@@ -1,554 +1,705 @@
-# One approval per release, and re-running only what failed — plan
+# One approval per release, re-running only what failed, and a nightly full check — plan
 
-Status: plan, revision 1, 2026-10-25. Branch `release-once` (worktree `so-releaseonce`), based on `release-0.9.70`; it
-will be rebased on main. Not reviewed yet. Nothing here is built.
+Status: plan, revision 2, 2026-10-25. Branch `release-once` (worktree `so-releaseonce`), rebased on main at
+`7a896d39` (0.9.70). Revision 1 got NO-GO from Codex (12 findings). This revision takes Alex's and the coordinator's
+decisions on those findings. The map is at the end. Nothing here is built.
 
 ## Why
 
 Shipping 0.9.70 needed four approvals from Alex. `src/release.ts` names the gate task by commit
-(`gateTaskId(version, sha)`), so every fix commit filed a new task with a new scope. Each one needed a person's
+(`gateTaskId(version, sha)`). Each fix commit therefore filed a new task with a new scope, and each needed a person's
 approval, a full release check (about 11 minutes, `scripts/release-check.mjs`) and GitHub CI (about 15 minutes). Six
-release checks failed on the way (runs 3234–3241). Most failures were in one place: one unit file (3238
-`src/live-terminal.test.ts`), one journey group (3237 `app/pages`, 3240 `app/console`), or the unit part (3241). Every
-retry still ran everything.
+release checks failed on the way (runs 3234–3241). Most failures were in one place:
 
-Alex: "I can't keep approving the same thing over and over."
+- one unit file: 3238, `src/live-terminal.test.ts`;
+- one journey group: 3237 `app/pages`, 3240 `app/console`;
+- the unit part: 3241.
+
+Every retry still ran everything. Alex: "I can't keep approving the same thing over and over."
 
 ## Goals
 
-1. **One approval per release.** A person approves a release once: version, branch, pull request, base, and the
-   approved commit. Later commits on that same pull request get a new gate task and a new full release check (and CI)
-   without asking again, as long as they stay inside the rules below.
-2. **Re-ask when it matters.** These always need a person again: changes to release, deploy, approval/authority,
-   fence/sandbox, credential, or upgrade/migration code; a large diff; any change to the release check command or its
-   scripts; a different pull request, base or version; rewritten history.
-3. **Show what landed after the approval.** The release summary and the console list every commit and file that
-   landed after the person's approval.
-4. **Re-run only what failed.** When a release check fails and everything changed since that run is test-only, the
-   next check runs only the failed parts and files, the changed tests, and a quick sanity pass. The gate accepts
-   "complete run at A + targeted pass at B, where B−A is test-only" as a pass on B. Any non-test change needs the
-   full check.
+1. **One approval per release, for test fixes.** A person approves a release once. Later commits on the same pull
+   request carry that approval only when every change since the approved commit is tests, docs or CHANGELOG, and the
+   production build is byte-for-byte the same. Anything else asks again.
+2. **Show what landed after the approval**, in the release summary and the console.
+3. **Re-run only what failed, at the level of single files.** On the second and later checks of a release, re-run the
+   failed tests (file by file), journey groups and upgrade versions, plus the changed tests and a sanity pass. Do not
+   re-run the whole suite.
+4. **A nightly full check as the safety net.** Every night at 03:00, the full release check runs on main and on open
+   release heads. A failure notifies Alex, and the next release must run the full check.
 
 ## Non-goals
 
-- No change to who may approve a release. Releases and deploys always need a person (approval-policy decision 1).
-  The lead never approves, carries or widens a release.
-- No change to CI. Every required pull-request check must still pass on the exact final commit (`REQUIRED_PR_CHECKS`),
-  and the merge still pins the head.
-- No partial checks for ordinary tasks. Targeted re-runs apply only to the release gate.
-- No re-running a failure without a change. A flaky failure is not retried until it passes (decision 6).
-- No dependency graph between tests and source. Test-only is proven by path classes, not by import tracing.
+- No change to who may approve. Releases and deploys always need a person (approval-policy decision 1). The lead may
+  ask for a carry. It can never make one stand on its own authority, and it can never widen one.
+- No carrying of production code, harness, dependencies or build inputs. Any of these asks again.
+- No carrying after deployment starts. The candidate freezes at deploy.
+- No carrying while the release project's checks run outside the sandbox.
+- No change to CI. Every required pull-request check passes on the exact final commit before merge.
+- No targeted checks for ordinary tasks. They apply only to release gates.
+- No reuse of GitHub CI results inside a composed check (cut from revision 1).
+- No mechanical proof that a changed test still asserts the same thing. See "What stays trusted".
 
-## How this fits the approval-policy branch
+## Prerequisites
 
-`docs/plans/approval-policy.md` (branch `approval-policy`, 20 commits, not on main yet) closes the lead-token hole and
-adds what this plan needs:
+### Approval policy
 
-- `personApprovalOf(store, taskId)` and `sealOriginOf` (`src/scope.ts`): a seal counts as a person's only with a
-  person's proof row recorded at that seal's instant, for those exact bytes.
-- Allowlist authority readers (`src/approval-authority.ts`, `dispatch.ts`, `work-index.ts`, `modeApprovalLive`). On
-  main these are still deny-lists, so a new basis would stand by default. This plan adds a basis, so it needs the
-  allowlists.
-- `src/person-proof.ts`, and `ownerApproval` reading the plane's `person` answer.
-- `src/deploy-gate.ts` and `src/commit-extract.ts`: the release proves the candidate in its own runtime, and reads Git
-  objects it has hashed itself. This plan reuses that verified object reader for ancestry and tree diffs.
+This plan builds on `approval-policy` (branch, 20 commits, not on main yet). It needs:
 
-**Build on it.** Recommendation: wait for approval-policy phase 1 to merge, then rebase `release-once` on main. If it
-hasn't merged when work starts, stack this branch on `approval-policy` and merge in that order. Building on main
-alone would mean re-doing the allowlists and the verified Git reader, or adding a basis that the deny-list readers
-would accept by default. (Decision 1.)
+- `personApprovalOf` and `sealOriginOf` (`src/scope.ts`), unchanged;
+- the allowlist authority readers (`src/approval-authority.ts`, `dispatch.ts`, `work-index.ts`, `modeApprovalLive`);
+- `src/person-proof.ts`;
+- the two deployment boundaries, `src/deploy-gate.ts deploymentGate` and `scripts/deploy-candidate.mjs`;
+- the verified Git object reader, `src/commit-extract.ts`.
+
+Order: approval-policy phase 1 merges first, then `release-once` rebases on main. If it hasn't merged when work
+starts, stack this branch on it.
+
+**Schema version.** Main is at v133. The approval-policy branch also says v133, so it must take v134 when it rebases.
+This plan takes **v135**. The implementation re-checks the numbers at rebase time. Migrations stay additive (new
+tables, nullable columns), so `toolroll update` runs them in place.
+
+### 0.9.71: release checks run sandboxed again
+
+0.9.70 ran the release project's checks "Not sandboxed" because the browser checks need it on macOS (CHANGELOG).
+0.9.71 ships three changes:
+
+- sandbox-runtime `allowPty`;
+- the Chromium mach-register rule;
+- a decision on Keychain access.
+
+With these, release checks run inside the fence again. Carrying, targeted re-runs and the nightly check are turned on
+only after 0.9.71 is deployed. Carrying refuses whenever the release project's check access is wider than the fence,
+both the access the anchor sealed and the live setting.
 
 ## Part 1 — one approval per release
 
 ### The model
 
-- **Release approval (the anchor).** The first gate task of a release is filed and approved as today, by a person,
-  with one change: its scope carries **release terms**. These are part of the scope text and the scope digest, so the
-  person sees them and approves those exact bytes:
-  - version, branch, pull request number, base (`main`), repository;
-  - the approved commit and its tree;
-  - the carry policy version (path rules, size limit, check harness list; these live in the installed runtime, not in
-    the scope, see below);
-  - the approved release check command (grant id and digest) and the check access the scope seals.
+- **The anchor.** The first gate task of a release is filed and approved as today, by a person. Its scope carries
+  **release terms**, which are part of the scope digest and shown on the approval sheet:
+  - repository (from Toolroll's records), version, head branch, pull request number, base `main`;
+  - the approved commit, its tree, and the approved production-artifact digest;
+  - the **effective carry policy**: the runtime rules and this project's protected paths, written out in full;
+  - the release check grant (id and digest), and the sealed check access, which must be fenced;
+  - the expiry.
 
-  The person sees this as plain words on the approval sheet, for example:
-  "Release 0.9.71 from pull request #240 (`release-0.9.71` → main) at `abc1234`. Later commits on this pull request
-  are checked and released without asking you again, unless they change release, deploy, approval, sandbox,
-  credential or upgrade code, the release check, more than 300 added lines, or the pull request, base or version.
-  Every later commit is listed in the release summary."
+  The sheet says, in two lines: "Release 0.9.71 from pull request #240 at `abc1234`. Later commits on this pull
+  request that only change tests, docs or the changelog ship without asking you again, until it merges or for 3 days.
+  You'll see each one in the release summary." The full terms sit behind **What asks again**.
 
-- **Carried gate task.** A later commit B gets its own gate task, as today: `gateTaskId(version, sha)`, one task per
-  commit, its own full check, receipt and completion. All of the deploy machinery (`deploymentCandidate`,
-  `deploymentGate`, completion, readiness) keeps working per task. The difference is how its scope is sealed: not by a
-  person's ceremony, but by **one store transaction that proves B against the anchor** and seals it with a new basis,
-  `carried`.
+- **The release authority record.** When a person seals an anchor, the same transaction creates one
+  `release_authority` row. That row is the single source of truth for the release:
+  - its generation;
+  - the anchor and the current tip;
+  - its state: `open`, then `deploying`, `merge-reserved`, and finally `merged`, `revoked`, `expired` or `superseded`;
+  - the coordinator lease;
+  - a revision number, so every change is a compare-and-swap.
 
-- **Re-ask.** When the proof fails, nothing is sealed. The coordinator files B's gate task normally and stops at
-  `approval` with the reason in words ("`def5678` changes `src/release.ts` (release code), so this release needs your
-  approval again"). When the person approves it, B becomes the new anchor. The earlier anchor and its carried commits
-  stay in history.
+  The JSON journal becomes recovery and display data only. Authority is never read from the journal.
 
-### What a person approved, and what can't widen it
+- **A carried gate task.** A later commit B still gets its own gate task (`gateTaskId(version, sha)`), its own check,
+  receipt and completion. Its scope is written and sealed **only by the carry transaction**, with the new basis
+  `carried`. That makes it a copy of the anchor's approved scope, with only the candidate changed.
 
-- The terms are fixed when the anchor is filed. The **carry policy itself** (protected paths, harness files, size
-  limit) is a constant in the runtime doing the proof (`src/release-carry.ts`), with a version and a digest. The
-  anchor's release terms store the policy version and digest. A runtime whose policy digest differs from the anchor's
-  refuses to carry. A newer runtime can't quietly loosen an older approval. Tightening also re-asks, which is fine.
-- The caller of a carry passes only the anchor task and the target commit. It cannot pass terms, paths, a limit or a
-  scope. The carried task's scope is written **by the carry transaction itself**, copied from the anchor's approved
-  scope with only the candidate and its words changed. The approved profile, route, check access and acceptance are
-  copied verbatim from `approved_profile_json` / `approved_route_json`. Nobody edits the carried text, so nobody can
-  widen it.
-- The carry can be requested by a machine (the coordinator usually runs as the lead). Its authority is the proof and
-  the anchor's person approval, never the caller. The anchor must pass `personApprovalOf`. A `lead`, `mode`,
-  `schedule`, `grant` or unproven seal is never an anchor.
-- `carried` is never a person. `personApprovalOf` refuses it. Release and deploy use a new reader,
-  `releaseApprovalOf(store, taskId)`: a person approval of this task, **or** a `carried` seal whose carry row still
-  proves against an anchor whose `personApprovalOf` still holds now.
+- **Asking again.** When a carry is refused, nothing is sealed. The coordinator files B's gate the ordinary way and
+  stops at `approval`, naming the commit, the path and the rule. The person's yes creates a **new generation**: a new
+  `release_authority` row whose `previous` points at the old one, which becomes `superseded`. Old rows are never
+  revived, so their carries stop standing.
 
-### The carry proof (one transaction)
+### Which changes carry
 
-`Store.carryReleaseApproval({ anchorTaskId, to, facts })` in `src/store.ts`, called from
-`src/release-carry.ts proveCarry()`.
+A change carries only when **both** of these hold.
 
-**Before the transaction (facts about fixed commits, gathered with no store lock):**
+**1. Every changed path is in an eligible class** (`src/release-carry.ts CARRY_RULES`, version 1):
 
-1. **Verified ancestry.** Walk from B back to the anchor's approved commit A0 using commit objects that Toolroll reads
-   from the project's own Git directory (as Toolroll records it, never a worktree `.git` pointer) and **hashes
-   itself** (`commit-extract.ts` reader, extended with `readVerifiedCommit`). Parents come from the verified bytes.
-   Replacement refs, grafts, shallow files and lazy fetch are not consulted. The walk is bounded: 200 commits and
-   only first parents. **Any merge commit in the range refuses.**
-2. **Chain.** The previous carried commit for this anchor (if any) must be on that walk. Dropping, reordering or
-   rewriting an already-carried commit refuses, even when A0 is still an ancestor.
-3. **Per-commit paths.** For each commit in A0..B, its own diff against its parent, from verified trees
-   (`parseTree`): path, old and new mode, old and new blob, added and deleted lines. No rename detection, so a move
-   lists both its old and its new path.
-4. **Cumulative size.** Added and deleted lines and the file count for tree(A0) → tree(B).
-5. **GitHub agrees.** `gh api repos/{repo}/compare/{A0}...{B}`: `status` is `ahead`, `behind_by` is 0, and the
-   commit list equals the verified walk. The pull request is the anchor's number, still open, base `main`, head B.
-   If GitHub and the local objects disagree, the carry refuses.
-6. **Version.** `package.json` at B has the anchor's version. Any change to `package.json` re-asks anyway.
+| Class | Paths |
+| --- | --- |
+| Unit tests | `src/**/*.test.ts` (including `*.slow.test.ts` and browser tests) |
+| Journey scripts | `scripts/app-e2e.mjs`, `scripts/flows-e2e.mjs` |
+| Docs | `docs/**`, other `*.md` files |
+| Changelog | `CHANGELOG.md` |
+
+These are **never** eligible, even when they match a class above:
+
+- `AGENTS.md` and `SECURITY.md`;
+- `test/attacks/**`, the attack suite;
+- every harness file and its executable dependencies:
+  - `scripts/release-check*.mjs`, `scripts/suite-lifecycle.mjs`, `scripts/provider-gate.mjs`;
+  - `scripts/e2e-parallel.mjs`, `scripts/e2e-kit.mjs`, `scripts/upgrade-path.mjs`;
+  - `vitest.config.ts`, `test/attacks/vitest.config.ts`;
+  - `test/setup-state.ts`, `test/fresh-store.ts`, `test/temp-root.ts`, `test/ensure-build.ts`;
+  - every `test/**` and `scripts/**` file those import;
+- fixtures and helpers (`test/**` other than test files, `scripts/fixtures/**`);
+- every path in the project's own `approval_policy.protected_paths`.
+
+Each commit is checked against its parent, and the whole range is checked from the approved commit to the tip.
+These also ask again: a deleted or renamed file; a mode change; a binary file, symlink or submodule; an unnormalized
+path.
+
+**2. The production artifacts are identical.** File names can't prove that shipped code is unchanged. Tailwind scans
+`src/browser/` (`src/browser/tailwind.css`, `@source "./"`), so a class name in a browser test can change the shipped
+CSS. So the plane builds both commits and compares what ships:
+
+- **Inputs.** It extracts the approved commit and the tip itself (`extractCommit`, verified objects, regular files
+  only) into fresh folders.
+- **Install.** It installs from the lockfile with `--ignore-scripts`, from the dependency cache, with no network. The
+  lockfile isn't eligible, so it is the approved one.
+- **Build.** It runs `npm run build` inside the fence. The build scripts aren't eligible either, so the code that runs
+  is code the person approved. No test runs.
+- **Digest.** It digests every file under `dist/` (path, mode, sha256), plus every file `npm pack --dry-run --json
+  --ignore-scripts` would ship. `CHANGELOG.md` and `README.md` are left out of the digest and listed as doc changes.
+
+The approved commit's digest is computed once and sealed in the authority record. A different digest asks again. The
+build stamp is printed, not written to `dist` (`scripts/postbuild.mjs`), so builds of the same inputs match. If
+implementation finds anything non-deterministic, it is fixed or listed in the sealed policy. It is never silently
+ignored.
+
+**Limits** (Codex: not a security boundary; they keep a carried change reviewable):
+
+- at most 400 changed lines (added plus deleted) and 20 files, from the approved commit to the tip;
+- at most 800 changed lines in total across all carried commits, so churn counts too.
+
+### The effective policy, sealed
+
+- **Policy.** The effective policy is the runtime rules plus this project's `protected_paths` and limits. It is
+  written into the release terms and into `release_authority.policy_json`, and its digest is part of the scope digest.
+- **At carry time** the transaction applies the **stricter** of the sealed policy and the current one. A path either
+  of them protects asks again, and the lower of the two limits applies. Tightening a policy can stop carrying.
+  Relaxing one never widens an approval.
+- **Unknown versions.** A runtime that doesn't know the sealed policy version refuses to carry.
+
+### The carry proof
+
+`src/release-carry.ts proveCarry(authorityId, to)` gathers facts. `Store.carryReleaseApproval(authorityId, rev,
+facts)` decides, in one transaction.
+
+**Gathered first.** These are facts about fixed, hashed commits:
+
+1. **Ancestry**, from commit objects read from the project's own Git directory (as Toolroll records it) and hashed by
+   Toolroll (`commit-extract.ts`, new `readVerifiedCommit` and `verifiedFirstParentWalk`). Replace refs, grafts,
+   shallow files and lazy fetch are ignored. The walk is limited to 200 commits. A merge commit refuses.
+2. **Each commit's own changes** against its parent, from verified trees (`verifiedTreeDiff`, no rename detection): the
+   path, old and new mode, and lines added and deleted.
+3. **The production-artifact digest of the tip**, built as described above.
 
 **Inside one `BEGIN IMMEDIATE` transaction:**
 
-1. Re-read the anchor's scope and seal. `personApprovalOf(anchor)` must hold now. The approved digest must still be
-   the digest, the release approval must not be revoked or expired, and the approver must be an active approver with
-   access to the project.
-2. The facts must name the anchor's approved commit as A0, and their tree must equal the anchor's sealed tree.
-3. The runtime's carry policy digest must equal the anchor's.
-4. The live release check grant (`liveVerifyCommand(repo)`) must have the anchor's id and digest, and the project's
-   check access must equal what the anchor sealed.
-5. Apply the rules (below) to the per-commit paths and the cumulative size. Any hit refuses, and the refusal names
-   the commit, path and rule.
-6. There must be no carry row for (anchor, B) yet. The unique index makes a race lose cleanly.
-7. Create the carried gate task and its scope from the anchor (candidate B). Seal it with basis `carried`, with the
-   authority reference set to the carry row id. Write the `release_carry` row with the facts, and a ledger row
-   (`release carried`, actor = the trusted caller, outcome = B).
+1. The authority row is at the caller's `rev`, in state `open`, not expired, and the caller holds the lease. A
+   `deploying` or `merge-reserved` release refuses.
+2. `personApprovalOf(anchor)` holds now: the approver is still an active approver with access to the project.
+3. The walk starts at the approved commit and passes through the **current tip**. A force-push, a dropped carried
+   commit or rewritten history refuses.
+4. The eligible-class rules and limits pass under the stricter policy.
+5. The production-artifact digest equals the sealed one.
+6. The live release check grant has the sealed id and digest. The project's check access, live and sealed, is fenced.
+7. **Idempotence.** If a carry for this authority and `to` already exists and still proves, its task is returned. The
+   lost-answer retry case makes no new row and doesn't refuse.
+8. Write:
+   - the carried task and its scope, copied from the anchor (approved profile, route, check access and acceptance
+     verbatim, candidate `to`);
+   - the seal, with basis `carried` and authority reference `<authority id>:<carry id>`;
+   - the `release_carry` row, with the facts and the scope digest;
+   - the authority's new tip, and `rev + 1`;
+   - a ledger row, `release carried`.
 
-The facts describe fixed, content-addressed commits, so gathering them outside the transaction is safe. The
-transaction binds them by commit id and re-checks everything that can change (approval, revocation, grant, policy,
-earlier carries). The coordinator still re-checks the branch and pull request at every step (`pinned()`).
+GitHub state can change, so it is never treated as a fixed fact. It is re-read at each step (below).
 
-### The rules (carry policy v1)
+### Who can make a `carried` seal stand
 
-A carry refuses (and the release re-asks) when any commit in A0..B does one of these:
+- `sealScopeApproval` refuses basis `carried` from every caller. Only the carry transaction writes it, with its own
+  statement.
+- The allowlist readers (`authorityStandsSql`, `modeApprovalLive`, dispatch, work index) let a `carried` seal stand
+  only when **all** of these hold:
+  - a `release_carry` row exists for this exact task, scope digest, candidate and authority generation;
+  - the authority is `open` or `deploying` and not expired;
+  - the anchor's seal is still a person's (`personSealSql`);
+  - the release check grant and the check access still match what was sealed.
+- `personApprovalOf` is **unchanged**, and it refuses `carried`.
+- New: `releaseApprovalOf(store, taskId)` accepts a person approval of this task, **or** a `carried` seal that the
+  rules above accept, and returns the anchor's approver.
 
-**Touches a protected path.** Concrete set for this repository, as globs in `src/release-carry.ts`:
+### Both deployment boundaries
 
-| Area | Paths |
-| --- | --- |
-| Release | `src/release*.ts`, `src/releases.ts`, `src/deploy-*.ts`, `src/commit-extract.ts`, `scripts/deploy-*.mjs`, `scripts/upgrade-path.mjs`, `.github/workflows/**` |
-| Approval and authority | `src/scope.ts`, `src/approval-*.ts`, `src/person-proof.ts`, `src/chat-approval.ts`, `src/chat-decide.ts`, `src/grant.ts`, `src/modes.ts`, `src/policy.ts`, `src/batch-policy.ts`, `src/writes-mode.ts`, `src/dispatch.ts`, `src/claim.ts`, `src/work-index.ts`, `src/pull-request-flow.ts`, `src/flow-pull-request.ts`, `src/publish.ts`, `src/result-completion.ts`, `src/dispose.ts`, `src/team-chat-authorization.ts`, `src/action-ledger.ts`, `src/ledger-chain.ts`, `src/operate.ts`, `src/operate-remote*.ts` |
-| The check and its receipt | `src/builder.ts`, `src/verification-evidence.ts`, `src/check-levels.ts`, `src/check-access.ts`, `src/assignment.ts`, `src/evidence.ts`, `src/contracts/verification-receipt.ts`, `src/contracts/verification-view.ts` |
-| Fence and sandbox | `src/agent-fence*.ts`, `src/brief-fence.ts`, `src/containment*.ts`, `src/sandbox-*.ts`, `src/project-sandbox.ts`, `src/teardown-git.ts`, `src/git.ts`, `src/job-object-helper.ps1`, `test/attacks/**` (the attack suite guards these) |
-| Credentials | `src/api-tokens.ts`, `src/tokens-cli.ts`, `src/token-notices.ts`, `src/password-bearer.ts`, `src/passwordless.ts`, `src/provider-auth.ts`, `src/oauth-run-token.ts`, `src/mcp-oauth.ts`, `src/mcp-person.ts`, `src/tool-secret-store.ts`, `src/flow-secrets.ts`, `src/envelope.ts` |
-| Upgrade and migration | `src/store.ts`, `src/store-baseline.ts`, `src/*migration*.ts`, `src/toolroll-update*.ts`, `src/desktop-update*.ts`, `src/coding-update.ts`, `src/deploy-lock.ts`, `src/database-reclaim.ts` |
-| Dependencies and build | `package.json`, `package-lock.json`, `tsconfig*.json`, `scripts/browser-build.mjs`, `scripts/postbuild.mjs`, `.gitattributes`, `.gitmodules`, `.npmrc` |
-| Policy text | `AGENTS.md`, `SECURITY.md` |
+`src/deploy-gate.ts deploymentGate` and `scripts/deploy-candidate.mjs deploymentCandidate` use
+`releaseApprovalOf` instead of `personApprovalOf`. This covers every resumed phase of `deploy-browser.mjs` (stage,
+prepare, rehearse, swap, finish). Both take the reader from the installed runtime, never from the candidate.
 
-The project's own `approval_policy.protected_paths` (Settings → Approval rules) are added to this set.
-`release-carry.test.ts` checks that each listed glob matches at least one file, so a rename can't silently empty a
-row. A new file whose name fits one of these areas (for example `src/approval-foo.ts`) matches the glob.
+The fallback for an older runtime (`personApprovalFromRecords`) does **not** learn about `carried`. It refuses a
+carried candidate: "This release continued from an earlier approval; update Toolroll first." Nothing reinterprets a
+carried seal as a person's.
 
-**Changes the release check or its harness.** `scripts/release-check.mjs`, `scripts/release-check-ci.mjs`,
-`scripts/suite-lifecycle.mjs`, `scripts/provider-gate.mjs`, `scripts/e2e-parallel.mjs`, `scripts/e2e-kit.mjs`,
-`scripts/upgrade-path.mjs`, `vitest.config.ts`, `test/attacks/vitest.config.ts`, `test/setup-state.ts`,
-`test/temp-root.ts`, `test/ensure-build.ts`. Also re-asks when the live check grant changed (step 4 above).
-
-**Is too large.** Cumulative from A0, not per commit, so splitting a change into small commits doesn't help:
-more than **300 added lines** or more than **20 files** changed since the approval (decision 2). Deleted lines don't
-count toward the limit.
-
-**Changes the file kinds.** A binary file, a symlink, a submodule (gitlink), a mode change, an unnormalized path, or
-a **deleted or renamed test file**. Removing a test is never carried (AGENTS.md: never delete tests to save time).
-
-**Changes the identity.** A different pull request number, base other than `main`, version in `package.json`, a merge
-commit, a force-push (A0 or an earlier carried commit is no longer an ancestor), or GitHub disagreeing with the local
-objects.
-
-**Is after merging started.** No carry once the journal has a merge intent.
-
-**Runs under widened check access** (decision 3). If the anchor sealed check access beyond the fence ("Not
-sandboxed", sign-ins), a carry refuses unless the person also approved "later commits may run their checks with this
-access" as part of the release terms. That consent is a separate, visible line on the approval sheet, off by default.
-
-### Honest limit: paths are an attention filter, not a wall
-
-Every file in `src/` runs in the same process as the plane after deploy. A carried change to an unprotected file (say
-`src/serve.ts`) could still do anything the plane can. The path rules route the code that decides authority, checks
-and installs back to a person. The rest is trust in the follow-up commits on a pull request the person already
-approved, bounded by size, listed in full afterwards, and reviewed by CI. That is the trade Alex asked for. It must
-be said on the approval sheet ("later commits are not shown to you before they ship") and in SECURITY.md.
-
-### When the carry applies (coordinator)
+### The coordinator
 
 `src/release.ts`:
 
-- `pinned()` today throws `drift` when the branch moves. It now calls `carryOrStop(newHead)` when the step is before
-  `merge` and the journal has an anchor:
-  - **Not approved yet** (step `gate` or `approval`): nothing to carry. The coordinator files the gate for the new
-    head and asks for approval of that one. The old task's scope is withdrawn, with words.
-  - **Approved:** `adapters.toolroll.carry(anchorTask, newHead)` → plane CLI `toolroll release carry <anchor-task>
-    --to <sha> --json`. On success the journal records the commit list, switches `candidate`, `task` and `pr` checks
-    to B, clears `check`, `completion`, `ci` (and `deploy`/`links` when A had been deployed, so B is deployed in turn),
-    and goes back to `check`. On refusal it files B's gate normally and stops at `approval` with the reason.
-- `begin()` writes `release: { anchorTask, approvedSha, approvalId }` once the anchor is approved.
-- `ownerApproval()` gives way to `releaseApproval(gate, digest)`, which reads the plane's `release` answer:
-  `{ ok: true, by, at, anchor, carriedFrom? } | { ok: false, why }`. It is computed by `releaseApprovalOf` in the
-  plane (`task show --json` gains `scope.release`). The coordinator never decides carry validity itself.
-- `--new` stays for "start over".
-- Journal (`ReleaseJournal`, still `version: 1`, new optional fields so older journals read):
-  `release?: { anchorTask: string; approvedSha: string; approvalId: number }`,
-  `landed?: { sha: string; task: string; subject: string; files: { path: string; added: number; deleted: number }[]; carriedAt: string }[]`.
+- **Lease.** `runRelease` takes the authority's coordinator lease with a compare-and-swap (owner id, expiry, renewed
+  while waiting). A second coordinator refuses: "Another `toolroll release` is running this release." Every
+  transition below is a compare-and-swap on `rev` while holding the lease.
+- **Identity, before every step that can't be undone.** Before `complete`, `deploy` and `merge`, `identity()` re-reads
+  and requires the following. Any mismatch stops the release.
+  - The authority is `open` (for `complete` and `deploy`), not expired or revoked, and the anchor's person approval
+    still holds.
+  - The repository matches Toolroll's record. The pull request is the sealed number and **open**, its base is
+    `main`, its head branch is the sealed branch, and its head is the authority's tip.
+  - The gate task is the tip's task, and `releaseApprovalOf` holds for it.
+- **The branch moves.** When `identity()` sees a new head while the authority is `open`, it doesn't patch the current
+  step. It throws `Restart`:
+  1. The outer loop catches it and releases nothing it was holding.
+  2. It asks the plane for a carry: `toolroll release carry <authority> --to <sha> --json`.
+  3. On success it writes the journal for the new tip (clearing `check`, `completion` and `ci`) and starts the state
+     machine again from `check`.
+  4. On refusal it files the new head's gate the ordinary way, and stops at `approval` with the reason.
+
+  No step goes on holding a variable captured before the restart. Before approval nothing is carried: the gate is
+  refiled for the newest head.
+- **Freeze at deploy.** `deploy` first moves the authority from `open` to `deploying` (compare-and-swap). From then
+  on, carrying refuses. A moved branch stops the release with today's `drift` words, and a new commit then needs
+  `--new` and a person's approval. A CI failure found after deploy also needs that approval: this is the cost of the
+  freeze.
+- **Merge reservation.** `merge` moves `deploying` to `merge-reserved` in one compare-and-swap. The same
+  compare-and-swap re-checks that the authority isn't revoked or expired, that the anchor's person approval holds and
+  that the tip is the gated candidate. Only then does it call `gh pr merge --match-head-commit`. Once reserved, a
+  revoke is refused with "the merge already started". After the merge the state is `merged`. Tag, publish and
+  Homebrew follow the merge commit as today.
+- **Revoke while deploying.** The deploy gate re-checks `releaseApprovalOf` at every phase. A revoke during deploy
+  stops it at the next phase boundary, and `--phase recover` puts the previous build back.
+- **Expiry.** At the merge, or 3 days after the approval, whichever comes first. Expiry stops new carries and any
+  action not yet taken. Facts already recorded (receipts, carries, completions) stay true.
+- **Journal.** `version: 1`, with optional fields so older journals still read:
+  - `authority?: { id: number; generation: number }`;
+  - `landed?: { sha; task; subject; files: { path; added; deleted }[]; carriedAt }[]`, built from `release_carry`
+    rows.
 
 ### What people see
 
-- **Release summary.** The final lines of `toolroll release` and the journal list: "Approved by alex at `abc1234`
-  (pull request #240). Landed after approval: `def5678` Fix the terminal test (`src/live-terminal.test.ts` +3 −1);
-  `0aa1b2c` …". The same list goes into the release's GitHub merge commit body (`merge()` adapter, squash message),
-  so it stays with the history.
-- **Console.** The anchor task page shows **Approved for release 0.9.71** with a **Later commits** disclosure (commit,
-  subject, files, +/−, and which check ran on it). A carried task page shows **Approved with release 0.9.71** with a
-  link to the anchor, never as a person's own approval ("Approved by alex" alone would be false). Words come from
-  `render-tasks.ts approvalProofWords` and `noteLifecycle` (one wording per basis: `carried` → "Carried from Alex's
-  release approval"). A carry posts one quiet task notification (no push).
-- **Stop carrying.** The anchor page has **Stop carrying later commits**: one click, any active approver,
-  `toolroll release revoke <anchor-task>`. In the same transaction it sets `revoked_at` and withdraws carried seals on
-  tasks with no live claim. The builder's final authority check refuses a claimed one, the same cutoff as approval-policy 2.4.
-- Simplicity pass: one heading, one disclosure, one action. The approval sheet shows the terms in two short lines plus
-  the risk line. The path list sits behind "What re-asks".
+- **Release summary.** The final lines of `toolroll release`, the journal and the squash-merge message list each
+  commit that landed after the approval, with its files and line counts.
+- **Console.**
+  - The anchor task page shows **Approved for release 0.9.71**, with a **Later commits** disclosure (commit, subject,
+    files, +/−, the check that ran) and **Stop carrying later commits**.
+  - Stop carrying is one click by any active approver, or `toolroll release revoke <authority>`. In the same
+    transaction it sets the state to `revoked` and withdraws carried seals that have no live claim.
+  - A carried task page says **Carried from Alex's release approval**, with a link. It never says "Approved by alex"
+    on its own.
+  - The approval sheet shows the two lines above. Terms and the full path rules sit behind **What asks again**.
+- **Words.** `render-tasks.ts approvalProofWords`, `noteLifecycle` and `evidence-pack.ts` get a `carried` wording.
+- **Notifications.** A carry posts one quiet task notification, without a push.
 
-### Data and schema
+## Part 2 — re-run only what failed, by file
 
-Schema version: the next after approval-policy's migration.
+### What can be trusted, and from where
+
+Revision 1 read results from files that tests can write, such as Vitest's JSON output and the journeys'
+`report.json`. A hostile test could change those files so that a real failure looked like a pass (Codex finding 1).
+Revision 2 changes where results come from:
+
+- **Over pipes, never from files.** The orchestrator (`release-check.mjs`) gives each child **one extra pipe, fd 3**,
+  and reads results only from it:
+  - the Vitest main process gets a small reporter (`test/release-reporter.ts`, a harness file) that writes one JSON
+    line per finished test to fd 3;
+  - `e2e-parallel.mjs` and `upgrade-path.mjs` write one JSON line per journey or upgrade version to their fd 3.
+
+  Node opens extra fds close-on-exec. The fork and spawn calls name their stdio exactly, so worker processes and test
+  code don't inherit fd 3 and can't write to it directly. Nothing reads results from a file on disk.
+- **Nonce.** The plane writes one line to the check's stdin, `{"nonce": "<random>", "mode": …, "plan": …}`, and
+  closes it. The orchestrator reads the line first and gives every child `stdin: "ignore"`. The nonce is never in the
+  environment or argv, where `ps` could read it. The orchestrator's report, its last stdout line
+  (`TOOLROLL_CHECK_REPORT <json>`, at most 256 KiB), carries the nonce. The plane takes only the last line.
+- **What stays trusted.** Test code runs as the same user as the orchestrator. Inside a Vitest worker it can
+  misreport its own results through Vitest's channel. Outside the sandbox it could also change `node_modules` or
+  other processes. Fixing that would need a boundary between test code and the check harness, which Toolroll doesn't
+  have. The mitigations:
+  - release checks run inside the fence (0.9.71), so test code can't reach the plane's state, credentials or other
+    projects;
+  - carried changes are limited to tests and docs, with identical production artifacts;
+  - the **nightly full check** runs everything again on main and release heads within a day;
+  - every changed test file is listed in the release summary.
+
+  The full check trusts test code the same way today. Targeted runs add only the risk that a forged result in run A
+  skips a test in run B. The nightly check bounds how long that can last.
+
+### Sealed before run A starts
+
+When the builder launches a release gate check, it first writes a `release_check_attempt` row. The row holds:
+
+- the **intended mode**: `full` or `targeted`;
+- the plan digest, for a targeted run;
+- the nonce hash;
+- the **inventory** (sealed as `check-inventory.json`):
+  - **unit files**, from the verified tree, matched with Vitest's include globs. The globs are a harness constant,
+    and their digest is checked against `vitest.config.ts` at that tree;
+  - **journey groups**, listed by the orchestrator before any test starts (`--groups --json`). They come back on the
+    first fd-3 line and are sealed at that point;
+  - **upgrade versions**, from the release tags, as `upgrade-path.mjs` selects them;
+  - **the parts** `planFor` selects.
+- the **execution context**:
+  - the Node version, platform and arch;
+  - the lockfile digest;
+  - the digest of the harness files at the tree;
+  - the release check grant (id and digest);
+  - the check access;
+  - the budget (`checkBudget`).
+
+Writing the mode and the inventory before launch means a run can't decide afterwards what it was supposed to cover
+(findings 3 and 11).
+
+### What run A records
+
+Every inventory item gets exactly one outcome:
+
+- **passed**;
+- **failed**, with the failed **test identities**. A Vitest identity is the file, the full name path (describe ›
+  test) and its index among tests with the same name. A journey identity is the group and the journey name;
+- **skipped**, with its identities;
+- **flaky**: passed only on the runner's retry (`e2e-parallel.mjs` retries, real-model retries);
+- **stopped**: killed by a timeout or a cancel;
+- **not run**;
+- **unattributed**: a runner error not tied to a test. Examples are Vitest's "Unhandled errors", a worker crash, a
+  group that ended without a report, or a browser-error check.
+
+Every item must be accounted for. An item missing from the report counts as not run.
+
+**No fail-fast on release runs.** A failure no longer stops parts that are running. Cancel, the part timeout
+(`PART_MS`), the process-exit checks and "a failed build starts no journeys" all stay.
+
+### When run B may be targeted
+
+`src/release-recheck.ts planTargetedRecheck(store, runId)` runs before the builder launches B's check. The check is
+**full** unless all of these hold:
+
+1. **Same release.** A and B are both gate tasks of the same authority generation.
+2. **A is the base.** A is the newest run in this generation whose intended mode was `full`. It executed (not reused
+   from CI), and its report has the run's nonce and agrees with the summary lines. Every inventory item has an
+   outcome, and A did **not** reuse CI for units. Targeted runs never become a base.
+3. **The changes are test-only.** Everything from A's candidate to B's is test-only: eligible classes and identical
+   production artifacts, as in Part 1. Under carrying this holds already; the check is repeated for A and B.
+4. **The setup is the same.** The execution context and the inventory at B equal A's, apart from changed unit test
+   files. A different harness digest, lockfile, Node version, grant, check access or parts means the full check.
+5. **No full-check debt.** If the newest nightly run on main or this release failed, and no full run has passed
+   since, B runs the full check (see the nightly section).
+
+### The plan for B
+
+Open **obligations** are recorded as `release_check_obligation` rows:
+
+- every identity that failed at A;
+- every identity that failed in a later targeted run of this generation.
+
+An obligation closes only when that identity runs and passes. B's plan, sealed as `targeted-plan.json`:
+
+- **Unit tests, by file.** It includes:
+  - every file with an open obligation;
+  - every changed unit test file.
+
+  Each of those files runs whole, so every identity in it is accounted for again. If A had unattributed or stopped
+  units, B runs **the whole unit part**.
+- **Journeys, by whole group.** It includes:
+  - every group that failed, was flaky, stopped, didn't run or was unattributed at A;
+  - a group with an open obligation;
+  - for a changed journey script, every one of its groups.
+- **Upgrades, by whole version.** Every version that failed, stopped or didn't run at A.
+- **Typecheck or build failed at A** means the full check. Test changes can't fix them, because `tsconfig.json`
+  excludes tests.
+- **Sanity pass, always:**
+  - `npm run typecheck` and `npm run build`;
+  - `SANITY_UNITS`, a fixed list of fast unit files in `release-check.mjs` (store open and migrate, CLI envelopes,
+    scope digest, release state machine), under a minute.
+- **Carried from A:** every other item that passed at A.
+
+### What B must show
+
+The plane checks B's fd-3 results against the sealed plan:
+
+- Every planned item has an outcome.
+- Every identity that A or an earlier run in this generation had **failed** **ran and passed**.
+- In every re-run file or group, every identity that existed at A still exists. It is not removed, renamed or newly
+  skipped. Any of those means the targeted result is **not a pass**, and the next check is full.
+- The sanity pass passed.
+
+### How it is recorded
+
+- **Receipt.** Version 3 of `contracts/verification-receipt.ts` follows the version 2 `reusedFrom` pattern. It keeps
+  the raw exit (`result`) separate from a new `coverage` field: `full`, `composed` or `partial`. A composed receipt
+  names A's run, receipt digest, report digest and candidate tree, the test-only proof (paths and artifact digest),
+  the plan digest and B's report digest.
+- **Mode decides the result.** The receipt is sealed according to the **intended mode** in `release_check_attempt`:
+  - **full:** today's rule. Exit 0, with every inventory item accounted for, is coverage `full`. A full run that
+    exits 0 but has no valid report is still a pass, because today's trust in a full run is unchanged. It just can't
+    be a base for a targeted run.
+  - **targeted:** the coverage is `composed` only when every condition above holds. Otherwise it is `partial`. A
+    `partial` receipt **is never a passing check**, whatever the exit code. It reads as failed, with words such as
+    "A targeted check couldn't be combined with run 3241; the next check runs in full."
+- **The reader re-proves everything.** `verificationEvidence()` reads version 3 by re-proving every link from the
+  store:
+  - A's sealed receipt and report artifacts;
+  - the same authority generation;
+  - the grant and the inventory context;
+  - the test-only proof and the artifact digests;
+  - the plan, derived again from A's report and the open obligations;
+  - B's report against that plan.
+
+  Only then does the result read `passed`, level `full`, with `composedFrom: A`. `gateStateOf`, `fullCheck`,
+  `deploymentCandidate`, `deploymentGate` and `release-coverage.ts` all read the result through this reader.
+- **Composition stops at merge.** A composed result never takes the place of the nightly check, and it never counts as
+  the "full pass" that clears a nightly failure.
+
+### Relatedness
+
+Revision 1 required the change to be "related" to the failure. That is now only a **hint**: the release summary says
+"the change didn't touch the failing test" when it didn't. It doesn't block anything. What blocks is the obligation
+list. A failure stays open until that exact test runs and passes, and the console lists open obligations on the
+anchor page. A test that fails and then passes with no change to its file is marked **passed without a change** in
+the summary and gets a follow-up note, so a flaky test stays visible.
+
+## Part 3 — the nightly full check
+
+- **What runs.** At 03:00 local, the full release check (`node scripts/release-check.mjs --full`, the approved
+  grant) runs on:
+  - **main's head**;
+  - **each open release head** whose release authority is `open` or `deploying`.
+
+  No other branches run, so nightly never runs code that no person approved or carried.
+- **Where it lives.** It is a Toolroll **flow with a schedule trigger** (`flow-schedule.ts`). Alex approves the flow
+  once with a password. Each firing files a check-only task, `nightly-<date>-<sha7>`:
+  - the candidate is the head, checks are `full`, and the acceptance is "The approved release check passes";
+  - it is sealed with basis `schedule` (approval-policy 1.6);
+  - it never deploys, merges or completes anything;
+  - it runs inside the fence. It is turned on after 0.9.71 is deployed.
+- **On failure.** It sends one notification with push class `attention`, which goes to web push and the Telegram
+  task updates channel: "Nightly full check failed on main at `abc1234`: 2 unit files, `app/pages`." It also writes a
+  `full_check_debt` row for the repository.
+- **The debt.** While the debt is open, every release gate check runs **full**, and `planTargetedRecheck` refuses with
+  "a nightly full check failed". The debt clears when a later nightly run or a full release check, on a commit that
+  contains the failed one, passes.
+- **Records.** A table, `nightly_check`, holds the repo, sha, run, outcome and time. The anchor page and
+  `toolroll status` show the last nightly result.
+
+## Data and schema (v135)
 
 ```sql
-CREATE TABLE release_approval (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  repo            TEXT NOT NULL,
-  anchor_task     TEXT NOT NULL UNIQUE,      -- the person-approved gate task
-  anchor_digest   TEXT NOT NULL,             -- its approved scope digest
-  version         TEXT NOT NULL,
-  pr              INTEGER NOT NULL,
-  branch          TEXT NOT NULL,
-  base            TEXT NOT NULL,             -- 'main'
-  approved_sha    TEXT NOT NULL,
-  approved_tree   TEXT NOT NULL,
-  policy_version  INTEGER NOT NULL,
-  policy_digest   TEXT NOT NULL,
-  verify_command  INTEGER NOT NULL,          -- grant id
-  verify_digest   TEXT NOT NULL,
-  access_digest   TEXT NOT NULL,             -- sealed check access
-  carry_wide_access INTEGER NOT NULL DEFAULT 0,
-  created_at      TEXT NOT NULL,
-  expires_at      TEXT NOT NULL,
-  revoked_at      TEXT, revoked_by TEXT
+CREATE TABLE release_authority (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo          TEXT NOT NULL,
+  generation    INTEGER NOT NULL,                  -- 1, 2, … per (repo, version, pr)
+  previous      INTEGER REFERENCES release_authority(id),
+  version       TEXT NOT NULL, pr INTEGER NOT NULL, branch TEXT NOT NULL, base TEXT NOT NULL,
+  anchor_task   TEXT NOT NULL, anchor_digest TEXT NOT NULL,
+  approved_sha  TEXT NOT NULL, approved_tree TEXT NOT NULL, artifact_digest TEXT NOT NULL,
+  tip_sha       TEXT NOT NULL, tip_task TEXT NOT NULL,
+  policy_json   TEXT NOT NULL, policy_digest TEXT NOT NULL,
+  verify_command INTEGER NOT NULL, verify_digest TEXT NOT NULL, access_digest TEXT NOT NULL,
+  state         TEXT NOT NULL CHECK (state IN ('open','deploying','merge-reserved','merged','revoked','expired','superseded')),
+  rev           INTEGER NOT NULL DEFAULT 0,
+  lease_owner   TEXT, lease_expires TEXT,
+  expires_at    TEXT NOT NULL, created_at TEXT NOT NULL,
+  ended_at      TEXT, ended_by TEXT,
+  UNIQUE (repo, version, pr, generation)
 );
+-- At most one live authority per release.
+CREATE UNIQUE INDEX release_authority_live ON release_authority(repo, version, pr)
+  WHERE state IN ('open','deploying','merge-reserved');
+
 CREATE TABLE release_carry (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  approval        INTEGER NOT NULL REFERENCES release_approval(id),
-  task_id         TEXT NOT NULL UNIQUE,      -- the carried gate task
-  from_sha        TEXT NOT NULL,             -- previous carried commit, or approved_sha
-  to_sha          TEXT NOT NULL,
-  to_tree         TEXT NOT NULL,
-  commits_json    TEXT NOT NULL,             -- [{sha, parent, subject, files:[{path, oldMode, newMode, added, deleted}]}]
-  added           INTEGER NOT NULL, deleted INTEGER NOT NULL, files INTEGER NOT NULL,  -- cumulative from approved_sha
-  github_json     TEXT NOT NULL,             -- compare status, ahead/behind, PR number/base/head
-  runtime         TEXT NOT NULL,             -- version and commit of the runtime that proved it
-  proved_at       TEXT NOT NULL,
-  UNIQUE (approval, to_sha)
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  authority     INTEGER NOT NULL REFERENCES release_authority(id),
+  task_id       TEXT NOT NULL UNIQUE,
+  scope_digest  TEXT NOT NULL,
+  from_sha      TEXT NOT NULL, to_sha TEXT NOT NULL, to_tree TEXT NOT NULL, artifact_digest TEXT NOT NULL,
+  commits_json  TEXT NOT NULL,                      -- [{sha, parent, subject, files:[{path, oldMode, newMode, added, deleted}]}]
+  changed_lines INTEGER NOT NULL, files INTEGER NOT NULL, churn INTEGER NOT NULL,
+  runtime       TEXT NOT NULL, proved_at TEXT NOT NULL,
+  UNIQUE (authority, to_sha)
+);
+
+CREATE TABLE release_check_attempt (
+  run           INTEGER PRIMARY KEY REFERENCES run(id),
+  authority     INTEGER REFERENCES release_authority(id),
+  mode          TEXT NOT NULL CHECK (mode IN ('full','targeted')),
+  base_run      INTEGER REFERENCES run(id),         -- A, for a targeted run
+  plan_digest   TEXT, inventory_digest TEXT NOT NULL, context_digest TEXT NOT NULL,
+  nonce_hash    TEXT NOT NULL, created_at TEXT NOT NULL
+);
+
+CREATE TABLE release_check_obligation (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  authority     INTEGER NOT NULL REFERENCES release_authority(id),
+  identity      TEXT NOT NULL,                      -- unit: file › names #n; journey: part/group › name
+  failed_run    INTEGER NOT NULL, closed_run INTEGER, closed_without_change INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (authority, identity, failed_run)
+);
+
+CREATE TABLE nightly_check (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, repo TEXT NOT NULL, sha TEXT NOT NULL, run INTEGER, outcome TEXT, at TEXT NOT NULL
+);
+CREATE TABLE full_check_debt (
+  repo TEXT PRIMARY KEY, sha TEXT NOT NULL, run INTEGER NOT NULL, opened_at TEXT NOT NULL, cleared_by_run INTEGER, cleared_at TEXT
 );
 ```
 
-- `task_scope` gains `release_terms_json` (nullable). It is part of the digest when present, rendered on the approval
-  sheet and validated strictly (`readScope`): known keys only, and a known policy version. The `release_approval`
-  row is written by `sealScopeApproval` in the **same transaction** as a person's seal of a scope with release terms.
-  No other road writes it.
-- `approval_basis` gains `carried`; `mode_digest` (the authority reference column) holds the carry row id. Readers:
-  `authorityStandsSql` / `modeApprovalLive` (claim and build) / dispatch / work index: `carried` stands only while
-  the carry row exists, its approval is not revoked or expired, and the anchor's seal is still a person's
-  (`personSealSql` on the anchor). `evidence-pack.ts`: `carried`. `personApprovalOf`: refuses `carried` (unchanged
-  allowlist).
-- `fileGate` (`release-adapters.ts`) passes `--release-terms` to `task scope`. The plane fills the terms from the
-  pull request and the runtime policy; the coordinator can't choose them.
+Other changes:
 
-## Part 2 — re-run only what failed
+- `task_scope.release_terms_json`, nullable. When present it is part of the digest, and it is read strictly (known
+  keys, known policy version).
+- The `approval_basis` allowlist gains `carried`.
+- New artifacts sealed per run: `check-inventory.json`, `check-report.json` and `targeted-plan.json`.
+- Receipt version 3.
 
-### What a release check records today, and why it isn't enough
-
-`evidence/<run>/` holds `verification-receipt.json` (command, exit code, log binding), `check-log.txt`, `handoff.json`,
-`terminal-diff-stat.json` and others. The log is truncated: run 3238 stored 25 KB of 803 KB. It keeps the summary,
-which prints only the last five matching lines per part. The first failure also stops the other parts ("stopping
-other parts"): in 3237 and 3241 the unit and upgrade parts were killed (exit 143), so they never finished. Neither the
-log nor the receipt can say which files failed and which parts really passed.
-
-### A structured check report
-
-`scripts/release-check.mjs` writes one report and prints it as its **last stdout line**:
-`TOOLROLL_CHECK_REPORT <json>`, capped at 256 KiB.
-
-```json
-{ "v": 1, "nonce": "…", "head": "<sha>", "mode": "full" | "targeted", "planDigest": "<sha256>" | null,
-  "selected": ["typecheck", "build", "unit", "flows", "app", "flows-real", "app-real", "upgrade"],
-  "parts": [{ "label": "unit", "state": "passed" | "failed" | "stopped" | "held" | "not-run", "exit": 0, "ms": 431000 }],
-  "units": [{ "file": "src/live-terminal.test.ts", "state": "passed" | "failed" | "skipped", "tests": 41, "failed": 4, "skipped": 0 }],
-  "journeys": [{ "part": "app", "group": "pages", "state": "passed" | "failed" | "flaky", "journeys": [{ "name": "…", "state": "…" }] }],
-  "upgrades": [{ "from": "0.9.65", "state": "passed" | "failed" }] }
-```
-
-- **Units:** vitest's JSON reporter (`--reporter=dot --reporter=json --outputFile.json=<part dir>/unit.json`). When
-  units are reused from CI (`passedCandidateCI`), the report says so, with the run id.
-- **Journeys:** each group's `report.json` that `e2e-parallel.mjs` already writes, read from the folder the release
-  check created for this run, plus `lanes.json`.
-- **Upgrades:** `upgrade-path.mjs` adds one JSON line per version (today it prints `✓`/`✗` lines).
-- `state` comes from the orchestrator's own view of each part's exit (`partRunner`). `stopped` is a part killed by
-  the fail-fast abort. `held` is a part not started because the build failed.
-
-**The plane captures it** (`builder.ts`, `runVerification`) from the full stream, before the log is truncated. It
-takes only the final line, parses it strictly, and stores it as a sealed artifact `check-report.json` (kind
-`structured-output`, capture `machine check report v1`). The receipt binds it by digest. Belts:
-
-- **Nonce on stdin.** For a release gate, the plane writes `{"nonce": "<random>", "plan": …}` as one line on the
-  check's stdin and closes it. `release-check.mjs` reads it first and gives every child `stdin: "ignore"`, so test
-  code never sees the nonce (it is not in the environment or argv, where `ps` could read it). A report without the
-  run's nonce is no report.
-- **Last line only.** If anything prints after the orchestrator's last line, there's no report.
-- **Consistency.** Each part's `exit` must match the `<label>: exit <n>` summary line the plane also sees in the
-  stream. Overall `exit 0` must agree with every part passed.
-- **No report → no shortcut.** A missing, malformed or inconsistent report never fails a check that otherwise
-  passed. It only means the next check is full.
-
-Trust: the report is exactly as trustworthy as the check's exit code, which already comes from this script and the
-candidate's tests. Test code in the candidate could tamper with `node_modules` and fake results today. The nonce and
-last-line rules stop a stray test process from forging a report later. They don't make hostile test code safe. That
-is why carried test code is limited by Part 1 (and decision 3 for unsandboxed checks).
-
-### When a targeted re-run applies
-
-`src/release-recheck.ts planTargetedRecheck(store, runId)`, called by the builder before it starts the check of a
-release gate task. All of these must hold, or the check runs in full:
-
-1. **Same release.** B's gate task and the earlier run A's task belong to the same `release_approval` (anchor or
-   carried).
-2. **A is a complete-run result.** A's receipt verifies (`verificationEvidence`), it ran under the same check grant
-   (id and digest) as B, it executed (not reused), it exited non-zero, and its `check-report.json` verifies, has
-   A's nonce, and is consistent. A is the newest such run for this release, and A itself is **not** targeted.
-   Targeted runs never stack: C is always composed against the last full run, never against B.
-3. **B−A is test-only.** From verified trees, tree(A's candidate) → tree(B's candidate), no renames. Every changed path
-   is in one of these classes, decided by the **installed runtime's** rules (`src/release-recheck.ts TEST_CLASSES`):
-
-   | Class | Paths | What re-runs |
-   | --- | --- | --- |
-   | unit test | `src/**/*.test.ts`, `src/**/*.slow.test.ts`, `test/attacks/**/*.test.ts` (attack tests re-ask under Part 1 anyway) | that file |
-   | unit helper | `test/**/*.ts` that isn't a test or a harness file, `test/fixtures/**` | the whole unit part |
-   | journey | `scripts/app-e2e.mjs`, `scripts/flows-e2e.mjs`, `scripts/flows/**` | every selected part of that script (scripted and real) |
-   | journey fixture | `scripts/fixtures/**` **not** listed in `package.json` `files` at A | the unit part and every journey part |
-
-   Anything else (any non-test file, a harness file, a shipped fixture, a deletion of a test file, a mode change, a
-   binary) means the full check.
-4. **A related change** (decision 6). At least one changed path is a failed unit file at A, a unit helper (when units
-   failed), the journey script of a failed journey part, or a journey fixture. An empty diff, or a change unrelated to
-   what failed, runs the full check. Nothing re-runs an unchanged failure until it passes.
-5. **Same selection.** `planFor` at B (from B's own base tag) selects the same parts as A's report `selected`. Test-only
-   changes can't move the selection (`MODEL` and `needsUpgrade` already ignore tests), so a difference means
-   something is off, and the check runs in full.
-
-### The targeted plan
-
-The plane writes the plan, seals it as `targeted-plan.json` in B's evidence, and sends it on stdin with the nonce:
-
-- **Re-run:** every part whose state at A is `failed`, `stopped`, `held` or `not-run` (while selected).
-  - unit, failed with a complete file list → only the failed files, plus the changed unit test files, plus the whole
-    unit part when a unit helper changed;
-  - unit, stopped or without a file list → the whole unit part;
-  - journeys → the failed or stopped **groups** (`--run-groups`), whole groups, never single journeys (decision 7);
-    a changed journey script re-runs all of that script's selected parts;
-  - upgrade, failed or stopped → the whole upgrade part;
-  - typecheck or build failed at A → the full check (tests can't fix these: `tsconfig.json` excludes them).
-- **Changed tests:** every changed unit test file, even when it passed at A.
-- **Sanity pass**, always: `npm run typecheck`, `npm run build`, and a fixed list of fast unit files that open the
-  store and migrate, read the CLI envelopes, compute a scope digest and run the release state machine
-  (`SANITY_UNITS` in `release-check.mjs`, under a minute). The release check is a harness file, so changing that list
-  re-asks. GitHub CI on B is still required before merge and runs the whole unit suite on Linux and Windows.
-- **Carried forward:** every part that `passed` at A and is not in the re-run set.
-
-`release-check.mjs` validates the plan strictly. Anything unknown makes it run the full check, which is still a valid
-pass. It runs the plan's items with the same budget and fail rules, and reports `mode: "targeted"` with the plan's
-digest.
-
-### What the gate accepts
-
-The builder seals B's receipt as **version 3** (`contracts/verification-receipt.ts`), following the version 2
-`reusedFrom` pattern:
-
-```json
-{ "version": 3, "run": B, "head": "...", "base": "...", "scopeDigest": "...", "command": {…}, "result": {"configured": true, "ran": true, "exitCode": 0}, "log": {…},
-  "composed": { "from": { "run": A, "receiptDigest": "…", "reportDigest": "…", "candidateTree": "…" },
-                "testOnly": { "toTree": "…", "paths": ["src/live-terminal.test.ts"], "rulesVersion": 1 },
-                "plan": { "digest": "…" }, "report": { "digest": "…" } } }
-```
-
-It is sealed as version 3 only when B's report has `mode: "targeted"`, the plan's digest, B's nonce, and every
-planned item `passed`. Each failed unit file at A must exist at B, pass, and skip no more tests than it did at A, so
-adding `.skip` doesn't pass. Otherwise it's sealed as an ordinary version 1 receipt with its real exit code. A
-targeted run that exits 0 but can't be composed is recorded as **failed**, never as passed.
-
-`verificationEvidence()` reads version 3 by re-proving everything from the store, not from the receipt's claims:
-
-- A's receipt and report artifacts verify against their sealed bytes and digests;
-- A and B are in the same release approval, and the approval still stands (`releaseApprovalOf`);
-- the same check grant, unrevoked, approved before both runs started;
-- the test-only proof re-derived from verified trees;
-- the plan re-derived from A's report and the path list, equal to the sealed plan;
-- B's report covers the plan.
-
-Then the result's check reads `passed`, level `full`, with `composedFrom: A`. `gateStateOf` and `fullCheck`
-(`release.ts`) accept it, and the summary says "full check: run A plus a targeted re-run on B (2 files)".
-`deploymentCandidate` (`scripts/deploy-candidate.mjs`) and `deploymentGate` need no new rule: they already go
-through `verificationEvidence`, require `exitCode 0` under the live command, and that path now validates the
-composition. `release-coverage.ts` treats a composed pass like a full one.
-
-A non-test change always gets the full check. The plane decides that before the run, from verified trees, and the
-reader decides it again after the run.
-
-### Fail-fast on release runs
-
-Today the first failure stops every other part, so a failed run tells us little about the rest (decision 4).
-Proposal: when the check runs as a release gate (the plane says so on stdin), a failure doesn't stop parts that have
-already started. Parts not started yet still don't start after a failed build. A failing run takes up to the full
-~11 minutes instead of stopping early. In exchange, the next run re-runs one file instead of everything.
-
-## Files and functions to touch
+## Files and functions
 
 | File | Change |
 | --- | --- |
-| `src/release-carry.ts` (new) | `CARRY_POLICY` (version, globs, harness list, limits) and `carryPolicyDigest()`; `proveCarry(store, gitDir, github, anchorTask, to)` gathers facts; `carryRefusalWords()` |
-| `src/commit-extract.ts` | `readVerifiedCommit(gitDir, sha)`; `verifiedFirstParentWalk(gitDir, from, to, limit)`; `verifiedTreeDiff(gitDir, treeA, treeB)` with modes and line counts |
-| `src/store.ts` | the two tables, `task_scope.release_terms_json`; `sealScopeApproval` writes `release_approval` for a person's seal of release terms; `carryReleaseApproval()` (one transaction); `revokeReleaseApproval()`; `releaseCarryOf(taskId)`; migration |
-| `src/scope.ts` | release terms in the scope draft, digest and `readScope`; `releaseApprovalOf(store, taskId)`; scope words for the terms |
-| `src/approval-authority.ts`, `src/dispatch.ts`, `src/work-index.ts`, `modeApprovalLive` | `carried` in the allowlist with its standing rule |
-| `src/release.ts` | `carryOrStop` in `pinned()`; `releaseApproval()` replaces `ownerApproval()` for the gate; journal `release`/`landed`; summary lines |
-| `src/release-adapters.ts` | `toolroll.carry()`, `fileGate` with release terms, `gateStateOf` reads `scope.release` and `checks.composedFrom`; merge body lists landed commits |
-| `src/release-cli.ts` | `toolroll release carry <task> --to <sha>`, `toolroll release revoke <task>`; help text |
-| `src/server/render-tasks.ts`, approval sheet | release terms, risk line, "Later commits" disclosure, carried wording, Stop carrying |
-| `src/evidence-pack.ts`, `noteLifecycle` | `carried` words |
-| `scripts/release-check.mjs` | stdin handshake, report, `--reporter=json`, run-to-end on release runs, plan execution, `SANITY_UNITS` |
-| `scripts/upgrade-path.mjs` | one JSON line per version |
-| `src/release-recheck.ts` (new) | `TEST_CLASSES`, `testOnlyDiff()`, `planTargetedRecheck()`, `planDigest()` |
-| `src/builder.ts` | stdin handshake for release gates; capture the last line; seal `check-report.json` and `targeted-plan.json`; seal receipt v3 |
-| `src/verification-evidence.ts`, `src/contracts/verification-receipt.ts` | receipt v3 and its reader |
-| `src/assignment.ts` | `composedFrom` in the checks view |
-| `AGENTS.md` (Lean verification), `SECURITY.md`, `docs/testing.md` | the targeted-release exception; the carry trust limit |
+| `src/release-carry.ts` (new) | `CARRY_RULES`, `effectivePolicy(store, repo)`, `stricterOf()`, `artifactDigest(gitDir, sha)` (extract, install, build in the fence, digest), `proveCarry()`, refusal words |
+| `src/commit-extract.ts` | `readVerifiedCommit`, `verifiedFirstParentWalk`, `verifiedTreeDiff` |
+| `src/store.ts` | v135 tables; `sealScopeApproval` creates the authority on a person's seal of release terms and refuses `carried`; `carryReleaseApproval`, `reserveRelease(rev, from, to)`, `leaseRelease`, `revokeRelease`; obligations; nightly and debt |
+| `src/scope.ts` | release terms in the scope; `releaseApprovalOf`. `personApprovalOf` unchanged |
+| `src/approval-authority.ts`, `dispatch.ts`, `work-index.ts`, `modeApprovalLive` | the `carried` standing rule |
+| `src/deploy-gate.ts`, `scripts/deploy-candidate.mjs` | `releaseApprovalOf` at every phase; the older-runtime fallback refuses `carried` |
+| `src/release.ts` | lease; `identity()` before `complete`, `deploy` and `merge`; `Restart` and the outer loop; freeze at deploy; merge reservation; journal `authority` and `landed`; summary |
+| `src/release-adapters.ts` | `carry`, `lease`, `reserve`, `revoke`; `fileGate` with release terms; `gateStateOf` reads `scope.release` and `checks.coverage`; the PR adapter returns repo, head branch and base; the merge message lists landed commits |
+| `src/release-cli.ts` | `release carry`, `release revoke`; help |
+| `src/release-recheck.ts` (new) | `planTargetedRecheck`, `obligationsOf`, `planDigest`, `composeCheck` |
+| `scripts/release-check.mjs` | stdin handshake, fd-3 result pipes, inventory line, last-line report, no fail-fast on release runs, executing a plan, `SANITY_UNITS` |
+| `test/release-reporter.ts` (new, harness) | the Vitest reporter that writes to fd 3 |
+| `scripts/e2e-parallel.mjs`, `scripts/upgrade-path.mjs` | per-journey and per-version lines to fd 3 |
+| `src/builder.ts` | the attempt row before spawn; the stdin line; fd 3 and the last line; sealing inventory, report and plan; receipt v3 by intended mode |
+| `src/verification-evidence.ts`, `src/contracts/verification-receipt.ts`, `src/assignment.ts` | receipt v3, `coverage`, `composedFrom` |
+| `src/flow-schedule.ts` + a flow definition | the nightly flow; the check-only task; notification and debt on failure |
+| `src/server/render-tasks.ts`, approval sheet, anchor page | terms, Later commits, obligations, last nightly, Stop carrying |
+| `AGENTS.md`, `SECURITY.md`, `docs/testing.md` | the targeted-release exception; what stays trusted; the nightly check |
 
 ## Tests
 
-Only what `docs/testing.md` keeps: security rules, data integrity, contracts. Attack cases go in `test/attacks/`.
-Every case goes through the real road (real Git repositories, the real store, the real CLI), not a hand-made gate.
-Run the AGENTS.md safety self-review before each security commit.
+Only what `docs/testing.md` keeps: security rules, data integrity, contracts. Every case goes through the real road
+(real Git, real store, real CLI and real child processes). Attack cases go in `test/attacks/`. Run the AGENTS.md
+safety self-review before each security commit.
 
-**Carry rules** — one table test (`release-carry.test.ts`), one row per rule: each protected area (one file from each
-row), each harness file, 301 added lines, 21 files, binary, symlink, submodule, mode change, a deleted test, a renamed
-test, `package.json` version bump, a protected file renamed to an unprotected path (both paths listed, refused),
-a new `src/approval-x.ts` (matched), an allowed `src/serve.ts` change (carried), and each glob matching a real file.
+**Carry rules table** (`release-carry.test.ts`), one row per rule:
 
-**Attacks** (`test/attacks/release-carry.test.ts`):
+- each eligible class carries;
+- each excluded file refuses: AGENTS.md, an attack test, each harness file and `test/fresh-store.ts`, a `test/`
+  helper, a fixture, a project protected path;
+- `src/serve.ts` refuses (production);
+- deleted and renamed tests refuse;
+- binary, symlink, submodule and mode change refuse;
+- 401 changed lines (deletions counted) refuses, 21 files refuses, churn 801 refuses.
 
-1. A lead token runs `toolroll release carry` for a commit touching `src/release.ts`: refused, no seal, no row.
-2. A lead token runs it for an allowed commit: carried. Proof that a machine can request but not widen. Then the same
-   token tries `task scope` on the carried task: the edit unseals it (digest change) and it doesn't re-carry.
-3. Force-push with the same tree on a new history: A0 isn't an ancestor, refused.
-4. Force-push that keeps A0 but rewrites an already-carried commit: refused (chain).
-5. A merge from main into the branch: refused.
-6. Slicing: ten commits of 40 lines; the one that crosses 300 cumulative is refused.
-7. Planted `refs/replace/*`, `info/grafts` and `shallow` in the shared Git directory that fake ancestry: the verified
-   walk ignores them and refuses. A corrupted object refuses.
-8. GitHub compare says `diverged` or lists other commits: refused.
-9. Pull request closed and a new one opened from the same branch; base changed: refused.
-10. The release check grant changed after the approval; check access widened in project settings: refused.
-11. Anchor approved by a mode, by the lead (`lead` basis), or a legacy unproven `password` row: no anchor, refused.
-12. Approver demoted, account revoked, release approval revoked, or expired: carried seals stop standing at
-    dispatch, claim, build, release and deploy. Revoke while a carried build is claimed: the builder refuses.
-13. Two carries for the same commit at once: one row, one task. A carry racing a revoke: one wins, never both.
-14. Carry after the journal's merge intent: refused.
-15. A runtime with a different policy digest: refused.
-16. A carry under unsandboxed check access without the person's consent line: refused; with it: carried.
+**Carry attacks** (`test/attacks/release-carry.test.ts`):
 
-**Targeted re-run** (`release-recheck.test.ts` table plus `test/attacks/release-recheck.test.ts`):
+1. A browser test that adds a Tailwind class name: the artifact digest differs, so it asks again.
+2. A lead token asks to carry an allowed commit: carried. It asks to carry a commit touching `src/release.ts`:
+   refused, no seal, no row.
+3. A direct `sealScopeApproval` with basis `carried`: refused. A hand-written `carried` row with no carry row, or a
+   carry row for another task, digest or candidate: doesn't stand at dispatch, claim, build, release or either deploy
+   boundary.
+4. A force-push with the same tree on a new history: refused. A history that keeps the approved commit but rewrites a
+   carried one: refused. A merge commit: refused.
+5. Planted `refs/replace/*`, `info/grafts` or `shallow` files, or a corrupted object: refused.
+6. Removing a project protected path after approval: the stricter rule still asks again. Adding one: asks again.
+7. The release check grant changes, or the check access goes beyond the fence (sealed or live): refused.
+8. Anchor by `lead`, `mode`, `schedule` or an unproven `password` seal: no authority is created.
+9. The approver is demoted, the authority is revoked, or it expires: carried seals stop standing at every reader and
+   at both deploy boundaries, including a resumed `deploy-browser.mjs` phase. An older-runtime fallback refuses a
+   carried candidate.
+10. Two coordinators: the second refuses on the lease. A carry racing a merge reservation: exactly one wins. A carry
+    after `deploying`: refused.
+11. A carry whose answer was lost, retried: the same task is returned, with no second row and no refusal.
+12. A new generation after a revoke: the old carries don't stand, and the old generation can't be revived.
+13. Pull request retargeted to another base with the same head; PR closed and a new one opened; head branch renamed:
+    stop before `complete`, `deploy` and `merge`.
 
-17. B−A touches `src/foo.ts`: full check.
-18. A's report missing, truncated, without the nonce, not the last line, or contradicting the summary: full check.
-19. A's report claims a part passed that the summary shows `exit 1`: full check.
-20. A test forges `TOOLROLL_CHECK_REPORT` lines during its run: ignored (not last, no nonce).
-21. A plan file planted in the worktree's `evidence/`: ignored. The plan comes only from the plane's stdin.
-22. B deletes the failed test file, or adds `.skip` to its failed test: not passed.
-23. B's report leaves out a planned file or group: not passed (recorded as failed).
-24. A from another release approval, or A itself targeted: not composed.
-25. Empty diff, or a change unrelated to the failure: full check.
-26. A unit helper changed: the whole unit part runs. A journey fixture shipped in `package.json` `files`: full check.
-27. A typecheck or build failure at A: full check.
-28. Receipt v3 reader: each binding broken in turn (A's receipt bytes, report digest, plan digest, tree, grant):
-    `verificationEvidence` refuses, and `deploymentCandidate` refuses through it.
-29. Contract: the report, plan and receipt v3 schemas (`contracts/`).
+**Coordinator** (`release.slow.test.ts`, faked adapters):
 
-**Coordinator** (`release.slow.test.ts`, adapters faked as today): a moved branch with an allowed commit carries and
-returns to `check`; a refused carry stops at `approval` with the reason; carry after deploy redeploys B; the final
-summary and merge body list every landed commit and file.
+- a branch move during the `check` wait, the CI poll and deploy preparation: the move during check and CI restarts at
+  `check` for the tip. Nothing from the old step runs afterwards, A is never deployed, and the old step never advances
+  to `merge`;
+- a move after `deploying`: the release stops;
+- revoke during the CI wait: `merge` refuses;
+- the summary and the merge message list every landed commit.
+
+**Targeted re-run attacks** (`test/attacks/release-recheck.test.ts`):
+
+14. A test rewrites a Vitest JSON or journey `report.json` file: ignored, because results come only from fd 3.
+15. A test prints `TOOLROLL_CHECK_REPORT` or writes to fd 1 with a forged line: not the last line, and no nonce.
+16. A test tries to write to fd 3: it isn't open in the worker.
+17. At A, X and Y both fail. B fixes X. Y is still an open obligation, so B runs Y. A forged A that hides Y is the
+    stated residual (see "What stays trusted"); the nightly check covers it.
+18. B deletes a failing `test(...)` from a file that still exists: an identity is missing, so it's not a pass. B skips
+    a failing test and un-skips another: a newly skipped identity, not a pass. B renames a failing test: not a pass.
+19. A journey group passes only on retry at A: the whole group runs at B. A Vitest "Unhandled errors" at A: the whole
+    unit part runs at B. A group with no result line: the whole group.
+20. Inventory: a unit file added to the tree but missing from the report counts as not run. The context changes
+    (lockfile, Node, harness digest): full check.
+21. Intended mode `targeted`, exit 0, report lost: coverage `partial`, read as failed, never a pass.
+22. Receipt v3 reader: break each link in turn (A's receipt bytes, report digest, plan digest, artifact digest,
+    generation, grant). `verificationEvidence`, `deploymentCandidate` and `deploymentGate` refuse.
+23. A targeted run used as a base: refused. A base with CI-reused units: refused.
+24. Open full-check debt: full check. After a passing full run: targeted allowed again.
+25. Contracts: the schemas for the inventory, the fd-3 lines, the report, the plan and receipt v3.
+
+**Nightly** (`flow-schedule` table): it fires at 03:00 on main and on live release heads only, never on other
+branches. A failure notifies (push and Telegram) and opens the debt. A later full pass on a containing commit clears
+it. The firing task can't deploy, merge or complete.
 
 ## Rollout
 
-1. **After approval-policy phase 1 merges:** rebase `release-once` on main.
-2. **Phase A — the check report** (no behaviour change): `release-check.mjs` report and stdin handshake,
-   `upgrade-path.mjs` JSON lines, the plane captures and seals `check-report.json`. Released through the normal gate.
-   One or two real releases then produce real reports to test the planner against.
-3. **Phase B — one approval per release:** schema, release terms, carry proof, coordinator, console. Codex review
-   rounds until GO. Its own release is approved the old way. The first release after it is deployed uses it.
-4. **Phase C — targeted re-runs:** plan, receipt v3, reader, run-to-end on release runs. Codex review rounds until GO.
-5. After each phase: update AGENTS.md (Lean verification: the targeted-release exception) and SECURITY.md (the carry
-   trust limit), both protected, so a person approves them.
+1. **0.9.71** ships with the sandbox fixes (`allowPty`, the Chromium mach-register rule, the Keychain decision).
+   Release checks run inside the fence again.
+2. **Approval-policy phase 1 merges.** Rebase `release-once`.
+3. **Phase A, the check report.** This changes no behaviour:
+   - the stdin handshake;
+   - the fd-3 pipes and the reporter;
+   - the inventory and the attempt row;
+   - the last-line report, sealed as artifacts;
+   - no fail-fast on release runs.
 
-Off switch: `toolroll release --no-carry` (per run), and a project setting "Ask for every release commit" (default
-off, lowering is one click). Both only make things stricter, so a machine may set them.
+   It is released through the normal gate, and a few real releases produce real reports.
+4. **Phase B, the nightly full check.** The flow, notifications and debt. Turned on once Phase A is deployed, so
+   nightly runs produce reports too.
+5. **Phase C, one approval per release.** The authority record, carrying, the coordinator changes, both deploy
+   boundaries and the console. Codex review rounds until GO. Its own release is approved the old way.
+6. **Phase D, targeted re-runs by file.** Obligations, plans and receipt v3. Codex review rounds until GO.
+7. **Docs.** AGENTS.md (Lean verification), SECURITY.md (what stays trusted) and docs/testing.md, updated in the
+   phases that need them. They are protected, so a person approves them.
+
+**Off switches.** Both only make things stricter, so a machine may set them:
+
+- `toolroll release --no-carry`, for one run;
+- the project setting "Ask for every release commit". Lowering it back is one click.
 
 ## Decisions for Alex
 
-1. **Build on approval-policy?** It provides person proofs, allowlist readers and the verified Git reader. *Recommend
-   yes: rebase on main after its phase 1 merges; stack on its branch if it hasn't merged when work starts.*
-2. **Size limit.** *Recommend 300 added lines or 20 files, cumulative since the approval.* (0.9.70's fix commits were
-   mostly well under this; larger needs a look anyway.)
-3. **Unsandboxed checks.** Carried commits run unseen test code on this Mac. With "Not sandboxed" check access that
-   code runs outside the fence. *Recommend: carry under widened check access only with a separate consent line in the
-   release approval, off by default. Landing the Chromium fence rule makes this moot.*
-4. **Fail-fast on release runs.** *Recommend: a failure stops nothing already running on a release gate run.* Failing
-   runs take longer; the next run re-runs only what failed.
-5. **How long a release approval lasts.** *Recommend: until the merge, or 3 days after the approval, whichever comes
-   first; Stop carrying at any time.*
-6. **Targeted re-run needs a related change.** *Recommend yes:* an empty or unrelated change gets the full check, so a
-   flaky failure is never retried until green.
-7. **Journey granularity.** *Recommend whole groups*, not single journeys: journeys in a group depend on each other,
-   and a lone retry can pass for the wrong reason (docs/testing.md).
-8. **Merging main into the branch.** *Recommend re-ask* (simple, and the release needs the branch to contain main
-   anyway). The alternative, allowing merges whose other parent is already on main, adds proof work for little gain.
-9. **`src/builder.ts` and `src/store.ts` are protected.** They change often, so this means more re-asks. *Recommend
-   keep:* they run and seal the check and hold migrations.
-10. **Say it on the approval sheet.** "Later commits are not shown to you before they ship; you'll see them in the
-    release summary." *Recommend yes*, plus the Later commits list on the task page.
+Settled in this revision: build on approval-policy; carry only tests, docs and the changelog, with identical artifacts;
+no carrying with unsandboxed checks; until merge or 3 days; no fail-fast on release runs; whole journey groups and
+upgrade versions; file-level unit re-runs; relatedness as a hint; the nightly full check; freeze at deploy; ask again
+on merges from main.
+
+Still open:
+
+1. **Limits.** *Recommend 400 changed lines (added plus deleted) and 20 files from the approved commit, and 800 lines
+   of churn across carried commits.* They only keep a carried change reviewable; they are not a security boundary.
+2. **Journey scripts carry.** `scripts/app-e2e.mjs` and `scripts/flows-e2e.mjs` are test code, but they are large and
+   drive a real install. *Recommend: they carry* (artifacts must still match, and their groups re-run whole).
+3. **Nightly on release heads.** *Recommend yes*, for heads with a live authority only, so a carried test-only change
+   gets a full check within a day even if the release waits.
+4. **A CI failure after deploy needs a new approval** (because of the freeze). *Recommend accepting it for now.*
+   Revisit if it happens often. The fix would be a separate, narrow "redeploy for a test-only change" rule with its
+   own review.
+
+## Codex round 1 → revision 2
+
+| # | Finding | How revision 2 answers it |
+| --- | --- | --- |
+| 1 | The nonce authenticates the wrapper, not its coverage; reports come from files tests can write | Results come only over fd-3 pipes from the harness processes. No report file is read. The nonce arrives on stdin and isn't inherited. The residual (same-user test code inside its own worker) is stated, and bounded by the fence (0.9.71), test-only carrying and the nightly full check. **Accepted as a stated residual, not closed.** |
+| 2 | Deleting failing cases or swapping skips passes the anti-skip rule | Failed test **identities** are bound. Every identity that failed must run and pass. A removed, renamed or newly skipped identity in a re-run file or group means not a pass, and the next check is full. Weakened assertions can't be detected mechanically; the release summary lists every changed test, and the nightly check runs everything. |
+| 3 | "Complete run" has no coverage contract | Inventory and execution context are sealed before A starts. Every item gets exactly one outcome. Flaky, stopped, not-run and unattributed items re-run their whole part or group. CI reuse is excluded from composition. |
+| 4 | Filename classes don't prove shipping code is unchanged (Tailwind scans tests) | The plane builds both commits from its own extractions and compares production-artifact digests (`dist` plus packaged files). A difference asks again, and the check runs in full. |
+| 5 | The protected list misses authority and harness code; carried production code runs as the plane | Narrowed to an allowlist: only tests, docs and the changelog carry. All production code asks again, so `src/server/guards.ts`, `session.ts`, `request-context.ts` and `project-access.ts` are covered. Harness dependencies (`test/fresh-store.ts`, and everything the harness imports) are excluded by name and by import. |
+| 6 | Effective policy not bound; standing readers weaker than the proof | The effective policy (runtime rules plus project protected paths plus limits) is sealed. The stricter of sealed and current applies. `carried` stands only with an exact carry row (task, scope digest, candidate, generation) and the current authority, grant and access. No other road can write `carried`. |
+| 7 | Carrying isn't serialized with merging; the journal competes as authority | One `release_authority` record holds the anchor, tip, state and merge reservation, under compare-and-swap on `rev`, with a coordinator lease. The journal is display and recovery only. |
+| 8 | Changing `pinned()` in place can continue the old step | A carry throws `Restart`. The outer loop restarts from `check` for the tip. No carrying after deploy starts. Tested during the check wait, the CI poll and deploy preparation. |
+| 9 | Revocation and PR identity missed after deploy | `identity()` runs before `complete`, `deploy` and `merge`: authority, repo, PR number, open, base, head branch and head. The merge reservation re-checks in the same compare-and-swap. Cutoffs are defined for deploy (next phase boundary, then recover) and merge (refused once reserved). |
+| 10 | The deploy integration contradicts approval-policy | Both `deploymentGate` and `deploymentCandidate` use `releaseApprovalOf` at every phase. `personApprovalOf` is unchanged. The older-runtime fallback refuses `carried`. |
+| 11 | "No report means no shortcut" conflicts with accepting v1 receipts | The intended mode is written before launch. A targeted attempt without valid composition is `partial` and never passes. Raw exit and coverage are separate fields. A full-mode run keeps today's rule but can't be a base without a report. |
+| 12 | Size limits ignore deletions and churn; retries; generations | Deletions count. Endpoint and churn limits. Carrying is idempotent. Generations are explicit, with `previous` and `superseded`, and old ones are never revived. |
