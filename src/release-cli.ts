@@ -24,7 +24,9 @@ import { parseSchedule } from "./flow-schedule.js";
 
 export const RELEASE_HELP = `toolroll release <branch> — release Toolroll itself, from a pushed branch with an open pull request
 
-  Requires an active approver's scope approval (the only human step) and a passing Full check on the exact commit.
+  First looks at the pull request's checks: a required check that already failed stops before anything is filed or
+  sent for approval. Then requires an active approver's scope approval (the only human step) and a passing Full check
+  on the exact commit.
   Completes that result, drains, backs up, deploys and relinks both CLI names to that commit. After PR checks pass,
   squash-merges, deletes the matching remote branch, verifies the merged tree and tags. Both macOS legs gate npm
   publication; Homebrew waits for its checks to register and all pass before merging.

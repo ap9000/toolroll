@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **`toolroll release` stops at the gate when the pull request's checks have
+  already failed.** Before it files the release task or asks for your
+  approval, it reads the required checks on the exact commit. One that
+  already failed or was cancelled stops the release with the failing job
+  names, so you aren't asked to approve a commit that can't merge. Checks
+  still running, or GitHub not answering, only get a line; the ci step still
+  waits for every check before merging, as before.
+
 ## 0.9.72 — 2026-10-25
 
 - **One approval per release.** A person approves a release once. Later

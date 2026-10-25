@@ -5,7 +5,9 @@
  *
  *   gate → approval → check → complete → quiet → deploy → link → ci → merge → tree → tag → publish → homebrew → done
  *
- * gate files a prepared-candidate task pinned to the branch's exact commit, with the full release check. approval
+ * gate first looks at the pull request's required checks on that commit: one that already failed stops the release
+ * before anything is filed (pending checks, or GitHub not answering, only get a line; ci stays the authority). It then
+ * files a prepared-candidate task pinned to the branch's exact commit, with the full release check. approval
  * waits for an active approver's yes to that exact scope (never a mode's, an AI's or the lead's). check requires a Full
  * result of that commit: a failed check stops the release and stays visible, nothing reruns it. complete marks that
  * exact result Complete through the task's own authorization. quiet waits until nothing builds. deploy runs the
@@ -563,6 +565,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             if (existing.candidate !== j.candidate.sha) throw new Stop("conflict", `Task ${j.task.id} exists for a different commit (${existing.candidate?.slice(0, 7) ?? "none"}).`);
             j.task.scopeDigest = existing.scopeDigest;
           } else {
+            await earlyChecks(adapters, j);
             intend("gate");
             await adapters.repo.sync(j.branch);
             const filed = await adapters.toolroll.fileGate({
@@ -905,4 +908,23 @@ async function deployed(adapters: ReleaseAdapters, candidate: string): Promise<s
   if (installed.services.length === 0 || installed.clis.length < 2 || runtimes.size !== 1) return null;
   const [runtime] = runtimes;
   return runtime !== undefined && runtime !== "" && await adapters.toolroll.runtimeCommit(runtime) === candidate ? runtime : null;
+}
+
+/** The gate's early look at the pull request's required checks, before anyone is asked to approve: a required check
+ * that already failed stops here, since the ci step would refuse it later anyway. Anything else goes on, and the ci
+ * step stays the authority: pending or absent checks are only mentioned, and GitHub not answering never blocks. */
+async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal): Promise<void> {
+  const sha = j.candidate.sha.slice(0, 7);
+  let runs: CheckRun[];
+  try { runs = await adapters.github.checks(j.github, j.candidate.sha); }
+  catch (error) {
+    adapters.say(`  Couldn't read the pull request checks on ${sha} (${(error as Error)?.message ?? error}); going on. The ci step still waits for them before merging.`);
+    return;
+  }
+  const required: readonly string[] = REQUIRED_PR_CHECKS;
+  const verdict = checksVerdict(runs.filter(run => required.includes(run.name)), required);
+  if (verdict.state === "failed") {
+    throw new Stop("ci-failed", `Pull request checks already failed on ${sha}: ${verdict.failed.join(", ")}. Nothing was filed or sent for approval. Fix the branch, then release the new commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\` (or rerun the failed job on GitHub and run this command again).`);
+  }
+  if (verdict.state === "pending") adapters.say(`  Pull request checks on ${sha} are still running; the ci step waits for them later.`);
 }
