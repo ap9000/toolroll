@@ -469,7 +469,7 @@ export class TerminalHost {
       for (const [pid, started] of found) session.known.set(pid, started);
       return found;
     };
-    const signal = (found: ReadonlyMap<number, string>, name: "SIGHUP" | "SIGKILL") => {
+    const signal = (found: ReadonlyMap<number, string>, name: "SIGHUP" | "SIGSTOP" | "SIGKILL") => {
       if (!leaderGone()) { try { process.kill(-session.leader, name); } catch { /* gone */ } try { session.pty?.kill(name); } catch { /* gone */ } }
       for (const pid of found.keys()) { try { process.kill(pid, name); } catch { /* gone */ } }
     };
@@ -487,9 +487,20 @@ export class TerminalHost {
         if (leaderGone() && members().size === 0 && readable) { cleanup = "clean"; return; }
       }
       for (let round = 0; round < 20; round += 1) {
-        const found = members();
+        let found = members();
         if (!readable) return;
         if (found.size === 0 && leaderGone()) { cleanup = "clean"; return; }
+        // Stopped first, then read again until nothing new appears: a stopped process can't fork, so a child one started
+        // just before it stopped is still its descendant here and is killed with it. Killed while running, a parent can
+        // fork between the read and the kill, and its child goes to launchd unnoted.
+        for (let settle = 0; settle < 5; settle += 1) {
+          signal(found, "SIGSTOP");
+          const again = members();
+          if (!readable) return;
+          const grew = [...again.keys()].some(pid => !found.has(pid));
+          found = again;
+          if (!grew) break;
+        }
         signal(found, "SIGKILL");
         await pause(100);
       }

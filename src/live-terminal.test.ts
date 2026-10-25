@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { fakePid } from "../test/fake-pid.js";
 import { createRequire } from "node:module";
-import { loadPtySpawn, MAX_PENDING_INPUT, membersOf, parseTerminalFrame, pendingInputOf, ScreenMirror, TerminalHost, type PtySpawn, type TerminalControl, type TerminalLedger } from "./live-terminal.js";
+import { CLOSE_GRACE_MS, loadPtySpawn, MAX_PENDING_INPUT, membersOf, parseTerminalFrame, pendingInputOf, ScreenMirror, TerminalHost, type PtySpawn, type TerminalControl, type TerminalLedger } from "./live-terminal.js";
 import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const ALEX = { name: "alex", generation: 1 };
@@ -173,16 +173,22 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
 
   // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
   test.skipIf(INSIDE_FENCE)("a child started during the close is caught too (round 2, finding 3)", async () => {
-    const started = await host.start(ALEX, repo, "shell");
-    const late = join(dir, "late.txt");
-    const { seen, viewer } = watcher();
-    host.attach(started.id, viewer);
-    host.input(started.id, `(trap 'sleep 61 & echo $! > ${late}' HUP; while :; do sleep 0.1; done) & echo armed\n`);
-    await until(() => seen.out.includes("armed"));
-    await host.close(started.id);
-    await until(() => { try { return readFileSync(late, "utf8").trim() !== ""; } catch { return false; } });
-    expect(gone(Number(readFileSync(late, "utf8")))).toBe(true);
-    expect(host.get(started.id)).toMatchObject({ cleanup: "clean" });
+    // The product's own grace: the job's trap must get to run before the kill, on a loaded machine too.
+    const slow = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "slow"), closeGraceMs: CLOSE_GRACE_MS, programs: { shell: { file: "/bin/sh", args: [] } }, env: () => ({ PATH: process.env["PATH"] ?? "", HOME: dir }) });
+    try {
+      const started = await slow.start(ALEX, repo, "shell");
+      const late = join(dir, "late.txt");
+      const { seen, viewer } = watcher();
+      slow.attach(started.id, viewer);
+      // "armed-42" is printed by the job itself once its trap is set: the terminal's echo of the typed line says
+      // "armed-$((6*7))", so a close can't start before the shell has run the line (it once did, and raced it).
+      slow.input(started.id, `(trap 'sleep 61 & echo $! > ${late}' HUP; echo armed-$((6*7)); while :; do sleep 0.1; done) &\n`);
+      await until(() => seen.out.includes("armed-42"));
+      await slow.close(started.id);
+      await until(() => { try { return readFileSync(late, "utf8").trim() !== ""; } catch { return false; } });
+      expect(gone(Number(readFileSync(late, "utf8")))).toBe(true);
+      expect(slow.get(started.id)).toMatchObject({ cleanup: "clean" });
+    } finally { await slow.stop(); }
   });
 
   test("an unreadable process table is uncertain, never clean: the worktree stays and stop says so (round 2, findings 4 and 6)", async () => {
