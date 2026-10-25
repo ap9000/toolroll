@@ -1097,6 +1097,25 @@ export function protectedChanges(changed: readonly string[]): string[] {
   });
 }
 
+/**
+ * The handoff's backstop for links (builder.ts commit): a staged symbolic link (Git mode 120000) whose path is a
+ * protected name or a folder on the way to one (`pkg/.claude`, `.vscode`, `lib/.git`), at any depth, in any case. A
+ * link there would lead whoever opens the project to settings, hooks or commands kept anywhere.
+ */
+export function protectedLinks(links: readonly string[]): string[] {
+  const entries = [...PROTECTED_FILES, ...PROTECTED_DIRS].map(one => one.toLowerCase().split("/"));
+  return links.filter(path => {
+    const parts = path.toLowerCase().split("/").filter(one => one !== "");
+    return entries.some(entry => {
+      // The link's last parts are the entry's first ones (the whole entry, or a folder on the way to it).
+      for (let take = 1; take <= Math.min(entry.length, parts.length); take++) {
+        if (parts.slice(parts.length - take).join("/") === entry.slice(0, take).join("/")) return true;
+      }
+      return false;
+    });
+  });
+}
+
 /** The home folder's own persistence points beyond the protected names (login items, systemd user units and autostart,
  * Git's, gh's, pip's and fish's configuration, the shells' other startup files, SSH and GnuPG, and the folders on a
  * login PATH). Under `.config/` each also stands under $XDG_CONFIG_HOME. */

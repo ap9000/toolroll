@@ -56,7 +56,7 @@ import { witnessedRunner } from "./process-custody.js";
 import { runWithIsolatedDatabase } from "./child-database.js";
 import { recordWorktreeProcess, saveWorkPatch } from "./worktree.js";
 import type { Decision, RunCheckSuite, SteerNote, Store } from "./store.js";
-import { launchSandboxOf, protectedChanges } from "./agent-fence.js";
+import { launchSandboxOf, protectedChanges, protectedLinks } from "./agent-fence.js";
 import { approvalOf, digestOf, idleClock, isAcpProfile, profileDigestOf, routeParityProblem, watchdogsOf, type ExecutionProfile, type Scope } from "./scope.js";
 import { legOf, routeDigestOf, routeFromJson, type RouteStamp } from "./phase-routing.js";
 import { execFileSync } from "node:child_process";
@@ -3924,7 +3924,13 @@ async function commit(
   // made after that, or by Codex, gets through it). The checkout is kept; nothing is committed.
   const staged = await git(GIT, ["--no-optional-locks", "diff", "--cached", "--name-only", "--no-renames", "-z"], { cwd: worktree });
   if (staged.code !== 0) return { ok: false, reason: "commit-failure", message: firstLine(staged.stderr) };
-  const forbidden = protectedChanges(staged.stdout.split("\0").filter(one => one !== ""));
+  // And any staged link at a protected name or a folder on the way to one (mode 120000, from the raw listing).
+  const raw = await git(GIT, ["--no-optional-locks", "diff", "--cached", "--raw", "--no-renames", "-z"], { cwd: worktree });
+  if (raw.code !== 0) return { ok: false, reason: "commit-failure", message: firstLine(raw.stderr) };
+  const rawParts = raw.stdout.split("\0");
+  const links: string[] = [];
+  for (let at = 0; at + 1 < rawParts.length; at += 2) if (rawParts[at]!.split(" ")[1] === "120000") links.push(rawParts[at + 1]!);
+  const forbidden = [...new Set([...protectedChanges(staged.stdout.split("\0").filter(one => one !== "")), ...protectedLinks(links)])];
   if (forbidden.length > 0) {
     return { ok: false, reason: "commit-failure", message: `The result changes ${forbidden.slice(0, 3).join(", ")}${forbidden.length > 3 ? ` and ${forbidden.length - 3} more` : ""}, which builds may not write (they run code or change tools for whoever opens the project next). Nothing was committed; the work is kept in ${worktree}.` };
   }
