@@ -19,6 +19,7 @@ import type { Runner } from "./builder.js";
 import { flowFromSteps, validateFlowDefinition } from "./flows.js";
 import { saveScript } from "./flow-scripts.js";
 import { alone, flowHousekeeping, moveCards, type FlowIo } from "./flow-cadence.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const OK: ExecResult = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
 const AGENT_SAID = JSON.stringify({ result: "Added the guard." });
@@ -153,6 +154,8 @@ describe("overlapping flow passes", () => {
   beforeEach(() => {
     store = openStore(db);
     if (!addApprover(store, "alex", new Date()).ok) throw new Error("approver");
+    // Inside another sandbox (the plane's release check) nothing can nest a fence: allowed there, as the plane allows it.
+    if (INSIDE_FENCE) store.setUnfencedAgentsAllowed(true, "alex", new Date());
     for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "alex", new Date());
   });
   afterEach(() => { store.close(); });

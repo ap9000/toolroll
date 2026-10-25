@@ -69,6 +69,17 @@ describe("attack: a tool server outside a build reading Toolroll's state", () =>
     expect(await useTool(store, stage, card, repo, { toolHome: home })).toMatchObject({ state: "passed", output: "denied" });
   });
 
+  test("where nothing can confine it and an operator allowed unconfined agents (as inside the plane's check), the tool step and discovery start it", async () => {
+    const flow = store.createFlow({ repo, name: "Post", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ title: "Inbox", kind: "inbox" }, { id: "use", title: "Use", kind: "tool", server: "probe", tool: "peek", args: {} }], null)) }, T0);
+    const stage = JSON.parse(store.getFlow(flow)!.definitionJson).stages.find((one: { id: string }) => one.id === "use");
+    const card = store.getFlowCard(store.addFlowCard({ flow, title: "Probe", description: null, stage: "use", by: "alex", byKind: "person" }, T0))!;
+    // Refused until someone allows it; then it runs, with nothing confining it (it reads the state).
+    expect((await useTool(store, stage, card, repo, { toolHome: home, fenceAvailable: () => false })).said).toMatch(/can't confine the tool's server/);
+    store.setUnfencedAgentsAllowed(true, "alex", T0);
+    expect(await useTool(store, stage, card, repo, { toolHome: home, fenceAvailable: () => false })).toMatchObject({ state: "passed", output: "read" });
+    expect(await testToolOf(store, repo, "probe", T0, { home, available: () => false })).toMatchObject({ ok: true, tools: ["read"] });
+  });
+
   test("a Codex launch file naming a local program is refused by the launcher; nothing starts", () => {
     const ran = write(join(root, "ran.txt"), "");
     const file = write(join(root, "launch.json"), JSON.stringify({ spec: { name: "local", transport: "stdio", command: "/bin/sh", args: ["-c", `echo started > ${JSON.stringify(ran)}`], url: null, secrets: [], bearer: null, headerSecrets: {}, about: "" }, values: {} }));

@@ -18,6 +18,7 @@ import { answerSubagentQuestion } from "./subagent-work.js";
 import { grantTool, setToolRules } from "./subagent-tools.js";
 import { requestUndo, runRequestedUndos, sendSubagentWeeklies, undoCall, undoFor, weekOf } from "./subagent-week.js";
 import { claudeTurnRunner, SUBAGENT_TEMPLATES, type TurnRequest, type TurnRunner } from "./subagents.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const T0 = new Date("2026-09-23T10:00:00.000Z"); // a Wednesday
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
@@ -29,6 +30,8 @@ beforeEach(async () => {
   calls = join(dir, "calls.log");
   store = openStore(join(dir, "orders.db"));
   if (!addApprover(store, "alex", T0).ok) throw new Error("bootstrap");
+  // Inside another sandbox (the plane's release check) nothing can nest a fence: allowed there, as the plane allows it.
+  if (INSIDE_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
   const server = join(dir, "desk-mcp.mjs");
   writeFileSync(server, `import { createInterface } from "node:readline";
 import { appendFileSync } from "node:fs";

@@ -21,6 +21,7 @@ import { flowInsights } from "./flow-insights.js";
 import { addFlowTriggerTo, flowFormPage, receiveFlowForm, shareFlowButton } from "./flow-triggers.js";
 import { storeEvidence } from "./evidence.js";
 import { sealVerificationReceipt } from "./verification-evidence.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const T0 = new Date("2026-09-24T09:00:00.000Z");
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
@@ -40,6 +41,8 @@ beforeEach(() => {
   const alex = addApprover(store, "alex", T0);
   if (!alex.ok) throw new Error("bootstrap");
   token = alex.token;
+  // Inside another sandbox (the plane's release check) nothing can nest a fence: allowed there, as the plane allows it.
+  if (INSIDE_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 

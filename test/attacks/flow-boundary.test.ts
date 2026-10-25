@@ -19,6 +19,7 @@ import { addFlowTriggerTo, checkFlowTriggerNow, type TriggerIo } from "../../src
 import { flowFromSteps } from "../../src/flows.js";
 import { addApprover } from "../../src/scope.js";
 import { openStore, type Store } from "../../src/store.js";
+import { INSIDE_FENCE } from "../inside-fence.js";
 import { git, marker, needs, repository, osFence, useScratch, write } from "./harness.js";
 
 const T0 = new Date("2026-10-24T09:00:00.000Z");
@@ -43,7 +44,9 @@ beforeEach(() => {
   // Another flow's scratch folder in the pool (its inputs and outputs): never readable, whatever the policy.
   canary.scratch = plant("flow-scratch", join(pool, "flow-checks", "flow-check-99-1", "output.txt"));
   // Another launch's private folder, where the run folders live (a check's on a Mac is /private/tmp).
-  otherRun = realpathSync(mkdtempSync(join(checkLaunchRoot(), "so-cmd-")));
+  // Inside another sandbox (the plane's release check) the shared launch root may be the outer fence's to hold; the
+  // tests that read this canary need Toolroll's own fence, which can't nest there, so they skip.
+  otherRun = realpathSync(mkdtempSync(join(INSIDE_FENCE ? root : checkLaunchRoot(), "so-cmd-")));
   canary.run = plant("flow-run", join(otherRun, "broker-token"));
   for (const one of Object.values(canary)) one.secret = execFileSync("cat", [one.path], { encoding: "utf8" });
 });
@@ -167,6 +170,8 @@ describe("attack: a flow reaching past the agents' fence", () => {
     const key = write(join(home, ".ssh", "id_ed25519"), marker("flow-home"));
     const folder = join(pool, "flow-checks", "run-1");
     mkdirSync(folder, { recursive: true });
+    // A fenced launch makes its folder in the shared launch root, which an outer sandbox (the plane's check) holds.
+    if (INSIDE_FENCE) needs(ctx, osFence());
     const launch = flowLaunch(store, { repo, folder, scratch: join(pool, "flow-checks"), copy: false, home, available: () => true });
     if (launch === null || "problem" in launch) throw new Error("no launch");
     try {
