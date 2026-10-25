@@ -122,6 +122,21 @@ Known limits:
   which admits every local service on that Mac (the macOS sandbox can't admit
   some local ports and refuse others). Linux builds always have a loopback of
   their own.
+- On a Mac, a build's agent can reach the keychain's services (securityd):
+  Claude Code signs in from the keychain. The sandbox runtime allows that to
+  every sandboxed process (anthropics/sandbox-runtime#755), so a build's
+  agent can read any keychain item, the login keychain's included, whose
+  access list lets any program read it; items that ask, or that name their
+  programs, stay closed. Toolroll denies those services to everything else
+  it sandboxes: a build's setup and check commands, a project's checks,
+  flows and tool servers. A check a project gave **sign-ins** keeps them,
+  since Claude Code's sign-in is there.
+- Every sandboxed launch on a Mac can open terminals of its own and no
+  other, can't type into a terminal (TIOCSTI), and starts in a session of
+  its own, so it has no terminal of whoever started Toolroll. A program
+  started on a terminal made for it (a live terminal, a coding session)
+  keeps that one. A project that denies `/dev` or its terminal devices by
+  name in its read-deny list gets no terminal of its own either.
 - Codex's command sandbox can't use a proxy: its commands are offline unless
   the project's network is `open` and the build has Full access.
 - A project's tool servers keep their own network reach (they hold the

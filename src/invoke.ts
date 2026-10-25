@@ -1110,7 +1110,8 @@ export function fencedCommands(store: Store, runId: number, writes: WritesMode, 
           ...options,
           fence: fenced.fence,
           // Each sign-in file looked at again right before the launch: one no longer itself isn't granted.
-          fenceGrants: signIns === null ? grants : { ...grants, signIns: { ...signIns.grants, read: signIns.grants.read.filter(path => signInIsItself(realpathSync(homedir()), path)) }, network: signIns.network },
+          // With sign-ins, the keychain too: Claude Code keeps its macOS sign-in there (the project's explicit grant).
+          fenceGrants: signIns === null ? grants : { ...grants, signIns: { ...signIns.grants, read: signIns.grants.read.filter(path => signInIsItself(realpathSync(homedir()), path)) }, network: signIns.network, keychain: true },
           confinement: "required",
           env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(fenced.cache === undefined || fenced.grants.writes === undefined ? {} : buildCacheEnv(fenced.cache)), ...(signIns?.env ?? {}) },
           ...(signIns === null ? {} : { omitEnv: [...(options?.omitEnv ?? []), ...SIGN_INS_OMITTED_ENV] }),
@@ -1171,7 +1172,8 @@ export function fencedCheckoutCommands(store: Store, repo: string, checkout: str
           ...options,
           fence: launch.fence,
           // Each sign-in file looked at again right before the launch: one no longer itself isn't granted.
-          fenceGrants: signIns === null ? grants : { ...grants, signIns: { ...signIns.grants, read: signIns.grants.read.filter(path => signInIsItself(realpathSync(homedir()), path)) }, network: signIns.network },
+          // With sign-ins, the keychain too: Claude Code keeps its macOS sign-in there (the project's explicit grant).
+          fenceGrants: signIns === null ? grants : { ...grants, signIns: { ...signIns.grants, read: signIns.grants.read.filter(path => signInIsItself(realpathSync(homedir()), path)) }, network: signIns.network, keychain: true },
           confinement: launch.confinement,
           env: { ...(options?.env ?? {}), TMPDIR: temp, TMP: temp, TEMP: temp, ...(allowed === null ? {} : buildCacheEnv(cache)), ...(signIns?.env ?? {}) },
           ...(signIns === null ? {} : { omitEnv: [...(options?.omitEnv ?? []), ...SIGN_INS_OMITTED_ENV] }),
