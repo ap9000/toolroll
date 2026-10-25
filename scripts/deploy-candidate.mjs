@@ -1,6 +1,6 @@
 // Deployment uses a real passing project check and the lead/user's decision
 // about that exact result. It never schedules or depends on a model reviewer.
-export function deploymentCandidate(store, { runId, head, evidenceRoot, now }, { assignmentOf, verificationEvidence, personApprovalOf }) {
+export function deploymentCandidate(store, { runId, head, evidenceRoot, now }, { assignmentOf, verificationEvidence, installedScope }) {
   const requireFact = (value, message) => { if (!value) throw Error(message); };
   const run = store.getRun(runId);
   const ref = run ? store.refById(run.taskRef) : null;
@@ -16,9 +16,12 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now }, {
     "The run's signed scope is no longer the approved one.");
   // Only a person's approval deploys (docs/plans/approval-policy.md §1.7): the ceremony or a paired-chat tap, with a
   // person's proof recorded for these exact words — never the lead, a mode, a flow or a schedule. Every phase, resumed
-  // ones included, proves the candidate through here.
-  requireFact(typeof personApprovalOf === 'function', "This deployment can't check who approved the candidate.");
-  const person = personApprovalOf(store, ref.externalId);
+  // ones included, proves the candidate through here. The answer comes from the INSTALLED runtime's scope.js when it
+  // has one, else from the plane's own records read here; never from the candidate being deployed, which would decide
+  // its own authorization.
+  const person = typeof installedScope?.personApprovalOf === 'function'
+    ? installedScope.personApprovalOf(store, ref.externalId)
+    : personApprovalFromRecords(store, ref.externalId);
   requireFact(person?.ok === true, `A person has to approve this candidate's scope: ${person?.why ?? 'its approval cannot be read'}.`);
   const evidence = verificationEvidence(store, evidenceRoot, runId);
   requireFact(evidence.ok && evidence.bytes, `Native check unavailable: ${evidence.problem ?? 'no receipt'}.`);
@@ -43,4 +46,42 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now }, {
     proofVerdict: store.proofVerdictFor(runId)?.verdict ?? null,
     acceptance: store.proofAcceptance(runId), criteria: scope.acceptance.length,
     worktree: run.worktree, gate };
+}
+
+/** The proofs a person gives (src/person-proof.ts), for a plane whose installed runtime predates personApprovalOf. */
+const PERSON_PROOFS = new Set(['password-now', 'sso-now', 'fresh-password', 'fresh-sso', 'session', 'cli-login', 'chat', 'passkey']);
+
+/** A proof row's detail, either form (src/scope.ts proofDetailOf). */
+function proofDigestOf(detail) {
+  if (typeof detail !== 'string') return null;
+  if (detail.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(detail);
+      return parsed !== null && typeof parsed === 'object' && parsed.v === 1 && typeof parsed.at === 'string' && !Number.isNaN(Date.parse(parsed.at))
+        && typeof parsed.digest === 'string' && parsed.digest !== '' ? parsed.digest : null;
+    } catch { return null; }
+  }
+  const parts = detail.split(' · ');
+  if (parts.length !== 3 || !parts[2].startsWith('digest ') || !/^generation \d+$/.test(parts[1]) || Number.isNaN(Date.parse(parts[0]))) return null;
+  return parts[2].slice('digest '.length);
+}
+
+/**
+ * Whether a person approved this task as it stands, read straight from the plane's records (src/scope.ts
+ * personApprovalOf, for an installed runtime too old to export it): the ceremony or a chat tap on the current digest,
+ * with that approver's newest proof row for those bytes a person's. Anything else — a mode, a flow, a schedule, the
+ * lead, no proof — is refused.
+ */
+export function personApprovalFromRecords(store, taskId) {
+  const scope = store.getScope(taskId);
+  if (!scope || scope.approvedAt == null || scope.approvedBy == null || scope.approvedDigest == null) return { ok: false, why: 'not approved yet' };
+  if (scope.approvedDigest !== scope.digest) return { ok: false, why: 'the approval is for different scope text' };
+  const basis = scope.approvalBasis ?? null;
+  if (basis !== 'password' && basis !== 'chat') return { ok: false, why: `approved by ${basis ?? 'an unknown road'}, not by a person` };
+  const rows = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = 'approval proved' AND actor = ? ORDER BY id DESC LIMIT 50")
+    .all(taskId, scope.approvedBy);
+  const proof = rows.find(row => proofDigestOf(row.detail) === scope.approvedDigest);
+  if (proof === undefined) return { ok: false, why: 'no record shows a person approved these exact words; approve it again' };
+  if (!PERSON_PROOFS.has(String(proof.outcome))) return { ok: false, why: proof.outcome === 'lead-token' ? 'approved by the lead, not by a person' : 'approved with a machine credential, not by a person' };
+  return { ok: true, by: scope.approvedBy, at: scope.approvedAt, method: String(proof.outcome) };
 }

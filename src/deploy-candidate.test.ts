@@ -29,7 +29,7 @@ function fixture(runs: Run[], receipts: Record<number, object | null>, readiness
       return receipt ? { ok: true, bytes: JSON.stringify(receipt), digest: `gate-${runId}` } : { ok: false, bytes: null, problem: "no receipt" };
     },
     assignmentOf: () => ({ state: "complete", receipt: { runId: 2, head: HEAD, scopeDigest: DIGEST, digest: "r" }, completion: { digest: "r" }, readiness }),
-    ...(person === null ? {} : { personApprovalOf: () => person }),
+    ...(person === null ? {} : { installedScope: { personApprovalOf: () => person } }),
   };
   return (runId: number) => deploymentCandidate(store, { runId, head: HEAD, evidenceRoot: "/evidence", now: new Date() }, deps);
 }
@@ -66,11 +66,12 @@ describe("deploymentCandidate", () => {
     expect(() => fixture([built, regate], { 2: passing }, null)(2)).toThrow("readiness could not be read");
   });
 
-  test("only a person's approval deploys; a gate that can't ask refuses", () => {
+  test("only a person's approval deploys; an installed runtime too old to ask is answered from the plane's records", () => {
     expect(fixture([built, regate], { 2: passing })(2)).toMatchObject({ approvedBy: "alex" });
     expect(() => fixture([built, regate], { 2: passing }, { blockers: [] }, { ok: false, why: "approved by the lead, not by a person" })(2))
       .toThrow("A person has to approve this candidate's scope: approved by the lead, not by a person.");
-    expect(() => fixture([built, regate], { 2: passing }, { blockers: [] }, null)(2)).toThrow("can't check who approved the candidate");
+    // No installed answer: the records decide, and this scope has no recorded approval.
+    expect(() => fixture([built, regate], { 2: passing }, { blockers: [] }, null)(2)).toThrow("A person has to approve this candidate's scope: not approved yet.");
   });
 
   test("a no-change run that is not a regate of the last built commit is refused", () => {

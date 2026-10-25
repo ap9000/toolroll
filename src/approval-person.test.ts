@@ -287,9 +287,11 @@ describe("release and deploy need a person's approval", () => {
     store.stampRun(runId, { scopeDigest: store.getScope("d-lead")!.digest, baseRevision: "1".repeat(40) });
     store.recordOutcomeFacts(runId, { headRevision: "a".repeat(40), handoff: "done" });
     store.finishRun(runId, { outcome: "built", committed: true, now: NOW });
-    expect(() => deploymentCandidate(store, { runId, head: "a".repeat(40), evidenceRoot: join(dir, "evidence"), now: NOW }, {
-      assignmentOf: () => null, verificationEvidence: () => ({ ok: false }), personApprovalOf,
-    })).toThrow("A person has to approve this candidate's scope: approved by the lead, not by a person.");
+    for (const installedScope of [{ personApprovalOf }, undefined]) {
+      expect(() => deploymentCandidate(store, { runId, head: "a".repeat(40), evidenceRoot: join(dir, "evidence"), now: NOW }, {
+        assignmentOf: () => null, verificationEvidence: () => ({ ok: false }), installedScope,
+      }), String(installedScope)).toThrow("A person has to approve this candidate's scope: approved by the lead, not by a person.");
+    }
   });
 });
 

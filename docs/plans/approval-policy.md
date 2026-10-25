@@ -172,6 +172,10 @@ row, become `schedule`.
   `deploy-browser.mjs` — the whole run and each resumed phase (stage, prepare, rehearse, swap, finish) — already
   re-proves the candidate through it, so resumed phases are covered. `--phase recover` still needs no approval: it
   only puts the previous service back. The passing check and exact-completion requirements are unchanged.
+  As built: the check comes from the installed runtime's `scope.js` (`personApprovalOf`), or, when that runtime is too
+  old to have it, from the plane's records read by `deploy-candidate.mjs` itself (`personApprovalFromRecords`). It is
+  never loaded from the candidate being deployed, which would decide its own authorization (attack test:
+  `test/attacks/deploy-candidate-approval.test.ts`).
 
 - **Flow merges.** A flow's Pull request zone merges after an approval zone said yes (`approvedSinceBuild` →
   `mergePullRequest`). A subagent can staff that zone. Each flow move now records its decision authority
