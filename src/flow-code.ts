@@ -17,7 +17,7 @@
  */
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Runner } from "./backend.js";
 import { buildCacheEnv, buildCacheFolder, checkLaunchRoot, fenceFor, linuxFenceAvailable, macosFenceAvailable, runFolders, taskBoundary, trustedWorktreeBinding, writeAllowlist, type FencePolicy, type LaunchFence } from "./agent-fence.js";
@@ -176,16 +176,20 @@ export function flowLaunch(store: Store, options: { repo: string; folder: string
   const databaseFile = store.databaseFile();
   if (databaseFile === null || databaseFile === "" || databaseFile === ":memory:") return null;
   const available = options.available ?? (() => macosFenceAvailable() || linuxFenceAvailable());
-  const own = realpathSync(mkdtempSync(join(checkLaunchRoot(), "so-cmd-")));
+  const fenced = available();
+  // Asked first: a launch with no fence of its own (an instance operator allowed it, as inside another sandbox) makes
+  // its folder in the temp folder it was given, never among the fenced launches' (which an outer sandbox may hold).
+  if (!fenced && !store.unfencedAgentsAllowed()) {
+    return { problem: "This machine can't confine the flow's script (no macOS sandbox, no working bubblewrap), so it didn't run. Install bubblewrap, socat and ripgrep (Linux), or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`." };
+  }
+  let own: string;
+  try { own = realpathSync(mkdtempSync(join(fenced ? checkLaunchRoot() : tmpdir(), "so-cmd-"))); }
+  catch (error) { return { problem: `The flow's launch folder couldn't be made, so nothing ran: ${error instanceof Error ? error.message : String(error)}` }; }
   const dispose = () => rmSync(own, { recursive: true, force: true });
   const temp = join(own, "tmp");
   mkdirSync(temp, { mode: 0o700 });
   const env: Record<string, string> = { TMPDIR: temp, TMP: temp, TEMP: temp };
-  if (!available()) {
-    if (store.unfencedAgentsAllowed()) return { folder: own, env, dispose };
-    dispose();
-    return { problem: "This machine can't confine the flow's script (no macOS sandbox, no working bubblewrap), so it didn't run. Install bubblewrap, socat and ripgrep (Linux), or an instance operator allows unconfined agents with `toolroll config unconfined-agents allow`." };
-  }
+  if (!fenced) return { folder: own, env, dispose };
   try {
     const poolRoots = [join(dirname(databaseFile), "worktrees"), options.scratch, ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];
     // Its scratch folder is a pool root (so another flow's copy is out of reach) and sealed: never read, at any policy.

@@ -252,7 +252,8 @@ function realSelection(only) {
 /** Whether this runs inside a macOS sandbox (the plane's check fence), where no new sandbox can be made. */
 export function insideFence() {
   if (process.platform !== "darwin" || !existsSync("/usr/bin/sandbox-exec")) return false;
-  try { execFileSync("/usr/bin/sandbox-exec", ["-p", "(version 1)(allow default)", "/usr/bin/true"], { stdio: "ignore", timeout: 10_000 }); return false; } catch { return true; }
+  // A deny-by-default profile, as the plane's own are: an allow-by-default one still nests inside some sandboxes.
+  try { execFileSync("/usr/bin/sandbox-exec", ["-p", "(version 1)(deny default)(allow process-exec)(allow process-fork)(allow file-read*)(allow sysctl-read)(allow mach-lookup)", "/usr/bin/true"], { stdio: "ignore", timeout: 10_000 }); return false; } catch { return true; }
 }
 
 export async function world(name, { seed, env = {}, groups = null } = {}) {

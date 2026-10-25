@@ -179,6 +179,22 @@ describe("attack: a flow reaching past the agents' fence", () => {
     } finally { launch.dispose(); }
   });
 
+  test("a flow with no fence of its own (allowed, as inside another sandbox) makes its folder in its own temp folder, never among the fenced launches'", async () => {
+    const { tmpdir } = await import("node:os");
+    const folder = join(pool, "flow-checks", "run-2");
+    mkdirSync(folder, { recursive: true });
+    // Refused where nothing can confine it and nobody allowed that.
+    expect(flowLaunch(store, { repo, folder, scratch: join(pool, "flow-checks"), copy: false, home: join(root, "home"), available: () => false })).toMatchObject({ problem: expect.stringContaining("can't confine") });
+    store.setUnfencedAgentsAllowed(true, "alex", T0);
+    const launch = flowLaunch(store, { repo, folder, scratch: join(pool, "flow-checks"), copy: false, home: join(root, "home"), available: () => false });
+    if (launch === null || "problem" in launch) throw new Error("no launch");
+    try {
+      // An outer sandbox (the plane's release check) may hold the shared launch root: the temp folder it gave is used.
+      expect(launch.folder.startsWith(realpathSync(tmpdir()))).toBe(true);
+      expect(launch.fence).toBeUndefined();
+    } finally { launch.dispose(); }
+  });
+
   test("a fence not made by fenceFor (no required mark) runs nothing, on either spawn road", async () => {
     const plain = await exec("/bin/cat", [canary.state.path], { fence: [state] });
     expect(plain).toMatchObject({ code: CONTAINMENT_REFUSED_CODE, stdout: "" });
