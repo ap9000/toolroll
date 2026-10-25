@@ -15,8 +15,8 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
-import { join, posix } from "node:path";
-import { readVerifiedCommit, verifiedBlobs, verifiedTreeEntries, type VerifiedEntry } from "./commit-extract.js";
+import { join } from "node:path";
+import { readVerifiedCommit, verifiedTreeEntries, type VerifiedEntry } from "./commit-extract.js";
 import {
   CHECK_PARTS, CHECK_REPORT_MAX_BYTES, CHECK_REPORT_PREFIX, readCheckReport,
   type CheckContext, type CheckInventory, type CheckReport, type ObligationSnapshot, type SealedInventory, type TargetedPlan,
@@ -32,9 +32,8 @@ export const OBLIGATION_SNAPSHOT_CAPTURE = "release check obligation snapshot v1
 /** How large a sealed check artifact may be (the report's own bound). */
 export const CHECK_ARTIFACT_CAP = CHECK_REPORT_MAX_BYTES;
 
-/** The release check's harness: the orchestrator, its runners and helpers, Vitest's configuration and setup, and the
- * reporter. With every `test/` or `scripts/` file they import (harnessClosure), these never carry and are part of the
- * execution context. */
+/** The release check's harness, named: the orchestrator, its runners and helpers, Vitest's configuration and setup, and
+ * the reporter. These never carry (release-carry.ts). The execution context digests far more (inHarnessDigest). */
 export const HARNESS_FILES: readonly string[] = Object.freeze([
   "scripts/release-check.mjs", "scripts/release-check-ci.mjs", "scripts/suite-lifecycle.mjs", "scripts/provider-gate.mjs",
   "scripts/e2e-parallel.mjs", "scripts/e2e-kit.mjs", "scripts/upgrade-path.mjs", "scripts/check-results.mjs",
@@ -58,34 +57,17 @@ const sha256 = (value: string | Buffer): string => createHash("sha256").update(v
 /** A digest of a payload, over its canonical JSON. */
 export const payloadDigest = (value: unknown): string => sha256(JSON.stringify(value));
 
-/** Relative import specifiers of a script or module (static imports, re-exports and literal dynamic imports). */
-export function importsOf(source: string): string[] {
-  const found = new Set<string>();
-  for (const match of source.matchAll(/(?:^|[\s;])(?:import|export)\s[^'"`;]*?from\s*["'](\.{1,2}\/[^"']+)["']|(?:^|[\s;(=])import\s*\(\s*["'](\.{1,2}\/[^"']+)["']\s*\)|(?:^|[\s;])import\s*["'](\.{1,2}\/[^"']+)["']/gm)) {
-    const spec = match[1] ?? match[2] ?? match[3];
-    if (spec !== undefined) found.add(spec);
-  }
-  return [...found];
-}
-
-/** The harness and every `test/` or `scripts/` file it imports, transitively, as the tree holds them. */
-export function harnessClosure(paths: ReadonlySet<string>, read: (path: string) => string | null, harness: readonly string[] = HARNESS_FILES): string[] {
-  const closure = new Set<string>();
-  const pending = harness.filter(one => paths.has(one));
-  while (pending.length > 0) {
-    const file = pending.pop()!;
-    if (closure.has(file)) continue;
-    closure.add(file);
-    const text = read(file);
-    if (text === null) continue;
-    for (const spec of importsOf(text)) {
-      const resolved = posix.normalize(posix.join(posix.dirname(file), spec));
-      const candidates = [resolved, resolved.replace(/\.js$/, ".ts"), resolved.replace(/\.mjs$/, ".mts"), `${resolved}.ts`, `${resolved}.mjs`, `${resolved}.js`];
-      const hit = candidates.find(one => paths.has(one));
-      if (hit !== undefined && /^(test|scripts)\//.test(hit) && !closure.has(hit)) pending.push(hit);
-    }
-  }
-  return [...closure].sort();
+/**
+ * Whether a tree path is part of the harness for the execution context: every file EXCEPT the unit test files
+ * themselves, the two journey scripts, docs and Markdown. No import tracing: a harness dependency reached by any road
+ * (a `require`, a computed `import()`, a side-effect import, a `src/` helper, a config file) is inside this set, so a
+ * change to it always changes the digest (fail closed).
+ */
+export function inHarnessDigest(path: string): boolean {
+  if (isUnitFile(path)) return false;
+  if (path === "scripts/app-e2e.mjs" || path === "scripts/flows-e2e.mjs") return false;
+  if (path.startsWith("docs/") || path.endsWith(".md")) return false;
+  return true;
 }
 
 /** What the plane reads from a commit for a check: its tree's entries, its unit files and its harness. */
@@ -97,18 +79,14 @@ export function treeFactsOf(gitDir: string, sha: string): { ok: true; facts: Tre
   if (!commit.ok) return { ok: false, problem: commit.message };
   const entries = verifiedTreeEntries(gitDir, commit.value.tree);
   if (!entries.ok) return { ok: false, problem: entries.message };
-  const paths = new Set(entries.value.map(one => one.path));
-  const scriptLike = entries.value.filter(one => /^(test|scripts)\/.+\.(ts|mjs|js|cjs|mts)$/.test(one.path) || one.path === "vitest.config.ts").map(one => one.path);
-  const blobs = verifiedBlobs(gitDir, commit.value.tree, scriptLike);
-  if (!blobs.ok) return { ok: false, problem: blobs.message };
-  const harness = harnessClosure(paths, path => blobs.value.get(path)?.bytes.toString("utf8") ?? null);
+  const harness = entries.value.filter(one => inHarnessDigest(one.path)).map(one => one.path).sort();
   const ids = new Map(entries.value.map(one => [one.path, one.id]));
   return { ok: true, facts: {
     tree: commit.value.tree,
     entries: entries.value,
     units: entries.value.filter(one => (one.mode === "100644" || one.mode === "100755") && isUnitFile(one.path)).map(one => one.path).sort(),
     harness,
-    harnessDigest: payloadDigest(harness.map(path => [path, ids.get(path) ?? null])),
+    harnessDigest: payloadDigest(entries.value.filter(one => inHarnessDigest(one.path)).map(one => [one.path, one.mode, one.id])),
     lockfile: ids.get("package-lock.json") ?? null,
   } };
 }

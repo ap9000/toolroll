@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, checkAttemptOf, type Store } from "./store.js";
 import {
-  CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, harnessClosure, importsOf, payloadDigest, prepareCheckAttempt, readSealedJson,
+  CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, payloadDigest, prepareCheckAttempt, readSealedJson,
   reportFromOutput, sealCheckOutcome, treeFactsOf, projectGitDir,
 } from "./check-report.js";
 
@@ -50,13 +50,13 @@ function setup(): { repo: string; head: string; store: Store; runId: number; roo
 }
 
 describe("the check attempt, sealed before the check runs", () => {
-  test("the inventory comes from the verified tree and Vitest's include globs; the harness takes in what it imports", () => {
+  test("the inventory comes from the verified tree and Vitest's include globs; the harness digest covers everything else", () => {
     const { repo, head, store } = setup();
     const facts = treeFactsOf(projectGitDir(repo)!, head);
     expect(facts.ok).toBe(true);
     if (!facts.ok) return;
     expect(facts.facts.units).toEqual(["src/a.test.ts", "src/b.slow.test.ts", "test/attacks/c.test.ts"]);
-    expect(facts.facts.harness).toEqual(["scripts/check-results.mjs", "scripts/helper.mjs", "scripts/release-check.mjs", "vitest.config.ts"]);
+    expect(facts.facts.harness).toEqual(["package-lock.json", "scripts/check-results.mjs", "scripts/helper.mjs", "scripts/other.mjs", "scripts/release-check.mjs", "src/a.ts", "test/attacks/harness.ts", "vitest.config.ts"]);
     expect(facts.facts.lockfile).toMatch(/^[0-9a-f]{40}$/);
     store.close();
   });
@@ -136,11 +136,35 @@ describe("the report, read from the check's output", () => {
   });
 });
 
-describe("harness imports", () => {
-  test("static, re-exported and literal dynamic imports are followed; package imports are not", () => {
-    expect(importsOf("import a from './a.mjs';\nexport { b } from \"../b.js\";\nconst c = await import('./c.mjs');\nimport 'node:fs';\nimport './side.mjs';\nimport z from 'zod';").sort())
-      .toEqual(["../b.js", "./a.mjs", "./c.mjs", "./side.mjs"]);
-    const paths = new Set(["test/setup-state.ts", "test/helper.ts", "src/store.ts"]);
-    expect(harnessClosure(paths, path => path === "test/setup-state.ts" ? "import '../src/store.js';\nimport { h } from './helper.js';" : "", ["test/setup-state.ts"])).toEqual(["test/helper.ts", "test/setup-state.ts"]);
+// Security review (parser differential): a harness dependency reached by any road changes the context's harness
+// digest. Nothing is traced through imports, so no shape of import can hide one.
+describe("the harness digest has no import parser to get around", () => {
+  const digestAfter = (change: Record<string, string>) => {
+    const { repo, head, store } = setup();
+    const before = treeFactsOf(projectGitDir(repo)!, head);
+    for (const [path, text] of Object.entries(change)) { mkdirSync(join(repo, path, ".."), { recursive: true }); writeFileSync(join(repo, path), text); }
+    git(repo, "add", "-A"); git(repo, "commit", "-qm", "change");
+    const after = treeFactsOf(projectGitDir(repo)!, git(repo, "rev-parse", "HEAD"));
+    store.close();
+    if (!before.ok || !after.ok) throw new Error("unreadable");
+    return { before: before.facts.harnessDigest, after: after.facts.harnessDigest };
+  };
+  test.each([
+    ["a src/ helper the harness imports", { "src/a.ts": "export const a = 2;\n" }],
+    ["a file reached by require()", { "scripts/release-check.mjs": "const h = require('./required.cjs');\n", "scripts/required.cjs": "module.exports = 1;\n" }],
+    ["a file reached by a computed import()", { "scripts/computed.mjs": "export default 2;\n" }],
+    ["a side-effect import's target", { "scripts/check-results.mjs": "export const changed = true;\n" }],
+    ["a file behind an import a regex can't read", { "scripts/release-check.mjs": "import(/* x */ `./hel${'per'}.mjs`);\n", "scripts/helper.mjs": "export const x = 3;\n" }],
+    ["a test/ helper nothing names", { "test/attacks/harness.ts": "export const changed = 1;\n" }],
+    ["package.json", { "package.json": "{}\n" }],
+    ["the lockfile", { "package-lock.json": "{\"changed\":1}\n" }],
+    ["a tsconfig", { "tsconfig.json": "{}\n" }],
+  ])("%s changes the digest", (_name, change) => {
+    const { before, after } = digestAfter(change);
+    expect(after).not.toBe(before);
+  });
+  test("a unit test, a journey script or a doc leaves it alone", () => {
+    const { before, after } = digestAfter({ "src/a.test.ts": "test('a2', () => {});\n", "scripts/app-e2e.mjs": "// journeys\n", "docs/x.md": "# x\n" });
+    expect(after).toBe(before);
   });
 });
