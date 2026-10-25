@@ -235,10 +235,12 @@ export type RecheckDecision =
  * must still report (watch).
  */
 export function planTargetedRecheck(store: Store, root: string, input: { runId: number; taskId: string; repo: string; head: string; command: VerifyCommand; access: string; now: Date }): RecheckDecision {
+  // The nightly's open failures are reported by name by every full check, so a pass can clear exactly them.
+  const mainOpen = store.handle.prepare("SELECT DISTINCT item FROM main_check_failure WHERE repo = ? AND cleared_at IS NULL").all(input.repo).map(row => String(row["item"]));
   const found = releaseAuthorityOfTask(store, input.taskId);
-  if (found === null) return { mode: "full", authority: null, why: "not a release task", watch: [] };
+  if (found === null) return { mode: "full", authority: null, why: "not a release task", watch: mainOpen.sort() };
   const a = found.authority;
-  const full = (why: string, watch: string[] = []): RecheckDecision => ({ mode: "full", authority: a.id, why, watch });
+  const full = (why: string, watch: string[] = []): RecheckDecision => ({ mode: "full", authority: a.id, why, watch: [...new Set([...watch, ...mainOpen])].sort() });
   const live = liveReleaseOf(store, input.taskId, "dispatch", input.now);
   if (!live.applies || !live.ok) return full("the release approval doesn't stand");
   const based = baseOf(store, root, a.id, input.runId);

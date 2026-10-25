@@ -21,7 +21,7 @@ import { projectGitDir } from "./check-report.js";
 import { readVerifiedCommit, verifiedFirstParentWalk } from "./commit-extract.js";
 import { fileIdentity, groupIdentity, journeyIdentity, partIdentity, unitIdentity, versionIdentity, type CheckReport } from "./contracts/release-check.js";
 import type { StandingOrder } from "./contracts/flow.js";
-import { propose, authenticateApprover, personProof } from "./scope.js";
+import { propose, authenticateApprover, liveReleaseOf, personProof } from "./scope.js";
 import { failedIdentities, sealedRun } from "./release-recheck.js";
 import { verificationEvidence } from "./verification-evidence.js";
 import { BUILT_IN, type Store } from "./store.js";
@@ -169,23 +169,30 @@ export function failureSummary(items: readonly string[]): string {
   ].join(", ") || "the check";
 }
 
-/** Whether a full run's report shows `item` ran and passed there (the item, or its whole part). */
+/**
+ * Whether a full run's report shows `item` itself ran and PASSED there (security review): a failed identity has to be
+ * reported passed by name — missing, skipped, or a passing part around it never clears it. A part-level item clears
+ * when that whole part ran and passed.
+ */
 export function coversItem(report: CheckReport, item: string): boolean {
   const part = (name: string) => report.parts.find(one => one.part === name);
   const passedPart = (name: string) => { const one = part(name); return one !== undefined && one.ran && one.code === 0; };
-  const unitFile = /^unit:(.+?)::/.exec(item)?.[1] ?? /^file:(.+)$/.exec(item)?.[1];
-  if (unitFile !== undefined) {
-    const file = report.units?.files.find(one => one.file === unitFile);
-    return passedPart("unit") || (file !== undefined && file.state === "passed" && file.failed === 0);
+  const unit = /^unit:(.+?)::(.+)$/s.exec(item);
+  if (unit !== null) return report.units?.identities.some(one => one.file === unit[1] && one.name === unit[2] && one.state === "passed") === true;
+  const file = /^file:(.+)$/.exec(item)?.[1];
+  if (file !== undefined) return report.units?.files.some(one => one.file === file && one.state === "passed" && one.failed === 0) === true;
+  const journey = /^journey:(app|flows):(scripted|real):([^:]+?)::(.+)$/s.exec(item);
+  if (journey !== null) {
+    const found = report.journeys.find(one => one.script === journey[1] && one.kind === journey[2])?.groups.find(one => one.group === journey[3]);
+    return found?.journeys.some(one => one.name === journey[4] && one.state === "passed") === true;
   }
-  const group = /^(?:group|journey):(app|flows):(scripted|real):([^:]+?)(?:::|$)/.exec(item);
+  const group = /^group:(app|flows):(scripted|real):(.+)$/.exec(item);
   if (group !== null) {
-    const run = report.journeys.find(one => one.script === group[1] && one.kind === group[2]);
-    const found = run?.groups.find(one => one.group === group[3]);
-    return passedPart(group[2] === "real" ? `${group[1]}-real` : group[1]!) || (found !== undefined && found.state === "passed" && !found.unattributed);
+    const found = report.journeys.find(one => one.script === group[1] && one.kind === group[2])?.groups.find(one => one.group === group[3]);
+    return found !== undefined && found.state === "passed" && !found.unattributed;
   }
   const version = /^upgrade:(.+)$/.exec(item)?.[1];
-  if (version !== undefined) return passedPart("upgrade") || report.upgrades?.versions.some(one => one.version === version && one.state === "passed") === true;
+  if (version !== undefined) return report.upgrades?.versions.some(one => one.version === version && one.state === "passed") === true;
   const whole = /^part:(.+)$/.exec(item)?.[1];
   if (whole === "all") return report.parts.filter(one => one.selected).every(one => one.ran && one.code === 0) && report.exitCode === 0;
   return whole !== undefined && passedPart(whole);
@@ -235,6 +242,15 @@ export function settleReleaseChecks(store: Store, root: string, now: Date): numb
       const gitDir = projectGitDir(repo);
       if (gitDir === null) return;
       const head = String(row["head_revision"]);
+      // The pass has to be on main (its head an ancestor of, or main's head itself) or the exact candidate of a release
+      // whose approval stands: a pass on a side branch clears nothing (security review).
+      const task = store.refById(Number(row["task_ref"]))?.externalId ?? null;
+      const main = mainHeadOf(repo);
+      const onMain = main.ok && (head === main.sha || verifiedFirstParentWalk(gitDir, main.sha, head, 5000).ok);
+      const release = task === null ? null : liveReleaseOf(store, task, "dispatch", now);
+      const candidate = task === null ? null : store.getScope(task)?.candidate ?? null;
+      const releaseTip = release !== null && release.applies && release.ok && candidate !== null && release.authority.tipSha === candidate;
+      if (!onMain && !releaseTip) return;
       for (const failure of store.handle.prepare("SELECT id, sha, item FROM main_check_failure WHERE repo = ? AND cleared_at IS NULL").all(repo)) {
         const sha = String(failure["sha"]);
         const contains = sha === head || verifiedFirstParentWalk(gitDir, head, sha, 2000).ok;
@@ -258,3 +274,8 @@ export function nightlyHealthWords(store: Store, repo: string, configuredAt: str
 }
 
 export { fileIdentity, groupIdentity, journeyIdentity, unitIdentity, versionIdentity };
+
+/** The items the nightly check of main found failing that are still open: a full check reports each by name. */
+export function openMainFailureItems(store: Store, repo: string): string[] {
+  return store.handle.prepare("SELECT DISTINCT item FROM main_check_failure WHERE repo = ? AND cleared_at IS NULL ORDER BY item").all(repo).map(row => String(row["item"]));
+}

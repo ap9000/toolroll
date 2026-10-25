@@ -10,7 +10,7 @@ import { releaseFixture, sealedCheck, reportOf, RELEASE_NOW, EVIDENCE, type Rele
 import { createNightlyCheckFlow, fileNightlyCheck, nightlyHealthWords, settleReleaseChecks, NIGHTLY_GOAL, isNightlyTask } from "../../src/nightly-check.js";
 import { triggerConfigOf } from "../../src/flow-triggers.js";
 import { proveCarry } from "../../src/release-carry.js";
-import { liveReleaseOf } from "../../src/scope.js";
+import { approve, liveReleaseOf, propose } from "../../src/scope.js";
 import { deploymentGate } from "../../src/deploy-gate.js";
 import { assignmentOf, checkAssignmentAsOperator } from "../../src/assignment.js";
 import { mergePullRequest } from "../../src/pull-request-flow.js";
@@ -74,7 +74,7 @@ describe("the nightly full check on main", () => {
     const notice = f.store.handle.prepare("SELECT body, push_class FROM notification WHERE dedupe_key LIKE 'nightly-failed:%'").get();
     expect(notice).toMatchObject({ push_class: "attention", body: `Nightly full check failed on main at ${f.approved.slice(0, 7)}: 2 unit files.` });
     // The release's own full check passes src/index.test.ts and still fails app: item 1 clears, item 2 stays.
-    sealedCheck(f, f.taskId, f.approved, () => reportOf(UNITS.map(file => file === "src/browser/app.test.ts" ? { file, failed: ["app"] } : { file })));
+    sealedCheck(f, f.taskId, f.approved, () => reportOf(UNITS.map(file => file === "src/browser/app.test.ts" ? { file, failed: ["app"] } : file === "src/index.test.ts" ? { file, passed: ["answer"] } : { file })));
     settleReleaseChecks(f.store, EVIDENCE(f), LATER);
     expect(open()).toEqual(["unit:src/browser/app.test.ts::app"]);
     // A composed pass of the other: nothing clears.
@@ -105,7 +105,7 @@ describe("the nightly full check on main", () => {
     expect(liveReleaseOf(f.store, carried.taskId, "merge", LATER)).toMatchObject({ ok: false, why: expect.stringContaining("nightly") });
     f.store.handle.prepare("UPDATE release_authority SET state = 'open'").run();
     // A full check of the release passes it: the row clears, and the release continues.
-    sealedCheck(f, carried.taskId, to, () => reportOf(UNITS.map(file => ({ file, ...(file === "src/index.test.ts" ? { passed: ["answer"] } : {}) }))), { forceFull: true });
+    sealedCheck(f, carried.taskId, to, () => reportOf(UNITS.map(file => ({ file, ...(file === "src/index.test.ts" ? { passed: ["answer"] } : file === "src/browser/app.test.ts" ? { passed: ["app"] } : {}) }))), { forceFull: true });
     settleReleaseChecks(f.store, EVIDENCE(f), LATER);
     expect(liveReleaseOf(f.store, carried.taskId, "deploy", LATER)).toMatchObject({ ok: true });
   }, 120_000);
@@ -152,5 +152,81 @@ describe("attack: forging the nightly's approval", () => {
   test("only a person's password sets it up", () => {
     const f = (fixture = releaseFixture());
     expect(createNightlyCheckFlow(f.store, { repo: f.repo, schedule: SCHEDULE, as: "alex", token: "wrong", start: true }, RELEASE_NOW)).toMatchObject({ ok: false });
+  });
+});
+
+describe("security review: clearing main's debt", () => {
+  /** A nightly that failed `answer` in src/index.test.ts; then a full check of `head` on its own task. */
+  const failedNightly = () => {
+    const { f, fire } = nightly();
+    const fired = fire();
+    if (fired.made !== "filed") throw new Error("not filed");
+    sealedCheck(f, fired.taskId, f.approved, () => reportOf(UNITS.map(file => file === "src/index.test.ts" ? { file, failed: ["answer"] } : { file })));
+    settleReleaseChecks(f.store, EVIDENCE(f), LATER);
+    const open = () => f.store.handle.prepare("SELECT item FROM main_check_failure WHERE cleared_at IS NULL").all().map(row => String(row["item"]));
+    expect(open()).toEqual(["unit:src/index.test.ts::answer"]);
+    return { f, open };
+  };
+  /** A full check of `head` on a task of its own (no release), sealed with `report`. */
+  const sideCheck = (f: ReleaseFixture, head: string, report: ReturnType<typeof reportOf>) => {
+    const id = `side-${head.slice(0, 7)}`;
+    f.store.createTask({ id, title: id }, LATER);
+    f.store.placeTask(f.store.refFor("built-in", id).id, f.repo, {}, LATER);
+    const scope = propose(f.store, { taskId: id, goal: "side", candidate: head, acceptance: [{ id: "c1", statement: "s", how: null, evidence: ["check"] }], now: LATER });
+    expect(approve(f.store, id, "alex", LATER, scope.digest, f.password).ok).toBe(true);
+    return sealedCheck(f, id, head, () => report);
+  };
+  const passing = reportOf(UNITS.map(file => ({ file, ...(file === "src/index.test.ts" ? { passed: ["answer"] } : {}) })));
+
+  test("a full pass on a side branch that contains the failing commit clears nothing", () => {
+    const { f, open } = failedNightly();
+    f.git("checkout", "-q", "-b", "side");
+    const side = f.commit({ "docs/side.md": "# side\n" });
+    sideCheck(f, side, passing);
+    settleReleaseChecks(f.store, EVIDENCE(f), LATER);
+    expect(open()).toEqual(["unit:src/index.test.ts::answer"]);
+  });
+
+  test("on main itself, the same pass clears it", () => {
+    const { f, open } = failedNightly();
+    f.git("checkout", "-q", "main");
+    const next = f.commit({ "docs/main.md": "# main\n" });
+    expect(next).toBeTruthy();
+    sideCheck(f, next, passing);
+    settleReleaseChecks(f.store, EVIDENCE(f), LATER);
+    expect(open()).toEqual([]);
+  });
+
+  test.each([
+    ["the test deleted (not reported by name)", reportOf(UNITS.map(file => ({ file })))],
+    ["the test skipped", reportOf(UNITS.map(file => ({ file, ...(file === "src/index.test.ts" ? { skipped: ["answer"] } : {}) })))],
+  ])("on main, %s clears nothing, even with its whole part passing", (_name, report) => {
+    const { f, open } = failedNightly();
+    const next = f.commit({ "docs/main.md": "# main\n" });
+    sideCheck(f, next, report);
+    settleReleaseChecks(f.store, EVIDENCE(f), LATER);
+    expect(open()).toEqual(["unit:src/index.test.ts::answer"]);
+  });
+});
+
+describe("security review: no road publishes or merges a nightly check", () => {
+  test("no publication can be made for it, the shared merge authority and the chat merge refuse it", async () => {
+    const { f, fire } = nightly();
+    const fired = fire();
+    if (fired.made !== "filed") throw new Error("not filed");
+    const ref = f.store.refFor("built-in", fired.taskId).id;
+    const check = sealedCheck(f, fired.taskId, f.approved, () => reportOf(UNITS.map(file => ({ file }))));
+    expect(() => f.store.createPublicationIntent({ run: check.runId, taskRef: ref, githubRepo: "o/r", remote: "origin", base: "main", head: "b", headSha: f.approved, bodyHash: "h", draft: false }, LATER)).toThrow("only a check");
+    const { mergeInChat } = await import("../../src/chat-decide.js");
+    expect(mergeInChat(f.store, fired.taskId, check.runId, "alex", LATER, "telegram" as never)).toMatchObject({ ok: false, why: expect.stringContaining("only a check") });
+    // A publication planted under it anyway: the merge intent and its firing refuse.
+    f.store.handle.prepare("INSERT INTO publication (run, task_ref, github_repo, remote, base, head, head_sha, body_hash, draft, state, created_at, updated_at) VALUES (?, ?, 'o/r', 'origin', 'main', 'b', ?, 'h', 0, 'intended', ?, ?)")
+      .run(check.runId, ref, f.approved, LATER.toISOString(), LATER.toISOString());
+    const publication = Number(f.store.handle.prepare("SELECT id FROM publication WHERE run = ?").get(check.runId)!["id"]);
+    expect(() => f.store.createMergeIntent({ publication, repo: f.repo, grantTermsHash: "g", headSha: f.approved, method: "squash", deleteBranch: false }, LATER)).toThrow("only a check");
+    f.store.handle.prepare("INSERT INTO merge_intent (publication, grant_terms_hash, head_sha, method, state, claimed_by, claimed_until, generation, created_at) VALUES (?, 'g', ?, 'squash', 'claimed', 'w', ?, 1, ?)").run(publication, f.approved, LATER.toISOString(), LATER.toISOString());
+    const intent = Number(f.store.handle.prepare("SELECT id FROM merge_intent WHERE publication = ?").get(publication)!["id"]);
+    expect(f.store.fireMergeIntent(intent, 1, { repo: f.repo, headSha: f.approved, liveGrantTermsHash: "g", graceMs: 0 }, LATER)).toMatchObject({ ok: false, why: expect.stringContaining("only a check") });
+    expect(await mergePullRequest(f.store, { runId: check.runId, by: "alex" })).toMatchObject({ ok: false, reason: "check-only" });
   });
 });

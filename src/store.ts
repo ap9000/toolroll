@@ -17789,6 +17789,8 @@ export class Store {
     now: Date,
   ): void {
     this.transact(() => {
+      // The nightly check of main is a check only (release-once.md, part 3): nothing merges it.
+      if (nightlyPublication(this, intent.publication)) throw new Error(NIGHTLY_CHECK_ONLY);
       const mode = this.activeMode(intent.repo, now);
       let state = "pending";
       let basis = "grant";
@@ -17920,8 +17922,13 @@ export class Store {
   ): { ok: true } | { ok: false; outcome: "raced" | "superseded" | "waiting-human"; why: string } {
     return this.transact(() => {
       const row = this.db
-        .prepare("SELECT state, generation, head_sha, grant_terms_hash, authority_basis, mode_digest FROM merge_intent WHERE id = ?")
+        .prepare("SELECT state, generation, head_sha, grant_terms_hash, authority_basis, mode_digest, publication FROM merge_intent WHERE id = ?")
         .get(id);
+      // The shared merge authority (release-once.md, part 3): a nightly check of main never merges, by any road.
+      if (row !== undefined && nightlyPublication(this, Number(row["publication"]))) {
+        this.settleMergeIntent(id, generation, "refused", now, { error: NIGHTLY_CHECK_ONLY, from: "claimed" });
+        return { ok: false as const, outcome: "superseded" as const, why: NIGHTLY_CHECK_ONLY };
+      }
       if (row === undefined || String(row["state"]) !== "claimed" || Number(row["generation"]) !== generation) {
         return { ok: false as const, outcome: "raced" as const, why: "the claim moved" };
       }
@@ -18058,6 +18065,8 @@ export class Store {
     },
     now: Date,
   ): number {
+    // The nightly check of main is a check only: it is never published, so no pull request or merge can follow.
+    if (nightlyTaskRef(this, intent.taskRef)) throw new Error(NIGHTLY_CHECK_ONLY);
     const inserted = this.db
       .prepare(
         `INSERT INTO publication
@@ -24410,4 +24419,16 @@ export function adoptReleaseOperation(store: Store, input: { id: string; authori
   const given = createHash("sha256").update(input.secret).digest("hex");
   if (typeof expected !== "string" || expected.length !== given.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(given))) return { ok: false, why: "This run can't prove it is the coordinator's deploy." };
   return { ok: true };
+}
+
+/** The nightly check of main is a check only (release-once.md, part 3). */
+export const NIGHTLY_CHECK_ONLY = "The nightly check of main is only a check; it is never published or merged.";
+/** Whether a task reference is a nightly check of main. */
+export function nightlyTaskRef(store: Store, taskRef: number): boolean {
+  return store.handle.prepare("SELECT 1 AS hit FROM nightly_check n JOIN task_ref r ON r.external_id = n.task AND r.backend = 'built-in' WHERE r.id = ?").get(taskRef) !== undefined;
+}
+/** Whether a publication belongs to a nightly check of main. */
+export function nightlyPublication(store: Store, publication: number): boolean {
+  const row = store.handle.prepare("SELECT task_ref FROM publication WHERE id = ?").get(publication);
+  return row !== undefined && nightlyTaskRef(store, Number(row["task_ref"]));
 }
