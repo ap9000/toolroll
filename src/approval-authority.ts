@@ -2,46 +2,55 @@
  * Which approval authorities stand, as ONE SQL predicate every dispatch belt shares (docs/plans/approval-policy.md
  * §1.5): the queue's dispatch query, the work index, and the claim and build belts (`Store.modeApprovalLive`).
  *
- * An allowlist, never a deny-list: a person's yes (`password`, `chat`) stands; a mode or a flow grant stands while its
- * signature does; a standing order's firing (`schedule`) stands while its approver can still approve in the project.
- * Everything else — the lead (`lead`, which phase 1 never lets stand), a null basis, a word this code doesn't write —
- * stands on nothing.
+ * An allowlist, never a deny-list: a person's yes (`password`, `chat`) stands unless a machine made that seal; a mode
+ * or a flow grant stands while its signature does; a standing order's firing (`schedule`, or an old firing stored as
+ * `password`) stands while its approver can still approve in the project. Everything else — the lead (`lead`, which
+ * phase 1 never lets stand), a null basis, a word this code doesn't write — stands on nothing.
+ *
+ * The seal's origin is read from the acts recorded AT the seal's own instant, exactly as scope.ts sealOriginOf reads
+ * it: an older proof for the same bytes never vouches for a later seal.
  */
 import { grantStandsSql } from "./flow-unattended.js";
 import { accountReachesSql } from "./project-access.js";
 
+/** The proofs a person gives (src/person-proof.ts), as an SQL list. */
+const PERSON_PROOFS = "('password-now', 'sso-now', 'fresh-password', 'fresh-sso', 'session', 'cli-login', 'chat', 'passkey')";
+
 /** SQL over a `task_scope` alias and a repo expression: whether that row's approval authority stands at `now` (an SQL
- * expression, used exactly twice, as the mode and grant clauses always have). It never asks whether the row is approved. */
+ * expression, used exactly twice, as the mode and grant clauses always have). It never asks whether the row is approved.
+ * COALESCE: a NULL basis would make the OR chain NULL, and NOT NULL reads as "not dead"; NULL stands on nothing. */
 export const authorityStandsSql = (scope: string, repo: string, now: string): string =>
-  // COALESCE: a NULL basis makes the OR chain NULL, and NOT NULL would read as "not dead"; NULL stands on nothing.
-  `COALESCE(((COALESCE(${scope}.approval_basis, '') IN ('password', 'chat') AND ${notMachineSealSql(scope)})
+  `COALESCE(((COALESCE(${scope}.approval_basis, '') IN ('password', 'chat') AND NOT ${machineSealSql(scope)}
+        AND (${personSealSql(scope)} OR NOT ${automationSql(scope)} OR ${approverStandsSql(scope, repo)}))
     OR (${scope}.approval_basis = 'mode' AND EXISTS (SELECT 1 FROM operating_mode om
           JOIN approver signer ON signer.name = om.signed_by
          WHERE om.repo = ${repo} AND om.revoked_at IS NULL AND om.absolute_expiry > ${now} AND om.digest = ${scope}.mode_digest
            AND signer.revoked_at IS NULL AND signer.role = 'approver' AND ${accountReachesSql("signer", repo)}))
     OR (${scope}.approval_basis = 'grant' AND ${grantStandsSql(`${scope}.mode_digest`, now, repo)})
-    OR (${scope}.approval_basis = 'schedule' AND EXISTS (SELECT 1 FROM approver sched
-          WHERE sched.name = ${scope}.approved_by AND sched.revoked_at IS NULL AND sched.role = 'approver'
-            AND ${accountReachesSql("sched", repo)}))), 0)`;
+    OR (${scope}.approval_basis = 'schedule' AND ${approverStandsSql(scope, repo)})), 0)`;
 
-/** The proof outcomes a machine credential leaves (scope.ts AuthMethod). */
-const MACHINE_PROOFS = "('lead-token', 'remote-token')";
+/** SQL: a machine made this seal — any proof at the seal's instant that isn't a person's (whatever its detail says,
+ * parsed or not: fail closed), or the lead's own approval act then. */
+export const machineSealSql = (scope: string): string =>
+  `(EXISTS (SELECT 1 FROM action_ledger mp WHERE mp.task_id = ${scope}.task_id AND mp.action = 'approval proved'
+       AND mp.actor = ${scope}.approved_by AND mp.at = ${scope}.approved_at AND mp.outcome NOT IN ${PERSON_PROOFS})
+    OR EXISTS (SELECT 1 FROM task_act la JOIN task_ref lr ON lr.id = la.task_ref AND lr.backend = 'built-in'
+       WHERE lr.external_id = ${scope}.task_id AND la.act = 'approved' AND la.lead = 1
+         AND la.account = ${scope}.approved_by AND la.at = ${scope}.approved_at))`;
 
-/** SQL: the newest proof row this approver left for this row's approved bytes (either detail form), or NULL. */
-export const sealProofSql = (scope: string): string =>
-  `(SELECT p.outcome FROM action_ledger p WHERE p.task_id = ${scope}.task_id AND p.action = 'approval proved' AND p.actor = ${scope}.approved_by
-      AND (p.detail LIKE '% · digest ' || ${scope}.approved_digest OR p.detail LIKE '%"digest":"' || ${scope}.approved_digest || '"%')
-    ORDER BY p.id DESC LIMIT 1)`;
+/** SQL: a person's proof at the seal's instant for these exact bytes, its detail parsed (the versioned JSON record,
+ * whitespace and all, or the legacy text). */
+export const personSealSql = (scope: string): string =>
+  `EXISTS (SELECT 1 FROM action_ledger pp WHERE pp.task_id = ${scope}.task_id AND pp.action = 'approval proved'
+      AND pp.actor = ${scope}.approved_by AND pp.at = ${scope}.approved_at AND pp.outcome IN ${PERSON_PROOFS}
+      AND CASE WHEN json_valid(pp.detail) THEN json_extract(pp.detail, '$.v') = 1 AND json_type(pp.detail, '$.digest') = 'text'
+                                            AND json_extract(pp.detail, '$.digest') = ${scope}.approved_digest
+               ELSE pp.detail LIKE '% · generation % · digest ' || ${scope}.approved_digest END)`;
 
-/**
- * SQL: a person-road seal (`password`, `chat`) that a machine credential did not make. Before the fix a lead token or a
- * remote API token sealed through the person's road and the row says `password`; the record of what happened — the
- * proof row (`lead-token`, `remote-token`) or the lead's own task act at that instant — says otherwise, and wins. A
- * seal with no proof row at all predates proof rows and is grandfathered for dispatch (it is still never a person's
- * approval for release, deploy or votes: scope.ts personApprovalOf).
- */
-export const notMachineSealSql = (scope: string): string =>
-  `(COALESCE(${sealProofSql(scope)}, '') NOT IN ${MACHINE_PROOFS}
-    AND NOT EXISTS (SELECT 1 FROM task_act la JOIN task_ref lr ON lr.id = la.task_ref AND lr.backend = 'built-in'
-                     WHERE lr.external_id = ${scope}.task_id AND la.act = 'approved' AND la.lead = 1
-                       AND la.account = ${scope}.approved_by AND la.at = ${scope}.approved_at))`;
+/** SQL: the task a standing order's firing filed (its own record of the firing). */
+const automationSql = (scope: string): string => `EXISTS (SELECT 1 FROM flow_trigger_event fe WHERE fe.task = ${scope}.task_id)`;
+
+/** SQL: the seal's approver can still approve in the project. */
+const approverStandsSql = (scope: string, repo: string): string =>
+  `EXISTS (SELECT 1 FROM approver sched WHERE sched.name = ${scope}.approved_by AND sched.revoked_at IS NULL AND sched.role = 'approver'
+      AND ${accountReachesSql("sched", repo)})`;

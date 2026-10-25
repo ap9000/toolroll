@@ -217,7 +217,7 @@ describe("toolroll release", () => {
       expect(ownerApproval(gate(null), DIGEST)).toMatchObject({ ok: false, why: "not approved yet" });
       expect(ownerApproval(gate({ by: "alex", at, digest: "older", basis: "password", role: "approver", active: true, person }), DIGEST)).toMatchObject({ ok: false });
       expect(ownerApproval(gate({ by: "alex", at, digest: DIGEST, basis: "mode", role: "approver", active: true, person }), DIGEST)).toMatchObject({ ok: false, why: "approved by mode, not by a person" });
-      expect(ownerApproval(gate({ by: "alex", at, digest: DIGEST, basis: "lead", role: "approver", active: true, person }), DIGEST)).toMatchObject({ ok: false, why: "approved by lead, not by a person" });
+      expect(ownerApproval(gate({ by: "alex", at, digest: DIGEST, basis: "lead", role: "approver", active: true, person }), DIGEST)).toMatchObject({ ok: false, why: "approved by the lead, not by a person" });
       for (const by of ["Maya (AI)", "mode overnight", "lead:alex", "routine"]) expect(ownerApproval(gate({ by, at, digest: DIGEST, basis: "password", role: "approver", active: true, person }), DIGEST), by).toMatchObject({ ok: false });
       // Approval policy: the owner's own name on a `password` seal is not enough — the plane's proof decides.
       expect(ownerApproval(gate({ by: "alex", at, digest: DIGEST, basis: "password", role: "approver", active: true }), DIGEST)).toMatchObject({ ok: false, why: expect.stringContaining("update it first") });

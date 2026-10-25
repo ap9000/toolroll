@@ -1605,6 +1605,9 @@ export function approvalOf(scope: Scope | null): Approval {
   if (scope.approvalBasis !== undefined && (scope.approvalBasis === null || !(APPROVAL_BASES as readonly string[]).includes(scope.approvalBasis))) {
     return { approved: false, reason: "none" };
   }
+  // Phase 1: only people approve, so a lead's seal (including an old one a lead token made through the person's road,
+  // which Store.getScope reads as `lead`) is no approval, and the person sees the Approve control again.
+  if (scope.approvalBasis === "lead") return { approved: false, reason: "none" };
   return { approved: true, at: scope.approvedAt, by: scope.approvedBy };
 }
 
@@ -1810,10 +1813,34 @@ export function personApprovalOf(store: Store, taskId: string): { ok: true; by: 
   const basis = scope.approvalBasis ?? null;
   if (basis === "lead") return { ok: false, why: "approved by the lead, not by a person" };
   if (basis !== "password" && basis !== "chat") return { ok: false, why: `approved by ${basis === null ? "an unknown road" : basis === "grant" ? "a flow" : basis}, not by a person` };
-  const proof = approvalProofOf(store, taskId, scope.approvedBy, scope.approvedDigest);
-  if (proof === null) return { ok: false, why: "no record shows a person approved these exact words; approve it again" };
-  if (!personProof(proof.method)) return { ok: false, why: proof.method === "lead-token" ? "approved by the lead, not by a person" : "approved with a machine credential, not by a person" };
-  return { ok: true, by: scope.approvedBy, at: scope.approvedAt, method: proof.method };
+  const origin = sealOriginOf(store, taskId, scope.approvedBy, scope.approvedDigest, scope.approvedAt);
+  if (origin.origin === "machine") return { ok: false, why: origin.lead ? "approved by the lead, not by a person" : "approved with a machine credential, not by a person" };
+  if (origin.origin !== "person") return { ok: false, why: "no record shows a person approved these exact words; approve it again" };
+  return { ok: true, by: scope.approvedBy, at: scope.approvedAt, method: origin.method };
+}
+
+/**
+ * Who made a seal that says it came through a person's road (`password`, `chat`), from the acts recorded AT THAT SEAL
+ * (approval policy §1.5): the proof rows its approver left at the seal's own instant, and the lead's task act then.
+ * - `machine`: any proof there that isn't a person's (a lead or remote token, or a word this code doesn't know), or the
+ *   lead's act — fail closed, whatever its digest says;
+ * - `person`: a person's proof there for these exact bytes (parsed, either form);
+ * - `automation`: a standing order's firing that no person's proof stands behind;
+ * - `unproven`: none of these (a seal from before proof rows): it dispatches as before, and is never a person's yes.
+ * An older proof for the same bytes never vouches for a later seal. The dispatch belts ask the same in SQL
+ * (approval-authority.ts).
+ */
+export function sealOriginOf(store: Store, taskId: string, by: string, digest: string, at: string):
+  { origin: "machine"; lead: boolean } | { origin: "person"; method: string } | { origin: "automation" } | { origin: "unproven" } {
+  const rows = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = ? AND actor = ? AND at = ? ORDER BY id DESC").all(taskId, APPROVAL_PROOF, by, at);
+  const leadAct = store.handle.prepare(`SELECT 1 AS hit FROM task_act a JOIN task_ref r ON r.id = a.task_ref AND r.backend = 'built-in'
+      WHERE r.external_id = ? AND a.act = 'approved' AND a.lead = 1 AND a.account = ? AND a.at = ?`).get(taskId, by, at) !== undefined;
+  const machine = rows.filter(row => !personProof(String(row["outcome"])));
+  if (leadAct || machine.length > 0) return { origin: "machine", lead: leadAct || machine.some(row => row["outcome"] === "lead-token") };
+  const person = rows.find(row => proofDetailOf(row["detail"])?.digest === digest);
+  if (person !== undefined) return { origin: "person", method: String(person["outcome"]) };
+  if (store.handle.prepare("SELECT 1 AS hit FROM flow_trigger_event WHERE task = ? LIMIT 1").get(taskId) !== undefined) return { origin: "automation" };
+  return { origin: "unproven" };
 }
 
 /** Text another machine wrote (a confirmed chat proposal, a coordinator, a scout): no mode, grant, remembered password

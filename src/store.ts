@@ -74,7 +74,7 @@ import { containerEmptiness } from "./container-state.js";
 import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
-import { APPROVAL_BASES, approvalOf, machineActing, personProof, quarantinedAuthor, type ScopeAuthor, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
+import { APPROVAL_BASES, approvalOf, machineActing, personProof, proofDetailOf, quarantinedAuthor, sealOriginOf, type ScopeAuthor, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
 import { resolveScopeProfile, resolveRouteCandidates, exactPinOf, routeOfTask, agentChoicesFor } from "./agentconfig.js";
 import {
   canonicalOverridesJson, canonicalRouteJson, isRiskLevel, isTaskSize, headroomFrom, makesNoPlan, legOf, overridesFromJson, phaseOfRole, recommendRoute, routeDigestOf, routeFromJson, routeProblems, routeStampProblem, ROUTE_ERA, type ExactSpec, type ProviderRoom, type CandidateTier, PROVIDER_ID_LIST, type TaskSize, type TaskSizing, type PhaseRoute, type PublicationAuthority, type RouteStamp, type ReadinessLookup, type ReadinessObservation, type ReadinessState, type RouteEvidenceKind, type RouteOverride,
@@ -8322,7 +8322,7 @@ export class Store {
 
   getScope(taskId: string): Scope | null {
     const row = this.db.prepare("SELECT * FROM task_scope WHERE task_id = ?").get(taskId);
-    return row === undefined ? null : readScope(row);
+    return row === undefined ? null : sealedAs(this, readScope(row));
   }
 
   /**
@@ -8851,7 +8851,7 @@ export class Store {
     if (!rules.protectProject && rules.protectedPaths.length === 0) return null;
     const hits = changed === null ? null : protectedChanges(rules, changed);
     if (hits !== null && hits.length === 0) return null;
-    const scope = this.db.prepare("SELECT approved_by, approved_digest FROM task_scope WHERE task_id = ?").get(taskId);
+    const scope = this.db.prepare("SELECT approved_by, approved_digest, approved_at, approval_basis FROM task_scope WHERE task_id = ?").get(taskId);
     const approvedDigest = scope?.["approved_digest"] == null ? "" : String(scope["approved_digest"]);
     const standing = (name: string) => { const account = this.accountOf(name); return account !== null && account.revokedAt === null && account.role === "approver" && this.accountCanAccess(name, repo); };
     const voters = new Set(this.db.prepare("SELECT approver, proof FROM scope_approval_vote WHERE task_id = ? AND digest = ?").all(taskId, approvedDigest).filter(row => personVote(this.db, taskId, approvedDigest, row)).map(row => String(row["approver"])).filter(standing));
@@ -8862,8 +8862,20 @@ export class Store {
     const approver = scope?.["approved_by"] == null ? null : String(scope["approved_by"]);
     const what = hits === null ? "files this project protects (its changed files couldn't be read)" : `protected files (${hits.slice(0, 3).join(", ")}${hits.length > 3 ? ` and ${hits.length - 3} more` : ""})`;
     if (completer === null) return `This result changed ${what}, so a person other than its approver marks it complete.`;
-    if (completer === approver || requesters.has(completer) || !standing(completer)) return `This result changed ${what}, and ${approver ?? "one person"} approved its scope alone. Someone else has to mark it complete.`;
-    return null;
+    // Two DISTINCT people across the votes, the seal and the completion (approval policy §1.7a): the seal's approver
+    // counts only when a person made that seal (never a lead or other machine credential under their name), a
+    // requester never counts, and someone who already voted is not a second person by also completing.
+    const people = new Set(voters);
+    const basis = scope?.["approval_basis"];
+    // (The approver is the first pair of eyes and may be who asked; the second may not.)
+    if (approver !== null && (basis === "password" || basis === "chat") && scope?.["approved_at"] != null
+      && sealOriginOf(this, taskId, approver, approvedDigest, String(scope["approved_at"])).origin !== "machine") people.add(approver);
+    const before = people.size;
+    if (!requesters.has(completer) && standing(completer)) people.add(completer);
+    // No seal on record at all (nothing to pair with): the completer, if they can still approve here, is the person.
+    if (approver === null && people.size > before && voters.size === 0) return null;
+    if (people.size >= 2 && people.size > before) return null;
+    return `This result changed ${what}, and ${approver ?? "one person"} approved its scope alone. Someone else has to mark it complete.`;
   }
 
   /** One person's yes to these exact bytes (protected work counts two). */
@@ -23940,7 +23952,22 @@ export const FLOW_DECISION_AUTHORITIES: readonly FlowDecisionAuthority[] = ["per
  * before votes kept one, the approver's own proof row for those bytes. None on record is no person. */
 function personVote(db: Database, taskId: string, digest: string, row: Record<string, unknown>): boolean {
   if (typeof row["proof"] === "string") return personProof(row["proof"]);
-  const proof = db.prepare(`SELECT outcome FROM action_ledger WHERE task_id = ? AND action = 'approval proved' AND actor = ?
-      AND (detail LIKE '% · digest ' || ? OR detail LIKE '%"digest":"' || ? || '"%') ORDER BY id DESC LIMIT 1`).get(taskId, String(row["approver"]), digest, digest);
+  // The approver's newest proof row for these exact bytes, parsed (either form); none is no person.
+  const proof = db.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = 'approval proved' AND actor = ? ORDER BY id DESC LIMIT 50")
+    .all(taskId, String(row["approver"])).find(one => proofDetailOf(one["detail"])?.digest === digest);
   return personProof(proof === undefined ? null : String(proof["outcome"]));
+}
+
+/**
+ * A scope's approval read for what its seal really was (approval policy §1.5): a seal that says `password` or `chat`
+ * but that a machine credential made reads as `lead` (the lead's token) or `unknown` (any other machine credential),
+ * and a standing order's old firing as `schedule`. Nothing is rewritten; every reader of getScope sees the truth.
+ */
+function sealedAs(store: Store, scope: Scope): Scope {
+  if (scope.approvedAt === null || scope.approvedBy === null || scope.approvedDigest === null) return scope;
+  if (scope.approvalBasis !== "password" && scope.approvalBasis !== "chat") return scope;
+  const origin = sealOriginOf(store, scope.taskId, scope.approvedBy, scope.approvedDigest, scope.approvedAt);
+  if (origin.origin === "machine") return { ...scope, approvalBasis: origin.lead ? "lead" : "unknown" };
+  if (origin.origin === "automation") return { ...scope, approvalBasis: "schedule" };
+  return scope;
 }

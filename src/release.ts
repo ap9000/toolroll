@@ -228,6 +228,7 @@ export function ownerApproval(gate: GateState, digest: string | null): { ok: tru
   const approval = gate.approval;
   if (approval === null) return { ok: false, why: "not approved yet" };
   if (digest === null || approval.digest !== digest) return { ok: false, why: "the approval is for different scope text" };
+  if (approval.basis === "lead") return { ok: false, why: "approved by the lead, not by a person" };
   if (approval.basis !== "password" && approval.basis !== "chat") return { ok: false, why: `approved by ${approval.basis ?? "an unknown road"}, not by a person` };
   if (/ \(AI\)$/.test(approval.by) || /^mode /.test(approval.by) || /^lead\b/.test(approval.by) || approval.by === "routine") return { ok: false, why: `approved as ${approval.by}, not by a person` };
   if (approval.role !== "approver" || !approval.active) return { ok: false, why: `approved by ${approval.by}, who is not an active approver` };
