@@ -68,7 +68,7 @@ describe("attack: the candidate's own scope.js approves its deployment", () => {
     } finally { store.close(); }
   });
 
-  test("the deploy scripts load scope.js only from the installed runtime, never from the candidate", () => {
+  test("the deploy scripts prove the candidate with the installed runtime before loading any of the candidate's code", () => {
     for (const script of ["scripts/deploy-browser.mjs", "scripts/upgrade-path.mjs"]) {
       const text = readFileSync(join(ROOT, script), "utf8");
       for (const line of text.split("\n").filter(one => /deploymentCandidate\(|installedScope|personApprovalOf/.test(one))) {
@@ -79,5 +79,13 @@ describe("attack: the candidate's own scope.js approves its deployment", () => {
     expect(browser).toContain('scope: await load(priorDist, "scope.js")');
     expect(browser).toContain("installedScope: oldRt.scope");
     expect(browser).not.toMatch(/load\(join\(source, "dist"\), "scope\.js"\)/);
+    // Nothing of the candidate's runs before it is proven: every module load that names the candidate's dist comes
+    // after the early proof, which uses only the installed runtime (its names, lock, scope, assignment and store).
+    const early = browser.indexOf("const early = ");
+    expect(early).toBeGreaterThan(0);
+    for (const at of [...browser.matchAll(/load\(join\(source, "dist"\)|import\(pathToFileURL\(join\(source/g)].map(one => one.index!)) expect(at).toBeGreaterThan(early);
+    expect(browser.slice(0, early)).not.toMatch(/candidateAssignment|loadNames\(join\(source/);
+    expect(browser).toContain('assignment: await load(priorDist, "assignment.js")');
+    expect(browser).toContain("assignmentOf: oldRt.assignment.assignmentOf");
   });
 });

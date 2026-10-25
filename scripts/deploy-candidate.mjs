@@ -77,11 +77,17 @@ export function personApprovalFromRecords(store, taskId) {
   if (!scope || scope.approvedAt == null || scope.approvedBy == null || scope.approvedDigest == null) return { ok: false, why: 'not approved yet' };
   if (scope.approvedDigest !== scope.digest) return { ok: false, why: 'the approval is for different scope text' };
   const basis = scope.approvalBasis ?? null;
+  if (basis === 'lead') return { ok: false, why: 'approved by the lead, not by a person' };
   if (basis !== 'password' && basis !== 'chat') return { ok: false, why: `approved by ${basis ?? 'an unknown road'}, not by a person` };
-  const rows = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = 'approval proved' AND actor = ? ORDER BY id DESC LIMIT 50")
-    .all(taskId, scope.approvedBy);
+  // The acts recorded at the seal's own instant (src/scope.ts sealOriginOf): a machine's proof or the lead's act there
+  // makes it a machine's seal, whatever else is on record; an older proof never vouches for a later seal.
+  const rows = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = 'approval proved' AND actor = ? AND at = ? ORDER BY id DESC")
+    .all(taskId, scope.approvedBy, scope.approvedAt);
+  const leadAct = store.handle.prepare(`SELECT 1 AS hit FROM task_act a JOIN task_ref r ON r.id = a.task_ref AND r.backend = 'built-in'
+      WHERE r.external_id = ? AND a.act = 'approved' AND a.lead = 1 AND a.account = ? AND a.at = ?`).get(taskId, scope.approvedBy, scope.approvedAt) !== undefined;
+  const machine = rows.filter(row => !PERSON_PROOFS.has(String(row.outcome)));
+  if (leadAct || machine.length > 0) return { ok: false, why: leadAct || machine.some(row => row.outcome === 'lead-token') ? 'approved by the lead, not by a person' : 'approved with a machine credential, not by a person' };
   const proof = rows.find(row => proofDigestOf(row.detail) === scope.approvedDigest);
   if (proof === undefined) return { ok: false, why: 'no record shows a person approved these exact words; approve it again' };
-  if (!PERSON_PROOFS.has(String(proof.outcome))) return { ok: false, why: proof.outcome === 'lead-token' ? 'approved by the lead, not by a person' : 'approved with a machine credential, not by a person' };
   return { ok: true, by: scope.approvedBy, at: scope.approvedAt, method: String(proof.outcome) };
 }

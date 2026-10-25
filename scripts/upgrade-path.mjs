@@ -245,14 +245,14 @@ async function seed({ dist, stateDir, repo }) {
 async function facts({ installed, candidate, databaseFile, evidenceRoot, runId, head }) {
   const { DatabaseSync } = await import("node:sqlite");
   const oldStore = await load(installed, "store.js"), oldEvidence = await load(installed, "verification-evidence.js");
-  const candidateAssignment = await load(join(candidate, "dist"), "assignment.js");
+  const installedAssignment = await load(installed, "assignment.js");
   const installedScope = await load(installed, "scope.js");
   const { deploymentCandidate } = await import(pathToFileURL(join(candidate, "scripts", "deploy-candidate.mjs")).href);
   const db = new DatabaseSync(databaseFile, { readOnly: true });
   try {
     db.exec("PRAGMA busy_timeout=5000");
     const result = deploymentCandidate(new oldStore.Store(db), { runId, head, evidenceRoot, now: NOW() }, {
-      assignmentOf: candidateAssignment.assignmentOf, verificationEvidence: oldEvidence.verificationEvidence, installedScope,
+      assignmentOf: installedAssignment.assignmentOf, verificationEvidence: oldEvidence.verificationEvidence, installedScope,
     });
     return { ok: true, completion: result.completion.digest };
   } finally { db.close(); }

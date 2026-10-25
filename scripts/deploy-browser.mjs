@@ -28,6 +28,9 @@ import { recoverOnExit } from "./deploy-recovery.mjs";
 import { browserDeployment, openDeploymentDatabase, sha, snapshot } from "./deploy-phases.mjs";
 
 const args = process.argv.slice(2);
+// git inside the candidate's checkout, without the user's global or system config, hooks or fsmonitor (AGENTS.md).
+const SAFE_GIT = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+const SAFE_GIT_ENV = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
 const flag = (name, fallback = undefined) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : fallback; };
 const has = name => args.includes(`--${name}`);
 const runId = Number(flag("run"));
@@ -35,26 +38,38 @@ const phaseWanted = flag("phase", "all");
 // New names first; an install made under the older name keeps being found (nothing is moved).
 const named = (paths) => paths.find(one => existsSync(one)) ?? paths[0];
 const source = resolve(flag("source", dirname(dirname(fileURLToPath(import.meta.url)))));
-const names = await loadNames(join(source, "dist"));
-// The folder that holds the database wins, exactly as the plane picks it.
-const stateDir = flag("state") ?? deployStateDir(names, process.env, homedir());
-const database = flag("db", join(stateDir, "orders.db"));
-const label = flag("label", basename(named(["com.toolroll.browser", "com.standing-orders.browser"].map(one => join(homedir(), "Library", "LaunchAgents", `${one}.plist`))), ".plist"));
-const plist = flag("plist", join(homedir(), "Library", "LaunchAgents", `${label}.plist`));
 // The staged runtime installs the candidate under its own package name (toolroll; standing-orders before the rename).
 const packageName = JSON.parse(readFileSync(join(source, "package.json"), "utf8")).name;
+const label = flag("label", basename(named(["com.toolroll.browser", "com.standing-orders.browser"].map(one => join(homedir(), "Library", "LaunchAgents", `${one}.plist`))), ".plist"));
+const plist = flag("plist", join(homedir(), "Library", "LaunchAgents", `${label}.plist`));
 const uid = userInfo().uid;
 const say = (...parts) => console.log(parts.map(p => typeof p === "string" ? p : JSON.stringify(p)).join(" "));
 function requireTrue(value, message) { if (!value) throw Error(message); }
 if (!Number.isInteger(runId) || runId < 1) requireTrue(false, "Name the verified builder run: --run <id>.");
 
+// ---- installed runtime (old): trusted, and the only code run before the candidate is proven ----------------------
+// Approval policy §1.7: whether a person approved the candidate and its exact result is complete is decided by the
+// INSTALLED runtime and the plane's records, before any of the candidate's own modules are imported. (Run this script
+// from a trusted checkout with --source <candidate> to keep the candidate's code out of the check entirely.)
+// Recovery runs after the swap may have written the new definition: it starts the one saved at preparation.
+const livePlist = readFileSync(phaseWanted === "recover" && flag("stage") ? join(flag("stage"), "browser.saved.plist") : plist, "utf8");
+const priorDist = (livePlist.match(/<string>([^<]*\/dist)\/cli\.js<\/string>/) ?? [])[1];
+requireTrue(priorDist && existsSync(priorDist), `The live service definition at ${plist} names no installed runtime.`);
+const publicUrl = (livePlist.match(/<string>--public-url<\/string>\s*<string>([^<]+)<\/string>/) ?? [])[1] ?? null;
+const servicePort = (livePlist.match(/<string>--port<\/string>\s*<string>(\d+)<\/string>/) ?? [])[1] ?? "4180";
+const names = await loadNames(priorDist);
+// The folder that holds the database wins, exactly as the plane picks it.
+const stateDir = flag("state") ?? deployStateDir(names, process.env, homedir());
+const database = flag("db", join(stateDir, "orders.db"));
+const evidenceRoot = join(dirname(database), "evidence");
+
 // Acquire before reading the saved definition, runtime or journal on every entry, including recovery.
-const candidateHead = execFileSync("git", ["-C", source, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+const candidateHead = execFileSync("git", [...SAFE_GIT, "-C", source, "rev-parse", "HEAD"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim();
 const short = candidateHead.slice(0, 7);
 const stageDir = flag("stage") ?? join(stateDir, "staged-upgrades", `browser-${short}-${randomUUID().slice(0, 6)}`);
 const journalFile = join(stageDir, "deployment.json");
 mkdirSync(stageDir, { recursive: true, mode: 0o700 });
-const { acquireDeploymentLock } = await import(pathToFileURL(join(source, "dist", "deploy-lock.js")).href);
+const { acquireDeploymentLock } = await import(pathToFileURL(join(priorDist, "deploy-lock.js")).href);
 const deploymentLock = acquireDeploymentLock(journalFile);
 const cancellation = new AbortController();
 const signal = cancellation.signal;
@@ -69,29 +84,21 @@ const load = async (root, name) => {
   signal.throwIfAborted();
   return module;
 };
-
-// ---- installed runtime (old) and candidate runtime (new) ---------------------
-// Recovery runs after the swap may have written the new definition: it starts the one saved at preparation.
-const livePlist = readFileSync(phaseWanted === "recover" && flag("stage") ? join(flag("stage"), "browser.saved.plist") : plist, "utf8");
-const priorDist = (livePlist.match(/<string>([^<]*\/dist)\/cli\.js<\/string>/) ?? [])[1];
-requireTrue(priorDist && existsSync(priorDist), `The live service definition at ${plist} names no installed runtime.`);
-const publicUrl = (livePlist.match(/<string>--public-url<\/string>\s*<string>([^<]+)<\/string>/) ?? [])[1] ?? null;
-const servicePort = (livePlist.match(/<string>--port<\/string>\s*<string>(\d+)<\/string>/) ?? [])[1] ?? "4180";
-const oldRt = { scope: await load(priorDist, "scope.js"), store: await load(priorDist, "store.js"), gate: await load(priorDist, "desktop-update-gate.js"), evidence: await load(priorDist, "verification-evidence.js"), update: await load(priorDist, "desktop-update.js") };
+const oldRt = { scope: await load(priorDist, "scope.js"), assignment: await load(priorDist, "assignment.js"), store: await load(priorDist, "store.js"), gate: await load(priorDist, "desktop-update-gate.js"), evidence: await load(priorDist, "verification-evidence.js"), update: await load(priorDist, "desktop-update.js") };
 oldRt.coding = await loadCodingDeploymentRuntime(priorDist);
-const candidateAssignment = await load(join(source, "dist"), "assignment.js");
+// The candidate is proven here, on every entry but recovery, before anything of its own runs.
+const early = phaseWanted === "recover" ? null : (() => { const db = openDeploymentDatabase(database, { readOnly: true }); try { return facts(db); } finally { db.close(); } })();
 // A stage made before the rename installed the runtime under the older name; resuming it keeps that path.
 const stagedRuntime = stagedRuntimePaths(stageDir, packageName, names);
 const stagedName = stagedRuntime.name, nextDist = stagedRuntime.dist;
-const evidenceRoot = join(dirname(database), "evidence");
 
 // ---- the plane's own records for this candidate -----------------------------
 function facts(db) {
   const store = new oldRt.store.Store(db);
   const result = deploymentCandidate(store, { runId, head: candidateHead, evidenceRoot, now: new Date() }, {
-    assignmentOf: candidateAssignment.assignmentOf, verificationEvidence: oldRt.evidence.verificationEvidence, installedScope: oldRt.scope,
+    assignmentOf: oldRt.assignment.assignmentOf, verificationEvidence: oldRt.evidence.verificationEvidence, installedScope: oldRt.scope,
   });
-  requireTrue(resolve(result.worktree) === source || execFileSync("git", ["-C", result.worktree, "rev-parse", "HEAD"], { encoding: "utf8" }).trim() === candidateHead, "Run this from the builder's worktree for this run.");
+  requireTrue(resolve(result.worktree) === source || execFileSync("git", [...SAFE_GIT, "-C", result.worktree, "rev-parse", "HEAD"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim() === candidateHead, "Run this from the builder's worktree for this run.");
   return result;
 }
 function quiet(db) {
@@ -124,7 +131,7 @@ const list = (root, prefix = "") => readdirSync(join(root, prefix), { withFileTy
 
 // ---- phases ------------------------------------------------------------------
 function stage() {
-  requireTrue(!execFileSync("git", ["-C", source, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8" }).trim(), "The candidate checkout has tracked changes.");
+  requireTrue(!execFileSync("git", [...SAFE_GIT, "-C", source, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim(), "The candidate checkout has tracked changes.");
   requireTrue(existsSync(join(source, "dist")), "The candidate has no dist; the native gate builds it.");
   mkdirSync(stageDir, { recursive: true, mode: 0o700 });
   // Spotlight leaves staged runtimes alone (src/never-index.ts).
@@ -207,7 +214,7 @@ function proveStaged() {
   requireTrue(JSON.stringify(built.files) === JSON.stringify(list(nextDist)), "Staged dist inventory differs from a clean build of the candidate commit.");
   for (const f of built.files) requireTrue(built.bytes.get(f).equals(readFileSync(join(nextDist, f))), `Staged file differs from a clean build of the candidate commit: ${f}`);
   for (const f of list(self).filter(f => !f.startsWith("dist/"))) {
-    const blob = spawnSync("git", ["-C", source, "show", `${candidateHead}:${f}`], { maxBuffer: 64 * 1024 * 1024 });
+    const blob = spawnSync("git", [...SAFE_GIT, "-C", source, "show", `${candidateHead}:${f}`], { maxBuffer: 64 * 1024 * 1024, env: SAFE_GIT_ENV });
     requireTrue(blob.status === 0 && blob.stdout.equals(readFileSync(join(self, f))), `Packed file differs from the candidate commit: ${f}`);
   }
   const staged = stagedPackages(join(runtime, "node_modules"), "node_modules").filter(dep => dep !== `node_modules/${stagedName}`).sort();
@@ -275,7 +282,7 @@ try {
     requireTrue(flag("stage") && existsSync(journalFile), "--phase recover resumes a failed deployment: pass --stage <dir> of one.");
     process.exit(recoverJournal() ? 0 : 1);
   }
-  const proven = (() => { const db = openDeploymentDatabase(database, { readOnly: true }); try { return facts(db); } finally { db.close(); } })();
+  const proven = early ?? (() => { const db = openDeploymentDatabase(database, { readOnly: true }); try { return facts(db); } finally { db.close(); } })();
   say(`Candidate ${short} — task ${proven.taskId}, run ${runId}, checks passed, marked complete by ${proven.completion.actor}.`);
   say(`Installed runtime: ${priorDist}`);
   say(`Staging directory: ${stageDir}`);
