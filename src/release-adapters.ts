@@ -7,8 +7,8 @@
 
 import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { parse as parseYaml } from "yaml";
@@ -21,6 +21,7 @@ import { BEFORE_SWAP, gateOwner } from "./release-gate.js";
 import { findCliLinks, switchCliLinks } from "./release-links.js";
 import { databasePath, Store, type Database } from "./store.js";
 import { deploymentGate } from "./deploy-gate.js";
+import { checkoutGitEnv, HARDENED_GIT_ARGS } from "./agent-fence.js";
 
 export type Exec = (command: string, args: readonly string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) =>
   Promise<{ code: number; stdout: string; stderr: string }>;
@@ -196,31 +197,60 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
     const gate = stageGate(stage, liveOwner);
     return gate === null ? { ok: false, message } : { ok: false, message, gate };
   };
-  /** The deployment gate in this runtime (deploy-gate.ts), then the checkout: exactly the approved commit, nothing
-   * tracked changed. git there runs without the user's config, hooks, fsmonitor, replacement objects or lazy fetch. */
-  const proveCandidate = async (runId: number, worktree: string): Promise<{ ok: true } | { ok: false; message: string }> => {
+  /** The deployment gate in this runtime (deploy-gate.ts): a person's approval, the passing check, the exact completed
+   * result. Its answer names the approved commit and the project it belongs to, from the plane's own records. */
+  const proveCandidate = (runId: number): ReturnType<typeof deploymentGate> => {
     if (!existsSync(database)) return { ok: false, message: "The plane's database isn't here, so the candidate can't be proven." };
     const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
-    let gate: ReturnType<typeof deploymentGate>;
-    try { gate = deploymentGate(new Store(db), { runId, evidenceRoot: join(dirname(database), "evidence"), now: (options.now ?? (() => new Date()))() }); }
-    catch (error) { gate = { ok: false, message: `The candidate can't be proven: ${(error as Error).message}` }; }
+    try { return deploymentGate(new Store(db), { runId, evidenceRoot: join(dirname(database), "evidence"), now: (options.now ?? (() => new Date()))() }); }
+    catch (error) { return { ok: false, message: `The candidate can't be proven: ${(error as Error).message}` }; }
     finally { db.close(); }
-    if (!gate.ok) return gate;
-    return provenCheckout(worktree, gate.head);
   };
-  /** The checkout is exactly `head` with nothing tracked changed: the script that runs is the approved commit's. */
-  const provenCheckout = async (worktree: string, head: string): Promise<{ ok: true } | { ok: false; message: string }> => {
-    const safe = (...args: string[]) => run("git", ["--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", worktree, ...args],
-      { env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: process.env["HOME"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1" } });
-    const at = await safe("rev-parse", "HEAD");
-    if (at.code !== 0 || at.stdout.trim() !== head) return { ok: false, message: `The checkout at ${worktree} isn't the approved commit ${head.slice(0, 7)}.` };
-    const status = await safe("status", "--porcelain", "--untracked-files=no");
-    if (status.code !== 0 || status.stdout.trim() !== "") return { ok: false, message: `The checkout at ${worktree} has tracked changes; deploy only the approved commit.` };
-    return { ok: true };
+  /** The run's recorded commit and project, for recovery (which needs no approval). */
+  const recordedCommit = (runId: number): { head: string; repo: string } | null => {
+    if (!existsSync(database)) return null;
+    const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
+    try {
+      const store = new Store(db), run = store.getRun(runId), repo = run === null ? null : store.refById(run.taskRef)?.repo ?? null;
+      return run?.headRevision != null && repo != null ? { head: run.headRevision, repo } : null;
+    } catch { return null; } finally { db.close(); }
   };
-  const deployScript = (worktree: string, stage: string, runId: number, extra: string[]) => run(process.execPath, ["scripts/deploy-browser.mjs", "--run", String(runId), "--stage", stage, ...extra], {
-    cwd: worktree, env: cleanEnv({ TMPDIR: resolved(process.env["TMPDIR"] ?? "/tmp") }), timeoutMs: (options.deployMinutes ?? 30) * 60_000,
-  });
+  /**
+   * The approved commit, extracted by this runtime into a fresh folder it owns: `git archive <full sha>` from the
+   * PROJECT's own Git directory as Toolroll records it (realpath, a real directory — never the candidate worktree's
+   * `.git` pointer or anything in that worktree), with no replacement objects, no lazy fetch, no global or system
+   * config, no hooks or fsmonitor. The deployment script runs from here, so neither a changed, flagged, swapped or
+   * untracked file in the worktree nor its Git pointer can change what runs.
+   */
+  const extractApproved = async (repo: string, head: string): Promise<{ ok: true; dir: string; gitDir: string } | { ok: false; message: string }> => {
+    if (!/^[0-9a-f]{40}$/.test(head)) return { ok: false, message: `The approved commit ${head} isn't a full SHA.` };
+    let gitDir: string;
+    try {
+      const named = join(realpathSync(repo), ".git");
+      if (!lstatSync(named).isDirectory()) return { ok: false, message: `${repo}'s Git directory isn't a plain directory, so the approved commit can't be read from it.` };
+      gitDir = realpathSync(named);
+    } catch { return { ok: false, message: `${repo} has no Git directory to read the approved commit from.` }; }
+    const dir = mkdtempSync(join(resolved(tmpdir()), "toolroll-deployer-"));
+    const tar = join(dir, "..", `${basename(dir)}.tar`);
+    const env = { ...checkoutGitEnv(), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_ATTR_NOSYSTEM: "1" };
+    const archived = await run("git", ["--git-dir", gitDir, "--no-replace-objects", ...HARDENED_GIT_ARGS, "-c", "core.attributesFile=/dev/null", "archive", "--format=tar", "-o", tar, head], { env });
+    if (archived.code !== 0) { rmSync(dir, { recursive: true, force: true }); rmSync(tar, { force: true }); return { ok: false, message: `The approved commit ${head.slice(0, 7)} couldn't be read from ${repo}: ${tail(archived)}` }; }
+    const unpacked = await run("tar", ["-x", "-f", tar, "-C", dir], { env: cleanEnv() });
+    rmSync(tar, { force: true });
+    if (unpacked.code !== 0) { rmSync(dir, { recursive: true, force: true }); return { ok: false, message: `The approved commit couldn't be unpacked: ${tail(unpacked)}` }; }
+    return { ok: true, dir, gitDir };
+  };
+  /** The approved commit's own deployment script, from the pristine extraction; the worktree is only its --source. */
+  const deployScript = async (worktree: string, stage: string, runId: number, commit: { head: string; repo: string }, extra: string[]) => {
+    const extracted = await extractApproved(commit.repo, commit.head);
+    if (!extracted.ok) return { code: 1, stdout: "", stderr: extracted.message };
+    try {
+      return await run(process.execPath, [join(extracted.dir, "scripts", "deploy-browser.mjs"), "--run", String(runId), "--stage", stage, "--source", worktree,
+        "--head", commit.head, "--git-dir", extracted.gitDir, ...extra], {
+        cwd: extracted.dir, env: cleanEnv({ TMPDIR: resolved(process.env["TMPDIR"] ?? "/tmp") }), timeoutMs: (options.deployMinutes ?? 30) * 60_000,
+      });
+    } finally { rmSync(extracted.dir, { recursive: true, force: true }); }
+  };
 
   return {
     now: options.now ?? (() => new Date()),
@@ -319,11 +349,11 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         // Approval policy §1.7: this runtime proves the candidate FIRST — a person approved it, its exact result passed
         // the approved check and is complete, and the checkout is exactly that commit — before anything from the
         // candidate's checkout runs. The candidate's own script never decides its own deployment.
-        const proven = await proveCandidate(runId, worktree);
+        const proven = proveCandidate(runId);
         if (!proven.ok) return stopped(stage, proven.message);
-        // The candidate's own deployment, from its own checkout: drain, backup, rehearsal, swap, health. Its last JSON
-        // line names the runtime it installed; the CLI names are moved to it by the release's link step.
-        const result = await deployScript(worktree, stage, runId, ["--yes"]);
+        // The approved commit's own deployment, extracted by this runtime: drain, backup, rehearsal, swap, health. Its
+        // last JSON line names the runtime it installed; the CLI names are moved to it by the release's link step.
+        const result = await deployScript(worktree, stage, runId, proven, ["--yes"]);
         const runtime = deployedRuntime(result.stdout);
         if (result.code !== 0 || runtime === null) return stopped(stage, tail(result));
         return { ok: true, runtime };
@@ -334,15 +364,10 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         // A deployment that outlived a killed release is still at work: recovering under it would race it.
         const running = (options.processes ?? processes)().filter(one => one.command.includes("deploy-browser.mjs") && one.command.includes(stage));
         if (running.length > 0) return { ok: false, message: `the deployment is still running (process ${running.map(one => one.pid).join(", ")}); let it finish, then rerun` };
-        // Recovery needs no approval, but it runs only the recorded candidate commit's own script, unchanged.
-        const recorded = (() => {
-          if (!existsSync(database)) return null;
-          const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
-          try { return new Store(db).getRun(runId)?.headRevision ?? null; } catch { return null; } finally { db.close(); }
-        })();
-        const checkout = recorded === null ? { ok: false as const, message: `Run ${runId} names no commit to recover with.` } : await provenCheckout(worktree, recorded);
-        if (!checkout.ok) return stopped(stage, checkout.message);
-        const result = await deployScript(worktree, stage, runId, ["--phase", "recover"]);
+        // Recovery needs no approval, but it runs only the recorded commit's own script, extracted by this runtime.
+        const recorded = recordedCommit(runId);
+        if (recorded === null) return stopped(stage, `Run ${runId} names no commit to recover with.`);
+        const result = await deployScript(worktree, stage, runId, recorded, ["--phase", "recover"]);
         if (result.code === 0) return { ok: true };
         // Killed while preparing, before it paused anything: nothing to undo (its journal is kept).
         const journal = (() => { try { return object(JSON.parse(readFileSync(join(stage, "deployment.json"), "utf8"))); } catch { return {}; } })();

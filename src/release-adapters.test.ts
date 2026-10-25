@@ -1,5 +1,5 @@
 import { CANDIDATE_HEAD, provableCandidate } from "../test/deploy-candidate-fixture.js";
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -143,14 +143,14 @@ describe("the release adapters", () => {
     expect(await adapter.runtimeCommit(dist)).toBeNull();
   });
 
-  test("deploy and recovery invoke the candidate script with the persisted stage and bounded runtime", async () => {
-    const stage = root(), database = join(stage, "orders.db");
-    const { runId, head } = provableCandidate(database);
+  test("deploy and recovery run the approved commit's own script, extracted by the release, with the persisted stage and bounded runtime", async () => {
+    const stage = root(), database = join(stage, "orders.db"), project = projectAt(stage);
+    const { runId, head } = provableCandidate(database, "deploy-me", "person", CANDIDATE_HEAD, project);
     const input = { stage, run: runId, worktree: "/w/7" };
     const calls: { command: string; args: readonly string[]; options: unknown }[] = [];
     const run: Exec = async (command, args, options) => {
       calls.push({ command, args, options });
-      return checkoutAt(head, args) ?? { code: 0, stdout: JSON.stringify({ runtime: "/new/dist" }), stderr: "" };
+      return extracting(command, args) ?? { code: 0, stdout: JSON.stringify({ runtime: "/new/dist" }), stderr: "" };
     };
     const adapter = releaseAdapters({ checkout: "/rv", run, deployMinutes: 3, database, processes: () => [] }).toolroll;
     // A crash before preparation installed any gate needs no rollback.
@@ -159,18 +159,29 @@ describe("the release adapters", () => {
     expect(await adapter.deploy(input)).toEqual({ ok: true, runtime: "/new/dist" });
     writeFileSync(join(stage, "deployment.json"), "{}");
     expect(await adapter.recoverDeploy(input)).toEqual({ ok: true });
-    const scripts = calls.filter(one => one.command !== "git");
-    expect(scripts.map(one => one.args)).toEqual([
-      ["scripts/deploy-browser.mjs", "--run", String(runId), "--stage", stage, "--yes"],
-      ["scripts/deploy-browser.mjs", "--run", String(runId), "--stage", stage, "--phase", "recover"],
+    const gitDir = realpathSync(join(project, ".git"));
+    const scripts = calls.filter(one => one.command === process.execPath);
+    expect(scripts.map(one => one.args.slice(1))).toEqual([
+      ["--run", String(runId), "--stage", stage, "--source", "/w/7", "--head", head, "--git-dir", gitDir, "--yes"],
+      ["--run", String(runId), "--stage", stage, "--source", "/w/7", "--head", head, "--git-dir", gitDir, "--phase", "recover"],
     ]);
-    for (const call of scripts) expect(call.options).toMatchObject({ cwd: "/w/7", timeoutMs: 180_000 });
-    // Each git read of the checkout runs hardened: no replacement objects, no lazy fetch, no user config or hooks.
-    for (const call of calls.filter(one => one.command === "git")) {
-      expect(call.args.slice(0, 7)).toEqual(["--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", "/w/7"]);
-      expect(call.options).toMatchObject({ env: { GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_CONFIG_NOSYSTEM: "1" } });
+    for (const call of scripts) {
+      // The script is the release's own extraction of the commit, run from there, never from the checkout.
+      const cwd = (call.options as { cwd: string }).cwd;
+      expect(call.args[0]).toBe(join(cwd, "scripts", "deploy-browser.mjs"));
+      expect(cwd).not.toBe("/w/7");
+      expect(call.options).toMatchObject({ timeoutMs: 180_000 });
     }
-    const failed = releaseAdapters({ checkout: "/rv", database, processes: () => [], run: async (_command, args) => checkoutAt(head, args) ?? { code: 124, stdout: "", stderr: "recovery timed out" } }).toolroll;
+    // Each extraction reads the project's own Git directory by its full SHA, hardened, and never touches the checkout.
+    const archives = calls.filter(one => one.command === "git");
+    expect(archives).toHaveLength(2);
+    for (const call of archives) {
+      expect(call.args.slice(0, 4)).toEqual(["--git-dir", gitDir, "--no-replace-objects", "--no-optional-locks"]);
+      expect(call.args.slice(-4)).toEqual(["--format=tar", "-o", expect.stringMatching(/\.tar$/), head]);
+      expect(call.args).not.toContain("/w/7");
+      expect(call.options).toMatchObject({ env: { GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" } });
+    }
+    const failed = releaseAdapters({ checkout: "/rv", database, processes: () => [], run: async (command, args) => extracting(command, args) ?? { code: 124, stdout: "", stderr: "recovery timed out" } }).toolroll;
     expect(await failed.recoverDeploy(input)).toEqual({ ok: false, message: expect.stringMatching(/^recovery timed out \(the deployment journal is at an unreadable phase;/) });
   });
 
@@ -183,8 +194,8 @@ describe("the release adapters", () => {
 
   test("an exit 0 without a runtime is a stop, not a deployment", async () => {
     const stage = root(), database = join(stage, "orders.db");
-    const { runId, head } = provableCandidate(database);
-    const run: Exec = async (_command, args) => checkoutAt(head, args) ?? { code: 0, stdout: "Add --yes to drain the plane, back up the database, and swap the service.", stderr: "" };
+    const { runId } = provableCandidate(database, "deploy-me", "person", CANDIDATE_HEAD, projectAt(stage));
+    const run: Exec = async (command, args) => extracting(command, args) ?? { code: 0, stdout: "Add --yes to drain the plane, back up the database, and swap the service.", stderr: "" };
     expect(await releaseAdapters({ checkout: "/rv", run, database }).toolroll.deploy({ stage, run: runId, worktree: "/w/7" }))
       .toEqual({ ok: false, message: "Add --yes to drain the plane, back up the database, and swap the service." });
   });
@@ -193,12 +204,12 @@ describe("the release adapters", () => {
     const ID = "0f1e2d3c-4b5a-4968-8776-655443322110";
     const paused = (phase: string, owned: boolean) => {
       const stage = root(), database = join(stage, "orders.db");
-      const { runId } = provableCandidate(database);
+      const { runId } = provableCandidate(database, "deploy-me", "person", CANDIDATE_HEAD, projectAt(stage));
       if (owned) { const db = new DatabaseSync(database) as unknown as Database; try { installUpdateGate(db, ID); } finally { db.close(); } }
       writeFileSync(join(stage, "deployment.json"), JSON.stringify({ id: ID, phase }));
       return { stage, database, input: { stage, run: runId, worktree: "/w/7" } };
     };
-    const exit1: Exec = async (_command, args) => checkoutAt(CANDIDATE_HEAD, args) ?? { code: 1, stdout: "", stderr: "The deployment stopped at preparing" };
+    const exit1: Exec = async (command, args) => extracting(command, args) ?? { code: 1, stdout: "", stderr: "The deployment stopped at preparing" };
 
     test("names its pause only when the journal is before the swap and the live pause is that deployment's", () => {
       expect(stageGate(paused("preparing", true).stage, () => ID)).toEqual({ id: ID, phase: "preparing" });
@@ -366,9 +377,16 @@ describe("the release adapters", () => {
   });
 });
 
-/** A stand-in checkout that is exactly `head` with nothing tracked changed: answers the release's two git reads. */
-function checkoutAt(head: string, args: readonly string[]): { code: number; stdout: string; stderr: string } | null {
-  if (args.includes("rev-parse")) return { code: 0, stdout: `${head}\n`, stderr: "" };
-  if (args.includes("status")) return { code: 0, stdout: "", stderr: "" };
+/** A stand-in for the release's extraction of the approved commit: git archive and tar succeed (writing nothing). */
+function extracting(command: string, args: readonly string[]): { code: number; stdout: string; stderr: string } | null {
+  if (command === "git" && args.includes("archive")) return { code: 0, stdout: "", stderr: "" };
+  if (command === "tar") return { code: 0, stdout: "", stderr: "" };
   return null;
+}
+
+/** A project folder whose own Git directory the release reads the approved commit from. */
+function projectAt(stage: string): string {
+  const project = join(stage, "project");
+  mkdirSync(join(project, ".git"), { recursive: true });
+  return project;
 }

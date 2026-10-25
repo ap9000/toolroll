@@ -10,7 +10,7 @@ import { personApprovalOf } from "./scope.js";
 import { verificationEvidence } from "./verification-evidence.js";
 import type { Store } from "./store.js";
 
-export type DeploymentGate = { ok: true; taskId: string; head: string; approvedBy: string } | { ok: false; message: string };
+export type DeploymentGate = { ok: true; taskId: string; head: string; repo: string; approvedBy: string } | { ok: false; message: string };
 
 /** Whether run `runId` is a deployable candidate now, read only from the plane's records and this runtime's code. */
 export function deploymentGate(store: Store, input: { runId: number; evidenceRoot: string; now: Date }): DeploymentGate {
@@ -42,5 +42,6 @@ export function deploymentGate(store: Store, input: { runId: number; evidenceRoo
   const blockers = assignment.readiness?.blockers;
   if (!Array.isArray(blockers)) return refuse("The result's readiness could not be read.");
   if (blockers.length > 0) return refuse(`This result isn't ready to deploy: ${blockers.map(one => one.message).join(" ")}`);
-  return { ok: true, taskId: ref.externalId, head, approvedBy: person.by };
+  if (ref.repo === null) return refuse("The candidate's task is in no project.");
+  return { ok: true, taskId: ref.externalId, head, repo: ref.repo, approvedBy: person.by };
 }

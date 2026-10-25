@@ -66,7 +66,13 @@ const database = flag("db", join(stateDir, "orders.db"));
 const evidenceRoot = join(dirname(database), "evidence");
 
 // Acquire before reading the saved definition, runtime or journal on every entry, including recovery.
-const candidateHead = execFileSync("git", [...SAFE_GIT, "-C", source, "rev-parse", "HEAD"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim();
+// `toolroll release` names the approved commit and the project's own Git directory (never the worktree's .git pointer),
+// and runs this script from its own extraction of that commit; run by hand, the checkout answers both.
+const gitDirGiven = flag("git-dir");
+const REPO_GIT = gitDirGiven === undefined ? ["-C", source] : ["--git-dir", gitDirGiven];
+const headGiven = flag("head");
+if (headGiven !== undefined) requireTrue(/^[0-9a-f]{40}$/.test(headGiven), "--head takes the full approved commit SHA.");
+const candidateHead = headGiven ?? execFileSync("git", [...SAFE_GIT, ...REPO_GIT, "rev-parse", "HEAD"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim();
 const short = candidateHead.slice(0, 7);
 const stageDir = flag("stage") ?? join(stateDir, "staged-upgrades", `browser-${short}-${randomUUID().slice(0, 6)}`);
 const journalFile = join(stageDir, "deployment.json");
@@ -133,7 +139,8 @@ const list = (root, prefix = "") => readdirSync(join(root, prefix), { withFileTy
 
 // ---- phases ------------------------------------------------------------------
 function stage() {
-  requireTrue(!execFileSync("git", [...SAFE_GIT, "-C", source, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim(), "The candidate checkout has tracked changes.");
+  // Run by hand, the checkout must be clean; under the release every packed byte is proven against the commit itself.
+  if (gitDirGiven === undefined) requireTrue(!execFileSync("git", [...SAFE_GIT, "-C", source, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim(), "The candidate checkout has tracked changes.");
   requireTrue(existsSync(join(source, "dist")), "The candidate has no dist; the native gate builds it.");
   mkdirSync(stageDir, { recursive: true, mode: 0o700 });
   // Spotlight leaves staged runtimes alone (src/never-index.ts).
@@ -141,7 +148,8 @@ function stage() {
   // The runtime is the packed package plus every production dependency of a
   // clean, lockfile-verified install of the candidate commit — nothing from
   // the worktree's mutable node_modules.
-  const packed = execFileSync("npm", ["pack", "--silent", "--pack-destination", stageDir], { cwd: source, encoding: "utf8" }).trim().split("\n").pop();
+  // No lifecycle scripts: packing must not run anything from the checkout.
+  const packed = execFileSync("npm", ["pack", "--silent", "--ignore-scripts", "--pack-destination", stageDir], { cwd: source, encoding: "utf8" }).trim().split("\n").pop();
   const runtime = join(stageDir, "runtime");
   const self = join(runtime, "node_modules", packageName);
   mkdirSync(self, { recursive: true });
@@ -177,7 +185,7 @@ function cleanBuildOf(commit) {
   // symlinked form matched no dependency, staging none and proving "none" equal to "none".
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), "so-deploy-")));
   requireTrue(/^[0-9a-f]{40}$/.test(commit), "The candidate commit isn't a full SHA.");
-  const archive = execFileSync("git", [...SAFE_GIT, "-C", source, "archive", "--format=tar", commit], { env: SAFE_GIT_ENV, maxBuffer: 1024 * 1024 * 1024 });
+  const archive = execFileSync("git", [...SAFE_GIT, ...REPO_GIT, "archive", "--format=tar", commit], { env: SAFE_GIT_ENV, maxBuffer: 1024 * 1024 * 1024 });
   execFileSync("tar", ["-x", "-C", scratch], { input: archive });
   const env = { ...process.env, NODE_OPTIONS: "" };
   execFileSync("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline", "--silent"], { cwd: scratch, stdio: ["ignore", "ignore", "inherit"], env });
@@ -218,7 +226,7 @@ function proveStaged() {
   requireTrue(JSON.stringify(built.files) === JSON.stringify(list(nextDist)), "Staged dist inventory differs from a clean build of the candidate commit.");
   for (const f of built.files) requireTrue(built.bytes.get(f).equals(readFileSync(join(nextDist, f))), `Staged file differs from a clean build of the candidate commit: ${f}`);
   for (const f of list(self).filter(f => !f.startsWith("dist/"))) {
-    const blob = spawnSync("git", [...SAFE_GIT, "-C", source, "show", `${candidateHead}:${f}`], { maxBuffer: 64 * 1024 * 1024, env: SAFE_GIT_ENV });
+    const blob = spawnSync("git", [...SAFE_GIT, ...REPO_GIT, "show", `${candidateHead}:${f}`], { maxBuffer: 64 * 1024 * 1024, env: SAFE_GIT_ENV });
     requireTrue(blob.status === 0 && blob.stdout.equals(readFileSync(join(self, f))), `Packed file differs from the candidate commit: ${f}`);
   }
   const staged = stagedPackages(join(runtime, "node_modules"), "node_modules").filter(dep => dep !== `node_modules/${stagedName}`).sort();

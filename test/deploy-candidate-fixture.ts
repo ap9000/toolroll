@@ -14,11 +14,13 @@ import { verifyApproverByPassword } from "../src/principal.js";
 
 export const CANDIDATE_HEAD = "c".repeat(40);
 const NOW = new Date("2026-10-24T12:00:00.000Z");
-const REPO = "/repo/deploy-candidate";
+export const CANDIDATE_REPO = "/repo/deploy-candidate";
 
 /** Build one candidate in the database at `database`. `approval: "lead"` makes the record say a lead token made its
  * seal (as before the fix); the result is still checked and complete. */
-export function provableCandidate(database: string, id = "deploy-me", approval: "person" | "lead" = "person", head = CANDIDATE_HEAD): { runId: number; head: string; now: Date } {
+/** `repo`: the project the task is placed in — the repository whose own .git the release extracts the commit from. */
+export function provableCandidate(database: string, id = "deploy-me", approval: "person" | "lead" = "person", head = CANDIDATE_HEAD, repo = CANDIDATE_REPO): { runId: number; head: string; now: Date } {
+  const REPO = repo;
   const store = openStore(database);
   try {
     let password = "";
@@ -27,17 +29,17 @@ export function provableCandidate(database: string, id = "deploy-me", approval: 
       if (!alex.ok) throw new Error("alex");
       password = alex.token;
       for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", NOW);
-      store.setVerifyCommand({ repo: REPO, command: "true", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
       store.handle.prepare("CREATE TABLE IF NOT EXISTS fixture_secret (v TEXT)").run();
       store.handle.prepare("INSERT INTO fixture_secret VALUES (?)").run(password);
     } else password = String(store.handle.prepare("SELECT v FROM fixture_secret").get()!["v"]);
+    if (store.liveVerifyCommand(REPO) === null) store.setVerifyCommand({ repo: REPO, command: "true", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
     store.createTask({ id, title: id }, NOW);
     const ref = store.refFor("built-in", id).id;
     store.placeTask(ref, REPO, {}, NOW);
     const scope = propose(store, { taskId: id, goal: `Ship ${id}`, touches: ["src/a.ts"], acceptance: [{ id: "c1", statement: "it works", how: null, evidence: ["check"] }], now: NOW });
     const approved = approve(store, id, "alex", NOW, scope.digest, password);
     if (!approved.ok) throw new Error(approved.reason);
-    const runId = built(store, id, ref, database, head);
+    const runId = built(store, id, ref, database, head, REPO);
     // A person marks the exact result complete.
     const root = join(database, "..", "evidence");
     const receipt = assignmentOf(store, id, NOW, { principal: "operator", repos: [REPO] }, root)?.receipt;
@@ -53,7 +55,7 @@ export function provableCandidate(database: string, id = "deploy-me", approval: 
   } finally { store.close(); }
 }
 
-function built(store: Store, id: string, ref: number, database: string, head: string): number {
+function built(store: Store, id: string, ref: number, database: string, head: string, REPO: string): number {
   const authority = store.routeAuthorityFor(ref, "builder");
   if (!authority?.ok) throw new Error("route");
   const runId = store.startRun({ taskRef: ref, leaseId: `l-${id}`, runner: "r", branch: `b-${id}`, worktree: `/pool/${id}`, route: authority.stamp, now: NOW });
