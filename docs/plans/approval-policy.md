@@ -215,6 +215,21 @@ classified when they are read:
 
 Nothing is unsealed in place and no notice is sent: the belts refuse instead, as they do for an ended mode.
 
+Implementation review (round 3) tightened this:
+
+- A seal's origin is read from the acts recorded **at the seal's own instant** (`scope.ts sealOriginOf`, mirrored in
+  SQL): any non-person proof there, parsed or not, or the lead's task act then, makes it a machine's seal; only a
+  person's proof there for those exact bytes makes it a person's. An older proof never vouches for a later seal.
+  Structured proof details are parsed (`json_valid`/`json_extract`, `JSON.parse`), never string-matched.
+- `Store.getScope` reads a machine-made `password` seal as `lead` (or `unknown`) and an old standing-order firing as
+  `schedule`, so `approvalOf`, the task page's Approve control and dispatch agree; an old firing's seal stands only while
+  its approver can approve in the project.
+- Protected work counts distinct people across votes, the seal (only when a person made it) and the completion.
+- A flow's most recent decision governs, and it must follow the build being merged.
+- A standing-order firing whose seal the rules refuse files its task unapproved instead of being dropped.
+- `deploy-browser.mjs` proves the candidate (person approval, completion, readiness) with the installed runtime's
+  modules before importing any of the candidate's.
+
 ## Phase 2 — the setting: People and the lead
 
 ### 2.1 The setting

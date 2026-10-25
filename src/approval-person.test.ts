@@ -29,6 +29,8 @@ import { assignmentOf } from "./assignment.js";
 import { protectedPublicationHold } from "./result-completion.js";
 import type { FlowDefinition } from "./flows.js";
 import { SUBAGENT_TEMPLATES } from "./subagents.js";
+import { createScheduledFlow, fileStandingOrder, standingApproval, standingDigestOf, type StandingOrder } from "./flow-schedule.js";
+import { parseAcceptanceCriteria } from "./scope.js";
 // @ts-expect-error plain ESM script without declarations
 import { deploymentCandidate } from "../scripts/deploy-candidate.mjs";
 
@@ -37,10 +39,10 @@ const REPO = "/repo/approval-person";
 let dir = "", db = "", store: Store, lines: string[] = [];
 const passwords: Record<string, string> = {};
 
-const run = (argv: string[]) => {
+const run = (argv: string[], now: Date = NOW) => {
   const [command = "", ...rest] = argv;
   lines = [];
-  return runOperate(command, rest, line => lines.push(line), { databaseFile: db, now: NOW });
+  return runOperate(command, rest, line => lines.push(line), { databaseFile: db, now });
 };
 const payload = () => JSON.parse(lines.join("\n")) as Record<string, unknown>;
 /** A lead token for alex, minted through the real command. */
@@ -56,6 +58,7 @@ const filed = (id: string, touches: string[] = ["src/a.ts"]): string => {
   expect(scope.profileState).toBe("resolved");
   return scope.digest;
 };
+const filedAt = (id: string) => filed(id);
 /** A legacy row: sealed through the person's road (basis `password`) with the proof the act really left. */
 const legacySeal = (id: string, proof: string | null): void => {
   expect(store.sealScopeApproval(id, "alex", NOW)).toBe(true);
@@ -197,19 +200,36 @@ describe("which authorities stand", () => {
       ["person with a proof", "r-person", () => legacySeal("r-person", "password-now"), { approved: true, stands: true, person: true }],
       ["chat with its proof", "r-chat", () => { legacySeal("r-chat", "chat"); store.handle.prepare("UPDATE task_scope SET approval_basis = 'chat' WHERE task_id = 'r-chat'").run(); }, { approved: true, stands: true, person: true }],
       ["legacy password, no proof row", "r-old", () => legacySeal("r-old", null), { approved: true, stands: true, person: false }],
-      ["legacy lead token as password", "r-lead-proof", () => legacySeal("r-lead-proof", "lead-token"), { approved: true, stands: false, person: false }],
-      ["legacy remote token as password", "r-remote", () => legacySeal("r-remote", "remote-token"), { approved: true, stands: false, person: false }],
-      ["legacy lead task act", "r-lead-act", () => { legacySeal("r-lead-act", null); store.handle.prepare("INSERT INTO task_act (task_ref, act, account, lead, at) VALUES (?, 'approved', 'alex', 1, ?)").run(store.refFor("built-in", "r-lead-act").id, NOW.toISOString()); }, { approved: true, stands: false, person: false }],
-      ["a person re-approved after a lead-token row", "r-again", () => { legacySeal("r-again", "lead-token"); store.recordAction({ at: NOW.toISOString(), actor: "alex", repo: REPO, taskId: "r-again", runId: null, action: APPROVAL_PROOF, outcome: "password-now", source: "work", detail: approvalProofDetail(NOW.getTime(), 1, store.getScope("r-again")!.digest) }); }, { approved: true, stands: true, person: true }],
+      ["legacy lead token as password", "r-lead-proof", () => legacySeal("r-lead-proof", "lead-token"), { approved: false, stands: false, person: false }],
+      ["legacy remote token as password", "r-remote", () => legacySeal("r-remote", "remote-token"), { approved: false, stands: false, person: false }],
+      ["legacy lead task act", "r-lead-act", () => { legacySeal("r-lead-act", null); store.handle.prepare("INSERT INTO task_act (task_ref, act, account, lead, at) VALUES (?, 'approved', 'alex', 1, ?)").run(store.refFor("built-in", "r-lead-act").id, NOW.toISOString()); }, { approved: false, stands: false, person: false }],
+      ["a person re-approved after a lead-token seal", "r-again", () => {
+        legacySeal("r-again", "lead-token");
+        const later = new Date(NOW.getTime() + 60_000);
+        expect(store.sealScopeApproval("r-again", "alex", later)).toBe(true);
+        store.recordAction({ at: later.toISOString(), actor: "alex", repo: REPO, taskId: "r-again", runId: null, action: APPROVAL_PROOF, outcome: "password-now", source: "work", detail: approvalProofDetail(later.getTime(), 1, store.getScope("r-again")!.digest) });
+      }, { approved: true, stands: true, person: true }],
+      ["an older person proof, then the lead's act at the seal", "r-older", () => {
+        filedAt("r-older");
+        store.recordAction({ at: new Date(NOW.getTime() - 60_000).toISOString(), actor: "alex", repo: REPO, taskId: "r-older", runId: null, action: APPROVAL_PROOF, outcome: "password-now", source: "work", detail: approvalProofDetail(NOW.getTime() - 60_000, 1, store.getScope("r-older")!.digest) });
+        expect(store.sealScopeApproval("r-older", "alex", NOW)).toBe(true);
+        withActor({ account: "alex", lead: true }, () => store.noteTaskAct(store.refFor("built-in", "r-older").id, "approved", NOW));
+      }, { approved: false, stands: false, person: false }],
+      ["a structured remote-token proof with whitespace", "r-json", () => {
+        legacySeal("r-json", null);
+        store.recordAction({ at: NOW.toISOString(), actor: "alex", repo: REPO, taskId: "r-json", runId: null, action: APPROVAL_PROOF, outcome: "password-now", source: "work", detail: approvalProofDetail(NOW.getTime(), 1, store.getScope("r-json")!.digest) });
+        store.recordAction({ at: NOW.toISOString(), actor: "alex", repo: REPO, taskId: "r-json", runId: null, action: APPROVAL_PROOF, outcome: "remote-token", source: "work", detail: JSON.stringify({ v: 1, at: NOW.toISOString(), generation: 1, digest: store.getScope("r-json")!.digest }, null, 2) });
+      }, { approved: false, stands: false, person: false }],
+      ["an unparseable machine proof at the seal", "r-garbled", () => { legacySeal("r-garbled", null); store.recordAction({ at: NOW.toISOString(), actor: "alex", repo: REPO, taskId: "r-garbled", runId: null, action: APPROVAL_PROOF, outcome: "lead-token", source: "work", detail: "{not json" }); }, { approved: false, stands: false, person: false }],
       ["live mode", "r-mode", () => { expect(store.sealScopeApproval("r-mode", "alex", NOW, {}, { kind: "mode", modeDigest: modeDigestOf(terms) })).toBe(true); }, { approved: true, stands: true, person: false }],
       ["dead mode", "r-dead-mode", () => raw("r-dead-mode", "mode", "not-the-live-one"), { approved: true, stands: false, person: false }],
       ["schedule, approver standing", "r-sched", () => { expect(store.sealScopeApproval("r-sched", "alex", NOW, {}, { kind: "schedule", modeDigest: "order" }, "automation")).toBe(true); }, { approved: true, stands: true, person: false }],
-      ["lead", "r-lead", () => raw("r-lead", "lead", "lt-1"), { approved: true, stands: false, person: false }],
+      ["lead", "r-lead", () => raw("r-lead", "lead", "lt-1"), { approved: false, stands: false, person: false }],
       ["null", "r-null", () => raw("r-null", null), { approved: false, stands: false, person: false }],
       ["bogus", "r-bogus", () => raw("r-bogus", "bogus"), { approved: false, stands: false, person: false }],
     ];
     for (const [name, id, make, want] of rows) {
-      filed(id);
+      if (id !== "r-older") filed(id);
       make();
       const ref = store.refFor("built-in", id).id;
       expect(approvalOf(store.getScope(id)).approved, `${name}: approvalOf`).toBe(want.approved);
@@ -238,6 +258,52 @@ describe("which authorities stand", () => {
   });
 });
 
+describe("standing orders and old seals", () => {
+  test("a firing whose checks reach beyond the sandbox files its task, waiting for a person, instead of being dropped", () => {
+    store.setProjectCheckAccess(REPO, "unsandboxed", "alex", NOW, { may: "widen" });
+    filed("t-shape");
+    const shape = store.getScope("t-shape")!;
+    expect(shape.profile?.checkAccess).toBe("unsandboxed");
+    const order: StandingOrder = { stem: "deps", goal: "Refresh the lockfile", outOfScope: null, touches: ["package.json"], requirements: [],
+      acceptance: [{ id: "c1", statement: "It still installs.", evidence: ["check"] }], budgetPerRunMicrousd: null, costCeilingUsd: null, singleFlight: true, filedBy: "alex", routine: null, approval: null };
+    const acceptance = parseAcceptanceCriteria(order.acceptance).criteria;
+    const routeJson = shape.proposedRouteJson!;
+    const approved = { ...order, approval: { digest: standingDigestOf(REPO, "every:60", order, acceptance, shape.profile!, JSON.parse(routeJson)), by: "alex", at: NOW.toISOString(), profileJson: shape.profileJson!, routeJson } };
+    expect(standingApproval(approved, REPO, "every:60")).toMatchObject({ live: true });
+    const fired = store.transact(() => fileStandingOrder(store, { flowId: 1, repo: REPO, trigger: 1, schedule: "every:60", order: approved, title: "Deps", slot: NOW.toISOString() }, NOW));
+    expect(fired).toMatchObject({ made: "filed", approved: false, note: expect.stringContaining("waits for approval") });
+    if (fired.made !== "filed") throw new Error("filed");
+    expect(store.getScope(fired.taskId)).toMatchObject({ approvedAt: null, approvedBy: null });
+  });
+
+  test("an old standing-order seal stored as password stands only while its approver can approve here, and is never a person's", () => {
+    const made = createScheduledFlow(store, { repo: REPO, name: "Nightly", stem: "nightly", schedule: "daily:03:30", by: "alex",
+      terms: { goal: "refresh", outOfScope: null, touches: [], requirements: [], acceptance: [{ id: "c1", statement: "Refreshed.", how: null, evidence: ["check"] }], budgetPerRunMicrousd: null, costCeilingUsd: null } }, NOW);
+    if (!made.ok) throw new Error(made.message);
+    filed("t-old-order");
+    // Before the fix a firing sealed as `password` under its approver's name, with no proof row.
+    expect(store.sealScopeApproval("t-old-order", "sam", NOW)).toBe(true);
+    store.handle.prepare("INSERT INTO flow_trigger_event (trigger, key, at, task) VALUES (?, 'slot-1', ?, 't-old-order')").run(made.trigger, NOW.toISOString());
+    const ref = store.refFor("built-in", "t-old-order").id;
+    expect(store.getScope("t-old-order")!.approvalBasis).toBe("schedule");
+    expect(personApprovalOf(store, "t-old-order").ok).toBe(false);
+    expect(store.modeApprovalLive(ref, NOW)).toBe(true);
+    expect(store.setAccountProjects("sam", ["/elsewhere"], "alex", NOW)).toEqual({ ok: true });
+    expect(store.modeApprovalLive(ref, NOW)).toBe(false);
+    expect(scopeApprovedForDispatch(store, ref, NOW)).toBe(false);
+  });
+
+  test("an old lead-made seal shows as not approved, so the person sees Approve, and their yes stands", async () => {
+    filed("t-page"); legacySeal("t-page", "lead-token");
+    expect(store.getScope("t-page")!.approvalBasis).toBe("lead");
+    expect(approvalOf(store.getScope("t-page")).approved).toBe(false);
+    expect(await run(["task", "approve", "t-page", "--yes", "--digest", store.getScope("t-page")!.digest, "--as", "alex", "--token", passwords["alex"]!, "--json"], new Date(NOW.getTime() + 60_000))).toBe(EXIT.ok);
+    expect(approvalOf(store.getScope("t-page")).approved).toBe(true);
+    expect(personApprovalOf(store, "t-page")).toMatchObject({ ok: true });
+    expect(scopeApprovedForDispatch(store, store.refFor("built-in", "t-page").id, NOW)).toBe(true);
+  });
+});
+
 describe("protected work counts only people", () => {
   test("a vote a lead token left, or one with no proof, is history only; a later person's yes is the first", async () => {
     store.setApprovalRules(REPO, { notRequester: false, protectProject: true, protectedPaths: [] }, "alex", NOW);
@@ -258,6 +324,26 @@ describe("protected work counts only people", () => {
     expect(await run(["task", "approve", "v-people", "--yes", "--digest", digest, "--as", "alex", "--token", passwords["alex"]!, "--json"])).toBe(EXIT.refused);
     expect(store.handle.prepare("SELECT proof FROM scope_approval_vote WHERE task_id = 'v-people'").get()).toEqual({ proof: "password-now" });
     expect(await run(["task", "approve", "v-people", "--yes", "--digest", digest, "--as", "sam", "--token", passwords["sam"]!, "--json"])).toBe(EXIT.ok);
+  });
+});
+
+describe("two distinct people on protected work", () => {
+  test("sam's vote, then a seal alex's lead token made: sam completing is not a second person; someone else is", () => {
+    store.setApprovalRules(REPO, { notRequester: false, protectProject: true, protectedPaths: [] }, "alex", NOW);
+    const bob = addApprover(store, "bob", NOW, { name: "alex", token: passwords["alex"]! });
+    if (!bob.ok) throw new Error("bob");
+    const digest = filed("p-mixed");
+    store.handle.prepare("INSERT INTO scope_approval_vote (task_id, digest, approver, at, proof) VALUES ('p-mixed', ?, 'sam', ?, 'password-now')").run(digest, NOW.toISOString());
+    store.handle.prepare("UPDATE task_scope SET approved_at = ?, approved_by = 'alex', approved_digest = digest, approval_basis = 'password' WHERE task_id = 'p-mixed'").run(NOW.toISOString());
+    store.recordAction({ at: NOW.toISOString(), actor: "alex", repo: REPO, taskId: "p-mixed", runId: null, action: APPROVAL_PROOF, outcome: "lead-token", source: "work", detail: approvalProofDetail(NOW.getTime(), 1, digest) });
+    expect(store.protectedResultProblem("p-mixed", ["src/a.ts"], "sam")).toContain("Someone else has to mark it complete.");
+    expect(store.protectedResultProblem("p-mixed", ["src/a.ts"], "bob")).toBeNull();
+    // A person-made seal is the first person: the other one completes.
+    const second = filed("p-person");
+    store.handle.prepare("UPDATE task_scope SET approved_at = ?, approved_by = 'alex', approved_digest = digest, approval_basis = 'password' WHERE task_id = 'p-person'").run(NOW.toISOString());
+    store.recordAction({ at: NOW.toISOString(), actor: "alex", repo: REPO, taskId: "p-person", runId: null, action: APPROVAL_PROOF, outcome: "password-now", source: "work", detail: approvalProofDetail(NOW.getTime(), 1, second) });
+    expect(store.protectedResultProblem("p-person", ["src/a.ts"], "alex")).toContain("Someone else");
+    expect(store.protectedResultProblem("p-person", ["src/a.ts"], "sam")).toBeNull();
   });
 });
 
@@ -333,6 +419,23 @@ describe("a flow merges only on a person's recorded decision", () => {
     expect(decideFlowCard(store, { card, decision: "approve", note: null, actor: "Maya (AI)", repos: [REPO], subagent: "maya" }, NOW)).toMatchObject({ ok: true });
     expect(store.flowEvents(card).at(-1)).toMatchObject({ outcome: "approved", authority: "subagent" });
     expect(approvedSinceBuild(store, def, store.getFlowCard(card)!)).toBeNull();
+  });
+
+  test("the most recent decision governs, even after the flow is edited, and it must follow the build being merged", () => {
+    const def = definition(null);
+    const card = cardAtDecision(def);
+    expect(decideFlowCard(store, { card, decision: "approve", note: null, actor: "alex", repos: [REPO] }, NOW)).toMatchObject({ ok: true });
+    expect(approvedSinceBuild(store, def, store.getFlowCard(card)!)).toBe("alex");
+    // Bound to the build: a decision made before the build being merged finished doesn't count for it.
+    expect(approvedSinceBuild(store, def, store.getFlowCard(card)!, new Date(NOW.getTime() + 1).toISOString())).toBeNull();
+    // Back for another round; the lead decides this time.
+    expect(store.moveFlowCard(card, { to: "build", outcome: "moved", actor: "alex" }, NOW)).toBe(true);
+    expect(store.moveFlowCard(card, { to: "decide", outcome: "ok", actor: "flow" }, NOW)).toBe(true);
+    expect(withActor({ account: "alex", lead: true }, () => decideFlowCard(store, { card, decision: "approve", note: null, actor: "alex", repos: [REPO] }, NOW))).toMatchObject({ ok: true });
+    expect(approvedSinceBuild(store, def, store.getFlowCard(card)!)).toBeNull();
+    // The flow is edited so the build zone is no longer a task: the older person decision still doesn't govern.
+    const edited = { ...def, stages: def.stages.map(stage => stage.id === "build" ? { ...stage, kind: "draft" } : stage) } as unknown as FlowDefinition;
+    expect(approvedSinceBuild(store, edited, store.getFlowCard(card)!)).toBeNull();
   });
 });
 
