@@ -8863,13 +8863,14 @@ export class Store {
     const what = hits === null ? "files this project protects (its changed files couldn't be read)" : `protected files (${hits.slice(0, 3).join(", ")}${hits.length > 3 ? ` and ${hits.length - 3} more` : ""})`;
     if (completer === null) return `This result changed ${what}, so a person other than its approver marks it complete.`;
     // Two DISTINCT people across the votes, the seal and the completion (approval policy §1.7a): the seal's approver
-    // counts only when a person made that seal (never a lead or other machine credential under their name), a
+    // counts only when a person's proof stands behind that seal (never a lead or other machine credential under their
+    // name, and never a seal with no proof on record: fail closed, as personApprovalOf), a
     // requester never counts, and someone who already voted is not a second person by also completing.
     const people = new Set(voters);
     const basis = scope?.["approval_basis"];
     // (The approver is the first pair of eyes and may be who asked; the second may not.)
     if (approver !== null && (basis === "password" || basis === "chat") && scope?.["approved_at"] != null
-      && sealOriginOf(this, taskId, approver, approvedDigest, String(scope["approved_at"])).origin !== "machine") people.add(approver);
+      && sealOriginOf(this, taskId, approver, approvedDigest, String(scope["approved_at"])).origin === "person") people.add(approver);
     const before = people.size;
     if (!requesters.has(completer) && standing(completer)) people.add(completer);
     // No seal on record at all (nothing to pair with): the completer, if they can still approve here, is the person.

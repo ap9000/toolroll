@@ -344,6 +344,12 @@ describe("two distinct people on protected work", () => {
     store.recordAction({ at: NOW.toISOString(), actor: "alex", repo: REPO, taskId: "p-person", runId: null, action: APPROVAL_PROOF, outcome: "password-now", source: "work", detail: approvalProofDetail(NOW.getTime(), 1, second) });
     expect(store.protectedResultProblem("p-person", ["src/a.ts"], "alex")).toContain("Someone else");
     expect(store.protectedResultProblem("p-person", ["src/a.ts"], "sam")).toBeNull();
+    // A password seal with no proof on record is no person: with one person's vote, sam completing is still one person.
+    const unproven = filed("p-unproven");
+    store.handle.prepare("INSERT INTO scope_approval_vote (task_id, digest, approver, at, proof) VALUES ('p-unproven', ?, 'sam', ?, 'password-now')").run(unproven, NOW.toISOString());
+    store.handle.prepare("UPDATE task_scope SET approved_at = ?, approved_by = 'alex', approved_digest = digest, approval_basis = 'password' WHERE task_id = 'p-unproven'").run(NOW.toISOString());
+    expect(store.protectedResultProblem("p-unproven", ["src/a.ts"], "sam")).toContain("Someone else has to mark it complete.");
+    expect(store.protectedResultProblem("p-unproven", ["src/a.ts"], "bob")).toBeNull();
   });
 });
 
