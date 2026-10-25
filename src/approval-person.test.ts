@@ -53,8 +53,8 @@ const leadToken = async (): Promise<string> => {
   return payload()["token"] as string;
 };
 /** A task in REPO with a resolved scope, nothing approved. */
-const filed = (id: string, touches: string[] = ["src/a.ts"]): string => {
-  store.createTask({ id, title: id }, NOW);
+const filed = (id: string, touches: string[] = ["src/a.ts"], filedBy?: string): string => {
+  store.createTask({ id, title: id, ...(filedBy === undefined ? {} : { filedBy: { name: filedBy, kind: "person" as const } }) }, NOW);
   store.placeTask(store.refFor("built-in", id).id, REPO, {}, NOW);
   const scope = propose(store, { taskId: id, goal: `Do ${id}`, touches, acceptance: [{ id: "c1", statement: "it works", how: null, evidence: ["check"] }], now: NOW });
   expect(scope.profileState).toBe("resolved");
@@ -374,6 +374,14 @@ describe("two distinct people on protected work", () => {
     store.handle.prepare("UPDATE task_scope SET approved_at = ?, approved_by = 'alex', approved_digest = digest, approval_basis = 'password' WHERE task_id = 'p-unproven'").run(NOW.toISOString());
     expect(store.protectedResultProblem("p-unproven", ["src/a.ts"], "sam")).toContain("Someone else has to mark it complete.");
     expect(store.protectedResultProblem("p-unproven", ["src/a.ts"], "bob")).toBeNull();
+    // Sam votes, the requester alex seals it as a person, sam completes: two distinct people (sam and alex) approved.
+    const both = filed("p-both", ["src/a.ts"], "alex");
+    store.handle.prepare("INSERT INTO scope_approval_vote (task_id, digest, approver, at, proof) VALUES ('p-both', ?, 'sam', ?, 'password-now')").run(both, NOW.toISOString());
+    store.handle.prepare("UPDATE task_scope SET approved_at = ?, approved_by = 'alex', approved_digest = digest, approval_basis = 'password' WHERE task_id = 'p-both'").run(NOW.toISOString());
+    store.recordAction({ at: NOW.toISOString(), actor: "alex", repo: REPO, taskId: "p-both", runId: null, action: APPROVAL_PROOF, outcome: "password-now", source: "work", detail: approvalProofDetail(NOW.getTime(), 1, both) });
+    expect([...store.requestersOf("p-both")]).toContain("alex");
+    expect(store.protectedResultProblem("p-both", ["src/a.ts"], "sam")).toBeNull();
+    expect(store.protectedResultProblem("p-both", ["src/a.ts"], "alex")).toBeNull();
   });
 });
 

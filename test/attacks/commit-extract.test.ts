@@ -7,7 +7,8 @@
  * reads its package name from the extracted commit and accepts only a plain name.
  */
 import { spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { deflateSync, inflateSync } from "node:zlib";
 import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
 import { extractCommit, normalizedTreePath } from "../../src/commit-extract.js";
@@ -59,6 +60,33 @@ describe("attack: the repository changes what the release extracts", () => {
     git(repo, "commit", "-q", "-m", "link");
     const out = into(dir);
     expect(extractCommit(join(repo, ".git"), git(repo, "rev-parse", "HEAD"), out)).toMatchObject({ ok: false, message: expect.stringContaining("symlink") });
+    expect(readdirSync(out)).toEqual([]);
+  });
+
+  test("a loose object rewritten under the same id (a valid zlib wrapper, other bytes) refuses the extraction", () => {
+    const dir = scratch();
+    const p = project(dir, { "scripts/deploy-browser.mjs": "console.log('approved');\n" });
+    const blob = git(p.repo, "rev-parse", "HEAD:scripts/deploy-browser.mjs");
+    const loose = join(p.gitDir, "objects", blob.slice(0, 2), blob.slice(2));
+    expect(inflateSync(readFileSync(loose)).toString("utf8")).toBe("blob 25\0console.log('approved');\n");
+    const evil = Buffer.from("console.log('evil!!!!');\n");
+    chmodSync(loose, 0o644);
+    writeFileSync(loose, deflateSync(Buffer.concat([Buffer.from(`blob ${evil.length}\0`), evil])));
+    const out = into(dir);
+    expect(extractCommit(p.gitDir, p.head, out)).toMatchObject({ ok: false, message: expect.stringContaining("doesn't hash to its id") });
+    expect(readdirSync(out)).toEqual([]);
+  });
+
+  test("a rewritten tree object refuses the extraction too", () => {
+    const dir = scratch();
+    const p = project(dir, { "scripts/deploy-browser.mjs": "console.log('approved');\n" });
+    const tree = git(p.repo, "rev-parse", "HEAD^{tree}");
+    const loose = join(p.gitDir, "objects", tree.slice(0, 2), tree.slice(2));
+    const original = inflateSync(readFileSync(loose));
+    chmodSync(loose, 0o644);
+    writeFileSync(loose, deflateSync(Buffer.from(original.toString("latin1").replace("scripts", "scriptz"), "latin1")));
+    const out = into(dir);
+    expect(extractCommit(p.gitDir, p.head, out)).toMatchObject({ ok: false });
     expect(readdirSync(out)).toEqual([]);
   });
 

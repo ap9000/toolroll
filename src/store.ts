@@ -8875,7 +8875,9 @@ export class Store {
     if (!requesters.has(completer) && standing(completer)) people.add(completer);
     // No seal on record at all (nothing to pair with): the completer, if they can still approve here, is the person.
     if (approver === null && people.size > before && voters.size === 0) return null;
-    if (people.size >= 2 && people.size > before) return null;
+    // Two distinct people across the votes, the person-made seal and the completer. Each person counts once, so one
+    // person voting and completing is still one; a voter who completes a seal another person made is two.
+    if (people.size >= 2) return null;
     return `This result changed ${what}, and ${approver ?? "one person"} approved its scope alone. Someone else has to mark it complete.`;
   }
 

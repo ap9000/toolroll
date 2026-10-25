@@ -224,7 +224,8 @@ Implementation review (round 3) tightened this:
 - `Store.getScope` reads a machine-made `password` seal as `lead` (or `unknown`) and an old standing-order firing as
   `schedule`, so `approvalOf`, the task page's Approve control and dispatch agree; an old firing's seal stands only while
   its approver can approve in the project.
-- Protected work counts distinct people across votes, the seal (only when a person made it) and the completion.
+- Protected work counts distinct people across votes, the seal (only when a person made it) and the completion: two
+  distinct people complete it (a voter completing a seal another person made is two; one person twice is one).
 - A flow's most recent decision governs, and it must follow the build being merged.
 - A standing-order firing whose seal the rules refuse files its task unapproved instead of being dropped.
 - `deploy-browser.mjs` proves the candidate (person approval, completion, readiness) with the installed runtime's
@@ -234,8 +235,10 @@ Implementation review (round 3) tightened this:
   worktree's `.git` pointer; no replacement objects, lazy fetch, global/system config or hooks) into a fresh folder and
   runs the deployment script (and its recovery) from there, with `--head`/`--git-dir` so the script's own git reads
   use the same trusted directory. `npm pack` runs without lifecycle scripts.
-- Round 5: the extraction is no-conversion (`src/commit-extract.ts`: `ls-tree -r -z` + `cat-file --batch`, written by
-  Toolroll, regular files only at 644/755), after refusing project config that names a command or includes a file
+- Round 5: the extraction is no-conversion (`src/commit-extract.ts`: `cat-file --batch` raw objects, written by
+  Toolroll, regular files only at 644/755; round 6: the commit, every tree and every blob are hashed here — sha1 or
+  sha256 per the repository's object format — against the ids naming them, and the trees parsed from those verified
+  bytes, so a corrupted object in a store a build could write refuses it), after refusing project config that names a command or includes a file
   (teardown-git.ts `commandSetting`); symlinks, submodules and unnormalized paths refuse it. node runs the script by its
   real path inside the extraction. Under the release, deploy-browser.mjs takes package.json and the package name
   (validated as a plain name) from the extraction, packs from the clean build of it, compares packed files with it,
