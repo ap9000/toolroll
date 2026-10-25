@@ -31,6 +31,8 @@ import type { FlowDefinition } from "./flows.js";
 import { SUBAGENT_TEMPLATES } from "./subagents.js";
 import { createScheduledFlow, fileStandingOrder, standingApproval, standingDigestOf, type StandingOrder } from "./flow-schedule.js";
 import { parseAcceptanceCriteria } from "./scope.js";
+import { planInChat } from "./chat-decide.js";
+import { taskWaitSnapshot } from "./lead-status.js";
 // @ts-expect-error plain ESM script without declarations
 import { deploymentCandidate } from "../scripts/deploy-candidate.mjs";
 
@@ -327,6 +329,28 @@ describe("protected work counts only people", () => {
   });
 });
 
+describe("every surface reads an old lead-made seal the way dispatch does", () => {
+  test("chat offers to approve it and status asks a person, instead of 'already approved' and 'wait for a worker'", () => {
+    filed("t-surface"); legacySeal("t-surface", "lead-token");
+    const why = planInChat(store, "t-surface", "alex", NOW, "telegram");
+    expect(why).toMatchObject({ ok: false });
+    expect(why.ok ? "" : why.why).not.toBe("This plan is already approved.");
+    expect(taskWaitSnapshot(store, "t-surface", NOW)).toMatchObject({ next: "Approve task" });
+    // A person's seal reads approved everywhere.
+    filed("t-fine"); legacySeal("t-fine", "password-now");
+    expect(planInChat(store, "t-fine", "alex", NOW, "telegram")).toMatchObject({ ok: false, why: "This plan is already approved." });
+    expect(taskWaitSnapshot(store, "t-fine", NOW)?.next).not.toBe("Approve task");
+  });
+
+  test("a scope whose approval kind is left out is not approved", () => {
+    filed("t-omitted"); legacySeal("t-omitted", "password-now");
+    const { approvalBasis: _dropped, ...omitted } = store.getScope("t-omitted")!;
+    expect(approvalOf({ ...omitted })).toMatchObject({ approved: false });
+    expect(approvalOf({ ...omitted, approvalBasis: undefined })).toMatchObject({ approved: false });
+    expect(approvalOf(store.getScope("t-omitted"))).toMatchObject({ approved: true });
+  });
+});
+
 describe("two distinct people on protected work", () => {
   test("sam's vote, then a seal alex's lead token made: sam completing is not a second person; someone else is", () => {
     store.setApprovalRules(REPO, { notRequester: false, protectProject: true, protectedPaths: [] }, "alex", NOW);
@@ -442,6 +466,21 @@ describe("a flow merges only on a person's recorded decision", () => {
     // The flow is edited so the build zone is no longer a task: the older person decision still doesn't govern.
     const edited = { ...def, stages: def.stages.map(stage => stage.id === "build" ? { ...stage, kind: "draft" } : stage) } as unknown as FlowDefinition;
     expect(approvedSinceBuild(store, edited, store.getFlowCard(card)!)).toBeNull();
+  });
+
+  test("sending the card back takes an earlier yes back, even when it goes back to a zone that isn't the build", () => {
+    const def = { version: 1, start: "build", stages: [
+      { id: "build", title: "Build", kind: "task", zone: {}, instructions: "Make the change.", next: "decide", onFail: null },
+      { id: "decide", title: "Decide", kind: "approval", zone: {}, next: "pr", onFail: "hold" },
+      { id: "hold", title: "Hold", kind: "inbox", zone: {}, next: "pr", onFail: null },
+      { id: "pr", title: "Pull request", kind: "pull-request", zone: {}, next: null, onFail: "build", merge: "squash" },
+    ] } as unknown as FlowDefinition;
+    const card = cardAtDecision(def);
+    expect(decideFlowCard(store, { card, decision: "approve", note: null, actor: "alex", repos: [REPO] }, NOW)).toMatchObject({ ok: true });
+    expect(store.moveFlowCard(card, { to: "decide", outcome: "moved", actor: "alex" }, NOW)).toBe(true);
+    expect(decideFlowCard(store, { card, decision: "send-back", note: "Not this one", actor: "alex", repos: [REPO] }, NOW)).toMatchObject({ ok: true });
+    expect(store.moveFlowCard(card, { to: "pr", outcome: "moved", actor: "alex" }, NOW)).toBe(true);
+    expect(approvedSinceBuild(store, def, store.getFlowCard(card)!)).toBeNull();
   });
 });
 

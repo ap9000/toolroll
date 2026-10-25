@@ -167,10 +167,13 @@ export function taskWaitSnapshot(store: Store, taskId: string, now: Date, watche
   const scope = store.handle.prepare(`SELECT digest, approved_digest, profile_state,
     (approved_at IS NOT NULL AND approved_by IS NOT NULL AND approved_digest = digest) AS approved
     FROM task_scope WHERE task_id = ?`).get(taskId);
-  if (task["plan"] === "drafted" && Number(scope?.["approved"]) !== 1) return answer("Needs a person", "Approve plan", true, 1, "needs-person");
+  // Approved only as dispatch reads it (approval policy): a seal whose authority doesn't stand — an old seal a lead token
+  // made, an ended mode — waits for a person, never for a worker.
+  const approvedNow = Number(scope?.["approved"]) === 1 && store.modeApprovalLive(taskRef, now);
+  if (task["plan"] === "drafted" && !approvedNow) return answer("Needs a person", "Approve plan", true, 1, "needs-person");
   if (Number(task["strikes"] ?? 0) >= 3) return answer("Needs a person", "Review repeated failures", true, 1, "needs-person");
   if (scope === undefined) return answer("Needs a person", "Add scope", true, 1, "needs-person");
-  if (Number(scope["approved"]) !== 1 || scope["profile_state"] !== "resolved") return answer("Needs a person", "Approve task", true, 1, "needs-person");
+  if (!approvedNow || scope["profile_state"] !== "resolved") return answer("Needs a person", "Approve task", true, 1, "needs-person");
   if (state === "running" && attempt === undefined) {
     const liveClaim = store.handle.prepare(`SELECT 1 AS hit FROM claim INDEXED BY claim_by_task
       WHERE task_ref = ? AND released_at IS NULL AND expires_at > ?

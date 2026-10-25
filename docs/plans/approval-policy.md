@@ -229,6 +229,11 @@ Implementation review (round 3) tightened this:
 - A standing-order firing whose seal the rules refuse files its task unapproved instead of being dropped.
 - `deploy-browser.mjs` proves the candidate (person approval, completion, readiness) with the installed runtime's
   modules before importing any of the candidate's.
+- Round 4: `toolroll release` proves the candidate in its own runtime (`src/deploy-gate.ts`) and checks the checkout is
+  exactly that commit with nothing tracked changed before it starts the candidate's deployment script (or its
+  recovery); every git read on the deploy path ignores replacement objects and lazy fetch. A flow's latest decision of
+  any kind governs (a send-back takes an earlier yes back). Chat approval and `task wait` read approval the way
+  dispatch does. A scope whose approval kind is left out is not approved.
 
 ## Phase 2 — the setting: People and the lead
 

@@ -1599,10 +1599,9 @@ export function approvalOf(scope: Scope | null): Approval {
     return { approved: false, reason: "none" };
   }
   if (scope.approvedDigest !== scope.digest) return { approved: false, reason: "changed" };
-  // A seal stands on a known authority (approval-policy plan §1.5): null (a fixture, or a row from before the basis
-  // column) or a word this code doesn't write is no approval. Hand-built scopes that leave the field
-  // out entirely are type-level fixtures, read as the person's ceremony they model.
-  if (scope.approvalBasis !== undefined && (scope.approvalBasis === null || !(APPROVAL_BASES as readonly string[]).includes(scope.approvalBasis))) {
+  // A seal stands on a known authority (approval-policy plan §1.5): one left out or undefined, null (a row from before
+  // the basis column) or a word this code doesn't write is no approval.
+  if (scope.approvalBasis === undefined || scope.approvalBasis === null || !(APPROVAL_BASES as readonly string[]).includes(scope.approvalBasis)) {
     return { approved: false, reason: "none" };
   }
   // Phase 1: only people approve, so a lead's seal (including an old one a lead token made through the person's road,

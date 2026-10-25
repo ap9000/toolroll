@@ -20,7 +20,9 @@
 - **Releases and deployments need a person's approval with its proof on
   record.** The release gate and `deploy-browser.mjs` (every phase, resumed
   ones included) refuse an approval a lead token made, a mode, a flow, a
-  standing order, or an approval with no recorded proof. Paired-chat
+  standing order, or an approval with no recorded proof. `toolroll release` proves the
+  candidate in its own runtime, and that the checkout is exactly that commit,
+  before it runs anything from the candidate's checkout. Paired-chat
   approvals now record their own proof, so they still count. Update the
   plane before running `toolroll release`: an older plane can't say who
   approved, and the release waits.

@@ -29,7 +29,7 @@ import { pullRequestFollowOf } from "./pull-request-flow.js";
 import { requestResultChanges } from "./result-actions.js";
 import { revisionSourceOf } from "./result-review.js";
 import type { Scope } from "./scope.js";
-import { APPROVAL_PROOF, approvalProofDetail, quarantinedAuthor } from "./scope.js";
+import { APPROVAL_PROOF, approvalOf, approvalProofDetail, quarantinedAuthor } from "./scope.js";
 import type { Store } from "./store.js";
 import { phoneText } from "./telegram-status.js";
 
@@ -123,7 +123,9 @@ export function planInChat(store: Store, taskId: string, approver: string, now: 
   const ref = store.lookupRef(taskId);
   const scope = store.getScope(taskId);
   if (ref === null || ref.repo === null || scope === null) return { ok: false, why: "This plan isn't available now." };
-  if (scope.approvedDigest != null && scope.approvedDigest === scope.digest) return { ok: false, why: "This plan is already approved." };
+  // Approved only as dispatch reads it (approval policy): an old seal a lead token made, or one whose authority has
+  // ended, is no approval, so the person can approve it here.
+  if (approvalOf(scope).approved && store.modeApprovalLive(ref.id, now)) return { ok: false, why: "This plan is already approved." };
   if (ref.plan === "requested") return { ok: false, why: "The plan is still being written." };
   const mode = chatApproveMode(store, ref.repo, approver, now, channel);
   if (!mode.ok) return mode;

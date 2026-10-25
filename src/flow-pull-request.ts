@@ -34,8 +34,9 @@ export function approvedSinceBuild(store: Store, definition: FlowDefinition, car
   const events = store.flowEvents(card.id);
   let built = -1;
   events.forEach((event, index) => { if (kindOf(event.fromStage) === "task" || kindOf(event.toStage) === "task") built = index; });
-  // Only decideFlowCard writes `approved` (from a decision zone), whatever the zones are called now.
-  const latest = events.slice(built + 1).reverse().find(event => event.outcome === "approved");
+  // The latest DECISION of any kind governs: only decideFlowCard writes `approved` or `sent-back` (from a decision
+  // zone), whatever the zones are called now, so a send-back after a yes takes that yes back.
+  const latest = events.slice(built + 1).reverse().find(event => event.outcome === "approved" || event.outcome === "sent-back");
   if (latest === undefined || latest.authority !== "person") return null;
   if (builtAt !== null && latest.at < builtAt) return null;
   return latest.actor;
