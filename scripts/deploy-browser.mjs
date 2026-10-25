@@ -322,9 +322,13 @@ function reserveReleaseDeploy(taskId) {
     requireTrue(candidate !== null, "The release task names no candidate.");
     const named = flag("operation");
     if (named !== undefined) {
-      const op = mod.releaseOperation(store, named);
-      requireTrue(op !== null && op.authority === found.authority.id && op.kind === "deploy" && op.candidate === candidate && op.state === "running",
-        `Operation ${named} isn't this release's running deploy.`);
+      // Adopting the coordinator's operation: it is this release's running deploy, reserved at the epoch that still holds
+      // a live lease, and this run proves the secret the coordinator handed it on stdin (never in argv).
+      requireTrue(typeof mod.adoptReleaseOperation === "function", "The installed Toolroll can't check a release's deploy; update it first.");
+      let secret = "";
+      try { secret = readFileSync(0, "utf8").trim(); } catch { secret = ""; }
+      const adopted = mod.adoptReleaseOperation(store, { id: named, authority: found.authority.id, candidate, secret, now: new Date() });
+      requireTrue(adopted.ok, adopted.ok ? "" : adopted.why);
       return { id: named, own: false };
     }
     const id = randomUUID();

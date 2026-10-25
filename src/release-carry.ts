@@ -49,9 +49,10 @@ export const CARRY_RULES = Object.freeze({
   classes: Object.freeze([
     { name: "unit tests", matches: (path: string) => /^src\/.+\.test\.ts$/.test(path) },
     { name: "journey scripts", matches: (path: string) => JOURNEY_SCRIPTS.includes(path) },
-    { name: "changelog", matches: (path: string) => path === "CHANGELOG.md" },
+    // Rules read the normalized, lower-case path (rulePath).
+    { name: "changelog", matches: (path: string) => path === "changelog.md" },
     // An allowlist (security review): Markdown under docs/, and the root README. Never any other .md anywhere.
-    { name: "docs", matches: (path: string) => (path.startsWith("docs/") && path.endsWith(".md")) || path === "README.md" },
+    { name: "docs", matches: (path: string) => (path.startsWith("docs/") && path.endsWith(".md")) || path === "readme.md" },
   ]),
   /** Never carry, even when a class above matches them. */
   never: Object.freeze([
@@ -61,7 +62,7 @@ export const CARRY_RULES = Object.freeze({
     { why: "it configures agents or CI", matches: (path: string) => /(^|\/)\.(claude|codex|gemini|cursor|github)(\/|$)/i.test(path) },
     // Docs agents are told to follow (AGENTS.md names the testing guide; plans are the input documents tasks build
     // from). Nothing under docs/ is read by the product itself: its guides are compiled into src/guides.ts.
-    { why: "agents follow it as instructions", matches: (path: string) => /^docs\/plans\//.test(path) || /^docs\/testing\.md$/i.test(path) },
+    { why: "agents follow it as instructions", matches: (path: string) => /^docs\/plans\//.test(path) || path === "docs/testing.md" },
     { why: "it's part of the test harness, a helper or a fixture", matches: (path: string) => path.startsWith("test/") },
     { why: "it's part of the test harness", matches: (path: string) => path.startsWith("scripts/") && !JOURNEY_SCRIPTS.includes(path) },
     { why: "it's part of the test harness", matches: (path: string) => /(^|\/)vitest\.config\.[cm]?[jt]s$/.test(path) },
@@ -102,19 +103,29 @@ export function stricterOf(a: ReleasePolicy | null, b: ReleasePolicy | null): Re
   };
 }
 
-/** Why one changed path doesn't carry, in words, or null when it does. */
+/**
+ * A path as the rules compare it: lower case (a case-insensitive file system reads docs/Plans as docs/plans), each part
+ * without the trailing dots and spaces Windows drops, and no empty or `.` parts (a verified tree never holds them, but
+ * the rules don't rely on that).
+ */
+export function rulePath(path: string): string {
+  return path.toLowerCase().split("/").map(part => part.replace(/[. ]+$/, "")).filter(part => part !== "" && part !== ".").join("/");
+}
+
+/** Why one changed path doesn't carry, in words, or null when it does. Every rule reads the normalized path. */
 export function changeRefusal(change: TreeChange, policy: ReleasePolicy): string | null {
   const path = change.path;
+  const normal = rulePath(path);
   if (change.kind === "deleted") return `${path} was deleted or renamed`;
   const modes = [change.before?.mode, change.after?.mode].filter((one): one is string => one !== undefined);
   if (modes.includes("120000")) return `${path} is a symlink`;
   if (modes.includes("160000")) return `${path} is a submodule`;
   if (change.before !== null && change.after !== null && change.before.mode !== change.after.mode) return `${path} changed its file mode`;
   if (change.binary) return `${path} is a binary file`;
-  const never = CARRY_RULES.never.find(one => one.matches(path));
+  const never = CARRY_RULES.never.find(one => one.matches(normal));
   if (never !== undefined) return `${path} doesn't carry: ${never.why}`;
-  if (policy.protectProject || policy.protectedPaths.some(glob => touchesProtected(path, glob))) return `${path} is protected in this project`;
-  if (!CARRY_RULES.classes.some(one => one.matches(path))) return `${path} isn't a test, a doc or the changelog`;
+  if (policy.protectProject || policy.protectedPaths.some(glob => touchesProtected(path, glob) || touchesProtected(normal, glob.toLowerCase()))) return `${path} is protected in this project`;
+  if (!CARRY_RULES.classes.some(one => one.matches(normal))) return `${path} isn't a test, a doc or the changelog`;
   return null;
 }
 

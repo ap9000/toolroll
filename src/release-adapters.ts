@@ -25,21 +25,24 @@ import {
 } from "./store.js";
 import { liveReleaseOf } from "./scope.js";
 import { proveCarry, type BuildRunner } from "./release-carry.js";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { deploymentGate } from "./deploy-gate.js";
 import { extractCommit } from "./commit-extract.js";
 
-export type Exec = (command: string, args: readonly string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) =>
+export type Exec = (command: string, args: readonly string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; input?: string }) =>
   Promise<{ code: number; stdout: string; stderr: string }>;
 
 /** A child process, its output kept whole; a missing program or a time limit is exit 127 or 124, never a throw. */
 export const exec: Exec = (command, args, options = {}) => new Promise(done => {
-  execFile(command, [...args], { cwd: options.cwd, env: options.env ?? process.env, timeout: options.timeoutMs ?? 120_000, maxBuffer: 64 * 1024 * 1024, encoding: "utf8" },
+  const child = execFile(command, [...args], { cwd: options.cwd, env: options.env ?? process.env, timeout: options.timeoutMs ?? 120_000, maxBuffer: 64 * 1024 * 1024, encoding: "utf8" },
     (error, stdout, stderr) => {
       const failure = error as (NodeJS.ErrnoException & { code?: number | string; killed?: boolean }) | null;
       const code = failure === null ? 0 : failure.code === "ENOENT" ? 127 : failure.killed === true ? 124 : typeof failure.code === "number" ? failure.code : 1;
       done({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
     });
+  // `input`: written on the child's stdin, then closed (a secret that must never ride in argv).
+  child.stdin?.on("error", () => { /* the child closed its stdin: its exit decides */ });
+  if (options.input !== undefined) child.stdin?.end(options.input); else child.stdin?.end();
 });
 
 /** Without NODE_OPTIONS, which a test runner or debugger may have left for this process. */
@@ -241,7 +244,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
     return { ok: true, dir, gitDir };
   };
   /** The approved commit's own deployment script, from the pristine extraction; the worktree is only its --source. */
-  const deployScript = async (worktree: string, stage: string, runId: number, commit: { head: string; repo: string }, extra: string[]) => {
+  const deployScript = async (worktree: string, stage: string, runId: number, commit: { head: string; repo: string }, extra: string[], input?: string) => {
     const extracted = await extractApproved(commit.repo, commit.head);
     if (!extracted.ok) return { code: 1, stdout: "", stderr: extracted.message };
     try {
@@ -253,7 +256,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
       } catch { return { code: 1, stdout: "", stderr: "The approved commit has no deployment script of its own." }; }
       return await run(process.execPath, [script, "--run", String(runId), "--stage", stage, "--source", worktree,
         "--head", commit.head, "--git-dir", extracted.gitDir, ...extra], {
-        cwd: extracted.dir, env: cleanEnv({ TMPDIR: resolved(process.env["TMPDIR"] ?? "/tmp") }), timeoutMs: (options.deployMinutes ?? 30) * 60_000,
+        cwd: extracted.dir, env: cleanEnv({ TMPDIR: resolved(process.env["TMPDIR"] ?? "/tmp") }), timeoutMs: (options.deployMinutes ?? 30) * 60_000, ...(input === undefined ? {} : { input }),
       });
     } finally { rmSync(extracted.dir, { recursive: true, force: true }); }
   };
@@ -363,7 +366,8 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         if (!proven.ok) return stopped(stage, proven.message);
         // The approved commit's own deployment, extracted by this runtime: drain, backup, rehearsal, swap, health. Its
         // last JSON line names the runtime it installed; the CLI names are moved to it by the release's link step.
-        const result = await deployScript(worktree, stage, runId, proven, ["--yes", ...(operation === undefined ? [] : ["--operation", operation])]);
+        // The operation the coordinator reserved, adopted by the deploy run with its secret on stdin (never in argv).
+        const result = await deployScript(worktree, stage, runId, proven, ["--yes", ...(operation === undefined ? [] : ["--operation", operation.id])], operation?.secret);
         const runtime = deployedRuntime(result.stdout);
         if (result.code !== 0 || runtime === null) return stopped(stage, tail(result));
         return { ok: true, runtime };
@@ -581,8 +585,9 @@ export function storeReleaseAdapter(open: () => Store, done: (store: Store) => v
     },
     async reserve(input) {
       return withStore(store => {
-        const result = reserveRelease(store, { ...input, operationId: randomUUID(), now: now() });
-        return result.ok ? { ok: true as const, operation: result.operation.id } : result;
+        const secret = randomBytes(32).toString("hex");
+        const result = reserveRelease(store, { ...input, operationId: randomUUID(), now: now(), secret });
+        return result.ok ? { ok: true as const, operation: result.operation.id, secret } : result;
       });
     },
     async start(operation, epoch) { return withStore(store => runReleaseOperation(store, operation, epoch, now())); },

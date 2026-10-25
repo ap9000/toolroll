@@ -61,7 +61,7 @@ import { hashSecret, mintLeadToken, parseCredential, secretMatches, tokenPurpose
  * nobody has designed yet is a column that will be wrong when they do.
  */
 
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
@@ -1125,6 +1125,8 @@ CREATE TABLE IF NOT EXISTS release_operation (
   epoch           INTEGER NOT NULL,
   state           TEXT NOT NULL CHECK (state IN ('reserved','running','succeeded','failed','unknown')),
   external_ref    TEXT,
+  -- The sha256 of a secret only the reserving coordinator holds: a deploy run adopting this operation proves it.
+  secret_hash     TEXT,
   reserved_at     TEXT NOT NULL,
   finished_at     TEXT,
   detail          TEXT
@@ -24254,13 +24256,14 @@ export function renewReleaseLease(store: Store, id: number, owner: string, epoch
  * to `merge-reserved`. `epoch` null is a direct deploy by a person: it takes the current epoch, and only while no
  * coordinator holds a live lease. Refused while any earlier operation is unsettled.
  */
-export function reserveRelease(store: Store, input: { authority: number; kind: "deploy" | "merge"; taskId: string; candidate: string; epoch: number | null; operationId: string; now: Date }):
+export function reserveRelease(store: Store, input: { authority: number; kind: "deploy" | "merge"; taskId: string; candidate: string; epoch: number | null; operationId: string; now: Date; secret?: string }):
   { ok: true; operation: ReleaseOperation } | { ok: false; why: string } {
   return store.transact(() => {
     const a = releaseAuthority(store, input.authority);
     if (a === null) return { ok: false as const, why: `No release ${input.authority}.` };
     const at = input.now.toISOString();
-    if (a.expiresAt <= at && a.state === "open") return { ok: false as const, why: "The release approval expired." };
+    // Expiry stops every live state; an operation already reserved settles only through reconciliation.
+    if (a.expiresAt <= at) return { ok: false as const, why: "The release approval expired." };
     if (a.tipTask !== input.taskId || a.tipSha !== input.candidate) return { ok: false as const, why: `Task ${input.taskId} is not the release's current commit.` };
     const leased = a.leaseOwner !== null && a.leaseExpires !== null && a.leaseExpires > at;
     if (input.epoch === null ? leased : input.epoch !== a.leaseEpoch || !leased) return { ok: false as const, why: input.epoch === null ? `A release coordinator (${a.leaseOwner}) holds this release; let it deploy.` : "This coordinator no longer holds the release's lease." };
@@ -24272,8 +24275,8 @@ export function reserveRelease(store: Store, input: { authority: number; kind: "
     if (next === null) return { ok: false as const, why: `The release is ${a.state}, so it can't ${input.kind}.` };
     const changed = store.handle.prepare("UPDATE release_authority SET state = ?, rev = rev + 1 WHERE id = ? AND rev = ?").run(next, a.id, a.rev);
     if (Number(changed.changes) !== 1) return { ok: false as const, why: "The release changed while reserving; try again." };
-    store.handle.prepare("INSERT INTO release_operation (id, authority, kind, task_id, candidate, epoch, state, reserved_at) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?)")
-      .run(input.operationId, a.id, input.kind, input.taskId, input.candidate, a.leaseEpoch, at);
+    store.handle.prepare("INSERT INTO release_operation (id, authority, kind, task_id, candidate, epoch, state, secret_hash, reserved_at) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?)")
+      .run(input.operationId, a.id, input.kind, input.taskId, input.candidate, a.leaseEpoch, input.secret === undefined ? null : createHash("sha256").update(input.secret).digest("hex"), at);
     store.recordAction({ at, actor: "toolroll", repo: a.repo, taskId: input.taskId, runId: null, action: `release ${input.kind} reserved`, outcome: next, source: "work", detail: `release ${a.id} · operation ${input.operationId} · epoch ${a.leaseEpoch}` });
     return { ok: true as const, operation: releaseOperation(store, input.operationId)! };
   });
@@ -24286,6 +24289,8 @@ export function runReleaseOperation(store: Store, id: string, epoch: number, now
     const op = releaseOperation(store, id);
     const a = op === null ? null : releaseAuthority(store, op.authority);
     if (op === null || a === null || op.state !== "reserved" || op.epoch !== epoch || a.leaseEpoch !== epoch) return false;
+    // Past the expiry nothing new starts; the reserved operation is settled by reconciliation instead.
+    if (a.expiresAt <= now.toISOString()) return false;
     const changed = store.handle.prepare("UPDATE release_operation SET state = 'running' WHERE id = ? AND state = 'reserved' AND epoch = ?").run(id, epoch);
     if (Number(changed.changes) === 1) store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: op.taskId, runId: null, action: `release ${op.kind} started`, outcome: "running", source: "work", detail: `operation ${id}` });
     return Number(changed.changes) === 1;
@@ -24389,3 +24394,20 @@ export function carryReleaseApproval(store: Store, w: CarryWrite, now: Date, rec
 
 /** Thrown inside a seal whose release authority can't open: the whole seal rolls back. */
 export class ReleaseSealRefused extends Error {}
+
+/**
+ * Whether a deploy run may adopt operation `id` (deploy-browser.mjs --operation): it is this release's running deploy of
+ * this candidate, reserved at the epoch that still holds a live lease, and the run proves the secret only the
+ * reserving coordinator holds (handed over on stdin, never in argv).
+ */
+export function adoptReleaseOperation(store: Store, input: { id: string; authority: number; candidate: string; secret: string; now: Date }): { ok: true } | { ok: false; why: string } {
+  const op = releaseOperation(store, input.id);
+  const a = releaseAuthority(store, input.authority);
+  if (op === null || a === null || op.authority !== a.id || op.kind !== "deploy" || op.candidate !== input.candidate || op.state !== "running") return { ok: false, why: `Operation ${input.id} isn't this release's running deploy.` };
+  if (op.epoch !== a.leaseEpoch || a.leaseOwner === null || a.leaseExpires === null || a.leaseExpires <= input.now.toISOString()) return { ok: false, why: "The coordinator that reserved this deploy no longer holds the release." };
+  const row = store.handle.prepare("SELECT secret_hash FROM release_operation WHERE id = ?").get(input.id);
+  const expected = row?.["secret_hash"];
+  const given = createHash("sha256").update(input.secret).digest("hex");
+  if (typeof expected !== "string" || expected.length !== given.length || !timingSafeEqual(Buffer.from(expected), Buffer.from(given))) return { ok: false, why: "This run can't prove it is the coordinator's deploy." };
+  return { ok: true };
+}

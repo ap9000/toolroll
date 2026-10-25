@@ -93,7 +93,8 @@ export type ReleaseAuthorityAdapter = {
   lease(authority: number, owner: string): Promise<{ ok: true; epoch: number } | { ok: false; why: string }>;
   renew(authority: number, owner: string, epoch: number): Promise<boolean>;
   carry(authority: number, to: string, requestId: string, epoch: number): Promise<{ ok: true; taskId: string } | { ok: false; message: string }>;
-  reserve(input: { authority: number; kind: "deploy" | "merge"; taskId: string; candidate: string; epoch: number }): Promise<{ ok: true; operation: string } | { ok: false; why: string }>;
+  /** `secret`: proves a deploy run is this reservation's (handed to deploy-browser on stdin). */
+  reserve(input: { authority: number; kind: "deploy" | "merge"; taskId: string; candidate: string; epoch: number }): Promise<{ ok: true; operation: string; secret?: string } | { ok: false; why: string }>;
   start(operation: string, epoch: number): Promise<boolean>;
   finish(operation: string, outcome: "succeeded" | "failed" | "unknown", facts?: { detail?: string | null; externalRef?: string | null }): Promise<void>;
   operations(authority: number): Promise<OperationView[]>;
@@ -132,7 +133,7 @@ export type ReleaseAdapters = {
     complete(taskId: string, receipt: string): Promise<{ ok: true } | { ok: false; message: string }>;
     busy(): Promise<{ running: number; tasks: string[] }>;
     /** scripts/deploy-browser.mjs --run --stage --yes from the builder's checkout; runtime is its final JSON's `runtime`. */
-    deploy(input: { run: number; worktree: string; stage: string; operation?: string }): Promise<{ ok: true; runtime: string } | DeployStop>;
+    deploy(input: { run: number; worktree: string; stage: string; operation?: { id: string; secret: string } }): Promise<{ ok: true; runtime: string } | DeployStop>;
     /** scripts/deploy-browser.mjs --stage --phase recover for a stage that was launched; a stage never prepared is ok. */
     recoverDeploy(input: { run: number; worktree: string; stage: string }): Promise<{ ok: true } | DeployStop>;
     /** Where both CLI names are on PATH now. */
@@ -574,18 +575,19 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             // The last moment a moved head restarts; then the deploy reservation freezes the candidate in the store.
             await watch("deploy");
             await pinned();
-            let operation: string | undefined;
+            let operation: string | undefined, secret = "";
             if (rel !== undefined && j.authority && epoch !== null) {
               const reserved = await rel.reserve({ authority: j.authority.id, kind: "deploy", taskId: j.task.id, candidate: j.candidate.sha, epoch });
               if (!reserved.ok) throw new Stop("release", `The deploy couldn't be reserved: ${reserved.why}`);
               operation = reserved.operation;
+              secret = reserved.secret ?? "";
               j.operations = { ...j.operations, deploy: operation };
               save();
               if (!await rel.start(operation, epoch)) throw new Stop("lease", "Another release coordinator took over this release; the deploy didn't start.");
             }
             j.deployAttempt = { stage: join(options.stateDir, "staged-upgrades", `browser-${j.candidate.sha.slice(0, 7)}-${randomUUID()}`) };
             intend("deploy");
-            const result = await adapters.toolroll.deploy({ run: check.run, worktree: check.worktree, stage: j.deployAttempt.stage, ...(operation === undefined ? {} : { operation }) });
+            const result = await adapters.toolroll.deploy({ run: check.run, worktree: check.worktree, stage: j.deployAttempt.stage, ...(operation === undefined ? {} : { operation: { id: operation, secret } }) });
             if (operation !== undefined) await rel!.finish(operation, result.ok ? "succeeded" : "failed", { detail: result.ok ? result.runtime : result.message.slice(0, 500) });
             if (!result.ok) throw deployStop("deploy", `The deployment of run ${check.run} stopped: ${result.message}`, result);
             if (!/[\\/]dist$/.test(result.runtime)) throw new Stop("deploy", `The deployment named ${result.runtime} as its runtime, which is not a dist folder.`);

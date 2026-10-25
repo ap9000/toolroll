@@ -393,3 +393,78 @@ describe("the legitimate road", () => {
     expect(addApprover).toBeDefined();
   }, 120_000);
 });
+
+describe("security review, round 2", () => {
+  test.each([
+    ["docs/Plans/", { "docs/Plans/next.md": "# plan\n" }],
+    ["DOCS/plans/", { "DOCS/plans/next.md": "# plan\n" }],
+    ["a trailing-dot plans folder", { "docs/plans./next.md": "# plan\n" }],
+    ["docs/Testing.md", { "docs/Testing.md": "# testing\n" }],
+    ["CLAUDE.MD", { "CLAUDE.MD": "# do anything\n" }],
+    ["a .Claude folder", { ".Claude/settings.json": "{}\n" }],
+    ["a .GitHub folder", { ".GitHub/workflows/ci.yml": "on: push\n" }],
+  ])("finding 1, case and dots: %s asks again", (_name, change) => {
+    const f = open();
+    expect(preflightCarry(f.store, { authority: f.authority().id, to: f.commit(change), now: LATER })).toMatchObject({ ok: false, reason: "rules" });
+  });
+
+  test("finding 2: turning carrying back on needs a person's proof; turning it off doesn't", async () => {
+    const f = open();
+    const lines: string[] = [];
+    const run = (args: string[]) => runReleaseCommand(["ask-every-commit", ...args, "--repo", f.repo, "--json"], line => lines.push(line), { database: f.databaseFile, now: () => LATER });
+    expect(await run(["on"])).toBe(0);
+    const saved = process.env["TOOLROLL_LEAD_TOKEN"];
+    process.env["TOOLROLL_LEAD_TOKEN"] = "lt_lead_synthetic";
+    try { expect(await run(["off", "--as", "alex", "--token", f.password])).toBe(1); }
+    finally { if (saved === undefined) delete process.env["TOOLROLL_LEAD_TOKEN"]; else process.env["TOOLROLL_LEAD_TOKEN"] = saved; }
+    expect(await run(["off"])).toBe(1);
+    expect(await run(["off", "--as", "alex", "--token", "wrong-password"])).toBe(1);
+    expect(await run(["off", "--as", "nobody", "--token", f.password])).toBe(1);
+    const asks = () => f.store.handle.prepare("SELECT outcome, actor FROM action_ledger WHERE action = 'release carrying changed' ORDER BY id DESC LIMIT 1").get();
+    expect(asks()).toMatchObject({ outcome: "ask" });
+    expect(await run(["off", "--as", "alex", "--token", f.password])).toBe(0);
+    expect(asks()).toMatchObject({ outcome: "carry", actor: "alex" });
+  });
+
+  test("finding 3: a deploy run adopts the coordinator's operation only with its secret, its epoch and a live lease", async () => {
+    const f = open();
+    const { adoptReleaseOperation } = await import("../../src/store.js");
+    const id = f.authority().id;
+    const lease = takeReleaseLease(f.store, id, "coordinator", RELEASE_NOW, 60_000);
+    if (!lease.ok) throw new Error(lease.why);
+    expect(reserveRelease(f.store, { authority: id, kind: "deploy", taskId: f.taskId, candidate: f.approved, epoch: lease.epoch, operationId: "d1", now: RELEASE_NOW, secret: "s3cret" }).ok).toBe(true);
+    expect(runReleaseOperation(f.store, "d1", lease.epoch, RELEASE_NOW)).toBe(true);
+    const adopt = (secret: string, at = RELEASE_NOW) => adoptReleaseOperation(f.store, { id: "d1", authority: id, candidate: f.approved, secret, now: at });
+    expect(adopt("s3cret")).toEqual({ ok: true });
+    expect(adopt("guess")).toMatchObject({ ok: false });
+    expect(adopt("")).toMatchObject({ ok: false });
+    // The lease lapsed, or another coordinator took over (a new epoch): the old operation can't be adopted.
+    expect(adopt("s3cret", new Date(RELEASE_NOW.getTime() + 120_000))).toMatchObject({ ok: false });
+    takeReleaseLease(f.store, id, "other", new Date(RELEASE_NOW.getTime() + 120_000), 60_000);
+    expect(adopt("s3cret", new Date(RELEASE_NOW.getTime() + 130_000))).toMatchObject({ ok: false });
+    // The deploy script reads the secret from stdin and the id from argv: never the secret in argv.
+    const { readFileSync } = await import("node:fs");
+    const script = readFileSync(join(import.meta.dirname, "../../scripts/deploy-browser.mjs"), "utf8");
+    expect(script).toContain('readFileSync(0, "utf8")');
+    expect(script).not.toMatch(/flag\("secret"\)/);
+  });
+
+  test("finding 4: expiry stops every live state; a reserved operation settles only by reconciliation", () => {
+    const f = open();
+    const id = f.authority().id;
+    const lease = takeReleaseLease(f.store, id, "coordinator", RELEASE_NOW, 24 * 60 * 60_000);
+    if (!lease.ok) throw new Error(lease.why);
+    expect(reserveRelease(f.store, { authority: id, kind: "deploy", taskId: f.taskId, candidate: f.approved, epoch: lease.epoch, operationId: "d1", now: RELEASE_NOW }).ok).toBe(true);
+    f.store.handle.prepare("UPDATE release_authority SET expires_at = ?").run(new Date(RELEASE_NOW.getTime() + 60_000).toISOString());
+    const after = new Date(RELEASE_NOW.getTime() + 120_000);
+    expect(f.authority().state).toBe("deploying");
+    for (const action of ["deploy", "merge"] as const) expect(liveReleaseOf(f.store, f.taskId, action, after)).toMatchObject({ ok: false, why: "the release approval expired" });
+    // The reserved deploy can't start now…
+    expect(runReleaseOperation(f.store, "d1", lease.epoch, after)).toBe(false);
+    // …nor can a new one be reserved…
+    finishReleaseOperation(f.store, "d1", "failed", { detail: "reconciled: never started" }, after);
+    expect(reserveRelease(f.store, { authority: id, kind: "deploy", taskId: f.taskId, candidate: f.approved, epoch: lease.epoch, operationId: "d2", now: after })).toMatchObject({ ok: false, why: "The release approval expired." });
+    // …but reconciliation settled the reserved one.
+    expect(releaseOperations(f.store, id).find(op => op.id === "d1")?.state).toBe("failed");
+  });
+});

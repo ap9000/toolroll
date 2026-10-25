@@ -18,6 +18,7 @@ import { processes, releaseAdapters } from "./release-adapters.js";
 import { releaseGate, type GateReleaseWorld } from "./release-gate.js";
 import { databasePath, openStore, revokeRelease, type Database } from "./store.js";
 import { carryRefusalWords, proveCarry, setAskEveryReleaseCommit } from "./release-carry.js";
+import { authenticateApprover, machineActing, personProof } from "./scope.js";
 
 export const RELEASE_HELP = `toolroll release <branch> — release Toolroll itself, from a pushed branch with an open pull request
 
@@ -41,8 +42,8 @@ toolroll release carry <release> --to <commit> [--request <id>] — carry a pers
 
 toolroll release revoke <release> — stop carrying later commits (before the merge starts)
 
-toolroll release ask-every-commit on|off --repo <path> — this project's releases ask for every later commit (on), or
-  carry test-only commits (off; a person's own command, never the lead's)
+toolroll release ask-every-commit on|off --repo <path> [--as <you> --token <password>] — this project's releases ask
+  for every later commit (on), or carry test-only commits again (off: your password, never the lead's token)
 
 Options
   --no-carry             every later commit of this release asks for approval again
@@ -76,7 +77,7 @@ export type ReleaseCliDeps = {
   now?: () => Date;
 };
 
-const VALUE_FLAGS = new Set(["--repo", "--limit", "--tap", "--release-gate", "--to", "--request"]);
+const VALUE_FLAGS = new Set(["--repo", "--limit", "--tap", "--release-gate", "--to", "--request", "--as", "--token"]);
 const BARE_FLAGS = new Set(["--new", "--json", "--help", "--yes", "--no-carry"]);
 
 export async function runReleaseCommand(args: readonly string[], write: (line: string) => void, deps: ReleaseCliDeps = {}): Promise<number> {
@@ -87,7 +88,7 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
   };
   const positional: string[] = [];
   const limits: Record<string, number> = {};
-  let repo: string | undefined, tap: string | undefined, gate: string | undefined, to: string | undefined, request: string | undefined;
+  let repo: string | undefined, tap: string | undefined, gate: string | undefined, to: string | undefined, request: string | undefined, as: string | undefined, token: string | undefined;
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!;
     if (BARE_FLAGS.has(arg)) continue;
@@ -98,6 +99,8 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
       if (arg === "--repo") repo = value;
       else if (arg === "--to") to = value;
       else if (arg === "--request") request = value;
+      else if (arg === "--as") as = value;
+      else if (arg === "--token") token = value;
       else if (arg === "--tap") tap = value;
       else if (arg === "--release-gate") gate = value;
       else {
@@ -117,7 +120,7 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
   }
   if (args.includes("--yes")) return refuse("usage", "--yes goes with --release-gate <id>; a release needs no confirmation beyond the owner's approval.", 2);
   if (["carry", "revoke", "ask-every-commit"].includes(positional[0] ?? "") && positional.length === 2) {
-    return runAuthorityCommand(positional[0] as "carry" | "revoke" | "ask-every-commit", positional[1]!, { to, request, repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo) }, write, json, deps);
+    return runAuthorityCommand(positional[0] as "carry" | "revoke" | "ask-every-commit", positional[1]!, { to, request, as, token, repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo) }, write, json, deps);
   }
   if (positional.length !== 1) return refuse("usage", `Which branch? \`toolroll release <branch>\`.\n${RELEASE_HELP}`, 2);
   const branch = positional[0]!;
@@ -200,7 +203,7 @@ function runGateRelease(id: string, yes: boolean, write: (line: string) => void,
  * included; only the rules decide), stop carrying (only ever stricter), or change the project's carry setting
  * (turning carrying back on is a person's own command, never the lead's or a remote token's).
  */
-async function runAuthorityCommand(command: "carry" | "revoke" | "ask-every-commit", target: string, flags: { to: string | undefined; request: string | undefined; repo: string | undefined },
+async function runAuthorityCommand(command: "carry" | "revoke" | "ask-every-commit", target: string, flags: { to: string | undefined; request: string | undefined; repo: string | undefined; as: string | undefined; token: string | undefined },
   write: (line: string) => void, json: boolean, deps: ReleaseCliDeps): Promise<number> {
   const name = `release ${command}`;
   const answer = (ok: boolean, fields: Record<string, unknown>, words: string, code: number) => {
@@ -215,10 +218,18 @@ async function runAuthorityCommand(command: "carry" | "revoke" | "ask-every-comm
     if (command === "ask-every-commit") {
       if (target !== "on" && target !== "off") return answer(false, { reason: "usage", message: "ask-every-commit takes on or off." }, "ask-every-commit takes on or off.", 2);
       if (flags.repo === undefined) return answer(false, { reason: "usage", message: "Name the project with --repo <path>." }, "Name the project with --repo <path>.", 2);
-      if (target === "off" && (process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined)) {
-        return answer(false, { reason: "person-only", message: "Only a person turns carrying back on." }, "Only a person turns carrying back on.", 1);
+      // Turning carrying back on relaxes a release's rules: a person's own ceremony, as an approval needs (a password
+      // typed now, a re-check, or their own session), never a lead or remote token. Turning it off is only stricter.
+      let actor = "cli";
+      if (target === "off") {
+        const refused = (message: string) => answer(false, { reason: "person-only", message }, message, 1);
+        if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return refused("Only a person turns carrying back on, never the lead or a remote token.");
+        if (flags.as === undefined || flags.token === undefined) return refused("Turning carrying back on needs your password: add --as <you> --token <password>.");
+        const proved = authenticateApprover(store, flags.as, flags.token, flags.repo);
+        if (!proved.ok || !personProof(proved.method)) return refused("Only an approver of this project, proved as a person, turns carrying back on.");
+        actor = flags.as;
       }
-      setAskEveryReleaseCommit(store, flags.repo, target === "on", "cli", now);
+      setAskEveryReleaseCommit(store, flags.repo, target === "on", actor, now);
       const words = target === "on" ? "Every later release commit in this project asks for approval." : "Later test-only release commits ship under the release approval.";
       return answer(true, { repo: flags.repo, ask: target === "on" }, words, 0);
     }
