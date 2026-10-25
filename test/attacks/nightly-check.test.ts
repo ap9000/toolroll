@@ -230,3 +230,16 @@ describe("security review: no road publishes or merges a nightly check", () => {
     expect(await mergePullRequest(f.store, { runId: check.runId, by: "alex" })).toMatchObject({ ok: false, reason: "check-only" });
   });
 });
+
+describe("security review: a release run clears debt only for the candidate it checked", () => {
+  test("a run whose head isn't its scope's candidate (another tree) clears nothing", () => {
+    const f = (fixture = releaseFixture());
+    f.store.handle.prepare("INSERT INTO main_check_failure (repo, sha, run, item, opened_at) VALUES (?, ?, 1, 'unit:src/index.test.ts::answer', ?)").run(f.repo, f.approved, RELEASE_NOW.toISOString());
+    // A commit that isn't on main and isn't the release's candidate, recorded as the release task's run head.
+    f.git("checkout", "-q", "-b", "other");
+    const other = f.commit({ "docs/other.md": "# other\n" });
+    sealedCheck(f, f.taskId, other, () => reportOf(UNITS.map(file => ({ file, ...(file === "src/index.test.ts" ? { passed: ["answer"] } : {}) }))));
+    settleReleaseChecks(f.store, EVIDENCE(f), LATER);
+    expect(f.store.handle.prepare("SELECT cleared_at FROM main_check_failure").get()?.["cleared_at"]).toBeNull();
+  });
+});

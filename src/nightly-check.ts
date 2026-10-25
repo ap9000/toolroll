@@ -249,7 +249,11 @@ export function settleReleaseChecks(store: Store, root: string, now: Date): numb
       const onMain = main.ok && (head === main.sha || verifiedFirstParentWalk(gitDir, main.sha, head, 5000).ok);
       const release = task === null ? null : liveReleaseOf(store, task, "dispatch", now);
       const candidate = task === null ? null : store.getScope(task)?.candidate ?? null;
-      const releaseTip = release !== null && release.applies && release.ok && candidate !== null && release.authority.tipSha === candidate;
+      // The run must have checked that very candidate: its head is the candidate, or the commit a prepared build recorded
+      // for it, holding exactly the candidate's verified tree.
+      const sameTree = (a: string, b: string) => { const x = readVerifiedCommit(gitDir, a), y = readVerifiedCommit(gitDir, b); return x.ok && y.ok && x.value.tree === y.value.tree; };
+      const releaseTip = release !== null && release.applies && release.ok && candidate !== null && release.authority.tipSha === candidate
+        && (head === candidate || sameTree(head, candidate));
       if (!onMain && !releaseTip) return;
       for (const failure of store.handle.prepare("SELECT id, sha, item FROM main_check_failure WHERE repo = ? AND cleared_at IS NULL").all(repo)) {
         const sha = String(failure["sha"]);
