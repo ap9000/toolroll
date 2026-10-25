@@ -80,6 +80,7 @@ const servicePort = (livePlist.match(/<string>--port<\/string>\s*<string>(\d+)<\
 const oldRt = { store: await load(priorDist, "store.js"), gate: await load(priorDist, "desktop-update-gate.js"), evidence: await load(priorDist, "verification-evidence.js"), update: await load(priorDist, "desktop-update.js") };
 oldRt.coding = await loadCodingDeploymentRuntime(priorDist);
 const candidateAssignment = await load(join(source, "dist"), "assignment.js");
+const candidateScope = await load(join(source, "dist"), "scope.js");
 // A stage made before the rename installed the runtime under the older name; resuming it keeps that path.
 const stagedRuntime = stagedRuntimePaths(stageDir, packageName, names);
 const stagedName = stagedRuntime.name, nextDist = stagedRuntime.dist;
@@ -89,7 +90,7 @@ const evidenceRoot = join(dirname(database), "evidence");
 function facts(db) {
   const store = new oldRt.store.Store(db);
   const result = deploymentCandidate(store, { runId, head: candidateHead, evidenceRoot, now: new Date() }, {
-    assignmentOf: candidateAssignment.assignmentOf, verificationEvidence: oldRt.evidence.verificationEvidence,
+    assignmentOf: candidateAssignment.assignmentOf, verificationEvidence: oldRt.evidence.verificationEvidence, personApprovalOf: candidateScope.personApprovalOf,
   });
   requireTrue(resolve(result.worktree) === source || execFileSync("git", ["-C", result.worktree, "rev-parse", "HEAD"], { encoding: "utf8" }).trim() === candidateHead, "Run this from the builder's worktree for this run.");
   return result;

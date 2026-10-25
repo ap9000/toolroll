@@ -10,7 +10,10 @@ const DIGEST = "scope-digest";
 
 type Run = { id: number; taskRef: number; role: string; outcome: string; headRevision: string; scopeDigest: string; worktree: string };
 
-function fixture(runs: Run[], receipts: Record<number, object | null>, readiness: { blockers: { key: string; message: string }[] } | null = { blockers: [] }) {
+type PersonAnswer = { ok: true; by: string; at: string; method: string } | { ok: false; why: string };
+const PERSON: PersonAnswer = { ok: true, by: "alex", at: "2026-10-24T09:00:00.000Z", method: "password-now" };
+
+function fixture(runs: Run[], receipts: Record<number, object | null>, readiness: { blockers: { key: string; message: string }[] } | null = { blockers: [] }, person: PersonAnswer | null = PERSON) {
   const store = {
     getRun: (id: number) => runs.find(one => one.id === id) ?? null,
     runsFor: (taskRef: number) => runs.filter(one => one.taskRef === taskRef).sort((a, b) => b.id - a.id),
@@ -26,6 +29,7 @@ function fixture(runs: Run[], receipts: Record<number, object | null>, readiness
       return receipt ? { ok: true, bytes: JSON.stringify(receipt), digest: `gate-${runId}` } : { ok: false, bytes: null, problem: "no receipt" };
     },
     assignmentOf: () => ({ state: "complete", receipt: { runId: 2, head: HEAD, scopeDigest: DIGEST, digest: "r" }, completion: { digest: "r" }, readiness }),
+    ...(person === null ? {} : { personApprovalOf: () => person }),
   };
   return (runId: number) => deploymentCandidate(store, { runId, head: HEAD, evidenceRoot: "/evidence", now: new Date() }, deps);
 }
@@ -60,6 +64,13 @@ describe("deploymentCandidate", () => {
     ]) expect(() => fixture([built, regate], { 2: passing }, { blockers: [blocker] })(2)).toThrow(`This result isn't ready to deploy: ${blocker.message}`);
     // A result whose readiness can't be read is never assumed ready.
     expect(() => fixture([built, regate], { 2: passing }, null)(2)).toThrow("readiness could not be read");
+  });
+
+  test("only a person's approval deploys; a gate that can't ask refuses", () => {
+    expect(fixture([built, regate], { 2: passing })(2)).toMatchObject({ approvedBy: "alex" });
+    expect(() => fixture([built, regate], { 2: passing }, { blockers: [] }, { ok: false, why: "approved by the lead, not by a person" })(2))
+      .toThrow("A person has to approve this candidate's scope: approved by the lead, not by a person.");
+    expect(() => fixture([built, regate], { 2: passing }, { blockers: [] }, null)(2)).toThrow("can't check who approved the candidate");
   });
 
   test("a no-change run that is not a regate of the last built commit is refused", () => {

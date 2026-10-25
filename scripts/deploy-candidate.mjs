@@ -1,6 +1,6 @@
 // Deployment uses a real passing project check and the lead/user's decision
 // about that exact result. It never schedules or depends on a model reviewer.
-export function deploymentCandidate(store, { runId, head, evidenceRoot, now }, { assignmentOf, verificationEvidence }) {
+export function deploymentCandidate(store, { runId, head, evidenceRoot, now }, { assignmentOf, verificationEvidence, personApprovalOf }) {
   const requireFact = (value, message) => { if (!value) throw Error(message); };
   const run = store.getRun(runId);
   const ref = run ? store.refById(run.taskRef) : null;
@@ -14,6 +14,12 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now }, {
     `Run ${runId} is not a built candidate at ${head.slice(0, 7)}.`);
   requireFact(scope && scope.approvedDigest === scope.digest && scope.digest === run.scopeDigest,
     "The run's signed scope is no longer the approved one.");
+  // Only a person's approval deploys (docs/plans/approval-policy.md §1.7): the ceremony or a paired-chat tap, with a
+  // person's proof recorded for these exact words — never the lead, a mode, a flow or a schedule. Every phase, resumed
+  // ones included, proves the candidate through here.
+  requireFact(typeof personApprovalOf === 'function', "This deployment can't check who approved the candidate.");
+  const person = personApprovalOf(store, ref.externalId);
+  requireFact(person?.ok === true, `A person has to approve this candidate's scope: ${person?.why ?? 'its approval cannot be read'}.`);
   const evidence = verificationEvidence(store, evidenceRoot, runId);
   requireFact(evidence.ok && evidence.bytes, `Native check unavailable: ${evidence.problem ?? 'no receipt'}.`);
   const gate = JSON.parse(evidence.bytes);
@@ -32,7 +38,7 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now }, {
   const blockers = assignment.readiness?.blockers;
   requireFact(Array.isArray(blockers), 'The result\'s readiness could not be read.');
   requireFact(blockers.length === 0, `This result isn't ready to deploy: ${blockers.map(one => one.message).join(' ')}`);
-  return { taskId: ref.externalId, repo: ref.repo, scopeDigest: scope.digest,
+  return { taskId: ref.externalId, repo: ref.repo, scopeDigest: scope.digest, approvedBy: person.by,
     completion: assignment.completion, gateDigest: evidence.digest,
     proofVerdict: store.proofVerdictFor(runId)?.verdict ?? null,
     acceptance: store.proofAcceptance(runId), criteria: scope.acceptance.length,

@@ -32,6 +32,7 @@
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
+import { personProof } from "./person-proof.js";
 
 /** The pull-request checks a release waits for, by exact job name (.github/workflows/ci.yml). Every one must have
  * concluded `success` on the gated commit; src/ci-workflow.test.ts holds the workflow to this list. */
@@ -61,7 +62,10 @@ export type GateState = {
   candidate: string | null;
   scopeDigest: string | null;
   /** The current approval of the scope: by whom, of which digest, and how (`password` or `chat` is a person's yes). */
-  approval: { by: string; at: string; digest: string; basis: string | null; role: string | null; active: boolean } | null;
+  approval: { by: string; at: string; digest: string; basis: string | null; role: string | null; active: boolean;
+    /** The plane's own answer to "did a person give this approval, with a person's proof recorded?" (approval policy
+     * §1.5). Absent from a plane too old to say, which is no person's approval. */
+    person?: { ok: true; method: string } | { ok: false; why: string } } | null;
   /** The newest finished build of the task: its sealed result and check. */
   result: { run: number; head: string | null; check: string; level: string | null; receipt: string; worktree: string | null } | null;
   /** A finished build that left no result to complete (it failed before the check), in words. */
@@ -227,6 +231,11 @@ export function ownerApproval(gate: GateState, digest: string | null): { ok: tru
   if (approval.basis !== "password" && approval.basis !== "chat") return { ok: false, why: `approved by ${approval.basis ?? "an unknown road"}, not by a person` };
   if (/ \(AI\)$/.test(approval.by) || /^mode /.test(approval.by) || /^lead\b/.test(approval.by) || approval.by === "routine") return { ok: false, why: `approved as ${approval.by}, not by a person` };
   if (approval.role !== "approver" || !approval.active) return { ok: false, why: `approved by ${approval.by}, who is not an active approver` };
+  // A person's proof, recorded for these exact bytes (approval policy §1.5): a lead token or a remote API token sealed
+  // through the person's road before the fix said `password` too. A plane that can't say is not a yes.
+  if (approval.person === undefined) return { ok: false, why: "the plane can't show a person gave this approval; update it first" };
+  if (!approval.person.ok) return { ok: false, why: approval.person.why };
+  if (!personProof(approval.person.method)) return { ok: false, why: "approved with a machine credential, not by a person" };
   return { ok: true, by: approval.by, at: approval.at };
 }
 

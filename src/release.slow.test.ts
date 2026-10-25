@@ -55,7 +55,7 @@ function world(options: { crashAfter?: Mutation } = {}) {
     if (crash === name) { crash = undefined; throw new Error(`lost the answer to ${name}`); }
   };
   const person = (state: typeof s) => {
-    if (state.gate.exists && state.gate.approval === null) state.gate.approval = { by: "alex", at: new Date(state.now).toISOString(), digest: DIGEST, basis: "password", role: "approver", active: true };
+    if (state.gate.exists && state.gate.approval === null) state.gate.approval = { by: "alex", at: new Date(state.now).toISOString(), digest: DIGEST, basis: "password", role: "approver", active: true, person: { ok: true, method: "password-now" } };
     else if (state.gate.approval !== null && state.gate.result === null) state.gate.result = { run: 2757, head: state.gate.candidate, check: "passed", level: "full", receipt: RECEIPT, worktree: "/worktrees/release" };
   };
   s.onSleep.push(person);
@@ -211,12 +211,18 @@ describe("toolroll release", () => {
     const at = "2026-10-08T09:00:00.000Z";
 
     test("a person's yes to these exact bytes, by password or chat, and nothing else", () => {
-      expect(ownerApproval(gate({ by: "alex", at, digest: DIGEST, basis: "password", role: "approver", active: true }), DIGEST)).toEqual({ ok: true, by: "alex", at });
-      expect(ownerApproval(gate({ by: "alex", at, digest: DIGEST, basis: "chat", role: "approver", active: true }), DIGEST)).toMatchObject({ ok: true });
+      const person = { ok: true as const, method: "password-now" };
+      expect(ownerApproval(gate({ by: "alex", at, digest: DIGEST, basis: "password", role: "approver", active: true, person }), DIGEST)).toEqual({ ok: true, by: "alex", at });
+      expect(ownerApproval(gate({ by: "alex", at, digest: DIGEST, basis: "chat", role: "approver", active: true, person: { ok: true, method: "chat" } }), DIGEST)).toMatchObject({ ok: true });
       expect(ownerApproval(gate(null), DIGEST)).toMatchObject({ ok: false, why: "not approved yet" });
-      expect(ownerApproval(gate({ by: "alex", at, digest: "older", basis: "password", role: "approver", active: true }), DIGEST)).toMatchObject({ ok: false });
-      expect(ownerApproval(gate({ by: "alex", at, digest: DIGEST, basis: "mode", role: "approver", active: true }), DIGEST)).toMatchObject({ ok: false, why: "approved by mode, not by a person" });
-      for (const by of ["Maya (AI)", "mode overnight", "lead:alex", "routine"]) expect(ownerApproval(gate({ by, at, digest: DIGEST, basis: "password", role: "approver", active: true }), DIGEST), by).toMatchObject({ ok: false });
+      expect(ownerApproval(gate({ by: "alex", at, digest: "older", basis: "password", role: "approver", active: true, person }), DIGEST)).toMatchObject({ ok: false });
+      expect(ownerApproval(gate({ by: "alex", at, digest: DIGEST, basis: "mode", role: "approver", active: true, person }), DIGEST)).toMatchObject({ ok: false, why: "approved by mode, not by a person" });
+      expect(ownerApproval(gate({ by: "alex", at, digest: DIGEST, basis: "lead", role: "approver", active: true, person }), DIGEST)).toMatchObject({ ok: false, why: "approved by lead, not by a person" });
+      for (const by of ["Maya (AI)", "mode overnight", "lead:alex", "routine"]) expect(ownerApproval(gate({ by, at, digest: DIGEST, basis: "password", role: "approver", active: true, person }), DIGEST), by).toMatchObject({ ok: false });
+      // Approval policy: the owner's own name on a `password` seal is not enough — the plane's proof decides.
+      expect(ownerApproval(gate({ by: "alex", at, digest: DIGEST, basis: "password", role: "approver", active: true }), DIGEST)).toMatchObject({ ok: false, why: expect.stringContaining("update it first") });
+      expect(ownerApproval(gate({ by: "alex", at, digest: DIGEST, basis: "password", role: "approver", active: true, person: { ok: false, why: "approved by the lead, not by a person" } }), DIGEST)).toMatchObject({ ok: false, why: "approved by the lead, not by a person" });
+      for (const method of ["lead-token", "remote-token", "bogus"]) expect(ownerApproval(gate({ by: "alex", at, digest: DIGEST, basis: "password", role: "approver", active: true, person: { ok: true, method } }), DIGEST), method).toMatchObject({ ok: false });
     });
 
     test("a mode's approval stops the release before any check counts", async () => {
@@ -244,7 +250,7 @@ describe("toolroll release", () => {
     const dir = stateDir();
     const { s, adapters } = world();
     s.onSleep = [state => {
-      if (state.gate.approval === null) state.gate.approval = { by: "alex", at: "2026-10-08T09:00:00.000Z", digest: DIGEST, basis: "password", role: "approver", active: true };
+      if (state.gate.approval === null) state.gate.approval = { by: "alex", at: "2026-10-08T09:00:00.000Z", digest: DIGEST, basis: "password", role: "approver", active: true, person: { ok: true, method: "password-now" } };
       else state.gate.result = { run: 2757, head: SHA, check: "failed", level: "full", receipt: RECEIPT, worktree: "/w" };
     }];
     for (let i = 0; i < 2; i += 1) expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "check", reason: "check-failed" });

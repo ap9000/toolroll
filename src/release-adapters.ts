@@ -109,6 +109,7 @@ export function gateStateOf(answer: Json, accounts: readonly unknown[] = []): Ga
     approval: approvedAt === null || approvedBy === null || approvedDigest === null ? null : {
       by: approvedBy, at: approvedAt, digest: approvedDigest, basis: textOr(scope["approvalBasis"]),
       role: textOr(account?.["role"]), active: account?.["revokedAt"] === null,
+      ...personAnswerOf(answer["personApproval"]),
     },
     result: resultRun === null || textOr(result["digest"]) === null ? null : {
       run: resultRun, head: textOr(result["head"]), receipt: String(result["digest"]), worktree: textOr(worktree),
@@ -467,4 +468,12 @@ export function workflowRunsOnChange(text: string): boolean {
 export function bumpFormula(text: string, url: string, sha256: string): string {
   if (!/^\s*url "[^"]*"/m.test(text) || !/^\s*sha256 "[0-9a-f]{64}"/m.test(text)) throw new Error("the formula has no url and sha256 lines to update");
   return text.replace(/^(\s*url ")[^"]*(")/m, `$1${url}$2`).replace(/^(\s*sha256 ")[0-9a-f]{64}(")/m, `$1${sha256}$2`);
+}
+
+/** The plane's person-approval answer from `task show --json`, read strictly: anything malformed is no person. */
+function personAnswerOf(value: unknown): { person?: { ok: true; method: string } | { ok: false; why: string } } {
+  if (value === undefined) return {};
+  const read = object(value);
+  if (read["ok"] === true && typeof read["method"] === "string") return { person: { ok: true, method: read["method"] } };
+  return { person: { ok: false, why: typeof read["why"] === "string" ? read["why"] : "the plane's answer about who approved it can't be read" } };
 }

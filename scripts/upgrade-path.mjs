@@ -246,12 +246,13 @@ async function facts({ installed, candidate, databaseFile, evidenceRoot, runId, 
   const { DatabaseSync } = await import("node:sqlite");
   const oldStore = await load(installed, "store.js"), oldEvidence = await load(installed, "verification-evidence.js");
   const candidateAssignment = await load(join(candidate, "dist"), "assignment.js");
+  const candidateScope = await load(join(candidate, "dist"), "scope.js");
   const { deploymentCandidate } = await import(pathToFileURL(join(candidate, "scripts", "deploy-candidate.mjs")).href);
   const db = new DatabaseSync(databaseFile, { readOnly: true });
   try {
     db.exec("PRAGMA busy_timeout=5000");
     const result = deploymentCandidate(new oldStore.Store(db), { runId, head, evidenceRoot, now: NOW() }, {
-      assignmentOf: candidateAssignment.assignmentOf, verificationEvidence: oldEvidence.verificationEvidence,
+      assignmentOf: candidateAssignment.assignmentOf, verificationEvidence: oldEvidence.verificationEvidence, personApprovalOf: candidateScope.personApprovalOf,
     });
     return { ok: true, completion: result.completion.digest };
   } finally { db.close(); }
