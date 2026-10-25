@@ -249,16 +249,20 @@ export function fileStandingOrder(store: Store, input: { flowId: number; repo: s
   if (order.requirements.length > 0) store.setRequirements(ref.id, order.requirements);
   const draft = { goal: order.goal, outOfScope: order.outOfScope, touches: [...order.touches], acceptance: approval.acceptance, ...(order.budgetPerRunMicrousd == null ? {} : { budgetMicrousd: order.budgetPerRunMicrousd }) };
   const digest = digestOf(draft, approval.profile, approval.route);
+  // Filed unapproved; only the seal below approves it (no approval fields are written beside it).
   store.saveScope(
-    { taskId, ...draft, proposedAt: now.toISOString(), digest, budgetMicrousd: order.budgetPerRunMicrousd ?? null, approvedAt: order.approval!.at, approvedBy: approval.by, approvedDigest: digest },
+    { taskId, ...draft, proposedAt: now.toISOString(), digest, budgetMicrousd: order.budgetPerRunMicrousd ?? null, approvedAt: null, approvedBy: null, approvedDigest: null },
     {},
     { profile: approval.profile, route: approval.route },
   );
-  // Its own authority (approval policy §1.6): the standing order's carried approval, never a person's ceremony.
+  // Its own authority (approval policy §1.6): the standing order's carried approval, never a person's ceremony. A seal
+  // the project's rules refuse to an automatic approval (checks beyond the sandbox, protected work, policy) leaves the
+  // task filed and waiting for a person, as any unapproved firing does — never a dropped firing.
   const sealed = store.sealScopeApproval(taskId, approval.by!, now, {}, { kind: "schedule", modeDigest: order.approval!.digest }, "automation");
-  const sealedRoute = sealed ? store.sealedRouteOf(taskId) : null;
-  if (!sealed || sealedRoute === null || !sealedRoute.ok || routeDigestOf(sealedRoute.route) !== routeDigestOf(approval.route)) {
-    throw new StandingOrderRefused(!sealed ? "the approval couldn't be sealed" : sealedRoute !== null && !sealedRoute.ok ? sealedRoute.detail : "the sealed agents aren't the approved ones");
+  if (!sealed) return { made: "filed", taskId, approved: false, note: "Its approval can't stand on its own here (its checks reach beyond the sandbox, or the project's rules need a person), so this one waits for approval." };
+  const sealedRoute = store.sealedRouteOf(taskId);
+  if (sealedRoute === null || !sealedRoute.ok || routeDigestOf(sealedRoute.route) !== routeDigestOf(approval.route)) {
+    throw new StandingOrderRefused(sealedRoute !== null && !sealedRoute.ok ? sealedRoute.detail : "the sealed agents aren't the approved ones");
   }
   return { made: "filed", taskId, approved: true, note: null };
 }
