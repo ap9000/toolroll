@@ -23,8 +23,15 @@ test.skipIf(!native)("files that launch flows' scripts and tools' servers pass i
   const nested = spawnSync("/usr/bin/sandbox-exec", ["-p", OUTER, "/usr/bin/sandbox-exec", "-p", NEST_PROBE, "/usr/bin/true"], { encoding: "utf8" });
   expect(nested.status).not.toBe(0);
   const ran = spawnSync("/usr/bin/sandbox-exec", ["-p", OUTER, resolve(root, "node_modules/.bin/vitest"), "run", ...FILES], {
-    cwd: root, encoding: "utf8", timeout: 540_000, env: { ...process.env, VITEST_MAX_WORKERS: "2" },
+    cwd: root, encoding: "utf8", timeout: 540_000, env: { ...withoutColor(process.env), NO_COLOR: "1", VITEST_MAX_WORKERS: "2" },
   });
   expect(ran.status, `${ran.stdout}\n${ran.stderr}`.slice(-4000)).toBe(0);
-  expect(ran.stdout).toMatch(/Test Files {2}4 passed/);
+  // Plain text: the release check forces colour, whose codes would sit between the words (run 3241).
+  expect(ran.stdout.replace(/\u001b\[[0-9;]*m/g, "")).toMatch(/Test Files {2}4 passed/);
 }, 600_000);
+
+/** The environment without what forces colour, so the inner run's summary is plain text. */
+function withoutColor(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const { FORCE_COLOR: _force, CLICOLOR_FORCE: _clicolor, ...rest } = env;
+  return rest;
+}
