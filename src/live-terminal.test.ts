@@ -191,6 +191,58 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     } finally { await slow.stop(); }
   });
 
+  // A real process stands in for "someone else's": the injected table says what the sweep sees of it. Never signalled.
+  type Inner = { sessions: Map<string, { leader: number; tty: string | null }> };
+  const bystander = () => spawnChild("/bin/sleep", ["30"], { stdio: "ignore" });
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+  test.skipIf(INSIDE_FENCE)("a pid used again between the read and the signal is never signalled, and the close is uncertain", async () => {
+    const other = bystander();
+    let phase: "running" | "observed" | "reused" = "running";
+    const real = await import("./live-terminal.js");
+    const host2 = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "reused-pid"), closeGraceMs: 200, programs: { shell: { file: "/bin/sleep", args: ["30"] } }, env: () => ({ PATH: "" }),
+      processes: () => {
+        const table = real.readProcessTable();
+        if (table === null || phase === "running") return table;
+        const session = [...(host2 as unknown as Inner).sessions.values()][0]!;
+        // First read of the close: the program's child. Every read after: the same pid, started later, nobody's child.
+        table.set(other.pid!, phase === "observed" ? { ppid: session.leader, uid: process.getuid!(), tty: "??", started: "Tue Oct 20 10:00:00 2026" } : { ppid: 1, uid: process.getuid!(), tty: "??", started: "Tue Oct 20 11:00:00 2026" });
+        phase = "reused";
+        return table;
+      } });
+    try {
+      const started = await host2.start(ALEX, repo, "shell");
+      phase = "observed";
+      await host2.close(started.id);
+      expect(alive(other.pid!)).toBe(true);
+      expect(host2.get(started.id)).toMatchObject({ cleanup: "uncertain" });
+    } finally { await host2.stop(); other.kill("SIGKILL"); }
+  });
+
+  test.skipIf(INSIDE_FENCE)("a process on its terminal's device after the program ended, never noted, is never signalled; the close is uncertain", async () => {
+    const other = bystander();
+    let ended = false;
+    const real = await import("./live-terminal.js");
+    const host2 = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "reused-tty"), closeGraceMs: 200, programs: { shell: { file: "/bin/sh", args: ["-c", "exit 0"] } }, env: () => ({ PATH: "" }),
+      processes: () => {
+        const table = real.readProcessTable();
+        if (table === null || !ended) return table;
+        const session = [...(host2 as unknown as Inner).sessions.values()][0]!;
+        // The device given out again: someone else's process, on it, started just after the program ended.
+        table.set(other.pid!, { ppid: 1, uid: process.getuid!(), tty: session.tty ?? "ttys999", started: new Date().toString() });
+        return table;
+      } });
+    try {
+      const started = await host2.start(ALEX, repo, "shell");
+      const session = (host2 as unknown as Inner).sessions.get(started.id)!;
+      expect(session.tty).not.toBeNull();
+      ended = true;
+      await until(() => host2.get(started.id)?.cleanup != null, 10_000);
+      expect(alive(other.pid!)).toBe(true);
+      expect(host2.get(started.id)).toMatchObject({ cleanup: "uncertain" });
+    } finally { await host2.stop(); other.kill("SIGKILL"); }
+  });
+
   test("an unreadable process table is uncertain, never clean: the worktree stays and stop says so (round 2, findings 4 and 6)", async () => {
     let readable = true;
     const blind = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "blind"), closeGraceMs: 200, programs: { shell: { file: "/bin/sh", args: [] } },
@@ -247,7 +299,7 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     expect(execFileSync("git", ["-C", repo, "branch", "--list", "toolroll/live-*"]).toString().trim()).toBe("");
   });
 
-  test("membership: noted by start time, the leader only while it runs, its terminal only before it ended", () => {
+  test("membership: noted by start time, the leader only while it runs, its terminal only while it runs", () => {
     const [P0, P1, P2, P3, P4, P5] = [0, 1, 2, 3, 4, 5].map(fakePid) as [number, number, number, number, number, number];
     const table = new Map([
       [P0, { ppid: 1, uid: 0, tty: "ttys009", started: "Tue Oct 20 10:00:00 2026" }],
@@ -258,7 +310,14 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
       [P5, { ppid: 1, uid: 0, tty: "??", started: "Tue Oct 20 10:10:00 2026" }],
     ]);
     const ended = Date.parse("Tue Oct 20 10:30:00 2026");
-    expect([...membersOf(table, { leader: P4, tty: "ttys009", known: new Map([[P2, "Tue Oct 20 10:00:02 2026"]]), exitedAt: ended }).keys()].sort()).toEqual([P0, P1, P2]);
+    // Running: its terminal, its leader and their descendants, and what was noted.
+    expect([...membersOf(table, { leader: P4, tty: "ttys009", known: new Map([[P2, "Tue Oct 20 10:00:02 2026"]]), exitedAt: null }).keys()].sort()).toEqual([P0, P1, P2, P3, P4]);
+    // Ended: only what was noted (by start time) and its descendants. The terminal's name proves nothing any more, even
+    // for a process that started before the end (the device may be someone else's by now): ambiguous, never a member.
+    const ambiguous = new Set<number>();
+    expect([...membersOf(table, { leader: P4, tty: "ttys009", known: new Map([[P2, "Tue Oct 20 10:00:02 2026"]]), exitedAt: ended }, ambiguous).keys()]).toEqual([P2]);
+    expect([...ambiguous].sort()).toEqual([P0, P3]);
+    // Noted under another start time: a pid used again, not a member.
     expect([...membersOf(table, { leader: P4, tty: null, known: new Map([[P2, "a different start"]]), exitedAt: null }).keys()]).toEqual([P4]);
   });
 

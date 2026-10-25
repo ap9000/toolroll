@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (0.9.71)
+## Unreleased (0.9.72)
 
 - **Sandboxed checks can start Chromium on macOS.** Playwright's default
   browser (its Chromium headless shell) now starts inside the check sandbox:
@@ -11,17 +11,16 @@
   a headless browser check can go back to **Sandboxed** in Settings → Project
   → Check access. Chrome for Testing (`channel: "chromium"`, headed runs)
   still needs **Not sandboxed**.
-- **Sandboxed launches can open a terminal of their own on macOS.** A check
-  or build that drives a pseudo-terminal (node-pty, `script`) now works. Only
-  terminals the sandboxed process made itself open: Toolroll doesn't turn on
-  the sandbox runtime's `allowPty`, which also opens your other open
-  terminals, and it now denies reading those by name, which the runtime's
-  baseline allowed.
 - **A wrong password on an approval says "That password didn't match."**
   instead of "not approved: not-an-approver". Someone who isn't an approver
   gets the same answer.
-- **Closing a live terminal stops its processes before it kills them,** so a
-  child one starts at that moment can't slip out from under the close.
+- **Closing a live terminal signals only its own processes.** It stops them
+  before it kills them, so a child one starts at that moment can't slip out
+  from under the close; each signal goes only to a process still the one it
+  saw (same pid, same start); and after the program ends, its terminal's
+  name no longer counts as proof, since the device may already be someone
+  else's. A process it can't prove is its own is never signalled, and the
+  close says it's uncertain (the worktree stays).
 - **Only a person approves work.** The lead's token used to approve a task's
   scope and be recorded as its owner's password approval, including on a
   release. Now `task approve` (and `task repair --yes`) with a lead token, or
@@ -52,6 +51,25 @@
   approved by its own authority (`schedule`), which stands only while its
   approver can still approve in the project. Schema v134 only adds two
   columns; `toolroll update` runs it in place.
+
+## 0.9.71 — 2026-10-25
+
+- **Sandboxed launches can open a terminal of their own on macOS.** A check
+  or build that drives a pseudo-terminal (node-pty, `script`, a test that
+  runs a shell) now works inside the sandbox. Only terminals the sandboxed
+  process made itself open: Toolroll doesn't turn on the sandbox runtime's
+  `allowPty`, which also opens your other open terminals, and it now denies
+  reading those by name, which the runtime's baseline allowed. Nothing
+  sandboxed can type into a terminal, and every sandboxed launch starts in a
+  session of its own, so a console started from your terminal doesn't hand
+  it that terminal.
+- **Only a build's agent reaches your keychain.** The sandbox runtime lets
+  every sandboxed process ask macOS's keychain service, so it could read
+  keychain items any program may read (anthropics/sandbox-runtime#755). A
+  build's setup and check commands, a project's checks, flows and tool
+  servers are now denied it. A build's agent keeps it (Claude Code signs in
+  from the keychain), and so does a check whose project gave it
+  **sign-ins**.
 
 ## 0.9.70 — 2026-10-24
 

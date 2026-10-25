@@ -131,19 +131,36 @@ Known limits:
   some local ports and refuse others). Linux builds always have a loopback of
   their own.
 - On a Mac, a project's checks may register and look up one macOS service
-  name pattern so Playwright's Chromium can start sandboxed:
+  name pattern so Playwright's Chromium headless shell can start sandboxed:
   `org.chromium.Chromium.MachPortRendezvousServer.<pid>` (builds, flows and
   tool servers can't). Chromium picks that name itself, and the sandbox can't
-  tie the pid in it to the process asking, so a hostile check can register
-  the name for another process's pid, or look up one that exists. What that
-  reaches: a Chromium started outside the sandbox with that default name
-  (your own Playwright or Puppeteer headless shell, another project's
-  check browser) that happens to get a squatted pid fails to start (a denial
-  of service, while the check runs); and a running one's rendezvous server
-  can be sent messages, which it answers only for the child processes it
-  started itself. Chrome, Chrome for Testing and Chromium-based apps use
-  their own names and aren't reachable. Neither reaches a file, a
-  credential or the network beyond what the check already has.
+  tie the pid in it to the process asking. So a hostile check can reach
+  across launches: register the name for another process's pid, so a
+  default-named Chromium started outside its sandbox with that pid (your own
+  Playwright or Puppeteer headless shell, another project's check browser)
+  fails to start; or look up a running one's rendezvous server and send it
+  messages. That server picks what it hands out by the sender's pid, as the
+  kernel reports it, and may answer an unknown sender with an empty reply;
+  what more it checks depends on how Chromium was built. Assessed against
+  Playwright's Chromium headless shell 156.0.8078.4: no port theft or escape
+  was found, but there is no guarantee beyond that, so treat it as
+  cross-launch messaging and denial of service you accept by running browser
+  checks sandboxed.
+- On a Mac, a build's agent can reach the keychain's services (securityd):
+  Claude Code signs in from the keychain. The sandbox runtime allows that to
+  every sandboxed process (anthropics/sandbox-runtime#755), so a build's
+  agent can read any keychain item, the login keychain's included, whose
+  access list lets any program read it; items that ask, or that name their
+  programs, stay closed. Toolroll denies those services to everything else
+  it sandboxes: a build's setup and check commands, a project's checks,
+  flows and tool servers. A check a project gave **sign-ins** keeps them,
+  since Claude Code's sign-in is there.
+- Every sandboxed launch on a Mac can open terminals of its own and no
+  other, can't type into a terminal (TIOCSTI), and starts in a session of
+  its own, so it has no terminal of whoever started Toolroll. A program
+  started on a terminal made for it (a live terminal, a coding session)
+  keeps that one. A project that denies `/dev` or its terminal devices by
+  name in its read-deny list gets no terminal of its own either.
 - Codex's command sandbox can't use a proxy: its commands are offline unless
   the project's network is `open` and the build has Full access.
 - A project's tool servers keep their own network reach (they hold the

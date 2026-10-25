@@ -747,7 +747,8 @@ describe("a build's tool secrets behind the macOS fence", () => {
           "for fd in /dev/fd/*; do [ -f \"$fd\" ] && head -c 65536 \"$fd\"; done; echo",
           `${JSON.stringify(python)} ${JSON.stringify(join(dir, "probe.py"))} ${process.pid} ${serverPid}`,
         ].join("\n")], { processGroup: true, confinement: "required", fence: fenceOf.fence, fenceGrants: fenceOf.grants });
-        expect(spawned.mock.calls.map(([file, args]) => [file, args?.[0], String(args?.[1]).includes("/usr/bin/sandbox-exec")])).toEqual([["/bin/sh", "-c", true]]);
+        // In a session of its own first (sandbox-runtime.ts DETACH), then the runtime's command in /bin/sh.
+        expect(spawned.mock.calls.map(([file, args]) => [file, args?.slice(-3, -1), String(args?.at(-1)).includes("/usr/bin/sandbox-exec")])).toEqual([["/usr/bin/perl", ["/bin/sh", "-c"], true]]);
         expect(fenced.stdout).not.toContain(secret);
         expect(fenced.stdout).toContain(notes.url);
         expect(fenced.stdout).toContain("other-launch-unreadable");
