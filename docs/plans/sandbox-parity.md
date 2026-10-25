@@ -68,7 +68,11 @@ macOS (srt's open mode is `(allow network*)`, its socket rules exist only in its
 filter refuses making one either way); srt's Linux filter refuses unix sockets and io_uring but not a VM socket or a
 user namespace; srt can't write back inside a write deny, so a folder or checkout made after launch inside a written
 area is writable, an own checkout can be removed, and under policy v1 a sign-ins check can't write its transcripts;
-a granted folder can be removed (the next launch never grants it through a link).
+a granted folder can be removed (the next launch never grants it through a link). On Linux, launches that write anywhere only: a home name
+absent when the launch starts (a missing ~/.bash_profile, .gitconfig, Claude settings, .mcp.json or .claude.json, a
+missing LaunchAgents or ~/.ssh) can be created, because srt holds an absent name with a stand-in the person's own
+tools can't read for the launch's length (measured: git fails on an unreadable ~/.gitconfig, bash on ~/.bashrc). This
+goes with the open decision on giving `anywhere` launches an allowlist.
 
 ## 0. What changed from v1
 

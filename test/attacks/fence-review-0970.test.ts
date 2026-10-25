@@ -12,7 +12,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, realpathSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
-import { codexFenceArgv, fenceFor, homeWriteDenies, protectedChanges, runFolders, sandboxedSpawn, serverGrantsOf, srtTermsOf, taskBoundary, trustedWorktreeBinding } from "../../src/agent-fence.js";
+import { codexFenceArgv, fenceFor, homeWriteDenies, protectedChanges, protectedLinks, runFolders, sandboxedSpawn, serverGrantsOf, srtTermsOf, taskBoundary, trustedWorktreeBinding } from "../../src/agent-fence.js";
 import { codexSandbox, git, needs, osFence, repository, underCodex, underSandbox, useScratch, write } from "./harness.js";
 
 const scratch = useScratch("review-0970");
@@ -53,6 +53,8 @@ describe("the 0.9.70 review's findings", () => {
   test("Codex's profile holds what no launch writes read-only, under Full access too", ctx => {
     const { home, worktree, launch, root } = plane();
     const agents = write(join(home, "Library", "LaunchAgents", "keep.plist"), "original\n");
+    // (On Linux the write denies take the names there at launch.)
+    for (const name of [".ssh", ".codex"]) mkdirSync(join(home, name), { recursive: true });
     const build = launch();
     const table = codexFenceArgv(build.fence, true, build.fenceGrants).find(one => one.startsWith("permissions.standing-orders.filesystem="))!;
     for (const path of [join(home, "Library", "LaunchAgents"), join(home, ".ssh"), join(home, ".codex")]) expect(table).toContain(`"${realpathSync(home)}${path.slice(home.length)}"="read"`);
@@ -79,7 +81,8 @@ describe("the 0.9.70 review's findings", () => {
     const listed = homeWriteDenies(home, binding, null, "darwin", { XDG_CONFIG_HOME: xdg });
     for (const name of [".zshenv", ".zlogin", ".bash_login", ".zprofile", ".profile", ".ssh", ".gnupg", ".config/fish", ".config/autostart", ".local/bin", "bin"]) expect(listed, name).toContain(join(base, name));
     expect(listed).toEqual(expect.arrayContaining([join(xdg, "git"), join(xdg, "fish")]));
-    // Linux holds an absent name too (the runtime puts an empty one there), but not one an empty file would change.
+    // Linux holds only what is there (an absent name's stand-in would be unreadable to the person's own tools).
+    write(join(base, ".zshenv"), "x\n");
     const linux = homeWriteDenies(home, binding, null, "linux");
     expect(linux).toContain(join(base, ".zshenv"));
     expect(linux).not.toContain(join(base, ".bash_profile"));
@@ -110,5 +113,26 @@ describe("the 0.9.70 review's findings", () => {
 
   test("the handoff refuses a protected folder's own name: a link committed as pkg/.vscode", () => {
     expect(protectedChanges(["pkg/.vscode", ".idea", "a/.claude/commands", "lib/.git/hooks", "src/vscode.ts", "docs/.vscodeignore"])).toEqual(["pkg/.vscode", ".idea", "a/.claude/commands", "lib/.git/hooks"]);
+  });
+
+  test("the handoff refuses a staged link at a protected name or a folder on the way to one, at any depth", () => {
+    const table: [string, boolean][] = [
+      [".claude", true], ["pkg/.claude", true], ["pkg/.CLAUDE", true], [".claude/commands", true], ["a/b/.vscode", true], [".git", true], ["lib/.git", true],
+      ["lib/.git/hooks", true], [".mcp.json", true], ["pkg/.envrc", true],
+      ["src/claude.ts", false], ["docs/link", false], ["pkg/.claudeignore", false], ["vendor/git", false],
+    ];
+    expect(protectedLinks(table.map(([path]) => path))).toEqual(table.filter(([, refused]) => refused).map(([path]) => path));
+  });
+
+  test("Codex: a linked ~/.ssh that leads into a read-denied folder is denied by its own name, never read back", () => {
+    const { home, root, launch } = plane();
+    const secret = join(root, "vault");
+    write(join(secret, "id"), "secret\n");
+    symlinkSync(secret, join(home, ".ssh"));
+    const build = launch();
+    // The vault is read-denied (as a project's read deny or the state is): its link at ~/.ssh must not read it back.
+    const table = codexFenceArgv([...build.fence, realpathSync(secret)], true, build.fenceGrants).find(one => one.startsWith("permissions.standing-orders.filesystem="))!;
+    expect(table).toContain(`"${join(realpathSync(home), ".ssh")}"="deny"`);
+    expect(table).not.toContain(`"${join(realpathSync(home), ".ssh")}"="read"`);
   });
 });

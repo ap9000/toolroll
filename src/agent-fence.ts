@@ -685,7 +685,12 @@ function codexFilesystem(fence: readonly string[], fullAccess: boolean, grants: 
   // Never inside a denied path: Codex lets the more specific path win, so a read there would bring it back.
   const deniedPaths = deny.filter(one => !one.includes("*")).map(real);
   for (const path of grants.writeDenies ?? []) {
-    if (access.get(path) === "deny" || deniedPaths.some(one => path === one || inside(path, one))) continue;
+    const leads = resolvedPath(path);
+    const denied = (one: string) => access.get(one) === "deny" || deniedPaths.some(den => one === den || inside(one, den));
+    // A name that leads into a denied path (a linked ~/.ssh into a read-denied folder) is denied by its own name too,
+    // never read back.
+    if (denied(leads)) { access.set(path, "deny"); continue; }
+    if (denied(path)) continue;
     access.set(path, "read");
   }
   // Denies are keyed where they resolve; the console's run folder is also denied by its
