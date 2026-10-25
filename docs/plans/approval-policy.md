@@ -1,6 +1,7 @@
 # Who can approve work — plan
 
-Status: plan, 2026-10-24. Branch `approval-policy`. Plan only; no code yet.
+Status: plan, revision 2, 2026-10-24. Branch `approval-policy`. Plan only; no code yet.
+Round 1 (Codex): NO-GO, 8 findings. All are answered below; the map is at the end.
 
 ## The problem (found by Codex)
 
@@ -8,233 +9,323 @@ A lead token can approve a task's scope today, and the result is recorded as the
 including on a release.
 
 - The CLI lets a lead token run `task` commands (`LEAD_COMMANDS`, `src/operate.ts`).
-- `credentialsFrom()` hands out the lead's owner name with the lead token (`operate.ts`).
-- `proveAccountNow()` knows it was the lead: it returns method `"lead-token"` (`src/scope.ts`).
-- `approve()` ignores the method and seals through the default basis, so the row says
-  `approval_basis = 'password'`, `approved_by = <owner>` (`scope.ts approve`, `store.ts sealScopeApproval`).
-- `ownerApproval()` in `src/release.ts` reads only basis and name, so it accepts that seal as the owner's yes.
-- The release test only rejects a made-up name, `lead:alex` (`src/release.slow.test.ts`), never the real path.
+- `credentialsFrom()` hands out the owner's name with the lead token (`operate.ts`).
+- `proveAccountNow()` knows it was the lead: method `"lead-token"` (`src/scope.ts`).
+- `approve()` ignores the method and seals with no basis, so the row says `approval_basis = 'password'`,
+  `approved_by = <owner>` (`scope.ts approve`, `store.ts sealScopeApproval`).
+- `ownerApproval()` (`src/release.ts`) reads only basis and name, so it takes that seal as the owner's yes.
+- The release test rejects only a made-up name, `lead:alex` (`src/release.slow.test.ts`).
 
-Two more things the audit found that make it worse:
+The audit found the hole is wider than approval:
 
-- On protected work the lead's approval counts as the owner's **vote** (`approvalGate(…, "person")`), so the lead
-  can supply one of the "two people".
-- `scopeApprovedForDispatch` (`src/dispatch.ts`) and the work index (`src/work-index.ts`) treat every basis that
-  isn't `mode` or `grant` as standing. A new basis would stand by default. These must become allowlists first.
+- **Merging.** `task merge` (a `task` command, so open to the lead token) checks only that the credential is valid,
+  then `mergeAsPerson()` checks the same (`task-outcome-cli.ts`, `pull-request-flow.ts`). The lead can merge,
+  including `--anyway`, which skips waiting for the full check.
+- **Deploying.** `deploymentCandidate()` (`scripts/deploy-candidate.mjs`, used by every phase of
+  `deploy-browser.mjs`) checks digests, the passing check and completion, never who approved.
+- **Votes.** On protected work the lead's approval is stored as the owner's vote (`scope_approval_vote` has no proof),
+  and both vote counters (`approvalGate`, `protectedResultProblem`) count it as a person.
+- **Provenance.** A refile through `task scope` writes `proposed_via = NULL` (`proposeLocked` default →
+  `saveScope`), so the lead can wipe a scout, coordinator or chat-proposal mark before approving.
+- **Default-allow readers.** Dispatch and the work index accept any basis that isn't `mode`/`grant`;
+  `approvalOf()` ignores basis; `modeApprovalLive()` returns true unless it recognises a dead mode or grant. A new or
+  corrupt basis would stand.
+- **Schedules.** A standing order's firing seals with no basis (`flow-schedule.ts`, kind `automation`), so it is also
+  recorded as `password`.
 
-Only the proof row (`action_ledger`, action `approval proved`, outcome `lead-token`) tells the truth today.
+What is truthful today: the proof row (`action_ledger`, `approval proved`, outcome `lead-token`) and `task_act`
+(`act = 'approved'`, `lead = 1`, plus its "lead for <owner>" ledger line). The migration uses both.
 
 ## Alex's decision
 
 The lead may approve, under a per-project setting with three choices:
 
-1. **Only people** — a person's approval counts; the lead's is refused.
-2. **People and the lead** — the lead may approve, recorded truthfully as the lead's (basis `lead`), never as a person's.
-3. **Approve automatically** — the existing signed, expiring operating modes (`docs/AUTO_APPROVAL.md`, basis `mode`).
-   Reused, not rebuilt.
+1. **Only people** — the lead's approval is refused.
+2. **People and the lead** — the lead may approve, recorded as the lead's (basis `lead`), never as a person's.
+3. **Approve automatically** — the existing signed, expiring operating modes (basis `mode`). Reused, not rebuilt.
 
 ## How the setting fits the modes
 
-Modes already answer "approve automatically": a signed, expiring envelope that seals the **signer's own filings**
-(`autoApproveFiling`, `planAuto`), with demotion on expiry or revocation. They also carry unrelated terms
-(permissions, reviews, repairs, merging).
+The setting stores two values, `people` or `lead`. Option 3 is a mode.
 
-Proposal: **the setting stores two values, `people` or `lead`; option 3 is a mode.**
+- Choosing **Approve automatically** opens the existing mode ceremony with the auto-approve preset. The mode is the
+  record, with its own expiry and one-click revoke. While it is live the setting reads "Approve automatically until
+  Fri 10:00 · Afterwards: Only people" (the stored value).
+- A mode does not change what the lead may approve by hand. Filings a mode covers seal as `mode`, as today, including
+  the lead's own CLI filings (decision 3). No new mode term, so no existing signature changes meaning.
 
-- The ledger holds the project's standing answer: Only people, or People and the lead.
-- Choosing **Approve automatically** opens the existing mode ceremony with the auto-approve preset. Nothing new is
-  signed or stored; the mode is the record, with its own expiry and one-click revoke.
-- While such a mode is live the setting reads "Approve automatically until Fri 10:00", with "Afterwards: Only people"
-  (the stored value). When the mode ends, the stored value is simply what's left.
-- A mode does not change what the lead may approve by hand. Filings it covers seal as `mode` exactly as today
-  (including the lead's own CLI filings, which sign in as the owner); anything else the lead approves follows the
-  stored value. No new mode term, so no existing signature changes meaning.
+## Words used below
 
-Why not a new mode term ("the lead approves too")? It would make a time-limited signature also widen the lead, and
-old signatures would need a rule. Keeping the two apart means each answer has one owner and one record.
+- **Proof**: how the approver was proved, recorded beside every yes. `personProof(proof: string)` is true only for
+  `password-now`, `sso-now`, `fresh-password`, `fresh-sso`, `session`, `cli-login`, `chat`. Everything else —
+  `lead-token`, `remote-token`, a missing row, any unknown string — is false. It takes a runtime string, so a
+  corrupt or future value fails closed; a type-level exhaustive switch over `AuthMethod` makes a new method a compile
+  error until classified.
+- **Person approval** of a task: basis `password` or `chat`, *and* a proof row for that approver and that exact digest
+  with `personProof`. One function, `personApprovalOf(store, taskId)`, used by release, deploy and vote counting.
+- **Authority** of a seal: its basis. Allowed values: `password`, `chat`, `mode`, `grant`, `schedule`, `lead`.
 
-## The setting
+## Phase 1 — close the hole (Only people is the only behaviour)
 
-- **Where:** per project, in Settings → Approval rules, beside the requester and protected-work rules.
-- **Record:** an append-only ledger entry, newest wins, like `passwordless.ts` and `batch-policy.ts`: action
-  `lead approval changed`, repo set, outcome `people` | `lead`, actor, time, detail `before → after`. One reader,
-  `leadMayApprove(store, repo)`, read live at each act; an unreadable or missing row is `people`. One SQL twin,
-  `leadApprovalStandsSql(repo)`, for the dispatch belts (same newest-row rule), like `grantStandsSql`.
-- **Who changes it:** an instance operator, as for approval rules.
-  - Raising to **People and the lead** is a credential act (`proveCredential`: a password typed now or a one-use
-    identity-provider re-check, never a session, remembered login or token), because it gives a machine credential a
-    new power. It joins the closed list in `docs/plans/passwordless.md`.
-  - Lowering to **Only people** is one click, like revoking a mode.
-  - Neither can be done with a lead token or an API token, and neither from chat.
-- **Default: Only people**, for existing and new installs. Fail closed: today's lead approvals were a bug that looked
-  like a person's yes, so no install should keep that power without someone choosing it; a missing setting must never
-  widen authority; and it matches modes, where no mode means every act keeps its own ceremony.
+Ships alone. No setting, no new UI beyond refusal words.
 
-## One enforcement point
+### 1.1 Approval
 
-Every scope approval ends in `approve()` (`scope.ts`) or `store.sealScopeApproval()`. The rule lives there.
+- `approve()`: right after authentication, before any vote or proof row, refuse unless `personProof(method)`.
+  Words: **"Only a person can approve this. Approve it on the task page or from your paired chat."**
+- `sealScopeApproval()` belt: a seal with no basis is a person's, so it refuses when `currentActor()?.lead === true`
+  or `activeRemote() !== null`. Every caller that isn't a person passes a basis (schedules included, 1.6).
+- `task approve` and `task repair --yes` under a lead token refuse before asking for anything.
 
-1. **Classify the proof.** `personProof(method)` in `scope.ts`, an exhaustive switch over `AuthMethod`:
-   `password-now`, `sso-now`, `fresh-password`, `fresh-sso`, `session`, `cli-login` are a person; `lead-token` is
-   the lead; `remote-token` is a machine. A new method fails to compile until it is classified.
-2. **`approve()`**, right after authentication and before any vote or proof row:
-   - person proof → today's road, basis `password`.
-   - `lead-token` → refused unless `leadMayApprove(repo)` and the scope is everyday work (below); then sealed with
-     basis `{ kind: "lead" }`, `approved_by` = the owner whose lead it is, proof row `lead-token`.
-   - `remote-token` → always refused (the remote surface already marks `task approve` as step-up; this is the belt).
-3. **The primitive's belt.** `sealScopeApproval` with no basis (a person's seal) returns false when
-   `currentActor()?.lead === true` or `activeRemote() !== null`. Any road written later that forgets `approve()`
-   still can't mint a person's seal from a machine.
-4. **Everyday work only.** A lead seal passes through the same quarantine block modes do, and takes the gate as a
-   non-person:
-   - coordinator-filed tasks: refused (a person sees who asked);
-   - checks that reach beyond the fence (check access): refused;
-   - escalated permissions: refused;
-   - scopes the lead, a scout or a coordinator proposed (`proposed_via`): refused (decision 3);
-   - requester rule or protected work on: refused, and the lead never counts as a vote (`approvalGate` kind `lead`,
-     handled like `ai`).
+### 1.2 Chat proof
 
-   This is `freshlyApprovable()` plus check access: the same "everyday work" rule a remembered password already uses.
+The paired-chat approval (`chat-decide.ts`, basis `chat`) writes a real proof row beside its seal: action
+`approval proved`, outcome `chat`, detail in the same digest-bound format (`<at> · generation <n> · digest <d>`),
+with the chat binding in its own ledger line as today. `chat` is classified as a person. Only the paired-chat tap
+writes it; it is never a password proof. Chat merges (`mergeInChat`) already record their own person tap.
 
-Refusal words, one line: **"Only a person can approve this. Approve it on the task page or from your paired chat."**
-When the setting is the reason: **"This project lets only people approve work."**
+### 1.3 Votes
 
-## Every reader of `approval_basis`
+- `scope_approval_vote` gains a `proof` column. `recordApprovalVote` writes the method; `approve()` already refuses
+  machine proofs, so new votes are always a person's.
+- Both counters (`approvalGate`, `protectedResultProblem`) count only votes with `personProof(proof)`.
+- Migration fills `proof` from the matching proof row (task, approver, digest). Votes with a machine proof, and votes
+  with no matching proof row (ambiguous), are kept as history but never counted.
+- Reassessment, in the same migration: every sealed protected scope whose counted votes fall below two is
+  - **queued with no live claim** → the seal is cleared and the task gets "Approval needs renewing";
+  - **claimed, running or finished** → history kept; the vote counter at completion now asks for a second person,
+    and deploy and release need a person approval anyway.
 
-`lead` is never "person" anywhere. Each reader moves to an allowlist so the next new basis fails closed too.
+### 1.4 Provenance can't be erased
 
-| Reader | Today | Change |
+`saveScope` derives who wrote the text from the trusted actor, not from the caller:
+
+- a lead-token write sets `proposed_via = 'lead'` if nothing stronger is there; a lead or remote write **never clears
+  or downgrades** an existing `mate`, `scout`, `coordinator` or `lead` mark;
+- only a write by a person (no lead actor, no remote run) may reset it, as today, since a person wrote those bytes.
+
+The mate/coordinator/scout quarantine for modes is unchanged. `lead` is **not** added to it, so mode-covered lead CLI
+filings keep working (decision 3). In phase 2, `lead` and `mate` mean "the lead's own text"; `scout` and
+`coordinator` mean another machine's.
+
+### 1.5 Authority readers, all allowlists
+
+`lead` and anything unknown never count as a person, and nothing unrecognised stands.
+
+| Reader | Today | Phase 1 |
 | --- | --- | --- |
-| `dispatch.ts scopeApprovedForDispatch` | `NOT IN ('mode','grant')` stands | Allowlist: `password`, `chat`, live `mode`, live `grant`, `lead` only while `leadApprovalStandsSql` |
-| `work-index.ts` `dispatch_approval` | same deny-list | same allowlist |
-| `store.ts modeApprovalLive` (claim and build belts, `claim.ts`, `builder.ts`) | removes dead mode/grant | also false for `lead` when the setting is `people` |
-| `store.ts sealScopeApproval` quarantines | apply when a basis is given | apply to `lead` too (falls out of passing a basis) |
-| `store.ts approvalGate` | kind from caller | `lead` kind: refused when any rule applies; never a vote |
-| `store.ts` demotions (mode, grant) | reset basis to `password` | unchanged; new `withdrawLeadApprovals` beside them |
-| `scope.ts` `Scope.approvalBasis` type, `store.ts readScope` | four values | add `lead`; unknown text reads as `null` (unapproved), not cast |
-| `evidence-pack.ts` | anything else is `"person"` | `password`/`chat` → `person`, `lead` → `lead`, `mode`, `flow`; unknown → `unknown` |
-| `release-adapters.ts` + `release.ts ownerApproval` | basis + name | also the proof method (below) |
-| `claim.ts` plan-ready words | mode vs grant | unchanged: lead never auto-approves a plan |
-| `chat-actions.ts` revision strip | drops the field | unchanged: a revision is new text and needs a new yes |
-| `render-tasks.ts approvalProofWords` | words for session/remembered | `lead-token` → " (by the lead)"; but the fact line itself says it (UI) |
-| `lead-tools.ts scopeStandingOf` | approved / not | "approved by the lead" when basis is `lead` |
-| `store.ts noteLifecycle` "Scope approved" | already says "the lead" | unchanged |
+| `readScope` (`store.ts`) | unchecked cast | allowed values pass; anything else reads as `unknown` (kept, not cast) |
+| `approvalOf` (`scope.ts`) | ignores basis | null or `unknown` basis → `{ approved: false, reason: "authority" }` |
+| `modeApprovalLive` → renamed `approvalAuthorityLive` (claim and build call it directly) | true unless a known mode/grant is dead | explicit allowlist: `password`/`chat` true; `mode`/`grant` live checks as today; `schedule` (1.6); `lead` false in phase 1; null/unknown false |
+| `dispatch.ts scopeApprovedForDispatch` | deny-list | same allowlist in SQL |
+| `work-index.ts` `dispatch_approval` | deny-list | same allowlist in SQL |
+| `release-adapters.ts` + `release.ts ownerApproval` | basis + name | `personApprovalOf`; `lead`/`mode`/`schedule` refuse in words |
+| `deploy-candidate.mjs` | no approval check | `personApprovalOf` (1.7) |
+| `evidence-pack.ts` | anything else is `"person"` | `person` only for a person approval; else `lead`, `mode`, `flow`, `schedule`, `unknown` |
+| `noteLifecycle` (in `sealScopeApproval`) | an unlisted basis says "under the operating mode" | one wording per basis; `lead` → "Approved by the lead", `schedule` → "Approved by its standing order" |
+| `render-tasks.ts approvalProofWords` | words for session/remembered | `chat` and `lead-token` get words; unknown says nothing |
+| `claim.ts` plan-ready words | mode vs grant | unchanged (display only) |
+| `chat-actions.ts` sweep-child fingerprint | drops approval fields | unchanged (not an authorization) |
+| store demotions | reset basis | unchanged; they clear approval |
 
-Per gate, what the lead may approve with the setting on:
+**Legacy null.** A sealed row with a null basis comes from before the basis column, when only the password ceremony
+sealed. The migration sets it to `password`. After that, null is never written and reads as no authority.
+
+**Legacy `password` without a proof row** (from before proof rows): stays `password` and keeps dispatching
+(grandfathered, as today), but is not a person approval for release, deploy or vote counting. Release tasks are filed
+fresh per commit, so this costs nothing there.
+
+### 1.6 Schedules get their own basis
+
+A standing order's firing seals with basis `schedule`, with the standing order's id as its authority reference (the
+`mode_digest` column, which already carries grant and chat references). It is automatic: never a person, never a
+vote, never enough for release, deploy or protected work (the gate already refuses kind `automation` there). It
+stands at claim and build only while the check the firing made still holds (the standing order active, its approver
+still an approver with access). Migration: `password` seals on tasks filed by a standing order, with no person proof
+row, become `schedule`.
+
+### 1.7 Merge and deploy need a person
+
+- **Merge.** The shared manual-merge boundary, `mergeAsPerson()`, requires a person proof from
+  `authenticateApprover` (not just `.ok`); `task merge` refuses a lead token before asking, `--anyway` included.
+  Words: **"Only a person can merge. Merge it on the task page or from your paired chat."** Automatic merging under a
+  mode's grant and chat merges are unchanged.
+- **Deploy.** `deploymentCandidate()` also requires `personApprovalOf` for the candidate's task. Every entry to
+  `deploy-browser.mjs` — the whole run and each resumed phase (stage, prepare, rehearse, swap, finish) — already
+  re-proves the candidate through it, so resumed phases are covered. `--phase recover` still needs no approval: it
+  only puts the previous service back. The passing check and exact-completion requirements are unchanged.
+
+### 1.8 Existing data (one migration)
+
+1. Null basis on sealed rows → `password` (1.5).
+2. `password` seals whose own proof row is `lead-token` or `remote-token`, or whose `task_act` row says `approved`
+   with `lead = 1` for that seal → `lead`, with the owner's lead credential as reference when it can be matched,
+   otherwise `unknown-credential` (never stands).
+3. Schedule seals → `schedule` (1.6).
+4. Vote proofs and the protected reassessment (1.3).
+5. Queued, unclaimed tasks that end up `lead` (or lose their second vote) are unsealed with the normal notice;
+   running and finished work keeps its history.
+
+## Phase 2 — the setting: People and the lead
+
+### 2.1 The setting
+
+- **Where:** per project, Settings → Approval rules, beside the requester and protected-work rules.
+- **Record:** append-only ledger, newest wins, like `passwordless.ts` and `batch-policy.ts`: action
+  `lead approval changed`, repo, outcome `people` | `lead`, actor, time, `before → after`. Reader
+  `leadMayApprove(store, repo)`; missing or unreadable is `people`. SQL twin `leadApprovalStandsSql(repo)`.
+- **Who:** an instance operator. Raising is a credential act (`proveCredential`: a password typed now or a one-use
+  identity-provider re-check; never a session, remembered login or token) and joins the closed list in
+  `docs/plans/passwordless.md`. Lowering is one click. Never from a lead token, an API token or chat.
+- **Default: Only people**, for existing and new installs. Fail closed: today's lead approvals were a bug that looked
+  like a person's, a missing setting must never widen authority, and it matches modes (no mode, no automation).
+
+### 2.2 Sealing as the lead
+
+`approve()` with `lead-token`, when `leadMayApprove(repo)` and the scope is **lead-approvable**, seals basis `lead`,
+`approved_by` = the owner, authority reference = the lead credential's public id, proof row `lead-token`.
+Lead-approvable means all of:
+
+- standard permissions (not escalated); no check access beyond the fence;
+- no requester rule and no protected work on this task (`approvalGate` kind `lead`, handled like `ai`); the lead
+  never adds a vote;
+- the text is the lead's own (`lead`, `mate`) or a person's (null) — never `scout` or `coordinator`;
+- the organisation policy allows it (as for every seal).
+
+Remote tokens never approve, in any setting.
+
+### 2.3 When a lead seal stands
+
+At dispatch, claim and build (`approvalAuthorityLive`, the dispatch and work-index SQL), a `lead` seal stands only
+while all of these hold:
+
+- the project setting is `lead`;
+- the lead credential named in the authority reference is not revoked or replaced;
+- its owner is still `approved_by`, an active approver, with access to the project.
+
+So demoting the owner, removing their project access, or revoking or replacing the lead token makes outstanding lead
+seals stop standing, as a mode stops when its signer does. Those events also run `withdrawLeadApprovals` (below) so
+queued tasks show "Approval needs renewing" instead of silently stalling.
+
+### 2.4 Lowering the setting, and the exact cutoff
+
+- In the same transaction as the ledger row, `withdrawLeadApprovals(repo)` unseals lead seals on **queued tasks with
+  no live claim**, each with the notice "The lead's approval no longer counts here. Approve it before it runs."
+- **The cutoff is the builder's final authority check** (`builder.ts`, the last check before money), the rule modes
+  follow today:
+  - claim taken, builder not yet past its check → the builder refuses, the claim is released, and the task is
+    unsealed with the notice;
+  - builder past its check → that attempt runs to the end and its result can be inspected as usual;
+  - any next attempt — retry, repair, revision, a resumed run — meets the check again and waits for a person.
+- History is never rewritten: finished work keeps basis `lead`.
+
+### 2.5 Gates
 
 | Gate | A person | The lead (People and the lead) | A mode |
 | --- | --- | --- | --- |
 | Ordinary scope, standard permissions | yes | yes, basis `lead` | signer's own filings |
 | Escalated permissions | yes | no | as signed |
 | Check access (sign-ins, no sandbox) | yes | no | no (today) |
-| Coordinator-filed task | yes | no | no (today) |
-| Lead/scout/coordinator-proposed text | yes | no (decision 3) | no (today) |
+| Coordinator- or scout-written text | yes | no | no (today) |
+| The lead's own text (CLI or chat proposal) | yes | yes | CLI filings yes, chat proposals no (today) |
 | Requester rule on | yes, not the requester | no | as today |
-| Protected work (two people) | counts as one vote | no, never a vote | no (today) |
-| Repair draft (`task repair --yes`) | yes | as ordinary scope (goes through `approve()`) | as today |
-| Merge (`publish merge`) | yes | no (not a lead command; unchanged) | grant + automerge (today) |
-| Release / deploy | yes | **no** (decision 1) | **no** |
+| Protected work (two people) | one vote | no, never a vote | no (today) |
+| Repair draft (`task repair --yes`) | yes | as ordinary scope | as today |
+| Manual merge (`task merge`, merge button) | yes | **no** (decision 2) | grant + automerge (today) |
+| Release | yes | **no** (decision 1) | no |
+| Deploy | yes | **no** (decision 1) | no |
+| Standing-order firing | — | — | basis `schedule` |
 
-## Releases
-
-Recommendation: **a release always needs a person, whatever the setting.** It ships to everyone, and it is the one
-gate where a machine approving its own build can't be caught later.
-
-- `ownerApproval()` keeps its allowlist (`password`, `chat`) and adds the proof: the release adapter reads
-  `approvalProofOf(task, by, digest)` and the gate refuses unless `personProof(method)`. A missing proof row refuses
-  ("approve it again"); release tasks are filed fresh per commit, so this costs nothing.
-- `lead` and `mode` bases refuse with "approved by the lead, not by a person" / "approved by a mode, not by a person".
-- The release test goes through the real lead-token path, not a synthetic name.
-
-## Revocation
-
-Lowering to **Only people** works like a mode ending (`reconcileIntentsForMode`, `withdrawGrantApprovals`):
-
-- In the same transaction, `withdrawLeadApprovals(repo)` clears lead-sealed scopes on **queued tasks with no live
-  claim**, and each gets the existing "Approval needs renewing" notice: "The lead's approval no longer counts here.
-  Approve it before it runs."
-- **Running work keeps running.** An attempt already claimed or building finishes, and its result can be inspected
-  as usual. The belts (`claim.ts`, `builder.ts`, dispatch) read the setting live, so any next attempt — retry,
-  repair, the next dispatch after a race — waits for a person.
-- History is never rewritten: finished work keeps its basis `lead`.
-
-## Existing data
-
-Rows sealed before the fix say `password` but their proof says `lead-token`. Phase 1 adds a data migration:
-
-- Find seals with basis `password` whose own proof row (same task, approver, approved digest) is `lead-token` or
-  `remote-token`; relabel them basis `lead`. History becomes truthful.
-- Because the default is Only people, the queued, unclaimed ones then demote with the normal notice; running and
-  finished ones keep their history.
-- Migration test with a seeded old database, per AGENTS.md.
-
-## UI
+### 2.6 UI
 
 - **Settings → Approval rules**, first block: **Who can approve work** — Only people / People and the lead / Approve
-  automatically. One hint under the second choice: "Marked as the lead's. Releases still need a person." Choosing the
-  third opens the mode screen with its preset; while a mode is live the block shows its end time and "Afterwards: …".
-  Raising asks for the password inside the form; lowering is a click.
-- **Task page**: the approval fact reads **"Approved by the lead"** with the time, never the owner's name alone. A
-  refused lead approval leaves the normal approval card for a person.
-- **Approval cards and the board**: the same three words wherever "Approved by alex" appears today.
-- **The lead's tools and chat**: the console chat lead keeps no approve tool. It still offers the owner's own Approve
-  buttons in paired chat (`lead-tools.ts`), and its facts say whether it may approve in this project. The lead
-  approves only through the CLI it already uses (`task approve` with its token), which hits the one rule.
-- **MCP proposals**: unchanged. `propose_scope` writes a proposal; a coordinator never approves, under any setting.
-- **Chat parity**: the setting is changed on its page (raising needs a password, so never in chat); the lead can link
-  to it with `show_control`.
+  automatically. One hint under the second: "Marked as the lead's. Merges and releases still need a person."
+  The third opens the mode screen; while a mode is live the block shows its end and "Afterwards: …". Raising asks for
+  the password inside the form; lowering is a click.
+- **Task page, approval cards, board**: **"Approved by the lead"** with the time, never the owner's name alone.
+- **The lead's tools**: the console chat lead gets no approve tool; it keeps offering the owner's own Approve buttons
+  in paired chat (`lead-tools.ts`). Its facts say whether it may approve in this project. The lead approves only
+  through `task approve` with its token, which meets the one rule.
+- **MCP**: unchanged. `propose_scope` writes a proposal; a coordinator never approves.
+- **Chat parity**: the setting is changed on its page (raising needs a password, so never in chat); the lead links to
+  it with `show_control`.
 
-Simplicity pass before sign-off: one heading, three plain choices, one hint, no explanation paragraphs.
+Simplicity pass: one heading, three plain choices, one hint.
+
+## Phase 3 — Approve automatically
+
+The third choice opens the mode ceremony with its preset, and the block shows the mode's end and the fallback. UI
+only; one desktop and one phone journey.
 
 ## Tests
 
 Only what `docs/testing.md` keeps: security rules, migrations, contracts. Run the AGENTS.md safety self-review before
-each security commit.
+each security commit. Every case goes through the real road, not a hand-made gate.
 
-1. **Real lead-token regression** (`runOperate` with `TOOLROLL_LEAD_TOKEN` from a minted lead token, `task approve
-   --yes --digest`):
-   - Only people → refused with the words; scope unsealed; no vote, no proof row.
-   - People and the lead → sealed, `approval_basis = 'lead'`, proof `lead-token`.
-   - Release gate over that row refuses in both settings (through `release-adapters`, not a hand-made gate).
-2. **Primitive belt**: `sealScopeApproval` with no basis inside `withActor({ lead: true })` or a remote run returns
-   false.
-3. **Gate table**: one table test, one row per line of the gate table above (setting on/off × gate), asserting seal or
-   refusal and that the lead never adds a vote.
-4. **Reader table**: one table over dispatch, work index, `modeApprovalLive`, evidence export: `lead` with setting on,
-   `lead` with setting off, an unknown basis — the unknown one never stands.
-5. **Contract**: `personProof` is exhaustive (type-level `never`); remote `task approve` stays step-up.
-6. **Revocation**: lowering demotes queued unclaimed lead seals; a claimed one keeps running; its next dispatch waits.
-7. **Setting**: raising refuses a session, remembered login, lead token and API token; lowering is one click; a viewer
-   or non-operator is refused; ledger rows written.
-8. **Migration**: old `password` + `lead-token` proof → `lead`, queued ones demoted.
-9. **Attack case**: the lead with its token env removed can't fall back to the owner's remembered login (the fence
-   already hides `up-login.txt`; add the case to the attack suite if it's missing).
+Phase 1:
 
-## Phases
+1. **Real lead-token approval** (`runOperate` with `TOOLROLL_LEAD_TOKEN` from a minted lead token, `task approve
+   --yes --digest`): refused; scope unsealed; no vote, no proof row. Same for `task repair --yes`.
+2. **Real lead-token merge**: `task merge` and `task merge --anyway` refused; `mergeAsPerson` with a lead token
+   refused; a person's merge still works.
+3. **Release and deploy**: over a lead-relabelled row, a schedule row, a mode row and a legacy no-proof row, both
+   `ownerApproval` (through `release-adapters`) and `deploymentCandidate` refuse; a password row with proof and a
+   chat row with its new chat proof pass. Deploy is also entered at a resumed phase.
+4. **Seal belt**: `sealScopeApproval` with no basis under a lead actor or a remote run returns false.
+5. **Final belts table**: one table over `approvalOf`, `approvalAuthorityLive` as called by claim and by build, the
+   dispatch query and the work index. Rows: password, chat, live/dead mode, live/dead grant, schedule, lead, null,
+   `bogus`. Null and `bogus` never stand anywhere.
+6. **Votes**: a machine vote plus a later person's vote does not seal protected work; a sealed protected scope with a
+   machine first vote is reassessed by the migration (queued → unsealed; running → completion asks for a second
+   person).
+7. **Provenance**: a lead refile of a scout, coordinator or mate scope keeps the mark; a person's refile resets it.
+8. **Proof contract**: `personProof` is exhaustive at type level and false for unknown runtime strings.
+9. **Migration**: seeded old database covering null basis, lead-token proof, `task_act` lead, a schedule firing,
+   machine and missing-proof votes.
+10. **Attack case**: the lead with its token env removed can't fall back to the owner's remembered login (the fence
+    hides `up-login.txt`; add the case to the attack suite if missing).
 
-1. **The fix: only people.** `personProof`; `approve()` refuses `lead-token` and `remote-token`; the primitive's
-   belt; allowlists in dispatch and the work index; `lead` basis known to every reader and never standing; release
-   reads the proof; evidence export fixed; migration of old rows; tests 1 (refusal half), 2, 4, 5, 8, 9. Small, no UI
-   beyond the refusal words. Ships alone.
-2. **The setting: people and the lead.** Ledger + reader + SQL twin; Settings → Approval rules block (two choices);
-   `approve()` seals `lead` for everyday work; `approvalGate` kind; `withdrawLeadApprovals`; task page, cards and lead
-   facts say "the lead"; tests 1 (seal half), 3, 6, 7.
-3. **Approve automatically.** The third choice opens the mode ceremony with its preset and shows the mode's end and
-   the fallback. UI only; one desktop and one phone journey.
+Phase 2:
+
+11. Lead-token approval under People and the lead seals `lead` with the credential reference; release, deploy and
+    merge still refuse it.
+12. **Gate table**: one row per line of 2.5, setting on and off; the lead never adds a vote.
+13. **Standing**: owner demoted, owner loses project access, lead token revoked, lead token replaced → the seal stops
+    standing at dispatch, claim and build, and queued tasks are unsealed.
+14. **Cutoff interleavings**: claim → lower → build refuses and releases; build past its check → lower → attempt
+    finishes, retry refuses.
+15. **Setting**: raising refuses a session, remembered login, lead token and API token; lowering is one click;
+    a viewer or non-operator is refused; ledger rows written.
 
 ## Decisions for Alex
 
-1. **Releases always need a person**, even with People and the lead or a mode? *Recommend yes.*
-2. **Option 3 is a mode, not a stored value**, and a mode doesn't widen what the lead approves by hand? *Recommend
-   yes* (alternative: a new signed mode term that also lets the lead approve).
-3. **What the lead may approve**: everyday work only — standard permissions, no protected work or requester rule, no
-   check access, not coordinator-filed, and not text the lead or a scout proposed? *Recommend yes.* Allowing its own
-   chat proposals is the one tempting widening; it would mean the lead writes and approves the same words.
-4. **Remote API tokens never approve**, under any setting? *Recommend yes* (the remote-team plan already keeps
-   approvals in the console and chat).
-5. **Default Only people for new installs too**, not just existing ones? *Recommend yes*; turning it on is one
-   deliberate act.
-6. **Raising the setting is a credential act** (typed password, even under Passwordless)? *Recommend yes*; it gives a
-   token a new power.
-7. **Old lead approvals**: relabel to `lead` and demote the queued ones on upgrade? *Recommend yes*; the alternative
-   (leave them as the owner's) keeps a false record.
+1. **Releases and deploys always need a person**, even with People and the lead or a mode? *Recommend yes.*
+2. **Manual merges always need a person** (the lead never merges by hand; automatic merging stays a mode's grant)?
+   *Recommend yes.*
+3. **Modes keep covering the lead's own CLI filings** (today's behaviour), while chat-proposal, scout and coordinator
+   text stays quarantined from modes? *Recommend yes*; that is what Approve automatically is for. The alternative
+   (quarantine all lead text from modes) means Approve automatically would not approve the lead's work.
+4. **What the lead may approve by hand**: everyday work, its own or a person's text, never another machine's (2.2)?
+   *Recommend yes.*
+5. **Revoking or replacing the lead token, or the owner losing standing, ends outstanding lead seals** (2.3)?
+   *Recommend yes*; it is the same rule as a mode's signer.
+6. **Remote API tokens never approve**, in any setting? *Recommend yes* (the remote-team plan keeps approvals in the
+   console and chat).
+7. **Default Only people for new installs too**, and raising is a credential act (typed password, even under
+   Passwordless)? *Recommend yes.*
+8. **Legacy rows**: relabel lead approvals to `lead`, don't count machine or unproven votes, and keep no-proof
+   `password` rows dispatching but not counting as a person for release, deploy or votes? *Recommend yes.*
+
+## Round 1 findings → where answered
+
+1. `task merge` open to the lead → 1.7, test 2.
+2. Deploy gate never asks who approved → 1.7, test 3.
+3. Machine votes counted as people → 1.3, 1.8, test 6.
+4. Provenance erased by refiling → 1.4, test 7; reconciled with mode-covered CLI filings in decision 3.
+5. Default-allow final belts → 1.5 (allowlist, legacy-null policy), test 5.
+6. Chat approvals have no proof → 1.2, test 3.
+7. Claimed vs started cutoff → 2.4, test 14.
+8. Owner and token revocation → 2.3, test 13.
+
+Also: schedules get basis `schedule` (1.6); `noteLifecycle` gets `lead` and `schedule` words (1.5); `task_act.lead`
+is used as an existing truthful record (1.8).
