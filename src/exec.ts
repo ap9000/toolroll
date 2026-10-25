@@ -10,7 +10,7 @@
 import { ACP_LINE_CAP, createAcpConversation } from "./acp-client.js";
 import { linuxFenceAvailable, macosFenceAvailable, sandboxedSpawn, type FenceGrants } from "./agent-fence.js";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { readlinkSync, realpathSync } from "node:fs";
 import { observeProcessTree, stopProcessTree, type ProcessTreeObserver } from "./process-tree.js";
 import { jsonlDiscriminants } from "./jsonl-discriminants.js";
 import { createContainer, currentContainment, type AttachOutcome, type Container, type ContainmentBackendId } from "./containment.js";
@@ -1583,7 +1583,7 @@ function liveUnderAgent(root: number, names: readonly string[], rootIsWrapper = 
   const children = new Map<number, ProcessRow[]>();
   for (const row of rows) children.set(row.parent, [...(children.get(row.parent) ?? []), row]);
   const self = rows.find(row => row.pid === root);
-  const named = (row: ProcessRow) => names.some(name => row.name === name || row.name.endsWith(`/${name}`));
+  const named = (row: ProcessRow) => agentNamed(row, names);
   // The agent: the root when it is the agent (macOS sandbox-exec execs in place), else the first named descendant.
   // On Linux the root is the sandbox launch helper (sandbox-launch.ts, itself node): never taken for the agent.
   let agent: number | null = !rootIsWrapper && self !== undefined && named(self) ? root : null;
@@ -1602,6 +1602,22 @@ function liveUnderAgent(root: number, names: readonly string[], rootIsWrapper = 
     below.push(...(children.get(row.pid) ?? []));
   }
   return found;
+}
+
+/** The program a Linux process runs (its /proc exe), or null: elsewhere, or unreadable. */
+function linuxProgramOf(pid: number): string | null {
+  if (process.platform !== "linux") return null;
+  try { return readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, "").split("/").pop() || null; } catch { return null; }
+}
+
+/**
+ * Whether a listed process is the agent's launch (`names`): by its listed name, or on Linux by the program it runs,
+ * since a listing there shows the main thread's name, which Node 24 sets to "MainThread".
+ */
+export function agentNamed(row: { pid: number; name: string }, names: readonly string[], programOf: (pid: number) => string | null = linuxProgramOf): boolean {
+  if (names.some(name => row.name === name || row.name.endsWith(`/${name}`))) return true;
+  const program = programOf(row.pid);
+  return program !== null && names.includes(program);
 }
 
 /** How long each shutdown step waits: session/close's answer, then exit after stdin closes, then exit after SIGTERM. */

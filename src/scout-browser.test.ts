@@ -13,6 +13,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSyn
 import { lookup } from "node:dns/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { readReportImage, scoutBrowserLaunch, scoutProxyEnv } from "./scout.js";
 import { startScoutProxy, type ScoutProxy } from "./scout-net.js";
 import { linuxFenceAvailable, macosFenceAvailable, NO_GRANTS, sandboxedSpawn } from "./agent-fence.js";
@@ -108,8 +109,10 @@ describe.skipIf(why !== null)(`the scout's real browser${why === null ? "" : ` (
       await session.close();
       console.log(JSON.stringify(steps.map(step => step.ok ? "ok" : step.reason)));
     `);
-    const tsx = resolve("node_modules/.bin/tsx");
-    let { file, args, env: added } = { file: tsx, args: [client, server.url, secret], env: {} as Record<string, string> };
+    // Node with tsx's loader, not the tsx command: that one opens a unix socket to relay signals, which the Linux
+    // fence (the sandbox runtime's seccomp filter) refuses.
+    const loader = pathToFileURL(resolve("node_modules/tsx/dist/loader.mjs")).href;
+    let { file, args, env: added } = { file: process.execPath, args: ["--import", loader, client, server.url, secret], env: {} as Record<string, string> };
     if (macosFenceAvailable() || linuxFenceAvailable()) ({ file, args, env: added } = sandboxedSpawn(file, args, [secret], NO_GRANTS));
     const env = { ...process.env, ...scoutProxyEnv(proxy.url, server.url), ...added };
     const output = await new Promise<string>((done, fail) => {
