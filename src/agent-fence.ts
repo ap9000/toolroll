@@ -11,7 +11,8 @@
  * Toolroll passes it (srtTermsOf): Toolroll's own state and database denied to read and write; the build's own
  * checkout writable; other tasks' checkouts read, never written; the project's read-deny list; under policy v1 (an
  * approval sealed before 0.9.70) the home configuration denied by name; a sign-ins check's exact files read again; the
- * run's proxy as its only way out when its network is confined.
+ * run's proxy as its only way out when its network is confined. On macOS every launch also gets a pseudo-terminal of its
+ * own and no other terminal (sandbox-runtime.ts SEATBELT_TERMINALS, a static rule).
  *
  * Codex (every platform) fences its own agent's commands with its own sandbox: a permission profile with the same
  * denies (codexFenceArgv). Claude also gets Read/Edit deny rules for its own file tools.

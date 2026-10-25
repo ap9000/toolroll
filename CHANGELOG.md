@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.71 — 2026-10-25
+
+- **Sandboxed launches can open a terminal of their own on macOS.** A check
+  or build that drives a pseudo-terminal (node-pty, `script`, a test that
+  runs a shell) now works inside the sandbox. Only terminals the sandboxed
+  process made itself open: Toolroll doesn't turn on the sandbox runtime's
+  `allowPty`, which also opens your other open terminals, and it now denies
+  reading those by name, which the runtime's baseline allowed. A launch's
+  own controlling terminal and a terminal handed to it open keep working.
+
 ## 0.9.70 — 2026-10-24
 
 - **Every sandbox is now Anthropic's sandbox-runtime.** Builds, their setup
