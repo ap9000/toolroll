@@ -619,7 +619,11 @@ export type TriggerIo = { gh: Runner; fetch: typeof fetch; dir: string | null;
   /** How mail is read (default: IMAP; tests pass a scripted mailbox). */
   mail?: MailReader;
   /** v90: how a schedule's script runs (default: the same runner as gh) and where (default: beside the database). */
-  shell?: Runner; scratch?: string };
+  shell?: Runner; scratch?: string;
+  /** Whether this machine can confine a script (tests only; default: the macOS sandbox or bubblewrap is here). */
+  fenceAvailable?: () => boolean;
+  /** The home folder a launch is fenced around (tests only; default: this user's). */
+  home?: string };
 export type TriggerPass = { added: number; checked: number; problems: string[] };
 
 /** Every trigger in one project that is due: schedules and other flows here, GitHub, Linear and email by asking them. */
@@ -789,20 +793,25 @@ async function fireScript(store: Store, trigger: FlowTriggerRow, config: Extract
   const missing = (config.secrets ?? []).filter(name => saved[name] === undefined);
   if (missing.length > 0) return done(false, `${script.name} needs the secret${missing.length === 1 ? "" : "s"} ${missing.join(", ")}. Save ${missing.length === 1 ? "it" : "them"} on the flow first.`);
   // Loaded when a script first runs: the runner reaches the builder's modules, which reach back to these triggers.
-  const { cardsFromOutput, cleanFolder, runCode } = await import("./flow-code.js");
-  const { agentFence } = await import("./agent-fence.js");
+  const { cardsFromOutput, cleanFolder, flowLaunch, runCode } = await import("./flow-code.js");
   const scratch = io.scratch ?? join(io.dir ?? tmpdir(), "flow-scratch");
   const folder = cleanFolder(scratch, `flow-trigger-${trigger.id}`);
   // Its cards run on their own only if it ran the very code a grant signed: pinned just before and just after the run.
   const pin = scheduled && grantSignsScriptOf(store, flow.id, trigger.id, now) ? () => scriptProvenanceOf(store, flow.repo, script.name) : null;
   const before = pin === null ? null : await pin();
   let ran: CodeResult;
+  // A full boundary around its clean folder, though it has no checkout (flow-code.ts flowLaunch).
+  const launch = flowLaunch(store, { repo: flow.repo, folder, scratch, copy: false, policy: store.flowFencePolicy(flow.id), ...(io.fenceAvailable === undefined ? {} : { available: io.fenceAvailable }), ...(io.home === undefined ? {} : { home: io.home }) });
   try {
+    if (launch !== null && "problem" in launch) return done(false, launch.problem);
     ran = await runCode({ script, cwd: folder, root: flow.repo, scratch, shell: io.shell ?? io.gh,
       input: { flow: { id: flow.id, name: flow.name }, trigger: trigger.id, lastRun: trigger.lastAt }, secrets: Object.fromEntries((config.secrets ?? []).map(name => [name, saved[name]!])),
       env: { FLOW_NAME: flow.name, FLOW_TRIGGER_ID: String(trigger.id), FLOW_PROJECT: flow.repo, FLOW_LAST_RUN: trigger.lastAt ?? "" },
-      fence: agentFence({ databaseFile: store.databaseFile(), worktree: folder }) });
-  } finally { rmSync(folder, { recursive: true, force: true }); }
+      launch });
+  } finally {
+    if (launch !== null && !("problem" in launch)) launch.dispose();
+    rmSync(folder, { recursive: true, force: true });
+  }
   if (ran.state === "failed") return done(false, ran.said.split("\n")[0]!);
   const ranScript = pin === null ? null : scriptRanDigestOf(before, await pin(), script);
   const items = cardsFromOutput(ran.printed);

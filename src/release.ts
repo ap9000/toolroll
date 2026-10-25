@@ -39,6 +39,7 @@ export const REQUIRED_PR_CHECKS = [
   "node 22 · ubuntu-latest",
   "node 24 · ubuntu-latest",
   "linux native containment · delegated cgroup v2",
+  "linux fence · sandbox-runtime",
   "Windows Job Object containment",
 ] as const;
 /** The checks a release tag runs (.github/workflows/publish.yml), awaited before Homebrew moves. */

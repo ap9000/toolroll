@@ -36,8 +36,7 @@ import { JEV_MODEL, askJev, readJevAnswers, sortLog, sortRequest, sortState, sor
 import { claudeDraftRunner, DRAFT_CHARS, DRAFT_TIMEOUT, draftPrompt, wholeDraft, type DraftRunner } from "./flow-draft.js";
 import { overruns, passOn, TEXT_LIMITS, writeWithin } from "./text-limits.js";
 import { readFlowSecrets, sendingReady, runRequest, sendEmail, toolWaiting, useTool, type MailSender, type ToolCaller } from "./flow-actions.js";
-import { cleanFolder, runCode } from "./flow-code.js";
-import { agentFence } from "./agent-fence.js";
+import { cleanFolder, flowLaunch, runCode } from "./flow-code.js";
 import { readProviderKey } from "./keys.js";
 import type { FlowCardRow, FlowRow, FlowScriptRow, FlowStepKind, Store } from "./store.js";
 import { replyInChannel } from "./chat-inbox.js";
@@ -58,6 +57,10 @@ export type StepIo = {
   dir: string | null;
   /** Where temporary copies of a card's work are made. */
   scratch: string;
+  /** Whether this machine can confine a script (tests only; default: the macOS sandbox or bubblewrap is here). */
+  fenceAvailable?: () => boolean;
+  /** The home folder a launch is fenced around (tests only; default: this user's). */
+  home?: string;
   evidenceRoot?: string;
   /** The branch a card with no result yet is checked against. */
   base: string;
@@ -370,13 +373,15 @@ async function runCheck(store: Store, flow: FlowRow, stage: FlowStage, script: F
     const added = await io.git("git", ["-C", flow.repo, "worktree", "add", "--detach", path, commit ?? io.base], { timeoutMs: 120_000 });
     if (added.code !== 0) return { state: "retry", said: `Couldn't make a copy of${where}: ${added.stderr.trim().split("\n")[0]?.slice(0, 160) ?? "git refused"}.` };
   }
+  const launch = flowLaunch(store, { repo: flow.repo, folder: path, scratch: io.scratch, copy, policy: store.flowFencePolicy(flow.id), ...(io.fenceAvailable === undefined ? {} : { available: io.fenceAvailable }), ...(io.home === undefined ? {} : { home: io.home }) });
   try {
-    const fence = agentFence({ databaseFile: store.databaseFile(), worktree: path });
+    if (launch !== null && "problem" in launch) return { state: "failed", said: launch.problem };
     let log = "";
     const setup = copy ? store.liveWorktreeSetup(flow.repo) : null;
     if (setup !== null) {
       const shell = approvedCommandShell(setup.command);
-      const prepared = await io.shell(shell.file, shell.args, { cwd: path, timeoutMs: setup.timeoutMs, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST, processGroup: true, fence });
+      const prepared = await io.shell(shell.file, shell.args, { cwd: path, timeoutMs: setup.timeoutMs, envAllowlist: SETUP_ENV_ALLOWLIST, omitEnv: SETUP_ENV_DENYLIST, processGroup: true,
+        ...(launch === null ? {} : { env: launch.env, ...(launch.fence ?? {}) }) });
       log += `$ ${setup.command}\n${prepared.stdout}${prepared.stderr}\n`;
       if (prepared.code !== 0) return { state: "failed", said: `The project's setup failed before ${script.name} ran (exit ${prepared.code}).\n${tail(`${prepared.stdout}\n${prepared.stderr}`)}`, log, exitCode: prepared.code };
     }
@@ -390,7 +395,7 @@ async function runCheck(store: Store, flow: FlowRow, stage: FlowStage, script: F
       answers: (stage.routes ?? []).map(one => one.answer),
     };
     const env = { FLOW_NAME: flow.name, FLOW_CARD_ID: String(card.id), FLOW_CARD_TITLE: card.title, FLOW_COMMIT: commit ?? "", FLOW_SCRIPT: script.name, FLOW_PROJECT: flow.repo };
-    const ran = await runCode({ script, cwd: path, root: copy ? path : flow.repo, input, env, secrets, scratch: io.scratch, shell: io.shell, fence });
+    const ran = await runCode({ script, cwd: path, root: copy ? path : flow.repo, input, env, secrets, scratch: io.scratch, shell: io.shell, launch });
     log += ran.log;
     const output = ran.output === "" ? undefined : ran.output;
     // Where it ran goes at the end of the first line: "run-tests failed (exit 1) on main."
@@ -401,6 +406,7 @@ async function runCheck(store: Store, flow: FlowRow, stage: FlowStage, script: F
     if (route === undefined) return { state: "failed", said: `${script.name} picked “${ran.goTo}”, but this zone has no answer called that${(stage.routes ?? []).length === 0 ? "" : ` (it has ${(stage.routes ?? []).map(one => one.answer).join(", ")})`}.`, log, exitCode: 0, ...(output === undefined ? {} : { output }) };
     return { state: "passed", said: `${script.name} ran${where} and picked ${route.answer}.`, log, exitCode: 0, to: route.to, ...(output === undefined ? {} : { output }) };
   } finally {
+    if (launch !== null && !("problem" in launch)) launch.dispose();
     if (copy) await io.git("git", ["-C", flow.repo, "worktree", "remove", "--force", path], { timeoutMs: 60_000 }).catch(() => undefined);
     rmSync(path, { recursive: true, force: true });
   }

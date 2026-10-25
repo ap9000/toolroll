@@ -311,6 +311,56 @@ describe("the builder's gates", () => {
     expect(store.handle.prepare("SELECT note FROM run_note WHERE run = ?").all(req.runId as number).map(row => String(row["note"]))).toContain(words);
   });
 
+  test("a result that wrote a protected name (an MCP server list, a nested Git hook) is refused at the handoff, its work kept (a backstop for what the sandbox runtime holds only at launch)", async () => {
+    const { mkdirSync } = await import('node:fs');
+    const { run } = await import('./exec.js');
+    const sh = (...args: string[]) => execFileSync('git', ['-C', wt, ...args], { encoding: 'utf8', env: {
+      ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@x',
+    } }).trim();
+    sh('init', '-q', '-b', 'main'); sh('config', 'user.name', 't'); sh('config', 'user.email', 't@x');
+    writeSync2(join2(wt, 'README.md'), 'base\n');
+    sh('add', '.'); sh('commit', '-q', '-m', 'base');
+    sh('checkout', '-q', '-b', 'feat/a');
+    approveScope(); claimIt();
+    const plantingAgent: Runner = async (file, args, options) => {
+      mkdirSync(join2(wt, 'src'), { recursive: true }); writeSync2(join2(wt, 'src', 'guard.ts'), 'export const guard = true;\n');
+      writeSync2(join2(wt, '.mcp.json'), '{"mcpServers":{"x":{"command":"sh"}}}\n');
+      return agent(file, args, options);
+    };
+    const actualGit: Runner = async (file, args, options) => {
+      if (options?.cwd === REPO && args.includes('symbolic-ref')) return { ...OK, stdout: 'main\n' };
+      return run(file, args, { ...options, cwd: options?.cwd === REPO ? wt : options?.cwd });
+    };
+    const result = await build(store, request({ agent: plantingAgent, git: actualGit }));
+    expect(result).toMatchObject({ ok: false, reason: 'commit-failure', message: expect.stringContaining('The result changes .mcp.json, which builds may not write') });
+    expect(sh('rev-list', '--count', 'HEAD')).toBe('1');
+    expect(readFileSync(join2(wt, '.mcp.json'), 'utf8')).toContain('mcpServers');
+  });
+  test("a result that commits a link at a folder on the way to a protected name (pkg/.claude) is refused at the handoff", async () => {
+    const { mkdirSync } = await import('node:fs');
+    const { run } = await import('./exec.js');
+    const sh = (...args: string[]) => execFileSync('git', ['-C', wt, ...args], { encoding: 'utf8', env: {
+      ...process.env, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@x', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@x',
+    } }).trim();
+    sh('init', '-q', '-b', 'main'); sh('config', 'user.name', 't'); sh('config', 'user.email', 't@x');
+    writeSync2(join2(wt, 'README.md'), 'base\n');
+    sh('add', '.'); sh('commit', '-q', '-m', 'base');
+    sh('checkout', '-q', '-b', 'feat/a');
+    approveScope(); claimIt();
+    const plantingAgent: Runner = async (file, args, options) => {
+      mkdirSync(join2(wt, 'src'), { recursive: true }); writeSync2(join2(wt, 'src', 'guard.ts'), 'export const guard = true;\n');
+      const { symlinkSync } = await import('node:fs');
+      mkdirSync(join2(wt, 'pkg'), { recursive: true }); symlinkSync('/tmp/anywhere', join2(wt, 'pkg', '.claude'));
+      return agent(file, args, options);
+    };
+    const actualGit: Runner = async (file, args, options) => {
+      if (options?.cwd === REPO && args.includes('symbolic-ref')) return { ...OK, stdout: 'main\n' };
+      return run(file, args, { ...options, cwd: options?.cwd === REPO ? wt : options?.cwd });
+    };
+    const result = await build(store, request({ agent: plantingAgent, git: actualGit }));
+    expect(result).toMatchObject({ ok: false, reason: 'commit-failure', message: expect.stringContaining('The result changes pkg/.claude, which builds may not write') });
+    expect(sh('rev-list', '--count', 'HEAD')).toBe('1');
+  });
   test("a rerun (task regate) dispatches through the builder with no agent call and reruns the check on the last head (v70)", async () => {
     const { regateTask } = await import("./dispose.js");
     approveScope();

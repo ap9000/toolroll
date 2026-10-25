@@ -177,6 +177,9 @@ describe.skipIf(!FENCED)("an ACP agent through the gateway, inside the fence", (
     check();
     const result = await run("descendant");
     if (result.kind !== "ran") throw new Error(JSON.stringify(result));
+    // On Linux the sandbox runtime gives the agent a process view of its own (the pid it wrote is that view's), and
+    // what is in it ends when the sandbox does: nothing of it outlives the run.
+    if (process.platform === "linux") { expect(result.outcome.acp?.exit).toMatchObject({ how: "eof", timedOut: false }); return; }
     // The runner says something of the group was still alive at the reap — and the reap ended it.
     expect(result.outcome.acp?.exit).toEqual({ how: "eof", leftover: true, timedOut: false });
     const pid = Number(readFileSync(join(worktree, "descendant.pid"), "utf8"));
@@ -220,7 +223,8 @@ describe.skipIf(!FENCED)("an ACP agent through the gateway, inside the fence", (
     const result = await run("ignore-term");
     if (result.kind !== "ran") throw new Error(JSON.stringify(result));
     expect(result.outcome.code).toBe(0);
-    expect(result.outcome.acp?.exit?.how).toBe("kill");
+    // On Linux the agent runs under the sandbox runtime's own processes, which end at the SIGTERM and take it with them.
+    expect(result.outcome.acp?.exit?.how).toBe(process.platform === "linux" ? "term" : "kill");
   }, 30_000);
 
   test("an agent that never answers initialize is stopped by the handshake deadline", async () => {
@@ -243,7 +247,8 @@ describe.skipIf(!FENCED)("an ACP agent through the gateway, inside the fence", (
       setTimeout(() => clearInterval(poll), 20_000).unref();
     } });
     expect(witnessed.length).toBeGreaterThan(0);
-    expect(witnessed.map(one => one.pid)).toContain(Number(readFileSync(join(worktree, "slow.pid"), "utf8")));
+    // (On Linux the pid the agent wrote is its sandbox's own process view's, not this host's.)
+    if (process.platform !== "linux") expect(witnessed.map(one => one.pid)).toContain(Number(readFileSync(join(worktree, "slow.pid"), "utf8")));
     expect(result.kind === "ran" ? result.outcome.code : -1).not.toBe(0);
     expect(agentLog()).toContain("session/cancel");
     for (const { pid } of witnessed) expect(() => process.kill(pid, 0)).toThrow();

@@ -6,10 +6,11 @@
 
 import { spawnSync } from "node:child_process";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
-import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { resetAttestationCache } from "./attest.js";
 import { dirname, join } from "node:path";
+import { addApprover } from "./scope.js";
 import { openStore, type Store } from "./store.js";
 import { invokeAgent as invokeGateway, type InvokeResult } from "./invoke.js";
 import { register, retireRunnerIfCurrent } from "./runner.js";
@@ -27,6 +28,11 @@ import { fakePid } from "../test/fake-pid.js";
 // Gateway tests must use a disposable provider home, never the operator's
 // credentials. Private-home setup is mandatory even with an injected runner.
 let providerHome: string;
+/** The fence fenceFor makes, with its denied paths replaced by `paths` (its grants as made). */
+const { fenceFor: realFenceFor } = await vi.importActual<typeof import("./agent-fence.js")>("./agent-fence.js");
+function fenceOnly(paths: string[]): void {
+  vi.mocked(fencing.fenceFor).mockImplementation((kind, ctx) => ({ ...realFenceFor(kind, ctx), fence: paths }));
+}
 beforeEach(() => { providerHome = mkdtempSync(join(tmpdir(), "so-invoke-home-")); });
 afterEach(() => rmSync(providerHome, { recursive: true, force: true }));
 function invokeAgent(...args: Parameters<typeof invokeGateway>): ReturnType<typeof invokeGateway> {
@@ -1058,6 +1064,50 @@ describe("checkout Git preflight", () => {
     return repo;
   }
 
+  test("the attempt pins its fence: stamped on the run, and a tool server started late gets the launch's decisions, not a setting changed meanwhile (C11)", async () => {
+    const store = openStore(join(providerHome, "orders.db"));
+    const tree = join(providerHome, "checkout");
+    bindCheckout(store, tree);
+    let broker: { unwrapped?: () => string | null; wrap?: () => unknown } = {};
+    vi.mocked(projectTools.prepareRunTools).mockImplementation(async (_store, _run, _provider, options) => {
+      broker = options.broker as typeof broker;
+      return { argv: [], env: {}, omitEnv: [], cleanup: () => undefined };
+    });
+    try {
+      registerBuilder(store);
+      if (!addApprover(store, "alex", T0).ok) throw new Error("bootstrap");
+      store.createTask({ id: "probe", title: "probe" }, T0);
+      const runId = store.startRun({ taskRef: claimTask(store, "probe", "probe-lease"), leaseId: "probe-lease", runner: RUNNER,
+        branch: "probe", worktree: tree, ...bareLegacy("build"), now: T0 });
+      await invokeAgent(store, runId, CLAUDE, ASK, { runner: vi.fn(async () => OK), cwd: tree, sandbox: { policy: 2, readDeny: [], machLookup: [] } });
+      expect(store.runFence(runId)).toMatchObject({ policy: 2, digest: expect.stringMatching(/^[0-9a-f]{32}$/) });
+      // Unconfined agents were refused when it launched: a server started later is refused that way too, however the
+      // setting changes meanwhile.
+      const before = broker.unwrapped?.() ?? null;
+      store.setUnfencedAgentsAllowed(true, "alex", T0);
+      expect(broker.unwrapped?.() ?? null).toBe(before);
+      expect(before).toMatch(/can't confine the tool's server/);
+    } finally { store.close(); }
+  });
+
+  test("a build's fence takes its approval's read denies and the project's current ones too (adding a deny only narrows)", async () => {
+    const store = openStore(join(providerHome, "orders.db"));
+    const tree = join(providerHome, "checkout");
+    const repo = bindCheckout(store, tree);
+    try {
+      registerBuilder(store);
+      if (!addApprover(store, "alex", T0).ok) throw new Error("bootstrap");
+      store.setAccountProjects("alex", [repo], "alex", T0);
+      store.setProjectSandbox(repo, { readDeny: ["~/.aws"], machLookup: [], writeUnlock: [] }, "alex", T0);
+      store.createTask({ id: "probe", title: "probe" }, T0);
+      const runId = store.startRun({ taskRef: claimTask(store, "probe", "probe-lease"), leaseId: "probe-lease", runner: RUNNER,
+        branch: "probe", worktree: tree, ...bareLegacy("build"), now: T0 });
+      vi.mocked(fencing.fenceFor).mockClear();
+      await invokeAgent(store, runId, CLAUDE, ASK, { runner: vi.fn(async () => OK), cwd: tree, sandbox: { policy: 2, readDeny: ["~/.ssh"], machLookup: [] } });
+      expect(fencing.fenceFor).toHaveBeenCalledWith("build", expect.objectContaining({ readDeny: [join(providerHome, ".ssh"), join(providerHome, ".aws")] }));
+    } finally { store.close(); }
+  });
+
   test.each(["ssh", "state", "database"])("changed %s pointer refuses before provider stamp or spawn", async target => {
     const store = openStore(join(providerHome, "orders.db"));
     const tree = join(providerHome, "checkout");
@@ -1086,7 +1136,7 @@ describe("checkout Git preflight", () => {
     bindCheckout(store, tree);
     const cleanup = vi.fn(() => rmSync(privateDir, { recursive: true, force: true }));
     vi.mocked(projectTools.prepareRunTools).mockResolvedValue({ argv: [], env: { FENCE_FIXTURE: "same" }, omitEnv: [], privateDir, cleanup });
-    vi.mocked(fencing.agentFence).mockReturnValue([blocked]);
+    fenceOnly([blocked]);
     vi.mocked(fencing.macosFenceAvailable).mockReturnValue(true);
     const binary = join(providerHome, "gemini");
     writeFileSync(binary, "#!/bin/sh\necho 0.57.0\n");
@@ -1149,13 +1199,13 @@ describe("checkout Git preflight", () => {
     bindCheckout(store, tree);
     const privateDir = join(providerHome, "so-tools-fixture");
     mkdirSync(privateDir, { recursive: true });
-    vi.mocked(fencing.agentFence).mockReturnValue([join(providerHome, "denied")]);
+    fenceOnly([join(providerHome, "denied")]);
     vi.mocked(fencing.macosFenceAvailable).mockReturnValue(macos);
     vi.mocked(fencing.linuxFenceAvailable).mockReturnValue(false);
     vi.mocked(command.run).mockResolvedValue(OK);
     vi.mocked(projectTools.prepareRunTools).mockImplementation(async () => {
       // Nothing of the fence exists yet: the decision can't have come from it, or from the launch's own folder.
-      expect(fencing.agentFence).not.toHaveBeenCalled();
+      expect(fencing.fenceFor).not.toHaveBeenCalled();
       return { argv: [], env: {}, omitEnv: [], cleanup: () => undefined, ...(own === "with" ? { privateDir } : {}) };
     });
     try {
@@ -1178,7 +1228,7 @@ describe("checkout Git preflight", () => {
     mkdirSync(join(providerHome, "empty-config"));
     // The tools are prepared for the macOS sandbox, then the fence comes back empty: the run would have none.
     vi.mocked(projectTools.prepareRunTools).mockResolvedValue({ argv: [], env: {}, omitEnv: [], cleanup, privateDir: join(providerHome, "empty-config"), ...(hasTools ? { serverPids: () => [] } : {}) });
-    vi.mocked(fencing.agentFence).mockReturnValue([]);
+    fenceOnly([]);
     vi.mocked(fencing.macosFenceAvailable).mockReturnValue(true);
     try {
       registerBuilder(store);
@@ -1202,7 +1252,7 @@ describe("checkout Git preflight", () => {
     const store = openStore(scenario === "no-fence" ? ":memory:" : join(providerHome, "orders.db"));
     const tree = join(providerHome, "checkout");
     bindCheckout(store, tree);
-    vi.mocked(fencing.agentFence).mockReturnValue([join(providerHome, "denied")]);
+    fenceOnly([join(providerHome, "denied")]);
     vi.mocked(fencing.macosFenceAvailable).mockReturnValue(scenario !== "no-native-wrapper");
     vi.mocked(fencing.linuxFenceAvailable).mockReturnValue(false);
     try {
@@ -1232,7 +1282,7 @@ describe("checkout Git preflight", () => {
         expect(checked.cwd).toBe(launch!.cwd);
         expect(checked.fence).toBe(launch!.fence);
         expect(checked.fenceGrants).toBe(launch!.fenceGrants);
-        expect(fencing.fenceGrants).toHaveBeenCalledWith(expect.objectContaining({
+        expect(fencing.fenceFor).toHaveBeenCalledWith("build", expect.objectContaining({
           poolRoots: expect.arrayContaining([join(dirname(store.databaseFile()!), "worktrees")]),
         }));
       }

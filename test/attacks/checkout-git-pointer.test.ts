@@ -7,7 +7,7 @@
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { agentFence, CheckoutBindingError, taskBoundary, trustedWorktreeBinding } from "../../src/agent-fence.js";
-import { expectNoMarker, lines, marker, needs, ordinaryWork, plane, q, seatbelt, underSeatbelt, useScratch, write } from "./harness.js";
+import { expectNoMarker, lines, marker, needs, ordinaryWork, plane, q, seatbelt, underSandbox, useScratch, write } from "./harness.js";
 
 describe("attack: a rewritten .git pointer weakening the fence", () => {
   const scratch = useScratch("pointer");
@@ -52,9 +52,9 @@ describe("attack: a rewritten .git pointer weakening the fence", () => {
     const { secret, at } = setup();
     const { fence, grants } = at.launch("claude");
     const work = ordinaryWork(at);
-    const before = underSeatbelt(work.script, fence, grants, { cwd: at.active });
+    const before = underSandbox(work.script, fence, grants, { cwd: at.active });
     expect(lines(before), before.stderr).toEqual(work.expected);
-    const attack = underSeatbelt([
+    const attack = underSandbox([
       `printf 'gitdir: %s\\n' ${q(join(at.home, ".ssh", "x"))} > .git 2>/dev/null; echo rewritten`,
       `cat ${q(join(at.home, ".ssh", "id"))} 2>/dev/null || echo ssh-denied`,
       `cat ${q(at.databaseFile)} 2>/dev/null || echo database-denied`,

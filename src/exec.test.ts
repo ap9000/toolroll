@@ -1,10 +1,12 @@
 import { describe, test, expect, vi } from "vitest";
+import { fakePid } from "../test/fake-pid.js";
 import { createHash } from "node:crypto";
 import {
   cumulativeLiveResult,
   run, runStreamJsonl, runClaudeStreamJsonl, runGeminiStreamJsonl, terminateLiveProviders, NOT_FOUND_CODE,
   JSONL_EVENT_HARD_CAP,
   retryTransientSpawn, isTransientSpawnFailure, type SpawnAttempt,
+  agentNamed,
 } from "./exec.js";
 import * as processTree from "./process-tree.js";
 import { adapterFor } from "./provider.js";
@@ -718,5 +720,26 @@ describe("a live Claude session's account across several results", () => {
     expect(cumulativeLiveResult({ usage: { input_tokens: -5, output_tokens: "7" }, num_turns: null }, { usage: { input_tokens: 3 } }))
       .toMatchObject({ usage: { input_tokens: 3 } });
     expect(cumulativeLiveResult(second, { type: "result", subtype: "success" })).toMatchObject({ usage: { input_tokens: 30, output_tokens: 50 }, num_turns: 2 });
+  });
+});
+
+describe("finding the agent's own process in a listing", () => {
+  test("by its listed name, or on Linux by its program when the listing shows Node 24's \"MainThread\"", () => {
+    const programs: Record<number, string> = { [fakePid(2)]: "node", [fakePid(3)]: "bwrap" };
+    const programOf = (pid: number) => programs[pid] ?? null;
+    expect(agentNamed({ pid: fakePid(1), name: "agent.mjs" }, ["node", "agent.mjs"], programOf)).toBe(true);
+    expect(agentNamed({ pid: fakePid(2), name: "MainThread" }, ["node", "agent.mjs"], programOf)).toBe(true);
+    // A wrapper on the way (bubblewrap) is never taken for it, by name or program.
+    expect(agentNamed({ pid: fakePid(3), name: "bwrap" }, ["node", "agent.mjs"], programOf)).toBe(false);
+    expect(agentNamed({ pid: fakePid(4), name: "MainThread" }, ["opencode"], programOf)).toBe(false);
+  });
+
+  test.skipIf(process.platform !== "linux")("on Linux a running Node process is found by its program", async () => {
+    const { spawn } = await import("node:child_process");
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], { stdio: "ignore" });
+    try {
+      await new Promise(done => setTimeout(done, 300));
+      expect(agentNamed({ pid: child.pid!, name: "MainThread" }, [process.execPath.split("/").pop()!])).toBe(true);
+    } finally { child.kill("SIGKILL"); }
   });
 });

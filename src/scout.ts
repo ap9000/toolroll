@@ -18,7 +18,7 @@ import { skillsContext } from "./project-skills.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, realpathSync, rmSync, unlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join, relative, isAbsolute } from "node:path";
+import { dirname, join, relative, isAbsolute } from "node:path";
 import { run } from "./exec.js";
 import { auditOf } from "./provider.js";
 import type { Store } from "./store.js";
@@ -46,7 +46,7 @@ import { openLiveLog } from "./live.js";
 import { proveTreeUntouched, snapshotIgnored } from "./tree-proof.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { CLAUDE_LIMITS } from "./scope.js";
-import { catalogTool, projectToolsOf, toolLaunchFor, type ToolSpec } from "./project-tools.js";
+import { projectToolsOf, toolLaunchFor, type ToolSpec } from "./project-tools.js";
 import { grantOf, researchToolsOf, type ResearchTools } from "./mcp-connect.js";
 import { startScoutProxy } from "./scout-net.js";
 import * as browserCheck from "./scout-browser.js";
@@ -84,7 +84,7 @@ function portOf(url: string): number {
   return Number(parsed.port || (parsed.protocol === "https:" ? 443 : 80));
 }
 
-export function scoutBrowserLaunch(tool: Pick<ToolSpec, "command" | "args"> | null, imageFolder: string, proxy: string): browserCheck.BrowserLaunch | null {
+export function scoutBrowserLaunch(tool: { command: string | null; args: readonly string[] } | null, imageFolder: string, proxy: string): browserCheck.BrowserLaunch | null {
   if (tool === null || tool.command === null) return null;
   return { command: tool.command, args: [...tool.args, "--isolated", "--output-dir", imageFolder, "--proxy-server", proxy, "--proxy-bypass", "<-loopback>"] };
 }
@@ -141,8 +141,8 @@ export type ScoutRequest = {
   outputDir?: string;
   /** The project's own demo or dev server, the one non-public address the scout's browser may open. */
   demoUrl?: string | null;
-  /** The browser to launch; left out, the catalog's Playwright entry. Null runs the scout without one. */
-  browserTool?: Pick<ToolSpec, "command" | "args"> | null;
+  /** The browser to launch; left out, the pinned helper in Toolroll's helpers folder. Null runs the scout without one. */
+  browserTool?: { command: string | null; args: readonly string[] } | null;
 };
 
 export type ReportArtifact = {
@@ -417,7 +417,11 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
   // Every scout runs behind its public-web-only proxy (reviews 826, 827): its browser, when this install has one,
   // and its web fetch both go through it. A proxy that cannot start leaves the scout without the web, reading only
   // the checkout, never with an unfiltered one.
-  const browserTool = request.browserTool === undefined ? catalogTool("playwright") : request.browserTool;
+  // The pinned browser in Toolroll's helpers folder, run under its launch contract (scout-browser.ts); none where the
+  // plane has no state folder.
+  const database = store.databaseFile();
+  const helpers = database === null || database === "" || database === ":memory:" ? null : join(dirname(realpathSync(database)), "helpers");
+  const browserTool = request.browserTool === undefined ? (helpers === null ? null : browserCheck.scoutBrowserTool(helpers)) : request.browserTool;
   const demoUrl = request.demoUrl ?? null;
   let proxy: Awaited<ReturnType<typeof startScoutProxy>> | null = null;
   let browserServer: browserCheck.ScoutBrowserServer | null = null;
@@ -429,9 +433,11 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
     // The preflight (run 2356, review 828): the worker starts the browser outside the fence and opens a public page
     // through the proxy before research begins. One that can't start is said once, in the brief and the report, and
     // the scout researches without it.
+    // Its environment is an allowlist of the worker's, with the scout's proxy (the launch contract).
     const started = launch === null || proxy === null ? null : await browserCheck.starterFor(agent !== undefined)(launch, {
-      env: { ...withoutEnv(process.env, [...AGENT_ENV_DENYLIST, ...PROXY_BYPASS_ENV]), ...scoutProxyEnv(proxy.url) },
+      env: { ...Object.fromEntries(browserCheck.SCOUT_BROWSER_ENV.filter(name => !(name in scoutProxyEnv(proxy!.url)) && process.env[name] !== undefined).map(name => [name, process.env[name]])), ...scoutProxyEnv(proxy.url) },
       folder: imageFolder,
+      ...(helpers === null ? {} : { contract: { helpers, proxy: proxy.url } }),
     }).catch((error: unknown): browserCheck.BrowserStart => ({ ok: false, reason: error instanceof Error ? error.message : String(error) }));
     if (started !== null && started.ok) browserServer = started.server;
     browserProblem = started !== null && !started.ok ? started.reason : null;
@@ -477,6 +483,9 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
         onStreamEvent: observe,
       },
     );
+    // The run says which exception its browser ran under: Chrome's own sandbox, not Toolroll's fence (recorded after the
+    // gateway, whose tool record would replace it).
+    if (browserServer !== null) store.recordRunBrowser(request.runId, { containment: browserCheck.SCOUT_BROWSER_CONTAINMENT, tool: browserCheck.SCOUT_BROWSER_PACKAGE }, new Date());
   } finally {
     if (pulseTimer !== undefined) clearInterval(pulseTimer);
     await browserServer?.close();

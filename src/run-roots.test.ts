@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "vitest";
-import { agentFence, codexFenceArgv, linuxFenced, macosFenceAvailable, macosFenceProfile, NO_GRANTS, runFolders, type RunFolders } from "./agent-fence.js";
+import { agentFence, codexFenceArgv, macosFenceAvailable, NO_GRANTS, runFolders, sandboxedSpawn, srtTermsOf, type RunFolders } from "./agent-fence.js";
 import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 let dir: string, root: string, shared: string, folders: RunFolders;
@@ -25,30 +25,33 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 test("every fence form denies another launch's folder under both roots", () => {
   const sibling = join(shared, "so-cmd-theirs");
-  const mac = macosFenceProfile([], { ...NO_GRANTS, runFolders: folders });
-  for (const at of [root, shared]) expect(mac).toContain(`(regex #"^${at.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/(so-tools-|so-codex-|so-net-|so-cmd-)")`);
+  // The sandbox runtime: unread by pattern under both roots, this launch's own folder read again.
+  const terms = srtTermsOf([], { ...NO_GRANTS, runFolders: folders });
+  for (const at of [root, shared]) for (const prefix of ["so-tools-", "so-codex-", "so-net-", "so-cmd-"]) expect(terms.readConfig.denyOnly).toContain(join(at, `${prefix}*`));
+  expect(terms.readConfig.allowWithinDeny).toContain(join(root, "so-cmd-own"));
   const codex = codexFenceArgv([], false, { ...NO_GRANTS, runFolders: folders }).join(" ");
   for (const at of [root, shared]) expect(codex).toContain(join(at, "so-cmd-*"));
-  // Linux: a grant inside another launch's folder under either root is dropped.
+  // Writes: every other launch's folder there now, under either root (never this launch's own).
   mkdirSync(sibling);
-  writeFileSync(join(sibling, "f"), "x");
   mkdirSync(join(root, "so-cmd-other"));
-  writeFileSync(join(root, "so-cmd-other", "f"), "x");
-  const { args } = linuxFenced("/bin/true", [], [], { ...NO_GRANTS, readable: [join(sibling, "f"), join(root, "so-cmd-other", "f")], runFolders: folders });
-  expect(args).not.toContain(join(sibling, "f"));
-  expect(args).not.toContain(join(root, "so-cmd-other", "f"));
+  const now = srtTermsOf([], { ...NO_GRANTS, runFolders: folders }).writeConfig.denyWithinAllow;
+  expect(now).toEqual(expect.arrayContaining([sibling, join(root, "so-cmd-other")]));
+  expect(now).not.toContain(join(root, "so-cmd-own"));
 });
 
-test("the shared root is never listed; a link planted among the system root's entries is never followed or fenced", () => {
+test("a link planted among a root's entries is never followed or listed; nothing of another launch's is in the fence itself", () => {
   mkdirSync(join(shared, "so-cmd-theirs"));
   mkdirSync(join(root, "so-cmd-real"));
   mkdirSync(join(dir, "elsewhere"));
   symlinkSync(join(dir, "elsewhere"), join(root, "so-cmd-planted"));
+  // Read by pattern, written by the folders there right before the launch (only where it writes anywhere).
   const fence = agentFence({ databaseFile: null, worktree: null, home: join(dir, "home"), runFolders: folders });
-  expect(fence).toContain(join(root, "so-cmd-real"));
-  expect(fence).not.toContain(join(root, "so-cmd-planted"));
-  expect(fence).not.toContain(join(dir, "elsewhere"));
-  expect(fence.some(path => path.startsWith(shared))).toBe(false);
+  expect(fence.some(path => path.startsWith(root) || path.startsWith(shared))).toBe(false);
+  const writes = srtTermsOf([], { ...NO_GRANTS, runFolders: folders }).writeConfig.denyWithinAllow;
+  expect(writes).toEqual(expect.arrayContaining([join(root, "so-cmd-real"), join(shared, "so-cmd-theirs")]));
+  expect(writes).not.toContain(join(root, "so-cmd-planted"));
+  expect(writes).not.toContain(join(dir, "elsewhere"));
+  expect(srtTermsOf([], { ...NO_GRANTS, runFolders: folders, writes: { subpaths: [dir], prefixes: [] } }).writeConfig.denyWithinAllow).not.toContain(join(root, "so-cmd-real"));
   // The system's own roots: on a Mac the short shared one comes with them; a root a caller names brings none.
   expect(runFolders(null, root).also).toBeUndefined();
   if (process.platform === "darwin") expect(runFolders(null).also).toEqual(["/private/tmp"]);
@@ -59,9 +62,9 @@ test.skipIf(INSIDE_FENCE || !macosFenceAvailable())("the real sandbox: another l
   writeFileSync(join(theirs, "secret"), "x");
   try {
     const own = realpathSync(mkdtempSync(join("/private/tmp", "so-cmd-")));
-    const profile = macosFenceProfile([], { ...NO_GRANTS, runFolders: { ...runFolders(own), own } });
-    const result = spawnSync("/usr/bin/sandbox-exec", ["-p", profile, "/bin/sh", "-c",
-      `cat ${theirs}/secret >/dev/null 2>&1 && echo read || echo read-refused; echo y > ${theirs}/planted 2>/dev/null && echo wrote || echo write-refused; echo z > ${own}/mine && echo own-ok`], { encoding: "utf8" });
+    const wrapped = sandboxedSpawn("/bin/sh", ["-c",
+      `cat ${theirs}/secret >/dev/null 2>&1 && echo read || echo read-refused; echo y > ${theirs}/planted 2>/dev/null && echo wrote || echo write-refused; echo z > ${own}/mine && echo own-ok`], [], { ...NO_GRANTS, runFolders: { ...runFolders(own), own } });
+    const result = spawnSync(wrapped.file, wrapped.args, { encoding: "utf8" });
     expect(result.stdout.trim().split("\n"), result.stderr).toEqual(["read-refused", "write-refused", "own-ok"]);
     rmSync(own, { recursive: true, force: true });
   } finally { rmSync(theirs, { recursive: true, force: true }); }

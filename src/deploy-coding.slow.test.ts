@@ -45,7 +45,7 @@ test('browser deployment uses installed SQLite backup for WAL history and refuse
   const f = fixture();
   const coding = await loadCodingDeploymentRuntime(resolve('dist'));
   const file = `${f.database}.coding.sqlite`;
-  const workspace = new CodingWorkspace({ database: file, worktreeRoot: join(f.root, 'worktrees') });
+  const workspace = new CodingWorkspace({ database: file, worktreeRoot: join(f.root, 'worktrees'), permissions: () => ({ sandbox: 'workspace-write' }) });
   const db = new DatabaseSync(file);
   try {
     const session = { id: 'retained-session', owner: 'alex', generation: 1, repo: f.root, status: 'ready', nativeThreadId: 'native-saved', turnId: null };
@@ -80,7 +80,7 @@ test('browser deployment refuses an unbacked or disappeared catalog and preserve
   const f = fixture();
   const coding = await loadCodingDeploymentRuntime(resolve('dist'));
   const file = `${f.database}.coding.sqlite`;
-  const workspace = new CodingWorkspace({ database: file, worktreeRoot: join(f.root, 'worktrees') });
+  const workspace = new CodingWorkspace({ database: file, worktreeRoot: join(f.root, 'worktrees'), permissions: () => ({ sandbox: 'workspace-write' }) });
   try {
     expect(() => verifyCodingDeploymentBackup(coding, f.database, f.stage, f.record)).toThrow('no verified deployment backup');
     const target = join(f.stage, 'coding.backup.sqlite');
@@ -99,7 +99,7 @@ test('browser deployment refuses an unbacked or disappeared catalog and preserve
 test.each(['backup', 'verify', 'stop'])('browser %s refuses a catalog lost after its presence was saved but before backup', async action => {
   const f = fixture(), coding = await loadCodingDeploymentRuntime(resolve('dist'));
   const file = `${f.database}.coding.sqlite`;
-  const workspace = new CodingWorkspace({ database: file, worktreeRoot: join(f.root, 'worktrees') });
+  const workspace = new CodingWorkspace({ database: file, worktreeRoot: join(f.root, 'worktrees'), permissions: () => ({ sandbox: 'workspace-write' }) });
   try {
     expect(observeCodingDeployment(coding, f.database, f.record)).toBe(file);
     expect(f.record.codingCatalogExpected).toBe(true);
@@ -132,7 +132,7 @@ test('a first browser catalog appearing after prepare or startup gets a verified
   const f = fixture(), coding = await loadCodingDeploymentRuntime(resolve('dist'));
   try {
     await backupCodingDeployment(null, f.database, f.stage, f.record);
-    const workspace = new CodingWorkspace({ database: `${f.database}.coding.sqlite`, worktreeRoot: join(f.root, 'worktrees') });
+    const workspace = new CodingWorkspace({ database: `${f.database}.coding.sqlite`, worktreeRoot: join(f.root, 'worktrees'), permissions: () => ({ sandbox: 'workspace-write' }) });
     await workspace.close();
     expect(() => verifyCodingDeploymentBackup(coding, f.database, f.stage, f.record)).toThrow('no verified deployment backup');
     await backupCodingDeployment(coding, f.database, f.stage, f.record);
@@ -145,7 +145,7 @@ test('a first browser catalog appearing after prepare or startup gets a verified
 
 test.each(['missing', 'changed', 'linked'])('browser final backup checks reject %s retained bytes without overwriting', async damage => {
   const f = fixture(), coding = await loadCodingDeploymentRuntime(resolve('dist'));
-  const workspace = new CodingWorkspace({ database: `${f.database}.coding.sqlite`, worktreeRoot: join(f.root, 'worktrees') });
+  const workspace = new CodingWorkspace({ database: `${f.database}.coding.sqlite`, worktreeRoot: join(f.root, 'worktrees'), permissions: () => ({ sandbox: 'workspace-write' }) });
   await workspace.close();
   try {
     await backupCodingDeployment(coding, f.database, f.stage, f.record);
@@ -179,7 +179,7 @@ async function deployment({ codingCatalog = true } = {}) {
   openStore(database).close();
   // A real coding catalog, kept aside so a test can make one appear partway through.
   const catalog = join(root, 'catalog.sqlite');
-  await new CodingWorkspace({ database: catalog, worktreeRoot: join(root, 'worktrees') }).close();
+  await new CodingWorkspace({ database: catalog, worktreeRoot: join(root, 'worktrees'), permissions: () => ({ sandbox: 'workspace-write' }) }).close();
   const appearCatalog = () => copyFileSync(catalog, `${database}.coding.sqlite`);
   if (codingCatalog) appearCatalog();
   const livePlist = `<string>${priorDist}/cli.js</string><string>--runner</string><string>worker</string>`;
@@ -673,7 +673,7 @@ test('a deploy over a runtime killed before its close releases the stale owner o
   const sibling = fakePid(2), service = fakePid(3), agent = fakePid(4), stranger = fakePid(5);
   const candidate = await loadCodingDeploymentRuntime(resolve('dist'));
   const file = `${f.database}.coding.sqlite`;
-  const workspace = new CodingWorkspace({ database: file, worktreeRoot: join(f.root, 'worktrees') });
+  const workspace = new CodingWorkspace({ database: file, worktreeRoot: join(f.root, 'worktrees'), permissions: () => ({ sandbox: 'workspace-write' }) });
   await workspace.close();
   const db = new DatabaseSync(file);
   try {
@@ -702,7 +702,7 @@ test('a stale owner whose agent or session still lives is never released by a de
   const service = fakePid(3);
   const candidate = await loadCodingDeploymentRuntime(resolve('dist'));
   const file = `${f.database}.coding.sqlite`;
-  const workspace = new CodingWorkspace({ database: file, worktreeRoot: join(f.root, 'worktrees') });
+  const workspace = new CodingWorkspace({ database: file, worktreeRoot: join(f.root, 'worktrees'), permissions: () => ({ sandbox: 'workspace-write' }) });
   await workspace.close();
   // The agent is detached into its own process group: a killed service can leave it running.
   const agent = spawn('sleep', ['30'], { detached: true, stdio: 'ignore' });

@@ -20,13 +20,13 @@ import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import type { ToolCaller } from "./flow-actions.js";
 import { scrubSecrets } from "./flow-secrets.js";
 import { toolRefusal } from "./policy.js";
-import { callProjectTool, listProjectToolActions, projectToolsOf, readToolSecrets, type ProjectTool, type ToolSpec } from "./project-tools.js";
+import { callProjectTool, listProjectToolActions, projectToolsOf, readToolSecrets, toolServerFor, type ProjectTool, type ToolServerStore, type ToolSpec } from "./project-tools.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import type { Store, SubagentCallRow, SubagentGrantRow, SubagentRow, ToolActionInfo, ToolRule } from "./store.js";
 
 /** Lists what a tool offers; injectable so tests never start a server. */
 export type ToolLister = (spec: ToolSpec, values: Record<string, string>) => Promise<{ ok: true; actions: ToolActionInfo[] } | { ok: false; problem: string }>;
-export type ToolIo = { callTool?: ToolCaller; listTools?: ToolLister; toolHome?: string | undefined };
+export type ToolIo = { callTool?: ToolCaller; listTools?: ToolLister; toolHome?: string | undefined; fenceAvailable?: () => boolean };
 
 /** Actions whose names say they only read start as "do it"; everything else asks first until its manager says otherwise. */
 export const READ_VERB = /^(get|list|search|find|read|fetch|lookup|look_up|query|show|describe|count|check|view|retrieve)([_.-]|$)/i;
@@ -123,14 +123,17 @@ export async function refreshGrants(store: Store, mate: SubagentRow, now: Date, 
     if (grant.listedAt !== null && now.getTime() - Date.parse(grant.listedAt) < LISTING_MS) continue;
     const tool = tools.find(one => one.name === grant.tool);
     if (tool === undefined) continue;
-    const listed = await listed_(tool, mate.repo, io);
+    const listed = await listed_(store, tool, mate.repo, io);
     if (!listed.ok) continue;
     store.saveSubagentGrant({ subagent: mate.id, tool: grant.tool, ...withActions(grant.rules, listed.actions), listedAt: now.toISOString() }, grant.updatedBy, now);
   }
 }
 
-const listed_ = (tool: ProjectTool, repo: string, io: ToolIo) =>
-  (io.listTools ?? ((spec, values) => listProjectToolActions(spec, values, { timeoutMs: 60_000, omitEnv: ALL_CREDENTIAL_ENV })))(tool.spec, readToolSecrets(repo, tool.name, io.toolHome));
+const listed_ = (store: ToolServerStore, tool: ProjectTool, repo: string, io: ToolIo) =>
+  (io.listTools ?? ((spec, values) => listProjectToolActions(spec, values, { timeoutMs: 60_000, omitEnv: ALL_CREDENTIAL_ENV, server: serverOf(store, repo, io) })))(tool.spec, readToolSecrets(repo, tool.name, io.toolHome));
+
+/** Where a subagent's tool server starts: in the server fence (project-tools.ts toolServerFor), never bare. */
+const serverOf = (store: ToolServerStore, repo: string, io: ToolIo) => toolServerFor(store, repo, { ...(io.toolHome === undefined ? {} : { home: io.toolHome }), ...(io.fenceAvailable === undefined ? {} : { available: io.fenceAvailable }) });
 
 /** Names only, from the tool's last test: what a grant starts with when it can't be listed right now. */
 const namesOnly = (tool: ProjectTool): ToolActionInfo[] => (tool.lastTest?.tools ?? []).map(name => ({ name, about: "", input: null, readOnly: false }));
@@ -140,7 +143,7 @@ export async function grantTool(store: Store, mate: SubagentRow, tool: string, b
   const found = projectToolsOf(store, mate.repo).find(one => one.name === tool);
   if (found === undefined) return { ok: false, said: `This project has no tool called ${tool}. Add it on the Tools page first.` };
   if (store.subagentGrant(mate.id, tool) !== null) return { ok: true, said: `It can already use ${tool}.` };
-  const listed = await listed_(found, mate.repo, io);
+  const listed = await listed_(store, found, mate.repo, io);
   return grantListed(store, mate, found, listed.ok ? listed.actions : null, by, now);
 }
 
@@ -224,7 +227,7 @@ export async function makeCall(store: Store, call: SubagentCallRow, repo: string
   const values = readToolSecrets(repo, tool.name, io.toolHome);
   let answer;
   try {
-    answer = await (io.callTool ?? ((spec, secrets, name, given) => callProjectTool(spec, secrets, name, given, { timeoutMs: 120_000, omitEnv: ALL_CREDENTIAL_ENV })))(tool.spec, values, call.action, call.input);
+    answer = await (io.callTool ?? ((spec, secrets, name, given) => callProjectTool(spec, secrets, name, given, { timeoutMs: 120_000, omitEnv: ALL_CREDENTIAL_ENV, server: serverOf(store, repo, io) })))(tool.spec, values, call.action, call.input);
   } catch (error) {
     answer = { ok: false as const, problem: error instanceof Error ? error.message : "It couldn't be reached." };
   }

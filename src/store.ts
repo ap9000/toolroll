@@ -1,5 +1,7 @@
 import { WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
 import { checkAccessOf, widerThan, type CheckAccess } from "./check-access.js";
+import { PROJECT_SANDBOX_DEFAULT, sandboxOf, type ProjectSandbox } from "./project-sandbox.js";
+import type { FencePolicy } from "./agent-fence.js";
 import { networkFromValue, PROJECT_NETWORK_DEFAULT, projectNetworkFromValue, runNetworkFromValue, type NetworkProfile, type ProjectNetwork, type RunNetworkRecord } from "./egress.js";
 import { isAcpProfile, isAcpProvider } from "./acp-agents.js";
 import { ACP_CONFORMANCE_VERSION, launchFromJson, type AcpLaunch } from "./acp-attest.js";
@@ -770,7 +772,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // agent-baseline-hardening.md arc 2) — only their workspace unless an approver chose anywhere.
 // v132 adds, and changes no saved row: how far a project's checks reach beyond the check fence (project_check_access;
 // check-access.ts, docs/plans/check-access.md) — sandboxed unless an instance operator widened it.
-export const SCHEMA_VERSION = 132;
+// v133 adds, and changes no saved row: a project's sandbox settings (project_sandbox; project-sandbox.ts,
+// docs/plans/sandbox-parity.md C9) — what its builds may not read, the macOS services and protected files they may — and
+// the fence policy a flow was made under (flow.fence_policy; saved flows read NULL: v1, the home configuration denied).
+export const SCHEMA_VERSION = 133;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -908,7 +913,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1061,6 +1066,16 @@ CREATE TABLE IF NOT EXISTS project_check_access (
   level       TEXT NOT NULL CHECK (level IN ('sandboxed', 'sign-ins', 'unsandboxed')),
   updated_at  TEXT NOT NULL,
   updated_by  TEXT NOT NULL
+);
+`;
+/** v133: a project's sandbox settings (project-sandbox.ts): JSON lists, each sorted, distinct and valid. */
+export const PROJECT_SANDBOX_SCHEMA = `
+CREATE TABLE IF NOT EXISTS project_sandbox (
+  repo              TEXT PRIMARY KEY,
+  read_deny_json    TEXT NOT NULL DEFAULT '[]',
+  mach_lookup_json  TEXT NOT NULL DEFAULT '[]',
+  updated_at        TEXT NOT NULL,
+  updated_by        TEXT NOT NULL
 );
 `;
 /** v129: a finished run's How it ran, derived from its own records on first view (display only: never a verdict). Its
@@ -5044,6 +5059,10 @@ function initializeStore(db: Database, file: string): Store {
   db.exec(PROJECT_CHECK_ACCESS_SCHEMA);
   addColumn(db, "run", "sandbox_access", "TEXT");
   addColumn(db, "run", "sandbox_network", "TEXT");
+  // v133: a project's sandbox settings (a new table), and the fence policy each flow was made under (saved flows: NULL,
+  // read as v1).
+  db.exec(PROJECT_SANDBOX_SCHEMA);
+  addColumn(db, "flow", "fence_policy", "INTEGER");
   // v123: a flow that runs on its own (flow-unattended.ts): its grants and daily runs (new tables), and which authority
   // armed a plan's unchanged-plan approval (plan_authorization.basis, V123_ADDED_COLUMNS: saved rows read the mode).
   db.exec(FLOW_UNATTENDED_SCHEMA);
@@ -8172,11 +8191,15 @@ export class Store {
           // all) seals only on a person's password ceremony — never a mode, a grant, a chat confirmation or a carry.
           const profileText = this.db.prepare("SELECT profile_json FROM task_scope WHERE task_id = ?").get(taskId)?.["profile_json"];
           let sealedAccess: unknown;
+          // SANDBOX WIDENINGS (v133, project-sandbox.ts): extra macOS services seal, likewise,
+          // only on a person's own password yes to exactly them.
+          let sandboxWidened = false;
           try {
             const stored = typeof profileText === "string" ? JSON.parse(profileText) as { profile?: Record<string, unknown> | null } | null : null;
             sealedAccess = stored?.profile?.["checkAccess"];
+            sandboxWidened = stored?.profile?.["machLookup"] !== undefined;
           } catch { sealedAccess = "unreadable"; }
-          if (sealedAccess !== undefined) return false;
+          if (sealedAccess !== undefined || sandboxWidened) return false;
         }
         // SEPARATION OF DUTIES (v102), enforced in the primitive so no road
         // around it exists: a project's rules can refuse the requester, and
@@ -18164,7 +18187,8 @@ export class Store {
 
   createFlow(flow: { repo: string; name: string; definitionJson: string; by: string }, now: Date): number {
     const stamp = now.toISOString();
-    return Number(this.db.prepare("INSERT INTO flow (repo, name, definition_json, revision, state, created_by, created_at, updated_by, updated_at) VALUES (?, ?, ?, 1, 'active', ?, ?, ?, ?)")
+    // A flow made from 0.9.70 on runs under fence policy v2 (agent-fence.ts FencePolicy); one made before stays v1.
+    return Number(this.db.prepare("INSERT INTO flow (repo, name, definition_json, revision, state, created_by, created_at, updated_by, updated_at, fence_policy) VALUES (?, ?, ?, 1, 'active', ?, ?, ?, ?, 2)")
       .run(flow.repo, flow.name, flowDefinitionForStore(flow.definitionJson), flow.by, stamp, flow.by, stamp).lastInsertRowid);
   }
 
@@ -19061,7 +19085,7 @@ export class Store {
   }
 
   /** How one attempt was kept away from Toolroll's own secrets (the agent fence), kept beside its tools. */
-  recordRunFence(run: number, fence: { method: string; paths: number }, now: Date): void {
+  recordRunFence(run: number, fence: { method: string; paths: number; policy?: 1 | 2; digest?: string; engine?: string }, now: Date): void {
     this.db.prepare(`INSERT INTO run_tool (run, tools_json, created_at) VALUES (?, json_object('fence', json(?)), ?)
       ON CONFLICT (run) DO UPDATE SET tools_json = json_set(tools_json, '$.fence', json(?))`).run(run, JSON.stringify(fence), now.toISOString(), JSON.stringify(fence));
   }
@@ -19081,7 +19105,7 @@ export class Store {
     return runNetworkFromValue(parsed);
   }
 
-  runFence(run: number): { method: string; paths: number } | null {
+  runFence(run: number): { method: string; paths: number; policy?: 1 | 2; digest?: string; engine?: string } | null {
     const row = this.db.prepare("SELECT json_extract(tools_json, '$.fence') AS fence FROM run_tool WHERE run = ?").get(run);
     if (row === undefined || row["fence"] === null) return null;
     const read = readStoreColumn("run_tool.tools_json.fence", row["fence"]);
@@ -22538,6 +22562,57 @@ export class Store {
       return { before, after };
     });
   }
+
+  // ---- sandbox parity (docs/plans/sandbox-parity.md). Kept last in the class: the freshness tripwire pins positions.
+
+  /** The scout's browser ran outside Toolroll's fence under its launch contract (scout-browser.ts): which exception. */
+  recordRunBrowser(run: number, browser: { containment: string; tool: string }, now: Date): void {
+    const json = JSON.stringify(browser);
+    this.db.prepare(`INSERT INTO run_tool (run, tools_json, created_at) VALUES (?, json_object('browser', json(?)), ?)
+      ON CONFLICT (run) DO UPDATE SET tools_json = json_set(tools_json, '$.browser', json(?))`).run(run, json, now.toISOString(), json);
+  }
+
+  runBrowser(run: number): { containment: string; tool: string } | null {
+    const row = this.db.prepare("SELECT json_extract(tools_json, '$.browser') AS browser FROM run_tool WHERE run = ?").get(run);
+    if (row === undefined || row["browser"] === null) return null;
+    try {
+      const parsed = JSON.parse(String(row["browser"])) as { containment?: unknown; tool?: unknown };
+      return typeof parsed.containment === "string" && typeof parsed.tool === "string" ? { containment: parsed.containment, tool: parsed.tool } : null;
+    } catch { return null; }
+  }
+  /** A project's sandbox settings (project-sandbox.ts): its saved lists, or none. A damaged row keeps what it can read
+   * of its read denies (never fewer) and grants nothing else. */
+  projectSandbox(repo: string): ProjectSandbox {
+    const row = this.db.prepare("SELECT read_deny_json, mach_lookup_json FROM project_sandbox WHERE repo = ?").get(repo);
+    if (row === undefined) return { ...PROJECT_SANDBOX_DEFAULT };
+    const read = (text: unknown): unknown => { try { return typeof text === "string" ? JSON.parse(text) : null; } catch { return null; } };
+    return sandboxOf({ readDeny: read(row["read_deny_json"]), machLookup: read(row["mach_lookup_json"]) });
+  }
+
+  /** An approver changed a project's sandbox settings (their password was proved by the caller): saved whole, and in
+   * the ledger as before → after. The account is proved again inside the write. Refused: null, nothing written. */
+  setProjectSandbox(repo: string, wanted: ProjectSandbox, by: string, now: Date): { before: ProjectSandbox; after: ProjectSandbox } | null {
+    return this.transact(() => {
+      const account = this.accountOf(by);
+      if (account === null || account.revokedAt !== null || account.role !== "approver" || !this.accountCanAccess(by, repo)) return null;
+      const before = this.projectSandbox(repo);
+      const clean = sandboxOf(wanted);
+      this.db.prepare(`INSERT INTO project_sandbox (repo, read_deny_json, mach_lookup_json, updated_at, updated_by) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (repo) DO UPDATE SET read_deny_json = excluded.read_deny_json, mach_lookup_json = excluded.mach_lookup_json,
+        updated_at = excluded.updated_at, updated_by = excluded.updated_by`)
+        .run(repo, JSON.stringify(clean.readDeny), JSON.stringify(clean.machLookup), now.toISOString(), by);
+      const after = this.projectSandbox(repo);
+      const words = (one: ProjectSandbox) => `read-deny ${one.readDeny.length === 0 ? "none" : one.readDeny.join(",")}; mach ${one.machLookup.length === 0 ? "none" : one.machLookup.join(",")}`;
+      this.recordPolicy(by, repo, "sandbox", words(before), words(after), now);
+      return { before, after };
+    });
+  }
+
+  /** The fence policy a flow was made under (agent-fence.ts FencePolicy): v2 for one made from 0.9.70; v1 otherwise. */
+  flowFencePolicy(flow: number): FencePolicy {
+    return this.db.prepare("SELECT fence_policy FROM flow WHERE id = ?").get(flow)?.["fence_policy"] === 2 ? 2 : 1;
+  }
+
 }
 
 /** A stored count or id that must be a whole, non-negative number — a

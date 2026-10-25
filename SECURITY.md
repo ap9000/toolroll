@@ -25,9 +25,11 @@ user. What it promises:
 - **The agent fence.** Standing Orders' own secrets (the state folder beside
   the database, except the build's worktree, and `~/.toolroll`) are
   denied to agents by the operating system: Codex through its own sandbox on
-  every platform; Claude, Gemini and ACP agents through Seatbelt on macOS and
-  bubblewrap on Linux. Where neither exists (Windows, or Linux without a
-  working bubblewrap) a build doesn't start, unless an instance operator
+  every platform; Claude, Gemini and ACP agents, and every command and check,
+  through Anthropic's sandbox-runtime (`@anthropic-ai/sandbox-runtime` 0.0.79:
+  Seatbelt on macOS, bubblewrap with its seccomp filter on Linux). Where it can't
+  run (Windows, or Linux without bubblewrap, socat or ripgrep) a build doesn't
+  start, unless an instance operator
   allows unconfined agents (`config unconfined-agents allow`; each such run
   says "Not confined"). The README's "What an agent can reach" has the table.
 - **A build writes only its workspace.** Each scope seals where its build may
@@ -35,7 +37,7 @@ user. What it promises:
   the project's package caches, its temp folder and its agent's session files.
   The operator's shell profile, login items, agent settings and the
   repository's Git config, hooks and info are read-only to it, enforced by the
-  same sandbox (Seatbelt, bubblewrap, Codex's profile); `anywhere` is an
+  same sandbox (the sandbox-runtime, Codex's profile); `anywhere` is an
   approver's explicit choice. Setup and check commands run in the build's
   fence. Toolroll's own Git on a build's checkout skips hooks, fsmonitor and
   submodules and refuses config that names a command; tool servers never run

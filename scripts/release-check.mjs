@@ -8,9 +8,9 @@
  * node scripts/release-check.mjs [--full] [--real] [--base <ref>] [--plan]
  */
 import { execFileSync } from "node:child_process";
-import { availableParallelism, loadavg } from "node:os";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { availableParallelism, loadavg, tmpdir } from "node:os";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { gateWords, openGate } from "./provider-gate.mjs";
 import { passedCandidateCI, macUnitFiles } from "./release-check-ci.mjs";
 import { makeTempRoot, runSuite } from "./suite-lifecycle.mjs";
@@ -231,8 +231,29 @@ export const partTempRoot = label => !/^(unit|app|flows)(-|$)/.test(label);
 
 const took = ms => ms < 60_000 ? `${Math.round(ms / 1000)} s` : `${Math.round(ms / 6000) / 10} min`;
 
+/**
+ * The launch folder (a plane's check folder, `so-cmd-…`) this check's temp folder lies inside, or null. The plane gives
+ * a check its temp folder there; the planes this check starts (its journeys, its fenced test suite) would then make
+ * everything inside a folder their own fence reads as another launch's (release check 3240: a journey's tool couldn't
+ * load its own script). So the check makes its temp root beside that launch folder instead (enclosingLaunchOf, in main).
+ */
+export function enclosingLaunchOf(temp = tmpdir()) {
+  let path;
+  try { path = realpathSync(temp); } catch { return null; }
+  for (let at = path; dirname(at) !== at; at = dirname(at)) if (/^so-cmd-/.test(basename(at))) return at;
+  return null;
+}
+
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const started = Date.now();
+  // Run by a plane, its temp folder inside the check's launch folder: every part takes a temp root beside that folder
+  // when it can be made there (an unsandboxed check; a sandboxed one can't write there, and nests no fence anyway).
+  const enclosing = enclosingLaunchOf();
+  if (enclosing !== null) {
+    let root = null;
+    try { root = makeTempRoot("so-rc-", { parent: dirname(enclosing) }); } catch { root = null; }
+    if (root !== null) for (const name of ["TMPDIR", "TMP", "TEMP"]) process.env[name] = root;
+  }
   // Newer release tags first: a checkout without them would quietly compare with an old release.
   if (process.env.TOOLROLL_RELEASE_LOCAL_TAGS !== "1") {
     let version = null;

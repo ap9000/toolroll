@@ -313,7 +313,7 @@ async function runtimeIdentity() {
 export async function checkCheckoutGit({ provider, worktree, databaseFile, repository, home = homedir() }, execute = run) {
   if (!["claude", "codex", "gemini"].includes(provider)) return null;
   if (typeof worktree !== "string" || worktree === "") throw new Error("the builder did not retain its worktree for the Git fence check");
-  const { agentFence, taskBoundary, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, fenceGrants, codexFenceArgv, macosFenceAvailable, macosFenced, linuxFenceAvailable, linuxFenced } = await import(join(root, "dist", "agent-fence.js"));
+  const { agentFence, taskBoundary, trustedWorktreeBinding, checkoutGitEnv, HARDENED_GIT_ARGS, fenceGrants, codexFenceArgv, macosFenceAvailable, linuxFenceAvailable, sandboxedSpawn } = await import(join(root, "dist", "agent-fence.js"));
   const binding = trustedWorktreeBinding(repository, worktree);
   const boundary = taskBoundary({ worktree, provider, home, binding });
   const fence = agentFence({ databaseFile, worktree, home, boundary, binding });
@@ -329,16 +329,15 @@ export async function checkCheckoutGit({ provider, worktree, databaseFile, repos
       if (control.code !== 0) throw new Error(`unfenced git ${args.join(" ")} failed: ${control.stderr}`);
       const wrapped = provider === "codex"
         ? { file: "codex", args: ["sandbox", ...codexFenceArgv(fence, false, grants), "-P", "standing-orders", "--", "git", ...gitArgs] }
-        : macosFenceAvailable() ? macosFenced("git", gitArgs, fence, grants)
-        : linuxFenceAvailable() ? linuxFenced("git", gitArgs, fence, grants) : null;
+        : macosFenceAvailable() || linuxFenceAvailable() ? sandboxedSpawn("git", gitArgs, fence, grants, worktree) : null;
       if (wrapped === null || fence.length === 0) { skipped = true; if (args[0] === "rev-parse") head = control.stdout.trim(); continue; }
       const checked = await execute(wrapped.file, wrapped.args, { cwd: worktree,
-        env });
+        env: { ...env, ...(wrapped.env ?? {}) } });
       if (checked.code !== 0) {
         const trivial = provider === "codex"
           ? { file: "codex", args: ["sandbox", ...codexFenceArgv(fence, false, grants), "-P", "standing-orders", "--", "true"] }
-          : macosFenceAvailable() ? macosFenced("true", [], fence, grants) : linuxFenced("true", [], fence, grants);
-        const sandbox = await execute(trivial.file, trivial.args, { cwd: worktree, env });
+          : sandboxedSpawn("true", [], fence, grants, worktree);
+        const sandbox = await execute(trivial.file, trivial.args, { cwd: worktree, env: { ...env, ...(trivial.env ?? {}) } });
         throw new Error(sandbox.code === 0 ? `The build fence blocks this checkout's own Git data. git ${args.join(" ")}: ${checked.stderr}` : `The provider sandbox could not run its control: ${sandbox.stderr}`);
       }
       if (checked.stdout !== control.stdout) throw new Error(`fenced git ${args.join(" ")} disagrees with its control`);

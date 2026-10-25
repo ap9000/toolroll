@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.9.70 — 2026-10-24
+
+- **Every sandbox is now Anthropic's sandbox-runtime.** Builds, their setup
+  and check commands, a saved result's checks, flows and project tool servers
+  all run in `@anthropic-ai/sandbox-runtime` 0.0.79, the same sandbox Claude
+  Code uses: its own code writes the macOS Seatbelt profile and the Linux
+  bubblewrap and seccomp command for each launch. Toolroll hands it only a
+  short list: its own folders and database are off limits, the build's
+  checkout is writable, other tasks' checkouts are read and never written,
+  your project's read-deny list, and the run's proxy as the only way out.
+  `toolroll doctor` and Settings → Project → Home folder name the engine and
+  its version. Codex builds keep Codex's own sandbox with the same rules.
+- **Checks that start Chrome don't run sandboxed on macOS yet.** The sandbox
+  runtime has no setting for the service Chromium registers at startup, so a
+  Playwright or browser check fails inside it. Until a follow-up adds that one
+  rule, set such a project's check access to **Not sandboxed** in
+  Settings → Project → Check access.
+- **Your home folder is readable to new scopes, as in the sandbox runtime.**
+  A project hides what it wants back with Settings → Project → **Home
+  folder**, or `toolroll project sandbox --repo <p> --read-deny "~/.ssh"`.
+  Each approved scope seals its list. Scopes approved before 0.9.70 keep
+  hiding your credentials and agent settings, as they were approved.
+- **The macOS services a project's builds may also reach** (`--mach`, for Go
+  tools that verify TLS through trustd) seal only on a person's password.
+  Approval cards and the CLI's scope view say what a scope reads and which
+  services it adds.
+- **Checks can use your Claude, Codex and GitHub sign-ins again.** The
+  "Sandboxed, with model and GitHub sign-ins" level is on: a check reads
+  exactly those files, by name, inside its sandbox, never through a link.
+- Flows, tool servers started outside a build and interactive Codex coding
+  sessions now run in the same sandbox as builds. A machine that can't
+  sandbox runs none of them unless an instance operator allowed unconfined
+  agents.
+- On Linux the sandbox needs bubblewrap, socat and ripgrep; without them
+  nothing starts (as before, unless unconfined agents are allowed).
+- A result that adds or changes a Git hook or config, editor or Claude
+  settings, a shell profile, `.envrc`, `.npmrc` or `.mcp.json` is refused at
+  the handoff, with its work kept. Toolroll's own install and the sandbox
+  runtime can't be written from inside a sandbox.
+- The scout's browser runs outside the sandbox, as an explicit exception: a
+  pinned Playwright release installed from a lockfile into Toolroll's own
+  folder, with exactly the arguments and environment it was approved with.
+- Limits that come with the sandbox runtime: rules are fixed when a launch
+  starts, concurrent builds share its temp folder, and on macOS a build can
+  read another process's arguments and environment. Write unlocks for
+  protected files are gone (the runtime can't grant them).
+
 ## 0.9.69 — 2026-10-23
 
 - **Choose how far a project's checks reach.** Settings → Project has a new

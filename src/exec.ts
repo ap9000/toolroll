@@ -8,9 +8,9 @@
  */
 
 import { ACP_LINE_CAP, createAcpConversation } from "./acp-client.js";
-import { linuxFenceAvailable, linuxFenced, macosFenceAvailable, macosFenced, type FenceGrants } from "./agent-fence.js";
+import { linuxFenceAvailable, macosFenceAvailable, sandboxedSpawn, type FenceGrants } from "./agent-fence.js";
 import { execFile, execFileSync, spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { readlinkSync, realpathSync } from "node:fs";
 import { observeProcessTree, stopProcessTree, type ProcessTreeObserver } from "./process-tree.js";
 import { jsonlDiscriminants } from "./jsonl-discriminants.js";
 import { createContainer, currentContainment, type AttachOutcome, type Container, type ContainmentBackendId } from "./containment.js";
@@ -211,20 +211,31 @@ export class ContainmentRefusal extends Error {
 }
 
 /**
- * The command as it runs inside the agent fence (sandbox-exec or bubblewrap wrapping it), or as it is when it has no
- * fence. A spawn whose confinement is required and that no backend here can wrap is refused (ContainmentRefusal):
- * nothing runs, and nothing falls back to running it unwrapped.
+ * The command as it runs inside the agent fence (Anthropic's sandbox-runtime wrapping it: agent-fence.ts
+ * sandboxedSpawn), with the environment that needs beside the caller's, or as it is when it has no fence. A spawn whose
+ * confinement is required and that no sandbox here can wrap is refused (ContainmentRefusal): nothing runs, and nothing
+ * falls back to running it unwrapped.
  */
-export function confined(file: string, args: readonly string[], bag: { fence?: readonly string[] | undefined; fenceGrants?: FenceGrants | undefined; confinement?: "required" | undefined }): { file: string; args: string[] } {
+export function confined(file: string, args: readonly string[], bag: { fence?: readonly string[] | undefined; fenceGrants?: FenceGrants | undefined; confinement?: "required" | undefined; cwd?: string | undefined; temp?: string | undefined }): { file: string; args: string[]; env: Record<string, string> } {
   const fence = bag.fence ?? [];
-  if (fence.length > 0 && macosFenceAvailable()) return macosFenced(file, args, fence, bag.fenceGrants);
-  if (fence.length > 0 && linuxFenceAvailable()) return linuxFenced(file, args, fence, bag.fenceGrants);
+  // A fence is only ever made by fenceFor (agent-fence.ts), which marks it required: one without the mark was put
+  // together some other way, and would run bare wherever no OS fence applies. Nothing runs.
+  if (fence.length > 0 && bag.confinement !== "required") throw new ContainmentRefusal("This process was given a fence that isn't marked required, so it was not started.");
+  if (fence.length > 0 && (macosFenceAvailable() || linuxFenceAvailable())) {
+    try { return sandboxedSpawn(file, args, fence, bag.fenceGrants, bag.cwd, bag.temp); }
+    catch (error) { throw new ContainmentRefusal(`The sandbox couldn't be made, so nothing was started: ${error instanceof Error ? error.message : String(error)}`); }
+  }
   if (bag.confinement === "required") {
     throw new ContainmentRefusal(fence.length === 0
       ? "This process must run inside the agent fence, and it was given none."
       : "This machine can't confine a build (no macOS sandbox, no working bubblewrap), so nothing was started.");
   }
-  return { file, args: [...args] };
+  return { file, args: [...args], env: {} };
+}
+
+/** A spawn's environment with what its sandbox needs added (nothing added: the caller's, as it was). */
+export function withSandboxEnv<T extends Record<string, string | undefined>>(env: T | undefined, added: Record<string, string>): T | Record<string, string | undefined> | undefined {
+  return Object.keys(added).length === 0 ? env : { ...(env ?? process.env), ...added };
 }
 
 /** A spawn callback refused custody AFTER the child existed: the caller
@@ -266,7 +277,9 @@ function spawnContained(
   contain = true,
 ): ContainedSpawn {
   // The agent fence wraps the target itself (sandbox-exec then execs it, same pid).
-  ({ file, args } = confined(file, args, bag));
+  const sandboxed = confined(file, args, { ...bag, cwd: spawnOptions.cwd, temp: spawnOptions.env?.["TMPDIR"] });
+  ({ file, args } = sandboxed);
+  spawnOptions = { ...spawnOptions, env: withSandboxEnv(spawnOptions.env, sandboxed.env) };
   // The policy refusal comes first: nothing is reserved, recorded or
   // spawned for a spawn that cannot be contained as required.
   const effective = contain ? currentContainment() : null;
@@ -689,8 +702,8 @@ export function run(file: string, args: readonly string[], options: RunOptions =
 
   // The plain road wraps exactly as the process-group road does: a fence given here is never dropped, and a spawn
   // whose confinement is required and can't be wrapped refuses before anything runs.
-  let wrapped: { file: string; args: string[] };
-  try { wrapped = confined(file, args, options); }
+  let wrapped: { file: string; args: string[]; env: Record<string, string> };
+  try { wrapped = confined(file, args, { ...options, cwd, temp: childEnv?.["TMPDIR"] }); }
   catch (error) {
     if (!(error instanceof ContainmentRefusal)) throw error;
     return Promise.resolve({ code: CONTAINMENT_REFUSED_CODE, stdout: "", stderr: error.message, timedOut: false, notFound: false, containment: { refused: error.message } });
@@ -708,7 +721,7 @@ export function run(file: string, args: readonly string[], options: RunOptions =
             encoding: "utf8",
             shell: false,
             windowsHide: true,
-            ...(childEnv === undefined ? {} : { env: childEnv }),
+            ...((env => env === undefined ? {} : { env }))(withSandboxEnv(childEnv, wrapped.env)),
           },
           (error, stdout, stderr) => {
             if (error === null) {
@@ -1564,15 +1577,16 @@ function processRows(): ProcessRow[] | null {
  * wrapper around it), down to the agent's own process (the first whose command is the agent's launch, `names`), then
  * every live, non-zombie process beneath it, with its group. The agent itself and any wrapper are never counted.
  */
-function liveUnderAgent(root: number, names: readonly string[]): { pid: number; group: number }[] | null {
+function liveUnderAgent(root: number, names: readonly string[], rootIsWrapper = false): { pid: number; group: number }[] | null {
   const rows = processRows();
   if (rows === null) return null;
   const children = new Map<number, ProcessRow[]>();
   for (const row of rows) children.set(row.parent, [...(children.get(row.parent) ?? []), row]);
   const self = rows.find(row => row.pid === root);
-  const named = (row: ProcessRow) => names.some(name => row.name === name || row.name.endsWith(`/${name}`));
+  const named = (row: ProcessRow) => agentNamed(row, names);
   // The agent: the root when it is the agent (macOS sandbox-exec execs in place), else the first named descendant.
-  let agent: number | null = self !== undefined && named(self) ? root : null;
+  // On Linux the root is the sandbox launch helper (sandbox-launch.ts, itself node): never taken for the agent.
+  let agent: number | null = !rootIsWrapper && self !== undefined && named(self) ? root : null;
   const pending = [...(children.get(root) ?? [])];
   while (agent === null && pending.length > 0) {
     const row = pending.shift()!;
@@ -1588,6 +1602,22 @@ function liveUnderAgent(root: number, names: readonly string[]): { pid: number; 
     below.push(...(children.get(row.pid) ?? []));
   }
   return found;
+}
+
+/** The program a Linux process runs (its /proc exe), or null: elsewhere, or unreadable. */
+function linuxProgramOf(pid: number): string | null {
+  if (process.platform !== "linux") return null;
+  try { return readlinkSync(`/proc/${pid}/exe`).replace(/ \(deleted\)$/, "").split("/").pop() || null; } catch { return null; }
+}
+
+/**
+ * Whether a listed process is the agent's launch (`names`): by its listed name, or on Linux by the program it runs,
+ * since a listing there shows the main thread's name, which Node 24 sets to "MainThread".
+ */
+export function agentNamed(row: { pid: number; name: string }, names: readonly string[], programOf: (pid: number) => string | null = linuxProgramOf): boolean {
+  if (names.some(name => row.name === name || row.name.endsWith(`/${name}`))) return true;
+  const program = programOf(row.pid);
+  return program !== null && names.includes(program);
 }
 
 /** How long each shutdown step waits: session/close's answer, then exit after stdin closes, then exit after SIGTERM. */
@@ -1768,7 +1798,7 @@ export function runAcpSession(
             forceKill();
           });
         },
-        liveDescendants: () => process.platform === "win32" ? null : exited() || child.pid === undefined ? [] : liveUnderAgent(child.pid, agentNames),
+        liveDescendants: () => process.platform === "win32" ? null : exited() || child.pid === undefined ? [] : liveUnderAgent(child.pid, agentNames, child.spawnargs.some(arg => arg.endsWith("sandbox-launch.js"))),
       });
     } catch { /* the caller's own failure */ }
 

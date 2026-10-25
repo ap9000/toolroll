@@ -565,24 +565,47 @@ Use Full access only for repositories and setup commands you trust.
 
 ### What an agent can reach
 
-Agents run as your own user, so Toolroll fences its own secrets off
-from them at the operating system, in every permission mode. The fence covers
-the state folder beside the database (your remembered login `up-login.txt`,
-runner and coordinator tokens, chat bot tokens, the database and its backups,
-other runs' evidence) — everything there except the build's own worktree —
-and `~/.toolroll` (stored provider keys and project tool secrets).
+#### Sandboxing: built on Anthropic's sandbox-runtime (v0.0.79)
 
-Seatbelt and bubblewrap deny the whole checkout pool and allow the build’s own
-checkout back, covering other projects created after launch too. Codex keeps
-the own checkout’s ancestors traversable and denies each other project folder
-found in trusted checkout pools at launch. A project added after a Codex build
-starts is covered on the next launch. Own Git data, linked shared dependencies
-and launch tools remain available.
+Every fenced launch (a build's agent, its setup and check commands, a saved
+result's checks, a flow's setup and script, a project tool's server) runs inside
+[Anthropic's sandbox-runtime](https://github.com/anthropics/sandbox-runtime)
+(`@anthropic-ai/sandbox-runtime`, pinned to 0.0.79): the same sandbox Claude Code
+uses. Its own code writes the macOS Seatbelt profile and the Linux bubblewrap and
+seccomp command for each launch, with its baseline, its protected names and its
+limits; Toolroll only hands it a short config. `toolroll doctor` and Settings →
+Project → **Home folder** name the engine and its version. Where it can't run
+(Windows; Linux without bubblewrap, socat or ripgrep, or with unprivileged user
+namespaces off), nothing starts unless an instance operator allows unconfined
+agents (`toolroll config unconfined-agents allow`). Codex builds use Codex's own
+sandbox, given the same rules.
+
+What Toolroll adds to the runtime's config, and nothing else:
+
+- **Toolroll's own folders** are denied to read and write: the state folder
+  beside the database (your remembered login `up-login.txt`, runner and
+  coordinator tokens, chat bot tokens, the database and its backups, other runs'
+  evidence) except the checkout pool, and `~/.toolroll` (stored provider keys and
+  project tool secrets); other launches' private folders are unread.
+- **The build's own checkout** is writable; **other tasks' checkouts** are read,
+  never written (those there when it starts).
+- **Your home folder** is readable, as in the runtime (a scope approved before
+  0.9.70 keeps hiding your credentials and agent settings, as it was approved). A
+  project hides more with Settings → Project → **Home folder**, or `toolroll
+  project sandbox --repo <p> --read-deny "~/.ssh,~/.aws"`; each approved scope
+  seals that list.
+- **The network**: open, or only through the run's own proxy (below).
+
+The runtime's limits are accepted as they are: rules are fixed when a launch
+starts; on Linux a deny for a path that isn't there yet is the runtime's to handle;
+concurrent builds share the system temp folder; another process's arguments and
+environment can be read on macOS; and a folder or checkout made after a build
+starts is writable to it unless something above denies it.
 
 | | Auto | Full access |
 |---|---|---|
-| **Codex / OpenRouter** (any OS) | Codex's sandbox with the fence: writes only the checkout, its Git data and the project's caches (anywhere outside the fence, under a project set to write anywhere); no network | the same writes, with the fence; its commands reach the network only when the project's network is open |
-| **Claude, Gemini, ACP agents** | macOS: inside a Seatbelt sandbox that denies the fence and writes only the checkout, its Git data, the project's caches, the run's temp folder and the agent's own session files. Linux: the same in bubblewrap, with a /tmp of its own. Neither (Windows, or Linux without bubblewrap): the build doesn't start, unless an instance operator allows unconfined agents | same |
+| **Claude, Gemini, ACP agents** | Anthropic's sandbox-runtime (Seatbelt on macOS; bubblewrap and its seccomp filter on Linux, which also needs socat and ripgrep): reads your home folder except the folders the project lists, never Toolroll's folders; other tasks' work read, never written; writes only the checkout, its Git data, the project's caches, the run's temp folder and the agent's own session files (anywhere outside the fence, under a project set to write anywhere), never the runtime's protected names in the checkout (Git hooks and config, shell profiles, `.mcp.json`, editor settings); no Apple Events. Neither (Windows, or a Linux missing one of those): the build doesn't start, unless an instance operator allows unconfined agents | same |
+| **Codex / OpenRouter** (any OS) | Codex's own sandbox, given the same fence: reads your home folder except the folders the project lists, never Toolroll's folders; other tasks' work read, never written; writes only the checkout, its Git data and the project's caches (anywhere outside the fence, under a project set to write anywhere); no network | the same reads and writes, with the fence; its commands reach the network only when the project's network is open |
 
 **Where a build writes.** Each approved scope also seals where its build may
 write. By default (Settings → Project → **Where builds write**, or `toolroll
@@ -618,8 +641,9 @@ mode** an agent's own provider key is in its environment, so its shell can
 read it (subscription mode, the default, puts no key there); and a project's
 own tool secrets reach that project's tools. They stay in a per-run broker
 outside the fence: the agent gets only its address and a token that stops
-working when the run ends, and on macOS it can't read another process's
-arguments or environment. Reviews and the lead chat run with no tools and are
+working when the run ends. A tool server's own environment (its secrets among it)
+is readable to a build on macOS through the process list, a limit of the sandbox
+runtime's baseline. Reviews and the lead chat run with no tools and are
 confined to their own files. See [SECURITY.md](SECURITY.md).
 
 ### How build sessions are protected
@@ -1197,6 +1221,8 @@ about seven minutes, and writes `report.md`, screenshots and both logs to
 `output/e2e/`.
 
 ## Credits
+
+Every sandbox Toolroll runs is [Anthropic's sandbox-runtime](https://github.com/anthropics/sandbox-runtime) (Apache-2.0), used as a dependency; see THIRD_PARTY_NOTICES.md.
 
 The workflow this formalizes comes from [Jason Ku's agentic engineering session](https://youtu.be/Ukju3maxbEQ) and his [`agents-md-snippets`](https://github.com/jasonku09/agents-md-snippets), plus Kun Chen's `treehouse`, `no-mistakes`, `gnhf`, `tasks-axi`, and `axi`. The design was reviewed adversarially by Codex; the appendix in `docs/DESIGN.md` lists every claim that review falsified, because the corrections are more useful than a clean spec would have been.
 

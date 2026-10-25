@@ -30,7 +30,7 @@ export function checkAccessWords(level: CheckAccess): string {
 
 /** What each wider level means, said before anyone chooses it. */
 export const CHECK_ACCESS_WARNINGS: Readonly<Record<Exclude<CheckAccess, "sandboxed">, string>> = {
-  "sign-ins": "This project's checks can read your Claude, Codex and GitHub sign-ins. Its tests could use or send those credentials anywhere its network setting allows. Only choose this for projects you trust.",
+  "sign-ins": "This project's checks can read your Claude, Codex and GitHub sign-ins, even where the project hides your home folder's files from builds. Its tests could use or send those credentials anywhere its network setting allows. Only choose this for projects you trust.",
   unsandboxed: "This project's checks get your full access to this machine and to Toolroll itself, including its database and every sign-in. Only for a project whose checks must create sandboxes themselves, such as Toolroll's own.",
 };
 
@@ -66,15 +66,12 @@ export function checkNetworkOf(sealed: NetworkProfile, provider: string, project
   return { ...sealed, hosts: sealed.hosts.filter(host => !agent.has(host)) };
 }
 
-/** Off everywhere, for now (0.9.69): no `sign-ins`. Reading a sign-in file resolves its parent folders by path (Node
- * has no openat), and each review round found another way a build or a check could swap a folder on that path between
- * the checks and the read (on Linux a Claude build can write ~/.claude outright). Until that read is race-free, no
- * check gets sign-ins: setting the level is refused, a level saved or sealed before (or copied in from another
- * database) runs sandboxed, a scope seals sandboxed, and the sign-ins launch refuses first thing. The code behind it
- * (signInGrants, readGrantedFile, the copies, the network fence) stays, guarded, for when such a reader exists; flip
- * SIGN_INS_READY then (Linux stays off until its copies are race-free too). */
-export const SIGN_INS_READY = false;
-export const signInsAvailable = (platform: NodeJS.Platform = process.platform): boolean => SIGN_INS_READY && platform !== "linux";
+/** On (0.9.70, sandbox parity C10): a `sign-ins` check reads its sign-in files itself, through its sandbox, by name
+ * (agent-fence.ts signInGrants). Nothing privileged reads or copies one, so the race that kept sign-ins off (a folder
+ * swapped between a privileged check and its read) has nothing to race; a link planted at a sign-in name leads, inside
+ * the sandbox's own view, to a denied path. Every platform with an OS fence. */
+export const SIGN_INS_READY = true;
+export const signInsAvailable = (_platform: NodeJS.Platform = process.platform): boolean => SIGN_INS_READY;
 
 /** Why sign-ins can't be chosen here, said plainly (null: they can). */
 export const signInsUnavailableWords = (platform: NodeJS.Platform = process.platform): string | null => signInsAvailable(platform) ? null

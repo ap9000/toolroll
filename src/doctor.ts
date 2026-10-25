@@ -24,12 +24,16 @@ import { envelopeJson } from "./envelope.js";
 import { run as runCommand } from "./exec.js";
 import { OWN_KEY_ENV } from "./keys.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
+import { SANDBOX_RUNTIME, sandboxRuntimeProblem, sandboxRuntimeWords } from "./sandbox-runtime.js";
 
 /** Something that holds a credential a build could read, by name only, and what the owner does about it. */
 export type DoctorFinding = { where: string; names: string[]; steps: string[] };
 /** Something the doctor could not read: never taken for clean. */
 export type DoctorUnreadable = { where: string; problem: string; steps: string[] };
-export type DoctorReport = { ok: boolean; checked: string[]; findings: DoctorFinding[]; unreadable: DoctorUnreadable[]; notes: string[] };
+export type DoctorReport = { ok: boolean; checked: string[]; findings: DoctorFinding[]; unreadable: DoctorUnreadable[]; notes: string[];
+  /** The sandbox every build runs in (sandbox-runtime.ts): Anthropic's sandbox-runtime, its version, and why it can't
+   * sandbox here (null when it can). */
+  sandbox?: { engine: string; version: string; problem: string | null } };
 
 export type DoctorDeps = {
   platform?: NodeJS.Platform;
@@ -382,6 +386,7 @@ export function doctorLines(report: DoctorReport): string[] {
     gap.steps.forEach((step, index) => lines.push(`  ${index + 1}. ${step}`));
   }
   for (const note of report.notes) lines.push("", `Note: ${note}`);
+  if (report.sandbox !== undefined) lines.push("", `Sandbox: ${sandboxRuntimeWords()}${report.sandbox.problem === null ? ", working here." : `, not available here: ${report.sandbox.problem}. Builds don't start unless an instance operator allows unconfined agents.`}`);
   if (report.checked.length > 0) lines.push("", "Checked:", ...report.checked.map(one => `  ${one}`));
   return lines;
 }
@@ -397,6 +402,7 @@ export async function runDoctorCommand(argv: readonly string[], write: (line: st
     return 2;
   }
   const report = await auditServiceEnvironment(deps);
+  report.sandbox = { engine: SANDBOX_RUNTIME.name, version: SANDBOX_RUNTIME.version, problem: sandboxRuntimeProblem() };
   if (json) write(envelopeJson({ command: "doctor", ...report }));
   else for (const line of doctorLines(report)) write(line);
   return report.ok ? 0 : 1;

@@ -17,6 +17,7 @@ import { boundProjectSummary,browserCrewFromIndex,browserCrewOf,browserNavigatio
 import { sharedActionPayload } from './chat-actions.js';
 import { prepareCodingContext } from './coding-context.js';
 import { CodingWorkspace } from './coding-workspace.js';
+import { codingSessionPermissions } from './coding-provider.js';
 import { CONSOLE_FORMS,readForm,type FormFieldOf,type FormView } from "./contracts/console-api.js";
 import type { DemoLead } from "./demo.js";
 import { createFlowRooms,flowFingerprint } from "./flow-live.js";
@@ -233,7 +234,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   if (coding === null && options.localRunner !== undefined && !store.isDemo()) {
     const database = store.handle.prepare('PRAGMA database_list').all().find(row => row['name'] === 'main')?.['file'];
     if (typeof database === 'string' && database !== '') {
-      try { coding = new CodingWorkspace({ database: `${database}.coding.sqlite`, worktreeRoot: join(dirname(database), 'coding-worktrees'), admissionPaused: () => updateAdmissionPaused(store.raw()), authorize: (actor, repo) => codingActorAllowed(actor) && codingProjectAllowed(repo), context: input => prepareCodingContext(store, { ...input, root: join(dirname(database), 'coding-context') }) }); }
+      try { coding = new CodingWorkspace({ database: `${database}.coding.sqlite`, worktreeRoot: join(dirname(database), 'coding-worktrees'), permissions: codingSessionPermissions(store, join(dirname(database), 'coding-worktrees')), admissionPaused: () => updateAdmissionPaused(store.raw()), authorize: (actor, repo) => codingActorAllowed(actor) && codingProjectAllowed(repo), context: input => prepareCodingContext(store, { ...input, root: join(dirname(database), 'coding-context') }) }); }
       catch (error) { codingProblem = error instanceof Error ? error.message : 'The coding workspace could not open.'; }
     }
   }
@@ -464,6 +465,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     access: projectAccessOf(repo),
     network: { setting: store.projectNetwork(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
     writes: { setting: store.projectWrites(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
+    sandbox: { setting: store.projectSandbox(repo), canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo) },
     checkAccess: {
       setting: store.projectCheckAccess(repo), changed: store.projectCheckAccessChange(repo),
       canNarrow: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo),

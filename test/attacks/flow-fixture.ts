@@ -13,6 +13,7 @@ import { signUnattended } from "../../src/flow-unattended.js";
 import { validateFlowDefinition } from "../../src/flows.js";
 import { addApprover } from "../../src/scope.js";
 import { openStore, type Store } from "../../src/store.js";
+import { NO_OS_FENCE } from "../inside-fence.js";
 import { useScratch } from "./harness.js";
 
 export const T0 = new Date("2026-10-12T08:00:00Z");
@@ -40,6 +41,8 @@ export function useFlowPlane(label: string) {
     store = openStore(join(plane.dir, "orders.db"));
     const alex = addApprover(store, "alex", T0);
     if (!alex.ok || !addApprover(store, "sam", T0, { name: "alex", token: alex.token }).ok) throw Error("account");
+    // Where no OS fence can be made (inside the plane's check, a runner without bubblewrap) an operator allows unconfined agents.
+    if (NO_OS_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
     for (const phase of ["plan", "build", "review"]) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", T0);
     plane.whileRunning = () => {};
     plane.io = {

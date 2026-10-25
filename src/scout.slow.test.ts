@@ -754,6 +754,11 @@ describe("scout tasks, against real git", () => {
     const store = openStore(db);
     const ref = store.refFor("built-in", "flaky");
     expect(store.runsFor(ref.id)[0]).toMatchObject({ role: "scout", outcome: "built", reason: "report-delivered" });
+    // The run records the exception its browser ran under (sandbox parity C4): Chrome's sandbox, the pinned tool.
+    expect(store.runBrowser(store.runsFor(ref.id)[0]!.id)).toEqual({ containment: "Chrome's sandbox", tool: "@playwright/mcp@0.0.82" });
+    // Launched as the contract has it: Toolroll's own Node running the pinned helper from Toolroll's helpers folder.
+    expect(launches[0]).toMatchObject({ command: process.execPath, args: expect.arrayContaining(["--headless", "--browser", "chromium"]) });
+    expect(launches[0]!.args[0]).toBe(join(realpathSync(base), "helpers", "scout-browser-0.0.82", "node_modules", "@playwright", "mcp", "cli.js"));
     const view = readVerifiedReport(store, join(base, "evidence"), ref.id);
     expect(view?.ok).toBe(true);
     if (view !== null && view.ok) {
@@ -869,7 +874,7 @@ describe("scout tasks, against real git", () => {
 
   test("with no Playwright entry the scout researches without a browser instead of failing", async () => {
     const { runnerToken } = await setup();
-    const missing = vi.spyOn(projectTools, "catalogTool").mockImplementation(() => null);
+    const missing = vi.spyOn(browserCheck, "scoutBrowserTool").mockImplementation(() => ({ command: null, args: [] }) as unknown as browserCheck.BrowserLaunch);
     try {
       expect(await tick(runnerToken, planModeAgent({ kind: "report", report: FOUND }))).toBe(EXIT.ok);
     } finally {

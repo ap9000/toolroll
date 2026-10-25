@@ -46,7 +46,7 @@ describe('native coding workspace', () => {
   let expectedCloseFailure: string | null = null;
   const actor = { name: 'alex', generation: 1 };
   const key = 'initial-request-0001';
-  const open = () => new CodingWorkspace({ database: db, worktreeRoot: join(dir, 'worktrees'), provider: () => provider });
+  const open = () => new CodingWorkspace({ database: db, worktreeRoot: join(dir, 'worktrees'), permissions: () => ({ sandbox: 'workspace-write' }), provider: () => provider });
   const start = () => workspace.start(actor, { repo, title: 'Improve the welcome screen', model: null, prompt: 'Make the welcome screen clearer.', requestId: key });
   beforeEach(() => {
     expectedCloseFailure = null;
@@ -79,6 +79,20 @@ describe('native coding workspace', () => {
     expect(provider.calls[0]).toMatchObject({ method: 'thread/start', params: { cwd: session.worktree, sandbox: 'workspace-write', approvalPolicy: 'on-request', approvalsReviewer: 'user' } });
     expect(workspace.snapshot(session.id, actor).items[0]?.text).toBe('Make the welcome screen clearer.');
     expect((await workspace.changes(session.id, actor)).diff).toContain('+Hello, player');
+  });
+
+  test("the thread starts with the session's permission profile as its config, and a refused profile starts no thread", async () => {
+    await workspace.close();
+    const config = { default_permissions: 'standing-orders' };
+    let refuse = false;
+    workspace = new CodingWorkspace({ database: db, worktreeRoot: join(dir, 'worktrees'), permissions: () => refuse ? { problem: 'not bound' } : { config }, provider: () => provider });
+    const session = await start();
+    expect(provider.calls[0]).toMatchObject({ method: 'thread/start', params: { cwd: session.worktree, config } });
+    expect(provider.calls[0]!.params).not.toHaveProperty('sandbox');
+    refuse = true;
+    const calls = provider.calls.length;
+    await expect(workspace.start(actor, { repo, title: 'Second', model: null, prompt: 'Again.', requestId: 'initial-request-0002' })).rejects.toThrow('not bound');
+    expect(provider.calls.slice(calls).map(call => call.method)).not.toContain('thread/start');
   });
 
   test('steers the live turn and resumes the same conversation for subsequent revisions', async () => {
@@ -276,7 +290,7 @@ describe('native coding workspace', () => {
 
   test('update drain blocks new turns while keeping Stop available', async () => {
     await workspace.close(); let paused = false;
-    workspace = new CodingWorkspace({ database: db, worktreeRoot: join(dir, 'worktrees'), provider: () => provider, admissionPaused: () => paused });
+    workspace = new CodingWorkspace({ database: db, worktreeRoot: join(dir, 'worktrees'), permissions: () => ({ sandbox: 'workspace-write' }), provider: () => provider, admissionPaused: () => paused });
     const session = await start(); paused = true;
     await expect(workspace.send(session.id, actor, 'Change heading', 'drain-revision-0001')).rejects.toThrow('preparing an update');
     await workspace.stop(session.id, actor); expect(workspace.get(session.id, actor).status).toBe('interrupted');
@@ -291,7 +305,7 @@ describe('native coding workspace', () => {
     await workspace.close(); provider = new FakeProvider();
     let paused = false;
     const account = { generation: actor.generation, instanceOperator: true }, projects = new Set([saved.repo]);
-    workspace = new CodingWorkspace({ database: db, worktreeRoot: join(dir, 'worktrees'), provider: () => provider,
+    workspace = new CodingWorkspace({ database: db, worktreeRoot: join(dir, 'worktrees'), permissions: () => ({ sandbox: 'workspace-write' }), provider: () => provider,
       admissionPaused: () => paused,
       authorize: (one, project) => account.instanceOperator && one.name === actor.name && one.generation === account.generation && projects.has(project) });
     let entered!: () => void, release!: () => void;
@@ -314,7 +328,7 @@ describe('native coding workspace', () => {
 
   test('pause while a live follow-up yields preserves its working turn without steering', async () => {
     await workspace.close(); let paused = false;
-    workspace = new CodingWorkspace({ database: db, worktreeRoot: join(dir, 'worktrees'), provider: () => provider, admissionPaused: () => paused });
+    workspace = new CodingWorkspace({ database: db, worktreeRoot: join(dir, 'worktrees'), permissions: () => ({ sandbox: 'workspace-write' }), provider: () => provider, admissionPaused: () => paused });
     const saved = await start(), calls = provider.calls.length;
     const sending = workspace.send(saved.id, actor, 'Make the heading shorter.', 'live-drain-race-001');
     paused = true;
@@ -325,7 +339,7 @@ describe('native coding workspace', () => {
 
   test('pause during checkout preparation refuses native startup and preserves the original request', async () => {
     await workspace.close(); let paused = false;
-    workspace = new CodingWorkspace({ database: db, worktreeRoot: join(dir, 'worktrees'), provider: () => provider, admissionPaused: () => paused });
+    workspace = new CodingWorkspace({ database: db, worktreeRoot: join(dir, 'worktrees'), permissions: () => ({ sandbox: 'workspace-write' }), provider: () => provider, admissionPaused: () => paused });
     const internals = workspace as unknown as { git: (repo: string, args: string[]) => Promise<string> };
     const git = internals.git.bind(workspace);
     internals.git = async (project, args) => { const result = await git(project, args); if (args[0] === 'worktree') paused = true; return result; };
@@ -519,7 +533,7 @@ describe('native coding workspace', () => {
   test('access revoked after an accepted native response keeps its receipt instead of inviting a resend', async () => {
     await workspace.close();
     let authorized = true;
-    workspace = new CodingWorkspace({ database: db, worktreeRoot: join(dir, 'worktrees'), provider: () => provider, authorize: () => authorized });
+    workspace = new CodingWorkspace({ database: db, worktreeRoot: join(dir, 'worktrees'), permissions: () => ({ sandbox: 'workspace-write' }), provider: () => provider, authorize: () => authorized });
     const original = provider.request.bind(provider);
     provider.request = async (method, params) => { const result = await original(method, params); if (method === 'turn/start') authorized = false; return result; };
     const failure = await start().catch(error => error);

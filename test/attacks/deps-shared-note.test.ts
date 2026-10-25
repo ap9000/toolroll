@@ -8,7 +8,7 @@ import { mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { codexFenceArgv, fenceGrants } from "../../src/agent-fence.js";
-import { expectNoMarker, lines, LINKED_KEY, marker, needs, OTHER_KEY, plane, q, seatbelt, underSeatbelt, useScratch, write } from "./harness.js";
+import { expectNoMarker, lines, LINKED_KEY, marker, needs, OTHER_KEY, plane, q, seatbelt, underSandbox, useScratch, write } from "./harness.js";
 
 describe("attack: a node_modules/.toolroll-shared note choosing another project's deps", () => {
   const scratch = useScratch("depsnote");
@@ -49,11 +49,11 @@ describe("attack: a node_modules/.toolroll-shared note choosing another project'
     const { secret, at } = setup();
     const load = `${q(process.execPath)} -e 'console.log("pkg-" + require("pkg").value)' 2>/dev/null || echo pkg-refused`;
     const { fence, grants } = at.launch("claude");
-    const own = underSeatbelt(load, fence, grants, { cwd: at.active });
+    const own = underSandbox(load, fence, grants, { cwd: at.active });
     expect(lines(own), own.stderr).toEqual(["pkg-linked"]);
     repoint(at, OTHER_KEY);
     const attacked = at.launch("claude");
-    const foreign = underSeatbelt(`${load}\ncat ${q(join(at.shared(OTHER_KEY), "pkg", "index.js"))} 2>/dev/null || echo source-denied`, attacked.fence, attacked.grants, { cwd: at.active });
+    const foreign = underSandbox(`${load}\ncat ${q(join(at.shared(OTHER_KEY), "pkg", "index.js"))} 2>/dev/null || echo source-denied`, attacked.fence, attacked.grants, { cwd: at.active });
     expectNoMarker(foreign, secret);
     expect(lines(foreign), foreign.stderr).toEqual(["pkg-refused", "source-denied"]);
   });
