@@ -135,8 +135,9 @@ export type UnitOutcome = { file: string; state?: "passed" | "failed" | "skipped
 
 /** A release check report with these units (every other part passed, no journeys or upgrades unless given). */
 export function reportOf(units: UnitOutcome[], extra: Partial<CheckReport> & { exitCode?: number } = {}): Omit<CheckReport, "nonce" | "mode" | "planDigest"> {
+  const unitFailed = units.some(one => (one.failed ?? []).length > 0 || one.state === "failed");
   const parts = ["typecheck", "build", "unit", "flows", "app", "flows-real", "app-real", "upgrade"].map(part => ({ part: part as CheckReport["parts"][number]["part"],
-    selected: ["typecheck", "build", "unit"].includes(part), ran: ["typecheck", "build", "unit"].includes(part), code: ["typecheck", "build", "unit"].includes(part) ? 0 : null, timedOut: false }));
+    selected: ["typecheck", "build", "unit"].includes(part), ran: ["typecheck", "build", "unit"].includes(part), code: ["typecheck", "build"].includes(part) ? 0 : part === "unit" ? (unitFailed ? 1 : 0) : null, timedOut: false }));
   return {
     version: 1, exitCode: extra.exitCode ?? (units.some(one => (one.failed ?? []).length > 0 || one.state === "failed") ? 1 : 0),
     parts: extra.parts ?? parts,

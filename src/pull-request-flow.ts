@@ -410,6 +410,10 @@ export async function mergePullRequest(
 ): Promise<Result<{ commit: string | null }>> {
   const exec = input.exec ?? execRun;
   const clock = input.clock ?? (() => new Date());
+  // The nightly check of main (release-once.md, part 3) is a check only: it never merges.
+  const mergedRun = store.getRun(input.runId);
+  const mergedTask = mergedRun === null ? null : store.refById(mergedRun.taskRef)?.externalId ?? null;
+  if (mergedTask !== null && store.handle.prepare("SELECT 1 AS hit FROM nightly_check WHERE task = ?").get(mergedTask) !== undefined) return refuse("check-only", "The nightly check of main is only a check; it never merges.");
   const publication = store.publicationForRun(input.runId);
   const follow = publication === null ? null : followOf(store, publication.id);
   if (publication === null || follow === null || publication.prNumber === null) return refuse("no-pr", "This result has no open pull request to merge.");

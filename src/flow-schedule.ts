@@ -16,6 +16,7 @@ import { legOf, routeDigestOf, routeFromJson, routeProblems, type PhaseRoute } f
 import { canonicalAcceptance, digestOf, parseAcceptanceCriteria, profileDigestOf, profileFromJson, type AcceptanceCriterion, type ExecutionProfile } from "./scope.js";
 import { hasDisguisedText, hasForbiddenControls } from "./decision.js";
 import { BUILT_IN, parseCapabilityKey, type Store } from "./store.js";
+import { fileNightlyCheck } from "./nightly-check.js";
 
 export type { StandingOrder };
 
@@ -205,6 +206,8 @@ export class StandingOrderRefused extends Error {}
  */
 export function fileStandingOrder(store: Store, input: { flowId: number; repo: string; trigger: number; schedule: string; order: StandingOrder; title: string; slot: string }, now: Date): StandingFiring {
   const { order, repo } = input;
+  // The nightly full check on main files a check-only task of its own (nightly-check.ts).
+  if (order.check !== undefined) return fileNightlyCheck(store, input, now);
   const blocker = store.standingOrderBlocker(input.trigger, order.routine, now);
   if (blocker !== null) return { made: "skipped", note: `Skipped: the last one (${blocker.taskId}, ${blocker.state}) hasn't finished.` };
   const standing = standingApproval(order, repo, input.schedule);

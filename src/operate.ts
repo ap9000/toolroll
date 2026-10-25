@@ -58,6 +58,7 @@ import { sendSubagentSummaries } from "./subagent-admin.js";
 import { runRequestedUndos, sendSubagentWeeklies } from "./subagent-week.js";
 import { refreshConnections } from "./mcp-connect.js";
 import { releaseTermsFor } from "./release-carry.js";
+import { settleReleaseChecks } from "./nightly-check.js";
 import type { ReleaseTerms } from "./contracts/release-terms.js";
 import { SECRETS_FIRST, startToolSecrets, toolSecretStorage } from "./project-tools.js";
 import type { StepIo } from "./flow-steps.js";
@@ -6727,6 +6728,9 @@ async function runWatchLoop(args: {
       if (batched > 0) progress(`watch: settled ${batched} batch-checked result(s)`);
       const ran = await runWaitingChecks(store, context.evidenceRoot, { now: context.clock, shouldStop: stopping });
       if (ran > 0) progress(`watch: ran ${ran} follow-up check(s)`);
+      // The nightly check of main and the release checks that clear its failures (release-once.md, part 3).
+      const settledChecks = settleReleaseChecks(store, context.evidenceRoot, context.clock());
+      if (settledChecks > 0) progress(`watch: settled ${settledChecks} release check(s)`);
       // A finished check may send a build's card down its failure path: now, not on the next beat.
       if (ran + batched > 0) moveCards(store, repo, context.clock(), context.evidenceRoot);
     },

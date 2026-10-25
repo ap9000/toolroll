@@ -25,6 +25,24 @@ user. What it promises:
   (`up-login.txt`) and approve as you, since Toolroll can't tell it from you at
   your own command line. Don't keep a remembered login on a machine where you
   run such an agent, or sign out of the CLI there.
+- **One approval per release, for test fixes only** (docs/plans/release-once.md).
+  A person's yes to a release's terms carries to later commits on the same pull
+  request only when every change since is unit tests, the journey scripts,
+  Markdown under docs/, the README or the changelog (never agent or policy
+  files, agent or CI settings, the test harness, helpers or fixtures), within
+  400 changed lines, 20 files and 800 lines of churn, and the production build
+  is byte-for-byte the approved one. The proof reads only Toolroll's records
+  and Git objects it hashes itself, runs nothing from the commit until a
+  read-only preflight passed, builds in the fence with no network, and is
+  checked again at every deploy entry. A moved head after the deploy started,
+  an expired, revoked or superseded approval, or a lost approver stops it.
+  **Accepted limit (Alex, 2026-10-25):** re-running only what failed trusts test
+  code, as the full check always has. A test runs as the same user as the
+  check harness in the same checkout, can misreport its own results or change
+  its own harness copy and `node_modules`; the fence limits writes outside the
+  run and network, but deliberately lets a run read the home folder and the
+  repositories beside it. The nightly full check on main catches some
+  accidental omissions, with no guaranteed time to detect them.
 - **Tokens, not passwords, on requests.** Scripts, the remote CLI and MCP sign
   in with an API token (`toolroll tokens create`): it reads or acts, can be
   limited to projects, expires, and only its hash is kept. A password sent on a

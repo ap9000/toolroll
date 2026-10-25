@@ -7,7 +7,7 @@ import { replacedWords } from "./task-status.js";
 import { COMPLETER_ACTOR, COMPLETION_ACTION, COMPLETION_BY_MACHINE, COMPLETION_BY_PERSON, familyChangedFiles, landedReasonOf, personCompletionOwed } from "./result-completion.js";
 import { homedir } from "node:os";
 import { readSchemaVersion, stopFactOf, type Store, type ProofVerdictRow, type ProofAcceptanceRow, type Artifact } from "./store.js";
-import { approvalOf, machineActing } from "./scope.js";
+import { approvalOf, liveReleaseOf, machineActing } from "./scope.js";
 import { openWorkDecisionOf, taskWorkSummaryOf, workDecisionAction, type WorkAction, type WorkSummaryAccess } from "./work-summary.js";
 import { evidenceRoot, readVerifiedArtifact, readVerifiedReport, verifyArtifact } from "./evidence.js";
 import { sweepIfMoved } from "./sweep-gate.js";
@@ -162,6 +162,9 @@ function buildChecks(store: Store, root: string | undefined, runId: number): Ass
     const receipt = gate.bytes === null ? null : JSON.parse(gate.bytes);
     if (receipt === null) return { ...unavailable(level === "off" ? "Checks were off for this build." : "No machine check is recorded."), status: "not-run" };
     const ran = receipt.result.ran === true, exitCode = ran ? receipt.result.exitCode : null;
+    // A release check whose coverage fell short (release-once.md) failed, whatever its command exited with.
+    if (receipt.result.failure === "coverage-incomplete") return { status: "failed", exitCode: null, command: receipt.command.command, logArtifactId: receipt.log.artifactId, level,
+      detail: "Checks didn't cover everything this release owed, or a required test went missing." };
     // The sealed receipt names the grant that ran: the quick one, or the full one.
     const sealedLevel: CheckLevel = typeof receipt.command?.repo === "string" && receipt.command.repo.startsWith("quick:") ? "quick" : "full";
     const words = sealedLevel === "quick" ? "Quick checks" : "Checks";
@@ -470,7 +473,12 @@ export function assignmentEvidenceIntact(store: Store, root: string, receipt: As
 function acknowledgeCurrent(store: Store, current: AssignmentSnapshot, receiptDigest: string, actor: string, now: Date, root: string, access: AssignmentAccess): MutationResult {
   if (!/^[a-f0-9]{64}$/.test(receiptDigest) || current.receipt?.digest !== receiptDigest) return { ok: false, reason: "stale", message: "The result changed. Read the current assignment before checking it." };
   const receipt = current.receipt;
+  // The nightly check of main is a check only (release-once.md, part 3): nobody completes it.
+  if (store.handle.prepare("SELECT 1 AS hit FROM nightly_check WHERE task = ?").get(current.receipt!.taskId) !== undefined) return { ok: false, reason: "check-only", message: "The nightly check of main is only a check; it isn't completed." };
   if (current.state !== "ready-to-check" && current.state !== "complete") return { ok: false, reason: "not-ready", message: "This assignment still has unresolved execution, scope or decisions." };
+  // A release task completes only while its release approval stands for it (release-once.md, liveReleaseOf).
+  const release = liveReleaseOf(store, current.receipt!.taskId, "complete", now);
+  if (release.applies && !release.ok) return { ok: false, reason: "release", message: `This release can't be completed: ${release.why}.` };
   // Who is completing, from trusted context (approval policy §1.7a): a person, or a machine credential (the lead's
   // token, a remote API run) that may complete ordinary work but is never the second person on protected work.
   const person = actor.startsWith("operator:") && !machineActing() ? actor.slice("operator:".length) : null;

@@ -19,6 +19,8 @@ import { releaseGate, type GateReleaseWorld } from "./release-gate.js";
 import { databasePath, openStore, revokeRelease, type Database } from "./store.js";
 import { carryRefusalWords, proveCarry, setAskEveryReleaseCommit } from "./release-carry.js";
 import { authenticateApprover, machineActing, personProof } from "./scope.js";
+import { createNightlyCheckFlow } from "./nightly-check.js";
+import { parseSchedule } from "./flow-schedule.js";
 
 export const RELEASE_HELP = `toolroll release <branch> — release Toolroll itself, from a pushed branch with an open pull request
 
@@ -41,6 +43,10 @@ toolroll release carry <release> --to <commit> [--request <id>] — carry a pers
   build. Anything else is refused, naming the commit, path and rule, and that commit needs a person's approval.
 
 toolroll release revoke <release> — stop carrying later commits (before the merge starts)
+
+toolroll release nightly --repo <path> --as <you> --token <password> [--schedule daily:03:00@<zone>] [--start]
+  — the full release check of main's head every night, approved once with your password; it never deploys,
+  merges or completes, and a failure tells you and holds composed releases until a full check passes
 
 toolroll release ask-every-commit on|off --repo <path> [--as <you> --token <password>] — this project's releases ask
   for every later commit (on), or carry test-only commits again (off: your password, never the lead's token)
@@ -77,8 +83,8 @@ export type ReleaseCliDeps = {
   now?: () => Date;
 };
 
-const VALUE_FLAGS = new Set(["--repo", "--limit", "--tap", "--release-gate", "--to", "--request", "--as", "--token"]);
-const BARE_FLAGS = new Set(["--new", "--json", "--help", "--yes", "--no-carry"]);
+const VALUE_FLAGS = new Set(["--repo", "--limit", "--tap", "--release-gate", "--to", "--request", "--as", "--token", "--schedule"]);
+const BARE_FLAGS = new Set(["--new", "--json", "--help", "--yes", "--no-carry", "--start"]);
 
 export async function runReleaseCommand(args: readonly string[], write: (line: string) => void, deps: ReleaseCliDeps = {}): Promise<number> {
   const json = args.includes("--json");
@@ -88,7 +94,7 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
   };
   const positional: string[] = [];
   const limits: Record<string, number> = {};
-  let repo: string | undefined, tap: string | undefined, gate: string | undefined, to: string | undefined, request: string | undefined, as: string | undefined, token: string | undefined;
+  let repo: string | undefined, tap: string | undefined, gate: string | undefined, to: string | undefined, request: string | undefined, as: string | undefined, token: string | undefined, scheduleFlag: string | undefined;
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i]!;
     if (BARE_FLAGS.has(arg)) continue;
@@ -101,6 +107,7 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
       else if (arg === "--request") request = value;
       else if (arg === "--as") as = value;
       else if (arg === "--token") token = value;
+      else if (arg === "--schedule") scheduleFlag = value;
       else if (arg === "--tap") tap = value;
       else if (arg === "--release-gate") gate = value;
       else {
@@ -119,6 +126,7 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
     return runGateRelease(gate, args.includes("--yes"), write, json, deps.gateWorld ?? installedGateWorld());
   }
   if (args.includes("--yes")) return refuse("usage", "--yes goes with --release-gate <id>; a release needs no confirmation beyond the owner's approval.", 2);
+  if (positional[0] === "nightly" && positional.length === 1) return runNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, schedule: scheduleFlag, start: args.includes("--start") }, write, json, deps);
   if (["carry", "revoke", "ask-every-commit"].includes(positional[0] ?? "") && positional.length === 2) {
     return runAuthorityCommand(positional[0] as "carry" | "revoke" | "ask-every-commit", positional[1]!, { to, request, as, token, repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo) }, write, json, deps);
   }
@@ -244,5 +252,23 @@ async function runAuthorityCommand(command: "carry" | "revoke" | "ask-every-comm
     if (result.ok) return answer(true, { release: id, task: result.taskId, retried: result.retried, carry: { files: result.carry.files, lines: result.carry.changedLines } },
       `Carried release ${id} to ${flags.to.slice(0, 7)}: task ${result.taskId} (${result.carry.files} files, ${result.carry.changedLines} lines).`, 0);
     return answer(false, { reason: result.reason, message: result.message, ...(result.path === undefined ? {} : { path: result.path }) }, carryRefusalWords(result, flags.to), 1);
+  } finally { store.close(); }
+}
+
+/** `toolroll release nightly`: the nightly full check on main, approved with a person's password (nightly-check.ts). */
+async function runNightlyCommand(flags: { repo: string | undefined; as: string | undefined; token: string | undefined; schedule: string | undefined; start: boolean }, write: (line: string) => void, json: boolean, deps: ReleaseCliDeps): Promise<number> {
+  const answer = (ok: boolean, fields: Record<string, unknown>, words: string, code: number) => { write(json ? checkedEnvelopeJson({ ok, command: "release nightly", ...fields } as never) : words); return code; };
+  if (flags.repo === undefined) return answer(false, { reason: "usage", message: "Name the project with --repo <path>." }, "Name the project with --repo <path>.", 2);
+  if (flags.as === undefined || flags.token === undefined) return answer(false, { reason: "usage", message: "The nightly check is approved with your password: add --as <you> --token <password>." }, "The nightly check is approved with your password: add --as <you> --token <password>.", 2);
+  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return answer(false, { reason: "person-only", message: "Only a person sets up the nightly check." }, "Only a person sets up the nightly check.", 1);
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const schedule = flags.schedule ?? `daily:03:00${zone ? `@${zone}` : ""}`;
+  if (parseSchedule(schedule) === null) return answer(false, { reason: "usage", message: `${schedule} isn't a schedule (daily:03:00@Europe/Paris, say).` }, `${schedule} isn't a schedule (daily:03:00@Europe/Paris, say).`, 2);
+  const database = deps.database ?? databasePath(process.env, homedir());
+  const store = openStore(database);
+  try {
+    const made = createNightlyCheckFlow(store, { repo: flags.repo, schedule, as: flags.as, token: flags.token, start: flags.start }, (deps.now ?? (() => new Date()))());
+    if (!made.ok) return answer(false, { reason: "refused", message: made.message }, made.message, 1);
+    return answer(true, { flow: made.flow, trigger: made.trigger, schedule }, `The nightly check of main runs ${schedule}${flags.start ? "" : " once you turn its schedule on"} (flow ${made.flow}).`, 0);
   } finally { store.close(); }
 }

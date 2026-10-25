@@ -9,6 +9,7 @@ import { SENDER_WORDS } from "./webhook-signing.js";
 import { READER_CAPTURED } from "./webhook-readers.js";
 import { hostOf, linkWords, provedWords, snapshotOf } from "./task-source.js";
 import { deciderOf, FLOW_COLORS, FLOW_KIND_WORDS, FLOW_STAGE_KINDS } from "./flows.js";
+import { nightlyHealthWords } from "./nightly-check.js";
 import { flowInsights, troubleWords } from "./flow-insights.js";
 import { parseSortDecision, sortChip } from "./flow-sort.js";
 import { flowSecretNames, readEmailSettings, sendingReady } from "./flow-actions.js";
@@ -71,7 +72,7 @@ export function flowsListHtml(store: Store, flows: readonly FlowRow[], projects:
     const definition = flowDefinitionOf(flow);
     const waiting = cards.filter(card => ["approval", "choose"].includes(definition?.stages.find(one => one.id === card.stage)?.kind ?? "")).length;
     const buttons = store.flowTriggers(flow.id).filter(one => one.state === "active").flatMap(one => { const config = triggerConfigOf(one); return config?.kind === "button" ? [{ id: one.id, label: config.label }] : []; });
-    const trouble = troubleWords(flowInsights(store, flow, new Date(), 7));
+    const trouble = troubleWords(flowInsights(store, flow, new Date(), 7)) ?? nightlyHealthOf(store, flow);
     return html`<article class="card"><div class="flow-row"><h2><a href="/flows/${flow.id}">${flow.name}</a></h2><span class="flow-counts">${projectName(flow.repo)} · ${cards.length} card${cards.length === 1 ? "" : "s"} in progress${waiting > 0 ? ` · ${waiting} waiting for a decision` : ""}${trouble === null ? "" : ` · ${trouble}`}</span></div>${buttons.length > 0 && html`<p class="flow-buttons">${joinHtml(buttons.map(one => html`<a class="button-link" href="/flows/${flow.id}?start=${one.id}">${one.label}</a>`), " ")}</p>`}</article>`;
   });
   const projectField = projects.length === 1 ? html`<input type="hidden" name="repo" value="${projects[0]!}">` : html`<label>Project<select name="repo">${projects.map(repo => html`<option value="${repo}">${projectName(repo)}</option>`)}</select></label>`;
@@ -280,4 +281,10 @@ export function flowFallbackHtml(view: BrowserFlowView): Html {
     const cards = view.cards.filter(card => card.stage === stage.id && card.state === "active");
     return html`<li><strong>${stage.title}</strong> · ${FLOW_KIND_WORDS[stage.kind].label}${cards.length > 0 && html`<ul>${cards.map(card => html`<li>${card.title}${card.waiting !== null && ` — ${card.waiting}`}</li>`)}</ul>`}</li>`;
   })}</ol></section>`;
+}
+
+/** The nightly check's own health on its flow (release-once.md, part 3): nothing since the last firing for 26 hours. */
+function nightlyHealthOf(store: Store, flow: FlowRow): string | null {
+  const nightly = store.flowTriggers(flow.id).find(one => one.state === "active" && triggerConfigOf(one)?.kind === "schedule" && (triggerConfigOf(one) as { order?: { check?: unknown } }).order?.check !== undefined);
+  return nightly === undefined ? null : nightlyHealthWords(store, flow.repo, nightly.updatedAt, new Date());
 }
