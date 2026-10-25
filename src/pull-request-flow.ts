@@ -22,7 +22,7 @@ import { failingChecks, summarizeChecks } from "./pulls.js";
 import { assignmentOf, checkAssignmentAsOperator } from "./assignment.js";
 import { requestResultChanges } from "./result-actions.js";
 import { revisionSourceOf } from "./result-review.js";
-import { authenticateApprover } from "./scope.js";
+import { authenticateApprover, personProof } from "./scope.js";
 import { BRANCH_PREFIX, headWithin } from "./names.js";
 import type { VerifiedApprover } from "./principal.js";
 import type { Publication, Store } from "./store.js";
@@ -387,7 +387,11 @@ export async function mergeAsPerson(
   const run = store.getRun(input.runId);
   const repo = run === null ? null : store.refById(run.taskRef)?.repo ?? null;
   if (input.password === "") return refuse("password", "Enter your password to merge.");
-  if (!authenticateApprover(store, input.name, input.password, repo).ok) return refuse("password", "That password didn't work, or you can't merge in this project.");
+  const proved = authenticateApprover(store, input.name, input.password, repo);
+  if (!proved.ok) return refuse("password", "That password didn't work, or you can't merge in this project.");
+  // A merge by hand is a person's (approval policy §1.7): the lead's token or a remote API token proves a credential,
+  // not a person — `--anyway` included.
+  if (!personProof(proved.method)) return refuse("person-required", MERGE_NEEDS_PERSON);
   return mergePullRequest(store, { runId: input.runId, by: input.name, ...(input.anyway === true ? { anyway: true } : {}), ...(input.exec === undefined ? {} : { exec: input.exec }), ...(input.clock === undefined ? {} : { clock: input.clock }) });
 }
 
@@ -526,3 +530,6 @@ export function newestPullRequestOf(store: Store, versions: readonly string[]): 
   }
   return null;
 }
+
+/** Why a machine credential's merge is refused (approval policy §1.7). */
+export const MERGE_NEEDS_PERSON = "Only a person can merge. Merge it on the task page or from your paired chat.";

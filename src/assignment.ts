@@ -4,10 +4,10 @@
 import { createHash } from "node:crypto";
 import { currentActor, withActor } from "./actor.js";
 import { replacedWords } from "./task-status.js";
-import { COMPLETER_ACTOR, COMPLETION_ACTION, familyChangedFiles, landedReasonOf } from "./result-completion.js";
+import { COMPLETER_ACTOR, COMPLETION_ACTION, COMPLETION_BY_MACHINE, COMPLETION_BY_PERSON, familyChangedFiles, landedReasonOf, personCompletionOwed } from "./result-completion.js";
 import { homedir } from "node:os";
 import { readSchemaVersion, stopFactOf, type Store, type ProofVerdictRow, type ProofAcceptanceRow, type Artifact } from "./store.js";
-import { approvalOf } from "./scope.js";
+import { approvalOf, machineActing } from "./scope.js";
 import { openWorkDecisionOf, taskWorkSummaryOf, workDecisionAction, type WorkAction, type WorkSummaryAccess } from "./work-summary.js";
 import { evidenceRoot, readVerifiedArtifact, readVerifiedReport, verifyArtifact } from "./evidence.js";
 import { sweepIfMoved } from "./sweep-gate.js";
@@ -471,20 +471,30 @@ function acknowledgeCurrent(store: Store, current: AssignmentSnapshot, receiptDi
   if (!/^[a-f0-9]{64}$/.test(receiptDigest) || current.receipt?.digest !== receiptDigest) return { ok: false, reason: "stale", message: "The result changed. Read the current assignment before checking it." };
   const receipt = current.receipt;
   if (current.state !== "ready-to-check" && current.state !== "complete") return { ok: false, reason: "not-ready", message: "This assignment still has unresolved execution, scope or decisions." };
+  // Who is completing, from trusted context (approval policy §1.7a): a person, or a machine credential (the lead's
+  // token, a remote API run) that may complete ordinary work but is never the second person on protected work.
+  const person = actor.startsWith("operator:") && !machineActing() ? actor.slice("operator:".length) : null;
+  const marked = actor.startsWith("operator:") ? (person === null ? COMPLETION_BY_MACHINE : COMPLETION_BY_PERSON) : null;
   if (current.state !== "complete") {
     // The one readiness guard: a failed or missing required check, an unresolved requirement or HIGH finding refuses.
     const blockers = current.readiness?.blockers ?? [];
     if (blockers.length > 0) return { ok: false, reason: "not-ready", message: blockers.map(one => one.message).join(" ") };
     // v102: declared paths are only a promise. A result whose actual diff reaches protected files, on a
     // scope one person approved, completes only by someone else — two people have then seen the work.
-    const problem = store.protectedResultProblem(receipt.taskId, familyChangedFiles(store, receipt.taskId, receipt.runId, root), actor.startsWith("operator:") ? actor.slice("operator:".length) : null);
+    const problem = store.protectedResultProblem(receipt.taskId, familyChangedFiles(store, receipt.taskId, receipt.runId, root), person);
     if (problem !== null) return { ok: false, reason: "approval-rules", message: problem };
     store.recordAction({ at: now.toISOString(), actor, repo: current.repo,
-      taskId: current.rootId, runId: receipt.runId, action: CHECK_ACTION, outcome: receiptDigest, source: "work" });
+      taskId: current.rootId, runId: receipt.runId, action: CHECK_ACTION, outcome: receiptDigest, source: "work", detail: marked });
     const ref = store.lookupRef(current.rootId);
     // Whose act this is, even outside a command that named its person: the operator who marked it.
     const by = currentActor() ?? (actor.startsWith("operator:") ? { account: actor.slice("operator:".length), lead: false } : null);
     if (ref !== null) store.noteTaskAct(ref.id, "completed", now, undefined, by);
+    store.bumpWake();
+  } else if (person !== null && personCompletionOwed(store, receipt.taskId, receipt.runId, receiptDigest, person, root)) {
+    // Already complete, but no person's completion is on record that lets protected work publish (a machine's, or one
+    // from before completions said who made them): this person's completion is recorded now (approval policy §1.7a).
+    store.recordAction({ at: now.toISOString(), actor, repo: current.repo,
+      taskId: current.rootId, runId: receipt.runId, action: CHECK_ACTION, outcome: receiptDigest, source: "work", detail: COMPLETION_BY_PERSON });
     store.bumpWake();
   }
   const assignment = assignmentOf(store, current.rootId, now, access, root)!;

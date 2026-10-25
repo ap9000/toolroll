@@ -31,7 +31,9 @@ export function approvedSinceBuild(store: Store, definition: FlowDefinition, car
   const events = store.flowEvents(card.id);
   let built = -1;
   events.forEach((event, index) => { if (kindOf(event.fromStage) === "task" || kindOf(event.toStage) === "task") built = index; });
-  const approval = events.slice(built + 1).reverse().find(event => event.outcome === "approved" && kindOf(event.fromStage) === "approval");
+  // Only a person's recorded decision (approval policy §1.7): a subagent's, a machine credential's, or one from before
+  // decisions recorded who made them, never lets this zone merge.
+  const approval = events.slice(built + 1).reverse().find(event => event.outcome === "approved" && kindOf(event.fromStage) === "approval" && event.authority === "person");
   return approval === undefined ? null : approval.actor;
 }
 
