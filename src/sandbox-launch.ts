@@ -35,7 +35,16 @@ async function main(): Promise<number> {
   for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, () => { stopping = true; try { child?.kill(signal); } catch { /* gone */ } });
   const network = spec.terms.network;
   let bridge: LinuxNetworkBridgeContext | null = null;
-  const stopBridge = () => { for (const one of [bridge?.httpBridgeProcess, bridge?.socksBridgeProcess]) { try { one?.kill("SIGTERM"); } catch { /* gone */ } } };
+  // The relays share the launch's process group: they are waited for (SIGKILL after a moment), so when the helper exits
+  // nothing of the launch is left in it to read as the agent's leftover.
+  const stopBridge = async () => {
+    await Promise.all([bridge?.httpBridgeProcess, bridge?.socksBridgeProcess].map(one => new Promise<void>(done => {
+      if (one === undefined || one.exitCode !== null || one.signalCode !== null) { done(); return; }
+      const force = setTimeout(() => { try { one.kill("SIGKILL"); } catch { /* gone */ } }, 1_000);
+      one.once("exit", () => { clearTimeout(force); done(); });
+      try { one.kill("SIGTERM"); } catch { clearTimeout(force); done(); }
+    })));
+  };
   try {
     if (network.kind === "proxy") bridge = await initializeLinuxNetworkBridge(network.httpPort, network.socksPort ?? network.httpPort);
     // The runtime reads the temp folder it gives the command when it builds it (withRuntimeTemp, sandbox-runtime.ts).
@@ -88,7 +97,7 @@ async function main(): Promise<number> {
     return 1;
   } finally {
     try { cleanupBwrapMountPoints(); } catch { /* best effort: the runtime's own exit handler retries */ }
-    stopBridge();
+    await stopBridge();
   }
 }
 

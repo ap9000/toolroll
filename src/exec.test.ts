@@ -1,4 +1,5 @@
 import { describe, test, expect, vi } from "vitest";
+import { fakePid } from "../test/fake-pid.js";
 import { createHash } from "node:crypto";
 import {
   cumulativeLiveResult,
@@ -724,13 +725,13 @@ describe("a live Claude session's account across several results", () => {
 
 describe("finding the agent's own process in a listing", () => {
   test("by its listed name, or on Linux by its program when the listing shows Node 24's \"MainThread\"", () => {
-    const programs: Record<number, string> = { 10: "node", 11: "bwrap" };
+    const programs: Record<number, string> = { [fakePid(2)]: "node", [fakePid(3)]: "bwrap" };
     const programOf = (pid: number) => programs[pid] ?? null;
-    expect(agentNamed({ pid: 9, name: "agent.mjs" }, ["node", "agent.mjs"], programOf)).toBe(true);
-    expect(agentNamed({ pid: 10, name: "MainThread" }, ["node", "agent.mjs"], programOf)).toBe(true);
+    expect(agentNamed({ pid: fakePid(1), name: "agent.mjs" }, ["node", "agent.mjs"], programOf)).toBe(true);
+    expect(agentNamed({ pid: fakePid(2), name: "MainThread" }, ["node", "agent.mjs"], programOf)).toBe(true);
     // A wrapper on the way (bubblewrap) is never taken for it, by name or program.
-    expect(agentNamed({ pid: 11, name: "bwrap" }, ["node", "agent.mjs"], programOf)).toBe(false);
-    expect(agentNamed({ pid: 12, name: "MainThread" }, ["opencode"], programOf)).toBe(false);
+    expect(agentNamed({ pid: fakePid(3), name: "bwrap" }, ["node", "agent.mjs"], programOf)).toBe(false);
+    expect(agentNamed({ pid: fakePid(4), name: "MainThread" }, ["opencode"], programOf)).toBe(false);
   });
 
   test.skipIf(process.platform !== "linux")("on Linux a running Node process is found by its program", async () => {
