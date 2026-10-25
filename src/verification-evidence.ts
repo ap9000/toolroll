@@ -13,20 +13,28 @@ import { readVerificationReceipt } from "./contracts/verification-receipt.js";
 import { LEGACY_GATE_SOURCE, readVerificationView, type LegacyGateView } from "./contracts/verification-view.js";
 import { readCandidateEndpoints, savedInventoryPaths } from "./contracts/diff-stat.js";
 import { liveQuickCommand, quickVerifyKey, runCheckLevel } from "./check-levels.js";
+import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE } from "./check-report.js";
+import { provedComposition, type ComposedLinks, type Coverage } from "./release-recheck.js";
+import { checkAttemptOf } from "./store.js";
 
 export const VERIFICATION_RECEIPT_CAPTURE = "machine verification receipt v1";
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const binding = (a: Artifact) => ({ artifactId: a.id, sha256: a.sha256, bytesStored: a.bytesStored, bytesOriginal: a.bytesOriginal, truncated: a.truncated, redacted: a.redacted, captureStatus: a.captureStatus });
 export const isVerificationReceipt = (a: Artifact) => a.kind === "structured-output" && (a.capture === VERIFICATION_RECEIPT_CAPTURE || a.capture === "machine verification reuse v1");
 
-export function sealVerificationReceipt(store: Store, root: string, runId: number, head: string, command: VerifyCommand, result: VerifyCommandFacts, now: Date, reusedFrom?: { run: number; digest: string }): void {
+/** A release check's own facts for a version 3 receipt (release-once.md): its coverage, its sealed check artifacts, and
+ * for a composed check the links its reader proves again. */
+export type ReleaseCheckFacts = { coverage: Coverage; check: { attempt: "full" | "targeted"; report: string | null; inventory: string | null }; composed: ComposedLinks | null };
+
+export function sealVerificationReceipt(store: Store, root: string, runId: number, head: string, command: VerifyCommand, result: VerifyCommandFacts, now: Date, reusedFrom?: { run: number; digest: string }, release?: ReleaseCheckFacts): void {
   const source = store.getRun(runId)!;
   const log = store.artifactsFor(runId).find(a => a.kind === "check-log");
   if (!log) throw new Error("Verification receipt requires its retained log");
   const receipt = {
-    version: reusedFrom === undefined ? 1 : 2, run: runId, head, base: source.baseRevision, scopeDigest: source.scopeDigest,
+    version: reusedFrom !== undefined ? 2 : release !== undefined ? 3 : 1, run: runId, head, base: source.baseRevision, scopeDigest: source.scopeDigest,
     ...(reusedFrom === undefined ? {} : { reusedFrom, executedHere: false }),
     command, result, log: binding(log),
+    ...(release === undefined || reusedFrom !== undefined ? {} : { coverage: release.coverage, check: release.check, ...(release.composed === null ? {} : { composed: release.composed }) }),
   };
   const checked = readVerificationReceipt(receipt);
   if (!checked.ok) throw new Error(`The verification receipt does not match its contract: ${checked.issues.map(issue => issue.line).join("; ")}`);
@@ -93,6 +101,27 @@ export function verificationEvidence(store: Store, root: string, runId: number):
           originalLog.bytesOriginal !== log.bytesOriginal || originalLog.redacted !== log.redacted || originalLog.truncated !== log.truncated) return fail("The reused gate's candidate, command, result or copied log changed.");
       } catch { return fail("The reused gate or its observations no longer verify."); }
     } else if (checked.reusedFrom !== undefined || checked.executedHere !== undefined) return fail("The gate reuse receipt has an unsupported version.");
+    // Version 3, a release check (release-once.md): its attempt, sealed before it ran, and its sealed artifacts must be
+    // the ones it names; a composed one has every link proved again from sealed artifacts and the store.
+    if (receipt.version === 3) {
+      if (checked.coverage === undefined || checked.check === undefined) return fail("The release check receipt names no coverage.");
+      const attempt = checkAttemptOf(store, runId);
+      if (attempt === null || attempt.mode !== checked.check.attempt) return fail("The release check's sealed attempt doesn't match its receipt.");
+      const sha = (capture: string) => { const found = artifacts.filter(a => a.kind === "structured-output" && a.capture === capture); return found.length === 1 ? found[0]!.sha256 : null; };
+      if (sha(CHECK_REPORT_CAPTURE) !== checked.check.report || sha(CHECK_INVENTORY_CAPTURE) !== checked.check.inventory) return fail("The release check's sealed report or inventory changed.");
+      if ((checked.coverage === "composed") !== (checked.composed !== undefined)) return fail("The release check's coverage and its links disagree.");
+      if (checked.composed !== undefined) {
+        const gateOf = (run: number) => { const one = verificationEvidence(store, root, run); return one.ok ? one.digest : null; };
+        const grantOf = (run: number) => {
+          if (run === runId) return checked.command.digest;
+          const one = verificationEvidence(store, root, run);
+          if (!one.ok || one.bytes === null) return null;
+          try { return String((JSON.parse(one.bytes) as { command?: { digest?: unknown } }).command?.digest ?? "") || null; } catch { return null; }
+        };
+        const problem = provedComposition(store, root, runId, checked.composed, gateOf, grantOf);
+        if (problem !== null) return fail(problem);
+      }
+    } else if (checked.coverage !== undefined || checked.check !== undefined || checked.composed !== undefined) return fail("The receipt names release check facts its version doesn't have.");
     const result = checked.result;
     if (!result.configured) return fail("The machine verification result is malformed.");
     if (verified && (!result.ran || result.exitCode !== 0)) return fail("The passing machine verdict disagrees with its verification receipt.");

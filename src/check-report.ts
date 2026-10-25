@@ -29,6 +29,7 @@ export const CHECK_REPORT_CAPTURE = "release check report v1";
 export const CHECK_INVENTORY_CAPTURE = "release check inventory v1";
 export const TARGETED_PLAN_CAPTURE = "release check targeted plan v1";
 export const OBLIGATION_SNAPSHOT_CAPTURE = "release check obligation snapshot v1";
+export const CHECK_CONTEXT_CAPTURE = "release check context v1";
 /** How large a sealed check artifact may be (the report's own bound). */
 export const CHECK_ARTIFACT_CAP = CHECK_REPORT_MAX_BYTES;
 
@@ -100,9 +101,10 @@ export function checkContextOf(facts: TreeFacts, command: VerifyCommand, access:
 /** The parts a full check selects, as far as the plane knows them before it runs. */
 export const FULL_PARTS: readonly (typeof CHECK_PARTS[number])[] = CHECK_PARTS;
 
-/** What a check must account for, sealed before it runs. */
+/** What a check must account for, sealed before it runs: every unit file of the tree, whatever runs (a targeted
+ * check accounts for the rest through its base), and the parts it selects. */
 export function inventoryOf(facts: TreeFacts, plan: TargetedPlan | null): CheckInventory {
-  return { version: 1, units: plan === null ? facts.units : [...new Set([...plan.units, ...plan.sanity])].sort(), parts: plan === null ? [...FULL_PARTS] : ["typecheck", "build", ...plan.parts.filter(one => one !== "typecheck" && one !== "build")] };
+  return { version: 1, units: facts.units, parts: plan === null ? [...FULL_PARTS] : ["typecheck", "build", ...plan.parts.filter(one => one !== "typecheck" && one !== "build")] };
 }
 
 /** A check about to run: its handshake (written on stdin, then closed) and the facts sealed with it. */
@@ -115,6 +117,8 @@ export type PreparedAttempt = {
   context: CheckContext;
   plan: TargetedPlan | null;
   snapshot: ObligationSnapshot | null;
+  /** The identities the check was asked to report one by one (required ones). */
+  watch: string[];
 };
 
 /**
@@ -136,6 +140,7 @@ export function prepareCheckAttempt(store: Store, root: string, input: {
   const context = checkContextOf(read.facts, input.command, input.access);
   const nonce = randomBytes(32).toString("hex");
   const mode = plan === null ? "full" as const : "targeted" as const;
+  sealJson(store, root, input.runId, "check-context.json", context, CHECK_CONTEXT_CAPTURE, now);
   if (plan !== null) sealJson(store, root, input.runId, "targeted-plan.json", plan, TARGETED_PLAN_CAPTURE, now);
   if (snapshot !== null) sealJson(store, root, input.runId, "obligation-snapshot.json", snapshot, OBLIGATION_SNAPSHOT_CAPTURE, now);
   recordCheckAttempt(store, {
@@ -144,7 +149,7 @@ export function prepareCheckAttempt(store: Store, root: string, input: {
     inventoryDigest: payloadDigest(inventory), contextDigest: payloadDigest(context), nonceHash: sha256(nonce),
   }, now);
   const stdin = JSON.stringify({ nonce, mode, plan, watch: [...(input.watch ?? [])] });
-  return { runId: input.runId, nonce, stdin, mode, inventory, context, plan, snapshot };
+  return { runId: input.runId, nonce, stdin, mode, inventory, context, plan, snapshot, watch: [...(input.watch ?? [])] };
 }
 
 /** Seal one JSON payload as a structured-output artifact under its capture label. */

@@ -166,3 +166,19 @@ export const journeyIdentity = (script: string, kind: string, group: string, jou
 export const versionIdentity = (version: string) => `upgrade:${version}`;
 /** A whole part. */
 export const partIdentity = (part: string) => `part:${part}`;
+
+/** One fd-3 result line a harness process writes (test/release-reporter.ts, scripts/check-results.mjs). The
+ * orchestrator reads only these shapes; anything else on the pipe is passed over. */
+export const checkResultLineSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("unit-case"), file: repoPath, name, state: z.enum(["passed", "failed", "skipped"]), flaky: z.boolean() }),
+  z.strictObject({ kind: z.literal("unit-file"), file: repoPath, state: z.enum(["passed", "failed", "skipped"]), passed: count, failed: count, skipped: count, flaky: z.boolean() }),
+  z.strictObject({ kind: z.literal("unit-end"), reason: z.string().max(40), errors: count }),
+  z.strictObject({ kind: z.literal("journey-inventory"), script: z.enum(JOURNEY_SCRIPTS), journeys: z.string().max(20), groups: z.array(groupName).max(200) }),
+  z.strictObject({ kind: z.literal("journey"), name, state: z.enum(["passed", "failed", "skipped"]) }),
+  z.strictObject({ kind: z.literal("journey-end"), script: z.enum(JOURNEY_SCRIPTS).optional(), journeys: z.string().max(20).optional(), browserCheck: z.string().nullable().optional(), unstopped: z.boolean().optional(), catalogue: count.optional() }),
+  z.strictObject({ kind: z.literal("journey-group"), script: z.enum(JOURNEY_SCRIPTS), journeys: z.string().max(20), group: groupName, state: z.enum(["passed", "failed", "not-run"]), retried: z.boolean(), unattributed: z.boolean(),
+    results: z.array(z.strictObject({ name, state: z.enum(["passed", "failed", "skipped"]) })).max(500) }),
+  z.strictObject({ kind: z.literal("upgrade-inventory"), versions: z.array(versionName).max(500) }),
+  z.strictObject({ kind: z.literal("upgrade-version"), version: versionName, state: z.enum(["passed", "failed", "not-run"]) }),
+  z.strictObject({ kind: z.literal("upgrade-end") }),
+]);

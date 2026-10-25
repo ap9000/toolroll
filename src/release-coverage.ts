@@ -61,7 +61,9 @@ function passingReleases(store: Store, root: string, repo: string): ReleaseCover
       if (level !== null && level !== "full") return [];
       const gate = verificationEvidence(store, root, run);
       if (!gate.ok || gate.bytes === null) return [];
-      const receipt = JSON.parse(gate.bytes) as { run?: unknown; head?: unknown; result?: { ran?: unknown; exitCode?: unknown }; command?: { repo?: unknown } };
+      const receipt = JSON.parse(gate.bytes) as { run?: unknown; head?: unknown; result?: { ran?: unknown; exitCode?: unknown }; command?: { repo?: unknown }; coverage?: unknown };
+      // A release check whose coverage is partial or lost a required test covers nothing.
+      if (receipt.coverage !== undefined && receipt.coverage !== "full" && receipt.coverage !== "composed") return [];
       const head = store.getRun(run)?.headRevision ?? null;
       if (receipt.run !== run || receipt.result?.ran !== true || receipt.result.exitCode !== 0) return [];
       if (typeof receipt.command?.repo === "string" && receipt.command.repo.startsWith("quick:")) return [];

@@ -118,3 +118,65 @@ export function countingRunner(): { runner: import("../src/release-carry.js").Bu
   };
   return { runner, calls };
 }
+
+// ------------------------------------------------------------------ release checks, sealed as the builder seals them
+
+import { storeEvidence } from "../src/evidence.js";
+import { prepareCheckAttempt, sealCheckOutcome } from "../src/check-report.js";
+import { planTargetedRecheck, settleCoverage } from "../src/release-recheck.js";
+import { sealVerificationReceipt, verificationEvidence } from "../src/verification-evidence.js";
+import { recordRunCheckLevel } from "../src/check-levels.js";
+import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE } from "../src/check-report.js";
+import type { CheckReport } from "../src/contracts/release-check.js";
+export const EVIDENCE = (f: ReleaseFixture) => join(f.dir, "evidence");
+
+/** One unit file's outcome in a report. */
+export type UnitOutcome = { file: string; state?: "passed" | "failed" | "skipped"; failed?: string[]; skipped?: string[]; passed?: string[]; flaky?: boolean };
+
+/** A release check report with these units (every other part passed, no journeys or upgrades unless given). */
+export function reportOf(units: UnitOutcome[], extra: Partial<CheckReport> & { exitCode?: number } = {}): Omit<CheckReport, "nonce" | "mode" | "planDigest"> {
+  const parts = ["typecheck", "build", "unit", "flows", "app", "flows-real", "app-real", "upgrade"].map(part => ({ part: part as CheckReport["parts"][number]["part"],
+    selected: ["typecheck", "build", "unit"].includes(part), ran: ["typecheck", "build", "unit"].includes(part), code: ["typecheck", "build", "unit"].includes(part) ? 0 : null, timedOut: false }));
+  return {
+    version: 1, exitCode: extra.exitCode ?? (units.some(one => (one.failed ?? []).length > 0 || one.state === "failed") ? 1 : 0),
+    parts: extra.parts ?? parts,
+    units: extra.units !== undefined ? extra.units : { reusedFromCI: false, finished: true, runErrors: 0,
+      files: units.map(one => ({ file: one.file, state: one.state ?? ((one.failed ?? []).length > 0 ? "failed" : "passed"), passed: (one.passed ?? []).length, failed: (one.failed ?? []).length, skipped: (one.skipped ?? []).length, flaky: one.flaky === true })),
+      identities: units.flatMap(one => [...(one.failed ?? []).map(name => ({ file: one.file, name, state: "failed" as const, flaky: false })),
+        ...(one.skipped ?? []).map(name => ({ file: one.file, name, state: "skipped" as const, flaky: false })), ...(one.passed ?? []).map(name => ({ file: one.file, name, state: "passed" as const, flaky: false }))]) },
+    journeys: extra.journeys ?? [],
+    upgrades: extra.upgrades ?? null,
+  };
+}
+
+/**
+ * One release check of a task's build, sealed as the builder seals it: the attempt row before it "runs" (targeted when
+ * planTargetedRecheck allows it), the report on the check's output with the nonce, its coverage, its log and its
+ * version 3 receipt. `report` gets the attempt's plan so a targeted report can answer it.
+ */
+export function sealedCheck(f: ReleaseFixture, taskId: string, head: string, report: (plan: import("../src/contracts/release-check.js").TargetedPlan | null) => Omit<CheckReport, "nonce" | "mode" | "planDigest"> | null, options: { forceFull?: boolean } = {}) {
+  const store = f.store, root = EVIDENCE(f);
+  const runId = builtRun(store, taskId, head);
+  recordRunCheckLevel(store, { id: runId, taskId, repo: f.repo }, "full", "project", RELEASE_NOW);
+  const command = store.liveVerifyCommand(f.repo)!;
+  const decision = planTargetedRecheck(store, root, { runId, taskId, repo: f.repo, head, command, access: "sandboxed", now: RELEASE_NOW });
+  const targeted = decision.mode === "targeted" && options.forceFull !== true;
+  const prepared = prepareCheckAttempt(store, root, { runId, repo: f.repo, head, command, access: "sandboxed", authority: decision.authority,
+    ...(targeted && decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch }, RELEASE_NOW);
+  if (prepared === null) throw new Error("no attempt");
+  const body = report(prepared.plan);
+  const exitCode = body?.exitCode ?? 1;
+  const full = body === null ? null : { ...body, nonce: prepared.nonce, mode: prepared.mode, planDigest: prepared.plan === null ? null : createHashHex(JSON.stringify(prepared.plan)) };
+  sealCheckOutcome(store, root, prepared, { stdout: full === null ? "the report was lost\n" : `checks\nTOOLROLL_CHECK_REPORT ${JSON.stringify(full)}\n`, exitCode }, RELEASE_NOW);
+  const settled = settleCoverage(store, root, { runId, taskId, exitCode, now: RELEASE_NOW }, run => { const gate = verificationEvidence(store, root, run); return gate.ok ? gate.digest : null; });
+  storeEvidence(store, root, runId, "check-log", "check-log.txt", Buffer.from(`exit ${exitCode}\n`), command.command, RELEASE_NOW, { captureStatus: "ok" });
+  const sha = (capture: string) => { const found = store.artifactsFor(runId).filter(a => a.kind === "structured-output" && a.capture === capture); return found.length === 1 ? found[0]!.sha256 : null; };
+  sealVerificationReceipt(store, root, runId, head, command, { configured: true, ran: true, exitCode }, RELEASE_NOW, undefined,
+    { coverage: settled.coverage, check: { attempt: prepared.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE) }, composed: settled.composed });
+  return { runId, prepared, decision, coverage: settled.coverage, composed: settled.composed };
+}
+
+function createHashHex(text: string): string {
+  return createHash("sha256").update(text).digest("hex");
+}
+import { createHash } from "node:crypto";

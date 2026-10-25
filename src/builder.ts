@@ -11,7 +11,9 @@ import { queueBatchCheck } from "./batch-checks.js";
 import { batchesFullCheck } from "./batch-policy.js";
 import { skillsContext } from "./project-skills.js";
 import { failedVerificationEvidence, sealVerificationReceipt, verificationEvidence, reuseObservationVerification } from "./verification-evidence.js";
-import { prepareCheckAttempt, sealCheckOutcome, type PreparedAttempt } from "./check-report.js";
+import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, prepareCheckAttempt, sealCheckOutcome, type PreparedAttempt } from "./check-report.js";
+import { planTargetedRecheck, settleCoverage } from "./release-recheck.js";
+import type { ReleaseCheckFacts } from "./verification-evidence.js";
 import { learningContext } from "./project-learning.js";
 import { knowledgeContext } from "./project-knowledge.js";
 import { flowGoalCuts } from "./flow-engine.js";
@@ -2602,6 +2604,7 @@ async function settleProof(
   const gateCommand = batched ? null : configured;
   let verifyCommand: VerifyCommandFacts;
   let checkAttempt: PreparedAttempt | null = null;
+  let releaseFacts: ReleaseCheckFacts | null = null;
   const verification: { last: ExecResult | null } = { last: null };
   const checkLog: string[] = [];
   const checkOutcomes: string[] = [];
@@ -2643,9 +2646,15 @@ async function settleProof(
     const verifyShell = approvedCommandShell(configured.command);
     // A Full check of a prepared candidate (a release gate, the nightly check): its attempt is sealed before the command
     // runs — intended mode, nonce, inventory, context — and the handshake goes on its stdin (check-report.ts).
-    checkAttempt = repo !== null && chosenCheck?.level === "full" && (store.getScope(request.taskId)?.candidate ?? null) !== null
-      ? prepareCheckAttempt(store, root, { runId, repo, head: sealedHead, command: configured, access: checkLaunchOf(store, runId, captured.effective.profile).access }, now())
-      : null;
+    // A release task's check is targeted when the release's last full check allows it (release-recheck.ts): its plan and
+    // obligation snapshot are sealed with the attempt; otherwise it runs in full, told which tests it must still report.
+    if (repo !== null && chosenCheck?.level === "full" && (store.getScope(request.taskId)?.candidate ?? null) !== null) {
+      const access = checkLaunchOf(store, runId, captured.effective.profile).access;
+      const decision = planTargetedRecheck(store, root, { runId, taskId: request.taskId, repo, head: sealedHead, command: configured, access, now: now() });
+      checkAttempt = prepareCheckAttempt(store, root, { runId, repo, head: sealedHead, command: configured, access, authority: decision.authority,
+        ...(decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch }, now());
+      if (checkAttempt !== null && decision.mode === "targeted") store.addRunNote(runId, "Toolroll", `Re-running only what failed at run #${decision.plan.base}: ${decision.plan.units.length} unit files, ${decision.plan.groups.reduce((n, one) => n + one.groups.length, 0)} journey groups, ${decision.plan.versions.length} upgrade versions${decision.plan.parts.length > 0 ? `, and in full: ${decision.plan.parts.join(", ")}` : ""}.`, now());
+    } else checkAttempt = null;
     const checkProgress = new CheckProgressTracker(snapshot => {
       store.saveCheckProgress(runId, snapshot, now());
     });
@@ -2828,6 +2837,14 @@ async function settleProof(
     if (checkAttempt !== null && last !== null && !last.notFound) {
       sealCheckOutcome(store, root, checkAttempt, { stdout: last.stdout, exitCode: last.timedOut ? null : last.code }, now());
     }
+    // What the check covered (receipt version 3): full, composed from the release's last full check, partial, or
+    // identity-removed (which stops the release carrying).
+    if (checkAttempt !== null) {
+      const settled = settleCoverage(store, root, { runId, taskId: request.taskId, exitCode: last === null || last.notFound || last.timedOut ? null : last.code, now: now() },
+        run => { const gate = verificationEvidence(store, root, run); return gate.ok ? gate.digest : null; });
+      const sha = (capture: string) => { const found = store.artifactsFor(runId).filter(a => a.kind === "structured-output" && a.capture === capture); return found.length === 1 ? found[0]!.sha256 : null; };
+      releaseFacts = { coverage: settled.coverage, check: { attempt: checkAttempt.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE) }, composed: settled.composed };
+    }
   }
   if (configured !== null && checkLog.length > 0) {
     const summary = `=== Attempt summary ===\n${checkOutcomes.length === 0 ? "No command started." : checkOutcomes.map(one => `- ${one}`).join("\n")}`;
@@ -2854,13 +2871,15 @@ async function settleProof(
     );
   }
 
-  if (configured !== null && checkLog.length > 0) sealVerificationReceipt(store, root, runId, sealedHead, configured, verifyCommand, now());
+  if (configured !== null && checkLog.length > 0) sealVerificationReceipt(store, root, runId, sealedHead, configured, verifyCommand, now(), undefined, releaseFacts ?? undefined);
 
   // The receipt above remains the evidence. This compact projection is what
   // `status` and `task wait` can read without opening logs. A reused gate did
   // not execute here, so its label says so instead of implying a fresh run.
+  // A release check that didn't cover what it owed (partial) or lost a required test reads failed, whatever its exit.
+  const uncovered = releaseFacts !== null && releaseFacts.coverage !== "full" && releaseFacts.coverage !== "composed";
   const checkStatus = verifyCommand.configured === false ? "not-run" as const
-    : verifyCommand.ran ? verifyCommand.exitCode === 0 ? "passed" as const : "failed" as const
+    : verifyCommand.ran ? verifyCommand.exitCode === 0 && !uncovered ? "passed" as const : "failed" as const
     : checkSuites.some(one => one.status === "failed") ? "failed" as const
     : "not-run" as const;
   const suites: RunCheckSuite[] = checkSuites.length > 0 ? checkSuites : verifyCommand.configured === false ? [] : [{

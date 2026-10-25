@@ -25,7 +25,7 @@ describe("the gate view contract", () => {
         { name: "legacy view without its candidate", input: { ...legacy, candidate: undefined }, paths: ["candidate"] },
         { name: "legacy view from another source", input: { ...legacy, source: "a guess" }, paths: ["source"] },
         { name: "legacy view with an exit code out of range", input: { ...legacy, result: { configured: true, ran: true, exitCode: 300 } }, paths: ["result.exitCode"] },
-        { name: "a receipt from a newer Toolroll", input: { ...direct, version: 3 }, paths: ["version"] },
+        { name: "a receipt from a newer Toolroll", input: { ...direct, version: 4 }, paths: ["version"] },
       ],
     });
     expect(readVerificationView("not json")).toMatchObject({ ok: false, issues: [{ path: "payload" }] });

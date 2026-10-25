@@ -39,6 +39,8 @@ export function deploymentGate(store: Store, input: { runId: number; evidenceRoo
   try { gate = JSON.parse(evidence.bytes.toString()) as Record<string, unknown>; } catch { return refuse("The native check's receipt can't be read."); }
   const live = ref.repo === null ? null : store.liveVerifyCommand(ref.repo);
   const result = gate["result"] as { ran?: unknown; exitCode?: unknown } | undefined;
+  // A release check's coverage (receipt version 3): partial or identity-removed never deploys, whatever the exit.
+  if (gate["coverage"] !== undefined && gate["coverage"] !== "full" && gate["coverage"] !== "composed") return refuse(`The release check didn't cover this candidate (${String(gate["coverage"])}).`);
   const command = gate["command"] as { command?: unknown } | undefined;
   if (gate["run"] !== input.runId || gate["head"] !== head || gate["scopeDigest"] !== scope.digest || result?.ran !== true || result.exitCode !== 0
     || live === null || command?.command !== live.command) return refuse("The native check did not pass this candidate under the currently approved command.");

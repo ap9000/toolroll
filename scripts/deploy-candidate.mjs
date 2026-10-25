@@ -35,6 +35,8 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now }, {
   const evidence = verificationEvidence(store, evidenceRoot, runId);
   requireFact(evidence.ok && evidence.bytes, `Native check unavailable: ${evidence.problem ?? 'no receipt'}.`);
   const gate = JSON.parse(evidence.bytes);
+  // A release check's coverage (receipt version 3): partial or identity-removed never deploys, whatever the exit.
+  requireFact(gate.coverage === undefined || gate.coverage === 'full' || gate.coverage === 'composed', `The release check didn't cover this candidate (${gate.coverage}).`);
   const live = store.liveVerifyCommand(ref.repo);
   requireFact(gate.run === runId && gate.head === head && gate.scopeDigest === scope.digest &&
     gate.result?.ran === true && gate.result.exitCode === 0 && live && gate.command.command === live.command,
