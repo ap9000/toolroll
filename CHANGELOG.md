@@ -1,7 +1,25 @@
 # Changelog
 
-## Unreleased
+## Unreleased (0.9.71)
 
+- **Sandboxed checks can start Chromium on macOS.** A Playwright or browser
+  check now runs inside the check sandbox: its sandbox may register and look
+  up Chromium's own port rendezvous service (named by its process id) and ask
+  whether it runs in a virtual machine, and nothing else. Builds, flows and
+  tool servers don't get this. A project set to **Not sandboxed** only for a
+  browser check can go back to **Sandboxed** in Settings → Project → Check
+  access.
+- **Sandboxed launches can open a terminal of their own on macOS.** A check
+  or build that drives a pseudo-terminal (node-pty, `script`) now works. Only
+  terminals the sandboxed process made itself open: Toolroll doesn't turn on
+  the sandbox runtime's `allowPty`, which also opens your other open
+  terminals, and it now denies reading those by name, which the runtime's
+  baseline allowed.
+- **A wrong password on an approval says "That password didn't match."**
+  instead of "not approved: not-an-approver". Someone who isn't an approver
+  gets the same answer.
+- **Closing a live terminal stops its processes before it kills them,** so a
+  child one starts at that moment can't slip out from under the close.
 - **Only a person approves work.** The lead's token used to approve a task's
   scope and be recorded as its owner's password approval, including on a
   release. Now `task approve` (and `task repair --yes`) with a lead token, or
@@ -45,11 +63,6 @@
   your project's read-deny list, and the run's proxy as the only way out.
   `toolroll doctor` and Settings → Project → Home folder name the engine and
   its version. Codex builds keep Codex's own sandbox with the same rules.
-- **Checks that start Chrome don't run sandboxed on macOS yet.** The sandbox
-  runtime has no setting for the service Chromium registers at startup, so a
-  Playwright or browser check fails inside it. Until a follow-up adds that one
-  rule, set such a project's check access to **Not sandboxed** in
-  Settings → Project → Check access.
 - **Your home folder is readable to new scopes, as in the sandbox runtime.**
   A project hides what it wants back with Settings → Project → **Home
   folder**, or `toolroll project sandbox --repo <p> --read-deny "~/.ssh"`.

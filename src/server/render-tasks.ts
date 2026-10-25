@@ -865,6 +865,9 @@ export function approveRefusalWords(reason: string): string {
   if (reason === "unrouted") return "not approved: this scope predates agent routing and its old approval no longer stands — edit and re-file the scope so it is routed under today’s agents, then approve it";
   if (reason === "profile-unresolved") return "not approved: the scope cannot name an exact agent for every role — fix the agent setup and re-file it";
   if (reason === "password-now") return "not approved: this needs your password typed now — protected work, raised permissions, or a plan an agent wrote can't use a remembered one";
+  // A wrong password, someone who isn't an approver (or not for this project), a revoked login: one answer for all, so
+  // the refusal never tells a guesser which it was.
+  if (reason === "not-an-approver") return "That password didn't match.";
   return `not approved: ${reason}`;
 }
 
