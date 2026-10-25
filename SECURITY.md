@@ -130,6 +130,20 @@ Known limits:
   which admits every local service on that Mac (the macOS sandbox can't admit
   some local ports and refuse others). Linux builds always have a loopback of
   their own.
+- On a Mac, a project's checks may register and look up one macOS service
+  name pattern so Playwright's Chromium can start sandboxed:
+  `org.chromium.Chromium.MachPortRendezvousServer.<pid>` (builds, flows and
+  tool servers can't). Chromium picks that name itself, and the sandbox can't
+  tie the pid in it to the process asking, so a hostile check can register
+  the name for another process's pid, or look up one that exists. What that
+  reaches: a Chromium started outside the sandbox with that default name
+  (your own Playwright or Puppeteer headless shell, another project's
+  check browser) that happens to get a squatted pid fails to start (a denial
+  of service, while the check runs); and a running one's rendezvous server
+  can be sent messages, which it answers only for the child processes it
+  started itself. Chrome, Chrome for Testing and Chromium-based apps use
+  their own names and aren't reachable. Neither reaches a file, a
+  credential or the network beyond what the check already has.
 - Codex's command sandbox can't use a proxy: its commands are offline unless
   the project's network is `open` and the build has Full access.
 - A project's tool servers keep their own network reach (they hold the

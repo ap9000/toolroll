@@ -2,13 +2,15 @@
 
 ## Unreleased (0.9.71)
 
-- **Sandboxed checks can start Chromium on macOS.** A Playwright or browser
-  check now runs inside the check sandbox: its sandbox may register and look
-  up Chromium's own port rendezvous service (named by its process id) and ask
-  whether it runs in a virtual machine, and nothing else. Builds, flows and
-  tool servers don't get this. A project set to **Not sandboxed** only for a
-  browser check can go back to **Sandboxed** in Settings → Project → Check
-  access.
+- **Sandboxed checks can start Chromium on macOS.** Playwright's default
+  browser (its Chromium headless shell) now starts inside the check sandbox:
+  the sandbox may register and look up Chromium's port rendezvous service,
+  `org.chromium.Chromium.MachPortRendezvousServer.<pid>`, and nothing else.
+  Builds, flows and tool servers don't get this; SECURITY.md says what a
+  hostile check could do with it. A project set to **Not sandboxed** only for
+  a headless browser check can go back to **Sandboxed** in Settings → Project
+  → Check access. Chrome for Testing (`channel: "chromium"`, headed runs)
+  still needs **Not sandboxed**.
 - **Sandboxed launches can open a terminal of their own on macOS.** A check
   or build that drives a pseudo-terminal (node-pty, `script`) now works. Only
   terminals the sandboxed process made itself open: Toolroll doesn't turn on

@@ -115,14 +115,16 @@ export const SEATBELT_TERMINALS = [
 ].join("\n");
 
 /**
- * Chromium, a project check's launch only (Playwright's Chromium and its headless shell): at start the browser
- * registers its port rendezvous service under its own pid and its helpers look it up; Chrome for Testing also asks
- * whether it runs in a virtual machine. Exactly those names, nothing else of anyone's.
+ * Chromium, a project check's launch only: Playwright's default browser (its Chromium headless shell) registers its
+ * port rendezvous service as org.chromium.Chromium.MachPortRendezvousServer.<its pid> at start, and its helpers look
+ * it up. Exactly that name. Chromium takes the prefix from its bundle id with no switch or variable to change it, and
+ * Seatbelt can't tie the pid to the caller, so the residual (another pid's name registered or looked up) is written
+ * up in SECURITY.md. Chrome for Testing (`channel: "chromium"`, headed runs) gets nothing: such a check runs Not
+ * sandboxed.
  */
 export const SEATBELT_CHROMIUM = [
-  "; Toolroll: the Chromium port rendezvous service, and whether it runs in a virtual machine",
-  "(allow mach-register mach-lookup (global-name-regex #\"^org\\.chromium\\.Chromium\\.MachPortRendezvousServer\\.[0-9]+$\") (global-name-regex #\"^com\\.google\\.chrome\\.for\\.testing\\.MachPortRendezvousServer\\.[0-9]+$\"))",
-  "(allow sysctl-read (sysctl-name \"kern.hv_vmm_present\"))",
+  "; Toolroll: the Chromium headless shell port rendezvous service",
+  "(allow mach-register mach-lookup (global-name-regex #\"^org\\.chromium\\.Chromium\\.MachPortRendezvousServer\\.[0-9]+$\"))",
 ].join("\n");
 
 const PROFILE_OPENS = `${SANDBOX_EXEC} -p '`;

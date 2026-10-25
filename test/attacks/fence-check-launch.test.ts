@@ -6,15 +6,16 @@
  *   device, the operator's own open terminals among them, and its baseline already read them (a read takes what the
  *   operator types there). Toolroll's rule opens only a terminal the launch made itself (macOS's
  *   `com.apple.sandbox.pty` extension), and denies the rest by name.
- * - Chromium, a check's launch only: registering and looking up its port rendezvous service under a pid, and nothing
- *   else of anyone's: other names (a near miss, another prefix, the pasteboard, the window server) stay refused, and
- *   a build, flow or tool server gets none of it.
+ * - Chromium, a check's launch only: registering and looking up the headless shell's port rendezvous service under a
+ *   pid, and nothing else of anyone's: other names (a near miss, Chrome for Testing's, the pasteboard, the window
+ *   server) stay refused, and a build, flow or tool server gets none of it. The residual (SECURITY.md): any pid's
+ *   name, so a server of that name registered outside is found too; pinned below.
  *
  * Positive controls: openpty works inside; the same terminal opened from outside works; the Chromium names register
  * inside a check's fence. Native probes use python3 (ctypes for bootstrap_check_in / bootstrap_look_up), skipped
  * where it isn't installed.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -122,11 +123,10 @@ for flag, name in ((os.O_RDONLY, "read"), (os.O_WRONLY, "write")):
     const probe = write(join(root, "mach.py"), MACH_PROBE);
     const pid = 4000 + Math.floor(Math.random() * 50_000);
     const chromium = `register:org.chromium.Chromium.MachPortRendezvousServer.${pid}`;
-    const testing = `register:com.google.chrome.for.testing.MachPortRendezvousServer.${pid + 1}`;
-    const refused = ["register:org.chromium.evil", "register:com.example.evil", `register:org.chromium.Chromium.MachPortRendezvousServer.${pid}x`,
+    const refused = [`register:com.google.chrome.for.testing.MachPortRendezvousServer.${pid + 1}`, `lookup:com.google.chrome.for.testing.MachPortRendezvousServer.${pid + 3}`, "register:org.chromium.evil", "register:com.example.evil", `register:org.chromium.Chromium.MachPortRendezvousServer.${pid}x`,
       "register:org.chromium.Chromium.MachPortRendezvousServer.", "register:com.google.Chrome.MachPortRendezvousServer.1",
       "lookup:com.apple.pasteboard.1", "lookup:com.apple.windowserver.active", "lookup:org.chromium.crashpad.child_port_handshake.1"];
-    const all = [chromium, testing, `lookup:org.chromium.Chromium.MachPortRendezvousServer.${pid + 2}`, ...refused];
+    const all = [chromium, `lookup:org.chromium.Chromium.MachPortRendezvousServer.${pid + 2}`, ...refused];
     const run = (kind: FenceKind) => {
       const fence = launch(kind);
       const ran = underSandbox(`python3 -I ${JSON.stringify(probe)} ${all.join(" ")}`, fence.fence, fence.fenceGrants, { cwd: root });
@@ -138,7 +138,6 @@ for flag, name in ((os.O_RDONLY, "read"), (os.O_WRONLY, "write")):
     expect(Object.values(bare).every(code => code === 0)).toBe(true);
     const check = run("check");
     expect(check[chromium]).toBe(0);
-    expect(check[testing]).toBe(0);
     // Looked up, not refused: the name is allowed and simply not registered by anyone.
     expect(check[`lookup:org.chromium.Chromium.MachPortRendezvousServer.${pid + 2}`]).toBe(1102);
     for (const one of refused) expect(check[one], one).toBe(1100);
@@ -146,5 +145,30 @@ for flag, name in ((os.O_RDONLY, "read"), (os.O_WRONLY, "write")):
       const other = run(kind);
       for (const one of all) expect(other[one], `${kind} ${one}`).toBe(1100);
     }
+  });
+
+  // The residual SECURITY.md states (Chromium in a check's sandbox): Seatbelt can't tie the name's pid to the caller,
+  // so a check finds a rendezvous server registered outside under that name. Pinned so a change either way is seen.
+  test("native residual: a check finds a Chromium-named server registered outside its sandbox (a build doesn't)", async ctx => {
+    needs(ctx, seatbelt());
+    needs(ctx, python);
+    const { root, launch } = plane();
+    const probe = write(join(root, "mach.py"), MACH_PROBE);
+    const name = `org.chromium.Chromium.MachPortRendezvousServer.${100_000 + Math.floor(Math.random() * 800_000)}`;
+    const holder = spawn("python3", ["-I", "-c", `import ctypes, sys
+lib = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+port = ctypes.c_uint(0)
+print(lib.bootstrap_check_in(ctypes.c_uint.in_dll(lib, "bootstrap_port").value, sys.argv[1].encode(), ctypes.byref(port)), flush=True)
+sys.stdin.read()`, name], { stdio: ["pipe", "pipe", "ignore"] });
+    try {
+      const registered = await new Promise<string>(done => holder.stdout!.once("data", chunk => done(String(chunk).trim())));
+      expect(registered).toBe("0");
+      const lookUp = (kind: FenceKind) => {
+        const fence = launch(kind);
+        return machResults(underSandbox(`python3 -I ${JSON.stringify(probe)} lookup:${name}`, fence.fence, fence.fenceGrants, { cwd: root }).stdout)[`lookup:${name}`];
+      };
+      expect(lookUp("check")).toBe(0);
+      expect(lookUp("build")).toBe(1100);
+    } finally { holder.kill("SIGKILL"); }
   });
 });
