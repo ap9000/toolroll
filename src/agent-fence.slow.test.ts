@@ -519,6 +519,10 @@ describe("the agent fence", () => {
       if (macosFenceAvailable()) {
         expect(wrap).toContain(join(state, "up-login.txt"));
         expect(store.runFence(claudeRun)).toMatchObject({ method: "macos-sandbox", paths: expect.any(Number) });
+      } else if (linuxFenceAvailable()) {
+        // A Linux runner with the sandbox runtime's tools (CI's unit jobs install them): bubblewrap holds it.
+        expect(wrap).toContain(join(state, "up-login.txt"));
+        expect(store.runFence(claudeRun)).toMatchObject({ method: "linux-bubblewrap", paths: expect.any(Number) });
       } else {
         expect(store.runFence(claudeRun)).toMatchObject({ method: "claude-rules", paths: expect.any(Number) });
       }
