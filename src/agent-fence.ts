@@ -1108,10 +1108,6 @@ const HOME_SIGN_INS: readonly string[] = [".codex", ".claude.json", ".claude/.cr
  * refreshes its sign-in outside the sandbox, so its commands write none. Configuration and persistence names stay
  * denied for every agent. */
 const OWN_SIGN_INS: Readonly<Record<string, readonly string[]>> = { claude: [".claude.json", ".claude/.credentials.json"] };
-/** On Linux the runtime holds a name that isn't there by putting an empty one there for the launch's length. These
- * would change what the person's own tools do meanwhile (an empty `.bash_profile` hides `.profile`, an empty settings
- * file doesn't parse), so an absent one is left to the handoff and the next launch. */
-const LINUX_ABSENT_UNSAFE: readonly string[] = [".bash_profile", ".bash_login", ".claude/settings.json", ".claude/settings.local.json", ".mcp.json", ".claude.json"];
 
 /** `path` as it resolves now: through every link above it (and at it), however much of it exists. */
 function resolvedPath(path: string): string {
@@ -1129,8 +1125,9 @@ function resolvedPath(path: string): string {
  * and tool configuration), its persistence points and sign-ins (but the launch's own agent's exact sign-in files), and
  * the bound repository's own Git config, hooks and submodules (a linked worktree reaches them through its `.git`
  * file). Each by its name and by where it leads now (a linked ~/.config or LaunchAgents is denied at both ends). On
- * Linux a name that isn't there is held too (the runtime puts an empty one there for the launch's length), but those
- * an empty one would change for the person (LINUX_ABSENT_UNSAFE).
+ * Linux only those there at launch: the runtime holds an absent name with a stand-in nothing can read for the launch's
+ * length, and the person's own git and shells then fail on their ~/.gitconfig and ~/.bashrc (measured). Under a write
+ * allowlist an absent one is out of reach anyway; under `anywhere` it can be made (an accepted limit).
  */
 export function homeWriteDenies(home: string, binding: WorktreeBinding | null, provider: string | null, platform: NodeJS.Platform = process.platform,
   env: Readonly<Record<string, string | undefined>> = process.env): string[] {
@@ -1140,8 +1137,7 @@ export function homeWriteDenies(home: string, binding: WorktreeBinding | null, p
     .filter(name => !own.has(name));
   const xdg = env["XDG_CONFIG_HOME"];
   const roots = (name: string): string[] => [join(base, name), ...(name.startsWith(".config/") && xdg !== undefined && isAbsolute(xdg) ? [join(xdg, name.slice(".config/".length))] : [])];
-  const held = (name: string, path: string) => platform !== "linux" || existsSync(path) || !LINUX_ABSENT_UNSAFE.includes(name);
-  const paths = names.flatMap(name => roots(name).filter(path => held(name, path)));
+  const paths = names.flatMap(name => roots(name).filter(path => platform !== "linux" || existsSync(path)));
   const git = binding === null ? [] : ["config", "hooks", "modules"].map(name => join(real(join(binding.main, ".git")), name));
   return [...new Set([...paths, ...git].flatMap(path => [path, resolvedPath(path)]))].sort();
 }
