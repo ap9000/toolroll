@@ -17,6 +17,14 @@ user. What it promises:
 - **No agent approves its own work.** Approvals need your password on a
   screen that restates the exact terms, and the agent fence keeps your
   remembered login, runner tokens and the database out of agents' reach.
+  The lead's token and API tokens can't approve, merge by hand, be the second
+  person on protected work, or stand behind a release or deployment; those
+  need a person's proof (docs/plans/approval-policy.md). **Accepted limit:** a
+  lead (or any program) running as your OS user outside Toolroll's fence, such
+  as an assistant in your own terminal, can read the remembered login
+  (`up-login.txt`) and approve as you, since Toolroll can't tell it from you at
+  your own command line. Don't keep a remembered login on a machine where you
+  run such an agent, or sign out of the CLI there.
 - **Tokens, not passwords, on requests.** Scripts, the remote CLI and MCP sign
   in with an API token (`toolroll tokens create`): it reads or acts, can be
   limited to projects, expires, and only its hash is kept. A password sent on a

@@ -229,9 +229,11 @@ Implementation review (round 3) tightened this:
 - A standing-order firing whose seal the rules refuse files its task unapproved instead of being dropped.
 - `deploy-browser.mjs` proves the candidate (person approval, completion, readiness) with the installed runtime's
   modules before importing any of the candidate's.
-- Round 4: `toolroll release` proves the candidate in its own runtime (`src/deploy-gate.ts`) and checks the checkout is
-  exactly that commit with nothing tracked changed before it starts the candidate's deployment script (or its
-  recovery); every git read on the deploy path ignores replacement objects and lazy fetch. A flow's latest decision of
+- Round 4: `toolroll release` proves the candidate in its own runtime (`src/deploy-gate.ts`), then extracts the
+  approved commit itself (`git archive <sha>` from the project's own Git directory as Toolroll records it, never the
+  worktree's `.git` pointer; no replacement objects, lazy fetch, global/system config or hooks) into a fresh folder and
+  runs the deployment script (and its recovery) from there, with `--head`/`--git-dir` so the script's own git reads
+  use the same trusted directory. `npm pack` runs without lifecycle scripts. A flow's latest decision of
   any kind governs (a send-back takes an earlier yes back). Chat approval and `task wait` read approval the way
   dispatch does. A scope whose approval kind is left out is not approved.
 
@@ -371,6 +373,16 @@ Phase 2:
     finishes, retry refuses.
 15. **Setting**: raising refuses a session, remembered login, lead token and API token; lowering is one click;
     a viewer or non-operator is refused; ledger rows written.
+
+## Remaining limits
+
+- **The remembered login (accepted by Alex, 2026-10-24).** A lead, or any program, running as the OS user outside
+  Toolroll's fence (an assistant in the user's own terminal) can read `up-login.txt` and approve, merge or complete
+  as that person, since Toolroll can't tell it from them at their own command line. CLI approvals keep accepting the
+  remembered login. SECURITY.md says so; the mitigation is not keeping a remembered login where such an agent runs.
+- **The release trusts its own runtime.** The deployment gate runs in whichever runtime runs `toolroll release`, which
+  should be the installed CLI. The deployment script that then runs is the approved commit's own, extracted by that
+  runtime from the project's Git directory.
 
 ## Decisions for Alex
 
