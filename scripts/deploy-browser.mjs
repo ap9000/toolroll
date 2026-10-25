@@ -28,9 +28,11 @@ import { recoverOnExit } from "./deploy-recovery.mjs";
 import { browserDeployment, openDeploymentDatabase, sha, snapshot } from "./deploy-phases.mjs";
 
 const args = process.argv.slice(2);
-// git inside the candidate's checkout, without the user's global or system config, hooks or fsmonitor (AGENTS.md).
-const SAFE_GIT = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
-const SAFE_GIT_ENV = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+// git inside the candidate's checkout (AGENTS.md trust boundary): no user global or system config, hooks or fsmonitor,
+// and no replacement objects or lazy fetch, so the bytes read under a SHA are that SHA's own (as evidence.ts reads them).
+const SAFE_GIT = ["--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+const SAFE_GIT_ENV = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1" };
 const flag = (name, fallback = undefined) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : fallback; };
 const has = name => args.includes(`--${name}`);
 const runId = Number(flag("run"));
@@ -174,7 +176,9 @@ function cleanBuildOf(commit) {
   // npm ls prints real paths; macOS's temp folder is behind a symlink (/var → /private/var), and a scratch path in the
   // symlinked form matched no dependency, staging none and proving "none" equal to "none".
   const scratch = realpathSync(mkdtempSync(join(tmpdir(), "so-deploy-")));
-  execFileSync("sh", ["-c", `git -C "${source}" archive --format=tar ${commit} | tar -x -C "${scratch}"`]);
+  requireTrue(/^[0-9a-f]{40}$/.test(commit), "The candidate commit isn't a full SHA.");
+  const archive = execFileSync("git", [...SAFE_GIT, "-C", source, "archive", "--format=tar", commit], { env: SAFE_GIT_ENV, maxBuffer: 1024 * 1024 * 1024 });
+  execFileSync("tar", ["-x", "-C", scratch], { input: archive });
   const env = { ...process.env, NODE_OPTIONS: "" };
   execFileSync("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline", "--silent"], { cwd: scratch, stdio: ["ignore", "ignore", "inherit"], env });
   execFileSync("npm", ["run", "build", "--silent"], { cwd: scratch, stdio: ["ignore", "ignore", "inherit"], env });

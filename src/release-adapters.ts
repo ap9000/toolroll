@@ -19,7 +19,8 @@ import type { CheckRun, DeployStop, GateState, HomebrewState, Installed, PullReq
 import { activeUpdateWork } from "./desktop-update-gate.js";
 import { BEFORE_SWAP, gateOwner } from "./release-gate.js";
 import { findCliLinks, switchCliLinks } from "./release-links.js";
-import { databasePath, type Database } from "./store.js";
+import { databasePath, Store, type Database } from "./store.js";
+import { deploymentGate } from "./deploy-gate.js";
 
 export type Exec = (command: string, args: readonly string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) =>
   Promise<{ code: number; stdout: string; stderr: string }>;
@@ -195,6 +196,28 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
     const gate = stageGate(stage, liveOwner);
     return gate === null ? { ok: false, message } : { ok: false, message, gate };
   };
+  /** The deployment gate in this runtime (deploy-gate.ts), then the checkout: exactly the approved commit, nothing
+   * tracked changed. git there runs without the user's config, hooks, fsmonitor, replacement objects or lazy fetch. */
+  const proveCandidate = async (runId: number, worktree: string): Promise<{ ok: true } | { ok: false; message: string }> => {
+    if (!existsSync(database)) return { ok: false, message: "The plane's database isn't here, so the candidate can't be proven." };
+    const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
+    let gate: ReturnType<typeof deploymentGate>;
+    try { gate = deploymentGate(new Store(db), { runId, evidenceRoot: join(dirname(database), "evidence"), now: (options.now ?? (() => new Date()))() }); }
+    catch (error) { gate = { ok: false, message: `The candidate can't be proven: ${(error as Error).message}` }; }
+    finally { db.close(); }
+    if (!gate.ok) return gate;
+    return provenCheckout(worktree, gate.head);
+  };
+  /** The checkout is exactly `head` with nothing tracked changed: the script that runs is the approved commit's. */
+  const provenCheckout = async (worktree: string, head: string): Promise<{ ok: true } | { ok: false; message: string }> => {
+    const safe = (...args: string[]) => run("git", ["--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", worktree, ...args],
+      { env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: process.env["HOME"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1" } });
+    const at = await safe("rev-parse", "HEAD");
+    if (at.code !== 0 || at.stdout.trim() !== head) return { ok: false, message: `The checkout at ${worktree} isn't the approved commit ${head.slice(0, 7)}.` };
+    const status = await safe("status", "--porcelain", "--untracked-files=no");
+    if (status.code !== 0 || status.stdout.trim() !== "") return { ok: false, message: `The checkout at ${worktree} has tracked changes; deploy only the approved commit.` };
+    return { ok: true };
+  };
   const deployScript = (worktree: string, stage: string, runId: number, extra: string[]) => run(process.execPath, ["scripts/deploy-browser.mjs", "--run", String(runId), "--stage", stage, ...extra], {
     cwd: worktree, env: cleanEnv({ TMPDIR: resolved(process.env["TMPDIR"] ?? "/tmp") }), timeoutMs: (options.deployMinutes ?? 30) * 60_000,
   });
@@ -293,6 +316,11 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         } finally { db.close(); }
       },
       async deploy({ run: runId, worktree, stage }) {
+        // Approval policy §1.7: this runtime proves the candidate FIRST — a person approved it, its exact result passed
+        // the approved check and is complete, and the checkout is exactly that commit — before anything from the
+        // candidate's checkout runs. The candidate's own script never decides its own deployment.
+        const proven = await proveCandidate(runId, worktree);
+        if (!proven.ok) return stopped(stage, proven.message);
         // The candidate's own deployment, from its own checkout: drain, backup, rehearsal, swap, health. Its last JSON
         // line names the runtime it installed; the CLI names are moved to it by the release's link step.
         const result = await deployScript(worktree, stage, runId, ["--yes"]);
@@ -306,6 +334,14 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         // A deployment that outlived a killed release is still at work: recovering under it would race it.
         const running = (options.processes ?? processes)().filter(one => one.command.includes("deploy-browser.mjs") && one.command.includes(stage));
         if (running.length > 0) return { ok: false, message: `the deployment is still running (process ${running.map(one => one.pid).join(", ")}); let it finish, then rerun` };
+        // Recovery needs no approval, but it runs only the recorded candidate commit's own script, unchanged.
+        const recorded = (() => {
+          if (!existsSync(database)) return null;
+          const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
+          try { return new Store(db).getRun(runId)?.headRevision ?? null; } catch { return null; } finally { db.close(); }
+        })();
+        const checkout = recorded === null ? { ok: false as const, message: `Run ${runId} names no commit to recover with.` } : await provenCheckout(worktree, recorded);
+        if (!checkout.ok) return stopped(stage, checkout.message);
         const result = await deployScript(worktree, stage, runId, ["--phase", "recover"]);
         if (result.code === 0) return { ok: true };
         // Killed while preparing, before it paused anything: nothing to undo (its journal is kept).

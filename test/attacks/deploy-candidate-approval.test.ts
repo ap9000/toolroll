@@ -87,5 +87,13 @@ describe("attack: the candidate's own scope.js approves its deployment", () => {
     expect(browser.slice(0, early)).not.toMatch(/candidateAssignment|loadNames\(join\(source/);
     expect(browser).toContain('assignment: await load(priorDist, "assignment.js")');
     expect(browser).toContain("assignmentOf: oldRt.assignment.assignmentOf");
+    // Every git read of the candidate (HEAD, status, the archive it builds from, the blobs it compares) ignores
+    // replacement objects and lazy fetch, and no shell pipes an archive.
+    const calls = [...browser.matchAll(/(?:execFileSync|spawnSync)\("git", \[([^\]]*)/g)].map(one => one[1]!);
+    expect(calls.length).toBeGreaterThanOrEqual(5);
+    for (const args of calls) expect(args.startsWith("...SAFE_GIT,"), args).toBe(true);
+    expect(browser).toMatch(/const SAFE_GIT = \["--no-replace-objects",/);
+    expect(browser).toMatch(/GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1"/);
+    expect(browser).not.toMatch(/git -C .*archive/);
   });
 });

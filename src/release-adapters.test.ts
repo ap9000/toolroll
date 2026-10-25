@@ -1,3 +1,4 @@
+import { CANDIDATE_HEAD, provableCandidate } from "../test/deploy-candidate-fixture.js";
 import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -143,13 +144,14 @@ describe("the release adapters", () => {
   });
 
   test("deploy and recovery invoke the candidate script with the persisted stage and bounded runtime", async () => {
-    const stage = root(), input = { stage, run: 7, worktree: "/w/7" };
-    const calls: { args: readonly string[]; options: unknown }[] = [];
-    const run: Exec = async (_command, args, options) => {
-      calls.push({ args, options });
-      return { code: 0, stdout: JSON.stringify({ runtime: "/new/dist" }), stderr: "" };
+    const stage = root(), database = join(stage, "orders.db");
+    const { runId, head } = provableCandidate(database);
+    const input = { stage, run: runId, worktree: "/w/7" };
+    const calls: { command: string; args: readonly string[]; options: unknown }[] = [];
+    const run: Exec = async (command, args, options) => {
+      calls.push({ command, args, options });
+      return checkoutAt(head, args) ?? { code: 0, stdout: JSON.stringify({ runtime: "/new/dist" }), stderr: "" };
     };
-    const database = join(stage, "no-such.db");
     const adapter = releaseAdapters({ checkout: "/rv", run, deployMinutes: 3, database, processes: () => [] }).toolroll;
     // A crash before preparation installed any gate needs no rollback.
     expect(await adapter.recoverDeploy(input)).toEqual({ ok: true });
@@ -157,12 +159,18 @@ describe("the release adapters", () => {
     expect(await adapter.deploy(input)).toEqual({ ok: true, runtime: "/new/dist" });
     writeFileSync(join(stage, "deployment.json"), "{}");
     expect(await adapter.recoverDeploy(input)).toEqual({ ok: true });
-    expect(calls.map(one => one.args)).toEqual([
-      ["scripts/deploy-browser.mjs", "--run", "7", "--stage", stage, "--yes"],
-      ["scripts/deploy-browser.mjs", "--run", "7", "--stage", stage, "--phase", "recover"],
+    const scripts = calls.filter(one => one.command !== "git");
+    expect(scripts.map(one => one.args)).toEqual([
+      ["scripts/deploy-browser.mjs", "--run", String(runId), "--stage", stage, "--yes"],
+      ["scripts/deploy-browser.mjs", "--run", String(runId), "--stage", stage, "--phase", "recover"],
     ]);
-    for (const call of calls) expect(call.options).toMatchObject({ cwd: "/w/7", timeoutMs: 180_000 });
-    const failed = releaseAdapters({ checkout: "/rv", database, processes: () => [], run: async () => ({ code: 124, stdout: "", stderr: "recovery timed out" }) }).toolroll;
+    for (const call of scripts) expect(call.options).toMatchObject({ cwd: "/w/7", timeoutMs: 180_000 });
+    // Each git read of the checkout runs hardened: no replacement objects, no lazy fetch, no user config or hooks.
+    for (const call of calls.filter(one => one.command === "git")) {
+      expect(call.args.slice(0, 7)).toEqual(["--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", "/w/7"]);
+      expect(call.options).toMatchObject({ env: { GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_CONFIG_NOSYSTEM: "1" } });
+    }
+    const failed = releaseAdapters({ checkout: "/rv", database, processes: () => [], run: async (_command, args) => checkoutAt(head, args) ?? { code: 124, stdout: "", stderr: "recovery timed out" } }).toolroll;
     expect(await failed.recoverDeploy(input)).toEqual({ ok: false, message: expect.stringMatching(/^recovery timed out \(the deployment journal is at an unreadable phase;/) });
   });
 
@@ -174,9 +182,10 @@ describe("the release adapters", () => {
   });
 
   test("an exit 0 without a runtime is a stop, not a deployment", async () => {
-    const stage = root();
-    const run: Exec = async () => ({ code: 0, stdout: "Add --yes to drain the plane, back up the database, and swap the service.", stderr: "" });
-    expect(await releaseAdapters({ checkout: "/rv", run, database: join(stage, "none.db") }).toolroll.deploy({ stage, run: 7, worktree: "/w/7" }))
+    const stage = root(), database = join(stage, "orders.db");
+    const { runId, head } = provableCandidate(database);
+    const run: Exec = async (_command, args) => checkoutAt(head, args) ?? { code: 0, stdout: "Add --yes to drain the plane, back up the database, and swap the service.", stderr: "" };
+    expect(await releaseAdapters({ checkout: "/rv", run, database }).toolroll.deploy({ stage, run: runId, worktree: "/w/7" }))
       .toEqual({ ok: false, message: "Add --yes to drain the plane, back up the database, and swap the service." });
   });
 
@@ -184,12 +193,12 @@ describe("the release adapters", () => {
     const ID = "0f1e2d3c-4b5a-4968-8776-655443322110";
     const paused = (phase: string, owned: boolean) => {
       const stage = root(), database = join(stage, "orders.db");
-      openStore(database).close();
+      const { runId } = provableCandidate(database);
       if (owned) { const db = new DatabaseSync(database) as unknown as Database; try { installUpdateGate(db, ID); } finally { db.close(); } }
       writeFileSync(join(stage, "deployment.json"), JSON.stringify({ id: ID, phase }));
-      return { stage, database, input: { stage, run: 7, worktree: "/w/7" } };
+      return { stage, database, input: { stage, run: runId, worktree: "/w/7" } };
     };
-    const exit1: Exec = async () => ({ code: 1, stdout: "", stderr: "The deployment stopped at preparing" });
+    const exit1: Exec = async (_command, args) => checkoutAt(CANDIDATE_HEAD, args) ?? { code: 1, stdout: "", stderr: "The deployment stopped at preparing" };
 
     test("names its pause only when the journal is before the swap and the live pause is that deployment's", () => {
       expect(stageGate(paused("preparing", true).stage, () => ID)).toEqual({ id: ID, phase: "preparing" });
@@ -356,3 +365,10 @@ describe("the release adapters", () => {
     await expect(releaseAdapters({ checkout: "/rv", run }).homebrew.merge(12, SHA)).rejects.toThrow(/did not merge.*Required check is pending/);
   });
 });
+
+/** A stand-in checkout that is exactly `head` with nothing tracked changed: answers the release's two git reads. */
+function checkoutAt(head: string, args: readonly string[]): { code: number; stdout: string; stderr: string } | null {
+  if (args.includes("rev-parse")) return { code: 0, stdout: `${head}\n`, stderr: "" };
+  if (args.includes("status")) return { code: 0, stdout: "", stderr: "" };
+  return null;
+}
