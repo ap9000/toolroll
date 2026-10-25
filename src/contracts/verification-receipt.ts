@@ -30,6 +30,8 @@ export const VERIFICATION_FAILURES = [
   "retry-spawn-failed",
   "retry-timed-out",
   "custody-lost",
+  // A release check that didn't cover what it owed, or lost a required test (release-once.md): never a pass.
+  "coverage-incomplete",
 ] as const;
 
 /**
@@ -93,7 +95,9 @@ export const verificationReceiptSchema = versioned(RECEIPT_VERSION, {
   /** Version 3: what the check covered, apart from its exit. */
   coverage: z.enum(RECEIPT_COVERAGES).optional(),
   /** Version 3: the attempt sealed before the check ran, and its sealed report (null: it gave none). */
-  check: z.strictObject({ attempt: z.enum(["full", "targeted"]), report: z.string().nullable(), inventory: z.string().nullable() }).optional(),
+  check: z.strictObject({ attempt: z.enum(["full", "targeted"]), report: z.string().nullable(), inventory: z.string().nullable(),
+    /** The command's own exit, kept here when `result` reads a failed attempt because the coverage fell short. */
+    exitCode: z.int().min(0).max(255).nullable().optional() }).optional(),
   /** Version 3, composed: the full check A and every link the reader proves again. */
   composed: z.strictObject({
     base: z.int().min(1), baseReceipt: z.string(), baseReport: z.string(), authority: z.int().min(1), carries: z.array(z.int()),

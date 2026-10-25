@@ -13,7 +13,7 @@ import { skillsContext } from "./project-skills.js";
 import { failedVerificationEvidence, sealVerificationReceipt, verificationEvidence, reuseObservationVerification } from "./verification-evidence.js";
 import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, prepareCheckAttempt, sealCheckOutcome, type PreparedAttempt } from "./check-report.js";
 import { planTargetedRecheck, settleCoverage } from "./release-recheck.js";
-import type { ReleaseCheckFacts } from "./verification-evidence.js";
+import { effectiveCheckFacts, type ReleaseCheckFacts } from "./verification-evidence.js";
 import { learningContext } from "./project-learning.js";
 import { knowledgeContext } from "./project-knowledge.js";
 import { flowGoalCuts } from "./flow-engine.js";
@@ -2843,7 +2843,11 @@ async function settleProof(
       const settled = settleCoverage(store, root, { runId, taskId: request.taskId, exitCode: last === null || last.notFound || last.timedOut ? null : last.code, now: now() },
         run => { const gate = verificationEvidence(store, root, run); return gate.ok ? gate.digest : null; });
       const sha = (capture: string) => { const found = store.artifactsFor(runId).filter(a => a.kind === "structured-output" && a.capture === capture); return found.length === 1 ? found[0]!.sha256 : null; };
-      releaseFacts = { coverage: settled.coverage, check: { attempt: checkAttempt.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE) }, composed: settled.composed };
+      // The one place coverage meets the outcome: a partial or identity-removed check is a failed attempt for every
+      // reader from here on (the verdict, the run's check, the receipt, reuse, the deploy gates).
+      const effective = effectiveCheckFacts(verifyCommand, { coverage: settled.coverage, check: { attempt: checkAttempt.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE) }, composed: settled.composed });
+      verifyCommand = effective.result;
+      releaseFacts = effective.facts;
     }
   }
   if (configured !== null && checkLog.length > 0) {
@@ -2879,7 +2883,8 @@ async function settleProof(
   // A release check that didn't cover what it owed (partial) or lost a required test reads failed, whatever its exit.
   const uncovered = releaseFacts !== null && releaseFacts.coverage !== "full" && releaseFacts.coverage !== "composed";
   const checkStatus = verifyCommand.configured === false ? "not-run" as const
-    : verifyCommand.ran ? verifyCommand.exitCode === 0 && !uncovered ? "passed" as const : "failed" as const
+    : uncovered ? "failed" as const
+    : verifyCommand.ran ? verifyCommand.exitCode === 0 ? "passed" as const : "failed" as const
     : checkSuites.some(one => one.status === "failed") ? "failed" as const
     : "not-run" as const;
   const suites: RunCheckSuite[] = checkSuites.length > 0 ? checkSuites : verifyCommand.configured === false ? [] : [{

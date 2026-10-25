@@ -124,7 +124,7 @@ export function countingRunner(): { runner: import("../src/release-carry.js").Bu
 import { storeEvidence } from "../src/evidence.js";
 import { prepareCheckAttempt, sealCheckOutcome } from "../src/check-report.js";
 import { planTargetedRecheck, settleCoverage } from "../src/release-recheck.js";
-import { sealVerificationReceipt, verificationEvidence } from "../src/verification-evidence.js";
+import { effectiveCheckFacts, sealVerificationReceipt, verificationEvidence } from "../src/verification-evidence.js";
 import { recordRunCheckLevel } from "../src/check-levels.js";
 import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE } from "../src/check-report.js";
 import type { CheckReport } from "../src/contracts/release-check.js";
@@ -171,8 +171,11 @@ export function sealedCheck(f: ReleaseFixture, taskId: string, head: string, rep
   const settled = settleCoverage(store, root, { runId, taskId, exitCode, now: RELEASE_NOW }, run => { const gate = verificationEvidence(store, root, run); return gate.ok ? gate.digest : null; });
   storeEvidence(store, root, runId, "check-log", "check-log.txt", Buffer.from(`exit ${exitCode}\n`), command.command, RELEASE_NOW, { captureStatus: "ok" });
   const sha = (capture: string) => { const found = store.artifactsFor(runId).filter(a => a.kind === "structured-output" && a.capture === capture); return found.length === 1 ? found[0]!.sha256 : null; };
-  sealVerificationReceipt(store, root, runId, head, command, { configured: true, ran: true, exitCode }, RELEASE_NOW, undefined,
-    { coverage: settled.coverage, check: { attempt: prepared.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE) }, composed: settled.composed });
+  // As the builder does: coverage meets the outcome in one place.
+  const effective = effectiveCheckFacts({ configured: true, ran: true, exitCode }, { coverage: settled.coverage, check: { attempt: prepared.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE) }, composed: settled.composed });
+  sealVerificationReceipt(store, root, runId, head, command, effective.result, RELEASE_NOW, undefined, effective.facts ?? undefined);
+  const passed = effective.result.configured && effective.result.ran && effective.result.exitCode === 0;
+  store.recordRunCheck(runId, { status: passed ? "passed" : "failed", exitCode: effective.result.configured && effective.result.ran ? effective.result.exitCode : null, suites: [] }, RELEASE_NOW);
   return { runId, prepared, decision, coverage: settled.coverage, composed: settled.composed };
 }
 

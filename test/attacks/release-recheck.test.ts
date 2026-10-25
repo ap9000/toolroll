@@ -196,3 +196,52 @@ describe("a targeted check, through the real road", () => {
     expect(coverageOf({ a: { report, inventory }, b: { report: null, inventory, exitCode: 0 }, plan, snapshot: { version: 1, authority: 1, base: 1, earlier: [] } })).toBe("partial");
   });
 });
+
+describe("security review: a partial or identity-removed check never reads as passed anywhere", () => {
+  const partial = async () => {
+    const { f, to, task } = await failedThenCarried();
+    // Exit 0, report lost: the command "passed", the coverage didn't.
+    const b = sealedCheck(f, task, to, () => null);
+    expect(b.coverage).toBe("partial");
+    return { f, b, to, task };
+  };
+
+  test("the receipt's result is a failed attempt (so reuse, follow-ups and the verdict read a failure), with the raw exit kept apart", async () => {
+    const { f, b } = await partial();
+    const gate = verificationEvidence(f.store, EVIDENCE(f), b.runId);
+    if (!gate.ok || gate.bytes === null) throw new Error("no gate");
+    const receipt = JSON.parse(gate.bytes);
+    expect(receipt.result).toEqual({ configured: true, ran: false, attemptFailed: true, failure: "coverage-incomplete" });
+    expect(receipt.check.exitCode).toBe(1);
+    // What reuseObservationVerification and build-review's checkPassed ask:
+    expect(receipt.result.ran === true && receipt.result.exitCode === 0).toBe(false);
+  }, 120_000);
+
+  test("a receipt forged to read passed with coverage partial is refused by its reader", async () => {
+    const { f, b } = await partial();
+    const artifact = f.store.artifactsFor(b.runId).find(one => one.capture === "machine verification receipt v1")!;
+    const path = join(EVIDENCE(f), artifact.key);
+    const forged = readFileSync(path, "utf8").replace(/"result": \{[^}]*\}/, '"result": {\n  "configured": true,\n  "ran": true,\n  "exitCode": 0\n }');
+    writeFileSync(path, forged);
+    const { createHash } = await import("node:crypto");
+    f.store.handle.prepare("UPDATE artifact SET sha256 = ?, bytes_stored = ?, bytes_original = ? WHERE id = ?").run(createHash("sha256").update(forged).digest("hex"), Buffer.byteLength(forged), Buffer.byteLength(forged), artifact.id);
+    expect(verificationEvidence(f.store, EVIDENCE(f), b.runId)).toMatchObject({ ok: false, problem: expect.stringContaining("coverage fell short") });
+  }, 120_000);
+
+  test("the deploy gates, the run's check, the assignment's checks and release coverage all read it as failed", async () => {
+    const { f, b, to, task } = await partial();
+    const { deploymentGate } = await import("../../src/deploy-gate.js");
+    // @ts-expect-error plain ESM script without declarations
+    const { deploymentCandidate } = await import("../../scripts/deploy-candidate.mjs");
+    const installedScope = await import("../../src/scope.js");
+    const { assignmentOf } = await import("../../src/assignment.js");
+    const { releaseCoverageOf } = await import("../../src/release-coverage.js");
+    const gate = deploymentGate(f.store, { runId: b.runId, evidenceRoot: EVIDENCE(f), now: LATER });
+    expect(gate).toMatchObject({ ok: false });
+    expect(() => deploymentCandidate(f.store, { runId: b.runId, head: to, evidenceRoot: EVIDENCE(f), now: LATER }, { assignmentOf, verificationEvidence, installedScope })).toThrow();
+    expect(f.store.handle.prepare("SELECT status FROM run_check WHERE run = ?").get(b.runId)?.["status"]).toBe("failed");
+    const assignment = assignmentOf(f.store, task, LATER, { principal: "operator", repos: null, includeUnplaced: true }, EVIDENCE(f));
+    expect(assignment?.receipt?.checks?.status ?? "failed").not.toBe("passed");
+    expect(releaseCoverageOf(f.store, EVIDENCE(f), f.repo, to, { isAncestor: () => true })).toBeNull();
+  }, 120_000);
+});
