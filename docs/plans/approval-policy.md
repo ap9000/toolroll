@@ -1,7 +1,8 @@
 # Who can approve work — plan
 
-Status: plan, revision 2, 2026-10-24. Branch `approval-policy`. Plan only; no code yet.
-Round 1 (Codex): NO-GO, 8 findings. All are answered below; the map is at the end.
+Status: plan, revision 3, 2026-10-24. Branch `approval-policy`. Alex approved building phase 1 after round 2.
+Round 1 (Codex): NO-GO, 8 findings. Round 2: 1, 2, 6–8 closed; 3–5 partial plus new findings. All are answered
+below; the map is at the end.
 
 ## The problem (found by Codex)
 
@@ -57,13 +58,19 @@ The setting stores two values, `people` or `lead`. Option 3 is a mode.
 ## Words used below
 
 - **Proof**: how the approver was proved, recorded beside every yes. `personProof(proof: string)` is true only for
-  `password-now`, `sso-now`, `fresh-password`, `fresh-sso`, `session`, `cli-login`, `chat`. Everything else —
+  `password-now`, `sso-now`, `fresh-password`, `fresh-sso`, `session`, `cli-login`, `chat`, `passkey`. Everything else —
   `lead-token`, `remote-token`, a missing row, any unknown string — is false. It takes a runtime string, so a
   corrupt or future value fails closed; a type-level exhaustive switch over `AuthMethod` makes a new method a compile
-  error until classified.
+  error until classified. `passkey` is listed now for the phone plan; a passkey approval seals with basis `password`
+  (a person's ceremony), and its proof row uses the structured record below.
+- **Proof row reader.** `approvalProofOf` reads both forms: the legacy text detail (`<at> · generation <n> · digest
+  <d>`) and a versioned structured detail (`{"v":1,"at":…,"generation":…,"digest":…, …}`, extra fields allowed). Any
+  other shape is no proof.
 - **Person approval** of a task: basis `password` or `chat`, *and* a proof row for that approver and that exact digest
   with `personProof`. One function, `personApprovalOf(store, taskId)`, used by release, deploy and vote counting.
 - **Authority** of a seal: its basis. Allowed values: `password`, `chat`, `mode`, `grant`, `schedule`, `lead`.
+- **Machine actor**: the lead (`currentActor().lead`) or a remote API run (`activeRemote()`). Trusted context, never a
+  flag or a name.
 
 ## Phase 1 — close the hole (Only people is the only behaviour)
 
@@ -105,7 +112,11 @@ writes it; it is never a password proof. Chat merges (`mergeInChat`) already rec
 - only a write by a person (no lead actor, no remote run) may reset it, as today, since a person wrote those bytes.
 
 The mate/coordinator/scout quarantine for modes is unchanged. `lead` is **not** added to it, so mode-covered lead CLI
-filings keep working (decision 3). In phase 2, `lead` and `mate` mean "the lead's own text"; `scout` and
+filings keep working (decision 3). Every provenance consumer asks one question, `quarantinedAuthor(via)` (true for
+`mate`, `scout`, `coordinator`), instead of "is it non-null": the mode seal quarantine, planning pre-authorization
+(`plan-auto.ts`: new filing, `authorizePlanUnderMode`, flow grant filing), chat approval eligibility
+(`chat-decide.ts`), the remembered-password rule (`freshlyApprovable`) and the stored-scope integrity check (which
+accepts `lead`). The CLI → planner → mode seal journey for a lead filing is a compatibility test. In phase 2, `lead` and `mate` mean "the lead's own text"; `scout` and
 `coordinator` mean another machine's.
 
 ### 1.5 Authority readers, all allowlists
@@ -116,7 +127,7 @@ filings keep working (decision 3). In phase 2, `lead` and `mate` mean "the lead'
 | --- | --- | --- |
 | `readScope` (`store.ts`) | unchecked cast | allowed values pass; anything else reads as `unknown` (kept, not cast) |
 | `approvalOf` (`scope.ts`) | ignores basis | null or `unknown` basis → `{ approved: false, reason: "authority" }` |
-| `modeApprovalLive` → renamed `approvalAuthorityLive` (claim and build call it directly) | true unless a known mode/grant is dead | explicit allowlist: `password`/`chat` true; `mode`/`grant` live checks as today; `schedule` (1.6); `lead` false in phase 1; null/unknown false |
+| `modeApprovalLive` (claim and build call it directly) | true unless a known mode/grant is dead | judges the seal that exists: no seal → true (nothing claimed; see below); `password`/`chat` true; `mode`/`grant` live checks as today; `schedule` (1.6); `lead` false in phase 1; a seal with null or unknown authority false |
 | `dispatch.ts scopeApprovedForDispatch` | deny-list | same allowlist in SQL |
 | `work-index.ts` `dispatch_approval` | deny-list | same allowlist in SQL |
 | `release-adapters.ts` + `release.ts ownerApproval` | basis + name | `personApprovalOf`; `lead`/`mode`/`schedule` refuse in words |
@@ -127,6 +138,13 @@ filings keep working (decision 3). In phase 2, `lead` and `mate` mean "the lead'
 | `claim.ts` plan-ready words | mode vs grant | unchanged (display only) |
 | `chat-actions.ts` sweep-child fingerprint | drops approval fields | unchanged (not an authorization) |
 | store demotions | reset basis | unchanged; they clear approval |
+
+**Planning and checks versus building.** The shared claim primitive (`acquireLocked`) also admits planners (only
+before approval) and scope-free checks (`acquireForCheck`). So the claim-time belt judges only a seal that exists: an
+unsealed scope claims no authority and passes, exactly as today, and the role gates decide (a planner needs a
+requested plan and no approval; a builder needs `scopeApprovedForDispatch`). A sealed row whose authority is null,
+unknown or dead is refused at claim. The builder's last check requires `approvalOf` approved *and* the belt, so a
+build never runs on null or unknown authority.
 
 **Legacy null.** A sealed row with a null basis comes from before the basis column, when only the password ceremony
 sealed. The migration sets it to `password`. After that, null is never written and reads as no authority.
@@ -140,8 +158,9 @@ fresh per commit, so this costs nothing there.
 A standing order's firing seals with basis `schedule`, with the standing order's id as its authority reference (the
 `mode_digest` column, which already carries grant and chat references). It is automatic: never a person, never a
 vote, never enough for release, deploy or protected work (the gate already refuses kind `automation` there). It
-stands at claim and build only while the check the firing made still holds (the standing order active, its approver
-still an approver with access). Migration: `password` seals on tasks filed by a standing order, with no person proof
+stands at claim and build only while its approver is still an active approver with access to the project. That
+live standing check is new work (today's `standingApproval` checks frozen terms and routing, not the account). A
+schedule seal never counts as a person, whatever its approver's name. Migration: `password` seals on tasks filed by a standing order, with no person proof
 row, become `schedule`.
 
 ### 1.7 Merge and deploy need a person
@@ -154,6 +173,26 @@ row, become `schedule`.
   `deploy-browser.mjs` — the whole run and each resumed phase (stage, prepare, rehearse, swap, finish) — already
   re-proves the candidate through it, so resumed phases are covered. `--phase recover` still needs no approval: it
   only puts the previous service back. The passing check and exact-completion requirements are unchanged.
+
+- **Flow merges.** A flow's Pull request zone merges after an approval zone said yes (`approvedSinceBuild` →
+  `mergePullRequest`). A subagent can staff that zone. Each flow move now records its decision authority
+  (`person`, `subagent`, `lead`, `remote`, `flow`) beside the event. `approvedSinceBuild` counts only a `person`
+  decision; subagent, machine and legacy events with no recorded authority never qualify (the card waits with the
+  existing words: "merge it from its task, or send it through a decision").
+
+### 1.7a Completion as the second person
+
+Protected work approved by one person completes only by someone else (`protectedResultProblem`). Today any active
+account can be that someone, including through a lead token (`checkAssignmentAsOperator`) or a remote `task
+complete`.
+
+- The completion ledger row records its proof: `proof person` or `proof machine` in its detail, from trusted context.
+- A machine completion is allowed when nobody else is needed (ordinary lead completion stays). When completion would
+  supply the second person, a machine completer is refused: "This result changed protected files, so a person other
+  than its approver marks it complete."
+- The publication reader (`protectedPublicationHold`) counts only completions marked `proof person`. Legacy rows
+  without a mark are ambiguous and do not count; a person can complete an already-complete result again to record
+  their mark, which releases the hold.
 
 ### 1.8 Existing data (one migration)
 
@@ -282,6 +321,13 @@ Phase 1:
 8. **Proof contract**: `personProof` is exhaustive at type level and false for unknown runtime strings.
 9. **Migration**: seeded old database covering null basis, lead-token proof, `task_act` lead, a schedule firing,
    machine and missing-proof votes.
+10a. **Completion**: a lead-token and a remote `task complete` cannot be the second person on protected work; an
+    ordinary lead completion still works; a legacy unmarked completion doesn't release the publication hold, and a
+    person's completion does.
+10b. **Flow merge**: build → subagent approval zone → pull request with merge: no merge; a person's decision merges;
+    a legacy event with no authority doesn't.
+10c. **Compatibility**: a pre-approval planner claim, a scope-free check claim, and the lead's CLI filing → planner →
+    mode seal all still work.
 10. **Attack case**: the lead with its token env removed can't fall back to the owner's remembered login (the fence
     hides `up-login.txt`; add the case to the attack suite if missing).
 
@@ -326,6 +372,15 @@ Phase 2:
 6. Chat approvals have no proof → 1.2, test 3.
 7. Claimed vs started cutoff → 2.4, test 14.
 8. Owner and token revocation → 2.3, test 13.
+
+Round 2:
+
+1. Completion as the second person → 1.7a, test 10a.
+2. Subagent flow decision feeding a merge → 1.7 (flow merges), test 10b.
+3. (phone plan) paired chat and passkey policy → the phone plan; here `chat` stays a person proof.
+4. Strict belt blocking planners and checks → 1.5 (planning and checks versus building), test 10c.
+5. `lead` provenance breaking mode-covered planning → 1.4 (`quarantinedAuthor`), test 10c.
+6. Passkey proof format → "Words used below" (`passkey`, structured reader).
 
 Also: schedules get basis `schedule` (1.6); `noteLifecycle` gets `lead` and `schedule` words (1.5); `task_act.lead`
 is used as an existing truthful record (1.8).
