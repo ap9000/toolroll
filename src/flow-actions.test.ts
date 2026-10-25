@@ -16,7 +16,7 @@ import { flowFromSteps, flowTerms, validateFlowDefinition, FLOW_TEMPLATES } from
 import { runFlowSteps, type StepIo } from "./flow-steps.js";
 import { readEmailSettings, saveEmailSettings, setFlowSecret, flowSecretNames } from "./flow-actions.js";
 import { addToolTo, validateToolSpec } from "./project-tools.js";
-import { INSIDE_FENCE } from "../test/inside-fence.js";
+import { NO_OS_FENCE } from "../test/inside-fence.js";
 
 const T0 = new Date("2026-09-25T09:00:00.000Z");
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
@@ -26,8 +26,8 @@ beforeEach(() => {
   repo = join(dir, "shop");
   store = openStore(join(dir, "orders.db"));
   if (!addApprover(store, "alex", T0).ok) throw new Error("bootstrap");
-  // Inside another sandbox (the plane's release check) nothing can nest a fence: allowed there, as the plane allows it.
-  if (INSIDE_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
+  // Where no OS fence can be made (inside the plane's check, a runner without bubblewrap) an operator allows unconfined agents.
+  if (NO_OS_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 

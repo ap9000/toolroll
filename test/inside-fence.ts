@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
+import { linuxFenceAvailable, macosFenceAvailable } from "../src/agent-fence.js";
 import { tmpdir } from "node:os";
 
 /**
@@ -24,3 +25,11 @@ export const INSIDE_FENCE: boolean = (() => {
  * (/private/tmp/so-cmd-…), so socket tests run inside a fence too.
  */
 export const SOCKETS_TOO_DEEP: boolean = INSIDE_FENCE && realpathSync(tmpdir()).length > 49;
+
+/**
+ * Whether no OS fence can be made here at all: inside another sandbox (INSIDE_FENCE), or on a Linux runner without the
+ * sandbox runtime's tools (bubblewrap, socat, ripgrep) or with unprivileged user namespaces refused. Launches that
+ * require a fence (flows' scripts, tools' servers) are then refused unless an operator allowed unconfined agents, so a
+ * test that isn't about the fence allows them in its store, as an operator of such a machine would.
+ */
+export const NO_OS_FENCE: boolean = INSIDE_FENCE || !(macosFenceAvailable() || linuxFenceAvailable());

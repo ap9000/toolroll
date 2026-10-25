@@ -24,7 +24,7 @@ import { FLOW_ACCEPTANCE, prepareUnattendedCandidates, activeUnattendedGrant, pa
 import { planAutoPending, sealUnchangedPlanUnderMode } from "./plan-auto.js";
 import { plannerContractOf, plannerSourceDigest } from "./planner-source.js";
 import { MODE_MAX_DAYS } from "./modes.js";
-import { INSIDE_FENCE } from "../test/inside-fence.js";
+import { NO_OS_FENCE } from "../test/inside-fence.js";
 
 vi.mock("node:child_process", { spy: true });
 vi.mock("node:fs/promises", { spy: true });
@@ -42,8 +42,8 @@ beforeEach(() => {
   store = openStore(join(dir, "orders.db"));
   const alex = addApprover(store, "alex", T0);
   if (!alex.ok || !addApprover(store, "sam", T0, { name: "alex", token: alex.token }).ok) throw Error("account");
-  // Inside another sandbox (the plane's release check) nothing can nest a fence: allowed there, as the plane allows it.
-  if (INSIDE_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
+  // Where no OS fence can be made (inside the plane's check, a runner without bubblewrap) an operator allows unconfined agents.
+  if (NO_OS_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
   for (const phase of ["plan", "build", "review"]) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", T0);
 });
 afterEach(() => { vi.restoreAllMocks(); store.close(); rmSync(dir, { recursive: true, force: true }); });

@@ -24,7 +24,7 @@ import { flowFromSteps, validateFlowDefinition } from "./flows.js";
 import { advanceFlows } from "./flow-engine.js";
 import { runFlowSteps, type StepIo } from "./flow-steps.js";
 import { saveScript } from "./flow-scripts.js";
-import { INSIDE_FENCE } from "../test/inside-fence.js";
+import { NO_OS_FENCE } from "../test/inside-fence.js";
 
 const T0 = new Date("2026-09-30T23:00:00.000Z");
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
@@ -45,8 +45,8 @@ beforeEach(() => {
   store = openStore(file);
   const alex = addApprover(store, "alex", T0);
   if (!alex.ok) throw new Error("approver");
-  // Inside another sandbox (the plane's release check) nothing can nest a fence: allowed there, as the plane allows it.
-  if (INSIDE_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
+  // Where no OS fence can be made (inside the plane's check, a runner without bubblewrap) an operator allows unconfined agents.
+  if (NO_OS_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
   token = alex.token;
   for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "alex", T0);
 });

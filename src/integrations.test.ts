@@ -19,7 +19,7 @@ import { addToolTo, setToolSecrets, validateToolSpec } from "./project-tools.js"
 import { checkIntegrations, createIntegrationMonitor, integrationsNow, renderIntegrations, scrubIntegrationText, type Integration, type IntegrationIo } from "./integrations.js";
 import { UNANSWERED_WORDS } from "./tool-secret-store.js";
 import { integrationsHtml } from "./integrations-ui.js";
-import { INSIDE_FENCE } from "../test/inside-fence.js";
+import { NO_OS_FENCE } from "../test/inside-fence.js";
 
 const T0 = new Date("2026-09-30T09:00:00.000Z");
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
@@ -33,8 +33,8 @@ beforeEach(() => {
   mkdirSync(repo);
   store = openStore(join(dir, "orders.db"));
   now = T0;
-  // Inside another sandbox (the plane's release check) nothing can nest a fence: allowed there, as the plane allows it.
-  if (INSIDE_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
+  // Where no OS fence can be made (inside the plane's check, a runner without bubblewrap) an operator allows unconfined agents.
+  if (NO_OS_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
