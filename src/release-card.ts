@@ -37,13 +37,16 @@ const NONE = "none";
 const money = (micro: number): string => `$${(micro / 1_000_000).toFixed(micro % 10_000 === 0 ? 2 : 6)}`;
 /** Words the card itself says in place of a value: a signed string spelled the same is quoted, never mistaken for one. */
 const RESERVED = new Set([NONE, "yes", "no", "any file in the project", "the whole project", "unreadable"]);
-/** Text that reads the same plain as quoted: words, numbers and ordinary punctuation, never a comma, semicolon,
- * parenthesis, quote, backslash, line break or control character, nor leading or trailing space. */
-const PLAIN = /^[\p{L}\p{N}~/.#$@][\p{L}\p{N} ._/@~+#=!?&%$*:<>|^-]*$/u;
-/** One signed string, unambiguous: as it is when plain, else JSON-quoted (commas, line breaks and controls escaped);
- * a number-like string or one of the card's own words is quoted too. */
+/** Text that reads the same plain as quoted: ASCII letters, digits and ordinary punctuation only (no lookalike letters
+ * from other scripts, no direction marks), never a comma, semicolon, parenthesis, quote, backslash, line break or
+ * control character, nor a trailing space. */
+const PLAIN = /^[A-Za-z0-9~/.#$@][A-Za-z0-9 ._/@~+#=!?&%$*:<>|^-]*$/;
+/** JSON-quoted with everything outside printable ASCII \u-escaped (JSON.stringify leaves non-ASCII as it is). */
+const quoted = (value: string): string => JSON.stringify(value).replace(/[^\x20-\x7e]/g, one => `\\u${one.charCodeAt(0).toString(16).padStart(4, "0")}`);
+/** One signed string, unambiguous: as it is when plain, else quoted; a number-like string or one of the card's own
+ * words is quoted too. */
 const text = (value: string): string =>
-  PLAIN.test(value) && !value.endsWith(" ") && !RESERVED.has(value.toLowerCase()) && !/^-?\d+(\.\d+)?$/.test(value) ? value : JSON.stringify(value);
+  PLAIN.test(value) && !value.endsWith(" ") && !RESERVED.has(value.toLowerCase()) && !/^-?\d+(\.\d+)?$/.test(value) ? value : quoted(value);
 /** One signed value as the card says it: "none" only for one truly absent or empty. */
 const said = (value: unknown): string => {
   if (value === null || value === undefined || value === "") return NONE;
@@ -124,7 +127,7 @@ export function approvalTermsOf(store: Store, scope: Scope, words: { profile: (p
   if (scope.proposedRouteJson != null) {
     const route = routeFromJson(scope.proposedRouteJson);
     // Unreadable (it then never seals): its stored text, exactly, so two different ones never read alike.
-    if (route === null) lines.push({ key: "route", label: "Phase route (unreadable)", value: JSON.stringify(scope.proposedRouteJson) });
+    if (route === null) lines.push({ key: "route", label: "Phase route (unreadable)", value: quoted(scope.proposedRouteJson) });
     else for (const leaf of leavesOf(route, "route")) lines.push({ key: leaf.path, label: `Phase route ${leaf.path.slice("route.".length)}`, value: leaf.value });
   }
   const terms = scope.releaseTerms ?? null;

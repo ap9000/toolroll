@@ -364,6 +364,11 @@ describe("the complete terms renderer (contract)", () => {
     tricky("readDeny=comma", one => { (one.profile as { readDeny: string[] }).readDeny = ["~/a, ~/b"]; });
     tricky("readDeny=two", one => { (one.profile as { readDeny: string[] }).readDeny = ["~/a", "~/b"]; });
     tricky("candidate=number", one => { one.scope.candidate = "12"; });
+    // Lookalike letters from other scripts and direction marks: never plain, so never alike.
+    tricky("outOfScope=cyrillic none", one => { one.scope.outOfScope = "n\u043ene"; });
+    tricky("goal=latin", one => { one.scope.goal = "Pay the invoice"; });
+    tricky("goal=greek lookalike", one => { one.scope.goal = "P\u03b1y the invoice"; });
+    tricky("goal=rtl override", one => { one.scope.goal = "Pay \u202eeciovni eht"; });
     const seen = new Map<string, { digest: string; path: string }>([[text(inputs), { digest: digest(inputs), path: "original" }]]);
     const before = { digest: digest(inputs), text: text(inputs) };
     let signed = 0;
@@ -385,6 +390,13 @@ describe("the complete terms renderer (contract)", () => {
     expect(before.text).toContain("Paths it may touch: src/one.ts");
     expect(text({ ...inputs, scope: { ...inputs.scope, touches: ["any file in the project"] } })).toContain('Paths it may touch: "any file in the project"');
     expect(text({ ...inputs, scope: { ...inputs.scope, outOfScope: "none" } })).toContain('Not in scope: "none"');
+    // Non-ASCII is quoted and \u-escaped: a Cyrillic "nоne", an RTL override, a Greek lookalike.
+    expect(text({ ...inputs, scope: { ...inputs.scope, outOfScope: "n\u043ene" } })).toContain('Not in scope: "n\\u043ene"');
+    const rtl = text({ ...inputs, scope: { ...inputs.scope, goal: "Pay \u202eeciovni eht" } });
+    expect(rtl).toContain('Goal: "Pay \\u202eeciovni eht"');
+    expect(rtl).not.toContain("\u202e");
+    expect(text({ ...inputs, scope: { ...inputs.scope, goal: "P\u03b1y the invoice" } })).not.toBe(text({ ...inputs, scope: { ...inputs.scope, goal: "Pay the invoice" } }));
+    expect(text({ ...inputs, scope: { ...inputs.scope, goal: "P\u03b1y the invoice" } })).toContain('Goal: "P\\u03b1y the invoice"');
   });
 
   test.each([...Object.keys(SCOPE_TERM_LABELS).filter(key => ["outOfScope", "acceptance", "budgetMicrousd", "candidate"].includes(key)), "release"])("with %s omitted, the line says none rather than dropping", omitted => {
