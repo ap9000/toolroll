@@ -45,8 +45,11 @@ const source = resolve(flag("source", dirname(dirname(fileURLToPath(import.meta.
 const releaseMode = flag("git-dir") !== undefined;
 const approvedRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const packageRoot = releaseMode ? approvedRoot : source;
-// npm reads no user or global config of the person's or the checkout's.
-const NPM_ENV = { ...process.env, NODE_OPTIONS: "", npm_config_userconfig: "/dev/null", npm_config_globalconfig: "/dev/null" };
+// npm reads no user or global config of the person's or the checkout's. Two different empty files: npm 11 refuses to
+// load one file as both (release 0.9.72's first deploy: "double-loading config /dev/null as global").
+const npmEmptyConfig = join(mkdtempSync(join(tmpdir(), "so-npmrc-")), "global-npmrc");
+writeFileSync(npmEmptyConfig, "", { mode: 0o600 });
+const NPM_ENV = { ...process.env, NODE_OPTIONS: "", npm_config_userconfig: "/dev/null", npm_config_globalconfig: npmEmptyConfig };
 // The staged runtime installs the candidate under its own package name (toolroll; standing-orders before the rename):
 // one optional scope, then a plain name, never a path.
 const packageName = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")).name;
