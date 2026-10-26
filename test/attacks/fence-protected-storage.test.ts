@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import { codexFenceArgv, fenceFor, runFolders, srtTermsOf, taskBoundary, trustedWorktreeBinding, type FenceGrants, type FencePolicy } from "../../src/agent-fence.js";
 import { run } from "../../src/exec.js";
-import { protectedStorageDenies } from "../../src/protected-storage.js";
+import { CONTAINER_LOOK_MS, containersListable, protectedStorageDenies } from "../../src/protected-storage.js";
 import { readDenyPath } from "../../src/project-sandbox.js";
 import { codexSandbox, git, lines, marker, needs, osFence, repository, underCodex, underSandbox, useScratch, write } from "./harness.js";
 
@@ -102,6 +102,53 @@ describe("protected storage: chat apps, browser profiles and password managers, 
     const denies = protectedStorageDenies(home, {}, "darwin", () => {});
     for (const kept of ["Desktop", "Library/Fonts", "Library/Application Scripts/com.tinyspeck.slackmacgap", "Downloads"]) expect(denies, kept).not.toContain(join(home, kept));
     for (const denied of ["Stash", "Library/Application Scripts/com.other.app", "Desktop-moved", "Elsewhere/Pictures"]) expect(denies, denied).toContain(join(home, denied));
+  });
+
+  // Release check 3249: under launchd, listing inside another app's container waited on macOS's "access data from other
+  // apps" prompt, so every launch (and the console's event loop) hung. The containers are walked only after a look that
+  // can't hang the caller says they can be listed; otherwise they stay denied by name and real path, and that is said once.
+  test("containers macOS won't list without asking stay denied, unwalked, and nothing else changes", () => {
+    const { root, home } = plane();
+    const slack = join(home, "Library/Containers/com.tinyspeck.slackmacgap"), teams = join(home, "Library/Group Containers/UBF8T346G9.com.microsoft.teams");
+    for (const [container, at, name] of [[slack, "Data/Stash", "Stash"], [teams, "Moved", "Moved"]] as const) {
+      mkdirSync(join(home, name), { recursive: true });
+      mkdirSync(join(container, at, ".."), { recursive: true });
+      symlinkSync(join(home, name), join(container, at), "dir");
+    }
+    const asked: string[][] = [], said: string[] = [];
+    const denies = protectedStorageDenies(home, {}, "darwin", line => said.push(line), roots => { asked.push([...roots].sort()); return false; });
+    expect(asked).toEqual([[slack, teams].sort()]);
+    // The browser profile's nested link (a Mac's paths) is still walked and denied.
+    for (const path of [slack, teams, ...(mac ? [join(root, "profiles", "chrome-default")] : [])]) expect(denies, path).toContain(path);
+    for (const path of ["Stash", "Moved"]) expect(denies, path).not.toContain(join(home, path));
+    protectedStorageDenies(home, {}, "darwin", line => said.push(line), () => false);
+    expect(said.filter(line => line.includes("other apps' containers"))).toHaveLength(1);
+    // Listable: walked as before, the outward links denied.
+    const walked = protectedStorageDenies(home, {}, "darwin", () => {}, () => true);
+    for (const path of ["Stash", "Moved"]) expect(walked, path).toContain(join(home, path));
+    // Not a Mac: nothing to ask.
+    protectedStorageDenies(home, {}, "linux", () => {}, () => { throw new Error("asked"); });
+  });
+
+  test("the container look: a yes is kept, a no is looked at again after ten minutes, and the real look lists plain folders", () => {
+    let clock = 0, looks = 0, answer = false;
+    const look = () => { looks++; return answer; };
+    const roots = [join(scratch(), "a")];
+    expect(containersListable(roots, look, () => clock)).toBe(false);
+    clock += 9 * 60_000;
+    expect(containersListable(roots, look, () => clock)).toBe(false);
+    expect(looks).toBe(1);
+    clock += 2 * 60_000; answer = true;
+    expect(containersListable(roots, look, () => clock)).toBe(true);
+    clock += 60 * 60_000; answer = false;
+    expect(containersListable(roots, look, () => clock)).toBe(true);
+    expect(looks).toBe(2);
+    // The child-process look itself finishes within its limit on folders that list.
+    const plain = scratch();
+    mkdirSync(join(plain, "one", "two"), { recursive: true });
+    const started = Date.now();
+    expect(containersListable([plain])).toBe(true);
+    expect(Date.now() - started).toBeLessThan(CONTAINER_LOOK_MS);
   });
 
   test("a project read grant or write grant inside protected storage is dropped, whatever the project set", () => {

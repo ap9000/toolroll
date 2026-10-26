@@ -18,6 +18,7 @@
  * The chat and vault variables (SLACK_*, TELEGRAM_*, DISCORD_*, TEAMS_*, OP_*, BW_*, BITWARDENCLI_*) are kept out of
  * every launch's environment (`withoutProtectedEnv`, exec.ts).
  */
+import { spawnSync } from "node:child_process";
 import { closeSync, fstatSync, lstatSync, openSync, constants as fsConstants, readSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -148,19 +149,34 @@ const unwalkedSaid = new Set<string>();
  * leads outward (where it leads, by real path and as spelled), and the overrides. Resolved at each launch, never kept.
  * A link macOS makes in a sandboxed app's container to the same place under the home folder (its Desktop, Downloads,
  * Fonts…) is the system's own mirror of the person's folders, not the app's data, and isn't followed (systemMirror).
+ *
+ * On a Mac, listing inside another app's container waits for the person to answer macOS's "access data from other apps"
+ * prompt when the process asking has no answer yet (a plane run by launchd: every launch, and the console with it, hung
+ * there in release check 3249). So the containers are walked only after a time-limited look in a child process
+ * (`containers`, containersListable) shows they can be listed without waiting; otherwise they stay denied by name and
+ * real path, the links inside them unchecked, and that is said once.
  */
 export function protectedStorageDenies(home: string = homedir(), env: Readonly<Record<string, string | undefined>> = process.env, platform: NodeJS.Platform = process.platform,
-  say: (line: string) => void = line => process.stderr.write(`${line}\n`)): string[] {
+  say: (line: string) => void = line => process.stderr.write(`${line}\n`), containers: (roots: readonly string[]) => boolean = roots => containersListable(roots)): string[] {
   const base = real(home);
   const out = new Set<string>();
   const add = (path: string) => { if (!tooWide(path, base)) out.add(path); };
+  const present: { name: string; root: string }[] = [];
   for (const name of protectedStorageNames(base, env, platform)) {
     add(name);
-    let present = false;
-    try { lstatSync(name); present = true; } catch { /* denied by name only */ }
-    if (!present) continue;
+    try { lstatSync(name); } catch { continue; /* denied by name only */ }
     const root = real(name);
     add(root);
+    present.push({ name, root });
+  }
+  const held = platform === "darwin" ? present.filter(one => inAppContainer(one.root, base)).map(one => one.root) : [];
+  const listable = held.length === 0 || containers(held);
+  if (!listable && !unwalkedSaid.has(CONTAINERS_UNLISTED)) {
+    unwalkedSaid.add(CONTAINERS_UNLISTED);
+    say("toolroll: fence: macOS didn't let Toolroll look inside other apps' containers without asking you, so links inside them weren't checked (the containers themselves stay denied). Allow Toolroll's service to access data from other apps (Privacy & Security) to check them.");
+  }
+  for (const { name, root } of present) {
+    if (!listable && held.includes(root)) continue;
     for (const target of outwardLinks(name, root, base, say)) add(target);
   }
   return [...out].sort();
@@ -218,4 +234,47 @@ function systemMirror(link: string, root: string, target: string, home: string):
   const named = under.join("/");
   const known = CONTAINER_MIRRORS.has(named) || named === `Library/Application Scripts/${root.split(sep).at(-1)}`;
   return known && target === join(home, ...under);
+}
+
+/** The key `unwalkedSaid` keeps for "the containers couldn't be listed" (said once per process). */
+const CONTAINERS_UNLISTED = "\0containers";
+
+/** A root directly in the home folder's Library/Containers or Library/Group Containers: another app's container. */
+function inAppContainer(root: string, home: string): boolean {
+  return dirname(root) === real(join(home, CONTAINERS)) || dirname(root) === real(join(home, GROUPS));
+}
+
+/** How long the look at other apps' containers may take before Toolroll takes it that macOS is waiting on the person. */
+export const CONTAINER_LOOK_MS = 3_000;
+/** How long a "can't list them" answer stands before the next launch looks again (the person may have allowed it since). */
+const CONTAINER_RELOOK_MS = 10 * 60_000;
+/** Each set of container roots' last answer: listable, or not and when that was seen. */
+const containerLooks = new Map<string, { listable: boolean; at: number }>();
+
+/** The look itself, in a child process: the same bounded walk `outwardLinks` makes, never following a link. */
+const CONTAINER_LOOK = `const fs=require("fs"),path=require("path");const [depth,limit,...roots]=process.argv.slice(1);
+for(const root of roots){let seen=0;const queue=[{p:root,d:0}];while(queue.length>0){const {p,d}=queue.shift();let entries;
+try{entries=fs.readdirSync(p,{withFileTypes:true});}catch{continue;}for(const e of entries){if(++seen>Number(limit)){queue.length=0;break;}
+if(!e.isSymbolicLink()&&e.isDirectory()&&d+1<Number(depth))queue.push({p:path.join(p,e.name),d:d+1});}}}`;
+
+/**
+ * Whether this process can list inside these app containers without macOS stopping to ask the person: the walk run
+ * first in a child process that is killed at CONTAINER_LOOK_MS. Finishing in time (listed, or refused outright) means
+ * the walk can run here too; taking longer means macOS is waiting on the person, and only the child waited. A yes is
+ * kept (macOS keeps the person's answer); a no is looked at again after CONTAINER_RELOOK_MS.
+ */
+export function containersListable(roots: readonly string[], look: (roots: readonly string[]) => boolean = lookInContainers, now: () => number = Date.now): boolean {
+  const key = [...roots].sort().join("\0");
+  const last = containerLooks.get(key);
+  if (last !== undefined && (last.listable || now() - last.at < CONTAINER_RELOOK_MS)) return last.listable;
+  const listable = look(roots);
+  containerLooks.set(key, { listable, at: now() });
+  return listable;
+}
+
+/** The child-process look (containersListable): node (or Electron as node) walks the roots, killed at its limit. */
+function lookInContainers(roots: readonly string[]): boolean {
+  const result = spawnSync(process.execPath, ["-e", CONTAINER_LOOK, String(PROTECTED_WALK.depth), String(PROTECTED_WALK.entries), ...roots],
+    { stdio: "ignore", timeout: CONTAINER_LOOK_MS, killSignal: "SIGKILL", env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
+  return result.error === undefined && result.signal === null && result.status === 0;
 }
