@@ -149,3 +149,45 @@ test("the three widening actions take a password (an ordinary step-up: with Pass
   expect(store.permissionDefault().mode).toBe("bypassPermissions");
   expect((await widen.kitGithub()).location).not.toMatch(/Enter your Toolroll password/);
 });
+
+test("a trigger that brings in items from anyone takes a password on every road; a team-only one doesn't", async () => {
+  const flow = store.createFlow({ repo: home, name: "Inbound", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ id: "triage", title: "Triage", kind: "task", instructions: "Look." }], null)) }, T0);
+  const cookie = await login();
+  const csrf = csrfOf(await page(cookie, "/settings/passwordless"));
+  const add = async (trigger: object, extra: Record<string, string> = {}) => {
+    const response = await fetch(`${base}/flows/${flow}/triggers`, { method: "POST", headers: { cookie, origin: base, accept: "application/json" }, body: new URLSearchParams({ csrf, trigger: JSON.stringify(trigger), ...extra }) });
+    return { status: response.status, body: await response.json() as { ok: boolean; said?: string } };
+  };
+  const github = { kind: "github", repo: "example/shop", watch: "issues", from: "anyone", delivery: "poll" };
+  const mail = { kind: "email", folder: "INBOX" };
+  for (const trigger of [github, mail]) {
+    expect(await add(trigger)).toMatchObject({ status: 403, body: { ok: false, said: "Enter your Toolroll password to bring in items from anyone." } });
+    expect(await add(trigger, { password: "wrong" })).toMatchObject({ status: 403 });
+  }
+  expect(store.flowTriggers(flow)).toHaveLength(0);
+  expect(await add({ ...github, from: "team" })).toMatchObject({ body: { ok: true } });
+  expect(await add({ ...mail, sender: "priya@example.com" })).toMatchObject({ body: { ok: true } });
+  expect(await add(github, { password })).toMatchObject({ body: { ok: true } });
+  expect(await add(mail, { password })).toMatchObject({ body: { ok: true } });
+  // Every other road (a chat card, an import, a template) adds one only with the person's proof.
+  const { addFlowTriggerTo } = await import("./flow-triggers.js");
+  expect(addFlowTriggerTo(store, store.getFlow(flow)!, github, "alex", T0, home)).toMatchObject({ ok: false, message: expect.stringContaining("takes your password") });
+  expect(addFlowTriggerTo(store, store.getFlow(flow)!, mail, "alex", T0, null, { shown: false })).toMatchObject({ ok: false });
+});
+
+test("loosening a subagent's tool rule, or accepting its suggestion to, takes a password; tightening doesn't", async () => {
+  const { setUpKit, kitOf, kitInstalled } = await import("./kits.js");
+  const kit = kitOf("support-desk")!;
+  await setUpKit(store, kit, home, "alex", T0, home);
+  const mate = kitInstalled(store, kit, home)!.mate;
+  store.saveSubagentGrant({ subagent: mate.id, tool: "shop", actions: [{ name: "refund", readOnly: false, input: null }], rules: { refund: { use: "ask" } } }, "alex", T0);
+  const cookie = await login();
+  const csrf = csrfOf(await page(cookie, "/settings/passwordless"));
+  const rule = (use: string, extra: Record<string, string> = {}) => post(cookie, `/settings/lead/subagents/${mate.id}/tools`, { csrf, tool: "shop", op: "rules", "use.refund": use, ...extra });
+  expect((await rule("free")).location).toMatch(/Enter your Toolroll password to let .* do more on its own/);
+  expect(store.subagentGrant(mate.id, "shop")?.rules["refund"]).toEqual({ use: "ask" });
+  expect((await rule("never")).location).not.toMatch(/password/);
+  expect(store.subagentGrant(mate.id, "shop")?.rules["refund"]).toEqual({ use: "never" });
+  expect((await rule("free", { password })).location).not.toMatch(/Enter your Toolroll password/);
+  expect(store.subagentGrant(mate.id, "shop")?.rules["refund"]).toEqual({ use: "free" });
+});

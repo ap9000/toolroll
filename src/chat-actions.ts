@@ -64,7 +64,7 @@ import { requestUndo, undoFor } from "./subagent-week.js";
 import { kitInstalled, kitOf, KITS, setUpKitNow } from "./kits.js";
 import { starterFlowOf, starterOf, startersFor, starterTerms, STARTER_FLOWS, switchOnStarter } from "./flow-starters.js";
 import { answerSubagentQuestion } from "./subagent-work.js";
-import { callWords, checkRule, defaultRule, grantListed, revokeTool, ruleWords, setToolRules } from "./subagent-tools.js";
+import { callWords, checkRule, defaultRule, grantListed, revokeTool, ruleLoosens, ruleWords, setToolRules } from "./subagent-tools.js";
 import { aboutYouOf, checkAboutYouLine, saveAboutYou, withAboutYouLine } from "./lead-about.js";
 import { CHAT_ACTION_FIELDS, readChatActionRequest, readSharedAction, SHARED_ACTION_VERSION, type ChatActionOperation, type SharedAction } from "./contracts/chat-actions.js";
 
@@ -504,6 +504,9 @@ export function prepareSharedAction(
         const limit = input["limitField"] === undefined || input["limitField"] === null || input["limitField"] === "" ? null : { field: input["limitField"], over: input["limitOver"] };
         const checked = checkRule(grant, action, { use: input["use"], limit, undo: input["undoWith"] ?? grant.rules[action]?.undo ?? "" });
         if (!checked.ok) throw Error(checked.said);
+        // Letting it do more on its own takes the person's password (chat-management.md §0a.3), never a card.
+        const info = grant.actions.find(one => one.name === action)!;
+        if (ruleLoosens(grant.rules[action] ?? defaultRule(info), checked.rule)) throw Error(`Letting ${name} do more with ${action} on its own takes your password. Change the rule on ${name}'s page in Toolroll.`);
         state = { rules: JSON.stringify(grant.rules) };
         title = `${name}: ${action} — ${ruleWords(checked.rule)}`;
         terms.push(`${tool} → ${action}: ${ruleWords(checked.rule)}.`, `Was: ${ruleWords(grant.rules[action] ?? { use: "ask" })}.`,

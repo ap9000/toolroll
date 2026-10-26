@@ -126,7 +126,7 @@ export const CONSOLE_FORMS = {
   skillsChange: formContract("POST /settings/skills/import, /settings/skills/change", ["repo", "identity", "revision", "method", "content", "files", "url", "action", "sha", "sample", "nonce", "restore"]),
   kit: formContract("POST /kits/<kit>/<act>", ["repo", "password"]),
   subagents: formContract("POST /settings/lead/subagents/new, /settings/lead/subagents/<id>/<part>, /settings/lead/subagents/questions/<id>/answer", ["choice", "text", "repo", "template", "name", "soul", "op", "id", "schedule", "tool", "state", "note", "model", "dailyTurns", "manager", "password"], { prefixes: ["use.", "undo.", "field.", "over."] }),
-  galleryUse: formContract("POST /flows/new/<template>", ["repo", "send-result", "name", "intent", "previewed"], { dynamic: true }),
+  galleryUse: formContract("POST /flows/new/<template>", ["repo", "send-result", "name", "intent", "previewed", "password"], { dynamic: true }),
   flows: formContract("POST /flows/new, /flows/example, /flows/import, /flows/<id>/<act>, /flows/<id>/cards/<card>/<act>, /flows/<id>/triggers/<trigger>/<act>", ["repo", "document", "url", "confirm", "previewed", "template", "name", "answers", "password", "secret", "sender", "project", "team", "trigger", "approve", "remove", "about", "body", "timeoutMinutes", "language", "file", "address", "key", "definition", "owner", "revision", "value", "title", "description", "stage", "decision", "note", "draft", "choice", "entry", "label", "watching", "days", "budget", "runs", "include", "schedules"], { prefixes: ["param."] }),
   spendBudget: formContract("POST /spend/budget", ["password", "target", "action", "usd", "stop"]),
   projectConcurrency: formContract("POST /settings/project/concurrency", ["repo", "concurrency"]),

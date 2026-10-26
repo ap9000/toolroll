@@ -275,9 +275,11 @@ describe("shared chat action lifecycle", () => {
     const drafted: Record<string, unknown>[] = [];
     const ctx = { store, who, now, step: 1, readDecisions: new Map<number, number>(), evidenceRoot: root, draft: (_kind: unknown, payload: Record<string, unknown>) => { drafted.push(payload); return drafted.length; } };
     for (const named of [{ tool: "create_issue" }, { tool: "github.create_issue" }, { tool: "github", action: "github.create_issue" }]) {
-      expect(executeLeadTool(ctx, "propose_subagent", { operation: "tool_rule", subagent: mate, ...named, use: "ask" })).toMatchObject({ ok: true });
-      expect(drafted.at(-1)).toMatchObject({ title: "Maya: create_issue — a person approves each call first" });
+      expect(executeLeadTool(ctx, "propose_subagent", { operation: "tool_rule", subagent: mate, ...named, use: "never" })).toMatchObject({ ok: true });
+      expect(drafted.at(-1)).toMatchObject({ title: "Maya: create_issue — never" });
     }
+    // Loosening a rule (never → ask first) takes the person's password on its page: never a card (chat-management.md §0a.3).
+    expect(() => prepareSharedAction(store, who, "subagent_tools", { subagent: mate, tool: "github", change: "rule", action: "create_issue", use: "ask" }, root, now)).toThrow("takes your password");
     expect(executeLeadTool(ctx, "propose_subagent", { operation: "tool_rule", subagent: mate, tool: "jira", action: "create_issue", use: "ask" })).toMatchObject({ ok: false, message: "Maya doesn't use a tool called jira. Maya uses github (actions: list_issues, create_issue)." });
     expect(confirm(proposal("subagent_tools", { subagent: mate, tool: "github", change: "revoke" }))).toMatchObject({ ok: true });
     expect(store.subagentGrants(mate)).toEqual([]);

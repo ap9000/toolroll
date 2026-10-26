@@ -225,7 +225,8 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
       id = store.transact(() => {
         const made = store.createFlow({ repo: project, name: flowName, definitionJson: JSON.stringify(definition), by: who }, now);
         if (template?.trigger !== undefined) {
-          const trigger = addFlowTriggerTo(store, store.getFlow(made)!, template.trigger, who, now, context.configDir);
+          // The command was proved with the person's password (verifyApproverByPassword above): a trigger from anyone may be added.
+          const trigger = addFlowTriggerTo(store, store.getFlow(made)!, template.trigger, who, now, context.configDir, { widening: 'proved' });
           if (!trigger.ok) throw new Error(trigger.message);
         }
         return made;
@@ -420,7 +421,8 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
     // remembered login under Passwordless) (docs/plans/passwordless.md).
     const ingress = rawTakesDeliveries(input.value);
     if (ingress && !proveCredential(store, acting.name, acting.token).ok) return refuse(flow.repo, 'unauthenticated', 'Making a webhook address takes your password, typed: pass --token.');
-    const made = addFlowTriggerTo(store, flow, input.value, who, now, context.configDir, ingress ? { ingress: 'proved' } : {});
+    // Proved with the person's password at the command's start (verifyApproverByPassword): a trigger from anyone may be added.
+    const made = addFlowTriggerTo(store, flow, input.value, who, now, context.configDir, ingress ? { ingress: 'proved' } : { widening: 'proved' });
     if (!made.ok) return refuse(flow.repo, 'invalid-trigger', made.message);
     await prepareUnattendedCandidates(store, flow.id);
     record(flow.repo, 'accepted', `flow #${flow.id} trigger #${made.id}`);

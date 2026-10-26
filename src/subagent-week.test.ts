@@ -106,7 +106,7 @@ test("the week counts what it did, what it cost and what people overrode, and re
 
 test("a person undoes a call with the action its manager named: the same input, as them; a failed undo leaves the call; the lead's undo is made by the worker", async () => {
   expect(setToolRules(store, mate, "desk", { add_label: { use: "free", undo: "add_label" } }, "alex", T0)).toMatchObject({ ok: false });
-  expect(setToolRules(store, mate, "desk", { add_label: { use: "free", undo: "remove_label" }, remove_label: { use: "never" } }, "alex", T0)).toMatchObject({ ok: true });
+  expect(setToolRules(store, mate, "desk", { add_label: { use: "free", undo: "remove_label" }, remove_label: { use: "never" } }, "alex", T0, { widening: "proved" })).toMatchObject({ ok: true });
   const card = cardFor("Label the printer ticket");
   await runFlowSteps(store, repo, at(1), io(turns(
     { action: "use_tool", tool: "desk.add_label", input: '{"ticket": "T-1", "label": "urgent"}', reason: "It's urgent." },

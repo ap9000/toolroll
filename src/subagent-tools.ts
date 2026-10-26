@@ -183,14 +183,31 @@ export function checkRule(grant: Pick<SubagentGrantRow, "tool" | "actions">, act
   return withUndo({ use: "free", limit: { field, over } });
 }
 
-/** Set the rules for some of a granted tool's actions; the others keep theirs. */
-export function setToolRules(store: Store, mate: SubagentRow, tool: string, changes: Record<string, { use: unknown; limit?: { field: unknown; over: unknown } | null; undo?: unknown }>, by: string, now: Date): Done {
+/** How much a rule lets a subagent do unasked: never, ask first, on its own up to a limit, on its own. */
+const ruleRank = (rule: ToolRule): number => rule.use === "never" ? 0 : rule.use === "ask" ? 1 : rule.limit !== undefined ? 2 : 3;
+
+/** Whether `next` lets the subagent do more unasked than `before` (chat-management.md §0a.3): a higher rank, or a limit
+ * on another number or a higher one. The undo action is never authority. */
+export function ruleLoosens(before: ToolRule, next: ToolRule): boolean {
+  const was = ruleRank(before), now = ruleRank(next);
+  if (now !== was) return now > was;
+  return now === 2 && (next.limit!.field !== before.limit!.field || next.limit!.over > before.limit!.over);
+}
+
+/** Set the rules for some of a granted tool's actions; the others keep theirs. Loosening any of them takes the
+ * person's proof (a password, or a session under Passwordless): `widening: "proved"`; tightening never does. */
+export function setToolRules(store: Store, mate: SubagentRow, tool: string, changes: Record<string, { use: unknown; limit?: { field: unknown; over: unknown } | null; undo?: unknown }>, by: string, now: Date,
+  options: { widening?: "proved" } = {}): Done {
   const grant = store.subagentGrant(mate.id, tool);
   if (grant === null) return { ok: false, said: `It doesn't use ${tool}. Let it use ${tool} first.` };
   const rules = { ...grant.rules };
   for (const [action, change] of Object.entries(changes)) {
     const checked = checkRule(grant, action, change);
     if (!checked.ok) return { ok: false, said: checked.said };
+    const info = grant.actions.find(one => one.name === action)!;
+    if (options.widening !== "proved" && ruleLoosens(grant.rules[action] ?? defaultRule(info), checked.rule)) {
+      return { ok: false, said: `Letting it do more with ${action} on its own takes your password. Change the rule on its page in Toolroll.` };
+    }
     rules[action] = checked.rule;
   }
   store.saveSubagentGrant({ subagent: mate.id, tool, actions: grant.actions, rules }, by, now);

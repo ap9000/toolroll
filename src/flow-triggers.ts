@@ -352,6 +352,19 @@ export function rawTakesDeliveries(raw: unknown): boolean {
   return one["kind"] === "webhook" || ((one["kind"] === "github" || one["kind"] === "linear") && one["delivery"] === "webhook");
 }
 
+/** Whether a trigger brings in items from anyone (chat-management.md §0a.3): GitHub issues or pull requests from anyone,
+ * or mail from any sender. A widening: it takes a person's password, on every road that adds one. */
+export function admitsAnyone(config: TriggerConfig): boolean {
+  return (config.kind === "github" && config.from === "anyone") || (config.kind === "email" && config.sender === null);
+}
+
+/** The same, read leniently from a raw trigger before validation (so the form can ask for the password first). */
+export function rawAdmitsAnyone(raw: unknown): boolean {
+  if (raw === null || typeof raw !== "object") return false;
+  const one = raw as Record<string, unknown>;
+  return (one["kind"] === "github" && one["from"] === "anyone") || (one["kind"] === "email" && (typeof one["sender"] !== "string" || one["sender"].trim() === ""));
+}
+
 export function takesDeliveries(config: TriggerConfig): boolean {
   return config.kind === "webhook" || ((config.kind === "github" || config.kind === "linear") && config.delivery === "webhook");
 }
@@ -433,13 +446,18 @@ export type TriggerMade = { ok: true; id: number; said: string; reveal: TriggerR
  * may a trigger that takes deliveries be made with an address. Without it a webhook is made with none (its panel's
  * set-up, which asks for the password, makes one), and GitHub/Linear webhook delivery is refused.
  */
-export function addFlowTriggerTo(store: Store, flow: FlowRow, raw: unknown, actor: string, now: Date, dir: string | null, options: { shown?: boolean; ingress?: "proved" } = {}): TriggerMade {
+export function addFlowTriggerTo(store: Store, flow: FlowRow, raw: unknown, actor: string, now: Date, dir: string | null, options: { shown?: boolean; ingress?: "proved";
+  /** The person proved themselves for this act (a password, or a session under Passwordless): a trigger that admits
+   * anyone is added only then. */
+  widening?: "proved" } = {}): TriggerMade {
   const definition = flowDefinitionOf(flow);
   if (definition === null || flow.state !== "active") return { ok: false, message: "This flow can't take triggers right now." };
   let config: TriggerConfig;
   try { config = validateTriggerConfig(raw, { store, flow, definition, actor }); } catch (error) { return { ok: false, message: error instanceof Error ? error.message : "That trigger isn't valid." }; }
   if (takesDeliveries(config) && dir === null) return { ok: false, message: "Webhook addresses are set up on the console." };
   if (takesDeliveries(config) && config.kind !== "webhook" && options.ingress !== "proved") return { ok: false, message: "Webhook delivery is set up on the flow's trigger panel, with your password." };
+  // Items from anyone come in only on a person's proof (chat-management.md §0a.3): never from a card, an import or a template alone.
+  if (admitsAnyone(config) && options.ingress !== "proved" && options.widening !== "proved") return { ok: false, message: "A trigger that brings in items from anyone takes your password. Add it on the flow's Triggers panel." };
   // v126: a webhook made where no one is shown its address (the gallery, an import) is made with none: its first
   // set-up or New address makes one and shows it. A webhook made on its panel is shown its address now.
   const token = takesDeliveries(config) && options.ingress === "proved" && (options.shown !== false || config.kind !== "webhook") ? randomBytes(24).toString("base64url") : null;

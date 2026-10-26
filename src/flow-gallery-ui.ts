@@ -5,7 +5,7 @@
  * A template's tools show their marks and whether the project has them; one it lacks offers Connect first.
  */
 import { brandMarkHtml } from "./brand-mark.js";
-import { BLANK, GALLERY, GALLERY_GROUPS, galleryDiagram, galleryToolsOf, OUTDATED_COMMANDS, SEND_RESULT, sendsAlready, type GalleryAnswers, type GalleryPreview, type GalleryTemplate, type GalleryTool } from "./flow-gallery.js";
+import { BLANK, GALLERY, GALLERY_GROUPS, galleryAdmitsAnyone, galleryDiagram, galleryToolsOf, OUTDATED_COMMANDS, SEND_RESULT, sendsAlready, type GalleryAnswers, type GalleryPreview, type GalleryTemplate, type GalleryTool } from "./flow-gallery.js";
 import { choiceTargets, type FlowDefinition, type FlowStage } from "./flows.js";
 import { html, joinHtml, postForm, type Html, reauth } from "./html.js";
 
@@ -119,7 +119,9 @@ export function galleryUseHtml(input: {
     : html`<input type="hidden" name="repo" value="${input.repo}">`;
   const preview = input.preview === null ? "" : html`<section class="gallery-preview" aria-labelledby="gallery-will"><h2 id="gallery-will">What it will do</h2><ul>${input.preview.built.does.map(one => html`<li>${one}</li>`)}</ul><p class="gallery-never">${input.preview.built.never}</p>${needing}${input.preview.startsFrom.length === 0 ? html`<p class="meta">Cards start when you add them.</p>` : input.preview.startsFrom.map(one => html`<p class="meta">Starts from: ${one}</p>`)}<details><summary>Every step</summary><ol>${input.preview.steps.map(one => html`<li>${one.replace(/^\d+\.\s/, "")}</li>`)}</ol></details></section>`;
   const sendResult = !sendsAlready(template) && html`<label class="gallery-check"><input type="checkbox" name="${SEND_RESULT.key}" value="yes"${input.answers[SEND_RESULT.key] === "yes" && html` checked`} data-send-result><span>${SEND_RESULT.title}<small>When a card finishes, what was done comes to you in your chat apps.</small></span></label>`;
-  const actions = html`<p class="gallery-actions">${input.preview !== null && html`<button type="submit" name="intent" value="create"${missing.length > 0 && html` class="secondary" data-without-tools`}>Create flow</button>`}<button type="submit" name="intent" value="preview" class="secondary">${input.preview === null ? "Preview" : "Update preview"}</button></p>`;
+  // A flow that brings in items from anyone takes the password to make (chat-management.md §0a.3).
+  const step = input.preview !== null && galleryAdmitsAnyone(template) ? reauth(html`<label>Your password <span class="meta">(it brings in items from anyone)</span><input type="password" name="password" autocomplete="current-password"></label>`) : "";
+  const actions = html`${step}<p class="gallery-actions">${input.preview !== null && html`<button type="submit" name="intent" value="create"${missing.length > 0 && html` class="secondary" data-without-tools`}>Create flow</button>`}<button type="submit" name="intent" value="preview" class="secondary">${input.preview === null ? "Preview" : "Update preview"}</button></p>`;
   const form = postForm(`/flows/new/${template.id}`, html`${project}${template.asks.map(field)}<label>Name<input name="name" value="${input.name}" maxlength="80"></label>${sendResult}${preview}${actions}`,
     { attrs: { "data-gallery-use": true }, hidden: { previewed: input.preview?.digest ?? "" } });
   return html`<section class="gallery-use" data-gallery-template="${template.id}">${input.problem !== null && html`<p class="problem" role="alert">${input.problem}</p>`}${input.said ? html`<p role="status">${input.said}</p>` : ""}<p>${template.promise}</p>${input.diagram !== null && stepStrip(input.diagram)}${needsList(template)}${toolsBlock}${form}<p class="meta"><a href="/flows/new">All templates</a></p></section>`;

@@ -217,10 +217,10 @@ export function addKitSample(store: Store, kit: Kit, repo: string, by: string, n
 }
 
 /** Bring new issues from the project's GitHub repository into the kit's flow (issues from anyone, polled). */
-export function addKitGithubTrigger(store: Store, kit: Kit, repo: string, by: string, now: Date, dir: string | null): { ok: true; said: string } | { ok: false; said: string } {
+export function addKitGithubTrigger(store: Store, kit: Kit, repo: string, by: string, now: Date, dir: string | null, proved: "proved" | null = null): { ok: true; said: string } | { ok: false; said: string } {
   const set = kitInstalled(store, kit, repo);
   const github = githubRepoOf(repo);
   if (set === null || github === null) return { ok: false, said: "This project isn't on GitHub." };
-  const made = addFlowTriggerTo(store, set.flow, { kind: "github", repo: github, watch: "issues", from: "anyone", delivery: "poll", zone: flowDefinitionOf(set.flow)?.start }, by, now, dir);
+  const made = addFlowTriggerTo(store, set.flow, { kind: "github", repo: github, watch: "issues", from: "anyone", delivery: "poll", zone: flowDefinitionOf(set.flow)?.start }, by, now, dir, proved === null ? {} : { widening: proved });
   return made.ok ? { ok: true, said: `New issues on ${github} now come into ${kit.flowName}.` } : { ok: false, said: made.message };
 }

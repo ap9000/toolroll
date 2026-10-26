@@ -125,7 +125,9 @@ export function subagentPageHtml(store: Store, mate: SubagentRow, viewer: string
     const flow = card === null ? null : store.getFlow(card.flow);
     const mine = question.askedOf === viewer;
     const cardLink = card === null || flow === null ? "a card" : html`<a href="/flows/${flow.id}?card=${card.id}">${card.title}</a>`;
-    const answer = mine && html`<div class="question-options">${question.options.map(one => postForm(`/settings/lead/subagents/questions/${question.id}/answer`, html`<button>${one.label}</button>`, { hidden: { choice: one.id } }))}</div>${postForm(`/settings/lead/subagents/questions/${question.id}/answer`, html`<label>Or answer in your words<textarea name="text" rows="2" maxlength="2000"></textarea></label><button>Answer</button>`, { attrs: { class: "question-reply" } })}`;
+    const answer = mine && html`<div class="question-options">${question.options.map(one => postForm(`/settings/lead/subagents/questions/${question.id}/answer`,
+      // Accepting a looser rule it suggested takes the password (chat-management.md §0a.3).
+      question.suggestion !== null && one.id === "accept" ? html`${reauth(html`<input type="password" name="password" autocomplete="current-password" aria-label="Your password" placeholder="Your password">`)}<button>${one.label}</button>` : html`<button>${one.label}</button>`, { hidden: { choice: one.id } }))}</div>${postForm(`/settings/lead/subagents/questions/${question.id}/answer`, html`<label>Or answer in your words<textarea name="text" rows="2" maxlength="2000"></textarea></label><button>Answer</button>`, { attrs: { class: "question-reply" } })}`;
     return html`<article class="card subagent-question" data-question="${question.id}"${question.suggestion !== null && html` data-suggestion`}><p class="meta">${question.suggestion === null ? html`About ${cardLink}` : "Suggests a rule change"} · ${when(question.createdAt)}${!mine && ` · for ${question.askedOf}`}</p><p><strong>${question.question}</strong></p>${answer}</article>`;
   });
   const zones = zonesOf(store, mate);
