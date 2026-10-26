@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { deflateSync } from "node:zlib";
 import { afterEach, describe, expect, test } from "vitest";
 import { releaseFixture, builtRun, countingRunner, RELEASE_NOW, VERSION, type ReleaseFixture } from "../release-fixture.js";
-import { proveCarry, preflightCarry, carriedTaskId } from "../../src/release-carry.js";
+import { proveCarry, preflightCarry, carriedTaskId, processesInside, type WriterScanIO } from "../../src/release-carry.js";
 import { addApprover, approve, liveReleaseOf, propose } from "../../src/scope.js";
 import {
   carryReleaseApproval, finishReleaseOperation, releaseAuthority, releaseAuthorityOfTask, releaseOperations, reserveRelease, revokeRelease, runReleaseOperation,
@@ -486,5 +486,80 @@ describe("security review, round 2", () => {
     expect(reserveRelease(f.store, { authority: id, kind: "deploy", taskId: f.taskId, candidate: f.approved, epoch: lease.epoch, operationId: "d2", now: after })).toMatchObject({ ok: false, why: "The release approval expired." });
     // …but reconciliation settled the reserved one.
     expect(releaseOperations(f.store, id).find(op => op.id === "d1")?.state).toBe("failed");
+  });
+});
+
+describe("security review: the writer scan refuses whatever it can't show", () => {
+  const ROOT = "/build/so-carry-x";
+  const TICKS = { ticks: 100_000, hz: 100 };
+  const SINCE = { ms: Date.parse("2026-10-25T12:00:00Z"), ticks: TICKS };
+  const errno = (code: string) => Object.assign(new Error(code), { code });
+  /** A world with nothing in the build folder; each test spoils one read. */
+  const io = (over: Partial<WriterScanIO> = {}): WriterScanIO => ({
+    platform: "linux", pid: 100, uid: 501,
+    procPids: () => ["1", "100", "200"],
+    procCwd: pid => pid === "1" ? "/" : "/home/me",
+    procIdentity: () => ({ uids: [501, 501], startTicks: TICKS.ticks + 50 }),
+    nowTicks: () => TICKS,
+    describe: pids => new Map(pids.map(pid => [pid, { uid: 501, zombie: false, startedMs: SINCE.ms + 5_000 }])),
+    processes: () => [{ pid: 100, uid: 501, zombie: false }, { pid: 200, uid: 501, zombie: false }, { pid: 1, uid: 0, zombie: false }],
+    lsof: () => ({ stdout: "p100\nfcwd\nn/home/me\np200\nfcwd\nn/home/me\n", status: 0, signal: null, code: null }),
+    gone: () => false,
+    ...over,
+  });
+  const scan = (over: Partial<WriterScanIO> = {}) => processesInside(ROOT, SINCE, io(over));
+  const denied = (code = "EACCES") => (pid: string) => { if (pid === "200") throw errno(code); return "/"; };
+
+  test("Linux: a found writer, and a clean scan", () => {
+    expect(scan()).toEqual([]);
+    expect(scan({ procCwd: pid => pid === "200" ? `${ROOT}/src` : "/" })).toEqual([200]);
+  });
+  test("Linux: an unreadable process of the build's own user, started since the build began, refuses (EACCES or EPERM)", () => {
+    expect(scan({ procCwd: denied("EACCES") })).toBeNull();
+    expect(scan({ procCwd: denied("EPERM") })).toBeNull();
+    // Its /proc files made root's (PR_SET_DUMPABLE 0) don't make it another user's: the real and effective uid decide.
+    expect(scan({ procCwd: denied(), procIdentity: () => ({ uids: [501, 0], startTicks: TICKS.ticks + 50 }) })).toBeNull();
+    // Its identity unreadable, or the build's start unknown: refuse.
+    expect(scan({ procCwd: denied(), procIdentity: () => { throw errno("EACCES"); } })).toBeNull();
+    expect(processesInside(ROOT, null, io({ procCwd: denied(), procIdentity: () => ({ uids: [501, 501], startTicks: 1 }) }))).toBeNull();
+    // Within a second of the build's start is not "before".
+    expect(scan({ procCwd: denied(), procIdentity: () => ({ uids: [501, 501], startTicks: TICKS.ticks - 50 }) })).toBeNull();
+  });
+  test("Linux: passed over only when gone, another user's, or started before the build", () => {
+    expect(scan({ procCwd: denied("ENOENT") })).toEqual([]);
+    expect(scan({ procCwd: denied(), procIdentity: () => { throw errno("ENOENT"); } })).toEqual([]);
+    expect(scan({ procCwd: denied(), procIdentity: () => ({ uids: [0, 0], startTicks: TICKS.ticks + 50 }) })).toEqual([]);
+    expect(scan({ procCwd: denied(), procIdentity: () => ({ uids: [501, 501], startTicks: TICKS.ticks - 500 }) })).toEqual([]);
+    expect(scan({ procCwd: denied("EIO") })).toBeNull();
+    expect(scan({ procPids: () => { throw errno("EACCES"); } })).toBeNull();
+  });
+  test("macOS: lsof killed by a signal, timed out or overflowing its buffer refuses; exit 1 with a full listing is read", () => {
+    const mac = (lsof: ReturnType<WriterScanIO["lsof"]>) => scan({ platform: "darwin", lsof: () => lsof });
+    const listing = "p100\nfcwd\nn/home/me\np200\nfcwd\nn/home/me\n";
+    expect(mac({ stdout: listing, status: null, signal: "SIGKILL", code: null })).toBeNull();
+    expect(mac({ stdout: listing, status: null, signal: "SIGTERM", code: "ETIMEDOUT" })).toBeNull();
+    expect(mac({ stdout: listing, status: null, signal: null, code: "ENOBUFS" })).toBeNull();
+    expect(mac({ stdout: listing, status: 1, signal: null, code: "ENOBUFS" })).toBeNull();
+    expect(mac({ stdout: listing, status: 2, signal: null, code: null })).toBeNull();
+    expect(mac({ stdout: listing, status: 1, signal: null, code: null })).toEqual([]);
+    expect(mac({ stdout: `p200\nfcwd\nn${ROOT}/dist\n`, status: 0, signal: null, code: null })).toEqual([200]);
+  });
+  test("macOS: a process of the build's own user lsof couldn't read refuses, unless it ended or runs as another user", () => {
+    const partial = { stdout: "p100\nfcwd\nn/home/me\n", status: 1, signal: null, code: null };
+    const mac = (over: Partial<WriterScanIO>) => scan({ platform: "darwin", lsof: () => partial, ...over });
+    expect(mac({})).toBeNull();
+    expect(mac({ gone: pid => pid === 200 })).toEqual([]);
+    expect(mac({ processes: () => [{ pid: 100, uid: 501, zombie: false }, { pid: 200, uid: 0, zombie: false }] })).toEqual([]);
+    expect(mac({ processes: () => [{ pid: 100, uid: 501, zombie: false }, { pid: 200, uid: 501, zombie: true }] })).toEqual([]);
+    expect(mac({ processes: () => null })).toBeNull();
+    // A second look decides: gone, a zombie or another user's by now, or started before the build: passed over.
+    expect(mac({ describe: () => new Map() })).toEqual([]);
+    expect(mac({ describe: pids => new Map(pids.map(pid => [pid, { uid: 501, zombie: true, startedMs: SINCE.ms + 5_000 }])) })).toEqual([]);
+    expect(mac({ describe: pids => new Map(pids.map(pid => [pid, { uid: 0, zombie: false, startedMs: SINCE.ms + 5_000 }])) })).toEqual([]);
+    expect(mac({ describe: pids => new Map(pids.map(pid => [pid, { uid: 501, zombie: false, startedMs: SINCE.ms - 5_000 }])) })).toEqual([]);
+    // Started within a second of the build, its start unreadable, or ps failing: refuse.
+    expect(mac({ describe: pids => new Map(pids.map(pid => [pid, { uid: 501, zombie: false, startedMs: SINCE.ms - 500 }])) })).toBeNull();
+    expect(mac({ describe: pids => new Map(pids.map(pid => [pid, { uid: 501, zombie: false, startedMs: null }])) })).toBeNull();
+    expect(mac({ describe: () => null })).toBeNull();
   });
 });

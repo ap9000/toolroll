@@ -255,47 +255,154 @@ export function fencedBuildRunner(store: Store): BuildRunner {
   };
 }
 
+/** What the writer scan reads from the OS: injectable so each refusal shape can be shown (tests), real by default. */
+export type WriterScanIO = {
+  platform: NodeJS.Platform;
+  /** This process: its pid, and the user the build runs as (its effective uid). */
+  pid: number; uid: number;
+  /** Linux: the numeric entries of /proc. Throws when /proc can't be listed. */
+  procPids(): string[];
+  /** Linux: readlink /proc/<pid>/cwd. Throws with the errno code. */
+  procCwd(pid: string): string;
+  /** Linux: a process's real and effective uid (/proc/<pid>/status, readable even when its folder isn't) and its start
+   * time in clock ticks since boot (/proc/<pid>/stat). Throws with the errno code. Never the owner of its /proc files:
+   * a process can make those root's (PR_SET_DUMPABLE 0). */
+  procIdentity(pid: string): { uids: number[]; startTicks: number };
+  /** Linux: now, in clock ticks since boot (from /proc/uptime), and the ticks in a second; null when unreadable. */
+  nowTicks(): { ticks: number; hz: number } | null;
+  /** macOS: each process's pid, effective uid and whether it is a zombie (ps), or null when ps failed. */
+  processes(): { pid: number; uid: number; zombie: boolean }[] | null;
+  /** macOS: lsof's cwd listing, its stdout and how it ended. */
+  lsof(): { stdout: string; status: number | null; signal: string | null; code: string | null };
+  /** macOS: a second look at these pids (ps): each one still there, with its uid, whether it is a zombie and when it
+   * started (ms, whole seconds); a pid missing from the map is gone. Null when ps failed. */
+  describe(pids: readonly number[]): Map<number, { uid: number; zombie: boolean; startedMs: number | null }> | null;
+  /** Whether a pid is gone (ESRCH). */
+  gone(pid: number): boolean;
+};
+
+/** When the build began: wall-clock ms, and on Linux the clock ticks since boot. */
+export type BuildStart = { ms: number; ticks: { ticks: number; hz: number } | null };
+
+const realScanIO = (): WriterScanIO => ({
+  platform: process.platform, pid: process.pid, uid: process.geteuid?.() ?? -1,
+  procPids: () => readdirSync("/proc").filter(one => /^\d+$/.test(one)),
+  procCwd: pid => readlinkSync(`/proc/${pid}/cwd`),
+  procIdentity: pid => {
+    const status = readFileSync(`/proc/${pid}/status`, "utf8");
+    const uids = /^Uid:\s+(\d+)\s+(\d+)/m.exec(status);
+    // The command name (field 2) is in parentheses and may hold spaces or parentheses: fields count from the last ")".
+    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+    const start = Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19]);
+    if (uids === null || !Number.isSafeInteger(start)) throw Object.assign(new Error("unreadable"), { code: "EUNREAD" });
+    return { uids: [Number(uids[1]), Number(uids[2])], startTicks: start };
+  },
+  nowTicks: () => {
+    try {
+      const hz = Number(execFileSync("getconf", ["CLK_TCK"], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim());
+      const up = Number(readFileSync("/proc/uptime", "utf8").split(" ")[0]);
+      return Number.isFinite(hz) && hz > 0 && Number.isFinite(up) ? { ticks: Math.floor(up * hz), hz } : null;
+    } catch { return null; }
+  },
+  processes: () => {
+    try {
+      return execFileSync("ps", ["-A", "-o", "pid=,uid=,stat="], { encoding: "utf8", timeout: 20_000, maxBuffer: 16 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] })
+        .split("\n").map(line => line.trim().split(/\s+/)).filter(parts => parts.length === 3 && /^\d+$/.test(parts[0]!) && /^\d+$/.test(parts[1]!))
+        .map(([pid, uid, stat]) => ({ pid: Number(pid), uid: Number(uid), zombie: stat!.startsWith("Z") }));
+    } catch { return null; }
+  },
+  lsof: () => {
+    try { return { stdout: execFileSync("lsof", ["-nP", "-d", "cwd", "-Fpn"], { encoding: "utf8", timeout: 20_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }), status: 0, signal: null, code: null }; }
+    catch (error) {
+      const e = error as { stdout?: unknown; status?: unknown; signal?: unknown; code?: unknown };
+      return { stdout: typeof e.stdout === "string" ? e.stdout : "", status: typeof e.status === "number" ? e.status : null, signal: typeof e.signal === "string" ? e.signal : null, code: typeof e.code === "string" ? e.code : null };
+    }
+  },
+  describe: pids => {
+    let text: string;
+    try { text = execFileSync("ps", ["-o", "pid=,uid=,stat=,lstart=", "-p", pids.join(",")], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, timeout: 20_000, maxBuffer: 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }); }
+    catch (error) {
+      // ps exits 1 when some of the pids are gone; what it printed is the rest. Anything else: no answer.
+      const e = error as { status?: unknown; signal?: unknown; stdout?: unknown };
+      if (e.status !== 1 || e.signal != null) return null;
+      text = typeof e.stdout === "string" ? e.stdout : "";
+    }
+    const found = new Map<number, { uid: number; zombie: boolean; startedMs: number | null }>();
+    for (const line of text.split("\n")) {
+      const m = /^\s*(\d+)\s+(\d+)\s+(\S+)\s+(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}) (\d{2}:\d{2}:\d{2}) (\d{4})\s*$/.exec(line);
+      if (m === null) continue;
+      const at = Date.parse(`${m[5]!.padStart(2, "0")} ${m[4]} ${m[7]} ${m[6]} GMT`);
+      found.set(Number(m[1]), { uid: Number(m[2]), zombie: m[3]!.startsWith("Z"), startedMs: Number.isFinite(at) ? at : null });
+    }
+    return found;
+  },
+  gone: pid => { try { process.kill(pid, 0); return false; } catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; } },
+});
+
 /**
- * Pids whose working folder is inside `root` (lsof on macOS, /proc on Linux), or null when that can't be read (the
- * caller refuses: nothing is digested unless it is shown that no writer remains).
+ * Pids whose working folder is inside `root` (lsof on macOS, /proc on Linux), or null when that can't be shown (the
+ * caller refuses: nothing is digested unless it is shown that no writer remains). A process is passed over only when
+ * it is gone, or provably runs as another user than the build; one of the build's own user that can't be read refuses.
  *
  * On Linux a fenced build can't leave one at all: the sandbox runtime starts every launch in a PID namespace of its own
  * (bwrap --unshare-pid, --die-with-parent), and when the build's process ends the kernel kills everything left in that
  * namespace, a detached or new-session child included, before the launch returns. The scan is the check for whatever
  * runs outside such a namespace (an unfenced runner) and the proof on macOS, where Seatbelt has no PID namespace.
  */
-function processesInside(root: string): number[] | null {
+export function processesInside(root: string, since: BuildStart | null, io: WriterScanIO = realScanIO()): number[] | null {
   const inside = (cwd: string) => cwd === root || cwd.startsWith(`${root}/`);
-  if (process.platform === "linux") {
+  const code = (error: unknown) => (error as NodeJS.ErrnoException)?.code;
+  if (io.platform === "linux") {
     let names: string[];
-    try { names = readdirSync("/proc").filter(one => /^\d+$/.test(one)); } catch { return null; }
+    try { names = io.procPids(); } catch { return null; }
     const found: number[] = [];
     for (const name of names) {
-      if (Number(name) === process.pid) continue;
+      if (Number(name) === io.pid) continue;
       let cwd: string;
-      try { cwd = readlinkSync(`/proc/${name}/cwd`); }
+      try { cwd = io.procCwd(name); }
       catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        // Gone since the listing, or a process of another user (whose folder can't be one this build made).
-        if (code === "ENOENT" || code === "ESRCH" || code === "EACCES" || code === "EPERM") continue;
+        if (code(error) === "ENOENT" || code(error) === "ESRCH") continue;
+        if (code(error) !== "EACCES" && code(error) !== "EPERM") return null;
+        // Unreadable: passed over only when it is gone by now, provably runs as another user (neither its real nor its
+        // effective uid is the build's), or provably started before the build did (so the build didn't start it).
+        let who: { uids: number[]; startTicks: number };
+        try { who = io.procIdentity(name); } catch (again) { if (code(again) === "ENOENT" || code(again) === "ESRCH") continue; return null; }
+        if (io.uid >= 0 && !who.uids.includes(io.uid)) continue;
+        // A whole second earlier than the build began: tick rounding can't make the build's own child look older.
+        if (since?.ticks != null && who.startTicks < since.ticks.ticks - since.ticks.hz) continue;
         return null;
       }
       if (inside(cwd)) found.push(Number(name));
     }
     return found;
   }
-  let text = "";
-  try { text = execFileSync("lsof", ["-nP", "-d", "cwd", "-Fpn"], { encoding: "utf8", timeout: 20_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }); }
-  catch (error) {
-    // lsof exits 1 when some processes can't be read; its output still lists every one it could. No output at all: unknown.
-    text = String((error as { stdout?: unknown }).stdout ?? "");
-    if (text === "") return null;
-  }
-  const found: number[] = [];
+  // macOS: every process of the build's user, listed first; then lsof's cwd for each.
+  const listed = io.processes();
+  if (listed === null) return null;
+  const out = io.lsof();
+  // lsof exits 1 when it couldn't read some process; anything else (a signal, a timeout, an overflow) is no listing.
+  const complete = out.status === 0 && out.signal === null && out.code === null;
+  const partial = out.status === 1 && out.signal === null && out.code !== "ETIMEDOUT" && out.code !== "ENOBUFS" && !/maxBuffer/i.test(out.code ?? "");
+  if (!complete && !partial) return null;
+  const found: number[] = [], read = new Set<number>();
   let pid = 0;
-  for (const line of text.split("\n")) {
+  for (const line of out.stdout.split("\n")) {
     if (line.startsWith("p")) pid = Number(line.slice(1));
-    else if (line.startsWith("n") && pid > 0 && pid !== process.pid && inside(line.slice(1))) found.push(pid);
+    else if (line.startsWith("n") && pid > 0) { read.add(pid); if (pid !== io.pid && inside(line.slice(1))) found.push(pid); }
+  }
+  // A process of the build's own user whose folder lsof couldn't read refuses, unless a second look shows it gone, a
+  // zombie (it has ended: it holds no folder and writes nothing), another user's, or started a whole second before the
+  // build began (so the build didn't start it).
+  const unread = listed.filter(one => one.uid === io.uid && one.pid !== io.pid && !one.zombie && !read.has(one.pid) && !io.gone(one.pid)).map(one => one.pid);
+  if (unread.length > 0) {
+    const again = io.describe(unread);
+    if (again === null) return null;
+    for (const pid of unread) {
+      const now = again.get(pid);
+      if (now === undefined || now.zombie || now.uid !== io.uid) continue;
+      if (since !== null && now.startedMs !== null && now.startedMs < since.ms - 1000) continue;
+      return null;
+    }
   }
   return [...new Set(found)];
 }
@@ -356,6 +463,9 @@ function walk(root: string, prefix: string): string[] {
 export async function artifactDigest(gitDir: string, sha: string, runner: BuildRunner, options: { timeoutMs?: number; npmCache?: string } = {}): Promise<{ ok: true; digest: string } | { ok: false; message: string }> {
   const timeoutMs = options.timeoutMs ?? 20 * 60_000;
   const dir = realpathSync(mkdtempSync(join(checkLaunchRoot(), "so-carry-")));
+  // When the build began (Linux: ticks since boot): an unreadable process that started before it isn't the build's.
+  const scan = realScanIO();
+  const began: BuildStart = { ms: Date.now(), ticks: scan.platform === "linux" ? scan.nowTicks() : null };
   try {
     const src = join(dir, "src"), tmp = join(dir, "tmp");
     mkdirSync(src); mkdirSync(tmp, { mode: 0o700 });
@@ -385,7 +495,12 @@ export async function artifactDigest(gitDir: string, sha: string, runner: BuildR
       packed = (parsed[0]?.files ?? []).map(one => String(one.path)).filter(path => !ARTIFACT_EXCLUDED.includes(path));
     } catch { return { ok: false, message: "The packed file list couldn't be read." }; }
     // The build's process group is gone; anything still running from the folder (a background writer) refuses.
-    const left = processesInside(dir);
+    // A process caught mid-exit or mid-exec can't be read for a moment: the scan is asked again before it refuses.
+    let left = processesInside(dir, began, scan);
+    for (let again = 0; left === null && again < 2; again++) {
+      await new Promise(resolve => setTimeout(resolve, 250));
+      left = processesInside(dir, began, scan);
+    }
     if (left === null) return { ok: false, message: "It can't be shown that nothing the build started is still running, so its output isn't trusted." };
     if (left.length > 0) return { ok: false, message: `Something the build started is still running (process ${left.join(", ")}).` };
     const paths = [...walk(src, "dist"), ...packed];
