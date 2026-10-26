@@ -125,7 +125,13 @@ export async function refreshGrants(store: Store, mate: SubagentRow, now: Date, 
     if (tool === undefined) continue;
     const listed = await listed_(store, tool, mate.repo, io);
     if (!listed.ok) continue;
-    store.saveSubagentGrant({ subagent: mate.id, tool: grant.tool, ...withActions(grant.rules, listed.actions), listedAt: now.toISOString() }, grant.updatedBy, now);
+    // The grant as it is now, after the listing's wait, in one transaction with the save: one taken away meanwhile stays
+    // gone, and only the tool's list of actions is new (rules changed meanwhile, tightened ones included, stand).
+    store.transact(() => {
+      const current = store.subagentGrant(mate.id, grant.tool);
+      if (current === null) return;
+      store.saveSubagentGrant({ subagent: mate.id, tool: grant.tool, ...withActions(current.rules, listed.actions), listedAt: now.toISOString() }, current.updatedBy, now);
+    });
   }
 }
 

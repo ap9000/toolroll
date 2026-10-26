@@ -15,7 +15,7 @@ import { run as exec } from "./exec.js";
 import { runFlowSteps, type StepIo } from "./flow-steps.js";
 import { addToolTo, validateToolSpec } from "./project-tools.js";
 import { answerSubagentQuestion } from "./subagent-work.js";
-import { grantTool, ruleFor, setToolRules } from "./subagent-tools.js";
+import { grantTool, refreshGrants, revokeTool, ruleFor, setToolRules } from "./subagent-tools.js";
 import { SUBAGENT_TEMPLATES, type TurnRequest, type TurnRunner } from "./subagents.js";
 import { NO_OS_FENCE } from "../test/inside-fence.js";
 
@@ -263,4 +263,19 @@ test("approving the same call five times in a row, none denied, makes it suggest
   expect(answerSubagentQuestion(store, store.subagentQuestionForSuggestion(stale.id)!.id, { choice: "accept", text: null, by: "alex", via: "web", widening: "proved" }, at(71))).toMatchObject({ ok: false, said: "Its rules changed since it suggested this, so nothing was changed." });
   expect(store.subagentSuggestion(stale.id)?.state).toBe("stale");
   expect(store.subagentGrant(mate.id, "shop")?.rules["refund_order"]).toEqual({ use: "ask" });
+});
+
+test.each(["revoke", "tighten"] as const)("a refresh whose listing waits never undoes a %s made meanwhile (0.9.73 review round 2, finding 1)", async change => {
+  expect(store.subagentGrant(mate.id, "shop")!.rules["lookup_order"]).toEqual({ use: "free" });
+  // The listing is old by the next turn; it pauses until the change below is made.
+  let resume: () => void = () => {};
+  const paused = new Promise<void>(resolve => { resume = resolve; });
+  const actions = store.subagentGrant(mate.id, "shop")!.actions;
+  const refreshing = refreshGrants(store, mate, new Date(T0.getTime() + 7 * 60 * 60_000), { toolHome: dir, listTools: async () => { await paused; return { ok: true, actions }; } });
+  if (change === "revoke") expect(revokeTool(store, mate, "shop", "alex", T0)).toMatchObject({ ok: true });
+  else expect(setToolRules(store, mate, "shop", { lookup_order: { use: "never" } }, "alex", T0)).toMatchObject({ ok: true });
+  resume();
+  await refreshing;
+  if (change === "revoke") expect(store.subagentGrant(mate.id, "shop")).toBeNull();
+  else expect(store.subagentGrant(mate.id, "shop")!.rules["lookup_order"]).toEqual({ use: "never" });
 });
