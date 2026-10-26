@@ -46,7 +46,7 @@ function toolsSection(store: Store, mate: SubagentRow, canManage: boolean): Html
     });
     const undoBox = undoing.length > 0 && html`<details class="tool-undo"${grant.actions.some(one => grant.rules[one.name]?.undo !== undefined) && html` open`}><summary>Undo</summary><p class="meta">When an action has an opposite, a person can press Undo on its receipts: the opposite is called with the same input.</p>${undoing}</details>`;
     return canManage
-      ? html`<div class="tool-grant" data-tool-grant="${grant.tool}">${head}${postForm(`/settings/lead/subagents/${mate.id}/tools`, html`${rows}${undoBox}<div class="tool-buttons"><button name="op" value="rules">Save rules</button><button name="op" value="revoke" class="secondary">Stop using ${grant.tool}</button></div>`, { hidden: { tool: grant.tool } })}</div>`
+      ? html`<div class="tool-grant" data-tool-grant="${grant.tool}">${head}${postForm(`/settings/lead/subagents/${mate.id}/tools`, html`${rows}${undoBox}${reauth(html`<label>Your password <span class="meta">only to let it do more on its own</span><input type="password" name="password" autocomplete="current-password"></label>`)}<div class="tool-buttons"><button name="op" value="rules">Save rules</button><button name="op" value="revoke" class="secondary">Stop using ${grant.tool}</button></div>`, { hidden: { tool: grant.tool } })}</div>`
       : html`<div class="tool-grant" data-tool-grant="${grant.tool}">${head}<ul>${rows}</ul></div>`;
   });
   const open = tools.filter(one => !grants.some(grant => grant.tool === one.name));

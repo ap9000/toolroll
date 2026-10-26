@@ -56,7 +56,7 @@ if (group !== null && !(group in GROUPS)) { console.error(`No group "${group}". 
 
 // The real mail server for the email inbox: GreenMail in Docker, over TLS on 127.0.0.1:993 with a
 // certificate made for this run (the console and worker trust it, and only it, beside the usual ones).
-const docker = !flag("--list") && (group === null || group === "mail") && (() => { try { execFileSync("docker", ["info"], { stdio: "ignore", timeout: 20_000 }); return true; } catch { return false; } })();
+const docker = !flag("--list") && (group === null || group === "mail") && (() => { try { execFileSync("docker", ["info"], { stdio: "ignore", timeout: 20_000, killSignal: "SIGKILL" }); return true; } catch { return false; } })();
 let mailCert = null;
 const certDir = join(process.env.TMPDIR ?? "/tmp", `so-e2e-mail-${randomBytes(4).toString("hex")}`);
 if (docker) {
@@ -284,10 +284,13 @@ await journey("console", SCRIPTED, "Sign-in hardening and the audit trail: five 
   const locked = await tryPassword(secret);
   if (!/Too many wrong passwords\. Try again in 15 minutes\./.test(locked) || !guest.url().includes("/login")) throw new Error(`the right password after five wrong ones: ${locked.slice(0, 200)}`);
   await context.close();
-  // A policy change, the way Settings makes it, and back.
+  // A policy change, the way Settings makes it, and back. Widening to Full access takes the password (back to Auto
+  // needs none): without it nothing changes.
   await page.goto(`${base}/settings`);
+  const unproved = await page.request.post(`${base}/settings/permission-default`, { form: { csrf: await csrfOf(page), "permission-mode": "bypassPermissions" }, headers: { origin: base }, maxRedirects: 0 });
+  if (!/Enter(%20|\+| )your(%20|\+| )Toolroll(%20|\+| )password/.test(unproved.headers()["location"] ?? "")) throw new Error(`Full access without the password: ${unproved.status()} ${unproved.headers()["location"]}`);
   for (const mode of ["bypassPermissions", "auto"]) {
-    const changed = await page.request.post(`${base}/settings/permission-default`, { form: { csrf: await csrfOf(page), "permission-mode": mode }, headers: { origin: base }, maxRedirects: 0 });
+    const changed = await page.request.post(`${base}/settings/permission-default`, { form: { csrf: await csrfOf(page), "permission-mode": mode, password: w.passwords.alex }, headers: { origin: base }, maxRedirects: 0 });
     if (changed.status() !== 303) throw new Error(`the permission default refused ${mode}: ${changed.status()}`);
   }
   await page.goto(`${base}/ledger?source=sign-in`); await page.waitForSelector("[data-ledger-id]");
@@ -716,7 +719,12 @@ await journey("stop", SCRIPTED, "Stop a build while it runs, then resume it with
   cli(["task", "scope", id, "--goal", "Add divide(a, b) to src/math.js, throwing on division by zero, with tests for both in test/math.test.js.", "--acceptance", "divide works and refuses zero|check", ...auth]);
   const digest = cli(["task", "show", id]).scope.digest;
   cli(["task", "approve", id, "--yes", "--digest", digest, ...auth]);
-  const running = await until("the build to start", async () => { const one = latestBuild(id); return one && !one.finished_at ? one : null; }, { timeoutMs: 180_000, everyMs: 1000 });
+  // Running means its agent has started (a stop before that is a different case: nothing ran yet). Every launch now
+  // checks the protected storage folders first, so the run's row comes a moment before its agent does.
+  const running = await until("the build's agent to start", async () => {
+    const one = latestBuild(id);
+    return one && !one.finished_at && rows(`SELECT provider_started_at FROM run WHERE id = ${one.id}`)[0]?.provider_started_at ? one : null;
+  }, { timeoutMs: 180_000, everyMs: 250 });
   await page.goto(`${base}/t/${id}`);
   const stop = page.locator("form.task-stop-form button");
   await stop.waitFor({ timeout: 15_000 });
@@ -1047,13 +1055,18 @@ async function mailServer() {
   try {
     execFileSync("docker", ["run", "-d", "--name", name, "-p", "127.0.0.1:993:3993", "-p", "127.0.0.1:3025:3025", "-v", `${join(certDir, "keystore.p12")}:/keystore.p12:ro`, "-e",
       "GREENMAIL_OPTS=-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=support:mail-pass@shop.example -Dgreenmail.users.login=email -Dgreenmail.tls.keystore.file=/keystore.p12 -Dgreenmail.tls.keystore.password=e2e-keystore",
-      "greenmail/standalone:2.1.3"], { stdio: "ignore", timeout: 120_000 });
-  } catch { throw new Skip("the mail server container couldn't start (is port 993 or 3025 taken?)"); }
+      "greenmail/standalone:2.1.3"], { stdio: "ignore", timeout: 120_000, killSignal: "SIGKILL" });
+  } catch {
+    // The Docker CLI ignores SIGTERM while the daemon hangs (a leftover container holding 993 or 3025 did that for
+    // hours), so the limit kills it outright, and the container it made is removed.
+    try { execFileSync("docker", ["rm", "-f", name], { stdio: "ignore", timeout: 60_000, killSignal: "SIGKILL" }); } catch { /* never made */ }
+    throw new Skip("the mail server container couldn't start (is port 993 or 3025 taken?)");
+  }
   const nodemailer = (await import(join(w.bin, "../../node_modules/nodemailer/dist/cjs/nodemailer.js"))).default;
   const { ImapFlow } = await import(join(w.bin, "../../node_modules/imapflow/dist/cjs/imap-flow.js"));
   const { simpleParser } = await import(join(w.bin, "../../node_modules/mailparser/index.js"));
   const smtp = nodemailer.createTransport({ host: "127.0.0.1", port: 3025, secure: false, ignoreTLS: true });
-  const stop = () => { smtp.close(); execFileSync("docker", ["rm", "-f", name], { stdio: "ignore" }); };
+  const stop = () => { smtp.close(); execFileSync("docker", ["rm", "-f", name], { stdio: "ignore", timeout: 60_000, killSignal: "SIGKILL" }); };
   try { await until("the mail server", async () => { await smtp.verify(); return true; }, { timeoutMs: 60_000, everyMs: 2000 }); } catch (error) { stop(); throw error; }
   /** Everything in someone's inbox (GreenMail signs a person in with their address as the password). */
   const inbox = async user => {
@@ -1097,6 +1110,8 @@ await journey("mail", SCRIPTED, "Email inbox: a real email becomes a card, Claud
     await page.click("[data-open-triggers]");
     if (!(await page.locator("[data-add-trigger] select").first().isVisible())) await page.getByText("Add a trigger", { exact: true }).click();
     await page.locator("[data-add-trigger] select").first().selectOption("email");
+    // Mail from any sender brings in work from anyone: the trigger takes the password.
+    await page.locator('[data-add-trigger] input[type="password"]').fill(w.passwords.alex);
     await page.locator('[data-add-trigger] button:has-text("Add trigger")').click();
     await until("the email trigger", async () => (await flowView(id)).triggers.some(one => one.kind === "email"), { timeoutMs: 15_000, everyMs: 500 });
     const checkNow = () => page.locator('[data-flow-drawer] button:has-text("Check now")').first().click();
@@ -1505,6 +1520,7 @@ createInterface({ input: process.stdin }).on("line", line => {
   await Promise.all([page.waitForNavigation(), page.click('form[data-new-subagent] button')]);
   const subagentId = Number(/\/settings\/lead\/subagents\/(\d+)/.exec(page.url())?.[1]);
   await page.selectOption('form.tool-add select[name="tool"]', "store");
+  await page.fill('form.tool-add input[name="password"]', w.passwords.alex);
   await Promise.all([page.waitForNavigation(), page.click('form.tool-add button')]);
   const shopRules = page.locator('[data-tool-grant="store"]');
   const ruleOf = action => shopRules.locator(`select[name="use.${action}"]`).inputValue();
@@ -1514,6 +1530,8 @@ createInterface({ input: process.stdin }).on("line", line => {
   await shopRules.locator('select[name="field.refund_order"]').selectOption("amount");
   await shopRules.locator('input[name="over.refund_order"]').fill("50");
   await shopRules.locator('select[name="use.delete_customer"]').selectOption("never");
+  // Ask first → on her own up to $50 loosens a rule: it takes the password.
+  await shopRules.locator('input[name="password"]').fill(w.passwords.alex);
   await Promise.all([page.waitForNavigation(), shopRules.locator('button:has-text("Save rules")').click()]);
   const rules = JSON.parse(rows(`SELECT rules_json FROM subagent_tool WHERE subagent = ${subagentId} AND tool = 'store'`)[0]?.rules_json ?? "{}");
   if (rules.refund_order?.limit?.over !== 50 || rules.delete_customer?.use !== "never") throw new Error(`the saved rules: ${JSON.stringify(rules)}`);
@@ -1578,7 +1596,8 @@ createInterface({ input: process.stdin }).on("line", line => {
 // In the rosa group's own world the lead chat isn't on yet: this journey turns it on the same way first.
 await journey("rosa", REAL_MODEL, "The lead changes a subagent's tool rule from plain words, as a card you confirm (real Claude turn)", [TOOL_CHECK], async () => {
   if (!leadChatOn) await turnLeadChatOn();
-  const { reply } = await askLead("Rosa can refund orders up to $100 in the store without asking me now. Just draft it.");
+  // A chat card can only tighten a rule (letting her do more takes the password on her page), so the lead tightens one.
+  const { reply } = await askLead("Rosa should ask me before any refund over $20 in the store from now on; under that she can still refund on her own. Just draft it.");
   const pending = reply.locator('[data-view="chat-card"][data-card-state="pending"]:has([data-card-confirm])');
   await waitFor(pending.first(), "a card changing Rosa's rule in the lead's reply", { seen: async () => `the reply “${(await reply.innerText()).replace(/\s+/g, " ").slice(0, 300)}”` });
   // The lead may draft her soul file's words too: confirm each card it drafted; the rule itself is what's checked.
@@ -1590,7 +1609,7 @@ await journey("rosa", REAL_MODEL, "The lead changes a subagent's tool rule from 
   }
   const rules = await until("Rosa's refund rule to change", async () => {
     const saved = JSON.parse(rows("SELECT t.rules_json FROM subagent_tool t JOIN subagent m ON m.id = t.subagent WHERE m.handle = 'rosa' AND t.tool = 'store'")[0]?.rules_json ?? "{}");
-    return saved.refund_order?.limit?.over === 100 ? saved : null;
+    return saved.refund_order?.limit?.over === 20 ? saved : null;
   }, { timeoutMs: 30_000, everyMs: 1000 });
   if (rules.refund_order.use !== "free") throw new Error(`Rosa's refund rule: ${JSON.stringify(rules.refund_order)}`);
   return { rule: rules.refund_order };
@@ -1644,6 +1663,8 @@ await journey("memory", SCRIPTED, "Subagents remember and learn: Rosa keeps a cu
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   await putPhoneDown();
   if (wide) throw new Error("the subagent page scrolls sideways on a phone");
+  // Accepting a looser rule she suggested takes the password, on her page (a chat tap can't).
+  await offered.locator('input[name="password"]').fill(w.passwords.alex);
   await Promise.all([page.waitForNavigation(), offered.locator('button:has-text("Yes, change it")').click()]);
   const rule = JSON.parse(rows(`SELECT rules_json FROM subagent_tool WHERE subagent = ${mate} AND tool = 'store'`)[0]?.rules_json ?? "{}").refund_order;
   if (JSON.stringify(rule) !== suggestion.rule_json) throw new Error(`her refund rule is ${JSON.stringify(rule)}, not the suggested ${suggestion.rule_json}`);
