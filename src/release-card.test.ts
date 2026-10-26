@@ -171,6 +171,15 @@ describe("the release card", () => {
     expect(card.short).toContain("No earlier verified release is recorded.");
   });
 
+  test.each(["sandboxed", "unsandboxed"] as const)("checks %s: the card says whether later commits run outside the sandbox unseen", access => {
+    const taskId = fileGate();
+    const scope = store.getScope(taskId)!;
+    const terms = { ...scope.releaseTerms!, access, policy: { ...scope.releaseTerms!.policy, unsandboxedCarry: access !== "sandboxed" } };
+    const card = releaseCardOf(store, { ...scope, releaseTerms: terms }, "form", { profile: () => null });
+    expect(card.short.includes("will run outside the sandbox without being shown to you first")).toBe(access !== "sandboxed");
+    expect(card.full).toContain(`Carry when checks aren't sandboxed: ${access === "sandboxed" ? "no" : "yes"}`);
+  });
+
   test("a tap from a group, another chat or a forwarded card does nothing; a nightly check is never approved from chat", () => {
     const taskId = fileGate();
     const offer = decideOffer(store, { kind: "plan", taskId }, who(), NOW, "telegram", root)!;
@@ -208,7 +217,7 @@ test("a release card works only in the person's own private chat, from the bindi
 describe("the complete terms renderer (contract)", () => {
   const terms = (): ReleaseTerms => ({
     version: 1, repo, packageVersion: "9.8.7", branch: "release-x", pr: 4321, base: "main", approvedSha: "a".repeat(40), approvedTree: "b".repeat(40),
-    policy: { version: 1, rules: 1, carry: true, protectProject: false, protectedPaths: ["src/policy.ts", "docs/secret.md"], limits: { lines: 111, files: 22, churn: 333 } },
+    policy: { version: 1, rules: 1, carry: true, protectProject: false, protectedPaths: ["src/policy.ts", "docs/secret.md"], limits: { lines: 111, files: 22, churn: 333 }, unsandboxedCarry: true },
     grant: { id: 77, digest: "grant-digest-xyz" }, access: "sandboxed", expiresAt: "2026-10-28T12:00:00.000Z",
   });
 
@@ -226,7 +235,7 @@ describe("the complete terms renderer (contract)", () => {
     const scope = { ...store.getScope("full")!, releaseTerms: terms() };
     const text = approvalTermsOf(store, scope, { profile: () => "the permission words" }).map(line => `${line.label}: ${line.value}`).join("\n");
     for (const value of ["Every field", "project (", "alex", "The goal words", "The exclusion words", "src/one.ts", "c1: The statement words", "claude · sonnet", "the permission words", "Checks:", "Check access: sandboxed", "$4.50", candidate,
-      repo, "9.8.7", "release-x", "#4321", "Base: main", "a".repeat(40), "b".repeat(40), "Carry later commits: yes", "Protected: the whole project: no", "src/policy.ts, docs/secret.md", "lines: 111", "files: 22", "churn: 333", "77", "grant-digest-xyz", "Release check access: sandboxed", "2026-10-28T12:00:00.000Z"]) {
+      repo, "9.8.7", "release-x", "#4321", "Base: main", "a".repeat(40), "b".repeat(40), "Carry later commits: yes", "Protected: the whole project: no", "src/policy.ts, docs/secret.md", "lines: 111", "files: 22", "churn: 333", "Carry when checks aren't sandboxed: yes", "77", "grant-digest-xyz", "Release check access: sandboxed", "2026-10-28T12:00:00.000Z"]) {
       expect(text, value).toContain(value);
     }
   });

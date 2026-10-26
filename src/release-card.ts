@@ -54,6 +54,7 @@ export const RELEASE_TERM_LABELS: Readonly<Record<string, string>> = {
   "policy.version": "Carry policy version", "policy.rules": "Carry rules", "policy.carry": "Carry later commits",
   "policy.protectProject": "Protected: the whole project", "policy.protectedPaths": "Protected paths",
   "policy.limits.lines": "Carry limit: lines", "policy.limits.files": "Carry limit: files", "policy.limits.churn": "Carry limit: churn",
+  "policy.unsandboxedCarry": "Carry when checks aren't sandboxed",
   "grant.id": "Release check grant", "grant.digest": "Release check grant digest", access: "Release check access", expiresAt: "Expires",
 };
 
@@ -91,7 +92,9 @@ export function approvalTermsOf(store: Store, scope: Scope, words: { profile: (p
   const terms = scope.releaseTerms ?? null;
   for (const path of schemaLeaves(releaseTermsSchema)) {
     const label = RELEASE_TERM_LABELS[path] ?? path;
-    const value = terms === null ? NONE : path === "pr" ? `#${terms.pr}` : path === "policy.protectedPaths" && terms.policy.protectProject ? "the whole project" : said(valueAt(terms, path));
+    const value = terms === null ? NONE : path === "pr" ? `#${terms.pr}` : path === "policy.protectedPaths" && terms.policy.protectProject ? "the whole project"
+      // Absent (sealed before the setting existed) is off, never "none".
+      : path === "policy.unsandboxedCarry" ? said(terms.policy.unsandboxedCarry === true) : said(valueAt(terms, path));
     lines.push({ key: `release.${path}`, label, value });
   }
   return lines;
@@ -210,6 +213,8 @@ export function releaseCardOf(store: Store, scope: Scope, formDigest: string, wo
     version === null ? `Deploy gate: ${value("title")}` : `Release ${version}: ${value("title")}`,
     terms === null ? `Candidate ${said(scope.candidate).slice(0, 12)} · ${value("project")}` : `${projectName(terms.repo)} · ${terms.branch} · pull request #${terms.pr} · commit ${terms.approvedSha.slice(0, 7)}`,
     terms === null ? `Checks: ${value("checks")} · check access: ${value("checkAccess")}` : `Carry later commits: ${terms.policy.carry ? "yes" : "no"} · checks: ${value("checks")} · expires ${terms.expiresAt}`,
+    // Option A's disclosure, on the card as on the approval sheet: never approved from chat without it.
+    ...(terms !== null && terms.policy.carry && terms.access !== "sandboxed" ? ["This project's checks don't run in the sandbox: later test-only commits will run outside the sandbox without being shown to you first."] : []),
     "",
     ...changeWords(changes, terms, 5),
     "",
