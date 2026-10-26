@@ -332,7 +332,8 @@ function reserveReleaseDeploy(taskId) {
       return { id: named, own: false };
     }
     const id = randomUUID();
-    const reserved = mod.reserveRelease(store, { authority: found.authority.id, kind: "deploy", taskId, candidate, epoch: null, operationId: id, now: new Date() });
+    // This process is the operation's issuer, and its staging folder is where recovery reads the deployment's journal.
+    const reserved = mod.reserveRelease(store, { authority: found.authority.id, kind: "deploy", taskId, candidate, epoch: null, operationId: id, now: new Date(), stage: stageDir });
     requireTrue(reserved.ok, `The release can't deploy now: ${reserved.ok ? "" : reserved.why}`);
     requireTrue(mod.runReleaseOperation(store, id, reserved.operation.epoch, new Date()), "The release's deploy couldn't start: its lease moved.");
     say(`Release ${found.authority.version}: deploy operation ${id} (resume a phase with --operation ${id}).`);

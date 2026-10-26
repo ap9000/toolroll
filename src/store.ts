@@ -64,6 +64,7 @@ import { hashSecret, mintLeadToken, parseCredential, secretMatches, tokenPurpose
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
 import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
 import { dirname } from "node:path";
 import { hostname } from "node:os";
 import { ownedProcessCount, runOwnerTag } from "./exec.js";
@@ -1129,6 +1130,13 @@ CREATE TABLE IF NOT EXISTS release_operation (
   secret_hash     TEXT,
   -- 1: reserved by a person's own deploy run with no coordinator holding the release (its epoch is the one it found).
   direct          INTEGER NOT NULL DEFAULT 0,
+  -- The process that reserved, then issued, the call: its pid, its start time and when it was recorded (real time).
+  -- Recovery settles a started operation only once that process is proven gone (review round 2).
+  issuer_pid      INTEGER,
+  issuer_started  TEXT,
+  issued_at       TEXT,
+  -- A person's direct deploy: the staging folder its deployment journals in.
+  stage           TEXT,
   reserved_at     TEXT NOT NULL,
   finished_at     TEXT,
   detail          TEXT
@@ -24256,6 +24264,9 @@ export function takeReleaseLease(store: Store, id: number, owner: string, now: D
     if (authority === null) return { ok: false as const, why: `No release ${id}.` };
     const held = authority.leaseOwner !== null && authority.leaseOwner !== owner && authority.leaseExpires !== null && authority.leaseExpires > now.toISOString();
     if (held) return { ok: false as const, why: `Release ${id} is being run by ${authority.leaseOwner} until ${authority.leaseExpires}.` };
+    // A person's own deploy still at work holds the release as a lease would: nothing takes it over (review round 2).
+    const direct = outstandingReleaseOperations(store, id).find(op => op.direct && !releaseIssuerGone(op));
+    if (direct !== undefined) return { ok: false as const, why: `A deploy of this release (operation ${direct.id}, process ${direct.issuer?.pid ?? "unknown"}) is still running.` };
     const epoch = authority.leaseOwner === owner && authority.leaseExpires !== null && authority.leaseExpires > now.toISOString() ? authority.leaseEpoch : authority.leaseEpoch + 1;
     const changed = store.handle.prepare("UPDATE release_authority SET lease_owner = ?, lease_epoch = ?, lease_expires = ?, rev = rev + 1 WHERE id = ? AND rev = ?")
       .run(owner, epoch, new Date(now.getTime() + ttlMs).toISOString(), id, authority.rev);
@@ -24276,7 +24287,7 @@ export function renewReleaseLease(store: Store, id: number, owner: string, epoch
  * to `merge-reserved`. `epoch` null is a direct deploy by a person: it takes the current epoch, and only while no
  * coordinator holds a live lease. Refused while any earlier operation is unsettled.
  */
-export function reserveRelease(store: Store, input: { authority: number; kind: "deploy" | "merge"; taskId: string; candidate: string; epoch: number | null; operationId: string; now: Date; secret?: string }):
+export function reserveRelease(store: Store, input: { authority: number; kind: "deploy" | "merge"; taskId: string; candidate: string; epoch: number | null; operationId: string; now: Date; secret?: string; issuer?: ReleaseIssuer; stage?: string }):
   { ok: true; operation: ReleaseOperation } | { ok: false; why: string } {
   return store.transact(() => {
     const a = releaseAuthority(store, input.authority);
@@ -24299,16 +24310,19 @@ export function reserveRelease(store: Store, input: { authority: number; kind: "
     if (next === null) return { ok: false as const, why: `The release is ${a.state}, so it can't ${input.kind}.` };
     const changed = store.handle.prepare("UPDATE release_authority SET state = ?, rev = rev + 1 WHERE id = ? AND rev = ?").run(next, a.id, a.rev);
     if (Number(changed.changes) !== 1) return { ok: false as const, why: "The release changed while reserving; try again." };
-    store.handle.prepare("INSERT INTO release_operation (id, authority, kind, task_id, candidate, epoch, state, secret_hash, direct, reserved_at) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?)")
-      .run(input.operationId, a.id, input.kind, input.taskId, input.candidate, a.leaseEpoch, input.secret === undefined ? null : createHash("sha256").update(input.secret).digest("hex"), input.epoch === null ? 1 : 0, at);
+    const issuer = input.issuer ?? currentReleaseIssuer();
+    store.handle.prepare("INSERT INTO release_operation (id, authority, kind, task_id, candidate, epoch, state, secret_hash, direct, issuer_pid, issuer_started, issued_at, stage, reserved_at) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?, ?, ?)")
+      .run(input.operationId, a.id, input.kind, input.taskId, input.candidate, a.leaseEpoch, input.secret === undefined ? null : createHash("sha256").update(input.secret).digest("hex"), input.epoch === null ? 1 : 0,
+        issuer.pid, issuer.started, issuer.at, input.stage ?? null, at);
     store.recordAction({ at, actor: "toolroll", repo: a.repo, taskId: input.taskId, runId: null, action: `release ${input.kind} reserved`, outcome: next, source: "work", detail: `release ${a.id} · operation ${input.operationId} · epoch ${a.leaseEpoch}` });
     return { ok: true as const, operation: releaseOperation(store, input.operationId)! };
   });
 }
 
-/** The external call's own fence: `reserved` → `running` only at the epoch that reserved it, while that epoch still
- * holds the lease (a direct deploy's epoch is checked as reserved). False: the call must not start. */
-export function runReleaseOperation(store: Store, id: string, epoch: number, now: Date): boolean {
+/** The external call's own fence, taken immediately before the call is spawned: `reserved` → `running` (issuing) only
+ * at the epoch that reserved it, while that epoch still holds the lease (a direct deploy's epoch is checked as
+ * reserved) and the release stands, recording the process that issues it. False: the call must not start. */
+export function runReleaseOperation(store: Store, id: string, epoch: number, now: Date, issuer: ReleaseIssuer = currentReleaseIssuer()): boolean {
   return store.transact(() => {
     const op = releaseOperation(store, id);
     const a = op === null ? null : releaseAuthority(store, op.authority);
@@ -24323,7 +24337,8 @@ export function runReleaseOperation(store: Store, id: string, epoch: number, now
     if (direct ? leased : !leased) return false;
     const live = liveReleaseOf(store, op.taskId, op.kind, now);
     if (!live.applies || !live.ok) return false;
-    const changed = store.handle.prepare("UPDATE release_operation SET state = 'running' WHERE id = ? AND state = 'reserved' AND epoch = ?").run(id, epoch);
+    const changed = store.handle.prepare("UPDATE release_operation SET state = 'running', issuer_pid = ?, issuer_started = ?, issued_at = ? WHERE id = ? AND state = 'reserved' AND epoch = ?")
+      .run(issuer.pid, issuer.started, issuer.at, id, epoch);
     if (Number(changed.changes) === 1) store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: op.taskId, runId: null, action: `release ${op.kind} started`, outcome: "running", source: "work", detail: `operation ${id}` });
     return Number(changed.changes) === 1;
   });
@@ -24473,9 +24488,25 @@ export function releasePublication(store: Store, publication: number): boolean {
 
 /** The ledger act that records a trusted read of a project's recorded remote main (remote-main.ts). */
 export const TRUSTED_MAIN_ACTION = "remote main read";
-/** Record the commit the project's recorded remote main was at, as Toolroll's own process fetched it just now. */
-export function recordTrustedMain(store: Store, repo: string, sha: string, url: string, now: Date): void {
-  store.recordAction({ at: now.toISOString(), actor: "toolroll", repo, taskId: null, runId: null, action: TRUSTED_MAIN_ACTION, outcome: sha, source: "work", detail: JSON.stringify({ v: 1, sha, url }) });
+/** The identity of a project's recorded remote: its URL and the ledger record that last set it (0: set on admission
+ * with no record). A read of main stands only for the remote identity it was read from (review round 2). */
+export function trustedRemoteIdentity(store: Store, repo: string): { url: string; record: number } | null {
+  const url = store.projectRemote(repo);
+  if (url === null) return null;
+  const row = store.handle.prepare("SELECT id FROM action_ledger WHERE repo = ? AND action = 'project remote recorded' ORDER BY id DESC LIMIT 1").get(repo);
+  return { url, record: row === undefined ? 0 : Number(row["id"]) };
+}
+/** Record the commit the project's recorded remote main was at, as Toolroll's own process fetched it just now from
+ * `url`, bound to the remote's identity at this moment. Refused (nothing recorded) when `url` isn't the recorded one. */
+export function recordTrustedMain(store: Store, repo: string, sha: string, url: string, now: Date): boolean {
+  const identity = trustedRemoteIdentity(store, repo);
+  if (identity === null || identity.url !== url || !/^[0-9a-f]{40}$/.test(sha)) return false;
+  store.recordAction({ at: now.toISOString(), actor: "toolroll", repo, taskId: null, runId: null, action: TRUSTED_MAIN_ACTION, outcome: sha, source: "work", detail: JSON.stringify({ v: 2, sha, url, record: identity.record }) });
+  return true;
+}
+/** A failed read of the recorded remote: the last read no longer stands. */
+export function forgetTrustedMain(store: Store, repo: string, why: string, now: Date): void {
+  store.recordAction({ at: now.toISOString(), actor: "toolroll", repo, taskId: null, runId: null, action: TRUSTED_MAIN_ACTION, outcome: "unread", source: "work", detail: JSON.stringify({ v: 2, why: why.slice(0, 300) }) });
 }
 
 /**
@@ -24494,4 +24525,43 @@ export function requireFreshReleaseApproval(store: Store, id: number, reason: st
     store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: a.tipTask, runId: null, action: "release revoked", outcome: "needs-approval", source: "work", detail: `release ${id}: ${reason}` });
     return true;
   });
+}
+
+/** The process that reserves or issues a release operation: its pid, its start time, and when it was recorded. */
+export type ReleaseIssuer = { pid: number; started: string; at: string };
+/** This process, as a release operation's issuer. Real time, whatever clock a caller passes for the rest. */
+export function currentReleaseIssuer(): ReleaseIssuer {
+  const now = Date.now();
+  return { pid: process.pid, started: new Date(now - Math.round(process.uptime() * 1000)).toISOString(), at: new Date(now).toISOString() };
+}
+/**
+ * Whether an operation's issuer is proven gone (review round 2): no process has its pid, or the process that has it
+ * started after the issuer was recorded (so it is another one). Anything unknown — no issuer recorded, a start time
+ * that can't be read — is not proof, and the operation stays for a person.
+ */
+export function releaseIssuerGone(op: ReleaseOperation): boolean {
+  const issuer = op.issuer;
+  if (issuer === null || !Number.isSafeInteger(issuer.pid) || issuer.pid <= 0) return false;
+  try { process.kill(issuer.pid, 0); }
+  catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ESRCH") return true;
+    if (code !== "EPERM") return false;
+  }
+  const started = processStartedAt(issuer.pid);
+  const recorded = Date.parse(issuer.at);
+  // ps shows whole seconds (a lower bound): a start a full second after the issuer was recorded is another process.
+  return started !== null && Number.isFinite(recorded) && started > recorded + 1000;
+}
+/** A live process's start time from ps (whole seconds, UTC), or null when it can't be read. */
+function processStartedAt(pid: number): number | null {
+  if (process.platform === "win32") return null;
+  try {
+    const raw = execFileSync("ps", ["-p", String(pid), "-o", "lstart="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" }, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 1024, timeout: 1_000, killSignal: "SIGKILL" })
+      .trim().replace(/ +/g, " ");
+    const match = /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{1,2}) (\d{2}:\d{2}:\d{2}) (\d{4})$/.exec(raw);
+    if (match === null) return null;
+    const at = Date.parse(`${match[2]!.padStart(2, "0")} ${match[1]} ${match[4]} ${match[3]} GMT`);
+    return Number.isFinite(at) ? at : null;
+  } catch { return null; }
 }

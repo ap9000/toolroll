@@ -407,6 +407,8 @@ export function settleCoverage(store: Store, root: string, input: { runId: numbe
       // Owed whatever made the last full check ineligible as a base: a failed typecheck never wipes them.
       const watch = owedIdentities(store, root, b.attempt.authority, input.runId);
       if (fullRunRemovedIdentity(b.report, watch, [])) return removed();
+      // Every identity that ever failed in this generation stays protected, passed since or not (review round 2).
+      if (removedProtected(b.report, b.inventory, protectedIdentities(store, root, b.attempt.authority, input.runId))) return removed();
     }
     return { coverage: "full", composed: null };
   }
@@ -415,6 +417,7 @@ export function settleCoverage(store: Store, root: string, input: { runId: numbe
   if (a === null || a.report === null || a.inventory === null) return { coverage: "partial", composed: null };
   const coverage = coverageOf({ a: { report: a.report, inventory: a.inventory }, b: { report: b.report, inventory: b.inventory, exitCode: input.exitCode }, plan: b.plan, snapshot: b.snapshot });
   if (coverage === "identity-removed") return removed();
+  if (removedProtected(b.report, b.inventory, protectedIdentities(store, root, b.attempt.authority, input.runId))) return removed();
   if (coverage !== "composed") return { coverage, composed: null };
   const authority = releaseAuthority(store, b.attempt.authority);
   const baseReceipt = gateOf(a.run);
@@ -444,6 +447,7 @@ export function provedComposition(store: Store, root: string, runId: number, lin
   if (grantOf(links.base) === null || grantOf(links.base) !== grantOf(runId)) return "The release check command differs from the full check's.";
   const coverage = coverageOf({ a: { report: a.report, inventory: a.inventory }, b: { report: b.report, inventory: b.inventory, exitCode: b.report?.exitCode ?? null }, plan: b.plan, snapshot: b.snapshot });
   if (coverage !== "composed") return "The composed check no longer covers what the full check owed.";
+  if (removedProtected(b.report, b.inventory, protectedIdentities(store, root, links.authority, runId))) return "The composed check removed a test that failed earlier in this release.";
   return null;
 }
 
@@ -472,6 +476,61 @@ export function owedIdentities(store: Store, root: string, authority: number, be
     for (const identity of failedIdentities(report)) owed.add(identity);
   }
   return [...owed].sort();
+}
+
+/**
+ * The generation's protected identities (review round 2): every identity that failed in any of its checks before
+ * `before`. Never shrinks — a later pass doesn't forgive a later removal: removing, renaming or newly skipping any of
+ * them, in any later run of the generation, asks a person again. Separate from what is still owed (owedIdentities).
+ */
+export function protectedIdentities(store: Store, root: string, authority: number, before: number): string[] {
+  const kept = new Set<string>();
+  for (const row of store.handle.prepare("SELECT run FROM release_check_attempt WHERE authority = ? AND run < ? ORDER BY run").all(authority, before)) {
+    const report = sealedRun(store, root, Number(row["run"]))?.report ?? null;
+    if (report !== null) for (const identity of failedIdentities(report)) kept.add(identity);
+  }
+  return [...kept].sort();
+}
+
+/**
+ * Whether a run's report removed one of the protected identities: a unit test or journey gone or newly skipped from a
+ * file or group the run did report, a unit file gone from its inventory, a group or upgrade version missing from a lane
+ * that finished. A lane that didn't run or finish is no pass, so it is judged by the next run that does.
+ */
+export function removedProtected(report: CheckReport | null, inventory: SealedInventory | null, kept: readonly string[]): boolean {
+  if (report === null || kept.length === 0) return false;
+  const states = new Map<string, string>();
+  for (const one of report.units?.identities ?? []) states.set(unitIdentity(one.file, one.name), one.state);
+  const ranFiles = new Set((report.units?.files ?? []).map(one => one.file));
+  const units = new Set(inventory?.sealed.units ?? []);
+  return kept.some(identity => {
+    const unit = /^unit:(.+?)::/.exec(identity);
+    if (unit !== null) {
+      const file = unit[1]!;
+      if (inventory !== null && !units.has(file)) return true;
+      if (!ranFiles.has(file)) return false;
+      const state = states.get(identity);
+      return state === undefined || state === "skipped";
+    }
+    const file = /^file:(.+)$/.exec(identity)?.[1];
+    if (file !== undefined) return inventory !== null && !units.has(file);
+    const journey = /^(group|journey):(app|flows):(scripted|real):(.+)$/.exec(identity);
+    if (journey !== null) {
+      const script = journey[2]!, kind = journey[3]!;
+      const run = report.journeys.find(one => one.script === script && one.kind === kind);
+      if (run === undefined || !run.finished) return false;
+      // A group that ran reports every journey in it; a group missing counts only from a full run (a targeted one
+      // runs the groups it owes).
+      const group = run.groups.find(one => journey[1] === "group" ? groupIdentity(run.script, run.kind, one.group) === identity : identity.startsWith(`${groupIdentity(run.script, run.kind, one.group)}::`));
+      if (group === undefined) return report.mode === "full";
+      if (journey[1] === "group") return false;
+      const one = group.journeys.find(j => journeyIdentity(run.script, run.kind, group.group, j.name) === identity);
+      return one === undefined || one.state === "skipped";
+    }
+    const version = /^upgrade:(.+)$/.exec(identity)?.[1];
+    if (version !== undefined) return report.mode === "full" && report.upgrades !== null && report.upgrades.finished && !report.upgrades.versions.some(one => one.version === version);
+    return false;
+  });
 }
 
 /** The identities a report shows passed by name. */

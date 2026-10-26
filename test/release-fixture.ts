@@ -36,6 +36,9 @@ export type ReleaseFixture = {
   close(): void;
 };
 
+/** The recorded remote every release fixture's project has (never fetched unless a test maps it). */
+export const FIXTURE_REMOTE = "https://example.invalid/r.git";
+
 /** A repository with an approved release of its head. `files` adds to the base tree. */
 export function releaseFixture(options: { files?: Record<string, string>; protectedPaths?: string[]; build?: string } = {}): ReleaseFixture {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-release-once-")));
@@ -73,6 +76,8 @@ export function releaseFixture(options: { files?: Record<string, string>; protec
   const databaseFile = join(dir, "state", "orders.db");
   mkdirSync(join(dir, "state"), { recursive: true });
   const store = openStore(databaseFile);
+  // The project's recorded remote: the trusted reads of main (nightly-check.ts) are bound to it.
+  store.upsertProject(repo, "project", RELEASE_NOW, { remoteUrl: FIXTURE_REMOTE });
   const added = addApprover(store, "alex", RELEASE_NOW);
   if (!added.ok) throw new Error("approver");
   for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", RELEASE_NOW);

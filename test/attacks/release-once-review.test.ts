@@ -2,19 +2,22 @@
  * Codex implementation review, round 1 (docs/plans/release-once.md): each finding replayed against the real guard.
  * Every test here failed before its fix.
  */
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { releaseAdapters } from "../../src/release-adapters.js";
+import { run, type RunOptions } from "../../src/exec.js";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
-import { releaseFixture, sealedCheck, reportOf, builtRun, RELEASE_NOW, EVIDENCE, type ReleaseFixture } from "../release-fixture.js";
+import { releaseFixture, sealedCheck, reportOf, builtRun, RELEASE_NOW, EVIDENCE, FIXTURE_REMOTE, type ReleaseFixture } from "../release-fixture.js";
 import { proveCarry } from "../../src/release-carry.js";
 import { coverageOf, requiredSet, owedIdentities } from "../../src/release-recheck.js";
 import {
-  finishReleaseOperation, releaseOperations, reserveRelease, revokeRelease, runReleaseOperation, takeReleaseLease, recordTrustedMain, requireFreshReleaseApproval,
+  finishReleaseOperation, releaseOperations, reserveRelease, revokeRelease, runReleaseOperation, takeReleaseLease, recordTrustedMain, requireFreshReleaseApproval, releaseIssuerGone,
 } from "../../src/store.js";
 import { mergePullRequest } from "../../src/pull-request-flow.js";
 import { fullCheckGate } from "../../src/result-follow-ups.js";
 import { recordRunCheckLevel } from "../../src/check-levels.js";
-import { createNightlyCheckFlow, fileNightlyCheck, settleReleaseChecks } from "../../src/nightly-check.js";
+import { createNightlyCheckFlow, fileNightlyCheck, refreshTrustedMains, settleReleaseChecks } from "../../src/nightly-check.js";
 import { triggerConfigOf } from "../../src/flow-triggers.js";
 import { approve, propose } from "../../src/scope.js";
 import type { CheckReport } from "../../src/contracts/release-check.js";
@@ -295,5 +298,172 @@ describe("security review of b788181a: one release publication can't stop the me
     expect(report.merged).toBe(1);
     expect(report.problems.some(one => one.startsWith("publication "))).toBe(true);
     expect(f.store.handle.prepare("SELECT COUNT(*) AS n FROM merge_intent m JOIN publication p ON p.id = m.publication WHERE p.pr_number = 1").get()?.["n"]).toBe(0);
+  });
+});
+
+// ---- Codex confirmation round (c143cdba): each probe, replayed ----------------------------------------------------
+
+describe("round 2, finding 7: a later pass never forgives a later removal", () => {
+  test("A fails X, a targeted B passes X, a full C that drops X asks again", async () => {
+    const f = (fixture = releaseFixture());
+    sealedCheck(f, f.taskId, f.approved, () => reportOf(UNITS.map(file => file === "src/index.test.ts" ? { file, failed: ["answer"] } : { file })));
+    const one = f.commit({ "docs/guide.md": "# Guide\none\n" });
+    const first = await proveCarry(f.store, { authority: f.authority().id, to: one, now: LATER });
+    if (!first.ok) throw new Error(first.message);
+    const b = sealedCheck(f, first.taskId, one, plan => reportOf((plan?.units ?? UNITS).map(file => ({ file, passed: (plan?.required ?? []).filter(id => id.startsWith(`unit:${file}::`)).map(id => id.slice(`unit:${file}::`.length)) }))));
+    expect(b.coverage).toBe("composed");
+    expect(owedIdentities(f.store, EVIDENCE(f), f.authority().id, Number.MAX_SAFE_INTEGER)).toEqual([]);
+    const two = f.commit({ "docs/guide.md": "# Guide\ntwo\n" });
+    const second = await proveCarry(f.store, { authority: f.authority().id, to: two, now: LATER });
+    if (!second.ok) throw new Error(second.message);
+    const c = sealedCheck(f, second.taskId, two, () => reportOf(UNITS.map(file => ({ file }))), { forceFull: true });
+    expect(c.coverage).toBe("identity-removed");
+  }, 180_000);
+});
+
+describe("round 2, new 3: a read of main stands only for the remote it was read from", () => {
+  const nightly = () => {
+    const f = (fixture = releaseFixture());
+    const made = createNightlyCheckFlow(f.store, { repo: f.repo, schedule: "daily:03:00@UTC", as: "alex", token: f.password, start: true }, RELEASE_NOW);
+    if (!made.ok) throw new Error(made.message);
+    const order = (triggerConfigOf(f.store.flowTriggers(made.flow)[0]!) as { order: StandingOrder }).order;
+    return { f, fire: () => fileNightlyCheck(f.store, { flowId: made.flow, repo: f.repo, trigger: made.trigger, schedule: "daily:03:00@UTC", order, title: "x", slot: "s" }, LATER) };
+  };
+  test("after the recorded remote changes, the old remote's main fires nothing and clears nothing", () => {
+    const { f, fire } = nightly();
+    expect(recordTrustedMain(f.store, f.repo, f.approved, FIXTURE_REMOTE, RELEASE_NOW)).toBe(true);
+    f.store.upsertProject(f.repo, "project", RELEASE_NOW, { remoteUrl: "https://example.invalid/other.git" });
+    f.store.recordProjectRemote("alex", f.repo, FIXTURE_REMOTE, "https://example.invalid/other.git", RELEASE_NOW);
+    expect(fire()).toMatchObject({ made: "skipped" });
+    f.store.handle.prepare("INSERT INTO main_check_failure (repo, sha, run, item, opened_at) VALUES (?, ?, 1, 'unit:src/index.test.ts::answer', ?)").run(f.repo, f.approved, RELEASE_NOW.toISOString());
+    // A full pass of main's commit on a task of its own (no release): only "on main" could clear it.
+    const id = "on-main";
+    f.store.createTask({ id, title: id }, LATER);
+    f.store.placeTask(f.store.refFor("built-in", id).id, f.repo, {}, LATER);
+    const scope = propose(f.store, { taskId: id, goal: id, candidate: f.approved, acceptance: [{ id: "c1", statement: "s", how: null, evidence: ["check"] }], now: LATER });
+    if (!approve(f.store, id, "alex", LATER, scope.digest, f.password).ok) throw new Error("approve");
+    sealedCheck(f, id, f.approved, () => reportOf(UNITS.map(file => ({ file, ...(file === "src/index.test.ts" ? { passed: ["answer"] } : {}) }))));
+    settleReleaseChecks(f.store, EVIDENCE(f), LATER);
+    expect(f.store.handle.prepare("SELECT cleared_at FROM main_check_failure").get()?.["cleared_at"]).toBeNull();
+  });
+
+  test("a failed refresh forgets the last read", async () => {
+    const { f, fire } = nightly();
+    recordTrustedMain(f.store, f.repo, f.approved, FIXTURE_REMOTE, new Date(RELEASE_NOW.getTime() - 31 * 60_000));
+    const failing = async () => ({ code: 1, stdout: "", stderr: "unreachable", timedOut: false, notFound: false });
+    await refreshTrustedMains(f.store, join(f.dir, "evidence"), RELEASE_NOW, failing);
+    expect(fire()).toMatchObject({ made: "skipped" });
+  });
+});
+
+describe("round 2, new 4: the nightly checks a remote merge the checkout never pulled", () => {
+  test("the trusted read hands its verified objects to the project's Git store", async () => {
+    const { f, fire } = (() => {
+      const f = (fixture = releaseFixture());
+      const made = createNightlyCheckFlow(f.store, { repo: f.repo, schedule: "daily:03:00@UTC", as: "alex", token: f.password, start: true }, RELEASE_NOW);
+      if (!made.ok) throw new Error(made.message);
+      const order = (triggerConfigOf(f.store.flowTriggers(made.flow)[0]!) as { order: StandingOrder }).order;
+      return { f, fire: () => fileNightlyCheck(f.store, { flowId: made.flow, repo: f.repo, trigger: made.trigger, schedule: "daily:03:00@UTC", order, title: "x", slot: "s" }, LATER) };
+    })();
+    const sh = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "user.name=T", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { cwd, encoding: "utf8" }).trim();
+    const origin = join(f.dir, "origin.git"), work = join(f.dir, "work");
+    sh(f.dir, "clone", "-q", "--bare", f.repo, origin);
+    sh(f.dir, "clone", "-q", origin, work);
+    writeFileSync(join(work, "docs", "merged.md"), "# merged remotely\n");
+    sh(work, "add", "-A"); sh(work, "commit", "-q", "-m", "remote merge"); sh(work, "push", "-q", "origin", "HEAD:main");
+    const merged = sh(work, "rev-parse", "HEAD");
+    expect(() => sh(f.repo, "cat-file", "-e", `${merged}^{commit}`)).toThrow();
+    // The recorded URL maps to the local fixture for this one fetch.
+    const runner = (file: string, args: readonly string[], options: RunOptions) =>
+      run(file, args.includes(FIXTURE_REMOTE) ? args.map(arg => arg === FIXTURE_REMOTE ? origin : arg === "protocol.file.allow=never" ? "protocol.file.allow=always" : arg) : args, options);
+    expect(await refreshTrustedMains(f.store, join(f.dir, "evidence"), RELEASE_NOW, runner)).toBe(1);
+    const fired = fire();
+    expect(fired).toMatchObject({ made: "filed" });
+    if (fired.made === "filed") expect(f.store.getScope(fired.taskId)?.candidate).toBe(merged);
+  }, 60_000);
+});
+
+describe("round 2, new 5: an ordinary task's passing Full follow-up clears its merge gate", () => {
+  /** A Full build whose own check failed, then a Full check run again on the same commit that passed. */
+  const followedUp = (f: ReleaseFixture, taskId: string) => {
+    const run = builtRun(f.store, taskId, f.approved);
+    recordRunCheckLevel(f.store, { id: run, taskId, repo: f.repo }, "full", "project", RELEASE_NOW);
+    f.store.recordRunCheck(run, { status: "failed", exitCode: 1, suites: [] }, RELEASE_NOW);
+    f.store.recordAction({ at: RELEASE_NOW.toISOString(), actor: "alex", repo: f.repo, taskId, runId: run, action: "checks requested", outcome: "full", source: "request", detail: `${f.approved} · person` });
+    const request = Number(f.store.handle.prepare("SELECT id FROM action_ledger WHERE run_id = ? AND action = 'checks requested'").get(run)!["id"]);
+    f.store.recordAction({ at: RELEASE_NOW.toISOString(), actor: "toolroll", repo: f.repo, taskId, runId: run, action: "checks started", outcome: String(request), source: "work", detail: null });
+    f.store.recordAction({ at: LATER.toISOString(), actor: "toolroll", repo: f.repo, taskId, runId: run, action: "checks finished", outcome: `${request}:passed`, source: "work", detail: "exit 0" });
+    return run;
+  };
+  test("follow-up passed: the ordinary gate is clear; a release task's isn't", () => {
+    const f = (fixture = releaseFixture());
+    const id = "ordinary";
+    f.store.createTask({ id, title: id }, LATER);
+    f.store.placeTask(f.store.refFor("built-in", id).id, f.repo, {}, LATER);
+    const scope = propose(f.store, { taskId: id, goal: id, candidate: f.approved, acceptance: [{ id: "c1", statement: "s", how: null, evidence: ["check"] }], now: LATER });
+    if (!approve(f.store, id, "alex", LATER, scope.digest, f.password).ok) throw new Error("approve");
+    expect(fullCheckGate(f.store, followedUp(f, id), LATER)).toEqual({ state: "clear" });
+    expect(fullCheckGate(f.store, followedUp(f, f.taskId), LATER).state).not.toBe("clear");
+  });
+});
+
+describe("round 2, finding 3: an operation is settled only when its issuer is proven gone", () => {
+  /** The pid of a process that has exited. */
+  const deadPid = () => spawnSync(process.execPath, ["-e", ""]).pid!;
+
+  test("probe: invocation A, paused before its issuing fence, can't issue after B took the release over", () => {
+    const f = (fixture = releaseFixture());
+    const id = f.authority().id;
+    const a = takeReleaseLease(f.store, id, "a", RELEASE_NOW, 60_000);
+    if (!a.ok) throw new Error(a.why);
+    reserveRelease(f.store, { authority: id, kind: "deploy", taskId: f.taskId, candidate: f.approved, epoch: a.epoch, operationId: "d1", now: RELEASE_NOW });
+    const at = new Date(RELEASE_NOW.getTime() + 11 * 60_000);
+    const b = takeReleaseLease(f.store, id, "b", at, 60_000);
+    if (!b.ok) throw new Error(b.why);
+    expect(finishReleaseOperation(f.store, "d1", "failed", { detail: "never started" }, at, b.epoch)).toBe(true);
+    expect(runReleaseOperation(f.store, "d1", a.epoch, at)).toBe(false);
+  });
+
+  test("the issuing fence records the issuing process; it is alive until proven gone (pid absent or a newer process)", () => {
+    const f = (fixture = releaseFixture());
+    const id = f.authority().id;
+    const lease = takeReleaseLease(f.store, id, "c", RELEASE_NOW, 60_000);
+    if (!lease.ok) throw new Error(lease.why);
+    reserveRelease(f.store, { authority: id, kind: "deploy", taskId: f.taskId, candidate: f.approved, epoch: lease.epoch, operationId: "d1", now: RELEASE_NOW });
+    expect(runReleaseOperation(f.store, "d1", lease.epoch, RELEASE_NOW)).toBe(true);
+    const op = releaseOperations(f.store, id)[0]!;
+    expect(op.issuer?.pid).toBe(process.pid);
+    expect(releaseIssuerGone(op)).toBe(false);
+    expect(releaseIssuerGone({ ...op, issuer: { pid: deadPid(), started: null, at: new Date().toISOString() } })).toBe(true);
+    // The same pid, recorded an hour before this process started: another process has it now.
+    expect(releaseIssuerGone({ ...op, issuer: { pid: process.pid, started: null, at: new Date(Date.now() - 3_600_000 - process.uptime() * 1000).toISOString() } })).toBe(process.platform !== "win32");
+    expect(releaseIssuerGone({ ...op, issuer: null })).toBe(false);
+  });
+
+  test("no coordinator takes the lease while a person's direct deploy is still running", () => {
+    const f = (fixture = releaseFixture());
+    const id = f.authority().id;
+    const reserved = reserveRelease(f.store, { authority: id, kind: "deploy", taskId: f.taskId, candidate: f.approved, epoch: null, operationId: "direct", now: RELEASE_NOW });
+    if (!reserved.ok) throw new Error(reserved.why);
+    expect(runReleaseOperation(f.store, "direct", reserved.operation.epoch, RELEASE_NOW)).toBe(true);
+    expect(takeReleaseLease(f.store, id, "coordinator", LATER, 60_000)).toMatchObject({ ok: false, why: expect.stringContaining("still running") });
+    f.store.handle.prepare("UPDATE release_operation SET issuer_pid = ? WHERE id = 'direct'").run(deadPid());
+    expect(takeReleaseLease(f.store, id, "coordinator", LATER, 60_000)).toMatchObject({ ok: true });
+  });
+
+  test("a direct deploy's recovery reads its process, its update pause and its journal", async () => {
+    const f = (fixture = releaseFixture());
+    const stage = join(f.dir, "stage");
+    mkdirSync(stage);
+    let running: { pid: number; command: string }[] = [];
+    const adapter = releaseAdapters({ checkout: f.repo, database: f.databaseFile, processes: () => running }).toolroll;
+    expect(await adapter.deploymentIdle(null)).toBe(false);
+    expect(await adapter.deploymentIdle(stage)).toBe(true);
+    writeFileSync(join(stage, "deployment.json"), JSON.stringify({ id: "x", phase: "frozen" }));
+    expect(await adapter.deploymentIdle(stage)).toBe(false);
+    writeFileSync(join(stage, "deployment.json"), JSON.stringify({ id: "x", phase: "deployed" }));
+    expect(await adapter.deploymentIdle(stage)).toBe(true);
+    running = [{ pid: 4242, command: `node scripts/deploy-browser.mjs --stage ${stage}` }];
+    expect(await adapter.deploymentIdle(stage)).toBe(false);
   });
 });

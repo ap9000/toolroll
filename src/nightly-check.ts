@@ -22,7 +22,11 @@ import type { StandingOrder } from "./contracts/flow.js";
 import { propose, authenticateApprover, liveReleaseOf, personProof } from "./scope.js";
 import { failedIdentities, sealedRun } from "./release-recheck.js";
 import { verificationEvidence } from "./verification-evidence.js";
-import { BUILT_IN, TRUSTED_MAIN_ACTION, recordTrustedMain, type Store } from "./store.js";
+import { BUILT_IN, TRUSTED_MAIN_ACTION, forgetTrustedMain, recordTrustedMain, trustedRemoteIdentity, type Store } from "./store.js";
+import { teardownGit } from "./teardown-git.js";
+
+/** Where the project's Git store keeps the objects of the remote main the plane read (they matter, the ref doesn't). */
+const NIGHTLY_MAIN_REF = "refs/toolroll/remote-main";
 import { RemoteMains } from "./remote-main.js";
 import { run } from "./exec.js";
 import type { Runner } from "./worktree.js";
@@ -63,26 +67,35 @@ export function nightlyApprovalOf(store: Store, trigger: number): { digest: stri
   return null;
 }
 
-/** How old a trusted read of main may be when a nightly fires, and how often the watch loop reads it again. */
-export const TRUSTED_MAIN_FIRE_MS = 2 * 60 * 60_000;
+/** How often the watch loop reads each recorded remote's main again, and how old a read may be when a nightly fires
+ * or debt is cleared against it (review round 2: one window, two refreshes wide, for both decisions). */
 export const TRUSTED_MAIN_REFRESH_MS = 30 * 60_000;
-/** How old a trusted read may be when debt is cleared against it. */
-export const TRUSTED_MAIN_CLEAR_MS = 26 * 60 * 60_000;
+export const TRUSTED_MAIN_FIRE_MS = 60 * 60_000;
+export const TRUSTED_MAIN_CLEAR_MS = TRUSTED_MAIN_FIRE_MS;
 
 /**
  * Main's head as Toolroll's own process last read it from the project's RECORDED remote (remote-main.ts: the recorded
  * URL, a private plane-owned Git directory, objects that arrive only by fetch) — never a ref in the project's Git
- * directory, which a build shares and can move (review round 1). Null when there is no read young enough.
+ * directory, which a build shares and can move (review round 1). Null when there is no read young enough, when the
+ * last read failed, or when the read was of another remote than the one recorded now (review round 2).
  */
 export function trustedMainOf(store: Store, repo: string, now: Date, maxAgeMs: number): string | null {
-  const row = store.handle.prepare("SELECT outcome, at FROM action_ledger WHERE repo = ? AND action = ? ORDER BY id DESC LIMIT 1").get(repo, TRUSTED_MAIN_ACTION);
+  const row = store.handle.prepare("SELECT outcome, at, detail FROM action_ledger WHERE repo = ? AND action = ? ORDER BY id DESC LIMIT 1").get(repo, TRUSTED_MAIN_ACTION);
   if (row === undefined || now.getTime() - Date.parse(String(row["at"])) > maxAgeMs) return null;
   const sha = String(row["outcome"]);
-  return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+  if (!/^[0-9a-f]{40}$/.test(sha)) return null;
+  const identity = trustedRemoteIdentity(store, repo);
+  try {
+    const read = JSON.parse(String(row["detail"])) as { v?: unknown; sha?: unknown; url?: unknown; record?: unknown };
+    if (read.v !== 2 || read.sha !== sha || identity === null || read.url !== identity.url || read.record !== identity.record) return null;
+  } catch { return null; }
+  return sha;
 }
 
 /** The watch loop's read of each project's recorded remote main that the nightly check or main's debt needs, at most
- * every 30 minutes. Each read is a fresh fetch into a private directory; failures record nothing. */
+ * every 30 minutes. Each read is a fresh fetch into a private directory. A failed read forgets the last one. A good
+ * one hands its verified objects to the project's Git store (hardened git, content-addressed: git checks every object
+ * against its hash, and filing verifies the commit again), so the nightly can check a merge the checkout never pulled. */
 export async function refreshTrustedMains(store: Store, root: string, now: Date, runner: Runner = run): Promise<number> {
   const repos = new Set<string>([
     ...store.handle.prepare("SELECT DISTINCT repo FROM main_check_failure WHERE cleared_at IS NULL").all().map(row => String(row["repo"])),
@@ -94,9 +107,9 @@ export async function refreshTrustedMains(store: Store, root: string, now: Date,
     for (const repo of repos) {
       if (trustedMainOf(store, repo, now, TRUSTED_MAIN_REFRESH_MS) !== null) continue;
       const got = await remotes.read(repo);
-      if (!got.ok) continue;
-      recordTrustedMain(store, repo, got.remote.main, got.remote.url, now);
-      read++;
+      if (!got.ok) { forgetTrustedMain(store, repo, got.why, now); continue; }
+      await teardownGit(runner)(repo, ["-c", "protocol.file.allow=always", "fetch", "--quiet", "--no-tags", "--no-write-fetch-head", "--", got.remote.gitDir, `+refs/toolroll/remote-main:${NIGHTLY_MAIN_REF}`]);
+      if (recordTrustedMain(store, repo, got.remote.main, got.remote.url, now)) read++;
     }
   } finally { remotes.close(); }
   return read;

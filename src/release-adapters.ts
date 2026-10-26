@@ -21,8 +21,9 @@ import { BEFORE_SWAP, gateOwner } from "./release-gate.js";
 import { findCliLinks, switchCliLinks } from "./release-links.js";
 import {
   databasePath, finishReleaseOperation, requireFreshReleaseApproval, openStore, releaseAuthorityOfTask, releaseCarries, releaseOperations, renewReleaseLease, reserveRelease, runReleaseOperation,
-  Store, takeReleaseLease, type Database,
+  Store, releaseIssuerGone, takeReleaseLease, type Database,
 } from "./store.js";
+import { acquireDeploymentLock } from "./deploy-lock.js";
 import { liveReleaseOf } from "./scope.js";
 import { proveCarry, type BuildRunner } from "./release-carry.js";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -388,6 +389,20 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         if (journal["phase"] === "preparing" && liveOwner() !== journal["id"]) return { ok: true };
         return stopped(stage, `${tail(result)} (the deployment journal is at ${String(journal["phase"] ?? "an unreadable phase")}; ${join(stage, "deployment.json")})`);
       },
+      async deploymentIdle(stage) {
+        // Whatever the stage: no deployment is running, and no update pause is held.
+        if ((options.processes ?? processes)().some(one => one.command.includes("deploy-browser.mjs"))) return false;
+        if (liveOwner() !== null) return false;
+        if (stage === null) return false;
+        const journalFile = join(stage, "deployment.json");
+        // Never prepared: staging touched neither the service nor the update pause.
+        if (!existsSync(journalFile)) return true;
+        // Its journal lock is free (nothing holds the journal), and it stopped where nothing changed, or finished.
+        try { acquireDeploymentLock(journalFile, 0).release(); } catch { return false; }
+        let phase: unknown;
+        try { phase = object(JSON.parse(readFileSync(journalFile, "utf8")))["phase"]; } catch { return false; }
+        return phase === "preparing" || phase === "released" || phase === "deployed";
+      },
       async cliLinks() { return findCliLinks(); },
       async switchLinks(links, bin, version) {
         const answers = (path: string) => spawnSync(path, ["--version"], { encoding: "utf8", env: cleanEnv(), timeout: 30_000 }).stdout?.trim() === version;
@@ -594,7 +609,8 @@ export function storeReleaseAdapter(open: () => Store, done: (store: Store) => v
     async finish(operation, outcome, facts, epoch) { return withStore(store => finishReleaseOperation(store, operation, outcome, facts, now(), epoch)); },
     async needsApproval(authority, reason, epoch) { return withStore(store => requireFreshReleaseApproval(store, authority, reason, epoch, now())); },
     async operations(authority) {
-      return withStore(store => releaseOperations(store, authority).map(op => ({ id: op.id, kind: op.kind, state: op.state, candidate: op.candidate, externalRef: op.externalRef, reservedAt: op.reservedAt })));
+      return withStore(store => releaseOperations(store, authority).map(op => ({ id: op.id, kind: op.kind, state: op.state, candidate: op.candidate, externalRef: op.externalRef, reservedAt: op.reservedAt,
+        direct: op.direct, issuerGone: releaseIssuerGone(op), stage: op.stage })));
     },
   };
 }

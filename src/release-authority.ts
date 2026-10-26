@@ -29,6 +29,12 @@ export type ReleaseCarry = {
 export type ReleaseOperation = {
   id: string; authority: number; kind: "deploy" | "merge"; taskId: string; candidate: string; epoch: number;
   state: "reserved" | "running" | "succeeded" | "failed" | "unknown"; externalRef: string | null; reservedAt: string; finishedAt: string | null; detail: string | null;
+  /** Reserved by a person's own deploy run, with no coordinator holding the release. */
+  direct: boolean;
+  /** The process that reserved, then issued, it (store.ts currentReleaseIssuer); null when none was recorded. */
+  issuer: { pid: number; started: string | null; at: string } | null;
+  /** A direct deploy's staging folder. */
+  stage: string | null;
 };
 
 function readReleaseAuthority(row: Record<string, unknown>): ReleaseAuthority {
@@ -74,7 +80,9 @@ function readReleaseOperation(row: Record<string, unknown>): ReleaseOperation {
   return {
     id: String(row["id"]), authority: Number(row["authority"]), kind: row["kind"] === "merge" ? "merge" : "deploy", taskId: String(row["task_id"]), candidate: String(row["candidate"]),
     epoch: Number(row["epoch"]), state: String(row["state"]) as ReleaseOperation["state"], externalRef: text("external_ref"), reservedAt: String(row["reserved_at"]),
-    finishedAt: text("finished_at"), detail: text("detail"),
+    finishedAt: text("finished_at"), detail: text("detail"), direct: Number(row["direct"] ?? 0) === 1,
+    issuer: row["issuer_pid"] == null || row["issued_at"] == null ? null : { pid: Number(row["issuer_pid"]), started: text("issuer_started"), at: String(row["issued_at"]) },
+    stage: text("stage"),
   };
 }
 

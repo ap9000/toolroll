@@ -91,6 +91,7 @@ function world(options: { crashAfter?: Mutation } = {}) {
       complete: async (_task, receipt) => { s.gate.completion = { actor: "lead:alex", at: new Date(s.now).toISOString(), digest: receipt }; landed("complete"); return { ok: true }; },
       busy: async () => ({ running: s.running, tasks: [] }),
       recoverDeploy: async () => ({ ok: true }),
+      deploymentIdle: async () => true,
       deploy: async () => {
         // The deployer stamps the runtime with the commit the passing build recorded (deploy-browser.mjs).
         s.commits.set(NEW, s.gate.result?.head ?? s.gate.candidate!);
@@ -697,7 +698,10 @@ function releaseWorld(options: { carryRefused?: string } = {}) {
   const rel = {
     id: 1, generation: 1, state: "open", tipSha: SHA, tipTask: "", tasks: new Set<string>(), landed: [] as { sha: string; files: { path: string; added: number; deleted: number }[] }[],
     epoch: 0, owner: null as string | null, owners: [] as string[], approvalsNeeded: [] as string[],
-    ops: new Map<string, { id: string; kind: "deploy" | "merge"; state: "reserved" | "running" | "succeeded" | "failed" | "unknown"; candidate: string; externalRef: string | null; reservedAt: string }>(),
+    ops: new Map<string, { id: string; kind: "deploy" | "merge"; state: "reserved" | "running" | "succeeded" | "failed" | "unknown"; candidate: string; externalRef: string | null; reservedAt: string;
+      direct?: boolean; issuerGone?: boolean; stage?: string | null }>(),
+    /** What deploymentIdle answers for a direct deploy's recovery. */
+    deploymentIdle: true,
     /** Override what the live predicate says. */
     live: null as null | ((taskId: string, action: string) => { applies: boolean; ok: boolean; why: string | null }),
     /** Override what authority() answers. */
@@ -760,7 +764,7 @@ function releaseWorld(options: { carryRefused?: string } = {}) {
       if (op.kind === "merge" && outcome === "failed") rel.state = "deploying";
       return true;
     },
-    async operations() { return [...rel.ops.values()]; },
+    async operations() { return [...rel.ops.values()].map(op => ({ direct: false, issuerGone: true, stage: null, ...op })); },
   };
   return { ...w, rel };
 }
@@ -953,17 +957,59 @@ describe("toolroll release: Codex review round 1", () => {
     expect(new Set(rel.owners).size).toBe(2);
   });
 
-  test("finding 3: a merge that started and may still be running is never declared failed while its call could land", async () => {
+  test("finding 3 (round 2 probe): a merge started 11 minutes ago by a process still alive is never declared failed", async () => {
+    const dir = stateDir();
+    const w = releaseWorld();
+    w.s.checks.set(SHA, []);
+    expect(await runRelease(options(dir, { limits: { ci: 1 } }), w.adapters)).toMatchObject({ ok: false, step: "ci" });
+    // Invocation A started the merge and paused; B takes over eleven minutes later, with CI now failing.
+    w.s.checks.set(SHA, passing(REQUIRED_PR_CHECKS).map((run, i) => i === 0 ? { ...run, conclusion: "failure" } : run));
+    w.rel.state = "merge-reserved";
+    w.rel.ops.set("merge-y", { id: "merge-y", kind: "merge", state: "running", candidate: SHA, externalRef: null, reservedAt: new Date(w.s.now - 11 * 60_000).toISOString(), issuerGone: false });
+    expect(await runRelease(options(dir), w.adapters)).toMatchObject({ ok: false, reason: "operation-in-flight" });
+    expect(w.rel.ops.get("merge-y")?.state).toBe("running");
+    // Nothing was revoked or reopened under it, and nothing merged.
+    expect(w.rel.state).toBe("merge-reserved");
+    expect(w.rel.approvalsNeeded).toEqual([]);
+    expect(w.s.calls).not.toContain("merge");
+  });
+
+  test("finding 3 (round 2): once the merge's process is proven gone and the PR is still open, it is failed and merged once", async () => {
     const dir = stateDir();
     const w = releaseWorld();
     w.s.checks.set(SHA, []);
     expect(await runRelease(options(dir, { limits: { ci: 1 } }), w.adapters)).toMatchObject({ ok: false, step: "ci" });
     w.s.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
     w.rel.state = "merge-reserved";
-    w.rel.ops.set("merge-y", { id: "merge-y", kind: "merge", state: "running", candidate: SHA, externalRef: null, reservedAt: new Date(w.s.now).toISOString() });
-    expect(await runRelease(options(dir), w.adapters)).toMatchObject({ ok: false, reason: "merge-in-flight" });
-    expect(w.rel.ops.get("merge-y")?.state).toBe("running");
-    expect(w.s.calls).not.toContain("merge");
+    w.rel.ops.set("merge-y", { id: "merge-y", kind: "merge", state: "running", candidate: SHA, externalRef: null, reservedAt: new Date(w.s.now).toISOString(), issuerGone: true });
+    expect(await runRelease(options(dir), w.adapters)).toMatchObject({ ok: true });
+    expect(w.rel.ops.get("merge-y")?.state).toBe("failed");
+    expect(w.s.calls.filter(one => one === "merge")).toHaveLength(1);
+  });
+
+  test("finding 3 (round 2): a person's direct deploy is settled only when its process, pause and journal say it ended", async () => {
+    const dir = stateDir();
+    const w = releaseWorld();
+    w.s.checks.set(SHA, []);
+    expect(await runRelease(options(dir, { limits: { ci: 1 } }), w.adapters)).toMatchObject({ ok: false, step: "ci" });
+    w.s.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
+    w.s.installed = { ...w.s.installed, services: [OLD] };
+    w.rel.ops.set("deploy-d", { id: "deploy-d", kind: "deploy", state: "running", candidate: SHA, externalRef: null, reservedAt: new Date(w.s.now).toISOString(), direct: true, issuerGone: true, stage: "/stage/d" });
+    let idle = false;
+    const asked: (string | null)[] = [];
+    w.adapters.toolroll.deploymentIdle = async stage => { asked.push(stage); return idle; };
+    expect(await runRelease(options(dir), w.adapters)).toMatchObject({ ok: false, reason: "deploy-recovery" });
+    expect(w.rel.ops.get("deploy-d")?.state).toBe("running");
+    expect(asked).toEqual(["/stage/d"]);
+    // Its issuer still alive: nothing is asked or settled.
+    w.rel.ops.set("deploy-d", { ...w.rel.ops.get("deploy-d")!, issuerGone: false });
+    expect(await runRelease(options(dir), w.adapters)).toMatchObject({ ok: false, reason: "operation-in-flight" });
+    expect(asked).toHaveLength(1);
+    // Gone, and nothing half done: failed.
+    w.rel.ops.set("deploy-d", { ...w.rel.ops.get("deploy-d")!, issuerGone: true });
+    idle = true;
+    await runRelease(options(dir), w.adapters);
+    expect(w.rel.ops.get("deploy-d")?.state).toBe("failed");
   });
 
   test("finding 4: a CI failure after the deploy needs a person's fresh approval, even on the same commit", async () => {

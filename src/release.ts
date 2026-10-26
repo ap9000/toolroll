@@ -52,8 +52,6 @@ type WaitingStep = "approval" | "check" | "quiet" | "deploy" | "ci" | "publish" 
 /** How long each waiting step may take, in minutes, before the release stops there (rerunning continues from it). */
 export const RELEASE_LIMITS: Readonly<Record<WaitingStep, number>> = { approval: 24 * 60, check: 120, quiet: 60, deploy: 30, ci: 60, publish: 45, homebrew: 45 };
 const POLL_MS = 15_000;
-/** How long one merge call may take before it has surely ended (gh's own time limit, with room). */
-export const MERGE_CALL_LIMIT_MS = 10 * 60_000;
 
 /** One check attempt; `app` is the GitHub App that made it (github-actions for a workflow), when known. */
 export type CheckRun = { name: string; status: string; conclusion: string | null; app?: string | null };
@@ -86,7 +84,13 @@ export type LandedCommit = { sha: string; files: { path: string; added: number; 
 /** A release's authority record as the coordinator reads it (store.ts release_authority). */
 export type AuthorityView = { id: number; generation: number; state: string; tipSha: string; tipTask: string; version: string; pr: number; landed: LandedCommit[] };
 export type ReleaseAction = "dispatch" | "deploy" | "merge" | "complete";
-export type OperationView = { id: string; kind: "deploy" | "merge"; state: "reserved" | "running" | "succeeded" | "failed" | "unknown"; candidate: string; externalRef: string | null; reservedAt: string };
+export type OperationView = { id: string; kind: "deploy" | "merge"; state: "reserved" | "running" | "succeeded" | "failed" | "unknown"; candidate: string; externalRef: string | null; reservedAt: string;
+  /** Reserved by a person's own deploy run (deploy-browser.mjs), not a coordinator. */
+  direct: boolean;
+  /** Whether the process that issued it is proven gone (store.ts releaseIssuerGone): read when the view is made. */
+  issuerGone: boolean;
+  /** A direct deploy's staging folder. */
+  stage: string | null };
 /** The release's authority record, through the plane's store (release-once.md). Absent: a plane too old to carry, and
  * every commit asks for a person as before. */
 export type ReleaseAuthorityAdapter = {
@@ -142,6 +146,9 @@ export type ReleaseAdapters = {
     deploy(input: { run: number; worktree: string; stage: string; operation?: { id: string; secret: string } }): Promise<{ ok: true; runtime: string } | DeployStop>;
     /** scripts/deploy-browser.mjs --stage --phase recover for a stage that was launched; a stage never prepared is ok. */
     recoverDeploy(input: { run: number; worktree: string; stage: string }): Promise<{ ok: true } | DeployStop>;
+    /** Whether no deployment is at work or half done: no deploy-browser process, no update pause held, and `stage`'s
+     * journal (when given) unlocked and at a phase that changed nothing or finished. Null stage: unknown, so false. */
+    deploymentIdle(stage: string | null): Promise<boolean>;
     /** Where both CLI names are on PATH now. */
     cliLinks(): Promise<SavedLink[]>;
     /** Point every saved link at `bin` and check each answers `version`; on any failure every link goes back to its
@@ -411,22 +418,29 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
     const reconcile = async () => {
       if (rel === undefined || !j.authority) return;
       for (const op of (await rel.operations(j.authority.id)).filter(one => one.state === "reserved" || one.state === "running" || one.state === "unknown")) {
+        // A started call whose issuer may still be alive may still land (review round 2): nothing is settled for it on
+        // elapsed time. It stays as it is, and a person looks.
+        const inFlight = () => new Stop("operation-in-flight", `An earlier ${op.kind} (operation ${op.id}) was started by a process that may still be running. Nothing was settled: check that process, then rerun.`);
         if (op.kind === "deploy") {
-          // Reserved and never started: nothing to undo. Running or unknown: the services tell, else recovery restores.
+          // Reserved and never started: nothing to undo (a start after this takeover is refused: its epoch moved).
           if (op.state === "reserved") { await rel.finish(op.id, "failed", { detail: "the call never started" }, epoch!); continue; }
           if (await served(adapters, builtHead()) !== null) { await rel.finish(op.id, "succeeded", { detail: "reconciled: the services run the candidate" }, epoch!); continue; }
+          if (!op.issuerGone) throw inFlight();
+          if (op.direct) {
+            // A person's own deploy: its process is gone; its lock, update pause and journal must say nothing is half done.
+            if (!await adapters.toolroll.deploymentIdle(op.stage)) throw new Stop("deploy-recovery", `A person's deploy of this release (operation ${op.id}) ended without finishing${op.stage === null ? "" : `; its journal is in ${op.stage}`}. Recover it, then rerun.`);
+            await rel.finish(op.id, "failed", { detail: "reconciled: the deploy's process ended, and nothing is deployed or half done" }, epoch!);
+            continue;
+          }
           await recoverDeploy();
           await rel.finish(op.id, "failed", { detail: "reconciled: recovered the previous build" }, epoch!);
         } else {
+          // The pull request decides an unknown merge: merged from the gated head is a success, whoever issued it.
           const pr = await adapters.github.pullRequest(j.github, j.branch);
           if (pr?.state === "merged" && pr.number === j.pr && pr.head === op.candidate && pr.mergeCommit !== null) await rel.finish(op.id, "succeeded", { externalRef: pr.mergeCommit, detail: "reconciled: the pull request is merged from the gated head" }, epoch!);
           else if (op.state === "reserved") await rel.finish(op.id, "failed", { detail: "reconciled: the merge never started" }, epoch!);
-          // A merge call that started may still land: it is declared failed only once it has surely ended (the call's
-          // own time limit has passed since it was reserved); before that the release waits.
-          else if (pr?.state === "open" && pr.number === j.pr && pr.head === op.candidate) {
-            if (adapters.now().getTime() - Date.parse(op.reservedAt) < MERGE_CALL_LIMIT_MS) throw new Stop("merge-in-flight", `An earlier merge of pull request #${j.pr} may still be running. Rerun in a few minutes.`);
-            await rel.finish(op.id, "failed", { detail: "reconciled: the merge call ended and the pull request is still open at the gated head" }, epoch!);
-          }
+          else if (!op.issuerGone) throw inFlight();
+          else if (pr?.state === "open" && pr.number === j.pr && pr.head === op.candidate) await rel.finish(op.id, "failed", { detail: "reconciled: the merge's process ended and the pull request is still open at the gated head" }, epoch!);
           else throw new Stop("merge-unknown", `The merge of pull request #${j.pr} can't be reconciled: it is ${pr?.state ?? "gone"}. Check it on GitHub before rerunning.`);
         }
       }
@@ -660,10 +674,12 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
               secret = reserved.secret ?? "";
               j.operations = { ...j.operations, deploy: operation };
               save();
-              if (!await rel.start(operation, epoch)) throw new Stop("lease", "Another release coordinator took over this release; the deploy didn't start.");
             }
             j.deployAttempt = { stage: join(options.stateDir, "staged-upgrades", `browser-${j.candidate.sha.slice(0, 7)}-${randomUUID()}`) };
             intend("deploy");
+            // The issuing fence, immediately before the deploy is spawned (review round 2): lease, epoch and the live
+            // release again, in one transaction that marks the operation as issued by this process.
+            if (operation !== undefined && !await rel!.start(operation, epoch!)) throw new Stop("lease", "Another release coordinator took over this release; the deploy didn't start.");
             const result = await adapters.toolroll.deploy({ run: check.run, worktree: check.worktree, stage: j.deployAttempt.stage, ...(operation === undefined ? {} : { operation: { id: operation, secret } }) });
             if (operation !== undefined) await rel!.finish(operation, result.ok ? "succeeded" : "failed", { detail: result.ok ? result.runtime : result.message.slice(0, 500) }, epoch!);
             if (!result.ok) throw deployStop("deploy", `The deployment of run ${check.run} stopped: ${result.message}`, result);
@@ -732,10 +748,11 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
               operation = reserved.operation;
               j.operations = { ...j.operations, merge: operation };
               save();
-              if (!await rel.start(operation, epoch)) throw new Stop("lease", "Another release coordinator took over this release; the merge didn't start.");
             }
             intend("merge");
             const message = landedWords(j.landed ?? []).join("\n");
+            // The issuing fence, immediately before gh is spawned (review round 2).
+            if (operation !== undefined && !await rel!.start(operation, epoch!)) throw new Stop("lease", "Another release coordinator took over this release; the merge didn't start.");
             let merged: string;
             try { merged = await adapters.github.merge(j.github, j.pr, j.candidate.sha, ...(message === "" ? [] : [message])); }
             catch (error) { if (operation !== undefined) await rel!.finish(operation, "unknown", { detail: String((error as Error)?.message ?? error).slice(0, 500) }, epoch!); throw error; }
