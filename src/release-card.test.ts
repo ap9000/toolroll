@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, releaseAuthorityOfTask, type Store } from "./store.js";
 import { addApprover, deployGateScope, digestOf, personApprovalOf, propose, type ExecutionProfile, type QualityMode } from "./scope.js";
-import { releaseTermsFor } from "./release-carry.js";
+import { releaseTermsFor, setUnsandboxedCarry } from "./release-carry.js";
 import { setChatApproval } from "./chat-approval.js";
 import { verifyApproverStanding } from "./principal.js";
 import { applyDecideTap, decideOffer, mintDecideButtons, permissionPlainWords, planInChat, privateReleaseChat, type DecideSeat } from "./chat-decide.js";
@@ -79,6 +79,7 @@ function bind(provider: string, id: number, member: string, channel: string, app
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
 /** Offer the card, tap Continue, then return the Approve tap. */
+const planInChatDigest = (taskId: string): string => { const plan = planInChat(store, taskId, "alex", NOW, "telegram", root); if (!plan.ok) throw new Error(plan.why); return plan.digest; };
 function continueCard(taskId: string, chat = "4242") {
   const offer = decideOffer(store, { kind: "plan", taskId }, who(), NOW, "telegram", root);
   if (offer === null) throw new Error("no release card offered");
@@ -225,6 +226,30 @@ describe("the release card", () => {
     const card = releaseCardOf(store, { ...scope, releaseTerms: terms }, "form", { profile: () => null });
     expect(card.short.includes("will run outside the sandbox without being shown to you first")).toBe(access !== "sandboxed");
     expect(card.full).toContain(`Carry when checks aren't sandboxed: ${access === "sandboxed" ? "no" : "yes"}`);
+  });
+
+  test("a release whose checks run outside the sandbox: no Approve in chat, the card links to Toolroll, and every tap refuses (0.9.73 review, finding 7)", () => {
+    // The project's real setting, sealed into the gate's profile as `toolroll release` files it.
+    expect(store.setProjectCheckAccess(repo, "unsandboxed", "alex", NOW, { may: "widen" })).not.toBeNull();
+    // Option A: the person let approvals carry with unsandboxed checks, so the release files with every term.
+    setUnsandboxedCarry(store, repo, true, "alex", NOW);
+    const taskId = fileGate();
+    expect(store.getScope(taskId)!.profile).toMatchObject({ checkAccess: "unsandboxed" });
+    const offer = decideOffer(store, { kind: "plan", taskId }, who(), NOW, "telegram", root)!;
+    expect(offer.text).toContain("This release's checks run outside the sandbox, so it's approved in Toolroll with your password.");
+    expect(offer.rows.flat()).toEqual([expect.objectContaining({ label: "Approve in Toolroll", path: expect.stringContaining(taskId) })]);
+    // A Continue minted for it anyway (a stale card, a crafted token): Continue and Approve both refuse, nothing seals.
+    const card = releaseCardOf(store, store.getScope(taskId)!, planInChatDigest(taskId), { profile: () => null });
+    const minted = mintDecideButtons(store, seat(), { kind: "plan", taskId }, { text: null, rows: [[{ act: "approve", run: null, digest: `release:${card.digest}`, label: "Continue" }]] }, NOW, "m1");
+    const tapped = applyDecideTap(store, seat(), { token: minted.tokens[0]!, message: "m1", shown: "", repos: [repo], root, now: NOW });
+    expect(tapped?.edit?.rows.flat().some(one => one.label === "Approve") ?? false).toBe(false);
+    expect(store.getScope(taskId)!.approvedAt).toBeNull();
+    // The seal itself agrees: a chat seal is refused, the person's password ceremony is the road.
+    expect(store.sealScopeApproval(taskId, "alex", NOW, {}, { kind: "chat", modeDigest: "m", card: "release", cardDigest: card.digest })).toBe(false);
+    // The same release with sandboxed checks reaches Approve.
+    expect(store.setProjectCheckAccess(repo, "sandboxed", "alex", NOW, { may: "narrow" })).not.toBeNull();
+    const sandboxed = fileGate("release-sandboxed");
+    expect(continueCard(sandboxed).tapped?.edit?.rows[0]![0]!.label).toBe("Approve");
   });
 
   test("a tap from a group, another chat or a forwarded card does nothing; a nightly check is never approved from chat", () => {
