@@ -218,7 +218,10 @@ export type TelegramTransport = (
  * Telegram never fetches anything for us, and nothing on this machine is
  * uploaded by name.
  */
-export type TelegramUpload = { field: "document" | "photo" | `shot${number}`; fileName: string; contentType: "image/png" | "image/jpeg"; bytes: Buffer };
+export type TelegramUpload = { field: "document" | "photo" | `shot${number}`; fileName: string; contentType: "image/png" | "image/jpeg" | "text/plain"; bytes: Buffer };
+
+/** A release card's full terms (release-card.ts) as the document Telegram sends with it: text this process wrote. */
+export const termsUpload = (file: { name: string; text: string }): TelegramUpload => ({ field: "document", fileName: file.name, contentType: "text/plain", bytes: Buffer.from(file.text, "utf8") });
 
 export function createTransport(token: string, timeoutMs = 30_000): TelegramTransport {
   return async (method, params, signal, upload, more) => {
@@ -850,6 +853,10 @@ async function deliverOutboxTo(
       if (answer.ok === true) sentAny = true;
       return answer;
     };
+    /** A release card's terms file (release-card.ts), sent before the card itself. */
+    const fileSender = async (file: { name: string; text: string }): Promise<boolean> => {
+      try { return (await wire("sendDocument", { chat_id: binding.chatId, caption: "Every term of this release" }, undefined, termsUpload(file))).ok === true; } catch { return false; }
+    };
     // `beforeSend`: the fence before a transport call also asks the watch — until something of this delivery went out;
     // the one after a confirmed send never does, so a message Telegram accepted is recorded as delivered.
     const fence = (beforeSend = !sentAny): string | null => {
@@ -1032,7 +1039,7 @@ async function deliverOutboxTo(
         // A lone update that is not finished work goes out exactly as it always has; a later one edits it in place.
         const lone = batch.items.length === 1 && batch.items[0]!.notification !== null;
         if (batch.message === null && lone) {
-          const sent = await deliverOne(store, botId, binding, sender, fact, clock, phoneOrigin, evidenceRoot, projects);
+          const sent = await deliverOne(store, botId, binding, sender, fact, clock, phoneOrigin, evidenceRoot, projects, fileSender);
           const placed = store.telegramMessageOf(fact.id, fact.destination);
           if (placed !== null) store.setChatBatchMessage(batch.id, placed, "");
           return sent;
@@ -1042,7 +1049,7 @@ async function deliverOutboxTo(
         // the reader's own completion) stays quiet; any other update that needs this person still reaches them alone.
         if (view === null) {
           if (readyRun !== null) return { ok: true, receipt: receiptFor(botId, binding.chatId, card.messageId) };
-          return deliverOne(store, botId, binding, sender, fact, clock, phoneOrigin, evidenceRoot, projects);
+          return deliverOne(store, botId, binding, sender, fact, clock, phoneOrigin, evidenceRoot, projects, fileSender);
         }
         // A message about one result, plan, failure or pull request acts in place (chat-decide.ts); its buttons are
         // minted only when what it offers changed, or its own were spent (Not now), so an unchanged repaint keeps the
@@ -1097,7 +1104,7 @@ async function deliverOutboxTo(
         } else dropDecideTokens(store, tokens, clock());
         return sent.ok ? { ok: true, receipt: receiptFor(botId, binding.chatId, sent.messageId) } : sent;
       }
-      return fact.kind === "acceptance-evidence" ? imageSender(fact) : deliverOne(store, botId, binding, sender, fact, clock, phoneOrigin, evidenceRoot, projects);
+      return fact.kind === "acceptance-evidence" ? imageSender(fact) : deliverOne(store, botId, binding, sender, fact, clock, phoneOrigin, evidenceRoot, projects, fileSender);
     };
     /** The lead's words (lead-voice.ts): one message; a later say within two minutes edits it in place. */
     const leadSayOutcome = async (fact: TelegramDelivery): Promise<{ ok: true; receipt: string | null } | { ok: false; error: string }> => {
@@ -1133,7 +1140,7 @@ async function deliverOutboxTo(
       outcome = updated !== null ? updated.ok ? { ok: true as const, receipt: receiptFor(botId, binding.chatId, updated.messageId) } : updated
         : rows[0]!.kind === "acceptance-evidence" ? await imageSender(rows[0]!) : batched
         ? await deliverDigest(botId, binding, sender, rows, digest.lastSentAt, clock, taskId => chatTitle(store, taskId))
-        : await deliverOne(store, botId, binding, sender, rows[0]!, clock, phoneOrigin, evidenceRoot, projects);
+        : await deliverOne(store, botId, binding, sender, rows[0]!, clock, phoneOrigin, evidenceRoot, projects, fileSender);
     }
     const finalProblem = outcome.ok ? (await readAccess()) ?? fence(false) : null;
     const settled = finalProblem === null ? outcome : { ok: false as const, error: finalProblem };
@@ -1223,6 +1230,7 @@ async function deliverOne(
   phoneOrigin?: () => string | null,
   evidenceRoot?: string,
   projects: readonly string[] = [],
+  fileSender?: (file: { name: string; text: string }) => Promise<boolean>,
 ): Promise<{ ok: true; receipt: string | null } | { ok: false; error: string }> {
   const decisionId = /^decision:(\d+)$/.exec(notification.dedupeKey);
   const decision = decisionId === null ? null : store.getDecision(Number(decisionId[1]));
@@ -1296,6 +1304,13 @@ async function deliverOne(
     const questionKeys = asked === null ? null : telegramQuestionButtons(store, binding, asked, clock());
     const keys = flowKeys ?? choiceKeys ?? questionKeys;
     let last: string | null = null;
+    // A release card: every term goes as a file first, so Continue is offered only once it has arrived.
+    if (offer?.file !== undefined && decided !== null) {
+      if (fileSender === undefined || !await fileSender(offer.file)) {
+        dropDecideTokens(store, decided.tokens, clock());
+        return { ok: false, error: "The release's terms file wasn't accepted" };
+      }
+    }
     for (const [index, part] of parts.entries()) {
       const final = index === parts.length - 1;
       const decideKeys = decided === null ? [] : decideKeyboard(phoneOrigin, decided.rows);
@@ -2301,6 +2316,11 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
     if (tapped === null) { report.ignored++; ack("That button doesn't do anything now."); return; }
     if (tapped.ignored === true) report.ignored++;
     ack(tapped.ack.slice(0, 190));
+    // A release card's terms, as a file, before its Approve is shown (chat-management.md §0a.5).
+    if (tapped.file !== undefined) {
+      const file = tapped.file;
+      effects.push(async () => { await transport("sendDocument", { chat_id: binding.chatId, caption: "Every term of this release, read again just now" }, undefined, termsUpload(file)); });
+    }
     if (tapped.edit !== undefined) editText(tapped.edit.text.slice(0, 4000), decideKeyboard(context.conversation?.phoneOrigin, tapped.edit.rows));
     if (tapped.prompt !== undefined) {
       const prompt = tapped.prompt;

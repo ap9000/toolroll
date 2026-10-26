@@ -1972,3 +1972,13 @@ export function mainDebtProblem(store: Store, repo: string, taskId: string): str
   if (newest === undefined || newest["mode"] !== "targeted") return null;
   return `the nightly full check on main has ${open} open failure${open === 1 ? "" : "s"}, so a check made from a re-run of what failed can't deploy; a full check has to pass first`;
 }
+
+/**
+ * A deploy gate (docs/plans/chat-management.md §0a.5): a scope whose signed terms name a prepared candidate or carry
+ * release terms. Both are in the scope digest and written at filing, before any release authority exists, so this is
+ * read from the scope alone: a first approval and a fallback gate filed without --release are deploy gates too. From
+ * chat it is approved only through the release card.
+ */
+export function deployGateScope(scope: Pick<Scope, "candidate" | "releaseTerms">): boolean {
+  return (scope.candidate ?? null) !== null || (scope.releaseTerms ?? null) !== null;
+}
