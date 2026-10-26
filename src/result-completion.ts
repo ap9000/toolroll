@@ -78,8 +78,23 @@ export function protectedPublicationHold(store: Store, runId: number, root: stri
   if (taskId === null) return null;
   const changed = familyChangedFiles(store, taskId, runId, root);
   if (store.protectedResultProblem(taskId, changed, null) === null) return null;
-  const completers = store.handle.prepare("SELECT DISTINCT actor FROM action_ledger WHERE run_id = ? AND action = ?").all(runId, COMPLETION_ACTION)
+  // Only a person's completion counts here (approval policy §1.7a): one a machine credential made, or one from before
+  // completions said who made them, never stands as the second person.
+  const completers = store.handle.prepare("SELECT DISTINCT actor FROM action_ledger WHERE run_id = ? AND action = ? AND detail = ?").all(runId, COMPLETION_ACTION, COMPLETION_BY_PERSON)
     .map(row => String(row["actor"])).filter(actor => actor.startsWith("operator:")).map(actor => actor.slice("operator:".length));
   if (completers.some(name => store.protectedResultProblem(taskId, changed, name) === null)) return null;
   return "held: it changed protected files on a one-person approval, so it publishes once someone other than its approver marks it complete";
+}
+
+/** A completion's mark (v134, approval policy §1.7a): whether a person or a machine credential made it. */
+export const COMPLETION_BY_PERSON = "proof person";
+export const COMPLETION_BY_MACHINE = "proof machine";
+
+/** Whether this person completing an already-complete result would release a protected publication hold: protected
+ * work needs someone other than its approver, no person's completion on record provides it, and this person can. */
+export function personCompletionOwed(store: Store, taskId: string, runId: number, receiptDigest: string, person: string, root: string): boolean {
+  const changed = familyChangedFiles(store, taskId, runId, root);
+  if (store.protectedResultProblem(taskId, changed, null) === null || store.protectedResultProblem(taskId, changed, person) !== null) return false;
+  return store.handle.prepare("SELECT 1 FROM action_ledger WHERE run_id = ? AND action = ? AND outcome = ? AND actor = ? AND detail = ?")
+    .get(runId, COMPLETION_ACTION, receiptDigest, `operator:${person}`, COMPLETION_BY_PERSON) === undefined;
 }

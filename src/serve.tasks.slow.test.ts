@@ -660,6 +660,8 @@ describe("the queue (portfolio arc, slice 1b): move-to-front resolved server-sid
       taskId: id, goal: "go", outOfScope: null, touches: [], acceptance: [],
       proposedAt: at.toISOString(), digest: `d-${id}`, approvedAt: at.toISOString(), approvedBy: "alex", approvedDigest: `d-${id}`,
     });
+    // A person's seal (approval policy: an approval with no recorded authority stands on nothing).
+    store.handle.prepare("UPDATE task_scope SET approval_basis = 'password' WHERE task_id = ?").run(id);
     return ref;
   };
 

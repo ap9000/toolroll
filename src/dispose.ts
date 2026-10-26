@@ -27,6 +27,7 @@ import { queueBuildReview } from "./build-review.js";
 import { homedir } from "node:os";
 import type { BuildResult } from "./builder.js";
 import type { Store } from "./store.js";
+import { nightlyTaskRef, releaseTaskRef } from "./store.js";
 import { type ProofVerdict, type VerifyCommandFacts } from "./proof.js";
 import { verificationEvidence, failedVerificationEvidence } from "./verification-evidence.js";
 import { classifyGateFailure, describeGateFailure, gateFailureSummary, type GateFailureClass } from "./gate-failure.js";
@@ -236,7 +237,9 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
           grant.publishOn !== "complete" &&
           headSha !== null &&
           headWithin(branch, grant.headPrefix) &&
-          (grant.selector === "all" || origin === "ours")
+          (grant.selector === "all" || origin === "ours") &&
+          // A nightly check or a release's task is never published (store.createPublicationIntent refuses both).
+          !nightlyTaskRef(store, taskRef) && !releaseTaskRef(store, taskRef)
         ) {
           const intentId = store.createPublicationIntent(
             {

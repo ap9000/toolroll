@@ -1,3 +1,4 @@
+import { releaseAuthorityOfTask, revokeRelease } from "../store.js";
 import { steerCapabilityOf } from "../steer-capabilities.js";
 import { canReveal, localCheckoutOf, revealInFinder } from "../checkout-proof.js";
 
@@ -1377,7 +1378,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
   }
 
   type TaskVerb = "hold" | "unhold" | "requeue" | "cancel" | "scope" | "approve" | "plan" | "plan-edit" | "next" | "reopen" | "steer" | "reply" | "accept-proof" | "accept-revision" |
-    "reject-revision" | "route" | "retry-review" | "complete" | "stop" | "pause" | "resume-arm" | "resume" | "block" | "unblock" | "repair-dependency" | "follow-up";
+    "reject-revision" | "route" | "retry-review" | "complete" | "stop" | "pause" | "resume-arm" | "resume" | "block" | "unblock" | "repair-dependency" | "follow-up" | "stop-carrying";
   /** A task act bound to its verb: taskMutation owns each verb's checks. */
   const taskAct = (verb: TaskVerb) => async (ctx: HandlerContext): Promise<void> => {
     const { url, who, response, now, posted } = ctx;
@@ -2043,6 +2044,14 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       case "unhold": {
         store.unhold(ref.id);
         return redirect(response, taskHref(taskId));
+      }
+      case "stop-carrying": {
+        // One click, any active approver (release-once.md): later commits of this release ask again. Only ever stricter.
+        const found = releaseAuthorityOfTask(store, taskId);
+        if (found === null) return taskScreen(response, who, taskId, "This task isn't part of a release.", 409);
+        const stopped = revokeRelease(store, found.authority.id, who.name, now);
+        if (!stopped.ok) return taskScreen(response, who, taskId, stopped.why, 409);
+        return redirect(response, `${taskHref(taskId)}#release`);
       }
       case "requeue": {
         const body = readForm(posted, CONSOLE_FORMS.taskRequeue);
@@ -3062,6 +3071,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     "task.act.merge": taskMerge,
     "task.act.confirm-stopped": taskConfirmStopped,
     "task.act.stop": taskAct("stop"),
+    "task.act.stop-carrying": taskAct("stop-carrying"),
     "task.act.pause": taskAct("pause"),
     "task.act.resume-arm": taskAct("resume-arm"),
     "task.act.resume": taskAct("resume"),

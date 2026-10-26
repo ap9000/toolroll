@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased
+
+- **Only a person approves work.** The lead's token used to approve a task's
+  scope and be recorded as its owner's password approval, including on a
+  release. Now `task approve` (and `task repair --yes`) with a lead token, or
+  any approval made with a remote API token, is refused: "Only a person can
+  approve this." Approve on the task page or from your paired chat
+  (docs/plans/approval-policy.md, phase 1; the setting that lets the lead
+  approve, recorded as the lead's, comes next).
+- **Only a person merges by hand.** `task merge` (including `--anyway`) and
+  the merge button refuse a lead or API token. A flow's Pull request zone
+  merges only after a person's recorded decision; a subagent's approval, or
+  a decision from before decisions recorded who made them, waits.
+- **Protected work counts only people.** A vote a machine credential left, or
+  one with no proof on record, doesn't count as one of the two people, and a
+  lead or API token's completion is never the second person. A person can
+  mark an already-complete result complete again to release a held push.
+- **Releases and deployments need a person's approval with its proof on
+  record.** The release gate and `deploy-browser.mjs` (every phase, resumed
+  ones included) refuse an approval a lead token made, a mode, a flow, a
+  standing order, or an approval with no recorded proof. `toolroll release` proves the
+  candidate in its own runtime, and that the checkout is exactly that commit,
+  before it runs anything from the candidate's checkout. Paired-chat
+  approvals now record their own proof, so they still count. Update the
+  plane before running `toolroll release`: an older plane can't say who
+  approved, and the release waits.
+- Approvals a lead token made before this change are read for what they were:
+  they no longer dispatch, and the task asks for a person's approval. Seals
+  with no recorded authority stand on nothing. A standing order's firing is
+  approved by its own authority (`schedule`), which stands only while its
+  approver can still approve in the project. Schema v134 only adds two
+  columns; `toolroll update` runs it in place.
+
 ## 0.9.71 — 2026-10-25
 
 - **Sandboxed launches can open a terminal of their own on macOS.** A check

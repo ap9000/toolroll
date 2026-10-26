@@ -53,7 +53,7 @@ const LIMITED_ACCESS = {
   'task.act.reopen': 'resource', 'task.act.steer': 'resource', 'task.act.reply': 'resource', 'task.act.accept-proof': 'resource',
   'task.act.accept-revision': 'resource', 'task.act.reject-revision': 'resource', 'task.act.route': 'resource',
   'task.act.retry-review': 'resource', 'task.act.complete': 'resource', 'task.act.merge': 'resource',
-  'task.act.confirm-stopped': 'resource', 'task.act.stop': 'resource', 'task.act.pause': 'resource',
+  'task.act.confirm-stopped': 'resource', 'task.act.stop': 'resource', 'task.act.stop-carrying': 'resource', 'task.act.pause': 'resource',
   'task.act.resume-arm': 'resource', 'task.act.resume': 'resource', 'chat.proposal.confirm': 'proposal', 'chat.proposal.dismiss': 'proposal',
   'recipes.prepare-send': 'collection', 'recipes.preview-send': 'collection', 'recipes.import-send': 'collection',
   'recipes.save-send': 'collection', 'recipes.launch-send': 'collection', 'run.act.add-tests': 'resource', 'run.act.checks': 'resource', 'run.act.comment': 'resource',

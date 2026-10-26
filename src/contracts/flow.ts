@@ -410,6 +410,9 @@ export const standingOrderSchema = z.strictObject({
   /** The routine it came from: that routine's earlier tasks still count toward one-at-a-time and the ceiling. */
   routine: z.int().nullable(),
   approval: z.strictObject({ digest: z.string().min(1), by: z.string().nullable(), at: z.string().min(1), profileJson: z.string().min(1), routeJson: z.string().min(1) }).nullable(),
+  /** The nightly full check on main (release-once.md, part 3): each firing files a check-only task at main's head, its
+   * approval bound to the release check grant and the fenced check access. */
+  check: z.strictObject({ kind: z.literal("main-full"), grant: z.strictObject({ id: z.int(), digest: z.string().min(1) }), access: z.literal("sandboxed") }).optional(),
 });
 export type StandingOrder = z.infer<typeof standingOrderSchema>;
 /** A trigger as it is saved (`configJson`), one schema per kind. */

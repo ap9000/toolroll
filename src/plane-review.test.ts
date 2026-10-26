@@ -58,7 +58,7 @@ function task(id: string, title: string, at: Date, state: "queued" | "running" |
 /** Approved and marked running, but no worker holds it: the dispatch is stuck. */
 function stuckDispatch(id: string, title: string, at: Date): void {
   task(id, title, at, "running");
-  store.handle.prepare("INSERT INTO task_scope (task_id, goal, proposed_at, digest, approved_digest, approved_at, approved_by) VALUES (?, 'Do it.', ?, 'd', 'd', ?, 'alex')").run(id, at.toISOString(), at.toISOString());
+  store.handle.prepare("INSERT INTO task_scope (task_id, goal, proposed_at, digest, approved_digest, approved_at, approved_by, approval_basis) VALUES (?, 'Do it.', ?, 'd', 'd', ?, 'alex', 'password')").run(id, at.toISOString(), at.toISOString());
   store.handle.prepare("UPDATE task SET updated_at = ? WHERE id = ?").run(at.toISOString(), id);
 }
 

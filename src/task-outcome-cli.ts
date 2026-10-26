@@ -4,11 +4,11 @@ import { assignmentOf, checkAssignmentAsOperator } from './assignment.js';
 import { assignmentForCoordinator, coordinatorToken } from './assignment-adapters.js';
 import { authenticateCoordinator } from './coordinator.js';
 import { reproveApprover, type VerifiedApprover } from './principal.js';
-import { authenticateApprover } from './scope.js';
+import { authenticateApprover, personProof } from './scope.js';
 import { requestResultChanges } from './result-actions.js';
 import { commentSourceKey, revisionSourceOf } from './result-review.js';
 import { envelopeJson } from './envelope.js';
-import { completeAndOpenPullRequest, mergeAsPerson, newestPullRequestOf, publishingOf, pullRequestViewOf, type PullRequestView } from './pull-request-flow.js';
+import { completeAndOpenPullRequest, mergeAsPerson, MERGE_NEEDS_PERSON, newestPullRequestOf, publishingOf, pullRequestViewOf, type PullRequestView } from './pull-request-flow.js';
 import type { PublishExec } from './publish.js';
 import type { Store } from './store.js';
 
@@ -122,7 +122,10 @@ export async function runTaskMergeCommand(positional: readonly string[], flags: 
   const acting = await context.credentials();
   if (acting === null) return fail('unauthenticated', 'Merging takes your password: --as <you> --token <password>.');
   const { store } = context;
-  if (!authenticateApprover(store, acting.name, acting.token).ok) return fail('not-an-approver', 'That password didn\'t work, or you can\'t merge.');
+  const proved = authenticateApprover(store, acting.name, acting.token);
+  if (!proved.ok) return fail('not-an-approver', 'That password didn\'t work, or you can\'t merge.');
+  // A merge by hand is a person's (approval policy §1.7): refused before anything is read, --anyway included.
+  if (!personProof(proved.method)) return fail('person-required', MERGE_NEEDS_PERSON);
   const family = store.taskFamilyOf(task, store.knownRepos().filter(repo => store.accountCanAccess(acting.name, repo)), false);
   if (family === null) return fail('not-found', 'That task is unavailable in your projects.');
   const view = newestPullRequestOf(store, family.versions.map(one => one.id));

@@ -455,9 +455,10 @@ export function storeEvidence(
   content: Buffer,
   capture: string,
   now: Date,
-  options: { redacted?: boolean; captureStatus?: "ok" | "failed"; sourceBytesOriginal?: number } = {},
+  options: { redacted?: boolean; captureStatus?: "ok" | "failed"; sourceBytesOriginal?: number; cap?: number } = {},
 ): number {
-  const cap = EVIDENCE_CAPS[kind];
+  // `cap`: a sealed structured payload with its own documented bound (a release check's report: 256 KiB), never above 1 MiB.
+  const cap = options.cap === undefined ? EVIDENCE_CAPS[kind] : Math.min(options.cap, 1024 * 1024);
   const stored = content.subarray(0, cap);
   // Some callers that deliberately summarize/bound a source before storage
   // may still report its true original size. This keeps `truncated` honest

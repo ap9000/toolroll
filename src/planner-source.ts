@@ -83,7 +83,7 @@ export type PlannerContractScope = ContractTerms & {
    * refuses that), but it may have been approved once and then rewritten
    * — the operator's earlier yes is context worth quoting. */
   approval: { state: "none" | "changed"; approvedDigest: string | null; approvedBy: string | null };
-  proposedVia: "mate" | "coordinator" | "scout" | null;
+  proposedVia: import("./scope.js").ScopeAuthor | null;
 };
 
 export type PlannerContract = {

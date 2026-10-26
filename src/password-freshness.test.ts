@@ -357,8 +357,8 @@ describe("where freshness may be honoured", () => {
     // checkApproverPassword), which proves through proveAccountNow. The counts make a new call site a reviewed change.
     expect(hits["checkApproverPassword()"]).toEqual({ "src/server/guards.ts": 2 });
     // Passwordless: credential acts moved to authenticateCredential / credentialApprover / proveCredential (pinned below).
-    expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/operate.ts": 58, "src/pull-request-flow.ts": 1,
-      "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 2, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 22,
+    expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/nightly-check.ts": 1, "src/operate.ts": 58, "src/pull-request-flow.ts": 1,
+      "src/release-cli.ts": 1, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 2, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 22,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
@@ -436,6 +436,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/desktop-host.ts#<module>": 2,
     "src/desktop-host.ts#desktopMain@14": 2,
     "src/desktop-host.ts#pairDesktopLogin@10": 3,
+    "src/nightly-check.ts#<module>": 2,
+    "src/nightly-check.ts#createNightlyCheckFlow@5": 1,
     "src/operate.ts#<module>": 1,
     "src/operate.ts#acceptTaskProof@100": 1,
     "src/operate.ts#authenticateApprover@127": 1,
@@ -484,6 +486,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/operate.ts#verifyCommand@50": 2,
     "src/pull-request-flow.ts#<module>": 2,
     "src/pull-request-flow.ts#mergeAsPerson@22": 1,
+    "src/release-cli.ts#<module>": 2,
+    "src/release-cli.ts#runAuthorityCommand@7": 1,
     "src/scope.ts#approve@46>store.transact(_)@1": 1,
     "src/scope.ts#authenticateApprover@42": 1,
     "src/serve.ts#createDecisionServer@1": 3,
@@ -640,7 +644,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/release-cli.ts#runReleaseCommand@3": 1,
     "src/release-gate.ts#releaseGate@5": 11,
     "src/release.ts#<module>": 1,
-    "src/release.ts#runRelease@10": 1,
+    "src/release.ts#runRelease@12": 1,
     "src/restart-certification.ts#verifyRestartRecovery@6": 4,
     "src/run-closeout.ts#closeOutCheckouts@11": 4,
     "src/runner.ts#recoverDead@17>recovery:store.transact(_)@1": 3,
@@ -658,7 +662,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/request-context.ts#<module>": 1,
     "src/server/runtime.ts#<module>": 2,
     "src/server/settings.ts#createSettingsHandlers@1>modelsView@90": 1,
-    "src/server/task-views.ts#createTaskViews@1>taskViewData@14>approvalFresh@17": 3,
+    "src/server/task-views.ts#createTaskViews@1>taskViewData@14>approvalFresh@18": 3,
     "src/server/tasks.ts#createTasksHandlers@2>peekFragment@42>work@2": 11,
     "src/shared-deps.ts#pruneUnusedShared@29": 7,
     "src/shared-deps.ts#pruneUnusedShared@29>finish@2": 2,
@@ -712,7 +716,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/chat.ts#<module>": 2,
     "src/server/chat.ts#createChatHandlers@1>sharedActionReview@5>freshSince@2>fresh:withFreshness(approve-standard,_)@1": 1,
     "src/server/task-views.ts#<module>": 2,
-    "src/server/task-views.ts#createTaskViews@1>taskViewData@14>approvalFresh@17>fresh:withFreshness(approve-standard,_)@1": 1,
+    "src/server/task-views.ts#createTaskViews@1>taskViewData@14>approvalFresh@18>fresh:withFreshness(approve-standard,_)@1": 1,
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@43>withFreshness(approve-standard,_)@10": 1,
   },
@@ -825,7 +829,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/chat.ts#createChatHandlers@1>chatSend@22>opened:spendingOnlyOnSuccess(_,_)@9": 1,
     "src/server/chat.ts#createChatHandlers@1>sharedActionReview@5>freshSince@2": 1,
     "src/server/task-views.ts#<module>": 2,
-    "src/server/task-views.ts#createTaskViews@1>taskViewData@14>approvalFresh@17": 1,
+    "src/server/task-views.ts#createTaskViews@1>taskViewData@14>approvalFresh@18": 1,
     "src/server/tasks.ts#<module>": 2,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@43": 1,
     "src/server/tasks.ts#createTasksHandlers@2>taskMutation@43>approved:spendingOnlyOnSuccess(_,_)@11": 1,

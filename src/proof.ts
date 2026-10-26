@@ -822,6 +822,8 @@ function verificationFailureWords(failure: Extract<VerifyCommandFacts, { ran: fa
           return "the retried verification command timed out after automatic recovery";
         case "custody-lost":
           return "automatic recovery stopped because this worker no longer owned the build";
+        case "coverage-incomplete":
+          return "the release check didn't cover everything it owed, or a required test went missing or was skipped";
         case "timed-out":
           return "the approved verification command timed out before checks finished";
         case "spawn-failed":

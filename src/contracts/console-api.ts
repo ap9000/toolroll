@@ -257,6 +257,7 @@ export const BODILESS_POSTS = [
   "POST /providers/<provider>/resume",
   "POST /logout",
   "POST /t/<task>/unhold",
+  "POST /t/<task>/stop-carrying",
   "POST /t/<task>/plan",
   "POST /t/<task>/retry-review",
 ] as const;

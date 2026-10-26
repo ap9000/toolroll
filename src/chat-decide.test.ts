@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
-import { addApprover, approve, propose } from "./scope.js";
+import { addApprover, approvalProofOf, approve, personApprovalOf, propose } from "./scope.js";
 import { register } from "./runner.js";
 import { storeEvidence } from "./evidence.js";
 import { sealVerificationReceipt } from "./verification-evidence.js";
@@ -345,6 +345,9 @@ describe("decisions finish in the chat app", () => {
     const ledger = store.handle.prepare("SELECT actor, task_id, action, outcome, detail FROM action_ledger WHERE action = 'plan approved in chat'").all();
     expect(ledger).toEqual([{ actor: "bob", task_id: "plan-5", action: "plan approved in chat", outcome: "approved",
       detail: `via telegram · chat binding #${binding.id} · mode ${store.activeMode(REPO, now)!.digest}` }]);
+    // Approval policy §1.2: the tap's own person proof, bound to these exact words, so release and deploy count it.
+    expect(approvalProofOf(store, "plan-5", "bob", scope.digest)).toMatchObject({ method: "chat" });
+    expect(personApprovalOf(store, "plan-5")).toMatchObject({ ok: true, by: "bob", method: "chat" });
   });
 
   test("c2: Not now leaves the plan waiting; a plan that changed after the card was sent acts on nothing", async () => {

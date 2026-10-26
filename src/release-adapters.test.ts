@@ -1,4 +1,6 @@
-import { existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { provableCandidate } from "../test/deploy-candidate-fixture.js";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
@@ -142,14 +144,15 @@ describe("the release adapters", () => {
     expect(await adapter.runtimeCommit(dist)).toBeNull();
   });
 
-  test("deploy and recovery invoke the candidate script with the persisted stage and bounded runtime", async () => {
-    const stage = root(), input = { stage, run: 7, worktree: "/w/7" };
-    const calls: { args: readonly string[]; options: unknown }[] = [];
-    const run: Exec = async (_command, args, options) => {
-      calls.push({ args, options });
-      return { code: 0, stdout: JSON.stringify({ runtime: "/new/dist" }), stderr: "" };
+  test("deploy and recovery run the approved commit's own script, extracted by the release, with the persisted stage and bounded runtime", async () => {
+    const stage = root(), database = join(stage, "orders.db"), { project, head: approved } = projectAt(stage);
+    const { runId, head } = provableCandidate(database, "deploy-me", "person", approved, project);
+    const input = { stage, run: runId, worktree: "/w/7" };
+    const calls: { command: string; args: readonly string[]; options: unknown }[] = [];
+    const run: Exec = async (command, args, options) => {
+      calls.push({ command, args, options });
+      return extracting(command, args) ?? { code: 0, stdout: JSON.stringify({ runtime: "/new/dist" }), stderr: "" };
     };
-    const database = join(stage, "no-such.db");
     const adapter = releaseAdapters({ checkout: "/rv", run, deployMinutes: 3, database, processes: () => [] }).toolroll;
     // A crash before preparation installed any gate needs no rollback.
     expect(await adapter.recoverDeploy(input)).toEqual({ ok: true });
@@ -157,12 +160,22 @@ describe("the release adapters", () => {
     expect(await adapter.deploy(input)).toEqual({ ok: true, runtime: "/new/dist" });
     writeFileSync(join(stage, "deployment.json"), "{}");
     expect(await adapter.recoverDeploy(input)).toEqual({ ok: true });
-    expect(calls.map(one => one.args)).toEqual([
-      ["scripts/deploy-browser.mjs", "--run", "7", "--stage", stage, "--yes"],
-      ["scripts/deploy-browser.mjs", "--run", "7", "--stage", stage, "--phase", "recover"],
+    const gitDir = realpathSync(join(project, ".git"));
+    const scripts = calls.filter(one => one.command === process.execPath);
+    expect(scripts.map(one => one.args.slice(1))).toEqual([
+      ["--run", String(runId), "--stage", stage, "--source", "/w/7", "--head", head, "--git-dir", gitDir, "--yes"],
+      ["--run", String(runId), "--stage", stage, "--source", "/w/7", "--head", head, "--git-dir", gitDir, "--phase", "recover"],
     ]);
-    for (const call of calls) expect(call.options).toMatchObject({ cwd: "/w/7", timeoutMs: 180_000 });
-    const failed = releaseAdapters({ checkout: "/rv", database, processes: () => [], run: async () => ({ code: 124, stdout: "", stderr: "recovery timed out" }) }).toolroll;
+    for (const call of scripts) {
+      // The script is the release's own extraction of the commit, run from there, never from the checkout.
+      const cwd = (call.options as { cwd: string }).cwd;
+      expect(call.args[0]).toBe(join(cwd, "scripts", "deploy-browser.mjs"));
+      expect(cwd).not.toBe("/w/7");
+      expect(call.options).toMatchObject({ timeoutMs: 180_000 });
+    }
+    // The extraction is this runtime's own (no git or tar through the stand-in), and only the node runs go out.
+    expect(calls.every(one => one.command === process.execPath)).toBe(true);
+    const failed = releaseAdapters({ checkout: "/rv", database, processes: () => [], run: async (command, args) => extracting(command, args) ?? { code: 124, stdout: "", stderr: "recovery timed out" } }).toolroll;
     expect(await failed.recoverDeploy(input)).toEqual({ ok: false, message: expect.stringMatching(/^recovery timed out \(the deployment journal is at an unreadable phase;/) });
   });
 
@@ -174,9 +187,11 @@ describe("the release adapters", () => {
   });
 
   test("an exit 0 without a runtime is a stop, not a deployment", async () => {
-    const stage = root();
-    const run: Exec = async () => ({ code: 0, stdout: "Add --yes to drain the plane, back up the database, and swap the service.", stderr: "" });
-    expect(await releaseAdapters({ checkout: "/rv", run, database: join(stage, "none.db") }).toolroll.deploy({ stage, run: 7, worktree: "/w/7" }))
+    const stage = root(), database = join(stage, "orders.db");
+    const { project, head } = projectAt(stage);
+    const { runId } = provableCandidate(database, "deploy-me", "person", head, project);
+    const run: Exec = async (command, args) => extracting(command, args) ?? { code: 0, stdout: "Add --yes to drain the plane, back up the database, and swap the service.", stderr: "" };
+    expect(await releaseAdapters({ checkout: "/rv", run, database }).toolroll.deploy({ stage, run: runId, worktree: "/w/7" }))
       .toEqual({ ok: false, message: "Add --yes to drain the plane, back up the database, and swap the service." });
   });
 
@@ -184,12 +199,13 @@ describe("the release adapters", () => {
     const ID = "0f1e2d3c-4b5a-4968-8776-655443322110";
     const paused = (phase: string, owned: boolean) => {
       const stage = root(), database = join(stage, "orders.db");
-      openStore(database).close();
+      const { project, head } = projectAt(stage);
+      const { runId } = provableCandidate(database, "deploy-me", "person", head, project);
       if (owned) { const db = new DatabaseSync(database) as unknown as Database; try { installUpdateGate(db, ID); } finally { db.close(); } }
       writeFileSync(join(stage, "deployment.json"), JSON.stringify({ id: ID, phase }));
-      return { stage, database, input: { stage, run: 7, worktree: "/w/7" } };
+      return { stage, database, input: { stage, run: runId, worktree: "/w/7" } };
     };
-    const exit1: Exec = async () => ({ code: 1, stdout: "", stderr: "The deployment stopped at preparing" });
+    const exit1: Exec = async (command, args) => extracting(command, args) ?? { code: 1, stdout: "", stderr: "The deployment stopped at preparing" };
 
     test("names its pause only when the journal is before the swap and the live pause is that deployment's", () => {
       expect(stageGate(paused("preparing", true).stage, () => ID)).toEqual({ id: ID, phase: "preparing" });
@@ -356,3 +372,24 @@ describe("the release adapters", () => {
     await expect(releaseAdapters({ checkout: "/rv", run }).homebrew.merge(12, SHA)).rejects.toThrow(/did not merge.*Required check is pending/);
   });
 });
+
+/** A stand-in for the release's extraction of the approved commit: git archive and tar succeed (writing nothing). */
+function extracting(command: string, args: readonly string[]): { code: number; stdout: string; stderr: string } | null {
+  if (command === "git" && args.includes("archive")) return { code: 0, stdout: "", stderr: "" };
+  if (command === "tar") return { code: 0, stdout: "", stderr: "" };
+  return null;
+}
+
+/** A real project repository with an approved deployment script committed; its own Git directory is what the release
+ * reads the approved commit from. */
+function projectAt(stage: string): { project: string; head: string } {
+  const project = join(stage, "project");
+  mkdirSync(join(project, "scripts"), { recursive: true });
+  writeFileSync(join(project, "scripts", "deploy-browser.mjs"), "console.log('approved');\n");
+  const git = (...args: string[]) => execFileSync("git", ["-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main", ...args], { cwd: project, encoding: "utf8",
+    env: { PATH: process.env["PATH"] ?? "", HOME: stage, GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" } }).trim();
+  git("init", "-q");
+  git("add", ".");
+  git("commit", "-q", "-m", "approved");
+  return { project, head: git("rev-parse", "HEAD") };
+}

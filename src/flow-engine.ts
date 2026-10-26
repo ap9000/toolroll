@@ -6,6 +6,8 @@
  * waits for people. See flows.ts for what each zone does.
  */
 import { assignmentOf } from "./assignment.js";
+import { currentActor } from "./actor.js";
+import { activeRemote } from "./remote-run.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
 import { passOn, TEXT_LIMITS } from "./text-limits.js";
 import { deciderOf, durationWords, fillFlowText, flowGoal, flowValueLabel, flowWorkTemplate, validateFlowDefinition, withinHours, type FlowDefinition, type FlowStage } from "./flows.js";
@@ -485,7 +487,9 @@ export function decideFlowCard(store: Store, input: { card: number; decision: "a
       ledger("approved");
       return { ok: true, said: "Approved. The card is done." };
     }
-    if (!store.moveFlowCard(card.id, { to: stage.next, outcome: "approved", actor: input.actor, note: input.note, expectEntry: card.entry }, now)) return { ok: false, message: "That card has moved on since; nothing was changed." };
+    // Who decided, from trusted context (approval policy §1.7): only a person's approval lets a Pull request zone merge.
+    const authority = input.subagent !== undefined ? "subagent" as const : currentActor()?.lead === true ? "lead" as const : activeRemote() !== null ? "remote" as const : "person" as const;
+    if (!store.moveFlowCard(card.id, { to: stage.next, outcome: "approved", actor: input.actor, note: input.note, expectEntry: card.entry, authority }, now)) return { ok: false, message: "That card has moved on since; nothing was changed." };
     ledger("approved");
     const title = definition.stages.find(one => one.id === stage.next)?.title ?? stage.next;
     if (card.owner !== null) notifyPeople(store, card, [card.owner], input.actor, { key: `approved:${card.entry}`, subject: `${input.actor} approved “${card.title}”`, body: `${stage.title}: approved. It moves to ${title}.${input.note === null || input.note.trim() === "" ? "" : `\n\n${input.note.trim()}`}` }, now);

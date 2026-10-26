@@ -195,8 +195,15 @@ describe("publication", () => {
       expect(one.pushed).toBe(0);
       expect(held.calls).toEqual([]);
       expect(one.problems[0]).toContain("held: it changed protected files");
-      // sam (not its approver or requester) marks the result complete: the push goes.
-      store.recordAction({ at: T0.toISOString(), actor: "operator:sam", repo: REPO, taskId: "t-1", runId, action: "assignment handoff checked", outcome: "x".repeat(64), source: "work" });
+      // Approval policy §1.7a: a completion sam's lead or API token made, or one from before completions said who made
+      // them, is not a second person; it stays held.
+      for (const detail of ["proof machine", null]) {
+        store.recordAction({ at: T0.toISOString(), actor: "operator:sam", repo: REPO, taskId: "t-1", runId, action: "assignment handoff checked", outcome: "x".repeat(64), source: "work", detail });
+        const still = await publishPass(store, { repo: REPO, clock: () => T0, exec: held.exec, evidenceRoot: root });
+        expect(still.pushed, String(detail)).toBe(0);
+      }
+      // sam (not its approver or requester) marks the result complete as a person: the push goes.
+      store.recordAction({ at: T0.toISOString(), actor: "operator:sam", repo: REPO, taskId: "t-1", runId, action: "assignment handoff checked", outcome: "x".repeat(64), source: "work", detail: "proof person" });
       const two = await publishPass(store, { repo: REPO, clock: () => T0, exec: scripted({ "gh pr list": { code: 0, stdout: "[]" }, "gh pr create": { code: 0, stdout: "https://github.com/alex/thing/pull/8\n" } }).exec, evidenceRoot: root });
       expect(two.pushed).toBe(1);
     } finally {
