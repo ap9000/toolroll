@@ -333,16 +333,33 @@ export function readLiveWindow(root: string, runId: number, from: number, allowT
   }
 }
 
-/** A window's complete lines as the plain words the run page and `toolroll peek` show, whatever its format. */
-export function liveWindowLines(read: { text: string; format: LiveFormat }, keys: KeyState = { inKey: false }): string[] {
-  if (read.format === "records") return projectLiveText(parseLiveRecords(read.text, keys));
+/** A window's complete lines as the plain words the run page and `toolroll peek` show, whatever its format. `commands` is
+ * the run's own captured answer (store.ts runLiveCommands), never the file's say. */
+export function liveWindowLines(read: { text: string; format: LiveFormat }, commands: boolean, keys: KeyState = { inKey: false }): string[] {
+  if (read.format === "records") return projectLiveText(withholdCommands(parseLiveRecords(read.text, keys), commands));
   return cleanLegacy(read.text, keys).split("\n").filter(one => one !== "");
 }
 
-/** A window as records, whatever its format: an older plain file's lines become the agent's words. */
-export function liveWindowRecords(read: { text: string; format: LiveFormat }, keys: KeyState = { inKey: false }): LiveRecord[] {
-  if (read.format === "records") return parseLiveRecords(read.text, keys);
+/** A window as records, whatever its format: an older plain file's lines become the agent's words. Command text and
+ * output show only when the run's own captured answer (`commands`) is on. */
+export function liveWindowRecords(read: { text: string; format: LiveFormat }, commands: boolean, keys: KeyState = { inKey: false }): LiveRecord[] {
+  if (read.format === "records") return withholdCommands(parseLiveRecords(read.text, keys), commands);
   return cleanLegacy(read.text, keys).split("\n").filter(one => one !== "").map(line => ({ k: "say" as const, at: "", t: [line] }));
+}
+
+/**
+ * Enforce a run's captured "Show commands" answer on read: the file is build-writable, so an `open` record, a command
+ * step's text or a step's output may say anything. With the answer off, every `open` reads the base tier, command steps
+ * lose their text and steps lose their output. (The older plain-text format predates command detail and is unchanged.)
+ */
+function withholdCommands(records: LiveRecord[], commands: boolean): LiveRecord[] {
+  if (commands) return records;
+  return records.map(record => {
+    if (record.k === "open") return record.detail === "base" ? record : { ...record, detail: "base" as const };
+    if (record.k === "step" && record.kind === "command" && record.target !== undefined) { const { target: _target, ...rest } = record; return rest; }
+    if (record.k === "done" && record.out !== undefined) { const { out: _out, ...rest } = record; return rest; }
+    return record;
+  });
 }
 
 /** Legacy text lines, cleaned again on read: the file may have been altered after it was written. */

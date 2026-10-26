@@ -1489,7 +1489,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
   // Every streaming transport emits events now (peek); a file that cannot
   // open is a null, and a null never costs a build.
   // What the agent did last rides the same stream into one row (live tasks).
-  const liveLog = withAgentTurns(withRunActivity(openLiveLog(root, request.runId, liveLogContext(store, taskRef, worktree)), store, request.runId, clock),
+  const liveLog = withAgentTurns(withRunActivity(openLiveLog(root, request.runId, liveLogContext(store, request.runId, taskRef, worktree, clock())), store, request.runId, clock),
     (state, at) => { if (attemptKey !== null) recordAgentTurn(store, { run: request.runId, attemptKey, state, at }); }, clock,
     (open, at) => { if (attemptKey !== null) noteOpenTool(store, request.runId, attemptKey, open, at); });
   // The retry base (steering fix for run 1465's proof): the SAME pinned

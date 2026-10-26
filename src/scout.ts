@@ -405,7 +405,7 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
 
   // The live window (peek): the same transcript file the builder keeps,
   // so `toolroll peek` and the run page can watch this session too.
-  const liveLog = openLiveLog(root, request.runId, liveLogContext(store, taskRef, worktree));
+  const liveLog = openLiveLog(root, request.runId, liveLogContext(store, request.runId, taskRef, worktree, clock()));
   // Claude's report rides the terminal result event (run 2334's fix): plan
   // mode only lets the session write its own plan file. Codex has no
   // structured output and keeps the mailbox file.

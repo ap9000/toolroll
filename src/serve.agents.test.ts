@@ -388,7 +388,7 @@ describe("Settings → Project → Live view", () => {
     expect(liveCommandsShown(store, repoA)).toBe(true);
     // A run opened now carries the project's choice; another project is untouched.
     const run = running("t-live", repoA);
-    expect(liveLogContext(store, store.getRun(run)!.taskRef, "/pool/wt")).toEqual({ base: "/pool/wt", commands: true });
+    expect(liveLogContext(store, run, store.getRun(run)!.taskRef, "/pool/wt", new Date())).toEqual({ base: "/pool/wt", commands: true });
     expect(liveCommandsShown(store, repoB)).toBe(false);
     expect((await send(cookie, { repo: repoA, act: "off" })).location).toContain("said=Commands are hidden");
     expect(liveCommandsShown(store, repoA)).toBe(false);

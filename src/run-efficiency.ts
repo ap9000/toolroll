@@ -8,7 +8,7 @@
  * kept 24 hours) are read once, bounded, through the descriptor-safe live reader, for step counts and observed step
  * times. No command text is ever stored here: repeats are counted, never quoted.
  */
-import type { Run, Store } from "./store.js";
+import { runLiveCommands, type Run, type Store } from "./store.js";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import { LIVE_RETAIN_MS, legacyLiveLogPath, liveLogPath, liveWindowRecords } from "./live.js";
@@ -117,7 +117,7 @@ const noSteps = (state: "expired" | "absent" | "truncated", reason: string): Run
  * directory), measured once, and never more than the budget read whatever the file does meanwhile; then parsed line by
  * line. A file over the budget, in the older text format, with lines that don't read, or cut or capped while the agent
  * ran, says its steps are incomplete. Null when there is no step file at all. */
-function readRecords(evidenceRoot: string, runId: number): { records: LiveRecord[]; truncated: string | null } | { unreadable: string } | null {
+function readRecords(evidenceRoot: string, runId: number, commands: boolean): { records: LiveRecord[]; truncated: string | null } | { unreadable: string } | null {
   try {
     const dir = lstatSync(join(evidenceRoot, "live"));
     if (!dir.isDirectory() || dir.isSymbolicLink()) return null;
@@ -151,10 +151,10 @@ function readRecords(evidenceRoot: string, runId: number): { records: LiveRecord
   if (whole.length > EFFICIENCY_RECORDS) whole.length = EFFICIENCY_RECORDS;
   const keys = { inKey: false };
   // One record per line: a whole line that doesn't read is a record lost.
-  const read = liveWindowRecords({ text: whole.length === 0 ? "" : `${whole.join("\n")}\n`, format: "records" }, keys);
+  const read = liveWindowRecords({ text: whole.length === 0 ? "" : `${whole.join("\n")}\n`, format: "records" }, commands, keys);
   const lost = whole.length - read.length;
   // A finished run's last line without its newline is read like any other; one that doesn't read is a record lost.
-  const tail = unfinished.trim() === "" ? [] : liveWindowRecords({ text: `${unfinished}\n`, format: "records" }, keys);
+  const tail = unfinished.trim() === "" ? [] : liveWindowRecords({ text: `${unfinished}\n`, format: "records" }, commands, keys);
   const records = [...read, ...tail];
   const lostAll = lost + (unfinished.trim() !== "" && tail.length === 0 ? 1 : 0);
   if (records.length === 0 && text.trim() !== "") return { unreadable: "The step records couldn't be read." };
@@ -167,10 +167,10 @@ function readRecords(evidenceRoot: string, runId: number): { records: LiveRecord
   return { records, truncated };
 }
 
-/** Derive a finished run's How it ran from its records. */
-export function deriveRunEfficiency(run: Run & { usageJson?: string | null }, evidenceRoot: string, now: Date): RunEfficiency {
+/** Derive a finished run's How it ran from its records, read under the run's own captured "Show commands" answer. */
+export function deriveRunEfficiency(run: Run & { usageJson?: string | null }, evidenceRoot: string, now: Date, commands = false): RunEfficiency {
   const finished = run.finishedAt;
-  const read = readRecords(evidenceRoot, run.id);
+  const read = readRecords(evidenceRoot, run.id, commands);
   const steps = read !== null && "unreadable" in read ? noSteps("truncated", read.unreadable)
     : read !== null ? stepsOf(read.records, read.truncated, run.provider === "claude")
     : finished !== null && now.getTime() - Date.parse(finished) > LIVE_RETAIN_MS ? noSteps("expired", "Step details are kept for a day after a run; this one's have expired.")
@@ -193,13 +193,14 @@ export function runEfficiencyOf(store: Store, evidenceRoot: string, runId: numbe
   if (run === null) return null;
   const usageJson = store.handle.prepare("SELECT usage_json FROM run WHERE id = ?").get(runId)?.["usage_json"];
   const full = { ...run, usageJson: typeof usageJson === "string" ? usageJson : null };
-  if (run.finishedAt === null) return deriveRunEfficiency(full, evidenceRoot, now);
+  const commands = runLiveCommands(store, runId);
+  if (run.finishedAt === null) return deriveRunEfficiency(full, evidenceRoot, now, commands);
   let saved: Record<string, unknown> | undefined;
   try { saved = store.handle.prepare("SELECT parser_version, payload_json FROM run_efficiency WHERE run = ?").get(runId); } catch { saved = undefined; }
   if (saved !== undefined && Number(saved["parser_version"]) === RUN_EFFICIENCY_VERSION) {
     try { return JSON.parse(String(saved["payload_json"])) as RunEfficiency; } catch { /* derived again below */ }
   }
-  const derived = deriveRunEfficiency(full, evidenceRoot, now);
+  const derived = deriveRunEfficiency(full, evidenceRoot, now, commands);
   const payload = JSON.stringify(derived);
   // A row too large for its column (it can't be: the counts are bounded) is shown, never saved.
   // Saving is a convenience: a store that can't take the row (read-only, busy) still shows what was derived.

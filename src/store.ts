@@ -24580,3 +24580,30 @@ function processStartedAt(pid: number): number | null {
     return Number.isFinite(at) ? at : null;
   } catch { return null; }
 }
+
+// A run's own "Show commands in the live view" answer (schema v136, docs/plans/agents-view.md §2.4). Free functions over
+// the store, kept together at the end.
+
+/**
+ * Capture a run's live-view answer once, before its live file opens: the first capture stands (a second never changes
+ * it). Returns the answer now saved for the run; any failure, or a saved row that isn't plainly 1, is commands off.
+ */
+export function captureRunLiveDetail(store: Store, runId: number, commands: boolean, now: Date): boolean {
+  try {
+    store.handle.prepare("INSERT OR IGNORE INTO run_live_detail (run, commands, captured_at) VALUES (?, ?, ?)").run(runId, commands ? 1 : 0, now.toISOString());
+  } catch {
+    return false;
+  }
+  return runLiveCommands(store, runId);
+}
+
+/** Whether a run's live view may show commands: only its own captured answer, and only when that is plainly 1. Absent
+ * (a run from before v136, or one whose capture failed), unreadable or anything else is off. */
+export function runLiveCommands(store: Store, runId: number): boolean {
+  try {
+    const row = store.handle.prepare("SELECT commands FROM run_live_detail WHERE run = ?").get(runId);
+    return row !== undefined && row["commands"] === 1;
+  } catch {
+    return false;
+  }
+}

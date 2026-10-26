@@ -63,7 +63,7 @@ describe("the window reader", () => {
     for (let read = 0; read < 10; read += 1) {
       const window = readLiveWindow(root, 4, offset);
       if (!window.ok) throw new Error(window.reason);
-      lines = lines.concat(liveWindowLines(window));
+      lines = lines.concat(liveWindowLines(window, false));
       if (window.nextOffset === offset) break;
       offset = window.nextOffset;
     }
@@ -75,13 +75,13 @@ describe("the window reader", () => {
     appendFileSync(liveLogPath(root, 12), `${"y".repeat(2 * 1024 * 1024)}\n${JSON.stringify({ k: "say", at: "", t: ["after"] })}\n`);
     const read = (from: number, tail = false) => { const window = readLiveWindow(root, 12, from, tail); if (!window.ok) throw new Error(window.reason); return window; };
     let offset = read(0).nextOffset, lines: string[] = [];
-    for (let step = 0; step < 5; step += 1) { const window = read(offset); lines = lines.concat(liveWindowLines(window)); if (window.nextOffset === offset) break; offset = window.nextOffset; }
+    for (let step = 0; step < 5; step += 1) { const window = read(offset); lines = lines.concat(liveWindowLines(window, false)); if (window.nextOffset === offset) break; offset = window.nextOffset; }
     expect(lines).toEqual(["[a line was too long to show]", "after"]);
     // A finished run's drain over a huge line that never ends moves to the end.
     appendFileSync(liveLogPath(root, 12), "z".repeat(200 * 1024));
     const drained = read(offset, true);
     expect(drained).toMatchObject({ eof: true });
-    expect(liveWindowLines(drained)).toEqual(["[a line was too long to show]"]);
+    expect(liveWindowLines(drained, false)).toEqual(["[a line was too long to show]"]);
   });
 
   test("an offset belongs to its file: a different file is a different generation", () => {
@@ -93,7 +93,7 @@ describe("the window reader", () => {
     if (!first.ok || !second.ok) throw new Error("unread");
     expect(first.gen).not.toBe(second.gen);
     // peek starts over visibly instead of reading the new file from the old offset.
-    const tail = advanceTail(root, 5, { offset: first.nextOffset, lines: ["old"], state: "live", gen: "records:0:0" });
+    const tail = advanceTail(root, 5, { offset: first.nextOffset, lines: ["old"], state: "live", gen: "records:0:0" }, false);
     expect(tail).toMatchObject({ offset: 0, state: "replaced" });
   });
 
@@ -103,12 +103,12 @@ describe("the window reader", () => {
     const window = readLiveWindow(root, 6, 0);
     if (!window.ok) throw new Error(window.reason);
     expect(window.format).toBe("text");
-    expect(liveWindowLines(window)).toEqual(["plain words", "cleared flipped", "[a line was hidden]"]);
+    expect(liveWindowLines(window, false)).toEqual(["plain words", "cleared flipped", "[a line was hidden]"]);
     // An older writer hid only a key's BEGIN line: its body never shows, even as a finished file's unended tail.
     writeFileSync(legacyLiveLogPath(root, 13), "[a credential-shaped line was redacted]\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC\n-----BEGIN PRIVATE KEY-----\nSYNTHETIC_BODY_123");
     const tail = readLiveWindow(root, 13, 0, true);
     if (!tail.ok) throw new Error(tail.reason);
-    expect(liveWindowLines(tail).join("\n")).not.toMatch(/MIIEvQ|SYNTHETIC_BODY/);
+    expect(liveWindowLines(tail, false).join("\n")).not.toMatch(/MIIEvQ|SYNTHETIC_BODY/);
   });
 
   test("a key block split across reads stays hidden: each read hands the next whether it ended inside one", () => {
@@ -117,14 +117,14 @@ describe("the window reader", () => {
     const first = readLiveWindow(root, 14, 0);
     if (!first.ok) throw new Error(first.reason);
     const keys = { inKey: false };
-    expect(liveWindowLines(first, keys)).toEqual(["before", "[a key block was hidden]"]);
+    expect(liveWindowLines(first, false, keys)).toEqual(["before", "[a key block was hidden]"]);
     expect(keys.inKey).toBe(true);
     appendFileSync(legacyLiveLogPath(root, 14), "MIIEowIBAAKCAQEA\n-----END PRIVATE KEY-----\nafter\n");
     const second = readLiveWindow(root, 14, first.nextOffset);
     if (!second.ok) throw new Error(second.reason);
-    expect(liveWindowLines(second, keys)).toEqual(["after"]);
+    expect(liveWindowLines(second, false, keys)).toEqual(["after"]);
     // peek carries it the same way.
-    const tail = advanceTail(root, 14, { offset: 0, lines: [], state: "not-yet" });
+    const tail = advanceTail(root, 14, { offset: 0, lines: [], state: "not-yet" }, false);
     expect(tail.lines.join("\n")).not.toContain("MIIEow");
   });
 
@@ -134,27 +134,27 @@ describe("the window reader", () => {
     const first = readLiveWindow(root, 15, 0);
     if (!first.ok) throw new Error(first.reason);
     const keys = { inKey: false, tail: "" };
-    expect(liveWindowLines(first, keys)).toEqual(["look -----BEG"]);
+    expect(liveWindowLines(first, false, keys)).toEqual(["look -----BEG"]);
     appendFileSync(legacyLiveLogPath(root, 15), "IN PRIVATE KEY-----\nYWJjZGVm\n-----END PRIVATE KEY-----\nafter\n");
     const second = readLiveWindow(root, 15, first.nextOffset);
     if (!second.ok) throw new Error(second.reason);
-    expect(liveWindowLines(second, keys)).toEqual(["[a key block was hidden]", "after"]);
+    expect(liveWindowLines(second, false, keys)).toEqual(["[a key block was hidden]", "after"]);
     // What rides the cursor is only ever a marker fragment, never part of a line — let alone a hidden one.
     const carried = { inKey: false, tail: "" };
-    liveWindowLines({ format: "text", text: "-----BEGIN KEY-----\nMIIEowIBAAKCAQEAabcdef12\n" }, carried);
+    liveWindowLines({ format: "text", text: "-----BEGIN KEY-----\nMIIEowIBAAKCAQEAabcdef12\n" }, false, carried);
     expect(carried.tail).toBe("|||");
-    liveWindowLines({ format: "text", text: "-----END KEY-----\nplain words -----BE\n" }, carried);
+    liveWindowLines({ format: "text", text: "-----END KEY-----\nplain words -----BE\n" }, false, carried);
     expect(carried.tail).toBe("-----BE|-----BE|-----BE|");
   });
 
   test("peek never keeps a key tail it could not have produced", () => {
-    expect(advanceTail(root, 99, { offset: 0, lines: [], state: "not-yet", keyTail: "TOPSECRET" }).keyTail).toBe("");
+    expect(advanceTail(root, 99, { offset: 0, lines: [], state: "not-yet", keyTail: "TOPSECRET" }, false).keyTail).toBe("");
   });
 
   test("peek's cursor moves by the bytes read even when nothing in them shows", () => {
     const log = openLiveLog(root, 9)!;
     log.close();
-    const tail = advanceTail(root, 9, { offset: 0, lines: [], state: "not-yet" });
+    const tail = advanceTail(root, 9, { offset: 0, lines: [], state: "not-yet" }, false);
     expect(tail.offset).toBeGreaterThan(0);
     expect(tail.lines).toEqual([]);
   });
