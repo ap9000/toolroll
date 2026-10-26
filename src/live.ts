@@ -19,6 +19,7 @@ import { closeSync, constants, fstatSync, linkSync, lstatSync, mkdirSync, openSy
 import { join } from "node:path";
 import { scanForSecrets } from "./evidence.js";
 import { createLiveRecorder, parseLiveRecords, redactLiveLines, projectLiveText, serializeLiveRecord, type KeyState, type LiveActivityKind, type LiveRecord, type LiveRecorderOptions } from "./live-records.js";
+import { childLogWriter, createChildRecorder } from "./live-children.js";
 import { topLevelEvent } from "./stream-scope.js";
 
 export const LIVE_LINE_CAP = 2 * 1024;
@@ -161,7 +162,11 @@ export function openLiveLog(root: string, runId: number, options: Partial<LiveRe
   } catch {
     return null;
   }
-  const recorder = createLiveRecorder({ base: options.base ?? null, commands: options.commands === true, ...(options.clock === undefined ? {} : { clock: options.clock }) });
+  const recorderOptions = { base: options.base ?? null, commands: options.commands === true, ...(options.clock === undefined ? {} : { clock: options.clock }) };
+  const recorder = createLiveRecorder(recorderOptions);
+  // The run's subagents go to their own file (live-children.ts), under the same captured answer; this file is unchanged.
+  const children = createChildRecorder(recorderOptions);
+  const childLog = childLogWriter(root, runId);
   let written = 0;
   let capped = false;
   let closed = false;
@@ -197,7 +202,9 @@ export function openLiveLog(root: string, runId: number, options: Partial<LiveRe
   return {
     observe(event: Record<string, unknown>): void {
       try {
-        for (const record of recorder.observe(event)) append(record);
+        const mine = recorder.observe(event);
+        for (const record of mine) append(record);
+        if (!closed) childLog.append(children.observe(event, mine), children.checkpoint);
       } catch {
         // Recording is observational; a malformed event records nothing.
       }
@@ -209,6 +216,8 @@ export function openLiveLog(root: string, runId: number, options: Partial<LiveRe
       } catch {
         // the steps simply stay open in the file
       }
+      try { childLog.append(children.end(), children.checkpoint); } catch { /* the subagents' steps stay open in theirs */ }
+      childLog.close();
       closed = true;
       try {
         closeSync(fd);

@@ -377,6 +377,8 @@ function liveHost(given: unknown): string | null {
 }
 
 const short = (given: unknown): string | null => (typeof given === "string" ? liveTarget(given.split(/\r?\n/)[0] ?? "", SHORT_CAP) : null);
+/** A short display form of one field: its first line, cleaned, redacted and cut (a delegated task's description). */
+export const liveShort = short;
 
 /** Claude tools: our kind, and whether it is a command. */
 const CLAUDE_KINDS: ReadonlyMap<string, LiveActivityKind> = new Map([
@@ -414,6 +416,8 @@ export type LiveRecorderOptions = {
   /** The project's "Show commands in the live view" setting, read at open. */
   commands: boolean;
   clock?: () => Date;
+  /** The key-block state to carry (the caller's, so it can write it down in a checkpoint); a fresh one by default. */
+  keyState?: KeyState;
 };
 
 export type LiveRecorder = {
@@ -442,7 +446,7 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
   const clock = options.clock ?? (() => new Date());
   let sequence = 0;
   /** A key block the agent began in one message stays hidden through the next, until it ends or a new session starts. */
-  const keyState: KeyState = { inKey: false };
+  const keyState: KeyState = options.keyState ?? { inKey: false };
   /** Provider call id → our step, while it is open. */
   const open = new Map<string, { id: string; kind: LiveActivityKind }>();
 
