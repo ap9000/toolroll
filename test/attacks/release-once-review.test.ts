@@ -249,3 +249,51 @@ describe("security review of f7912c15: the fresh-approval stop reports whether i
     expect(f.authority().state).toBe("revoked");
   });
 });
+
+describe("security review of b788181a: one release publication can't stop the merge sweep", () => {
+  test("no publication can be made for a release task", () => {
+    const f = (fixture = releaseFixture());
+    const run = builtRun(f.store, f.taskId, f.approved);
+    const ref = f.store.refFor("built-in", f.taskId).id;
+    expect(() => f.store.createPublicationIntent({ run, taskRef: ref, githubRepo: "o/r", remote: "origin", base: "main", head: "b", headSha: f.approved, bodyHash: "h", draft: false }, LATER)).toThrow("toolroll release");
+  });
+
+  test("a sweep with a release publication, a bad row and an ordinary one merges the ordinary one", async () => {
+    const f = (fixture = releaseFixture());
+    f.store.savePublicationGrant({ repo: f.repo, githubRepo: "o/r", remote: "origin", headPrefix: "standing-orders/", base: "main", capabilities: ["push-branch", "open-pr"], selector: "all", draft: false, grantedBy: "alex", merge: true, mergeMethod: "squash" }, RELEASE_NOW);
+    const opened = (taskId: string, pr: number) => {
+      const run = builtRun(f.store, taskId, f.approved);
+      const ref = f.store.refFor("built-in", taskId).id;
+      f.store.handle.prepare("INSERT INTO publication (run, task_ref, github_repo, remote, base, head, head_sha, body_hash, draft, state, pr_number, created_at, updated_at) VALUES (?, ?, 'o/r', 'origin', 'main', ?, ?, 'h', 0, 'opened', ?, ?, ?)")
+        .run(run, ref, `standing-orders/${taskId}`, f.approved, pr, LATER.toISOString(), LATER.toISOString());
+    };
+    const ordinary = (id: string) => {
+      f.store.createTask({ id, title: id }, LATER);
+      f.store.placeTask(f.store.refFor("built-in", id).id, f.repo, {}, LATER);
+      const scope = propose(f.store, { taskId: id, goal: id, candidate: f.approved, acceptance: [{ id: "c1", statement: "s", how: null, evidence: ["check"] }], now: LATER });
+      if (!approve(f.store, id, "alex", LATER, scope.digest, f.password).ok) throw new Error("approve");
+      return id;
+    };
+    opened(f.taskId, 1);
+    // A row that throws when its intent is written (a nightly check, planted): the sweep goes on past it.
+    const bad = ordinary("planted-nightly");
+    f.store.handle.prepare("INSERT INTO nightly_check (repo, sha, task, at) VALUES (?, ?, ?, ?)").run(f.repo, f.approved, bad, LATER.toISOString());
+    opened(bad, 2);
+    opened(ordinary("ordinary"), 3);
+    const merged: string[] = [];
+    const exec = async (file: string, args: readonly string[]) => {
+      const ok = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
+      if (args[0] === "api" && args[1] === "--paginate") return { ...ok, stdout: "[[]]" };
+      if (args[0] === "api" && args[1] === "--include") return { ...ok, code: 1, stdout: "HTTP/2.0 404 Not Found\n" };
+      if (args[0] === "pr" && args[1] === "view") return { ...ok, stdout: JSON.stringify({ headRefOid: f.approved, state: "OPEN", isDraft: false, baseRefName: "main", statusCheckRollup: [{ name: "ci", status: "COMPLETED", conclusion: "SUCCESS" }] }) };
+      if (args[0] === "pr" && args[1] === "merge") { merged.push(String(args[2])); return ok; }
+      return { ...ok, code: 1, stderr: `unexpected ${file} ${args.join(" ")}` };
+    };
+    const { sweepMerges } = await import("../../src/publish.js");
+    const report = await sweepMerges(f.store, { repo: f.repo, exec, clock: () => LATER });
+    expect(merged).toEqual(["3"]);
+    expect(report.merged).toBe(1);
+    expect(report.problems.some(one => one.startsWith("publication "))).toBe(true);
+    expect(f.store.handle.prepare("SELECT COUNT(*) AS n FROM merge_intent m JOIN publication p ON p.id = m.publication WHERE p.pr_number = 1").get()?.["n"]).toBe(0);
+  });
+});

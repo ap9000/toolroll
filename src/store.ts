@@ -18076,6 +18076,8 @@ export class Store {
   ): number {
     // The nightly check of main is a check only: it is never published, so no pull request or merge can follow.
     if (nightlyTaskRef(this, intent.taskRef)) throw new Error(NIGHTLY_CHECK_ONLY);
+    // Nor is a release's task: `toolroll release` merges its own pull request, so no publication (and no merge sweep) has it.
+    if (releaseTaskRef(this, intent.taskRef)) throw new Error(RELEASE_MERGES_ONLY);
     const inserted = this.db
       .prepare(
         `INSERT INTO publication

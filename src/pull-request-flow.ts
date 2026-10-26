@@ -26,6 +26,7 @@ import { authenticateApprover, personProof } from "./scope.js";
 import { BRANCH_PREFIX, headWithin } from "./names.js";
 import type { VerifiedApprover } from "./principal.js";
 import type { Publication, Store } from "./store.js";
+import { NIGHTLY_CHECK_ONLY, RELEASE_MERGES_ONLY, nightlyTaskRef, releaseTaskRef } from "./store.js";
 import { belongsToRelease } from "./release-authority.js";
 import { fullCheckGate, requestFollowUpChecks } from "./result-follow-ups.js";
 
@@ -156,6 +157,8 @@ export function pullRequestBlocker(store: Store, runId: number): string | null {
   const { grant } = publicationGrantOf(store, run.taskRef);
   if (grant === null || !grant.capabilities.includes("push-branch") || !grant.capabilities.includes("open-pr")) return "Pull requests aren't set up for this project.";
   if (run.headRevision === null || run.committed === false) return "This result has no commit to publish.";
+  if (nightlyTaskRef(store, run.taskRef)) return NIGHTLY_CHECK_ONLY;
+  if (releaseTaskRef(store, run.taskRef)) return RELEASE_MERGES_ONLY;
   if (run.branch === null || !headWithin(run.branch, grant.headPrefix)) return "This result's branch isn't one Toolroll may push.";
   if (store.hasRedactedTerminalDiff(runId)) return "This result's changes contain something that looks like a secret, so it won't be pushed.";
   const existing = store.publicationForRun(runId);
