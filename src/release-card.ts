@@ -3,8 +3,9 @@
  * authenticator ships. Alex's decision (2026-10-25): chat keeps approving releases by tap, so the tap is made to mean
  * exactly what was shown.
  *
- * - `approvalTermsOf`: every signed term of the scope and every field of its release terms, one line each, "none" for
- *   an empty one (a contract test holds it to the schemas, so a field added later and left out fails).
+ * - `approvalTermsOf`: every signed term of the scope (its agent profile and phase route setting by setting) and every
+ *   field of its release terms, one line each, "none" for an empty one and "any file in the project" for unnamed paths
+ *   (a contract test changes each input of the approval digest in turn and holds the text to change with it).
  * - `releaseChangeList`: what changed since the last verified release, from the plane's own record of it (the merge
  *   commit of the newest merged release whose merge operation succeeded), read as verified Git objects from the
  *   project's recorded Git directory: never a tag or a ref, so moving one changes nothing, and history rewritten around
@@ -22,6 +23,7 @@ import { checkAccessWords } from "./check-access.js";
 import { CHECK_LEVEL_WORDS, effectiveCheckLevel } from "./check-levels.js";
 import { verifiedRange } from "./commit-extract.js";
 import { releaseTermsSchema, type ReleaseTerms } from "./contracts/release-terms.js";
+import { routeFromJson } from "./phase-routing.js";
 import { projectName } from "./project.js";
 import { RELEASE_PATH, releaseConfigProblem, releaseGitEnv, releaseRemote, releaseTools } from "./release-git.js";
 import type { Scope } from "./scope.js";
@@ -31,7 +33,8 @@ import type { Store } from "./store.js";
 export type TermLine = { key: string; label: string; value: string };
 
 const NONE = "none";
-const money = (micro: number): string => `$${(micro / 1_000_000).toFixed(2)}`;
+// Exact: a budget that isn't whole cents shows every digit it was signed with.
+const money = (micro: number): string => `$${(micro / 1_000_000).toFixed(micro % 10_000 === 0 ? 2 : 6)}`;
 const said = (value: unknown): string => {
   if (value === null || value === undefined || value === "") return NONE;
   if (typeof value === "boolean") return value ? "yes" : "no";
@@ -40,12 +43,24 @@ const said = (value: unknown): string => {
 };
 
 /** The scope's own terms the card names, in order. A contract test holds `goal`, `outOfScope`, `touches` and
- * `acceptance` (contracts/scope.ts) and the scope's other signed fields to this list. */
+ * `acceptance` (contracts/scope.ts) and the scope's other signed fields to this list; the agent profile and the phase
+ * route follow as one line per signed setting (`profile.…`, `route.…`). */
 export const SCOPE_TERM_LABELS = {
   title: "Title", project: "Project", filedBy: "Filed by", goal: "Goal", outOfScope: "Not in scope", touches: "Paths it may touch",
-  acceptance: "Done when", agents: "Agents and model", permission: "Agents may", checks: "Checks", checkAccess: "Check access",
+  acceptance: "Done when", qualityMode: "Evidence standard", agents: "Agents and model", permission: "Agents may", checks: "Checks", checkAccess: "Check access",
   budgetMicrousd: "Budget per attempt", candidate: "Candidate commit",
 } as const;
+
+/** Every leaf of a signed value, at its path (`a.b`, `legs.0.model`), as the card says it. */
+function leavesOf(value: unknown, path: string): { path: string; value: string }[] {
+  if (Array.isArray(value)) return value.every(one => one === null || typeof one !== "object") ? [{ path, value: said(value) }]
+    : value.flatMap((one, index) => leavesOf(one, `${path}.${index}`));
+  if (value !== null && typeof value === "object") {
+    const keys = Object.keys(value).sort();
+    return keys.length === 0 ? [{ path, value: NONE }] : keys.flatMap(key => leavesOf((value as Record<string, unknown>)[key], `${path}.${key}`));
+  }
+  return [{ path, value: said(value) }];
+}
 
 /** Every field of the release terms, by its path in the terms (contracts/release-terms.ts), against the schema's
  * own leaves: the contract test checks every one has a label. */
@@ -80,8 +95,10 @@ export function approvalTermsOf(store: Store, scope: Scope, words: { profile: (p
     filedBy: filer === null ? NONE : filer.name === null ? filer.kind : `${filer.name}${filer.kind === "person" ? "" : ` (${filer.kind})`}`,
     goal: said(scope.goal),
     outOfScope: said(scope.outOfScope),
-    touches: said(scope.touches),
-    acceptance: scope.acceptance.length === 0 ? NONE : scope.acceptance.map(one => `${one.id}: ${one.statement}`).join("; "),
+    // No paths named is no limit: the work may touch any file in the project.
+    touches: scope.touches.length === 0 ? "any file in the project" : said(scope.touches),
+    acceptance: scope.acceptance.length === 0 ? NONE : scope.acceptance.map(one => `${one.id}: ${one.statement} (evidence: ${said(one.evidence)})`).join("; "),
+    qualityMode: scope.qualityMode === "strict" ? "strict" : "standard",
     agents: profile === null ? NONE : `${profile.provider} · ${profile.model}`,
     permission: said(words.profile(profile)),
     checks: CHECK_LEVEL_WORDS[effectiveCheckLevel(store, repo, scope.taskId).level],
@@ -90,6 +107,14 @@ export function approvalTermsOf(store: Store, scope: Scope, words: { profile: (p
     candidate: said(scope.candidate),
   };
   const lines: TermLine[] = (Object.keys(SCOPE_TERM_LABELS) as (keyof typeof SCOPE_TERM_LABELS)[]).map(key => ({ key, label: SCOPE_TERM_LABELS[key], value: scopeValues[key] }));
+  // Every signed setting of the agent profile (what it may read, reach and write, its limits) and the phase route the
+  // digest binds, one line each: the summary lines above never stand in for them.
+  if (profile !== null) for (const leaf of leavesOf(profile, "profile")) lines.push({ key: leaf.path, label: `Agent setting ${leaf.path.slice("profile.".length)}`, value: leaf.value });
+  if (scope.proposedRouteJson != null) {
+    const route = routeFromJson(scope.proposedRouteJson);
+    if (route === null) lines.push({ key: "route", label: "Phase route", value: "unreadable" });
+    else for (const leaf of leavesOf(route, "route")) lines.push({ key: leaf.path, label: `Phase route ${leaf.path.slice("route.".length)}`, value: leaf.value });
+  }
   const terms = scope.releaseTerms ?? null;
   for (const path of schemaLeaves(releaseTermsSchema)) {
     const label = RELEASE_TERM_LABELS[path] ?? path;

@@ -11,12 +11,13 @@ import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, releaseAuthorityOfTask, type Store } from "./store.js";
-import { addApprover, deployGateScope, personApprovalOf, propose } from "./scope.js";
+import { addApprover, deployGateScope, digestOf, personApprovalOf, propose, type ExecutionProfile, type QualityMode } from "./scope.js";
 import { releaseTermsFor } from "./release-carry.js";
 import { setChatApproval } from "./chat-approval.js";
 import { verifyApproverStanding } from "./principal.js";
-import { applyDecideTap, decideOffer, mintDecideButtons, planInChat, privateReleaseChat, type DecideSeat } from "./chat-decide.js";
-import { approvalTermsOf, cardDigestOf, RELEASE_TERM_LABELS, releaseBaseline, releaseCardOf, SCOPE_TERM_LABELS, schemaLeaves } from "./release-card.js";
+import { applyDecideTap, decideOffer, mintDecideButtons, permissionPlainWords, planInChat, privateReleaseChat, type DecideSeat } from "./chat-decide.js";
+import { approvalTermsOf, cardDigestOf, RELEASE_TERM_LABELS, releaseBaseline, releaseCardOf, SCOPE_TERM_LABELS, schemaLeaves, termsText } from "./release-card.js";
+import { routeFromJson } from "./phase-routing.js";
 import { releaseTermsSchema, type ReleaseTerms } from "./contracts/release-terms.js";
 import { scopeTermsSchema } from "./contracts/scope.js";
 
@@ -286,7 +287,56 @@ describe("the complete terms renderer (contract)", () => {
     }
   });
 
-  test.each([...Object.keys(SCOPE_TERM_LABELS).filter(key => ["outOfScope", "touches", "acceptance", "budgetMicrousd", "candidate"].includes(key)), "release"])("with %s omitted, the line says none rather than dropping", omitted => {
+  test("every input of the approval digest is in the terms: changing any one signed value changes the text too (0.9.73 review, finding 5)", () => {
+    store.createTask({ id: "full", title: "Every field", filedBy: { name: "alex", kind: "person" } }, NOW);
+    store.placeTask(store.refFor("built-in", "full").id, repo, {}, NOW);
+    propose(store, { taskId: "full", goal: "The goal words", outOfScope: "The exclusion words", touches: ["src/one.ts"], budgetMicrousd: 4_500_000, candidate,
+      acceptance: [{ id: "c1", statement: "The statement words", how: "advisory, never signed", evidence: ["check", "screenshot"] }], releaseTerms: terms(), now: NOW });
+    const filed = store.getScope("full")!;
+    const route = routeFromJson(filed.proposedRouteJson ?? null);
+    expect(route).not.toBeNull();
+    // Every optional setting a profile can seal, present, so each is varied too.
+    const profile = { ...filed.profile!, readDeny: ["~/private"], machLookup: ["com.example.service"], checkAccess: "unsandboxed", fencePolicy: 2, timeoutKind: "idle" } as unknown as ExecutionProfile;
+    const inputs = { scope: { goal: filed.goal, outOfScope: filed.outOfScope, touches: filed.touches, budgetMicrousd: filed.budgetMicrousd, acceptance: filed.acceptance,
+      qualityMode: "standard" as QualityMode, candidate: filed.candidate ?? null, releaseTerms: filed.releaseTerms! }, profile, route: route! };
+    type Inputs = typeof inputs;
+    const digest = (one: Inputs) => digestOf(one.scope, one.profile, one.route);
+    const text = (one: Inputs) => termsText(approvalTermsOf(store, { ...filed, ...one.scope, profile: one.profile, proposedRouteJson: JSON.stringify(one.route) }, { profile: permissionPlainWords }));
+    // Each leaf of every input, changed in turn: a string gains a letter, a number one, a flag flips, a list gains an entry.
+    const variants: { path: string; changed: Inputs }[] = [];
+    const walk = (value: unknown, path: (string | number)[]): void => {
+      const set = (next: unknown) => {
+        const changed = structuredClone(inputs) as Record<string | number, unknown>;
+        let at = changed;
+        for (const key of path.slice(0, -1)) at = at[key] as Record<string | number, unknown>;
+        at[path.at(-1)!] = next;
+        variants.push({ path: path.join("."), changed: changed as unknown as Inputs });
+      };
+      if (Array.isArray(value)) { set([...value, value.every(one => typeof one === "string") ? "extra" : structuredClone(value[0])]); value.forEach((one, index) => walk(one, [...path, index])); }
+      else if (value !== null && typeof value === "object") for (const [key, one] of Object.entries(value)) walk(one, [...path, key]);
+      else if (typeof value === "string") set(`${value}x`);
+      else if (typeof value === "number") set(value + 1);
+      else if (typeof value === "boolean") set(!value);
+      else set("set");
+    };
+    walk(inputs, []);
+    variants.push({ path: "scope.qualityMode=strict", changed: { ...inputs, scope: { ...inputs.scope, qualityMode: "strict" } } });
+    const before = { digest: digest(inputs), text: text(inputs) };
+    let signed = 0;
+    for (const { path, changed } of variants) {
+      if (digest(changed) === before.digest) continue;
+      signed += 1;
+      expect(text(changed), path).not.toBe(before.text);
+    }
+    // The profile's read denies and the evidence each criterion needs are among them (the review's two examples).
+    expect(variants.some(one => one.path.startsWith("profile.readDeny"))).toBe(true);
+    expect(variants.some(one => one.path.includes("acceptance.0.evidence"))).toBe(true);
+    expect(signed).toBeGreaterThan(40);
+    // Unnamed paths are no limit, said so.
+    expect(text({ ...inputs, scope: { ...inputs.scope, touches: [] } })).toContain("Paths it may touch: any file in the project");
+  });
+
+  test.each([...Object.keys(SCOPE_TERM_LABELS).filter(key => ["outOfScope", "acceptance", "budgetMicrousd", "candidate"].includes(key)), "release"])("with %s omitted, the line says none rather than dropping", omitted => {
     store.createTask({ id: "sparse", title: "Sparse" }, NOW);
     store.placeTask(store.refFor("built-in", "sparse").id, repo, {}, NOW);
     propose(store, { taskId: "sparse", goal: "Only a goal", now: NOW });
@@ -294,6 +344,6 @@ describe("the complete terms renderer (contract)", () => {
     const lines = approvalTermsOf(store, scope, { profile: () => null });
     const keys = omitted === "release" ? lines.filter(line => line.key.startsWith("release.")).map(line => line.key) : [omitted];
     for (const key of keys) expect(lines.find(line => line.key === key), key).toMatchObject({ value: "none" });
-    expect(lines.length).toBe(Object.keys(SCOPE_TERM_LABELS).length + schemaLeaves(releaseTermsSchema).length);
+    expect(lines.filter(line => !/^(profile|route)\b/.test(line.key)).length).toBe(Object.keys(SCOPE_TERM_LABELS).length + schemaLeaves(releaseTermsSchema).length);
   });
 });
