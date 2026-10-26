@@ -321,12 +321,34 @@ describe("the complete terms renderer (contract)", () => {
     };
     walk(inputs, []);
     variants.push({ path: "scope.qualityMode=strict", changed: { ...inputs, scope: { ...inputs.scope, qualityMode: "strict" } } });
+    // Values that could read alike: a comma inside one entry against two entries, a line break against a space, the
+    // literal word "none" against nothing, a semicolon or parenthesis inside a criterion, a number-like string.
+    const tricky = (path: string, change: (one: Inputs) => void) => { const changed = structuredClone(inputs); change(changed); variants.push({ path, changed }); };
+    tricky("touches=[a, b]", one => { one.scope.touches = ["src/a.ts, src/b.ts"]; });
+    tricky("touches=a,b", one => { one.scope.touches = ["src/a.ts", "src/b.ts"]; });
+    tricky("touches=[]", one => { one.scope.touches = []; });
+    tricky("touches=any", one => { one.scope.touches = ["any file in the project"]; });
+    tricky("goal=newline", one => { one.scope.goal = "Ship it\nCarefully"; });
+    tricky("goal=space", one => { one.scope.goal = "Ship it Carefully"; });
+    tricky("goal=escaped", one => { one.scope.goal = "Ship it\\nCarefully"; });
+    tricky("outOfScope=none", one => { one.scope.outOfScope = "none"; });
+    tricky("outOfScope=null", one => { one.scope.outOfScope = null; });
+    tricky("outOfScope=quoted none", one => { one.scope.outOfScope = "\"none\""; });
+    tricky("statement=semicolon", one => { one.scope.acceptance = [{ ...one.scope.acceptance[0]!, statement: "It works (evidence: check); c2: it ships" }]; });
+    tricky("statement=two", one => { one.scope.acceptance = [{ ...one.scope.acceptance[0]!, statement: "It works" }, { id: "c2", statement: "it ships", how: null, evidence: ["check"] }]; });
+    tricky("readDeny=comma", one => { (one.profile as { readDeny: string[] }).readDeny = ["~/a, ~/b"]; });
+    tricky("readDeny=two", one => { (one.profile as { readDeny: string[] }).readDeny = ["~/a", "~/b"]; });
+    tricky("candidate=number", one => { one.scope.candidate = "12"; });
+    const seen = new Map<string, { digest: string; path: string }>([[text(inputs), { digest: digest(inputs), path: "original" }]]);
     const before = { digest: digest(inputs), text: text(inputs) };
     let signed = 0;
     for (const { path, changed } of variants) {
-      if (digest(changed) === before.digest) continue;
-      signed += 1;
-      expect(text(changed), path).not.toBe(before.text);
+      const signedAs = digest(changed), shown = text(changed);
+      if (signedAs !== before.digest) signed += 1;
+      // Two different signed inputs never read the same.
+      const other = seen.get(shown);
+      if (other !== undefined) expect(other.digest, `${path} reads like ${other.path}`).toBe(signedAs);
+      else seen.set(shown, { digest: signedAs, path });
     }
     // The profile's read denies and the evidence each criterion needs are among them (the review's two examples).
     expect(variants.some(one => one.path.startsWith("profile.readDeny"))).toBe(true);
@@ -334,6 +356,10 @@ describe("the complete terms renderer (contract)", () => {
     expect(signed).toBeGreaterThan(40);
     // Unnamed paths are no limit, said so.
     expect(text({ ...inputs, scope: { ...inputs.scope, touches: [] } })).toContain("Paths it may touch: any file in the project");
+    // Ordinary values stay plain; only an ambiguous one is quoted.
+    expect(before.text).toContain("Paths it may touch: src/one.ts");
+    expect(text({ ...inputs, scope: { ...inputs.scope, touches: ["any file in the project"] } })).toContain('Paths it may touch: "any file in the project"');
+    expect(text({ ...inputs, scope: { ...inputs.scope, outOfScope: "none" } })).toContain('Not in scope: "none"');
   });
 
   test.each([...Object.keys(SCOPE_TERM_LABELS).filter(key => ["outOfScope", "acceptance", "budgetMicrousd", "candidate"].includes(key)), "release"])("with %s omitted, the line says none rather than dropping", omitted => {

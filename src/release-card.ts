@@ -35,11 +35,22 @@ export type TermLine = { key: string; label: string; value: string };
 const NONE = "none";
 // Exact: a budget that isn't whole cents shows every digit it was signed with.
 const money = (micro: number): string => `$${(micro / 1_000_000).toFixed(micro % 10_000 === 0 ? 2 : 6)}`;
+/** Words the card itself says in place of a value: a signed string spelled the same is quoted, never mistaken for one. */
+const RESERVED = new Set([NONE, "yes", "no", "any file in the project", "the whole project", "unreadable"]);
+/** Text that reads the same plain as quoted: words, numbers and ordinary punctuation, never a comma, semicolon,
+ * parenthesis, quote, backslash, line break or control character, nor leading or trailing space. */
+const PLAIN = /^[\p{L}\p{N}~/.#$@][\p{L}\p{N} ._/@~+#=!?&%$*:<>|^-]*$/u;
+/** One signed string, unambiguous: as it is when plain, else JSON-quoted (commas, line breaks and controls escaped);
+ * a number-like string or one of the card's own words is quoted too. */
+const text = (value: string): string =>
+  PLAIN.test(value) && !value.endsWith(" ") && !RESERVED.has(value.toLowerCase()) && !/^-?\d+(\.\d+)?$/.test(value) ? value : JSON.stringify(value);
+/** One signed value as the card says it: "none" only for one truly absent or empty. */
 const said = (value: unknown): string => {
   if (value === null || value === undefined || value === "") return NONE;
   if (typeof value === "boolean") return value ? "yes" : "no";
-  if (Array.isArray(value)) return value.length === 0 ? NONE : value.map(one => String(one)).join(", ");
-  return String(value);
+  if (typeof value === "number") return String(value);
+  if (Array.isArray(value)) return value.length === 0 ? NONE : value.map(one => typeof one === "string" ? text(one) : said(one)).join(", ");
+  return text(String(value));
 };
 
 /** The scope's own terms the card names, in order. A contract test holds `goal`, `outOfScope`, `touches` and
@@ -91,15 +102,15 @@ export function approvalTermsOf(store: Store, scope: Scope, words: { profile: (p
   const profile = scope.profile ?? null;
   const scopeValues: Record<keyof typeof SCOPE_TERM_LABELS, string> = {
     title: said(store.getTask(scope.taskId)?.title),
-    project: repo === null ? NONE : `${projectName(repo)} (${repo})`,
-    filedBy: filer === null ? NONE : filer.name === null ? filer.kind : `${filer.name}${filer.kind === "person" ? "" : ` (${filer.kind})`}`,
+    project: repo === null ? NONE : `${text(projectName(repo))} (${text(repo)})`,
+    filedBy: filer === null ? NONE : filer.name === null ? filer.kind : `${text(filer.name)}${filer.kind === "person" ? "" : ` (${filer.kind})`}`,
     goal: said(scope.goal),
     outOfScope: said(scope.outOfScope),
     // No paths named is no limit: the work may touch any file in the project.
     touches: scope.touches.length === 0 ? "any file in the project" : said(scope.touches),
-    acceptance: scope.acceptance.length === 0 ? NONE : scope.acceptance.map(one => `${one.id}: ${one.statement} (evidence: ${said(one.evidence)})`).join("; "),
+    acceptance: scope.acceptance.length === 0 ? NONE : scope.acceptance.map(one => `${text(one.id)}: ${text(one.statement)} (evidence: ${said(one.evidence)})`).join("; "),
     qualityMode: scope.qualityMode === "strict" ? "strict" : "standard",
-    agents: profile === null ? NONE : `${profile.provider} · ${profile.model}`,
+    agents: profile === null ? NONE : `${profile.provider} · ${text(profile.model)}`,
     permission: said(words.profile(profile)),
     checks: CHECK_LEVEL_WORDS[effectiveCheckLevel(store, repo, scope.taskId).level],
     checkAccess: checkAccessWords(profile?.checkAccess ?? "sandboxed"),
@@ -112,7 +123,8 @@ export function approvalTermsOf(store: Store, scope: Scope, words: { profile: (p
   if (profile !== null) for (const leaf of leavesOf(profile, "profile")) lines.push({ key: leaf.path, label: `Agent setting ${leaf.path.slice("profile.".length)}`, value: leaf.value });
   if (scope.proposedRouteJson != null) {
     const route = routeFromJson(scope.proposedRouteJson);
-    if (route === null) lines.push({ key: "route", label: "Phase route", value: "unreadable" });
+    // Unreadable (it then never seals): its stored text, exactly, so two different ones never read alike.
+    if (route === null) lines.push({ key: "route", label: "Phase route (unreadable)", value: JSON.stringify(scope.proposedRouteJson) });
     else for (const leaf of leavesOf(route, "route")) lines.push({ key: leaf.path, label: `Phase route ${leaf.path.slice("route.".length)}`, value: leaf.value });
   }
   const terms = scope.releaseTerms ?? null;
