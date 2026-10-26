@@ -138,17 +138,25 @@ const serverOf = (store: ToolServerStore, repo: string, io: ToolIo) => toolServe
 /** Names only, from the tool's last test: what a grant starts with when it can't be listed right now. */
 const namesOnly = (tool: ProjectTool): ToolActionInfo[] => (tool.lastTest?.tools ?? []).map(name => ({ name, about: "", input: null, readOnly: false }));
 
-/** Let a subagent use one of the project's tools. Its actions start at their defaults: reading is free, everything else asks first. */
-export async function grantTool(store: Store, mate: SubagentRow, tool: string, by: string, now: Date, io: ToolIo = {}): Promise<Done> {
+/** Let a subagent use one of the project's tools. Its actions start at their defaults: reading is free, everything else asks first.
+ * A grant widens what it does unasked, so it takes the person's proof (a password, or a session under Passwordless):
+ * `widening: "proved"` (chat-management.md §0a.3). */
+export async function grantTool(store: Store, mate: SubagentRow, tool: string, by: string, now: Date, io: ToolIo = {}, options: { widening?: "proved" } = {}): Promise<Done> {
+  if (options.widening !== "proved") return grantRefused(tool);
   const found = projectToolsOf(store, mate.repo).find(one => one.name === tool);
   if (found === undefined) return { ok: false, said: `This project has no tool called ${tool}. Add it on the Tools page first.` };
   if (store.subagentGrant(mate.id, tool) !== null) return { ok: true, said: `It can already use ${tool}.` };
   const listed = await listed_(store, found, mate.repo, io);
-  return grantListed(store, mate, found, listed.ok ? listed.actions : null, by, now);
+  return grantListed(store, mate, found, listed.ok ? listed.actions : null, by, now, options);
 }
 
-/** A grant from what the tool offers (or, not reachable now, the names its last test found). */
-export function grantListed(store: Store, mate: SubagentRow, tool: ProjectTool, actions: ToolActionInfo[] | null, by: string, now: Date): Done {
+const grantRefused = (tool: string): Done => ({ ok: false, said: `Letting it use ${tool} takes your password. Do it on its page in Toolroll.` });
+
+/** A grant from what the tool offers (or, not reachable now, the names its last test found). Every road to a grant
+ * comes here: it takes the person's proof, and a tool it already uses keeps its rules (a grant never resets them). */
+export function grantListed(store: Store, mate: SubagentRow, tool: ProjectTool, actions: ToolActionInfo[] | null, by: string, now: Date, options: { widening?: "proved" } = {}): Done {
+  if (options.widening !== "proved") return grantRefused(tool.name);
+  if (store.subagentGrant(mate.id, tool.name) !== null) return { ok: true, said: `It can already use ${tool.name}.` };
   const offered = actions ?? namesOnly(tool);
   if (offered.length === 0) return { ok: false, said: `${tool.name} didn't say what it can do. Test it on the Tools page, then try again.` };
   store.saveSubagentGrant({ subagent: mate.id, tool: tool.name, ...withActions({}, offered), listedAt: actions === null ? null : now.toISOString() }, by, now);

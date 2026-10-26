@@ -18,7 +18,7 @@ import { mailboxReady } from "./mailbox.js";
 import { projectToolsOf } from "./project-tools.js";
 import type { FlowRow, Store, SubagentRow } from "./store.js";
 import { createSubagentFrom, nameOf } from "./subagent-admin.js";
-import { grantListed, grantTool, type ToolIo } from "./subagent-tools.js";
+import { grantTool, type ToolIo } from "./subagent-tools.js";
 import { SUBAGENT_TEMPLATES } from "./subagents.js";
 
 /** A tool a kit's subagent works better with: the catalog entry that connects it, and why. */
@@ -138,19 +138,20 @@ export function kitInstalled(store: Store, kit: Kit, repo: string): { flow: Flow
  * flow, and its button triggers; then its subagent may use whichever of the
  * kit's tools the project already has (reading free, writing asking first).
  */
-export async function setUpKit(store: Store, kit: Kit, repo: string, by: string, now: Date, dir: string | null, io: ToolIo = {}): Promise<Done> {
+export async function setUpKit(store: Store, kit: Kit, repo: string, by: string, now: Date, dir: string | null, io: ToolIo = {}, options: { widening?: "proved" } = {}): Promise<Done> {
   const made = setUpKitNow(store, kit, repo, by, now, dir);
-  if (!made.ok || made.said.endsWith("already set up here.")) return made;
+  // Its tools only with the person's proof (chat-management.md §0a.3); without it, the checklist says to let it use each.
+  if (!made.ok || made.said.endsWith("already set up here.") || options.widening !== "proved") return made;
   const mate = store.getSubagent(made.subagent)!;
   const present = new Set(projectToolsOf(store, repo).map(one => one.name));
   for (const tool of kit.tools.filter(one => present.has(one.tool))) {
-    try { await grantTool(store, mate, tool.tool, by, now, io); } catch { /* it can be given the tool on its page */ }
+    try { await grantTool(store, mate, tool.tool, by, now, io, options); } catch { /* it can be given the tool on its page */ }
   }
   return made;
 }
 
-/** The same, all at once (a chat confirmation can't wait on a tool): its subagent is given the kit's connected tools by the names their last test found, and each is listed properly on its first turn. */
-export function setUpKitNow(store: Store, kit: Kit, repo: string, by: string, now: Date, dir: string | null, grantByName = false): Done {
+/** The same, all at once and without its tools (a chat confirmation is never a grant's proof): its subagent, its flow and its buttons. */
+export function setUpKitNow(store: Store, kit: Kit, repo: string, by: string, now: Date, dir: string | null): Done {
   const had = kitInstalled(store, kit, repo);
   if (had !== null) return { ok: true, said: `${kit.name} is already set up here.`, flow: had.flow.id, subagent: had.mate.id };
   let mate = store.subagentByHandle(repo, kit.subagent.handle);
@@ -166,7 +167,6 @@ export function setUpKitNow(store: Store, kit: Kit, repo: string, by: string, no
   const flowId = store.createFlow({ repo, name: kit.flowName, definitionJson: JSON.stringify(definition), by }, now);
   const flow = store.getFlow(flowId)!;
   for (const button of kit.buttons) addFlowTriggerTo(store, flow, { kind: "button", label: button.label, questions: button.questions, zone: definition.start }, by, now, dir);
-  if (grantByName) for (const tool of projectToolsOf(store, repo).filter(one => kit.tools.some(each => each.tool === one.name))) grantListed(store, mate, tool, null, by, now);
   return { ok: true, said: `${kit.name} is ready: ${nameOf(mate)} works its ${kit.flowName} flow.`, flow: flowId, subagent: mate.id };
 }
 

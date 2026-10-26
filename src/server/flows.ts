@@ -304,7 +304,9 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
     if (kit === null || !projects.includes(repo) || !store.accountCanAccess(who.name, repo)) return redirect(response, `/kits?problem=${encodeURIComponent("Choose one of your projects.")}`);
     const page = (key: "said" | "problem", words: string) => redirect(response, `/kits/${kit.id}?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
     if (step === "setup") {
-      const made = await setUpKit(store, kit, repo, who.name, now, options.configDir ?? null, { toolHome });
+      // Its tools come with it only on the person's proof (a password, or the session under Passwordless): a grant widens.
+      const proved = authenticateApprover(who, body.get("password") ?? "", repo).ok;
+      const made = await setUpKit(store, kit, repo, who.name, now, options.configDir ?? null, { toolHome }, proved ? { widening: "proved" } : {});
       return page(made.ok ? "said" : "problem", made.said);
     }
     if (step === "github") {
@@ -405,7 +407,7 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
       if (op === "grant" && !authenticateApprover(who, body.get("password") ?? "", mate.repo).ok) {
         return redirect(response, `${back}?problem=${encodeURIComponent(`Enter your Toolroll password to let ${nameOf(mate)} use ${tool}. Nothing changed.`)}#tools`);
       }
-      const changed = op === "grant" ? await grantTool(store, mate, tool, who.name, now, { toolHome })
+      const changed = op === "grant" ? await grantTool(store, mate, tool, who.name, now, { toolHome }, { widening: "proved" })
         : op === "revoke" ? revokeTool(store, mate, tool, who.name, now)
         : grant === null ? { ok: false as const, said: `${nameOf(mate)} doesn't use ${tool}.` } : (() => {
           // Loosening a rule widens what it does unasked: a password (chat-management.md §0a.3); tightening needs none.

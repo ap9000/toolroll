@@ -60,7 +60,9 @@ createInterface({ input: process.stdin }).on("line", line => {
   ] }) }, T0);
   store.createSubagent({ repo, handle: "maya", soul: SUBAGENT_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, T0);
   mate = store.subagentByHandle(repo, "maya")!;
-  expect(await grantTool(store, mate, "shop", "alex", T0, { toolHome: dir })).toMatchObject({ ok: true });
+  // Without the person's proof a grant is refused; with it, made.
+  expect(await grantTool(store, mate, "shop", "alex", T0, { toolHome: dir })).toMatchObject({ ok: false, said: expect.stringContaining("takes your password") });
+  expect(await grantTool(store, mate, "shop", "alex", T0, { toolHome: dir }, PROVED)).toMatchObject({ ok: true });
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 

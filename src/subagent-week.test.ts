@@ -54,7 +54,7 @@ createInterface({ input: process.stdin }).on("line", line => {
   ] }) }, T0);
   store.createSubagent({ repo, handle: "maya", soul: SUBAGENT_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, T0);
   mate = store.subagentByHandle(repo, "maya")!;
-  expect(await grantTool(store, mate, "desk", "alex", T0, { toolHome: dir })).toMatchObject({ ok: true });
+  expect(await grantTool(store, mate, "desk", "alex", T0, { toolHome: dir }, { widening: "proved" })).toMatchObject({ ok: true });
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 

@@ -1278,7 +1278,7 @@ export function executeSharedAction(
       }
       else if (payload.operation === "kit_setup") {
         const kit = kitOf(String(req["kit"]))!;
-        const made = setUpKitNow(store, kit, repo, actor, now, null, true);
+        const made = setUpKitNow(store, kit, repo, actor, now, null);
         if (!made.ok) throw Error(made.said);
         return { ok: true as const, taskId: null, said: `${made.said} Try it with a sample card from its page.`, href: `/kits/${kit.id}?repo=${encodeURIComponent(repo)}` };
       }
@@ -1538,7 +1538,7 @@ function runSubagentAction(store: Store, payload: SharedAction, actor: string, n
     const found = projectToolsOf(store, mate.repo).find(one => one.name === tool);
     // A grant takes the person's password on the subagent's page (chat-management.md §0a.3): never from a card.
     if (req["change"] === "grant") throw Error("Giving a subagent a tool takes your password. Do it on its page in Toolroll.");
-    const done = req["change"] === "grant" ? found === undefined ? { ok: false as const, said: `There's no tool called ${tool} any more.` } : grantListed(store, mate, found, null, actor, now)
+    const done = req["change"] === "grant" ? found === undefined ? { ok: false as const, said: `There's no tool called ${tool} any more.` } : grantListed(store, mate, found, null, actor, now, {})
       : req["change"] === "revoke" ? revokeTool(store, mate, tool, actor, now)
       : setToolRules(store, mate, tool, { [String(req["action"])]: { use: req["use"], limit: req["limitField"] === undefined || req["limitField"] === null || req["limitField"] === "" ? null : { field: req["limitField"], over: req["limitOver"] },
         undo: req["undoWith"] ?? grant?.rules[String(req["action"])]?.undo ?? "" } }, actor, now);

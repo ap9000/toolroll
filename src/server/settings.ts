@@ -2110,7 +2110,8 @@ ${modeWords(terms)
     // From a kit: its teammate may use the tool now (reading freely, the rest after a person approves each call).
     const set = kit === null || !kit.tools.some(one => one.tool === service.id) ? null : kitInstalled(store, kit, visit.repo);
     if (set !== null && store.subagentGrant(set.mate.id, service.id) === null) {
-      const granted = await grantTool(store, set.mate, service.id, visit.by, now, { toolHome });
+      // The password at Connect (toolsConnect) is this grant's proof: the visit is ours, single-use and short-lived.
+      const granted = await grantTool(store, set.mate, service.id, visit.by, now, { toolHome }, { widening: "proved" });
       if (granted.ok) return done(back, "said", `${service.label} is connected to ${to}, and ${nameOf(set.mate)} can use it: reading freely, the rest after you approve each call.`);
     }
     return done(back, "said", finished.said);

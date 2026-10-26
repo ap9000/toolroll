@@ -22,7 +22,7 @@ import {
   type ChatAction,
 } from "./chat-actions.js";
 import { confirmLeadProposal } from "./lead-doors.js";
-import { projectToolsOf } from "./project-tools.js";
+import { addToolTo, projectToolsOf, validateToolSpec } from "./project-tools.js";
 import { grantListed } from "./subagent-tools.js";
 import { skillsView, importSkill, changeSkills } from "./project-skills.js";
 import { knowledgeView, changeKnowledge } from "./project-knowledge.js";
@@ -264,7 +264,10 @@ describe("shared chat action lifecycle", () => {
     // Giving it a tool takes the person's password on its page (chat-management.md §0a.3): never a card.
     expect(() => prepareSharedAction(store, who, "subagent_tools", { subagent: mate, tool: "github", change: "grant" }, root, now)).toThrow("Giving Maya a tool takes your password. Open Maya's page in Toolroll, then Tools → Let Maya use github.");
     const listed = projectToolsOf(store, repo).find(one => one.name === "github")!;
-    expect(grantListed(store, store.getSubagent(mate)!, listed, null, who.name, now)).toMatchObject({ ok: true });
+    // The grant itself takes the person's proof: without it, refused (every road reaches this boundary).
+    expect(grantListed(store, store.getSubagent(mate)!, listed, null, who.name, now)).toMatchObject({ ok: false, said: expect.stringContaining("takes your password") });
+    expect(store.subagentGrant(mate, "github")).toBeNull();
+    expect(grantListed(store, store.getSubagent(mate)!, listed, null, who.name, now, { widening: "proved" })).toMatchObject({ ok: true });
     expect(store.subagentGrant(mate, "github")?.rules).toEqual({ list_issues: { use: "free" }, create_issue: { use: "ask" } });
     expect(() => prepareSharedAction(store, who, "subagent_tools", { subagent: mate, tool: "github", change: "rule", action: "delete_repo", use: "free" }, root, now)).toThrow("github has no action called delete_repo. Its actions: list_issues, create_issue.");
     const rule = proposal("subagent_tools", { subagent: mate, tool: "github", change: "rule", action: "create_issue", use: "never", undoWith: null, limitField: null, limitOver: null });
@@ -321,6 +324,24 @@ describe("shared chat action lifecycle", () => {
     expect(store.subagentByHandle(repo, "ada")).not.toBeNull();
     expect(store.listFlows([repo]).map(one => one.name)).toEqual(["Ops requests"]);
     expect(() => prepareSharedAction(store, who, "kit_setup", { repo, kit: "ops-requests" }, root, now)).toThrow("Ops requests is already set up");
+  });
+  test("a kit set up from a chat card never gives its subagent a tool, and never resets one it already uses (0.9.73 review, finding 1)", () => {
+    // The kit's tools are connected and tested; its subagent is already on the team, with a stricter rule on one of them.
+    for (const name of ["notion", "atlassian"]) {
+      expect(addToolTo(store, repo, validateToolSpec({ name, command: process.execPath, args: [], secrets: [], about: name }), "test", who.name, now, { home: root })).toMatchObject({ ok: true });
+      store.recordProjectToolTest(repo, name, JSON.stringify({ at: now.toISOString(), ok: true, tools: ["search", "create_page"], problem: null }));
+    }
+    const mate = store.createSubagent({ repo, handle: "ada", soul: "---\nname: Ada\nrole: Ops\n---\n## Who you are\nHelpful.\n", model: null, manager: who.name, by: who.name }, now);
+    store.saveSubagentGrant({ subagent: mate, tool: "notion", actions: [{ name: "search", about: "", input: null, readOnly: true }, { name: "create_page", about: "", input: null, readOnly: false }],
+      rules: { search: { use: "never" }, create_page: { use: "never" } } }, who.name, now);
+    expect(confirm(proposal("kit_setup", { repo, kit: "ops-requests" }))).toMatchObject({ ok: true, said: expect.stringContaining("Ops requests is ready") });
+    // The tap is no grant's proof: the tool it didn't use stays ungranted, the stricter rules stand.
+    expect(store.subagentGrant(mate, "atlassian")).toBeNull();
+    expect(store.subagentGrant(mate, "notion")?.rules).toEqual({ search: { use: "never" }, create_page: { use: "never" } });
+    // Even proved, a grant on a tool it already uses keeps its rules.
+    const notion = projectToolsOf(store, repo).find(one => one.name === "notion")!;
+    expect(grantListed(store, store.getSubagent(mate)!, notion, null, who.name, now, { widening: "proved" })).toMatchObject({ ok: true, said: "It can already use notion." });
+    expect(store.subagentGrant(mate, "notion")?.rules).toEqual({ search: { use: "never" }, create_page: { use: "never" } });
   });
   test("the lead gives a subagent a routine and stops it, each as a card (v96)", () => {
     const mate = store.createSubagent({ repo, handle: "maya", soul: "---\nname: Maya\nrole: Support\n---\n## Who you are\nHelpful.\n", model: null, manager: who.name, by: who.name }, now);
