@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
-  checksVerdict, gateTaskId, journalFile, ownerApproval, readJournal, writeJournal, REQUIRED_PR_CHECKS, RELEASE_TAG_CHECKS, runRelease,
+  checksVerdict, gateTaskId, journalFile, ownerApproval, readJournal, writeJournal, REQUIRED_PR_CHECKS, RELEASE_TAG_CHECKS, runRelease, transientNetworkError,
   type CheckRun, type GateState, type HomebrewState, type ReleaseAdapters, type ReleaseJournal,
 } from "./release.js";
 
@@ -315,6 +315,35 @@ describe("toolroll release", () => {
     later.s.onSleep.push(state => { if (state.installed.services[0] === NEW) state.pr.head = OTHER; });
     expect(await runRelease(options(stateDir()), later.adapters)).toMatchObject({ ok: false, step: "ci", reason: "drift" });
     expect(later.s.calls).not.toContain("merge");
+  });
+
+  // 2026-10-26: three releases stopped on one slow answer from GitHub while they waited (git ls-remote, gh).
+  test("a short GitHub network timeout while waiting is asked again, not the release's end; one that lasts runs into the step's limit", async () => {
+    const SAID = ["fatal: unable to access 'https://github.com/ap9000/toolroll.git/': Recv failure: Operation timed out",
+      'Post "https://api.github.com/graphql": net/http: TLS handshake timeout'];
+    const flaky = (times: number, said: string) => { let left = times; return () => { if (left > 0) { left--; throw new Error(`failed (exit 128): ${said}`); } }; };
+    const { s, adapters } = world();
+    const { remoteHead } = adapters.repo, { checks, tag } = adapters.github;
+    // While the pull request checks finish (git ls-remote) and while the release publishes (gh): two misses each.
+    const whileCi = flaky(2, SAID[0]!), whilePublishing = flaky(2, SAID[1]!);
+    adapters.repo.remoteHead = async branch => { if (s.installed.services[0] === NEW && s.tags.size === 0) whileCi(); return remoteHead(branch); };
+    adapters.github.tag = async (repo, name) => { if (s.tags.size > 0) whilePublishing(); return tag(repo, name); };
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
+    expect(s.said.filter(line => line.includes("GitHub didn't answer in time"))).toEqual(expect.arrayContaining([
+      expect.stringContaining("Recv failure: Operation timed out"), expect.stringContaining("TLS handshake timeout")]));
+
+    // GitHub unreachable for the whole step: the step's own limit, saying why.
+    const down = world();
+    down.adapters.github.checks = async (repo, sha) => { if (down.s.installed.services[0] === NEW) throw new Error(`gh: ${SAID[0]}`); return checks(repo, sha); };
+    expect(await runRelease(options(stateDir(), { limits: { ci: 1 } }), down.adapters)).toMatchObject({ ok: false, step: "ci", reason: "timeout", message: expect.stringContaining("Recv failure: Operation timed out") });
+
+    // Anything else still stops the release at once.
+    const broken = world();
+    broken.adapters.github.checks = async (repo, sha) => { if (broken.s.installed.services[0] === NEW) throw new Error("gh: HTTP 404: Not Found"); return checks(repo, sha); };
+    expect(await runRelease(options(stateDir()), broken.adapters)).toMatchObject({ ok: false, step: "ci", reason: "error" });
+    for (const [text, transient] of [["Recv failure: Operation timed out", true], ["net/http: TLS handshake timeout", true], ["dial tcp 140.82.112.3:443: i/o timeout", true],
+      ["Failed to connect to github.com port 443 after 75003 ms: Couldn't connect to server", true], ["HTTP 404: Not Found", false], ["authentication required", false]] as const)
+      expect(transientNetworkError(new Error(text)), text).toBe(transient);
   });
 
   test("--new sets an unfinished release aside before merging began, and is refused after", async () => {

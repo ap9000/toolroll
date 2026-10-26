@@ -344,14 +344,24 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
     delete j.intents.deploy;
     save();
   };
-  /** Ask `probe` until it answers, within this step's limit. */
+  /** Ask `probe` until it answers, within this step's limit. A short network failure on the way to GitHub (git or gh
+   * timing out) is no answer yet, never the release's end: the next poll asks again, until the step's own limit. */
   const waitFor = async <T>(at: WaitingStep, what: string, probe: () => Promise<T | null>): Promise<T> => {
     const deadline = adapters.now().getTime() + limits[at] * 60_000;
-    let said = false;
+    let said = false, unreachable: string | null = null;
     for (;;) {
-      const answer = await probe();
+      let answer: T | null;
+      try {
+        answer = await probe();
+        unreachable = null;
+      } catch (error) {
+        if (!transientNetworkError(error)) throw error;
+        if (unreachable === null) say(`  GitHub didn't answer in time (${networkWords(error)}); asking again`);
+        unreachable = networkWords(error);
+        answer = null;
+      }
       if (answer !== null) return answer;
-      if (adapters.now().getTime() >= deadline) throw new Stop("timeout", `Still waiting for ${what} after ${limits[at]} minutes.`);
+      if (adapters.now().getTime() >= deadline) throw new Stop("timeout", `Still waiting for ${what} after ${limits[at]} minutes${unreachable === null ? "" : ` (GitHub last didn't answer: ${unreachable})`}.`);
       if (!said) { say(`  waiting for ${what} (up to ${limits[at]} min)`); said = true; }
       await adapters.sleep(pollMs);
     }
@@ -945,4 +955,18 @@ async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal, wait: <
     if (!(error instanceof Stop) || error.reason !== "timeout") throw error;
     throw new Stop("ci-missing", `Pull request checks on ${sha} didn't all finish in time${named === "" ? (unread ? " (GitHub didn't answer)" : "") : `: ${named}`}. Nothing was filed or sent for approval. Start or rerun them on GitHub, then run this command again.`);
   }
+}
+
+/** The network failures a release's waits ride out: git or gh timing out (or cut off) on the way to GitHub. */
+const TRANSIENT_NETWORK = /Recv failure: (?:Operation timed out|Connection reset by peer)|TLS handshake timeout|Operation timed out|Connection timed out|i\/o timeout|Connection reset by peer|Failed to connect to [^\s]*github\.com port \d+/i;
+
+/** A probe's failure that is only the network to GitHub being slow, never a decision (a Stop) or another error. */
+export function transientNetworkError(error: unknown): boolean {
+  if (error instanceof Stop || error instanceof Restart) return false;
+  return TRANSIENT_NETWORK.test(String((error as Error)?.message ?? error));
+}
+
+/** The part of a network failure worth saying: its matching phrase. */
+function networkWords(error: unknown): string {
+  return TRANSIENT_NETWORK.exec(String((error as Error)?.message ?? error))?.[0] ?? "a network failure";
 }
