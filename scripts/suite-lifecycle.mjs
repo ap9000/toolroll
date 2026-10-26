@@ -157,20 +157,30 @@ function installHandlers() {
  * left in its group have ended and its root is gone: { code, signal, timedOut, ms, root, output } (output: what it
  * printed, unless `stdio` is "inherit"). `onData` sees each chunk as it comes.
  */
-export function runSuite({ command, args = [], cwd, env = {}, timeoutMs = null, prefix = "so-suite-", keep = false, graceMs = GRACE_MS, stdio = "pipe", onData = null, onSpawn = null, onExit = null, signal: abortSignal = null, beforeRemove = null, tempRoot = true }) {
+export function runSuite({ command, args = [], cwd, env = {}, timeoutMs = null, prefix = "so-suite-", keep = false, graceMs = GRACE_MS, stdio = "pipe", onData = null, onSpawn = null, onExit = null, signal: abortSignal = null, beforeRemove = null, tempRoot = true, onResult = null }) {
   // `tempRoot: false`: a suite that keeps its own short temp root (the unit tests: test/temp-root.ts) runs without one
   // more folder level, which would push the socket paths its tests make past the OS limit (103 bytes on macOS).
   if (abortSignal?.aborted) return Promise.resolve({ code: 130, signal: null, timedOut: false, cancelled: true, ms: 0, root: null, output: Buffer.alloc(0) });
   const root = tempRoot ? makeTempRoot(prefix, { keep }) : null;
   const at = Date.now();
   return new Promise(done => {
+    // `onResult`: the suite reports its results as JSON lines on fd 3, a pipe only this process holds (release checks,
+    // docs/plans/release-once.md). Without it, the suite is told no fd 3 is its own, whatever this process was told.
+    const results = onResult !== null && stdio !== "inherit";
     const child = spawn(command, args, {
       cwd, detached: process.platform !== "win32",
-      stdio: stdio === "inherit" ? ["inherit", "inherit", "inherit"] : ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ...env, ...(root === null ? {} : { TMPDIR: root, TMP: root, TEMP: root }) },
+      stdio: stdio === "inherit" ? ["inherit", "inherit", "inherit"] : results ? ["ignore", "pipe", "pipe", "pipe"] : ["ignore", "pipe", "pipe"],
+      env: { ...process.env, ...env, ...(root === null ? {} : { TMPDIR: root, TMP: root, TEMP: root }), TOOLROLL_CHECK_RESULTS_FD: results ? "3" : undefined },
     });
     const chunks = [];
     for (const stream of [child.stdout, child.stderr]) stream?.on("data", chunk => { chunks.push(chunk); onData?.(chunk); });
+    let pending = "";
+    const resultLine = line => { if (line.trim() === "") return; let parsed; try { parsed = JSON.parse(line); } catch { return; } if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) onResult(parsed); };
+    const resultsDone = !results || child.stdio[3] == null ? Promise.resolve() : new Promise(resolve => { child.stdio[3].on("close", resolve); child.stdio[3].on("error", resolve); });
+    if (results) child.stdio[3]?.on("data", chunk => {
+      const lines = (pending + chunk.toString("utf8")).split("\n"); pending = lines.pop() ?? "";
+      for (const line of lines) resultLine(line);
+    });
     if (child.pid !== undefined) groups.set(child.pid, graceMs);
     const abort = () => { if (child.pid !== undefined) void stopGroup(child.pid, { graceMs }); };
     abortSignal?.addEventListener("abort", abort, { once: true });
@@ -186,6 +196,8 @@ export function runSuite({ command, args = [], cwd, env = {}, timeoutMs = null, 
       if (timer !== null) clearTimeout(timer);
       // The suite's own process is gone; what it left in its group goes too, before its root does.
       if (child.pid !== undefined) { await stopGroup(child.pid, { graceMs }); groups.delete(child.pid); }
+      // Every result line the suite wrote, read to its end (bounded: the group is gone, so the pipe closes).
+      if (results) { await Promise.race([resultsDone, sleep(5_000)]); if (pending !== "") { resultLine(pending); pending = ""; } }
       // `beforeRemove`: the runner's own last word (stopping groups the suite listed as its own) while the root is there.
       try { await beforeRemove?.(); } catch { /* the root goes regardless */ }
       if (root !== null) { try { removeRoot(root); } catch { /* the plane's sweep takes it */ } }

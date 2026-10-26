@@ -17,6 +17,32 @@ user. What it promises:
 - **No agent approves its own work.** Approvals need your password on a
   screen that restates the exact terms, and the agent fence keeps your
   remembered login, runner tokens and the database out of agents' reach.
+  The lead's token and API tokens can't approve, merge by hand, be the second
+  person on protected work, or stand behind a release or deployment; those
+  need a person's proof (docs/plans/approval-policy.md). **Accepted limit:** a
+  lead (or any program) running as your OS user outside Toolroll's fence, such
+  as an assistant in your own terminal, can read the remembered login
+  (`up-login.txt`) and approve as you, since Toolroll can't tell it from you at
+  your own command line. Don't keep a remembered login on a machine where you
+  run such an agent, or sign out of the CLI there.
+- **One approval per release, for test fixes only** (docs/plans/release-once.md).
+  A person's yes to a release's terms carries to later commits on the same pull
+  request only when every change since is unit tests, the journey scripts,
+  Markdown under docs/, the README or the changelog (never agent or policy
+  files, agent or CI settings, the test harness, helpers or fixtures), within
+  400 changed lines, 20 files and 800 lines of churn, and the production build
+  is byte-for-byte the approved one. The proof reads only Toolroll's records
+  and Git objects it hashes itself, runs nothing from the commit until a
+  read-only preflight passed, builds in the fence with no network, and is
+  checked again at every deploy entry. A moved head after the deploy started,
+  an expired, revoked or superseded approval, or a lost approver stops it.
+  **Accepted limit (Alex, 2026-10-25):** re-running only what failed trusts test
+  code, as the full check always has. A test runs as the same user as the
+  check harness in the same checkout, can misreport its own results or change
+  its own harness copy and `node_modules`; the fence limits writes outside the
+  run and network, but deliberately lets a run read the home folder and the
+  repositories beside it. The nightly full check on main catches some
+  accidental omissions, with no guaranteed time to detect them.
 - **Tokens, not passwords, on requests.** Scripts, the remote CLI and MCP sign
   in with an API token (`toolroll tokens create`): it reads or acts, can be
   limited to projects, expires, and only its hash is kept. A password sent on a
@@ -122,6 +148,22 @@ Known limits:
   which admits every local service on that Mac (the macOS sandbox can't admit
   some local ports and refuse others). Linux builds always have a loopback of
   their own.
+- On a Mac, a project's checks may register and look up one macOS service
+  name pattern so Playwright's Chromium headless shell can start sandboxed:
+  `org.chromium.Chromium.MachPortRendezvousServer.<pid>` (builds, flows and
+  tool servers can't). Chromium picks that name itself, and the sandbox can't
+  tie the pid in it to the process asking. So a hostile check can reach
+  across launches: register the name for another process's pid, so a
+  default-named Chromium started outside its sandbox with that pid (your own
+  Playwright or Puppeteer headless shell, another project's check browser)
+  fails to start; or look up a running one's rendezvous server and send it
+  messages. That server picks what it hands out by the sender's pid, as the
+  kernel reports it, and may answer an unknown sender with an empty reply;
+  what more it checks depends on how Chromium was built. Assessed against
+  Playwright's Chromium headless shell 156.0.8078.4: no port theft or escape
+  was found, but there is no guarantee beyond that, so treat it as
+  cross-launch messaging and denial of service you accept by running browser
+  checks sandboxed.
 - On a Mac, a build's agent can reach the keychain's services (securityd):
   Claude Code signs in from the keychain. The sandbox runtime allows that to
   every sandboxed process (anthropics/sandbox-runtime#755), so a build's
@@ -129,10 +171,10 @@ Known limits:
   access list lets any program read it; items that ask, or that name their
   programs, stay closed. Toolroll denies those services to everything else
   it sandboxes: a build's setup and check commands, a project's checks,
-  flows and tool servers. A check a project gave **sign-ins** keeps them
-  (Claude Code's sign-in is there), and so reaches those keychain items too,
-  not only the sign-ins; the sign-ins warning says so. Only while that level
-  stands as an instance operator set it, with their password typed then.
+  flows and tool servers, a check a project gave **sign-ins** included:
+  Toolroll itself reads Claude Code's and gh's sign-ins from the keychain,
+  outside the sandbox, and hands just those tokens to the check in its
+  environment (Claude's current access token, which the check can't renew).
 - Every sandboxed launch on a Mac can open terminals of its own and no
   other, can't type into a terminal (TIOCSTI), and starts in a session of
   its own, so it has no terminal of whoever started Toolroll. A program

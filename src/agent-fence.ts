@@ -12,7 +12,7 @@
  * checkout writable; other tasks' checkouts read, never written; the project's read-deny list; under policy v1 (an
  * approval sealed before 0.9.70) the home configuration denied by name; a sign-ins check's exact files read again; the
  * run's proxy as its only way out when its network is confined. On macOS every launch also gets a pseudo-terminal of its
- * own and no other terminal, and only a build's agent (and a check with sign-ins) reaches the keychain
+ * own and no other terminal, a project check's launch Chromium's own service, and only a build's agent the keychain
  * (sandbox-runtime.ts seatbeltRulesFor, static rules).
  *
  * Codex (every platform) fences its own agent's commands with its own sandbox: a permission profile with the same
@@ -347,9 +347,12 @@ export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: stri
   /** macOS: the project's sealed mach services beyond the runtime's baseline (its `allowMachLookup`). */
   machLookup?: string[];
   /** macOS: the keychain's services (securityd), denied to every launch without it (sandbox-runtime.ts
-   * SEATBELT_NO_KEYCHAIN). Only fenceFor gives it, to a build's agent; a check with sign-ins is given it at its launch
-   * (invoke.ts). Never a tool server's (serverGrantsOf). */
+   * SEATBELT_NO_KEYCHAIN). Only fenceFor gives it, to a build's agent. Never a check's (one with sign-ins gets those in
+   * its environment, invoke.ts keychainSignIns), never a tool server's (serverGrantsOf). */
   keychain?: true;
+  /** macOS: a project check's launch, whose Chromium may start (sandbox-runtime.ts SEATBELT_CHROMIUM). Only fenceFor
+   * sets it, only for kind "check". */
+  browser?: true;
   /** A `sign-ins` check's exact sign-in files, read again inside the home denies (check-access.ts, signInGrants). */
   signIns?: SignInGrants;
   /** Never written, wherever the launch writes (homeWriteDenies): what runs for the operator next or signs them in. */
@@ -877,6 +880,7 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
     readConfig,
     writeConfig: { allowOnly: [...new Set(allowOnly)].sort(), denyWithinAllow: [...denyWrite].sort() },
     allowMachLookup: [...grants.machLookup ?? [], ...grants.signIns?.mach ?? []],
+    ...(grants.browser === true ? { browser: true } : {}),
     ...(grants.keychain === true ? { keychain: true } : {}),
     network: network === undefined || network.mode === "open" ? { kind: "open" } : {
       kind: "proxy", httpPort: network.proxyPort, ...(network.brokerPorts[0] === undefined ? {} : { socksPort: network.brokerPorts[0] }),
@@ -1044,6 +1048,8 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
     ...(written === null ? {} : { writes: written.writes, readOnly: [...new Set([...made.readOnly, ...written.readOnly])].sort() }),
     ...(ctx.network === undefined ? {} : { network: ctx.network }),
     ...(ctx.machLookup === undefined || ctx.machLookup.length === 0 ? {} : { machLookup: [...ctx.machLookup] }),
+    // A project's checks may drive a browser (Playwright's Chromium); builds, flows and tool servers don't get it.
+    ...(kind === "check" ? { browser: true as const } : {}),
     // A build's agent signs in from the keychain (Claude Code does); nothing else it launches reaches it.
     ...(kind === "build" ? { keychain: true as const } : {}),
     // Under a write allowlist these are out of reach already; where the launch writes anywhere, they are denied by name.
@@ -1179,7 +1185,7 @@ export function homeWriteDenies(home: string, binding: WorktreeBinding | null, p
  * where it always has), and never the build's own checkout or launch folder read back (nothing a build wrote loads in a
  * process that holds a tool's secrets). */
 export function serverGrantsOf(grants: FenceGrants): FenceGrants {
-  const { network: _agentOnly, writes: _agentWrites, keychain: _agentKeychain, ...rest } = grants;
+  const { network: _agentOnly, writes: _agentWrites, keychain: _agentKeychain, browser: _checkOnly, ...rest } = grants;
   return {
     ...rest,
     ...(rest.pool === undefined ? {} : { pool: { ...rest.pool, own: null } }),

@@ -26,7 +26,7 @@ describe("the verification receipt contract", () => {
         { name: "setup replayed", input: { ...direct, result: { configured: true, ran: true, exitCode: 0, setupReplayed: true } } },
       ],
       invalid: [
-        { name: "newer version", input: { ...direct, version: 3 }, paths: ["version"] },
+        { name: "newer version", input: { ...direct, version: 4 }, paths: ["version"] },
         { name: "no version", input: { ...direct, version: undefined }, paths: ["version"] },
         { name: "unknown key", input: { ...direct, source: "legacy machine log header" }, paths: ["payload"] },
         { name: "missing command digest", input: { ...direct, command: { ...(direct["command"] as object), digest: undefined } }, paths: ["command.digest"] },
@@ -39,7 +39,7 @@ describe("the verification receipt contract", () => {
   });
 
   it("reads a direct receipt without reuse, and a reused one with its source", () => {
-    expect(readVerificationReceipt(direct)).toMatchObject({ ok: true, value: { version: 2, run: 2438 } });
+    expect(readVerificationReceipt(direct)).toMatchObject({ ok: true, value: { version: 3, run: 2438 } });
     expect(readVerificationReceipt(direct).ok && (readVerificationReceipt(direct) as { value: { reusedFrom?: unknown } }).value.reusedFrom).toBeUndefined();
     expect(readVerificationReceipt(reused)).toMatchObject({ ok: true, value: { reusedFrom: { run: 2437 }, executedHere: false } });
   });

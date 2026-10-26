@@ -105,8 +105,13 @@ or raise the requested count within that CPU bound.
 
 Scripted release journeys cap build/settle polling at 90 seconds;
 `TOOLROLL_CHECK_SCRIPTED_TIMEOUT_SECONDS` changes that limit. A timeout is a
-failure. The first hard failure in a journey, upgrade worker, build, typecheck
-or units stops the other parts and queued work. Scripted journeys never retry;
+failure. Run by hand, the first hard failure in a journey, upgrade worker, build,
+typecheck or units stops the other parts and queued work. Run by the plane, the
+check reads a handshake on stdin and keeps going instead, so every part reports
+(docs/plans/release-once.md): results come only from the fd-3 pipes of the
+harness processes it starts (`test/release-reporter.ts`, `scripts/check-results.mjs`),
+never from a file, and its last stdout line is `TOOLROLL_CHECK_REPORT <json>`
+with the plane's nonce. A failed build still starts no journeys. Scripted journeys never retry;
 real-model journeys retain their existing retry and report-validation policy,
 and a failure after that policy is exhausted stops the check.
 The failure is printed immediately; cleanup is awaited before the normal
@@ -114,6 +119,14 @@ per-part timing summary. Release journey reports are under
 `evidence/release-<pid>/<part>/`. Standalone app/flow scripts use
 `output/e2e/<name>-<time>/`; the parallel wrapper defaults to `evidence/<script>-parallel-<time>/`.
 Standalone runners retain their retry policy.
+On the second and later checks of a release, the plane may hand the check a
+targeted plan (docs/plans/release-once.md): only the unit files, journey groups
+and upgrade versions that failed at the release's last full check, every test
+changed since, and a sanity pass. Such a result is `composed` with that full
+check, or `partial` (never a pass). A nightly full check of main
+(`toolroll release nightly`) runs at 03:00; each item it finds failing stays
+open until a full check covering it passes on a commit that contains it.
+
 The target is 6–8 minutes for a passing small check and under three minutes to
 report a scripted failure; actual wall time remains visible in the summary.
 

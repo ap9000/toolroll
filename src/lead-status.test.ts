@@ -47,9 +47,9 @@ describe("lead status commands", () => {
   const draft = (store: Store, id: string, approved: boolean): void => {
     store.handle.prepare("UPDATE task_ref SET plan = 'drafted' WHERE backend = ? AND external_id = ?").run(BUILT_IN, id);
     store.handle.prepare(`INSERT INTO task_scope
-      (task_id, goal, proposed_at, digest, profile_state, approved_at, approved_by, approved_digest)
-      VALUES (?, 'Update the labels', ?, 'current-scope', 'resolved', ?, ?, ?)`)
-      .run(id, NOW.toISOString(), approved ? NOW.toISOString() : null, approved ? "alex" : null, approved ? "current-scope" : null);
+      (task_id, goal, proposed_at, digest, profile_state, approved_at, approved_by, approved_digest, approval_basis)
+      VALUES (?, 'Update the labels', ?, 'current-scope', 'resolved', ?, ?, ?, ?)`)
+      .run(id, NOW.toISOString(), approved ? NOW.toISOString() : null, approved ? "alex" : null, approved ? "current-scope" : null, approved ? "password" : null);
   };
 
   test("status gives one deprecation warning for both legacy webhooks, without their secrets", async () => {

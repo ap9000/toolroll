@@ -9,7 +9,8 @@ import { runOperate, EXIT } from "./operate.js";
 import { checkAccessHere, checkAccessOf, checkNetworkOf, narrowestAccess, narrowestNetwork, signInHostsMissing, signInsAvailable, signInsUnavailableWords, widerThan } from "./check-access.js";
 import { resolveScopeProfile } from "./agentconfig.js";
 import { checkLaunchOf } from "./builder.js";
-import { checkoutLaunchOf, checkoutRunner, ranAtLine, signInsKeychain, signInsLaunch, widestRan } from "./invoke.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
+import { checkoutLaunchOf, checkoutRunner, keychainSignIns, ranAtLine, readKeychainSecret, signInsLaunch, widestRan } from "./invoke.js";
 
 const REPO = "/repo/main";
 let dir: string, db: string, store: Store, lines: string[];
@@ -268,6 +269,40 @@ describe("sign-ins: on wherever the OS fence is (0.9.70, sandbox parity C10: the
     } finally { if (savedHome === undefined) delete process.env["HOME"]; else process.env["HOME"] = savedHome; }
   });
 
+  test("macOS: the keychain's sign-ins are read outside and handed in as environment; the check itself gets no keychain", async () => {
+    const { mkdirSync } = await import("node:fs");
+    const own = join(dir, "launch-keychain");
+    mkdirSync(join(own, "tmp"), { recursive: true });
+    const fake: Record<string, string> = { "Claude Code-credentials": JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-synthetic-token", refreshToken: "never-passed" } }), "gh:github.com": `go-keyring-base64:${Buffer.from("gho_synthetic123456").toString("base64")}` };
+    const result = await signInsLaunch(store, own, join(own, "tmp"), dir, { version: 1, mode: "open", hosts: [], loopback: "proxy-only" }, [], "darwin", () => keychainSignIns("darwin", service => fake[service] ?? null));
+    if ("problem" in result) throw new Error(result.problem);
+    expect(result.env).toMatchObject({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-synthetic-token", GH_TOKEN: "gho_synthetic123456" });
+    expect(JSON.stringify(result.env)).not.toContain("never-passed");
+    await result.close();
+    // Anything that isn't a plain token, or nothing there: left out. Not macOS: nothing read at all.
+    expect(keychainSignIns("darwin", service => service === "gh:github.com" ? "token with spaces\nand a line" : "not json")).toEqual({});
+    expect(keychainSignIns("darwin", () => null)).toEqual({});
+    let asked = false;
+    expect(keychainSignIns("linux", () => { asked = true; return "x"; })).toEqual({});
+    expect(asked).toBe(false);
+    // Under the test suite (TOOLROLL_SECRET_STORE=files), the real keychain is never read.
+    expect(keychainSignIns("darwin")).toEqual({});
+  });
+
+  // Inside the release check's fence (INSIDE_FENCE) a check is denied securityd outright (SEATBELT_NO_KEYCHAIN), so
+  // Toolroll's reader can't reach even a throwaway keychain there; CI and a developer's shell run it unfenced.
+  test.skipIf(process.platform !== "darwin" || INSIDE_FENCE)("macOS: a synthetic sign-in in a throwaway keychain is read by Toolroll's own reader", async () => {
+    const { spawnSync } = await import("node:child_process");
+    const keychain = join(dir, "signins.keychain-db");
+    const security = (...args: string[]) => spawnSync("/usr/bin/security", args, { encoding: "utf8", timeout: 30_000 });
+    expect(security("create-keychain", "-p", "throwaway", keychain).status).toBe(0);
+    try {
+      expect(security("unlock-keychain", "-p", "throwaway", keychain).status).toBe(0);
+      expect(security("add-generic-password", "-a", "someone", "-s", "Claude Code-credentials", "-w", JSON.stringify({ claudeAiOauth: { accessToken: "sk-ant-oat01-throwaway" } }), "-A", keychain).status).toBe(0);
+      expect(keychainSignIns("darwin", service => readKeychainSecret(service, keychain))).toEqual({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat01-throwaway" });
+    } finally { security("delete-keychain", keychain); }
+  });
+
   test("with no OS sandbox here and unconfined running allowed, the CLI says checks run without one: never sandboxed", async () => {
     store.setProjectCheckAccess(REPO, "sign-ins", "alex", new Date(), { may: "widen" });
     const none = () => false;
@@ -289,27 +324,4 @@ describe("sign-ins: on wherever the OS fence is (0.9.70, sandbox parity C10: the
     expect(await run(["--repo", REPO, "--json"], "darwin")).toBe(EXIT.ok);
     expect(payload().runsAs).toBeUndefined();
   });
-});
-
-test("a check with sign-ins reaches the keychain only while the sign-ins level stands as an instance operator set it", () => {
-  // Sandboxed (or nothing set): no keychain.
-  expect(signInsKeychain(store, REPO)).toBe(false);
-  expect(signInsKeychain(store, null)).toBe(false);
-  // Widened by alex, an instance operator (the roads require a password typed now): the keychain too.
-  expect(store.setProjectCheckAccess(REPO, "sign-ins", "alex", new Date(), { may: "widen" })).toMatchObject({ after: "sign-ins" });
-  expect(signInsKeychain(store, REPO)).toBe(true);
-  // A row that names someone who isn't an instance operator (written past the roads): no keychain.
-  store.handle.prepare("UPDATE project_check_access SET updated_by = 'sam' WHERE repo = ?").run(REPO);
-  expect(signInsKeychain(store, REPO)).toBe(false);
-  store.handle.prepare("UPDATE project_check_access SET updated_by = 'nobody' WHERE repo = ?").run(REPO);
-  expect(signInsKeychain(store, REPO)).toBe(false);
-  // The one who set it no longer an instance operator: no keychain.
-  store.handle.prepare("UPDATE project_check_access SET updated_by = 'alex' WHERE repo = ?").run(REPO);
-  expect(signInsKeychain(store, REPO)).toBe(true);
-  store.handle.prepare("UPDATE approver SET projects_json = ? WHERE name = 'alex'").run(JSON.stringify([REPO]));
-  expect(signInsKeychain(store, REPO)).toBe(false);
-  store.handle.prepare("UPDATE approver SET projects_json = NULL WHERE name = 'alex'").run();
-  // Narrowed back: none.
-  expect(store.setProjectCheckAccess(REPO, "sandboxed", "alex", new Date(), { may: "narrow" })).toMatchObject({ after: "sandboxed" });
-  expect(signInsKeychain(store, REPO)).toBe(false);
 });

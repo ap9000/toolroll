@@ -7,6 +7,7 @@
  * diagnosis can go stale; it can never grant a lease.
  */
 
+import { authorityStandsSql } from "./approval-authority.js";
 import { isAlive } from "./runner.js";
 import { updateAdmissionPaused, UPDATE_PAUSED } from "./desktop-update-gate.js";
 import { approvalOf, type ExecutionProfile } from "./scope.js";
@@ -16,8 +17,6 @@ import { REVIEW_TOKENS, resultStatusOf, reviewFactsOf } from "./workspace-ui.js"
 import { replacedWords } from "./task-status.js";
 import { failedAttemptSentence, latestFinishedAttempt } from "./needs-you.js";
 import { buildReviewOf } from "./review-switch.js";
-import { grantStandsSql } from "./flow-unattended.js";
-import { accountReachesSql } from "./project-access.js";
 import { BUILT_IN, parseCapabilityKey, type ChatSnapshot, type ReviewRequestOrigin, type ReviewRetryState, type Store, type TaskState } from "./store.js";
 
 export const DEFAULT_MAX_OPEN_DECISIONS = 5;
@@ -190,15 +189,9 @@ export function scopeApprovedForDispatch(store: Store, taskRef: number, now: Dat
       `SELECT 1 AS hit FROM task_scope
        JOIN task_ref ON task_ref.id = ? AND task_scope.task_id = task_ref.external_id
        WHERE task_scope.approved_digest = task_scope.digest AND task_scope.approved_at IS NOT NULL
-         AND (COALESCE(task_scope.approval_basis, 'password') NOT IN ('mode', 'grant')
-           OR (task_scope.approval_basis = 'mode' AND EXISTS (SELECT 1 FROM operating_mode om
-                      JOIN approver signer ON signer.name = om.signed_by
-                     WHERE om.repo = task_ref.repo AND om.revoked_at IS NULL
-                       AND om.absolute_expiry > ? AND om.digest = task_scope.mode_digest
-                       AND signer.revoked_at IS NULL AND signer.role = 'approver' AND ${accountReachesSql("signer", "task_ref.repo")}))
-           OR (task_scope.approval_basis = 'grant' AND ${grantStandsSql("task_scope.mode_digest", "?", "task_ref.repo")}))`,
+         AND ${authorityStandsSql("task_scope", "task_ref.repo", "?")}`,
     )
-    .get(taskRef, now.toISOString(), now.toISOString());
+    .get(taskRef, now.toISOString(), now.toISOString(), now.toISOString());
   return row !== undefined;
 }
 

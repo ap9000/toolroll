@@ -1,5 +1,84 @@
 # Changelog
 
+## 0.9.72 — 2026-10-25
+
+- **One approval per release.** A person approves a release once. Later
+  commits on the same pull request carry that approval only when every change
+  since is unit tests, journey scripts, Markdown under docs/, the README or
+  the changelog, within 400 changed lines, 20 files and 800 lines of churn,
+  and the production build is byte-for-byte the approved one. Anything else
+  asks again, and so does any change after the deploy has started. The
+  approval sheet states the release and what asks again; the release summary
+  and the squash message list every commit that landed after the approval.
+  **Stop carrying later commits** on the task page (or `toolroll release
+  revoke`) ends it, and `toolroll release ask-every-commit on` makes a
+  project's releases ask for every commit. A release approval expires after
+  3 days.
+- **Re-checks of a release re-run only what failed.** On the second and later
+  release checks, only the failed unit files, journey groups and upgrade
+  versions run again, with every test changed since and a short sanity pass.
+  A check that can't prove it covered everything counts as failed, and a
+  test that disappears or is newly skipped stops carrying.
+- **A nightly full check of main.** `toolroll release nightly --repo <path>`
+  sets up a daily full check of main (03:00 local by default). A failure
+  becomes an attention notice naming what failed, holds re-checks that run
+  only part of the suite until a full check passes it again, and a nightly
+  that hasn't run for 26 hours says so.
+- **Sandboxed checks can start Chromium on macOS.** Playwright's default
+  browser (its Chromium headless shell) now starts inside the check sandbox:
+  the sandbox may register and look up Chromium's port rendezvous service,
+  `org.chromium.Chromium.MachPortRendezvousServer.<pid>`, and nothing else.
+  Builds, flows and tool servers don't get this; SECURITY.md says what a
+  hostile check could do with it. A project set to **Not sandboxed** only for
+  a headless browser check can go back to **Sandboxed** in Settings → Project
+  → Check access. Chrome for Testing (`channel: "chromium"`, headed runs)
+  still needs **Not sandboxed**.
+- **Checks with sign-ins no longer reach your keychain.** Toolroll reads
+  Claude Code's and gh's sign-ins from the keychain itself, outside the
+  sandbox, and hands the check just those tokens in its environment. A check
+  gets Claude's current access token and can't renew it.
+- **A wrong password on an approval says "That password didn't match."**
+  instead of "not approved: not-an-approver". Someone who isn't an approver
+  gets the same answer.
+- **Closing a live terminal signals only its own processes.** It stops them
+  before it kills them, so a child one starts at that moment can't slip out
+  from under the close; each signal goes only to a process still the one it
+  saw (same pid, same start); and after the program ends, its terminal's
+  name no longer counts as proof, since the device may already be someone
+  else's. A process it can't prove is its own is never signalled, and the
+  close says it's uncertain (the worktree stays).
+- **Only a person approves work.** The lead's token used to approve a task's
+  scope and be recorded as its owner's password approval, including on a
+  release. Now `task approve` (and `task repair --yes`) with a lead token, or
+  any approval made with a remote API token, is refused: "Only a person can
+  approve this." Approve on the task page or from your paired chat
+  (docs/plans/approval-policy.md, phase 1; the setting that lets the lead
+  approve, recorded as the lead's, comes next).
+- **Only a person merges by hand.** `task merge` (including `--anyway`) and
+  the merge button refuse a lead or API token. A flow's Pull request zone
+  merges only after a person's recorded decision; a subagent's approval, or
+  a decision from before decisions recorded who made them, waits.
+- **Protected work counts only people.** A vote a machine credential left, or
+  one with no proof on record, doesn't count as one of the two people, and a
+  lead or API token's completion is never the second person. A person can
+  mark an already-complete result complete again to release a held push.
+- **Releases and deployments need a person's approval with its proof on
+  record.** The release gate and `deploy-browser.mjs` (every phase, resumed
+  ones included) refuse an approval a lead token made, a mode, a flow, a
+  standing order, or an approval with no recorded proof. `toolroll release` proves the
+  candidate in its own runtime, and that the checkout is exactly that commit,
+  before it runs anything from the candidate's checkout. Paired-chat
+  approvals now record their own proof, so they still count. Update the
+  plane before running `toolroll release`: an older plane can't say who
+  approved, and the release waits.
+- Approvals a lead token made before this change are read for what they were:
+  they no longer dispatch, and the task asks for a person's approval. Seals
+  with no recorded authority stand on nothing. A standing order's firing is
+  approved by its own authority (`schedule`), which stands only while its
+  approver can still approve in the project.
+- Schema v134 and v135 only add columns and tables; `toolroll update` runs
+  them in place.
+
 ## 0.9.71 — 2026-10-25
 
 - **Sandboxed launches can open a terminal of their own on macOS.** A check

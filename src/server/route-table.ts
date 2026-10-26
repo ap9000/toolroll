@@ -451,6 +451,7 @@ post("tasks", "task.act.retry-review", `^\\/t\\/${TASK}\\/retry-review$`, { proj
 post("tasks", "task.act.complete", `^\\/t\\/${TASK}\\/complete$`, { project: "task", limited: "resource", sample: "/t/one/complete", ...approver("Only an approver can mark a result complete.") });
 post("tasks", "task.act.merge", `^\\/t\\/${TASK}\\/merge$`, { project: "task", limited: "resource", sample: "/t/one/merge", ...approver("Only an approver can merge.") });
 post("tasks", "task.act.confirm-stopped", `^\\/t\\/${TASK}\\/confirm-stopped$`, { scope: "step-up", project: "task", limited: "resource", sample: "/t/one/confirm-stopped", ...approver("Only an approver can confirm a build stopped.") });
+post("tasks", "task.act.stop-carrying", `^\\/t\\/${TASK}\\/stop-carrying$`, { project: "task", limited: "resource", sample: "/t/one/stop-carrying", ...approver("Only an approver can stop carrying a release.") });
 post("tasks", "task.act.stop", `^\\/t\\/${TASK}\\/stop$`, { project: "task", limited: "resource", sample: "/t/one/stop" });
 post("tasks", "task.act.pause", `^\\/t\\/${TASK}\\/pause$`, { project: "task", limited: "resource", sample: "/t/one/pause" });
 post("tasks", "task.act.resume-arm", `^\\/t\\/${TASK}\\/resume-arm$`, { project: "task", limited: "resource", sample: "/t/one/resume-arm" });

@@ -25,12 +25,12 @@ export const narrowestAccess = (levels: readonly CheckAccess[]): CheckAccess =>
 
 /** The level as a person reads it, in a sentence's middle ("Checks: …"). */
 export function checkAccessWords(level: CheckAccess): string {
-  return level === "sandboxed" ? "sandboxed" : level === "sign-ins" ? "sandboxed, with model and GitHub sign-ins and, on a Mac, Keychain access" : "not sandboxed";
+  return level === "sandboxed" ? "sandboxed" : level === "sign-ins" ? "sandboxed, with model and GitHub sign-ins" : "not sandboxed";
 }
 
 /** What each wider level means, said before anyone chooses it. */
 export const CHECK_ACCESS_WARNINGS: Readonly<Record<Exclude<CheckAccess, "sandboxed">, string>> = {
-  "sign-ins": "This project's checks can read your Claude, Codex and GitHub sign-ins, even where the project hides your home folder's files from builds. On a Mac that includes Keychain access: they can read any keychain item that lets every program read it, not only those sign-ins. Its tests could use or send those credentials anywhere its network setting allows. Only choose this for projects you trust.",
+  "sign-ins": "This project's checks can read your Claude, Codex and GitHub sign-ins, even where the project hides your home folder's files from builds. Its tests could use or send those credentials anywhere its network setting allows. Only choose this for projects you trust.",
   unsandboxed: "This project's checks get your full access to this machine and to Toolroll itself, including its database and every sign-in. Only for a project whose checks must create sandboxes themselves, such as Toolroll's own.",
 };
 

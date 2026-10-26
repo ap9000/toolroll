@@ -28,6 +28,7 @@ import { join } from "node:path";
 import { run as execRun, type ExecResult, type RunOptions } from "./exec.js";
 import { summarizeChecks } from "./pulls.js";
 import type { Publication, PublicationGrant, Store } from "./store.js";
+import { releasePublication } from "./store.js";
 import { headWithin } from "./names.js";
 
 export const BODY_TEMPLATE_VERSION = 2;
@@ -672,213 +673,220 @@ export async function sweepMerges(
   const termsHash = mergeTermsHash(grant);
 
   for (const publication of store.openedPublications()) {
-    if (publication.prNumber === null || publication.headSha === null) continue;
-    const prNumber = publication.prNumber;
-    const headSha = publication.headSha;
-    // The local-repo fence (finding 6): repo B's publication never rides
-    // repo A's sweep, whatever the remote terms coincide on.
-    const ref = store.refForId(publication.taskRef);
-    if (ref === null || ref.repo !== options.repo) continue;
-    if (publication.githubRepo !== grant.githubRepo) continue;
+    // A release's result merges only through `toolroll release` (release-once.md): the sweep never takes it up.
+    if (releasePublication(store, publication.id)) { report.skipped++; continue; }
+    // One bad row never stops the rest of the sweep: every other publication, in every project, still merges.
+    try {
+      if (publication.prNumber === null || publication.headSha === null) continue;
+      const prNumber = publication.prNumber;
+      const headSha = publication.headSha;
+      // The local-repo fence (finding 6): repo B's publication never rides
+      // repo A's sweep, whatever the remote terms coincide on.
+      const ref = store.refForId(publication.taskRef);
+      if (ref === null || ref.repo !== options.repo) continue;
+      if (publication.githubRepo !== grant.githubRepo) continue;
 
-    const blocker = store.mergeBlockerFor(publication.id);
-    if (blocker !== null) {
-      report.skipped++;
-      pagePerson(
-        publication, "blocked",
-        "PR #" + prNumber + " holds for a repair",
-        "A CI repair (" + (blocker.taskId ?? "?") + ") is in flight. It merges nothing until you lift it: toolroll publish unblock " + prNumber + ".",
-      );
-      continue;
-    }
-
-    store.createMergeIntent(
-      { publication: publication.id, repo: options.repo, grantTermsHash: termsHash, headSha, method, deleteBranch: grant.mergeDeleteBranch === true },
-      clock(),
-    );
-    const intent = store.mergeIntentFor(publication.id);
-    if (intent === null || intent.state === "merged" || intent.state === "refused" || intent.state === "superseded") continue;
-
-    // WAITING-HUMAN never fires itself (E1): the person is paged once,
-    // episodically, with the exact ceremony that releases it.
-    if (intent.state === "waiting-human") {
-      report.skipped++;
-      pagePerson(
-        publication, "waiting-human",
-        "PR #" + prNumber + " waits for your go-ahead",
-        "Merges wait for you while this posture holds. When you want it merged: toolroll publish merge " + prNumber + " --as <you> --token <t>. It still merges only when CI is seen green on the exact head.",
-      );
-      continue;
-    }
-
-    // FIRING is one-shot (E1): a live firing row belongs to its owner.
-    // A STALE one (deadline passed) recovers by STRUCTURED REMOTE REREAD
-    // (F1): an observed terminal settles it; an OPEN same-head PR is
-    // NEVER auto-retried - the person gets the recovery ceremony.
-    if (intent.state === "firing") {
-      if (intent.firingDeadline !== null && intent.firingDeadline <= clock().toISOString()) {
-        const reread = await observeOne(store, exec, clock, grant.githubRepo, prNumber);
-        if (!reread.ok && reread.why === "pr-merged") {
-          store.settleMergeIntent(intent.id, intent.generation, "merged", clock(), {
-            receipt: "observed merged remotely after a stale firing claim", from: "firing", bumpGeneration: true,
-          });
-          report.merged++;
-        } else if (!reread.ok && reread.why.startsWith("pr-")) {
-          store.settleMergeIntent(intent.id, intent.generation, "superseded", clock(), {
-            error: reread.why, from: "firing", bumpGeneration: true,
-          });
-        } else if (reread.ok && reread.headSha !== intent.headSha) {
-          store.settleMergeIntent(intent.id, intent.generation, "superseded", clock(), {
-            error: "the head moved while the firing claim was stale", from: "firing", bumpGeneration: true,
-          });
-        } else {
-          report.skipped++;
-          pagePerson(
-            publication, "half-fired",
-            "PR #" + prNumber + " may have half-merged",
-            "A merge was issued and its owner went silent; the PR is still open on the same commit. Nothing retries by itself. If you want it fired again: toolroll publish refire " + prNumber + " --as <you> --token <t>.",
-          );
-        }
-      } else {
+      const blocker = store.mergeBlockerFor(publication.id);
+      if (blocker !== null) {
         report.skipped++;
-      }
-      continue;
-    }
-
-    const claim = store.claimMergeIntent(intent.id, who, MERGE_LEASE_MS, clock());
-    if (claim === null) continue; // someone else's live claim
-    const settle = (state: "merged" | "refused" | "superseded" | "pending", detail: { error?: string | null; receipt?: string | null; countAttempt?: boolean; from?: "claimed" | "firing" } = {}) =>
-      store.settleMergeIntent(intent.id, claim.generation, state, clock(), { from: "claimed", ...detail });
-
-    // The live grant, re-read AFTER the claim (finding 7): revocation,
-    // narrowing, or any term drift supersedes rather than merges.
-    const live = store.publicationGrantFor(options.repo);
-    if (live === null || live.merge !== true || mergeTermsHash(live) !== termsHash || intent.headSha !== headSha) {
-      settle("superseded", { error: "the grant or the head moved since this intent was written" });
-      continue;
-    }
-
-    const queue = await proveNoMergeQueue(exec, grant.githubRepo, grant.base);
-    if (!queue.ok) {
-      settle("refused", { error: queue.why });
-      report.refused++;
-      pagePerson(
-        publication, queue.why,
-        "PR #" + prNumber + " will not auto-merge",
-        queue.why === "merge-queue"
-          ? "The base branch requires a merge queue - out of this release's scope. Merge it on GitHub, or lift the queue and run: toolroll publish rearm " + prNumber + "."
-          : "The branch's protection could not be READ well enough to prove no merge queue governs it - auto-merge stays paused. Check access, then run: toolroll publish rearm " + prNumber + ".",
-      );
-      continue;
-    }
-
-    // One fresh, winning observation - green on the EXACT publication head.
-    const seen = await observeOne(store, exec, clock, grant.githubRepo, prNumber);
-    if (!seen.ok) {
-      if (seen.why === "draft") {
-        settle("refused", { error: "draft" });
-        report.refused++;
         pagePerson(
-          publication, "draft",
-          "PR #" + prNumber + " is a draft",
-          "Drafts never merge themselves. Mark it ready on GitHub, then run: toolroll publish rearm " + prNumber + ".",
+          publication, "blocked",
+          "PR #" + prNumber + " holds for a repair",
+          "A CI repair (" + (blocker.taskId ?? "?") + ") is in flight. It merges nothing until you lift it: toolroll publish unblock " + prNumber + ".",
         );
-      } else if (seen.why.startsWith("pr-")) {
-        settle("superseded", { error: seen.why });
-      } else {
-        settle("pending");
-        report.problems.push("PR #" + prNumber + ": " + seen.why);
+        continue;
       }
-      continue;
-    }
-    if (seen.headSha !== headSha || seen.state !== "passing") {
-      settle(seen.headSha !== headSha ? "superseded" : "pending", {
-        error: seen.headSha !== headSha ? "the head moved" : "CI is " + seen.state + ", not green",
-      });
-      continue;
-    }
 
-    // The linearization point (E1): claimed -> firing as a DURABLE CAS
-    // re-proving grant terms, head, and basis-specific authority in one
-    // transaction. Before it commits, a revocation wins; after, the
-    // issued call is one-shot and no revocation demotes it.
-    const fired = store.fireMergeIntent(
-      intent.id, claim.generation,
-      { repo: options.repo, headSha, liveGrantTermsHash: mergeTermsHash(live), graceMs: FIRING_GRACE_MS },
-      clock(),
-    );
-    if (!fired.ok) {
-      if (fired.outcome === "waiting-human") {
+      store.createMergeIntent(
+        { publication: publication.id, repo: options.repo, grantTermsHash: termsHash, headSha, method, deleteBranch: grant.mergeDeleteBranch === true },
+        clock(),
+      );
+      const intent = store.mergeIntentFor(publication.id);
+      if (intent === null || intent.state === "merged" || intent.state === "refused" || intent.state === "superseded") continue;
+
+      // WAITING-HUMAN never fires itself (E1): the person is paged once,
+      // episodically, with the exact ceremony that releases it.
+      if (intent.state === "waiting-human") {
         report.skipped++;
         pagePerson(
           publication, "waiting-human",
           "PR #" + prNumber + " waits for your go-ahead",
-          fired.why + " - when you want it merged: toolroll publish merge " + prNumber + " --as <you> --token <t>.",
+          "Merges wait for you while this posture holds. When you want it merged: toolroll publish merge " + prNumber + " --as <you> --token <t>. It still merges only when CI is seen green on the exact head.",
         );
+        continue;
       }
-      continue;
-    }
 
-    const merged = await exec(
-      "gh",
-      [
-        "pr", "merge", String(prNumber),
-        "--repo", grant.githubRepo,
-        "--" + method,
-        "--match-head-commit", headSha,
-        ...(grant.mergeDeleteBranch === true ? ["--delete-branch"] : []),
-      ],
-      { timeoutMs: EXEC_TIMEOUT_MS },
-    );
+      // FIRING is one-shot (E1): a live firing row belongs to its owner.
+      // A STALE one (deadline passed) recovers by STRUCTURED REMOTE REREAD
+      // (F1): an observed terminal settles it; an OPEN same-head PR is
+      // NEVER auto-retried - the person gets the recovery ceremony.
+      if (intent.state === "firing") {
+        if (intent.firingDeadline !== null && intent.firingDeadline <= clock().toISOString()) {
+          const reread = await observeOne(store, exec, clock, grant.githubRepo, prNumber);
+          if (!reread.ok && reread.why === "pr-merged") {
+            store.settleMergeIntent(intent.id, intent.generation, "merged", clock(), {
+              receipt: "observed merged remotely after a stale firing claim", from: "firing", bumpGeneration: true,
+            });
+            report.merged++;
+          } else if (!reread.ok && reread.why.startsWith("pr-")) {
+            store.settleMergeIntent(intent.id, intent.generation, "superseded", clock(), {
+              error: reread.why, from: "firing", bumpGeneration: true,
+            });
+          } else if (reread.ok && reread.headSha !== intent.headSha) {
+            store.settleMergeIntent(intent.id, intent.generation, "superseded", clock(), {
+              error: "the head moved while the firing claim was stale", from: "firing", bumpGeneration: true,
+            });
+          } else {
+            report.skipped++;
+            pagePerson(
+              publication, "half-fired",
+              "PR #" + prNumber + " may have half-merged",
+              "A merge was issued and its owner went silent; the PR is still open on the same commit. Nothing retries by itself. If you want it fired again: toolroll publish refire " + prNumber + " --as <you> --token <t>.",
+            );
+          }
+        } else {
+          report.skipped++;
+        }
+        continue;
+      }
 
-    if (merged.code === 0) {
-      store.transact(() => {
-        settle("merged", { receipt: "merged " + headSha.slice(0, 12) + " at " + clock().toISOString(), countAttempt: true, from: "firing" });
-        store.recordPublicationRemoteState(publication.id, "MERGED", clock());
-        store.resolveCiEpisodes(grant.githubRepo, prNumber, null, clock());
-      });
-      report.merged++;
-      store.resolveEpisodes(`merge-attn:${publication.id}`, clock());
-      page(
-        publication,
-        "merge:" + publication.id + ":merged",
-        "merged: PR #" + prNumber,
-        (publication.prUrl ?? grant.githubRepo) + " - " + method + " of " + headSha.slice(0, 12) + ", under the merge terms you approved.",
-      );
-      continue;
-    }
+      const claim = store.claimMergeIntent(intent.id, who, MERGE_LEASE_MS, clock());
+      if (claim === null) continue; // someone else's live claim
+      const settle = (state: "merged" | "refused" | "superseded" | "pending", detail: { error?: string | null; receipt?: string | null; countAttempt?: boolean; from?: "claimed" | "firing" } = {}) =>
+        store.settleMergeIntent(intent.id, claim.generation, state, clock(), { from: "claimed", ...detail });
 
-    // NEVER classify from the exit code alone (only auth=4 is distinct):
-    // re-read structured state and let the PR say what happened.
-    if (merged.code === 4) {
-      settle("refused", { error: "credential", countAttempt: true, from: "firing" });
-      report.refused++;
-      pagePerson(
-        publication, "credential",
-        "PR #" + prNumber + ": gh is not signed in",
-        "The merge acts as this machine's GitHub account, and it could not authenticate. Run gh auth login, then: toolroll publish rearm " + prNumber + ".",
+      // The live grant, re-read AFTER the claim (finding 7): revocation,
+      // narrowing, or any term drift supersedes rather than merges.
+      const live = store.publicationGrantFor(options.repo);
+      if (live === null || live.merge !== true || mergeTermsHash(live) !== termsHash || intent.headSha !== headSha) {
+        settle("superseded", { error: "the grant or the head moved since this intent was written" });
+        continue;
+      }
+
+      const queue = await proveNoMergeQueue(exec, grant.githubRepo, grant.base);
+      if (!queue.ok) {
+        settle("refused", { error: queue.why });
+        report.refused++;
+        pagePerson(
+          publication, queue.why,
+          "PR #" + prNumber + " will not auto-merge",
+          queue.why === "merge-queue"
+            ? "The base branch requires a merge queue - out of this release's scope. Merge it on GitHub, or lift the queue and run: toolroll publish rearm " + prNumber + "."
+            : "The branch's protection could not be READ well enough to prove no merge queue governs it - auto-merge stays paused. Check access, then run: toolroll publish rearm " + prNumber + ".",
+        );
+        continue;
+      }
+
+      // One fresh, winning observation - green on the EXACT publication head.
+      const seen = await observeOne(store, exec, clock, grant.githubRepo, prNumber);
+      if (!seen.ok) {
+        if (seen.why === "draft") {
+          settle("refused", { error: "draft" });
+          report.refused++;
+          pagePerson(
+            publication, "draft",
+            "PR #" + prNumber + " is a draft",
+            "Drafts never merge themselves. Mark it ready on GitHub, then run: toolroll publish rearm " + prNumber + ".",
+          );
+        } else if (seen.why.startsWith("pr-")) {
+          settle("superseded", { error: seen.why });
+        } else {
+          settle("pending");
+          report.problems.push("PR #" + prNumber + ": " + seen.why);
+        }
+        continue;
+      }
+      if (seen.headSha !== headSha || seen.state !== "passing") {
+        settle(seen.headSha !== headSha ? "superseded" : "pending", {
+          error: seen.headSha !== headSha ? "the head moved" : "CI is " + seen.state + ", not green",
+        });
+        continue;
+      }
+
+      // The linearization point (E1): claimed -> firing as a DURABLE CAS
+      // re-proving grant terms, head, and basis-specific authority in one
+      // transaction. Before it commits, a revocation wins; after, the
+      // issued call is one-shot and no revocation demotes it.
+      const fired = store.fireMergeIntent(
+        intent.id, claim.generation,
+        { repo: options.repo, headSha, liveGrantTermsHash: mergeTermsHash(live), graceMs: FIRING_GRACE_MS },
+        clock(),
       );
-      continue;
-    }
-    const after = await observeOne(store, exec, clock, grant.githubRepo, prNumber);
-    if (!after.ok && after.why === "pr-merged") {
-      settle("merged", { receipt: "merged (confirmed by re-read after an ambiguous exit)", countAttempt: true, from: "firing" });
-      report.merged++;
-    } else if (!after.ok && (after.why === "draft" || after.why.startsWith("pr-"))) {
-      settle(after.why === "draft" ? "refused" : "superseded", { error: after.why, countAttempt: true, from: "firing" });
-      if (after.why === "draft") report.refused++;
-    } else if (after.ok && after.headSha !== headSha) {
-      settle("superseded", { error: "the head moved during the attempt", countAttempt: true, from: "firing" });
-    } else if (intent.attempts + 1 >= MERGE_MAX_ATTEMPTS) {
-      settle("refused", { error: firstLine(merged.stderr) || "the merge was rejected", countAttempt: true, from: "firing" });
-      report.refused++;
-      pagePerson(
-        publication, "rejected",
-        "PR #" + prNumber + " would not merge",
-        (firstLine(merged.stderr) || "GitHub rejected the merge") + " - likely branch protection, required reviews, or a conflict. Fix the cause, then run: toolroll publish rearm " + prNumber + ".",
+      if (!fired.ok) {
+        if (fired.outcome === "waiting-human") {
+          report.skipped++;
+          pagePerson(
+            publication, "waiting-human",
+            "PR #" + prNumber + " waits for your go-ahead",
+            fired.why + " - when you want it merged: toolroll publish merge " + prNumber + " --as <you> --token <t>.",
+          );
+        }
+        continue;
+      }
+
+      const merged = await exec(
+        "gh",
+        [
+          "pr", "merge", String(prNumber),
+          "--repo", grant.githubRepo,
+          "--" + method,
+          "--match-head-commit", headSha,
+          ...(grant.mergeDeleteBranch === true ? ["--delete-branch"] : []),
+        ],
+        { timeoutMs: EXEC_TIMEOUT_MS },
       );
-    } else {
-      settle("pending", { error: firstLine(merged.stderr) || "transport", countAttempt: true, from: "firing" });
+
+      if (merged.code === 0) {
+        store.transact(() => {
+          settle("merged", { receipt: "merged " + headSha.slice(0, 12) + " at " + clock().toISOString(), countAttempt: true, from: "firing" });
+          store.recordPublicationRemoteState(publication.id, "MERGED", clock());
+          store.resolveCiEpisodes(grant.githubRepo, prNumber, null, clock());
+        });
+        report.merged++;
+        store.resolveEpisodes(`merge-attn:${publication.id}`, clock());
+        page(
+          publication,
+          "merge:" + publication.id + ":merged",
+          "merged: PR #" + prNumber,
+          (publication.prUrl ?? grant.githubRepo) + " - " + method + " of " + headSha.slice(0, 12) + ", under the merge terms you approved.",
+        );
+        continue;
+      }
+
+      // NEVER classify from the exit code alone (only auth=4 is distinct):
+      // re-read structured state and let the PR say what happened.
+      if (merged.code === 4) {
+        settle("refused", { error: "credential", countAttempt: true, from: "firing" });
+        report.refused++;
+        pagePerson(
+          publication, "credential",
+          "PR #" + prNumber + ": gh is not signed in",
+          "The merge acts as this machine's GitHub account, and it could not authenticate. Run gh auth login, then: toolroll publish rearm " + prNumber + ".",
+        );
+        continue;
+      }
+      const after = await observeOne(store, exec, clock, grant.githubRepo, prNumber);
+      if (!after.ok && after.why === "pr-merged") {
+        settle("merged", { receipt: "merged (confirmed by re-read after an ambiguous exit)", countAttempt: true, from: "firing" });
+        report.merged++;
+      } else if (!after.ok && (after.why === "draft" || after.why.startsWith("pr-"))) {
+        settle(after.why === "draft" ? "refused" : "superseded", { error: after.why, countAttempt: true, from: "firing" });
+        if (after.why === "draft") report.refused++;
+      } else if (after.ok && after.headSha !== headSha) {
+        settle("superseded", { error: "the head moved during the attempt", countAttempt: true, from: "firing" });
+      } else if (intent.attempts + 1 >= MERGE_MAX_ATTEMPTS) {
+        settle("refused", { error: firstLine(merged.stderr) || "the merge was rejected", countAttempt: true, from: "firing" });
+        report.refused++;
+        pagePerson(
+          publication, "rejected",
+          "PR #" + prNumber + " would not merge",
+          (firstLine(merged.stderr) || "GitHub rejected the merge") + " - likely branch protection, required reviews, or a conflict. Fix the cause, then run: toolroll publish rearm " + prNumber + ".",
+        );
+      } else {
+        settle("pending", { error: firstLine(merged.stderr) || "transport", countAttempt: true, from: "firing" });
+      }
+    } catch (error) {
+      report.problems.push("publication " + publication.id + ": " + (error instanceof Error ? error.message : String(error)));
     }
   }
   return report;

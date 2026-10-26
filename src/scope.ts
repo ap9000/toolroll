@@ -770,8 +770,10 @@ export type Scope = SavedScopeTerms & {
   /** How the approval happened (v29): 'password' = the ceremony;
    * 'mode' = sealed by the signer's live mode (modeDigest names it);
    * 'chat' = the owner's own two taps in their paired chat, under their chat-approval setting or a signed term
-   * (modeDigest names that authority; the yes is the person's and doesn't lapse with it). */
-  approvalBasis?: "password" | "mode" | "chat" | "grant" | null;
+   * (modeDigest names that authority; the yes is the person's and doesn't lapse with it).
+   * 'schedule' = a standing order's firing (modeDigest names the order); 'lead' = the owner's lead (never a person);
+   * 'unknown' = a stored word this code doesn't write, which no reader treats as authority (approval-policy plan). */
+  approvalBasis?: ApprovalBasis | "unknown" | null;
   modeDigest?: string | null;
   /** v24 (optional so hand-built scopes in tests stay valid): the working
    * execution profile, its resolution state, and the immutable snapshot
@@ -820,9 +822,22 @@ export type Scope = SavedScopeTerms & {
   /** Who wrote the text (mate arc, ruling 2): a confirmed lead proposal,
    * the coordinator, a scout, or a person (null). Read raw and proved by
    * `termsProblem` — a word outside these is a stated problem, never a
-   * value that slips past the lead quarantine at a mode seal. */
-  proposedVia?: "mate" | "coordinator" | "scout" | null;
+   * value that slips past the lead quarantine at a mode seal. `lead`: the lead wrote it through its token (CLI); it is
+   * the lead's own text, not another machine's, so it isn't quarantined (`quarantinedAuthor`). */
+  proposedVia?: ScopeAuthor | null;
+  /** v135 (docs/plans/release-once.md): a release scope's terms — repository, version, pull request, approved commit,
+   * carry policy, grant, check access, expiry. Part of the digest when present; a person's seal of them opens the
+   * release's authority record. */
+  releaseTerms?: ReleaseTerms | null;
 };
+
+/** Who wrote a scope's text, when not a person (approval-policy plan §1.4). */
+export type ScopeAuthor = "mate" | "coordinator" | "scout" | "lead";
+/** The authorities a seal can stand on (approval-policy plan §1.5). Anything else stands on nothing. */
+/** `carried`: a later commit of a release carried under a person's release approval (release-once.md); only the carry
+ * transaction ever writes it. */
+export type ApprovalBasis = "password" | "mode" | "chat" | "grant" | "schedule" | "lead" | "carried";
+export const APPROVAL_BASES: readonly ApprovalBasis[] = ["password", "mode", "chat", "grant", "schedule", "lead", "carried"];
 
 export type Approval =
   | { approved: true; at: string; by: string }
@@ -853,11 +868,14 @@ export type ScopeInput = {
   posture?: "escalated";
   /** Who wrote this text (mate arc, ruling 2): `mate` for a confirmed mate
    * proposal — mode coverage then never seals it; a human rewrite clears it. */
-  proposedVia?: "mate" | "coordinator" | null;
+  proposedVia?: ScopeAuthor | null;
   /** v39: the signed acceptance rubric. Absent digests exactly like `[]` —
    * see `Scope.acceptance`. `propose` itself never requires this to be
    * non-empty; the roads that call it do. */
   acceptance?: readonly AcceptanceCriterion[];
+  /** v135: release terms (release-carry.ts releaseTermsFor), from the plane's own records. Undefined keeps any terms
+   * the scope already carries; null removes them. */
+  releaseTerms?: ReleaseTerms | null;
   now: Date;
   mutation?: Mutation;
 };
@@ -882,6 +900,8 @@ export function digestOf(
     /** v69: a prepared commit, folded in only when present so every earlier
      * digest is untouched. */
     candidate?: string | null;
+    /** v135: release terms, folded in only when present. */
+    releaseTerms?: ReleaseTerms | null;
   },
   // The execution target: a single profile (legacy v24), OR an explicit
   // fallback chain (v30). BOTH fold through the SAME outer `profileDigest`
@@ -922,6 +942,7 @@ export function digestOf(
         // like an absent v41 field. Strict is an explicit signed promise.
         ...(scope.qualityMode === "strict" ? { qualityMode: "strict" } : {}),
         ...(scope.candidate ? { candidate: scope.candidate } : {}),
+        ...(scope.releaseTerms == null ? {} : { releaseTerms: releaseTermsDigest(scope.releaseTerms) }),
         // The single outer key, whichever target produced its inner value:
         // absent => the golden and every profileless approval are untouched;
         // a legacy profile => its exact profileDigestOf; an explicit chain
@@ -980,6 +1001,7 @@ function proposeLocked(store: Store, input: ScopeInput): Scope {
     ...(permissionMode === undefined ? {} : { permissionMode }),
     ...(input.qualityMode === undefined ? {} : { qualityMode: input.qualityMode }),
     ...(posture === undefined ? {} : { posture }),
+    ...(input.releaseTerms === undefined ? {} : { releaseTerms: input.releaseTerms }),
     proposedVia,
   });
   // The store may have RECOMPUTED the digest to bind the resolved profile
@@ -1131,7 +1153,9 @@ export type ApproveResult =
   /** Sprint 8: the organisation policy stops these terms (a provider, a model, the permission ceiling); `message` says which. */
   | { ok: false; reason: "policy"; message: string }
   /** Cockpit B2: a remembered password can't approve these terms (protected, escalated, or a quarantined filing). */
-  | { ok: false; reason: "password-now" };
+  | { ok: false; reason: "password-now" }
+  /** Approval policy, phase 1: a machine credential (the lead's token, a remote API token) is not a person. */
+  | { ok: false; reason: "machine-proof" };
 
 /**
  * Whether this name-and-token pair is a person the store knows. Shared by
@@ -1476,6 +1500,9 @@ export function approve(
   return store.transact(() => {
     const authenticated = authenticateApprover(store, by, token, store.lookupRef(taskId)?.repo ?? null);
     if (!authenticated.ok) return authenticated;
+    // ONLY A PERSON APPROVES (docs/plans/approval-policy.md, phase 1): a lead token or a remote API token proves the
+    // credential, not a person at a ceremony. Refused before any vote or proof row is written.
+    if (!personProof(authenticated.method)) return { ok: false as const, reason: "machine-proof" as const };
 
     const scope = store.getScope(taskId);
     if (scope === null) return { ok: false as const, reason: "no-scope" as const };
@@ -1504,6 +1531,9 @@ export function approve(
     // permission ceiling, are refused in words that name the rule.
     const policy = store.scopePolicyRefusal(taskId);
     if (policy !== null) return { ok: false as const, reason: "policy" as const, message: policy };
+    // A release scope's yes opens its authority record (release-once.md); say first why it can't.
+    const releaseProblem = scope.releaseTerms == null ? null : releaseSealProblem(store, scope.releaseTerms);
+    if (releaseProblem !== null) return { ok: false as const, reason: "policy" as const, message: releaseProblem };
     const gate = store.approvalGate(taskId, by, "person");
     if (gate.verdict === "refuse") return { ok: false as const, reason: gate.reason };
     // A remembered password (cockpit B2) approves only everyday work: one approver, standard permissions, terms a
@@ -1518,7 +1548,7 @@ export function approve(
     if (gate.verdict === "vote") {
       // The same person again adds nothing: no new vote, no proof row (and the approval roads refund a re-check).
       if (gate.already) return { ok: false as const, reason: "second-approver" as const, have: gate.have, need: gate.need, already: true };
-      store.recordApprovalVote(taskId, scope.digest, by, now);
+      store.recordApprovalVote(taskId, scope.digest, by, now, authenticated.method);
       proved();
       return { ok: false as const, reason: "second-approver" as const, have: gate.have, need: gate.need, already: gate.already };
     }
@@ -1527,7 +1557,7 @@ export function approve(
     const refused: { result?: ApproveResult } = {};
     try {
       return store.savepoint(() => {
-        if (gate.protectedWork) store.recordApprovalVote(taskId, scope.digest, by, now);
+        if (gate.protectedWork) store.recordApprovalVote(taskId, scope.digest, by, now, authenticated.method);
         // SEAL, never re-resolve: the approval snapshots the stored working
         // profile — the exact bytes the digest the approver signed was bound
         // to. Routing saveScope here would re-run resolution and could sign a
@@ -1553,9 +1583,9 @@ export const approvalProofDetail = (at: number, generation: number, digest: stri
 export function approvalProofOf(store: Store, taskId: string, by: string, digest: string): { method: string; at: string } | null {
   const rows = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = ? AND actor = ? ORDER BY id DESC LIMIT 50").all(taskId, APPROVAL_PROOF, by);
   for (const row of rows) {
-    const parts = typeof row["detail"] === "string" ? row["detail"].split(" · ") : [];
-    if (parts.length !== 3 || parts[2] !== `digest ${digest}` || Number.isNaN(Date.parse(parts[0]!))) continue;
-    return { method: String(row["outcome"]), at: parts[0]! };
+    const read = proofDetailOf(row["detail"]);
+    if (read === null || read.digest !== digest) continue;
+    return { method: String(row["outcome"]), at: read.at };
   }
   return null;
 }
@@ -1568,7 +1598,7 @@ export function freshlyApprovable(store: Store, taskId: string, scope: Scope, si
   const ref = store.handle.prepare("SELECT coordinator_cid FROM task_ref WHERE backend = 'built-in' AND external_id = ?").get(taskId);
   if (ref === undefined || ref["coordinator_cid"] != null) return false;
   const via = store.handle.prepare("SELECT proposed_via FROM task_scope WHERE task_id = ?").get(taskId)?.["proposed_via"];
-  return !(via === "mate" || via === "coordinator" || via === "scout");
+  return !quarantinedAuthor(typeof via === "string" ? via : null);
 }
 
 /**
@@ -1585,6 +1615,14 @@ export function approvalOf(scope: Scope | null): Approval {
     return { approved: false, reason: "none" };
   }
   if (scope.approvedDigest !== scope.digest) return { approved: false, reason: "changed" };
+  // A seal stands on a known authority (approval-policy plan §1.5): one left out or undefined, null (a row from before
+  // the basis column) or a word this code doesn't write is no approval.
+  if (scope.approvalBasis === undefined || scope.approvalBasis === null || !(APPROVAL_BASES as readonly string[]).includes(scope.approvalBasis)) {
+    return { approved: false, reason: "none" };
+  }
+  // Phase 1: only people approve, so a lead's seal (including an old one a lead token made through the person's road,
+  // which Store.getScope reads as `lead`) is no approval, and the person sees the Approve control again.
+  if (scope.approvalBasis === "lead") return { approved: false, reason: "none" };
   return { approved: true, at: scope.approvedAt, by: scope.approvedBy };
 }
 
@@ -1676,7 +1714,7 @@ export function scopeAuthorityOf(scope: Scope, env: ScopeAuthorityEnv = {}): Sco
   const parity = routeParityProblem(route, profile, { riskLevel: scope.riskLevel ?? "routine", qualityMode: scope.qualityMode ?? "default" });
   if (parity !== null) return { ok: false, reason: "parity", problem: parity };
   const digest = digestOf(
-    { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default" },
+    { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default", releaseTerms: scope.releaseTerms ?? null },
     profile,
     route,
   );
@@ -1739,9 +1777,32 @@ export function describeScope(scope: Scope, readiness: ReadinessLookup = NO_READ
     ...(scope.profile?.checkAccess === undefined ? [] : [`  checks       ${checkAccessWords(scope.profile.checkAccess)}`]),
     // Its sandbox terms (project-sandbox.ts), part of what the yes agrees to: what it reads, and any widening.
     ...(scope.profile === null || scope.profile === undefined ? [] : ((terms) => [`  reads        ${terms.reads}`, ...(terms.mach === null ? [] : [`  services     ${terms.mach}`])])(sandboxTermsWords(scope.profile))),
+    ...releaseTermsWords(scope.releaseTerms ?? null),
     `  reference    ${scope.digest}`,
     `  approved     ${describeApproval(approval)}`,
   ];
+}
+
+/** The approval sheet's release lines (release-once.md): the release in one sentence, then what asks again. */
+export function releaseTermsSentence(terms: ReleaseTerms): string {
+  if (!terms.policy.carry) return `Release ${terms.packageVersion} from pull request #${terms.pr} at ${terms.approvedSha.slice(0, 7)}. Every later commit asks for your approval again.`;
+  return `Release ${terms.packageVersion} from pull request #${terms.pr} at ${terms.approvedSha.slice(0, 7)}. Later commits on this pull request that only change tests, docs or the changelog ship without asking you again, until it merges or for 3 days. You'll see each one in the release summary.`;
+}
+/** What asks again, in full: the terms behind the sentence. */
+export function releaseAsksAgainWords(terms: ReleaseTerms): string[] {
+  const p = terms.policy;
+  return [
+    "A later commit asks again when it changes anything but unit tests, the journey scripts, docs under docs/, the README or the changelog;",
+    "when it touches AGENTS.md, CLAUDE.md, SECURITY.md, agent or CI settings, the test harness, helpers or fixtures;",
+    `when it deletes, renames or changes the mode of a file, adds a binary, a symlink or a submodule; when it changes the production build;`,
+    `when more than ${p.limits.lines} lines or ${p.limits.files} files change after this approval, or ${p.limits.churn} lines of churn;`,
+    ...(p.protectProject ? ["when it changes anything: this project is protected;"] : p.protectedPaths.length === 0 ? [] : [`when it changes a protected path: ${p.protectedPaths.join(", ")};`]),
+    `and always once the deploy starts. Repository ${terms.repo}, branch ${terms.branch} into ${terms.base}, check grant ${terms.grant.id}, checks in the sandbox, until ${terms.expiresAt}.`,
+  ];
+}
+function releaseTermsWords(terms: ReleaseTerms | null): string[] {
+  if (terms === null) return [];
+  return [`  release      ${releaseTermsSentence(terms)}`, ...(terms.policy.carry ? releaseAsksAgainWords(terms).map(line => `               ${line}`) : [])];
 }
 
 function describeApproval(approval: Approval): string {
@@ -1750,4 +1811,156 @@ function describeApproval(approval: Approval): string {
     return "no — it was approved, then the scope was rewritten; approve it again";
   }
   return "no — nothing will build this until somebody agrees to it";
+}
+
+// ---- Only a person approves (docs/plans/approval-policy.md, phase 1). Kept last: the freshness tripwire pins places.
+
+export { personProof } from "./person-proof.js";
+import { personProof } from "./person-proof.js";
+import { releaseTermsDigest, type ReleaseTerms } from "./contracts/release-terms.js";
+import { newestReleaseGeneration, releaseAuthorityOfTask, releaseSealProblem, type ReleaseAuthority, type ReleaseCarry } from "./release-authority.js";
+
+/** Whether the command running now is a machine's: the lead (its token) or a remote API run. Trusted context only. */
+export const machineActing = (): boolean => currentActor()?.lead === true || activeRemote() !== null;
+
+/** A proof row's detail, either form: the legacy text (`<at> · generation <n> · digest <d>`) or the versioned record
+ * (`{"v":1,"at":…,"digest":…}`, more fields allowed). Any other shape is no proof. */
+export function proofDetailOf(detail: unknown): { at: string; digest: string } | null {
+  if (typeof detail !== "string") return null;
+  if (detail.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(detail) as Record<string, unknown>;
+      if (parsed === null || typeof parsed !== "object" || parsed["v"] !== 1 || typeof parsed["at"] !== "string" || typeof parsed["digest"] !== "string") return null;
+      if (Number.isNaN(Date.parse(parsed["at"])) || parsed["digest"] === "") return null;
+      return { at: parsed["at"], digest: parsed["digest"] };
+    } catch { return null; }
+  }
+  const parts = detail.split(" · ");
+  if (parts.length !== 3 || !parts[2]!.startsWith("digest ") || !/^generation \d+$/.test(parts[1]!) || Number.isNaN(Date.parse(parts[0]!))) return null;
+  return { at: parts[0]!, digest: parts[2]!.slice("digest ".length) };
+}
+
+/**
+ * A person's approval of this task as it stands: approved, on the current digest, by the ceremony (`password`) or a
+ * paired-chat tap (`chat`), with a person's proof recorded for that approver and those exact bytes. Release, deploy
+ * and the protected-work counters ask this; a lead, a mode, a grant, a schedule or an approval with no proof is not
+ * a person's.
+ */
+export function personApprovalOf(store: Store, taskId: string): { ok: true; by: string; at: string; method: string } | { ok: false; why: string } {
+  const scope = store.getScope(taskId);
+  if (scope === null || scope.approvedAt === null || scope.approvedBy === null || scope.approvedDigest === null) return { ok: false, why: "not approved yet" };
+  if (scope.approvedDigest !== scope.digest) return { ok: false, why: "the approval is for different scope text" };
+  const basis = scope.approvalBasis ?? null;
+  if (basis === "lead") return { ok: false, why: "approved by the lead, not by a person" };
+  if (basis !== "password" && basis !== "chat") return { ok: false, why: `approved by ${basis === null ? "an unknown road" : basis === "grant" ? "a flow" : basis}, not by a person` };
+  const origin = sealOriginOf(store, taskId, scope.approvedBy, scope.approvedDigest, scope.approvedAt);
+  if (origin.origin === "machine") return { ok: false, why: origin.lead ? "approved by the lead, not by a person" : "approved with a machine credential, not by a person" };
+  if (origin.origin !== "person") return { ok: false, why: "no record shows a person approved these exact words; approve it again" };
+  return { ok: true, by: scope.approvedBy, at: scope.approvedAt, method: origin.method };
+}
+
+/**
+ * Who made a seal that says it came through a person's road (`password`, `chat`), from the acts recorded AT THAT SEAL
+ * (approval policy §1.5): the proof rows its approver left at the seal's own instant, and the lead's task act then.
+ * - `machine`: any proof there that isn't a person's (a lead or remote token, or a word this code doesn't know), or the
+ *   lead's act — fail closed, whatever its digest says;
+ * - `person`: a person's proof there for these exact bytes (parsed, either form);
+ * - `automation`: a standing order's firing that no person's proof stands behind;
+ * - `unproven`: none of these (a seal from before proof rows): it dispatches as before, and is never a person's yes.
+ * An older proof for the same bytes never vouches for a later seal. The dispatch belts ask the same in SQL
+ * (approval-authority.ts).
+ */
+export function sealOriginOf(store: Store, taskId: string, by: string, digest: string, at: string):
+  { origin: "machine"; lead: boolean } | { origin: "person"; method: string } | { origin: "automation" } | { origin: "unproven" } {
+  const rows = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = ? AND actor = ? AND at = ? ORDER BY id DESC").all(taskId, APPROVAL_PROOF, by, at);
+  const leadAct = store.handle.prepare(`SELECT 1 AS hit FROM task_act a JOIN task_ref r ON r.id = a.task_ref AND r.backend = 'built-in'
+      WHERE r.external_id = ? AND a.act = 'approved' AND a.lead = 1 AND a.account = ? AND a.at = ?`).get(taskId, by, at) !== undefined;
+  const machine = rows.filter(row => !personProof(String(row["outcome"])));
+  if (leadAct || machine.length > 0) return { origin: "machine", lead: leadAct || machine.some(row => row["outcome"] === "lead-token") };
+  const person = rows.find(row => proofDetailOf(row["detail"])?.digest === digest);
+  if (person !== undefined) return { origin: "person", method: String(person["outcome"]) };
+  if (store.handle.prepare("SELECT 1 AS hit FROM flow_trigger_event WHERE task = ? LIMIT 1").get(taskId) !== undefined) return { origin: "automation" };
+  return { origin: "unproven" };
+}
+
+/** Text another machine wrote (a confirmed chat proposal, a coordinator, a scout): no mode, grant, remembered password
+ * or chat tap seals it. The lead's own CLI text (`lead`) is not quarantined. */
+export const quarantinedAuthor = (via: string | null | undefined): boolean => via === "mate" || via === "coordinator" || via === "scout";
+
+// ------------------------------------------------------------------------------------------------------------------
+// One approval per release (docs/plans/release-once.md): the ONE reader of release authority.
+
+/** What a release task is about to do. */
+export type ReleaseAction = "dispatch" | "deploy" | "merge" | "complete";
+export type LiveRelease =
+  | { applies: false }
+  | { applies: true; ok: true; authority: ReleaseAuthority; carry: ReleaseCarry | null }
+  | { applies: true; ok: false; why: string; authority: ReleaseAuthority | null };
+
+/** Which states each action may start from (deploy and merge also resume their own reservation). */
+const RELEASE_ACTION_STATES: Record<ReleaseAction, readonly string[]> = {
+  dispatch: ["open"], complete: ["open"], deploy: ["open", "deploying"], merge: ["deploying", "merge-reserved"],
+};
+
+/**
+ * Whether a task that belongs to a release authority may do `action` now. It applies to EVERY such task, whether its
+ * seal is the person's own or `carried`, and requires all of: the authority's current generation (never superseded,
+ * revoked or expired before it started); a state that fits the action; the task is the authority's current tip; the
+ * anchor's seal is a person's (personApprovalOf, unchanged) on the exact sealed anchor digest; the anchor's approver is
+ * still an active approver with access to the project; for a carried task, a carry row for exactly this task, scope
+ * digest, candidate and generation; the release check grant and check access as sealed (access only ever the fence);
+ * a sealed policy this runtime knows; and, for deploy and merge, no open main-check failure blocking a composed check.
+ * A task that belongs to no release reads `applies: false` — the ordinary rules decide it.
+ */
+export function liveReleaseOf(store: Store, taskId: string, action: ReleaseAction, now: Date = new Date()): LiveRelease {
+  const found = releaseAuthorityOfTask(store, taskId);
+  if (found === null) return { applies: false };
+  const { authority: a, carry } = found;
+  const refuse = (why: string): LiveRelease => ({ applies: true, ok: false, why, authority: a });
+  const newest = newestReleaseGeneration(store, a.repo, a.version, a.pr);
+  if (newest === null || newest.id !== a.id) return refuse("a newer approval of this release replaced this one");
+  if (a.state === "superseded") return refuse("a newer approval of this release replaced this one");
+  if (a.state === "revoked") return refuse(`${a.endedBy ?? "an approver"} stopped carrying commits for this release`);
+  // Expiry stops every live state (security review): an operation already reserved finishes only through reconciliation.
+  if (a.state === "expired" || ((a.state === "open" || a.state === "deploying" || a.state === "merge-reserved") && a.expiresAt <= now.toISOString())) return refuse("the release approval expired");
+  if (a.state === "merged") return refuse("the release was already merged");
+  if (!RELEASE_ACTION_STATES[action].includes(a.state)) return refuse(a.state === "open" ? "the release hasn't started deploying" : `the release is already ${a.state === "deploying" ? "deploying" : "merging"}`);
+  if (a.tipTask !== taskId) return refuse("this is not the release's current commit");
+  const anchor = store.getScope(a.anchorTask);
+  const person = personApprovalOf(store, a.anchorTask);
+  if (!person.ok) return refuse(`the release approval no longer stands: ${person.why}`);
+  if (anchor === null || anchor.approvedDigest !== a.anchorDigest || anchor.digest !== a.anchorDigest) return refuse("the release approval is for different words");
+  const account = store.accountOf(person.by);
+  if (account === null || account.revokedAt !== null || account.role !== "approver" || !store.accountCanAccess(person.by, a.repo)) return refuse(`${person.by} can no longer approve in this project`);
+  const scope = store.getScope(taskId);
+  if (scope === null || scope.approvedDigest !== scope.digest) return refuse("this task's approved words changed");
+  if (carry !== null) {
+    if (carry.authority !== a.id || scope.approvalBasis !== "carried" || carry.scopeDigest !== scope.digest || carry.toSha !== scope.candidate || scope.modeDigest !== `${a.id}:${carry.id}`) {
+      return refuse("this commit's carry doesn't match its record");
+    }
+  } else if (scope.candidate !== a.approvedSha) return refuse("this task isn't the approved commit");
+  const grant = store.liveVerifyCommand(a.repo);
+  if (grant === null || grant.id !== a.verifyCommand || grant.digest !== a.verifyDigest) return refuse("the release check command changed since the approval");
+  if (a.accessDigest !== "sandboxed" || store.projectCheckAccess(a.repo) !== "sandboxed") return refuse("the project's checks no longer run in the sandbox");
+  if (a.policy === null) return refuse("this Toolroll doesn't know the release's carry rules; update Toolroll first");
+  if (action === "deploy" || action === "merge") {
+    const debt = mainDebtProblem(store, a.repo, taskId);
+    if (debt !== null) return refuse(debt);
+  }
+  return { applies: true, ok: true, authority: a, carry };
+}
+
+/**
+ * Open main-check failures (the nightly full check, part 3) block the deploy and the merge of a release whose gate
+ * check was composed from a targeted run: a full pass is needed first. Null when nothing blocks.
+ */
+export function mainDebtProblem(store: Store, repo: string, taskId: string): string | null {
+  const open = Number(store.handle.prepare("SELECT COUNT(*) AS n FROM main_check_failure WHERE repo = ? AND cleared_at IS NULL").get(repo)?.["n"] ?? 0);
+  if (open === 0) return null;
+  const ref = store.lookupRef(taskId);
+  if (ref === null) return null;
+  const newest = store.handle.prepare(`SELECT a.mode FROM run r JOIN release_check_attempt a ON a.run = r.id
+      WHERE r.task_ref = ? AND r.role = 'builder' ORDER BY r.id DESC LIMIT 1`).get(ref.id);
+  if (newest === undefined || newest["mode"] !== "targeted") return null;
+  return `the nightly full check on main has ${open} open failure${open === 1 ? "" : "s"}, so a check made from a re-run of what failed can't deploy; a full check has to pass first`;
 }

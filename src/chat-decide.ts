@@ -12,6 +12,7 @@
  * The same in every chat app: Telegram's bridge and the shared engine Slack, Discord and Teams run on (chat-delivery.ts)
  * offer, mint and answer these through the same tokens (the `channel` column). Every act runs through the door the
  * console uses. */
+import { NIGHTLY_CHECK_ONLY, RELEASE_MERGES_ONLY, nightlyTaskRef, releaseTaskRef } from "./store.js";
 import { isAcpProfile } from "./acp-agents.js";
 import { DECIDE_ACTS, readDecideActionRow, type DecideActionRow } from "./contracts/chat-callback-rows.js";
 import type { ContractResult } from "./contracts/contract.js";
@@ -29,6 +30,7 @@ import { pullRequestFollowOf } from "./pull-request-flow.js";
 import { requestResultChanges } from "./result-actions.js";
 import { revisionSourceOf } from "./result-review.js";
 import type { Scope } from "./scope.js";
+import { APPROVAL_PROOF, approvalOf, approvalProofDetail, quarantinedAuthor } from "./scope.js";
 import type { Store } from "./store.js";
 import { phoneText } from "./telegram-status.js";
 
@@ -122,7 +124,9 @@ export function planInChat(store: Store, taskId: string, approver: string, now: 
   const ref = store.lookupRef(taskId);
   const scope = store.getScope(taskId);
   if (ref === null || ref.repo === null || scope === null) return { ok: false, why: "This plan isn't available now." };
-  if (scope.approvedDigest != null && scope.approvedDigest === scope.digest) return { ok: false, why: "This plan is already approved." };
+  // Approved only as dispatch reads it (approval policy): an old seal a lead token made, or one whose authority has
+  // ended, is no approval, so the person can approve it here.
+  if (approvalOf(scope).approved && store.modeApprovalLive(ref.id, now)) return { ok: false, why: "This plan is already approved." };
   if (ref.plan === "requested") return { ok: false, why: "The plan is still being written." };
   const mode = chatApproveMode(store, ref.repo, approver, now, channel);
   if (!mode.ok) return mode;
@@ -130,7 +134,7 @@ export function planInChat(store: Store, taskId: string, approver: string, now: 
   const family = store.taskFamilyOf(taskId, [ref.repo], false);
   if (family === null || family.problem !== null || family.current.id !== taskId) return { ok: false, why: "A newer version of this task is current." };
   // What the mode's seal refuses anyway, said first: model- or coordinator-written terms, an unreadable route.
-  if (ref.coordinatorCid !== null || (scope.proposedVia ?? null) !== null) return { ok: false, why: "This plan was written for you, so you approve it in Toolroll." };
+  if (ref.coordinatorCid !== null || quarantinedAuthor(scope.proposedVia ?? null)) return { ok: false, why: "This plan was written for you, so you approve it in Toolroll." };
   if (scope.profileState === "unresolved" || scope.routeEra == null || (scope.termsProblem ?? null) !== null) return { ok: false, why: "This plan can't say exactly which agents run, so you approve it in Toolroll." };
   const yours = mode.source === "setting" ? "your chat approval setting" : "your mode";
   if (fullAccess(scope.profile) && !mode.limits.fullAccess) return { ok: false, why: `This plan asks for more access than ${yours} allows.` };
@@ -159,6 +163,10 @@ export function planInChat(store: Store, taskId: string, approver: string, now: 
 export function mergeInChat(store: Store, taskId: string, run: number, approver: string, now: Date, channel: DecideChannel):
   { ok: true; modeDigest: string; source: "setting" | "mode"; head: string } | { ok: false; why: string } {
   const ref = store.lookupRef(taskId);
+  // The nightly check of main never merges (release-once.md, part 3).
+  if (ref !== null && nightlyTaskRef(store, ref.id)) return { ok: false, why: NIGHTLY_CHECK_ONLY };
+  // A release's result merges only through its coordinator.
+  if (ref !== null && releaseTaskRef(store, ref.id)) return { ok: false, why: RELEASE_MERGES_ONLY };
   const publication = store.publicationForRun(run);
   const follow = publication === null ? null : pullRequestFollowOf(store, publication.id);
   if (ref === null || ref.repo === null || publication === null || follow === null || publication.prNumber === null) return { ok: false, why: "This result has no pull request to merge." };
@@ -527,6 +535,11 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
       if (!plan.ok) return notDone(plan.why);
       // The owner's own yes, sealed as theirs ("chat"), never as a mode's: it stands like the console's after the mode or setting ends.
       if (!store.sealScopeApproval(row.taskId, who.name, now, {}, { kind: "chat", modeDigest: plan.modeDigest })) return notDone("the plan couldn't be approved from chat. Open it in Toolroll.");
+      // The person's proof beside the seal, bound to these exact words (approval policy §1.2): a paired-chat tap, never a
+      // password. Release, deploy and the protected counters read it as a person's.
+      const sealedDigest = store.getScope(row.taskId)?.approvedDigest ?? "";
+      store.recordAction({ at: now.toISOString(), actor: who.name, repo: ref.repo, taskId: row.taskId, runId: null, action: APPROVAL_PROOF, outcome: "chat",
+        source: "request", detail: approvalProofDetail(now.getTime(), store.accountOf(who.name)?.generation ?? 0, sealedDigest) });
       store.recordAction({ at: now.toISOString(), actor: who.name, repo: ref.repo, taskId: row.taskId, runId: null, action: "plan approved in chat", outcome: "approved",
         source: "request", detail: `via ${seat.channel} · chat binding #${seat.binding} · ${plan.source} ${plan.modeDigest}` });
       return done("✓ Approved. Work starts when a worker is free.");

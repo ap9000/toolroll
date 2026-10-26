@@ -7,8 +7,8 @@
 
 import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { parse as parseYaml } from "yaml";
@@ -19,19 +19,31 @@ import type { CheckRun, DeployStop, GateState, HomebrewState, Installed, PullReq
 import { activeUpdateWork } from "./desktop-update-gate.js";
 import { BEFORE_SWAP, gateOwner } from "./release-gate.js";
 import { findCliLinks, switchCliLinks } from "./release-links.js";
-import { databasePath, type Database } from "./store.js";
+import {
+  databasePath, finishReleaseOperation, requireFreshReleaseApproval, openStore, releaseAuthorityOfTask, releaseCarries, releaseOperations, renewReleaseLease, reserveRelease, runReleaseOperation,
+  Store, releaseIssuerGone, takeReleaseLease, type Database,
+} from "./store.js";
+import { acquireDeploymentLock } from "./deploy-lock.js";
+import { liveReleaseOf } from "./scope.js";
+import { proveCarry, type BuildRunner } from "./release-carry.js";
+import { randomBytes, randomUUID } from "node:crypto";
+import { deploymentGate } from "./deploy-gate.js";
+import { extractCommit } from "./commit-extract.js";
 
-export type Exec = (command: string, args: readonly string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }) =>
+export type Exec = (command: string, args: readonly string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; input?: string }) =>
   Promise<{ code: number; stdout: string; stderr: string }>;
 
 /** A child process, its output kept whole; a missing program or a time limit is exit 127 or 124, never a throw. */
 export const exec: Exec = (command, args, options = {}) => new Promise(done => {
-  execFile(command, [...args], { cwd: options.cwd, env: options.env ?? process.env, timeout: options.timeoutMs ?? 120_000, maxBuffer: 64 * 1024 * 1024, encoding: "utf8" },
+  const child = execFile(command, [...args], { cwd: options.cwd, env: options.env ?? process.env, timeout: options.timeoutMs ?? 120_000, maxBuffer: 64 * 1024 * 1024, encoding: "utf8" },
     (error, stdout, stderr) => {
       const failure = error as (NodeJS.ErrnoException & { code?: number | string; killed?: boolean }) | null;
       const code = failure === null ? 0 : failure.code === "ENOENT" ? 127 : failure.killed === true ? 124 : typeof failure.code === "number" ? failure.code : 1;
       done({ code, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
     });
+  // `input`: written on the child's stdin, then closed (a secret that must never ride in argv).
+  child.stdin?.on("error", () => { /* the child closed its stdin: its exit decides */ });
+  if (options.input !== undefined) child.stdin?.end(options.input); else child.stdin?.end();
 });
 
 /** Without NODE_OPTIONS, which a test runner or debugger may have left for this process. */
@@ -109,6 +121,7 @@ export function gateStateOf(answer: Json, accounts: readonly unknown[] = []): Ga
     approval: approvedAt === null || approvedBy === null || approvedDigest === null ? null : {
       by: approvedBy, at: approvedAt, digest: approvedDigest, basis: textOr(scope["approvalBasis"]),
       role: textOr(account?.["role"]), active: account?.["revokedAt"] === null,
+      ...personAnswerOf(answer["personApproval"]),
     },
     result: resultRun === null || textOr(result["digest"]) === null ? null : {
       run: resultRun, head: textOr(result["head"]), receipt: String(result["digest"]), worktree: textOr(worktree),
@@ -194,11 +207,65 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
     const gate = stageGate(stage, liveOwner);
     return gate === null ? { ok: false, message } : { ok: false, message, gate };
   };
-  const deployScript = (worktree: string, stage: string, runId: number, extra: string[]) => run(process.execPath, ["scripts/deploy-browser.mjs", "--run", String(runId), "--stage", stage, ...extra], {
-    cwd: worktree, env: cleanEnv({ TMPDIR: resolved(process.env["TMPDIR"] ?? "/tmp") }), timeoutMs: (options.deployMinutes ?? 30) * 60_000,
-  });
+  /** The deployment gate in this runtime (deploy-gate.ts): a person's approval, the passing check, the exact completed
+   * result. Its answer names the approved commit and the project it belongs to, from the plane's own records. */
+  const proveCandidate = (runId: number): ReturnType<typeof deploymentGate> => {
+    if (!existsSync(database)) return { ok: false, message: "The plane's database isn't here, so the candidate can't be proven." };
+    const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
+    try { return deploymentGate(new Store(db), { runId, evidenceRoot: join(dirname(database), "evidence"), now: (options.now ?? (() => new Date()))() }); }
+    catch (error) { return { ok: false, message: `The candidate can't be proven: ${(error as Error).message}` }; }
+    finally { db.close(); }
+  };
+  /** The run's recorded commit and project, for recovery (which needs no approval). */
+  const recordedCommit = (runId: number): { head: string; repo: string } | null => {
+    if (!existsSync(database)) return null;
+    const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
+    try {
+      const store = new Store(db), run = store.getRun(runId), repo = run === null ? null : store.refById(run.taskRef)?.repo ?? null;
+      return run?.headRevision != null && repo != null ? { head: run.headRevision, repo } : null;
+    } catch { return null; } finally { db.close(); }
+  };
+  /**
+   * The approved commit, written by this runtime into a fresh folder it owns (commit-extract.ts): every regular file of
+   * that full SHA, read byte for byte from the PROJECT's own Git directory as Toolroll records it (realpath, a real
+   * directory — never the candidate worktree's `.git` pointer or anything in that worktree), with no filter, attribute,
+   * replacement object, lazy fetch, hook or outside config, and no symlink or submodule. The deployment script runs
+   * from here, so nothing changed, flagged, swapped or untracked in the worktree, nor its Git pointer, changes what runs.
+   */
+  const extractApproved = async (repo: string, head: string): Promise<{ ok: true; dir: string; gitDir: string } | { ok: false; message: string }> => {
+    let gitDir: string;
+    try {
+      const named = join(realpathSync(repo), ".git");
+      if (!lstatSync(named).isDirectory()) return { ok: false, message: `${repo}'s Git directory isn't a plain directory, so the approved commit can't be read from it.` };
+      gitDir = realpathSync(named);
+    } catch { return { ok: false, message: `${repo} has no Git directory to read the approved commit from.` }; }
+    const dir = realpathSync(mkdtempSync(join(resolved(tmpdir()), "toolroll-deployer-")));
+    const extracted = extractCommit(gitDir, head, dir);
+    if (!extracted.ok) { rmSync(dir, { recursive: true, force: true }); return { ok: false, message: `The approved commit couldn't be prepared: ${extracted.message}` }; }
+    return { ok: true, dir, gitDir };
+  };
+  /** The approved commit's own deployment script, from the pristine extraction; the worktree is only its --source. */
+  const deployScript = async (worktree: string, stage: string, runId: number, commit: { head: string; repo: string }, extra: string[], input?: string) => {
+    const extracted = await extractApproved(commit.repo, commit.head);
+    if (!extracted.ok) return { code: 1, stdout: "", stderr: extracted.message };
+    try {
+      // The script node runs is the extraction's own regular file, by its real path inside the folder.
+      let script: string;
+      try {
+        script = realpathSync(join(extracted.dir, "scripts", "deploy-browser.mjs"));
+        if (!script.startsWith(extracted.dir + "/") || !lstatSync(script).isFile()) throw new Error("outside");
+      } catch { return { code: 1, stdout: "", stderr: "The approved commit has no deployment script of its own." }; }
+      return await run(process.execPath, [script, "--run", String(runId), "--stage", stage, "--source", worktree,
+        "--head", commit.head, "--git-dir", extracted.gitDir, ...extra], {
+        cwd: extracted.dir, env: cleanEnv({ TMPDIR: resolved(process.env["TMPDIR"] ?? "/tmp") }), timeoutMs: (options.deployMinutes ?? 30) * 60_000, ...(input === undefined ? {} : { input }),
+      });
+    } finally { rmSync(extracted.dir, { recursive: true, force: true }); }
+  };
+
+  const release = storeReleaseAdapter(() => openStore(database), store => store.close(), options.now ?? (() => new Date()));
 
   return {
+    ...(existsSync(database) ? { release } : {}),
     now: options.now ?? (() => new Date()),
     sleep: options.sleep ?? sleep,
     say: options.say ?? (line => process.stdout.write(`${line}\n`)),
@@ -266,7 +333,8 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
       async fileGate(input) {
         const added = await toolroll("task", "add", input.title, "--id", input.taskId, "--repo", input.checkout, "--checks", "full");
         if (added["ok"] !== true) throw new Error(`task add: ${refused(added)}`);
-        const scoped = await toolroll("task", "scope", input.taskId, "--candidate", input.candidate, "--goal", input.goal, "--acceptance", input.acceptance);
+        const scoped = await toolroll("task", "scope", input.taskId, "--candidate", input.candidate, "--goal", input.goal, "--acceptance", input.acceptance,
+          ...(input.release === undefined ? [] : ["--release", `${input.release.version}:${input.release.pr}:${input.release.branch}`, ...(input.release.noCarry ? ["--no-carry"] : [])]));
         if (scoped["ok"] !== true) throw new Error(`task scope: ${refused(scoped)}`);
         const digest = gateStateOf(await toolroll("task", "show", input.taskId)).scopeDigest;
         if (digest === null) throw new Error(`task ${input.taskId} has no scope after filing it`);
@@ -291,10 +359,16 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
           return { running: Object.values(work).reduce((total, count) => total + count, 0), tasks };
         } finally { db.close(); }
       },
-      async deploy({ run: runId, worktree, stage }) {
-        // The candidate's own deployment, from its own checkout: drain, backup, rehearsal, swap, health. Its last JSON
-        // line names the runtime it installed; the CLI names are moved to it by the release's link step.
-        const result = await deployScript(worktree, stage, runId, ["--yes"]);
+      async deploy({ run: runId, worktree, stage, operation }) {
+        // Approval policy §1.7: this runtime proves the candidate FIRST — a person approved it, its exact result passed
+        // the approved check and is complete, and the checkout is exactly that commit — before anything from the
+        // candidate's checkout runs. The candidate's own script never decides its own deployment.
+        const proven = proveCandidate(runId);
+        if (!proven.ok) return stopped(stage, proven.message);
+        // The approved commit's own deployment, extracted by this runtime: drain, backup, rehearsal, swap, health. Its
+        // last JSON line names the runtime it installed; the CLI names are moved to it by the release's link step.
+        // The operation the coordinator reserved, adopted by the deploy run with its secret on stdin (never in argv).
+        const result = await deployScript(worktree, stage, runId, proven, ["--yes", ...(operation === undefined ? [] : ["--operation", operation.id])], operation?.secret);
         const runtime = deployedRuntime(result.stdout);
         if (result.code !== 0 || runtime === null) return stopped(stage, tail(result));
         return { ok: true, runtime };
@@ -305,12 +379,29 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         // A deployment that outlived a killed release is still at work: recovering under it would race it.
         const running = (options.processes ?? processes)().filter(one => one.command.includes("deploy-browser.mjs") && one.command.includes(stage));
         if (running.length > 0) return { ok: false, message: `the deployment is still running (process ${running.map(one => one.pid).join(", ")}); let it finish, then rerun` };
-        const result = await deployScript(worktree, stage, runId, ["--phase", "recover"]);
+        // Recovery needs no approval, but it runs only the recorded commit's own script, extracted by this runtime.
+        const recorded = recordedCommit(runId);
+        if (recorded === null) return stopped(stage, `Run ${runId} names no commit to recover with.`);
+        const result = await deployScript(worktree, stage, runId, recorded, ["--phase", "recover"]);
         if (result.code === 0) return { ok: true };
         // Killed while preparing, before it paused anything: nothing to undo (its journal is kept).
         const journal = (() => { try { return object(JSON.parse(readFileSync(join(stage, "deployment.json"), "utf8"))); } catch { return {}; } })();
         if (journal["phase"] === "preparing" && liveOwner() !== journal["id"]) return { ok: true };
         return stopped(stage, `${tail(result)} (the deployment journal is at ${String(journal["phase"] ?? "an unreadable phase")}; ${join(stage, "deployment.json")})`);
+      },
+      async deploymentIdle(stage) {
+        // Whatever the stage: no deployment is running, and no update pause is held.
+        if ((options.processes ?? processes)().some(one => one.command.includes("deploy-browser.mjs"))) return false;
+        if (liveOwner() !== null) return false;
+        if (stage === null) return false;
+        const journalFile = join(stage, "deployment.json");
+        // Never prepared: staging touched neither the service nor the update pause.
+        if (!existsSync(journalFile)) return true;
+        // Its journal lock is free (nothing holds the journal), and it stopped where nothing changed, or finished.
+        try { acquireDeploymentLock(journalFile, 0).release(); } catch { return false; }
+        let phase: unknown;
+        try { phase = object(JSON.parse(readFileSync(journalFile, "utf8")))["phase"]; } catch { return false; }
+        return phase === "preparing" || phase === "released" || phase === "deployed";
       },
       async cliLinks() { return findCliLinks(); },
       async switchLinks(links, bin, version) {
@@ -334,8 +425,10 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         // Oldest first, so a rerun's attempt is the last one listed for its name.
         return runs.sort((a, b) => Number(a["id"]) - Number(b["id"])).map((one): CheckRun => ({ name: String(one["name"]), status: String(one["status"]), conclusion: textOr(one["conclusion"]), app: textOr(one["app"]) }));
       },
-      async merge(repo, pr, head) {
-        const merged = object(await ghJson("gh api pulls merge", "api", "-X", "PUT", `repos/${repo}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`));
+      async merge(repo, pr, head, message) {
+        // The squash commit's message lists every commit that landed after the approval (release-once.md).
+        const merged = object(await ghJson("gh api pulls merge", "api", "-X", "PUT", `repos/${repo}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`,
+          ...(message === undefined ? [] : ["-f", `commit_message=${message}`])));
         if (typeof merged["sha"] !== "string") throw new Error(`GitHub did not merge #${pr}: ${String(merged["message"] ?? "no merge commit")}`);
         return merged["sha"];
       },
@@ -467,4 +560,57 @@ export function workflowRunsOnChange(text: string): boolean {
 export function bumpFormula(text: string, url: string, sha256: string): string {
   if (!/^\s*url "[^"]*"/m.test(text) || !/^\s*sha256 "[0-9a-f]{64}"/m.test(text)) throw new Error("the formula has no url and sha256 lines to update");
   return text.replace(/^(\s*url ")[^"]*(")/m, `$1${url}$2`).replace(/^(\s*sha256 ")[0-9a-f]{64}(")/m, `$1${sha256}$2`);
+}
+
+/** The plane's person-approval answer from `task show --json`, read strictly: anything malformed is no person. */
+function personAnswerOf(value: unknown): { person?: { ok: true; method: string } | { ok: false; why: string } } {
+  if (value === undefined) return {};
+  const read = object(value);
+  if (read["ok"] === true && typeof read["method"] === "string") return { person: { ok: true, method: read["method"] } };
+  return { person: { ok: false, why: typeof read["why"] === "string" ? read["why"] : "the plane's answer about who approved it can't be read" } };
+}
+
+/**
+ * The release's authority record through a store (release-once.md): what `toolroll release` reads and writes for its
+ * lease, its carries and its operations. `open` hands a store for each call and `done` lets it go.
+ */
+export function storeReleaseAdapter(open: () => Store, done: (store: Store) => void, now: () => Date, runner?: BuildRunner): NonNullable<ReleaseAdapters["release"]> {
+  const withStore = <T>(body: (store: Store) => T): T => { const store = open(); try { return body(store); } finally { done(store); } };
+  return {
+    async authority(taskId) {
+      return withStore(store => {
+        const found = releaseAuthorityOfTask(store, taskId);
+        if (found === null) return null;
+        const a = found.authority;
+        return { id: a.id, generation: a.generation, state: a.state, tipSha: a.tipSha, tipTask: a.tipTask, version: a.version, pr: a.pr,
+          landed: releaseCarries(store, a.id).flatMap(carry => carry.commits) };
+      });
+    },
+    async live(taskId, action) {
+      return withStore(store => { const live = liveReleaseOf(store, taskId, action, now()); return live.applies ? { applies: true, ok: live.ok, why: live.ok ? null : live.why } : { applies: false, ok: false, why: null }; });
+    },
+    async lease(authority, owner) { return withStore(store => takeReleaseLease(store, authority, owner, now())); },
+    async renew(authority, owner, epoch) { return withStore(store => renewReleaseLease(store, authority, owner, epoch, now())); },
+    async carry(authority, to, requestId, epoch) {
+      const store = open();
+      try {
+        const result = await proveCarry(store, { authority, to, requestId, epoch, now: now(), ...(runner === undefined ? {} : { runner }) });
+        return result.ok ? { ok: true, taskId: result.taskId } : { ok: false, message: result.message };
+      } finally { done(store); }
+    },
+    async reserve(input) {
+      return withStore(store => {
+        const secret = randomBytes(32).toString("hex");
+        const result = reserveRelease(store, { ...input, operationId: randomUUID(), now: now(), secret });
+        return result.ok ? { ok: true as const, operation: result.operation.id, secret } : result;
+      });
+    },
+    async start(operation, epoch) { return withStore(store => runReleaseOperation(store, operation, epoch, now())); },
+    async finish(operation, outcome, facts, epoch) { return withStore(store => finishReleaseOperation(store, operation, outcome, facts, now(), epoch)); },
+    async needsApproval(authority, reason, epoch) { return withStore(store => requireFreshReleaseApproval(store, authority, reason, epoch, now())); },
+    async operations(authority) {
+      return withStore(store => releaseOperations(store, authority).map(op => ({ id: op.id, kind: op.kind, state: op.state, candidate: op.candidate, externalRef: op.externalRef, reservedAt: op.reservedAt,
+        direct: op.direct, issuerGone: releaseIssuerGone(op), stage: op.stage })));
+    },
+  };
 }

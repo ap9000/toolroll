@@ -59,6 +59,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { limiter } from "./provider-gate.mjs";
 import { runSuite, removeOnExit } from "./suite-lifecycle.mjs";
+import { result } from "./check-results.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
 const args = process.argv.slice(2);
@@ -78,6 +79,11 @@ export function lastPublished(versions, count = Infinity) {
 
 /** The oldest release the rollback leg runs on: the ones a person may go back to from raised text limits (Oct 4). */
 export const ROLLBACK_FROM = "0.9.23";
+/** The oldest release that records a person's proof for each approval (0.9.64). A plane older than that can't say who
+ * approved, so the deploy refuses its candidate (docs/plans/approval-policy.md; the changelog says to update first). */
+export const PERSON_PROOF_FROM = "0.9.64";
+/** The deploy's refusal over a plane with no proof on record: the facts check must end in exactly this. */
+export const NO_PROOF_REFUSAL = "A person has to approve this candidate's scope: no record shows a person approved these exact words; approve it again.";
 /** Whether `version` is at or after `from`. */
 export function atLeast(version, from) {
   const [a, b] = [version, from].map(v => v.split(".").map(Number));
@@ -242,17 +248,25 @@ async function seed({ dist, stateDir, repo }) {
 }
 
 /** scripts/deploy-browser.mjs's facts(): the candidate's code over the installed release's store, before migration. */
-async function facts({ installed, candidate, databaseFile, evidenceRoot, runId, head }) {
+async function facts({ installed, candidate, databaseFile, evidenceRoot, runId, head, refusalAllowed = false }) {
   const { DatabaseSync } = await import("node:sqlite");
   const oldStore = await load(installed, "store.js"), oldEvidence = await load(installed, "verification-evidence.js");
-  const candidateAssignment = await load(join(candidate, "dist"), "assignment.js");
+  const installedAssignment = await load(installed, "assignment.js");
+  const installedScope = await load(installed, "scope.js");
   const { deploymentCandidate } = await import(pathToFileURL(join(candidate, "scripts", "deploy-candidate.mjs")).href);
   const db = new DatabaseSync(databaseFile, { readOnly: true });
   try {
     db.exec("PRAGMA busy_timeout=5000");
-    const result = deploymentCandidate(new oldStore.Store(db), { runId, head, evidenceRoot, now: NOW() }, {
-      assignmentOf: candidateAssignment.assignmentOf, verificationEvidence: oldEvidence.verificationEvidence,
-    });
+    let result;
+    try {
+      result = deploymentCandidate(new oldStore.Store(db), { runId, head, evidenceRoot, now: NOW() }, {
+        assignmentOf: installedAssignment.assignmentOf, verificationEvidence: oldEvidence.verificationEvidence, installedScope,
+      });
+    } catch (error) {
+      // Only a plane older than PERSON_PROOF_FROM may end in a refusal, and only the caller decides it was the right one.
+      if (!refusalAllowed) throw error;
+      return { ok: false, why: String(error?.message ?? error) };
+    }
     return { ok: true, completion: result.completion.digest };
   } finally { db.close(); }
 }
@@ -522,7 +536,13 @@ async function onePath(version, { candidate, candidateDist, candidateVersion, ta
   // The same database and installation, kept apart for the npm route.
   const npmHome = join(work, `home-${version}-npm`), npmPrefix = join(npmHome, "global"), npmState = join(npmHome, ".toolroll");
   cpSync(home, npmHome, { recursive: true, verbatimSymlinks: true });
-  step("facts check", () => child("facts", { installed, candidate, databaseFile: seeded.databaseFile, evidenceRoot: seeded.evidenceRoot, runId: seeded.candidateRun, head: seeded.head }, env, "the deploy's facts check (the candidate's code over the installed store)"));
+  // From PERSON_PROOF_FROM on, the candidate deploys; before it, the candidate's code reads the older store and refuses
+  // for exactly the missing proof (anything else, a crash included, fails the path).
+  step("facts check", () => {
+    const proved = atLeast(version, PERSON_PROOF_FROM);
+    const fact = child("facts", { installed, candidate, databaseFile: seeded.databaseFile, evidenceRoot: seeded.evidenceRoot, runId: seeded.candidateRun, head: seeded.head, refusalAllowed: !proved }, env, "the deploy's facts check (the candidate's code over the installed store)");
+    if (proved ? fact?.ok !== true : fact?.ok !== false || fact.why !== NO_PROOF_REFUSAL) throw Error(`the deploy's facts check over ${version} ended ${JSON.stringify(fact)}`);
+  });
 
   // toolroll update, by the candidate's own updater, then the switched command opens the database.
   const staged = step("stage", () => child("stage", { candidateDist, stateDir, databaseFile: seeded.databaseFile, from: { version, dist: installed }, version: candidateVersion, tarball }, env, "staging the update"));
@@ -603,6 +623,12 @@ async function main() {
   console.log(`Upgrade path: ${versions.join(", ")} → ${candidateVersion} (${candidate})`);
   removeOnExit(work, { keep: args.includes("--keep") });
   let failed = 0;
+  // The release check's inventory of versions, before any runs (check-results.mjs: only to its own pipe).
+  result({ kind: "upgrade-inventory", versions });
+  // A release check keeps going past a failure (docs/plans/release-once.md: no fail-fast on release runs); run by hand,
+  // the first failure still stops the rest.
+  const keepGoing = process.env.TOOLROLL_CHECK_KEEP_GOING === "1";
+  const finished = new Set();
   try {
     const tarball = pack(candidate, work);
     toolsDir(work); // Shared immutable tools, made before workers can race to create them.
@@ -614,12 +640,15 @@ async function main() {
       const one = await runSuite({ command: process.execPath,
         args: [SELF, "--path", JSON.stringify({ version, candidate, candidateDist, candidateVersion, tarball, work })],
         signal: abort.signal,
-        onExit: code => { if (code !== 0 && !abort.signal.aborted) { console.error(`TOOLROLL_CHECK_FAILURE upgrade ${version}: exit ${code}`); abort.abort(); } },
+        onExit: code => { if (code !== 0 && !abort.signal.aborted) { console.error(`TOOLROLL_CHECK_FAILURE upgrade ${version}: exit ${code}`); if (!keepGoing) abort.abort(); } },
       });
       console.log(one.output.toString());
       if (one.code !== 0) { failed++; console.log(`✗ ${version} → ${candidateVersion}: exit ${one.code}; ${Math.round(one.ms / 1000)} s`); }
+      if (!one.cancelled) { finished.add(version); result({ kind: "upgrade-version", version, state: one.code === 0 ? "passed" : "failed" }); }
     })));
   } finally {
+    for (const version of versions) if (!finished.has(version)) result({ kind: "upgrade-version", version, state: "not-run" });
+    result({ kind: "upgrade-end" });
     if (args.includes("--keep")) console.log(`kept: ${work}`); else rmSync(work, { recursive: true, force: true });
   }
   console.log(failed === 0 ? `upgrade path: ${versions.length} of ${versions.length} versions updated with no manual step` : `upgrade path: ${failed} of ${versions.length} versions failed`);

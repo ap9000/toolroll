@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { countingProvider, scriptedProvider, turnsOf } from "./fixtures/scripted-provider.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
+import { result as checkResult } from "./check-results.mjs";
 
 // Every Toolroll an end-to-end run starts keeps tool secrets as files in its own temporary state folder, never in the
 // person's login keychain (tool-secret-store.ts): the keychain is the person's, and a run's sign-ins are throwaway.
@@ -477,6 +478,10 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
     const catalogued = groups === null ? [] : catalogueProblems(catalogue, groups);
     const report = { startedAt: new Date(started).toISOString(), minutes: Math.round((Date.now() - started) / 6000) / 10, workspace: root, journeys, models: provider.mode, modelCalls, passed, failed: bad, skipped, results, ...(unstopped === null ? {} : { unstopped }), ...(catalogued.length === 0 ? {} : { catalogue: catalogued }) };
     writeFileSync(join(out, "report.json"), JSON.stringify(report, null, 2) + "\n");
+    // The release check reads results only from its pipes (check-results.mjs), never from report.json: one line per
+    // journey, then the group's own end.
+    for (const one of results) checkResult({ kind: "journey", name: one.name, state: one.state === "passed" || one.state === "failed" ? one.state : "skipped" });
+    checkResult({ kind: "journey-end", browserCheck: results.find(one => one.name === BROWSER_CHECK)?.state ?? null, unstopped: unstopped !== null, catalogue: catalogued.length });
     writeFileSync(join(out, "report.md"), [`# ${title} — ${passed} passed, ${bad} failed, ${skipped} skipped (${report.minutes} min)`, "",
       `Models: ${provider.mode === "scripted" ? `scripted (${modelCalls.scripted} scripted model calls)` : "real"}; real model turns: ${modelCalls.real}`, "",
       ...results.map(one => `- ${one.state === "passed" ? "✅" : one.state === "failed" ? "❌" : "⏭️"} ${one.name}${one.mode === undefined ? "" : ` [${one.mode}]`}${one.seconds === undefined ? "" : ` — ${one.seconds} s`}${one.error ? `\n  - ${one.error.split("\n")[0]}` : ""}${one.state === "skipped" ? `\n  - skipped: ${one.because.join(", ")}` : ""}`),
