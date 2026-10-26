@@ -15,7 +15,7 @@ import { addApprover, deployGateScope, personApprovalOf, propose } from "./scope
 import { releaseTermsFor } from "./release-carry.js";
 import { setChatApproval } from "./chat-approval.js";
 import { verifyApproverStanding } from "./principal.js";
-import { applyDecideTap, decideOffer, mintDecideButtons, planInChat, type DecideSeat } from "./chat-decide.js";
+import { applyDecideTap, decideOffer, mintDecideButtons, planInChat, privateReleaseChat, type DecideSeat } from "./chat-decide.js";
 import { approvalTermsOf, cardDigestOf, RELEASE_TERM_LABELS, releaseBaseline, releaseCardOf, SCOPE_TERM_LABELS, schemaLeaves } from "./release-card.js";
 import { releaseTermsSchema, type ReleaseTerms } from "./contracts/release-terms.js";
 import { scopeTermsSchema } from "./contracts/scope.js";
@@ -66,7 +66,15 @@ beforeEach(() => {
   store.setVerifyCommand({ repo, command: "node scripts/release-check.mjs --full", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
   if (!setChatApproval(store, { approver: "alex", scope: "*", enabled: true, limits: { fullAccess: true, capMicrousd: null }, via: "test" }, NOW).ok) throw new Error("chat approval");
   recordMergedRelease(baseline);
+  // The person's paired chats, as the bridges record them: Telegram (a private chat is the user's own id) and Slack.
+  bind("telegram", 1, "4242", "4242", "alex");
+  bind("slack", 2, "U1", "D0ALEX", "alex");
+  bind("telegram", 3, "5353", "5353", "sam");
 });
+function bind(provider: string, id: number, member: string, channel: string, approver: string): void {
+  store.handle.prepare("INSERT INTO chat_binding (provider, id, installation, team, app, member, channel, approver, generation, created) VALUES (?,?,?,?,?,?,?,?,?,?)")
+    .run(provider, id, "i", "t", "a", member, channel, approver, store.accountOf(approver)?.generation ?? 1, NOW.toISOString());
+}
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
 /** Offer the card, tap Continue, then return the Approve tap. */
@@ -179,6 +187,22 @@ describe("the release card", () => {
     expect(decideOffer(store, { kind: "plan", taskId }, who(), NOW, "telegram", root)).toBeNull();
     expect(store.getScope(taskId)!.approvedAt).toBeNull();
   });
+});
+
+test("a release card works only in the person's own private chat, from the binding's record: fail closed", () => {
+  const telegram = { channel: "telegram" as const, binding: 1, chat: "4242", approver: "alex" };
+  expect(privateReleaseChat(store, telegram)).toBe(true);
+  expect(privateReleaseChat(store, { channel: "slack", binding: 2, chat: "D0ALEX", approver: "alex" })).toBe(true);
+  // A missing chat, a group, a chat that isn't the binding's, another person's binding or DM, an unknown binding.
+  expect(privateReleaseChat(store, { ...telegram, chat: "" })).toBe(false);
+  expect(privateReleaseChat(store, { ...telegram, chat: "-1004242" })).toBe(false);
+  expect(privateReleaseChat(store, { ...telegram, chat: "5353" })).toBe(false);
+  expect(privateReleaseChat(store, { ...telegram, binding: 3, chat: "5353" })).toBe(false);
+  expect(privateReleaseChat(store, { ...telegram, binding: 99 })).toBe(false);
+  expect(privateReleaseChat(store, { channel: "slack", binding: 2, chat: "C0TEAM", approver: "alex" })).toBe(false);
+  // Discord and Teams have no private-chat record to prove: the card isn't offered there.
+  expect(privateReleaseChat(store, { channel: "discord", binding: 1, chat: "4242", approver: "alex" })).toBe(false);
+  expect(privateReleaseChat(store, { channel: "teams", binding: 1, chat: "4242", approver: "alex" })).toBe(false);
 });
 
 describe("the complete terms renderer (contract)", () => {

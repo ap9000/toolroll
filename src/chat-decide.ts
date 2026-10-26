@@ -256,7 +256,7 @@ export function decideOffer(store: Store, target: DecideTarget, who: VerifiedApp
       if (!plan.ok) return null;
       // A deploy gate is approved from chat only through its release card (chat-management.md §0a.5).
       if (deployGateScope(plan.scope)) {
-        const release = releaseInChat(store, target.taskId, who.name, now, channel, null, root);
+        const release = releaseInChat(store, target.taskId, who.name, now, channel, "offer", root);
         if (!release.ok) return null;
         const card = release.card;
         return { text: channel === "telegram" ? card.short : `${card.short}\n\n${card.full}`,
@@ -385,12 +385,21 @@ export type ChatMerge = { runId: number; taskId: string; by: string; repo: strin
 const RELEASE_DIGEST = "release:";
 const releaseDigest = (card: ReleaseCard): string => `${RELEASE_DIGEST}${card.digest}`;
 
-/** The chat a release card works in: the person's private chat with the bot, never a group or a channel. */
-function privateChat(channel: DecideChannel, chat: string | null): boolean {
-  if (chat === null) return true;
-  if (channel === "telegram") return /^[1-9][0-9]*$/.test(chat);
-  if (channel === "slack") return /^D[A-Z0-9]+$/.test(chat);
-  return true;
+/** Where a release card is tapped: the person's binding and the chat the tap came from. */
+export type ReleaseSeat = Pick<DecideSeat, "channel" | "binding" | "chat" | "approver">;
+
+/**
+ * Whether a release card's tap comes from the person's own private chat with Toolroll (chat-management.md §0a.5), from
+ * the binding's own record, failing closed: Telegram, a private chat (a positive id, which Telegram makes equal to the
+ * user's own id) that is the binding's chat and its user's; Slack, a direct-message channel (D…) that is the binding's.
+ * Any other chat app, a missing chat or binding, or another person's binding is not.
+ */
+export function privateReleaseChat(store: Store, seat: ReleaseSeat): boolean {
+  const row = store.handle.prepare("SELECT member, channel, approver FROM chat_binding WHERE provider = ? AND id = ? AND revoked IS NULL").get(seat.channel, seat.binding);
+  if (row === undefined || String(row["approver"]) !== seat.approver || seat.chat !== String(row["channel"])) return false;
+  if (seat.channel === "telegram") return /^[1-9][0-9]*$/.test(seat.chat) && seat.chat === String(row["member"]);
+  if (seat.channel === "slack") return /^D[A-Z0-9]+$/.test(seat.chat);
+  return false;
 }
 
 /**
@@ -399,14 +408,16 @@ function privateChat(channel: DecideChannel, chat: string | null): boolean {
  * policy, protected work), never a nightly check, only in their private chat, and the card as the live records say
  * it now (chat-management.md §0a.5).
  */
-export function releaseInChat(store: Store, taskId: string, approver: string, now: Date, channel: DecideChannel, chat: string | null, root?: string):
+export function releaseInChat(store: Store, taskId: string, approver: string, now: Date, channel: DecideChannel,
+  /** The seat a tap came from, checked strictly; "offer" only where the card is drawn for the binding's own chat (no act). */
+  seat: ReleaseSeat | "offer", root?: string):
   { ok: true; card: ReleaseCard; modeDigest: string; source: "setting" | "mode"; scope: Scope } | { ok: false; why: string } {
   const plan = planInChat(store, taskId, approver, now, channel, root);
   if (!plan.ok) return plan;
   if (!deployGateScope(plan.scope)) return { ok: false, why: "This plan isn't a release." };
   const ref = store.lookupRef(taskId);
   if (ref === null || nightlyTaskRef(store, ref.id)) return { ok: false, why: NIGHTLY_CHECK_ONLY };
-  if (!privateChat(channel, chat)) return { ok: false, why: "A release is approved only in your private chat with Toolroll." };
+  if (seat !== "offer" && (seat.channel !== channel || !privateReleaseChat(store, seat))) return { ok: false, why: "A release is approved only in your private chat with Toolroll." };
   let card: ReleaseCard;
   try { card = releaseCardOf(store, plan.scope, plan.digest, { profile: permissionPlainWords }); }
   catch { return { ok: false, why: "This release's terms can't be shown here, so you approve it in Toolroll." }; }
@@ -430,7 +441,7 @@ function targetOf(row: Pick<ActionRow, "act" | "taskId" | "run">): DecideTarget 
 }
 
 /** Why the card's act no longer applies, or null while it still does — checked at the offer and again at the yes. */
-function staleWhy(store: Store, row: Pick<ActionRow, "act" | "taskId" | "run" | "digest"> & { chat?: string }, who: VerifiedApprover, now: Date, channel: DecideChannel, root?: string): string | null {
+function staleWhy(store: Store, row: Pick<ActionRow, "act" | "taskId" | "run" | "digest"> & { chat?: string; binding?: number }, who: VerifiedApprover, now: Date, channel: DecideChannel, root?: string): string | null {
   switch (row.act) {
     case "accept": case "changes": {
       const fresh = resultFresh(store, row.taskId, row.run ?? 0, who, now, root);
@@ -444,7 +455,8 @@ function staleWhy(store: Store, row: Pick<ActionRow, "act" | "taskId" | "run" | 
     }
     case "approve": case "not-now": {
       if (row.digest.startsWith(RELEASE_DIGEST)) {
-        const release = releaseInChat(store, row.taskId, who.name, now, channel, "chat" in row ? (row as { chat: string }).chat : null, root);
+        // The button's own seat as it was minted: its binding's chat, checked against the binding's record.
+        const release = releaseInChat(store, row.taskId, who.name, now, channel, { channel, binding: row.binding ?? -1, chat: row.chat ?? "", approver: who.name }, root);
         if (!release.ok) return release.why;
         return releaseDigest(release.card) === row.digest ? null : "This release changed while you were reading.";
       }
@@ -572,7 +584,7 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
     }
     // A release card's Continue: the card again from the live records, its full terms as a file, then Approve.
     if (row.act === "approve" && row.digest.startsWith(RELEASE_DIGEST)) {
-      const release = releaseInChat(store, row.taskId, who.name, now, seat.channel, seat.chat, input.root);
+      const release = releaseInChat(store, row.taskId, who.name, now, seat.channel, seat, input.root);
       if (!release.ok) return stale(release.why);
       spend();
       const spec: ActSpec = { act: "approve", run: null, digest: row.digest };
@@ -610,7 +622,7 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
     }
     case "approve": {
       if (row.digest.startsWith(RELEASE_DIGEST)) {
-        const release = releaseInChat(store, row.taskId, who.name, now, seat.channel, seat.chat, input.root);
+        const release = releaseInChat(store, row.taskId, who.name, now, seat.channel, seat, input.root);
         if (!release.ok) return notDone(release.why);
         const cardDigest = release.card.digest;
         // The seal knows which card it came from: a chat seal of a deploy gate needs this evidence (store.ts).
