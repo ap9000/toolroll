@@ -1387,13 +1387,13 @@ export type ClaudeBillingSeen = { keySource: string | null; model: string | null
 /**
  * One stream event's billing observation: the key source and model from the session's own init, plan windows from a
  * rate-limit event, and whether the main query answered. The session's own events only (stream-scope.ts): a
- * subagent's init or result says nothing about this turn's billing.
+ * subagent's init, rate-limit event or result says nothing about this turn's billing.
  */
 export function observeClaudeBilling(seen: ClaudeBillingSeen, event: Record<string, unknown>): void {
   if (event["type"] === "system" && event["subtype"] === "init" && topLevelEvent(event)) {
     if (typeof event["apiKeySource"] === "string") seen.keySource = event["apiKeySource"].slice(0, 80);
     if (typeof event["model"] === "string") seen.model = event["model"].slice(0, 200);
-  } else if (event["type"] === "rate_limit_event") {
+  } else if (event["type"] === "rate_limit_event" && topLevelEvent(event)) {
     seen.planWindows = true;
   } else if (primaryResultEvent(event) && event["is_error"] !== true && event["subtype"] === "success") {
     seen.answered = true;

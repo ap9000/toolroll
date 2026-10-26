@@ -10,6 +10,8 @@ import { liveActivityKind } from "./live.js";
 import { adapterFor } from "./provider.js";
 import { claudeStreamReader } from "./lead-progress.js";
 import { touchesPlanFile } from "./scout.js";
+import { claudeLimitsOf, pushLimitSink, type LimitReading } from "./provider-limits.js";
+import { claudeBillingFrom } from "./spend.js";
 import { primaryResultEvent, topLevelEvent } from "./stream-scope.js";
 import { performSubscriptionLeadRequest } from "./subscription-chat.js";
 
@@ -18,7 +20,9 @@ const childInit = { type: "system", subtype: "init", session_id: "s-child", mode
 const childAssistant = { type: "assistant", message: { id: "m-child", content: [{ type: "tool_use", id: "c1", name: "Bash", input: {} }] }, parent_tool_use_id: CHILD };
 const childResult = { type: "result", subtype: "success", is_error: false, result: "child says done", session_id: "s-child", total_cost_usd: 9, parent_tool_use_id: CHILD };
 const childHumanResult = { ...childResult, origin: { kind: "human" } };
-const CHILD_EVENTS: [string, Record<string, unknown>][] = [["init", childInit], ["assistant", childAssistant], ["result", childResult], ["human-origin result", childHumanResult]];
+const rateLimit = { type: "rate_limit_event", rate_limit_info: { status: "allowed", unifiedWindows: { five_hour: { utilization: 0.4, resetsAt: 2_000_000_000 } } } };
+const childRateLimit = { ...rateLimit, parent_tool_use_id: CHILD };
+const CHILD_EVENTS: [string, Record<string, unknown>][] = [["init", childInit], ["assistant", childAssistant], ["rate limit", childRateLimit], ["result", childResult], ["human-origin result", childHumanResult]];
 
 describe("the predicate", () => {
   test.each([
@@ -81,6 +85,18 @@ describe("a subagent's events are not the parent's", () => {
     observeClaudeBilling(seen, { type: "system", subtype: "init", model: "parent-model", apiKeySource: "none" });
     observeClaudeBilling(seen, { type: "result", subtype: "success", is_error: false });
     expect(seen).toEqual({ keySource: "none", model: "parent-model", planWindows: false, answered: true });
+    // A gateway's key ("none", no windows) stays a key: a child's limit window never turns it into the plan.
+    observeClaudeBilling(seen, childRateLimit);
+    expect(claudeBillingFrom(seen)).toBe("api-key");
+    // The session's own window is the plan's sign, as before.
+    observeClaudeBilling(seen, rateLimit);
+    expect(claudeBillingFrom(seen)).toBe("subscription");
+  });
+
+  test("a child's rate-limit event is never a limit reading; the session's own still is", () => {
+    expect(claudeLimitsOf(childRateLimit)).toBeNull();
+    expect(claudeLimitsOf({ ...rateLimit, parent_tool_use_id: "" })).toBeNull();
+    expect(claudeLimitsOf(rateLimit)).toMatchObject({ provider: "claude", windows: [{ window: "five_hour", usedPercent: 40 }] });
   });
 
   test("the envelope parser: a child's init never names or conflicts the session, a child's result never stands", () => {
@@ -147,6 +163,8 @@ describe("the claude streaming transport", () => {
   const line = (event: Record<string, unknown>): string => `process.stdout.write(${JSON.stringify(JSON.stringify(event))}+"\\n");`;
 
   test("child events fire no receipt, save no session, raise no conflict, and are not the result", async () => {
+    const readings: LimitReading[] = [];
+    const release = pushLimitSink(reading => readings.push(reading));
     const childOnly = await (async () => {
       let receipts = 0;
       const sessions: string[] = [];
@@ -156,6 +174,7 @@ describe("the claude streaming transport", () => {
       return { receipts, sessions, stdout: result.stdout };
     })();
     expect(childOnly).toEqual({ receipts: 0, sessions: [], stdout: expect.not.stringContaining("s-child") });
+    expect(readings).toEqual([]); // a child's limit window is never published
 
     let receipts = 0;
     const sessions: string[] = [];
@@ -176,6 +195,10 @@ describe("the claude streaming transport", () => {
     const parsed = adapterFor("claude").parse(result.stdout);
     expect(parsed).toMatchObject({ sessionId: "s-parent", finalMessage: "parent done", costUsd: 0.25 });
     expect(parsed.protocolError ?? null).toBeNull();
+    // The session's own window still publishes.
+    await runClaudeStreamJsonl(process.execPath, ["-e", line(rateLimit)], { timeoutMs: 30_000 });
+    release();
+    expect(readings).toHaveLength(1);
   });
 });
 
@@ -183,10 +206,15 @@ describe("the lead's subscription turn", () => {
   test("a child's init and result are neither its billing nor its answer", async () => {
     const answer = { type: "result", subtype: "success", is_error: false, structured_output: { text: "Parent answer", calls: [] }, usage: { input_tokens: 3, output_tokens: 4 } };
     const childAnswer = { ...answer, structured_output: { text: "Child answer", calls: [] }, parent_tool_use_id: CHILD };
-    const stdout = [{ type: "system", subtype: "init" }, childInit, answer, childAnswer].map(event => JSON.stringify(event)).join("\n") + "\n";
+    const stdout = [{ type: "system", subtype: "init" }, childInit, childRateLimit, answer, childAnswer].map(event => JSON.stringify(event)).join("\n") + "\n";
+    const readings: LimitReading[] = [];
+    const release = pushLimitSink(reading => readings.push(reading));
     const result = await performSubscriptionLeadRequest({
       provider: "claude-subscription", model: "default", system: "s", dataDocument: "d", history: [{ role: "operator", text: "hi" }], tools: [], timeoutMs: 5_000, onText: () => undefined,
     }, async () => ({ code: 0, stdout, stderr: "", timedOut: false, notFound: false }));
     expect(result).toMatchObject({ ok: true, answer: { text: "Parent answer" } });
+    release();
+    // No limit window from the child; billing from the parent's own init alone (no key source, no windows) says nothing.
+    expect(readings.filter(reading => reading.windows.length > 0)).toEqual([]);
   });
 });
