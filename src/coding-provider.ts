@@ -12,6 +12,7 @@ import { createContainer, currentContainment, type Container } from "./containme
 import { processMayBeAlive } from "./process-liveness.js";
 import { observeProcessTree, sampleProcessTree, stopProcessTree, type ProcessObservationFailure } from "./process-tree.js";
 import { isOwnEnv } from "./names.js";
+import { isProtectedEnvName } from "./protected-storage.js";
 import { sleep } from "./sleep.js";
 
 /** Read-only recovery witnesses, never authority to signal historical PIDs.
@@ -89,8 +90,9 @@ export function codingEnvironment(): NodeJS.ProcessEnv {
     // Preserve native Codex auth, HOME, PATH, CODEX_HOME and project config.
     // A parent desktop session's control pipe and identity do not belong to
     // this independent native client. Keep install/runtime paths such as
-    // CODEX_MCP_NODE_PATH. Service credentials stay with the web service.
-    if (isOwnEnv(key) || /^(TELEGRAM|SLACK|DISCORD)_.*(TOKEN|SECRET|KEY)$/i.test(key) || /^CODEX_APP_TOOLS_/.test(key) || invokingSession.has(key) || key === "NODE_OPTIONS" || key === "NODE_PATH") delete env[key];
+    // CODEX_MCP_NODE_PATH. Service credentials stay with the web service; no chat or vault variable reaches it
+    // (protected-storage.ts).
+    if (isOwnEnv(key) || isProtectedEnvName(key) || /^CODEX_APP_TOOLS_/.test(key) || invokingSession.has(key) || key === "NODE_OPTIONS" || key === "NODE_PATH") delete env[key];
   }
   return env;
 }

@@ -9,6 +9,7 @@
 
 import { ACP_LINE_CAP, createAcpConversation } from "./acp-client.js";
 import { linuxFenceAvailable, macosFenceAvailable, sandboxedSpawn, type FenceGrants } from "./agent-fence.js";
+import { withoutProtectedEnv } from "./protected-storage.js";
 import { execFile, execFileSync, spawn } from "node:child_process";
 import { readlinkSync, realpathSync } from "node:fs";
 import { observeProcessTree, stopProcessTree, type ProcessTreeObserver } from "./process-tree.js";
@@ -234,7 +235,9 @@ export function confined(file: string, args: readonly string[], bag: { fence?: r
 }
 
 /** A spawn's environment with what its sandbox needs added (nothing added: the caller's, as it was). */
-export function withSandboxEnv<T extends Record<string, string | undefined>>(env: T | undefined, added: Record<string, string>): T | Record<string, string | undefined> | undefined {
+export function withSandboxEnv<T extends Record<string, string | undefined>>(env: T | undefined, added: Record<string, string>, fenced = false): T | Record<string, string | undefined> | undefined {
+  // A fenced launch never gets a chat or vault variable (protected-storage.ts), whoever made its environment.
+  if (fenced) return withoutProtectedEnv({ ...(env ?? process.env), ...added });
   return Object.keys(added).length === 0 ? env : { ...(env ?? process.env), ...added };
 }
 
@@ -279,7 +282,7 @@ function spawnContained(
   // The agent fence wraps the target itself (sandbox-exec then execs it, same pid).
   const sandboxed = confined(file, args, { ...bag, cwd: spawnOptions.cwd, temp: spawnOptions.env?.["TMPDIR"] });
   ({ file, args } = sandboxed);
-  spawnOptions = { ...spawnOptions, env: withSandboxEnv(spawnOptions.env, sandboxed.env) };
+  spawnOptions = { ...spawnOptions, env: withSandboxEnv(spawnOptions.env, sandboxed.env, (bag.fence?.length ?? 0) > 0) };
   // The policy refusal comes first: nothing is reserved, recorded or
   // spawned for a spawn that cannot be contained as required.
   const effective = contain ? currentContainment() : null;
@@ -721,7 +724,7 @@ export function run(file: string, args: readonly string[], options: RunOptions =
             encoding: "utf8",
             shell: false,
             windowsHide: true,
-            ...((env => env === undefined ? {} : { env }))(withSandboxEnv(childEnv, wrapped.env)),
+            ...((env => env === undefined ? {} : { env }))(withSandboxEnv(childEnv, wrapped.env, (options.fence?.length ?? 0) > 0)),
           },
           (error, stdout, stderr) => {
             if (error === null) {

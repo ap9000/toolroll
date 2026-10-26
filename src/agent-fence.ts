@@ -36,6 +36,7 @@ import { DEPS_FOLDER, linkedKey, readyCopy, sharedCopies } from "./shared-deps.j
 import type { LoopbackMode } from "./egress.js";
 import type { ExecutionProfile } from "./scope.js";
 import { SEATBELT_PROBE, sandboxRuntimeProblem, srtSpawn, type SrtTerms } from "./sandbox-runtime.js";
+import { protectedStorageDenies, protectedStorageNames } from "./protected-storage.js";
 import { getDefaultWritePaths } from "@anthropic-ai/sandbox-runtime";
 
 /** How a launch was fenced, as recorded on the run and said on the task. */
@@ -108,7 +109,9 @@ export function trustedWorktreeBinding(repository: string, worktree: string, poo
  * database sits anywhere else (a shared folder), only the database and
  * secret-looking entries there are fenced.
  */
-export function agentFence(options: { databaseFile: string | null; worktree: string | null; home?: string; extra?: readonly string[]; boundary?: TaskBoundary | null; binding?: WorktreeBinding | null; runFolders?: RunFolders }): string[] {
+export function agentFence(options: { databaseFile: string | null; worktree: string | null; home?: string; extra?: readonly string[]; boundary?: TaskBoundary | null; binding?: WorktreeBinding | null; runFolders?: RunFolders;
+  /** Protected storage as this launch resolved it (protected-storage.ts); resolved here when not given. */
+  protectedStorage?: readonly string[] }): string[] {
   const fence = new Set<string>();
   /** The console's run folder: kept by its own pathname through canonicalization (and its target's too). */
   let runFolder: string | null = null;
@@ -159,10 +162,14 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   // Secret, state, database, explicit-extra and home-config denies are never exemptible.
   for (const path of options.boundary?.protectedShell ?? []) fence.add(real(path));
   const protectedPaths = new Set([...fence].flatMap(path => path === runFolder ? [path, real(path)] : [real(path)]));
+  // Protected storage (chat apps, browser profiles, password managers): every launch, every policy, never exemptible,
+  // kept by the name it was resolved under as well as where it leads.
+  const storage = options.protectedStorage ?? protectedStorageDenies(home);
+  for (const path of storage) { protectedPaths.add(path); protectedPaths.add(real(path)); }
   for (const path of options.boundary?.shell ?? []) fence.add(path);
   const binding = options.binding;
   const needed = binding === undefined || binding === null ? [] : [binding.gitdir, real(join(binding.main, ".git"))];
-  return [...new Set([...fence].flatMap(path => path === runFolder ? [path, real(path)] : [real(path)]))].filter(path => {
+  return [...new Set([...[...fence].flatMap(path => path === runFolder ? [path, real(path)] : [real(path)]), ...storage.flatMap(path => [path, real(path)])])].filter(path => {
     if (protectedPaths.has(path) || !needed.some(target => target === path || inside(target, path))) return true;
     console.warn(`Dropped build fence entry covering this checkout's own Git data: ${path}`);
     return false;
@@ -215,9 +222,11 @@ export function taskBoundary(options: { worktree: string; provider: string; home
   const present = (names: readonly string[]) => names.map(name => join(home, name)).filter(path => existsSync(path)).map(real);
   // Policy v2 (docs/plans/sandbox-parity.md §1.2): the home folder, the repositories beside this one and the project's
   // primary checkout are read as Anthropic's sandbox runtime reads them; only writes to the primary checkout stay denied.
-  if ((options.policy ?? 1) === 2) return v2Boundary(worktree, main, gitdir);
+  // Protected storage by name, under both policies (protected-storage.ts): never part of the v1-only home configuration.
+  const storage = protectedStorageNames(home);
+  if ((options.policy ?? 1) === 2) return v2Boundary(worktree, main, gitdir, storage);
   const shell = new Set(present(HOME_CONFIGURATION.filter(name => !own.has(name))));
-  const protectedShell = [...shell];
+  const protectedShell = [...shell, ...storage];
   const repository = (path: string) => existsSync(join(path, ".git"));
   for (const parent of new Set([dirname(worktree), ...(main === null ? [] : [dirname(main)])])) {
     // Home contains toolchain clones such as .nvm and .oh-my-zsh. The
@@ -253,7 +262,7 @@ export function taskBoundary(options: { worktree: string; provider: string; home
 /** A v2 boundary: nothing of the home folder, the repositories beside this one or the primary checkout is denied to
  * read; the primary checkout (all but its `.git`, which this worktree's Git needs) is never written; other tasks' Git
  * metadata is read, never written, as under v1. */
-function v2Boundary(worktree: string, main: string | null, gitdir: string | null): TaskBoundary {
+function v2Boundary(worktree: string, main: string | null, gitdir: string | null, storage: readonly string[]): TaskBoundary {
   const noWrite = new Set<string>();
   if (main !== null && main !== worktree) {
     let entries: string[] = [];
@@ -265,7 +274,7 @@ function v2Boundary(worktree: string, main: string | null, gitdir: string | null
   }
   const { readOnly, lookup } = siblingGitData(main, gitdir);
   for (const path of noWrite) readOnly.add(path);
-  return { protectedShell: [], shell: [], fileTools: [], readOnly: [...readOnly].sort(), lookup: [...lookup].sort(), homeNames: [] };
+  return { protectedShell: [...storage], shell: [], fileTools: [], readOnly: [...readOnly].sort(), lookup: [...lookup].sort(), homeNames: [] };
 }
 
 /**
@@ -356,7 +365,10 @@ export type FenceGrants = { readOnly: string[]; readable: string[]; lookup: stri
   /** A `sign-ins` check's exact sign-in files, read again inside the home denies (check-access.ts, signInGrants). */
   signIns?: SignInGrants;
   /** Never written, wherever the launch writes (homeWriteDenies): what runs for the operator next or signs them in. */
-  writeDenies?: string[] };
+  writeDenies?: string[];
+  /** Protected storage (protected-storage.ts): denied to read and write by every backend, and no grant equal to or
+   * inside one survives (a sandbox that lets the more specific path win can't reopen it). */
+  protectedStorage?: string[] };
 
 export { isWritesMode, WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
 
@@ -705,6 +717,13 @@ function codexFilesystem(fence: readonly string[], fullAccess: boolean, grants: 
   // Denies are keyed where they resolve; the console's run folder is also denied by its
   // own pathname, so a link there stays unreplaceable, not only its target.
   for (const path of deny) { access.set(real(path), "deny"); if (basename(path) === INSTANCE_DIR) access.set(path, "deny"); }
+  // Protected storage: denied by name and real path, and nothing granted inside it (Codex lets the more specific path
+  // win, so a grant there would reopen it).
+  const storage = grants.protectedStorage ?? [];
+  if (storage.length > 0) {
+    for (const [path, mode] of [...access]) if (mode !== "deny" && storage.some(one => path === one || inside(path, one))) access.delete(path);
+    for (const path of storage) { access.set(path, "deny"); access.set(real(path), "deny"); }
+  }
   return access;
 }
 
@@ -866,6 +885,11 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
       if (!(pool.own !== null && (pool.own === sealed || inside(pool.own, sealed)))) denyWrite.add(sealed);
     }
   }
+  // Protected storage last: denied to read and write by name and real path, and no read grant inside it survives.
+  const storage = grants.protectedStorage ?? [];
+  const isProtected = (path: string): boolean => storage.some(one => path === one || inside(path, one) || real(path) === one || inside(real(path), one));
+  for (const path of storage) { denyRead.add(path); denyWrite.add(path); }
+  for (const path of [...allowRead]) if (isProtected(path)) allowRead.delete(path);
   const readConfig = { denyOnly: [...denyRead].sort(), allowWithinDeny: [...allowRead].sort() };
   const writes = grants.writes;
   // A sign-ins check also writes Codex's session and log folders and its own Claude transcripts (never inside a
@@ -878,7 +902,7 @@ export function srtTermsOf(fence: readonly string[], grants: FenceGrants = NO_GR
   const network = grants.network;
   return {
     readConfig,
-    writeConfig: { allowOnly: [...new Set(allowOnly)].sort(), denyWithinAllow: [...denyWrite].sort() },
+    writeConfig: { allowOnly: [...new Set(allowOnly)].filter(path => path === "/" || !isProtected(path.replace(/\*$/, ""))).sort(), denyWithinAllow: [...denyWrite].sort() },
     allowMachLookup: [...grants.machLookup ?? [], ...grants.signIns?.mach ?? []],
     ...(grants.browser === true ? { browser: true } : {}),
     ...(grants.keychain === true ? { keychain: true } : {}),
@@ -1037,7 +1061,9 @@ export type LaunchFence = { kind: FenceKind; fence: string[]; fenceGrants: Fence
 export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
   const home = ctx.home === undefined ? {} : { home: ctx.home };
   // The project's read denies join the fence by name, there or not (the runtime denies a path that isn't there yet).
-  const fence = agentFence({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, ...home, boundary: ctx.boundary, binding: ctx.binding, runFolders: ctx.runFolders, extra: [...ctx.extra ?? [], ...ctx.readDeny ?? []] });
+  // Protected storage, resolved once for this launch, from the plane's own environment (protected-storage.ts).
+  const storage = protectedStorageDenies(ctx.home ?? homedir());
+  const fence = agentFence({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, ...home, boundary: ctx.boundary, binding: ctx.binding, runFolders: ctx.runFolders, extra: [...ctx.extra ?? [], ...ctx.readDeny ?? []], protectedStorage: storage });
   const found = fenceGrants({ databaseFile: ctx.databaseFile, worktree: ctx.worktree, boundary: ctx.boundary, runFolders: ctx.runFolders, linked: ctx.linked ?? null, binding: ctx.binding, ...home, poolRoots: ctx.poolRoots });
   // Toolroll's own install, the sandbox runtime's package and the Node running them, never written by anything it
   // launches: rewriting the code that fences a build would switch the fence off.
@@ -1054,6 +1080,7 @@ export function fenceFor(kind: FenceKind, ctx: FenceContext): LaunchFence {
     ...(kind === "build" ? { keychain: true as const } : {}),
     // Under a write allowlist these are out of reach already; where the launch writes anywhere, they are denied by name.
     writeDenies: homeWriteDenies(ctx.home ?? homedir(), ctx.binding, ctx.provider ?? null),
+    protectedStorage: storage,
     ...(made.pool === undefined ? {} : { pool: { ...made.pool, ...(ctx.policy === 2 ? { readable: true as const } : {}),
       // Flows' scratch folders in the pool (and any the caller names) stay denied whole, at every policy version.
       sealed: sealedScratch(ctx.poolRoots, ctx.scratchRoots ?? []) } }),

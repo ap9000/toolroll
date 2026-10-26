@@ -29,6 +29,10 @@ import { claudeToolArgs } from "./project-tools.js";
 import { NOTES_SERVER } from "../test/notes-mcp-server.js";
 import { poolRootOf } from "./worktree.js";
 import { INSIDE_FENCE } from "../test/inside-fence.js";
+import { protectedStorageDenies } from "./protected-storage.js";
+
+/** A fence without the protected storage every fence carries (protected-storage.ts), for tests about the rest of it. */
+const withoutStorageOf = (home: string) => (fence: string[]): string[] => { const storage = new Set(protectedStorageDenies(home)); return fence.filter(path => !storage.has(path)); };
 
 // Observe the real spawn boundary without redefining Node's ESM exports.
 vi.mock("node:child_process", { spy: true });
@@ -233,7 +237,9 @@ describe("the agent fence", () => {
   });
 
   test("covers everything in the state folder but the worktree's own folder, the database with its journal, and ~/.standing-orders; never the worktree", () => {
-    const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree, home });
+    // Protected storage (protected-storage.ts) joins every fence; this test is about the state folder.
+    const withoutStorage = withoutStorageOf(home);
+    const fence = withoutStorage(agentFence({ databaseFile: join(state, "orders.db"), worktree, home }));
     expect(fence).toEqual([
       join(home, ".standing-orders"),
       join(state, "backups"), join(state, "evidence"), join(state, "orders.db"), join(state, "orders.db-wal"),
@@ -246,15 +252,15 @@ describe("the agent fence", () => {
     mkdirSync(join(state, "repo", ".git", "worktrees", "task-1"), { recursive: true });
     mkdirSync(join(state, "other-project", ".git"), { recursive: true });
     writeFileSync(join(worktree, ".git"), `gitdir: ${join(state, "repo", ".git", "worktrees", "task-1")}\n`);
-    const withRepos = agentFence({ databaseFile: join(state, "orders.db"), worktree, home });
+    const withRepos = withoutStorage(agentFence({ databaseFile: join(state, "orders.db"), worktree, home }));
     expect(withRepos).toEqual(fence);
     // A database in a shared folder (a repository): only it and secret-looking entries.
     const shared = join(dir, "repo");
     mkdirSync(join(shared, ".git"), { recursive: true });
     for (const file of ["orders.db", "up-login.txt", "package.json", "deploy.token"]) writeFileSync(join(shared, file), "x");
-    expect(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home })).toEqual([join(home, ".standing-orders"), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, "orders.db-journal"), join(shared, "orders.db-shm"), join(shared, "orders.db-wal"), join(shared, ".toolroll-run"), join(shared, "up-login.txt")].sort());
+    expect(withoutStorage(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home }))).toEqual([join(home, ".standing-orders"), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, "orders.db-journal"), join(shared, "orders.db-shm"), join(shared, "orders.db-wal"), join(shared, ".toolroll-run"), join(shared, "up-login.txt")].sort());
     // No database file: only ~/.standing-orders.
-    expect(agentFence({ databaseFile: null, worktree: null, home })).toEqual([join(home, ".standing-orders")]);
+    expect(withoutStorage(agentFence({ databaseFile: null, worktree: null, home }))).toEqual([join(home, ".standing-orders")]);
   });
 
   describe("a build's task boundary", () => {
