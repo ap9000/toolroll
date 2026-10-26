@@ -39,7 +39,10 @@ Alex: "I can't keep approving the same thing over and over."
 - **No change to who may approve.** Releases and deploys always need a person (approval-policy decision 1). The
   lead may ask for a carry but can never make one stand on its own authority, and can never widen one.
 - **No carrying production code, harness, dependencies or build inputs.**
-- **No carrying while the release project's checks run outside the sandbox.**
+- **No carrying while the release project's checks run outside the sandbox**, unless the project's "Carry release
+  approvals when checks aren't sandboxed" was on when the person approved (Alex, 0.9.73, option A: off by default,
+  turned on only with a person's proof, sealed into the terms and policy; the stricter of sealed and current applies,
+  and checks never reach further than at the approval).
 - **No carrying, and no restart, after the deploy reservation.** A head that moves after deploy starts stops the
   release, and the new commit needs a person's approval. This includes a CI failure found after deploy.
 - **No change to CI.** Every required pull-request check still passes on the exact final commit before merge.

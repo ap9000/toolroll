@@ -32,6 +32,7 @@ import { CARRY_RULES_VERSION, readReleasePolicy, releasePolicyDigest, type Relea
 import { run, type ExecResult } from "./exec.js";
 import { proxyEnv, startEgressProxy } from "./egress.js";
 import { liveReleaseOf } from "./scope.js";
+import { UNSANDBOXED_CARRY_ACTION, carriesUnsandboxed } from "./release-authority.js";
 import {
   carryReleaseApproval, releaseAuthority, releaseCarryTo, sealAnchorArtifact,
   type ReleaseAuthority, type ReleaseCarry, type Store,
@@ -78,6 +79,12 @@ export function asksEveryReleaseCommit(store: Store, repo: string): boolean {
   const row = store.handle.prepare("SELECT outcome FROM action_ledger WHERE repo = ? AND action = ? ORDER BY id DESC LIMIT 1").get(repo, ASK_EVERY_COMMIT_ACTION);
   return row !== undefined && row["outcome"] === "ask";
 }
+/** Set "Carry release approvals when checks aren't sandboxed". `by` is who set it; turning it on is only ever called
+ * after a person's own proof (release-cli.ts). */
+export function setUnsandboxedCarry(store: Store, repo: string, on: boolean, by: string, now: Date): void {
+  store.recordAction({ at: now.toISOString(), actor: by, repo, taskId: null, runId: null, action: UNSANDBOXED_CARRY_ACTION, outcome: on ? "on" : "off", source: "request",
+    detail: on ? "Carry release approvals when checks aren't sandboxed: later test-only commits run outside the sandbox without being shown first" : "Release approvals carry only when checks are sandboxed" });
+}
 export function setAskEveryReleaseCommit(store: Store, repo: string, ask: boolean, by: string, now: Date): void {
   store.recordAction({ at: now.toISOString(), actor: by, repo, taskId: null, runId: null, action: ASK_EVERY_COMMIT_ACTION, outcome: ask ? "ask" : "carry", source: "request",
     detail: ask ? "Ask for every release commit" : "Later test-only commits ship under the release approval" });
@@ -89,6 +96,7 @@ export function effectivePolicy(store: Store, repo: string, options: { noCarry?:
   return {
     version: 1, rules: CARRY_RULES_VERSION, carry: options.noCarry !== true && !asksEveryReleaseCommit(store, repo),
     protectProject: rules.protectProject, protectedPaths: [...new Set(rules.protectedPaths)].sort(), limits: { ...CARRY_LIMITS },
+    unsandboxedCarry: carriesUnsandboxed(store, repo),
   };
 }
 
@@ -100,6 +108,8 @@ export function stricterOf(a: ReleasePolicy | null, b: ReleasePolicy | null): Re
     version: 1, rules: CARRY_RULES_VERSION, carry: a.carry && b.carry, protectProject: a.protectProject || b.protectProject,
     protectedPaths: [...new Set([...a.protectedPaths, ...b.protectedPaths])].sort(),
     limits: { lines: Math.min(a.limits.lines, b.limits.lines), files: Math.min(a.limits.files, b.limits.files), churn: Math.min(a.limits.churn, b.limits.churn) },
+    // Carrying when checks aren't sandboxed only while both allow it: turning it on later never widens an approval.
+    unsandboxedCarry: a.unsandboxedCarry === true && b.unsandboxedCarry === true,
   };
 }
 
@@ -144,11 +154,17 @@ export function releaseTermsFor(store: Store, input: { repo: string; version: st
   if (!commit.ok) return { ok: false, why: commit.message };
   const grant = store.liveVerifyCommand(input.repo);
   if (grant === null) return { ok: false, why: "the project has no approved release check" };
-  if (store.projectCheckAccess(input.repo) !== "sandboxed") return { ok: false, why: "the project's checks run outside the sandbox, so later commits always ask again" };
+  const access = store.projectCheckAccess(input.repo);
+  const policy = effectivePolicy(store, input.repo, { noCarry: input.noCarry ?? false });
+  // Checks outside the sandbox carry only with the project's "Carry release approvals when checks aren't sandboxed" on,
+  // sealed here: turning it on after this approval never carries for it.
+  if (access !== "sandboxed" && policy.unsandboxedCarry !== true) {
+    return { ok: false, why: "the project's checks run outside the sandbox, so later commits always ask again (unless “Carry release approvals when checks aren't sandboxed” is on)" };
+  }
   return { ok: true, terms: {
     version: 1, repo: input.repo, packageVersion: input.version, branch: input.branch, pr: input.pr, base: "main",
-    approvedSha: input.candidate, approvedTree: commit.value.tree, policy: effectivePolicy(store, input.repo, { noCarry: input.noCarry ?? false }),
-    grant: { id: grant.id, digest: grant.digest }, access: "sandboxed",
+    approvedSha: input.candidate, approvedTree: commit.value.tree, policy,
+    grant: { id: grant.id, digest: grant.digest }, access,
     expiresAt: new Date(input.now.getTime() + 3 * 24 * 60 * 60_000).toISOString(),
   } };
 }
@@ -188,6 +204,10 @@ export function preflightCarry(store: Store, input: { authority: number; to: str
   const policy = stricterOf(a.policy, effectivePolicy(store, a.repo));
   if (policy === null) return refuse("authority", "This Toolroll doesn't know the release's carry rules; update Toolroll first.");
   if (!policy.carry) return refuse("rules", "This project asks for every release commit.");
+  // Checks outside the sandbox (at the approval or now): only when the sealed setting and the current one both allow it.
+  if ((a.accessDigest !== "sandboxed" || store.projectCheckAccess(a.repo) !== "sandboxed") && policy.unsandboxedCarry !== true) {
+    return refuse("rules", "This project's checks run outside the sandbox, and carrying release approvals then wasn't on when this release was approved, or is off now.");
+  }
   if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(input.to)) return refuse("ancestry", `${input.to} isn't a full commit id.`);
   if (input.to === a.tipSha) return refuse("ancestry", `${input.to.slice(0, 7)} is already the release's commit.`);
   const gitDir = projectGitDir(a.repo);

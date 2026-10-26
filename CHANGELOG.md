@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Carry release approvals when checks aren't sandboxed.** A project whose
+  checks run outside the sandbox (like Toolroll's own release project) can
+  let later test-only commits carry a release approval:
+  `toolroll release unsandboxed-carry on --repo <path> --as <you> --token
+  <password>`. It is off by default; only a person turns it on, and it counts
+  only for releases approved while it is on. The approval sheet says plainly
+  that those later commits will run outside the sandbox without being shown
+  to you first. Every other carry rule stays: tests and docs only, the
+  400-line, 20-file and 800-line-churn limits, an identical production build,
+  and main's open nightly failures. Turning it off, or checks that reach
+  further than at the approval, stops carrying.
+
 - **`toolroll release` stops at the gate when the pull request's checks
   fail.** Before it files the release task or asks for your approval, it
   reads the required checks on the exact commit. One that failed or was

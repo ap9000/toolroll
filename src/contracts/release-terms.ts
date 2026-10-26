@@ -19,6 +19,9 @@ export const releasePolicySchema = versioned(1, {
   protectProject: z.boolean(),
   protectedPaths: z.array(z.string().min(1).max(400)).max(200),
   limits: z.strictObject({ lines: z.int().min(0).max(1_000_000), files: z.int().min(0).max(100_000), churn: z.int().min(0).max(1_000_000) }),
+  /** "Carry release approvals when checks aren't sandboxed" (a person's project setting, off by default). Absent (a
+   * policy sealed before it existed): off. */
+  unsandboxedCarry: z.boolean().optional(),
 });
 export type ReleasePolicy = z.infer<typeof releasePolicySchema>;
 
@@ -34,8 +37,9 @@ export const releaseTermsSchema = versioned(1, {
   approvedTree: sha,
   policy: releasePolicySchema,
   grant: z.strictObject({ id: z.int(), digest: z.string().min(1).max(128) }),
-  /** The check access the release check runs with: only the fence ever carries. */
-  access: z.literal("sandboxed"),
+  /** The check access the release check runs with at approval: the fence, or (only with unsandboxedCarry sealed in the
+   * policy) a wider one. Never wider later: a check that reaches further than this stops the release. */
+  access: z.enum(["sandboxed", "sign-ins", "unsandboxed"]),
   expiresAt: z.iso.datetime(),
 });
 export type ReleaseTerms = z.infer<typeof releaseTermsSchema>;

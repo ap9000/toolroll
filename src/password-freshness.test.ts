@@ -358,7 +358,7 @@ describe("where freshness may be honoured", () => {
     expect(hits["checkApproverPassword()"]).toEqual({ "src/server/guards.ts": 2 });
     // Passwordless: credential acts moved to authenticateCredential / credentialApprover / proveCredential (pinned below).
     expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/nightly-check.ts": 1, "src/operate.ts": 58, "src/pull-request-flow.ts": 1,
-      "src/release-cli.ts": 1, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 2, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 22,
+      "src/release-cli.ts": 2, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 2, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 22,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
@@ -487,7 +487,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/pull-request-flow.ts#<module>": 2,
     "src/pull-request-flow.ts#mergeAsPerson@22": 1,
     "src/release-cli.ts#<module>": 2,
-    "src/release-cli.ts#runAuthorityCommand@7": 1,
+    "src/release-cli.ts#runAuthorityCommand@7": 2,
     "src/scope.ts#approve@46>store.transact(_)@1": 1,
     "src/scope.ts#authenticateApprover@42": 1,
     "src/serve.ts#createDecisionServer@1": 3,

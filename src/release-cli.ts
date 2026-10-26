@@ -17,7 +17,7 @@ import { RELEASE_LIMITS, runRelease, type ReleaseAdapters, type ReleaseOutcome }
 import { processes, releaseAdapters } from "./release-adapters.js";
 import { releaseGate, type GateReleaseWorld } from "./release-gate.js";
 import { databasePath, openStore, revokeRelease, type Database } from "./store.js";
-import { carryRefusalWords, proveCarry, setAskEveryReleaseCommit } from "./release-carry.js";
+import { carryRefusalWords, proveCarry, setAskEveryReleaseCommit, setUnsandboxedCarry } from "./release-carry.js";
 import { authenticateApprover, machineActing, personProof } from "./scope.js";
 import { createNightlyCheckFlow } from "./nightly-check.js";
 import { parseSchedule } from "./flow-schedule.js";
@@ -53,6 +53,11 @@ toolroll release nightly --repo <path> --as <you> --token <password> [--schedule
 
 toolroll release ask-every-commit on|off --repo <path> [--as <you> --token <password>] — this project's releases ask
   for every later commit (on), or carry test-only commits again (off: your password, never the lead's token)
+
+toolroll release unsandboxed-carry on|off --repo <path> [--as <you> --token <password>] — carry release approvals
+  when this project's checks aren't sandboxed (on: your password, never the lead's token). With it on, later
+  test-only commits of a release run outside the sandbox without being shown to you first. Off by default; it counts
+  only for releases approved while it is on.
 
 Options
   --no-carry             every later commit of this release asks for approval again
@@ -130,8 +135,8 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
   }
   if (args.includes("--yes")) return refuse("usage", "--yes goes with --release-gate <id>; a release needs no confirmation beyond the owner's approval.", 2);
   if (positional[0] === "nightly" && positional.length === 1) return runNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, schedule: scheduleFlag, start: args.includes("--start") }, write, json, deps);
-  if (["carry", "revoke", "ask-every-commit"].includes(positional[0] ?? "") && positional.length === 2) {
-    return runAuthorityCommand(positional[0] as "carry" | "revoke" | "ask-every-commit", positional[1]!, { to, request, as, token, repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo) }, write, json, deps);
+  if (["carry", "revoke", "ask-every-commit", "unsandboxed-carry"].includes(positional[0] ?? "") && positional.length === 2) {
+    return runAuthorityCommand(positional[0] as "carry" | "revoke" | "ask-every-commit" | "unsandboxed-carry", positional[1]!, { to, request, as, token, repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo) }, write, json, deps);
   }
   if (positional.length !== 1) return refuse("usage", `Which branch? \`toolroll release <branch>\`.\n${RELEASE_HELP}`, 2);
   const branch = positional[0]!;
@@ -214,7 +219,7 @@ function runGateRelease(id: string, yes: boolean, write: (line: string) => void,
  * included; only the rules decide), stop carrying (only ever stricter), or change the project's carry setting
  * (turning carrying back on is a person's own command, never the lead's or a remote token's).
  */
-async function runAuthorityCommand(command: "carry" | "revoke" | "ask-every-commit", target: string, flags: { to: string | undefined; request: string | undefined; repo: string | undefined; as: string | undefined; token: string | undefined },
+async function runAuthorityCommand(command: "carry" | "revoke" | "ask-every-commit" | "unsandboxed-carry", target: string, flags: { to: string | undefined; request: string | undefined; repo: string | undefined; as: string | undefined; token: string | undefined },
   write: (line: string) => void, json: boolean, deps: ReleaseCliDeps): Promise<number> {
   const name = `release ${command}`;
   const answer = (ok: boolean, fields: Record<string, unknown>, words: string, code: number) => {
@@ -243,6 +248,26 @@ async function runAuthorityCommand(command: "carry" | "revoke" | "ask-every-comm
       setAskEveryReleaseCommit(store, flags.repo, target === "on", actor, now);
       const words = target === "on" ? "Every later release commit in this project asks for approval." : "Later test-only release commits ship under the release approval.";
       return answer(true, { repo: flags.repo, ask: target === "on" }, words, 0);
+    }
+    if (command === "unsandboxed-carry") {
+      if (target !== "on" && target !== "off") return answer(false, { reason: "usage", message: "unsandboxed-carry takes on or off." }, "unsandboxed-carry takes on or off.", 2);
+      if (flags.repo === undefined) return answer(false, { reason: "usage", message: "Name the project with --repo <path>." }, "Name the project with --repo <path>.", 2);
+      // Turning it on relaxes a release's rules: a person's own ceremony, as an approval needs, never a lead or remote
+      // token. Turning it off is only stricter.
+      let actor = "cli";
+      if (target === "on") {
+        const refused = (message: string) => answer(false, { reason: "person-only", message }, message, 1);
+        if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return refused("Only a person turns this on, never the lead or a remote token.");
+        if (flags.as === undefined || flags.token === undefined) return refused("Turning this on needs your password: add --as <you> --token <password>.");
+        const proved = authenticateApprover(store, flags.as, flags.token, flags.repo);
+        if (!proved.ok || !personProof(proved.method)) return refused("Only an approver of this project, proved as a person, turns this on.");
+        actor = flags.as;
+      }
+      setUnsandboxedCarry(store, flags.repo, target === "on", actor, now);
+      const words = target === "on"
+        ? "Release approvals approved from now on carry when this project's checks aren't sandboxed: later test-only commits will run outside the sandbox without being shown to you first."
+        : "Release approvals carry only when this project's checks are sandboxed.";
+      return answer(true, { repo: flags.repo, unsandboxedCarry: target === "on" }, words, 0);
     }
     const id = Number(target);
     if (!Number.isSafeInteger(id) || id < 1) return answer(false, { reason: "usage", message: `${target} isn't a release id.` }, `${target} isn't a release id.`, 2);

@@ -11,11 +11,12 @@ import { execFileSync } from "node:child_process";
 import { deflateSync } from "node:zlib";
 import { afterEach, describe, expect, test } from "vitest";
 import { releaseFixture, builtRun, countingRunner, RELEASE_NOW, VERSION, type ReleaseFixture } from "../release-fixture.js";
-import { proveCarry, preflightCarry, carriedTaskId, processesInside, type WriterScanIO } from "../../src/release-carry.js";
-import { addApprover, approve, liveReleaseOf, propose } from "../../src/scope.js";
+import { proveCarry, preflightCarry, carriedTaskId, processesInside, setUnsandboxedCarry, type WriterScanIO } from "../../src/release-carry.js";
+import { UNSANDBOXED_CARRY_ACTION, carriesUnsandboxed } from "../../src/release-authority.js";
+import { addApprover, approve, liveReleaseOf, propose, releaseTermsSentence } from "../../src/scope.js";
 import {
   carryReleaseApproval, finishReleaseOperation, releaseAuthority, releaseAuthorityOfTask, releaseOperations, reserveRelease, revokeRelease, runReleaseOperation,
-  takeReleaseLease,
+  takeReleaseLease, type Store,
 } from "../../src/store.js";
 import { scopeApprovedForDispatch } from "../../src/dispatch.js";
 import { deploymentGate } from "../../src/deploy-gate.js";
@@ -561,5 +562,76 @@ describe("security review: the writer scan refuses whatever it can't show", () =
     expect(mac({ describe: pids => new Map(pids.map(pid => [pid, { uid: 501, zombie: false, startedMs: SINCE.ms - 500 }])) })).toBeNull();
     expect(mac({ describe: pids => new Map(pids.map(pid => [pid, { uid: 501, zombie: false, startedMs: null }])) })).toBeNull();
     expect(mac({ describe: () => null })).toBeNull();
+  });
+});
+
+describe("option A: carry release approvals when checks aren't sandboxed", () => {
+  const unsandboxed = (setting: boolean) => (store: Store, repo: string) => {
+    store.setProjectCheckAccess(repo, "unsandboxed", "alex", RELEASE_NOW, { may: "widen" });
+    if (setting) setUnsandboxedCarry(store, repo, true, "alex", RELEASE_NOW);
+  };
+
+  test("an unsandboxed project without the setting has no carrying release, and a carry is refused", () => {
+    const f = open();
+    f.store.setProjectCheckAccess(f.repo, "unsandboxed", "alex", RELEASE_NOW, { may: "widen" });
+    // The approval sheet's terms can't be made: the release asks for every commit, as before.
+    expect(releaseTermsFor(f.store, { repo: f.repo, version: VERSION, branch: "b", pr: 240, candidate: f.approved, now: LATER })).toMatchObject({ ok: false, why: expect.stringContaining("outside the sandbox") });
+    // A release approved while sandboxed doesn't carry once its checks leave the sandbox.
+    expect(preflightCarry(f.store, { authority: f.authority().id, to: f.commit(testOnly), now: LATER })).toMatchObject({ ok: false });
+  });
+
+  test("with the setting on at the approval, a test-only commit carries; the sheet says it runs outside the sandbox unseen", async () => {
+    const f = open({ beforeApproval: unsandboxed(true) });
+    expect(f.authority()).toMatchObject({ accessDigest: "unsandboxed", policy: expect.objectContaining({ unsandboxedCarry: true }) });
+    const terms = f.store.getScope(f.taskId)!.releaseTerms!;
+    expect(terms.access).toBe("unsandboxed");
+    expect(releaseTermsSentence(terms)).toContain("will run outside the sandbox without being shown to you first");
+    const to = f.commit(testOnly);
+    const result = await proveCarry(f.store, { authority: f.authority().id, to, now: LATER });
+    if (!result.ok) throw new Error(result.message);
+    expect(liveReleaseOf(f.store, result.taskId, "deploy", LATER)).toMatchObject({ ok: true });
+    // Turned off later: the carried commit stops standing, and nothing more carries.
+    setUnsandboxedCarry(f.store, f.repo, false, "cli", LATER);
+    expect(liveReleaseOf(f.store, result.taskId, "deploy", LATER)).toMatchObject({ ok: false, why: expect.stringContaining("aren't sandboxed is off") });
+    expect(preflightCarry(f.store, { authority: f.authority().id, to: f.commit({ "src/index.test.ts": "test('answer', () => {});\ntest('third', () => {});\n" }), now: LATER })).toMatchObject({ ok: false });
+  }, 120_000);
+
+  test("the setting turned on after the approval doesn't carry for that generation", () => {
+    // Approved sandboxed with the setting off; then the checks leave the sandbox and the setting is turned on.
+    const f = open();
+    expect(f.authority().policy).toMatchObject({ unsandboxedCarry: false });
+    f.store.setProjectCheckAccess(f.repo, "unsandboxed", "alex", RELEASE_NOW, { may: "widen" });
+    setUnsandboxedCarry(f.store, f.repo, true, "alex", LATER);
+    expect(preflightCarry(f.store, { authority: f.authority().id, to: f.commit(testOnly), now: LATER })).toMatchObject({ ok: false });
+    expect(liveReleaseOf(f.store, f.taskId, "deploy", LATER)).toMatchObject({ ok: false });
+  });
+
+  test("checks that reach further than at the approval stop the release, even with the setting on", () => {
+    const f = open({ beforeApproval: (store, repo) => { store.setProjectCheckAccess(repo, "sign-ins", "alex", RELEASE_NOW, { may: "widen" }); setUnsandboxedCarry(store, repo, true, "alex", RELEASE_NOW); } });
+    expect(f.authority().accessDigest).toBe("sign-ins");
+    expect(liveReleaseOf(f.store, f.taskId, "deploy", LATER)).toMatchObject({ ok: true });
+    f.store.setProjectCheckAccess(f.repo, "unsandboxed", "alex", LATER, { may: "widen" });
+    expect(liveReleaseOf(f.store, f.taskId, "deploy", LATER)).toMatchObject({ ok: false, why: expect.stringContaining("reach further") });
+  });
+
+  test("a machine can't turn it on: the lead's or a remote token, no password, a wrong one or a non-approver refuse; off needs nothing", async () => {
+    const f = open();
+    const lines: string[] = [];
+    const run = (args: string[]) => runReleaseCommand(["unsandboxed-carry", ...args, "--repo", f.repo, "--json"], line => lines.push(line), { database: f.databaseFile, now: () => LATER });
+    for (const variable of ["TOOLROLL_LEAD_TOKEN", "TOOLROLL_REMOTE_TOKEN"]) {
+      const saved = process.env[variable];
+      process.env[variable] = "synthetic";
+      try { expect(await run(["on", "--as", "alex", "--token", f.password])).toBe(1); }
+      finally { if (saved === undefined) delete process.env[variable]; else process.env[variable] = saved; }
+    }
+    expect(await run(["on"])).toBe(1);
+    expect(await run(["on", "--as", "alex", "--token", "wrong-password"])).toBe(1);
+    expect(await run(["on", "--as", "nobody", "--token", f.password])).toBe(1);
+    expect(carriesUnsandboxed(f.store, f.repo)).toBe(false);
+    expect(await run(["on", "--as", "alex", "--token", f.password])).toBe(0);
+    const row = () => f.store.handle.prepare("SELECT outcome, actor FROM action_ledger WHERE action = ? ORDER BY id DESC LIMIT 1").get(UNSANDBOXED_CARRY_ACTION);
+    expect(row()).toMatchObject({ outcome: "on", actor: "alex" });
+    expect(await run(["off"])).toBe(0);
+    expect(row()).toMatchObject({ outcome: "off" });
   });
 });

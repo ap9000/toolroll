@@ -1786,7 +1786,8 @@ export function describeScope(scope: Scope, readiness: ReadinessLookup = NO_READ
 /** The approval sheet's release lines (release-once.md): the release in one sentence, then what asks again. */
 export function releaseTermsSentence(terms: ReleaseTerms): string {
   if (!terms.policy.carry) return `Release ${terms.packageVersion} from pull request #${terms.pr} at ${terms.approvedSha.slice(0, 7)}. Every later commit asks for your approval again.`;
-  return `Release ${terms.packageVersion} from pull request #${terms.pr} at ${terms.approvedSha.slice(0, 7)}. Later commits on this pull request that only change tests, docs or the changelog ship without asking you again, until it merges or for 3 days. You'll see each one in the release summary.`;
+  const outside = terms.access === "sandboxed" ? "" : " This project's checks don't run in the sandbox: those later test-only commits will run outside the sandbox without being shown to you first.";
+  return `Release ${terms.packageVersion} from pull request #${terms.pr} at ${terms.approvedSha.slice(0, 7)}. Later commits on this pull request that only change tests, docs or the changelog ship without asking you again, until it merges or for 3 days. You'll see each one in the release summary.${outside}`;
 }
 /** What asks again, in full: the terms behind the sentence. */
 export function releaseAsksAgainWords(terms: ReleaseTerms): string[] {
@@ -1797,7 +1798,7 @@ export function releaseAsksAgainWords(terms: ReleaseTerms): string[] {
     `when it deletes, renames or changes the mode of a file, adds a binary, a symlink or a submodule; when it changes the production build;`,
     `when more than ${p.limits.lines} lines or ${p.limits.files} files change after this approval, or ${p.limits.churn} lines of churn;`,
     ...(p.protectProject ? ["when it changes anything: this project is protected;"] : p.protectedPaths.length === 0 ? [] : [`when it changes a protected path: ${p.protectedPaths.join(", ")};`]),
-    `and always once the deploy starts. Repository ${terms.repo}, branch ${terms.branch} into ${terms.base}, check grant ${terms.grant.id}, checks in the sandbox, until ${terms.expiresAt}.`,
+    `and always once the deploy starts. Repository ${terms.repo}, branch ${terms.branch} into ${terms.base}, check grant ${terms.grant.id}, ${terms.access === "sandboxed" ? "checks in the sandbox" : `checks outside the sandbox (${terms.access}), carried because the project allows it`}, until ${terms.expiresAt}.`,
   ];
 }
 function releaseTermsWords(terms: ReleaseTerms | null): string[] {
@@ -1818,7 +1819,7 @@ function describeApproval(approval: Approval): string {
 export { personProof } from "./person-proof.js";
 import { personProof } from "./person-proof.js";
 import { releaseTermsDigest, type ReleaseTerms } from "./contracts/release-terms.js";
-import { newestReleaseGeneration, releaseAuthorityOfTask, releaseSealProblem, type ReleaseAuthority, type ReleaseCarry } from "./release-authority.js";
+import { CHECK_ACCESS_WIDTH, carriesUnsandboxed, newestReleaseGeneration, releaseAuthorityOfTask, releaseSealProblem, type ReleaseAuthority, type ReleaseCarry } from "./release-authority.js";
 
 /** Whether the command running now is a machine's: the lead (its token) or a remote API run. Trusted context only. */
 export const machineActing = (): boolean => currentActor()?.lead === true || activeRemote() !== null;
@@ -1941,7 +1942,14 @@ export function liveReleaseOf(store: Store, taskId: string, action: ReleaseActio
   } else if (scope.candidate !== a.approvedSha) return refuse("this task isn't the approved commit");
   const grant = store.liveVerifyCommand(a.repo);
   if (grant === null || grant.id !== a.verifyCommand || grant.digest !== a.verifyDigest) return refuse("the release check command changed since the approval");
-  if (a.accessDigest !== "sandboxed" || store.projectCheckAccess(a.repo) !== "sandboxed") return refuse("the project's checks no longer run in the sandbox");
+  // The checks reach no further than at the approval. Wider than the sandbox, a carried commit stands only while both
+  // the sealed and the current "Carry release approvals when checks aren't sandboxed" allow it (the stricter of the two).
+  const access = store.projectCheckAccess(a.repo);
+  const sealedWidth = CHECK_ACCESS_WIDTH[a.accessDigest], nowWidth = CHECK_ACCESS_WIDTH[access];
+  if (sealedWidth === undefined || nowWidth === undefined || nowWidth > sealedWidth) return refuse(a.accessDigest === "sandboxed" ? "the project's checks no longer run in the sandbox" : "the project's checks reach further than when the release was approved");
+  if (carry !== null && (a.accessDigest !== "sandboxed" || access !== "sandboxed") && (a.policy?.unsandboxedCarry !== true || !carriesUnsandboxed(store, a.repo))) {
+    return refuse("carrying release approvals when checks aren't sandboxed is off");
+  }
   if (a.policy === null) return refuse("this Toolroll doesn't know the release's carry rules; update Toolroll first");
   if (action === "deploy" || action === "merge") {
     const debt = mainDebtProblem(store, a.repo, taskId);
