@@ -341,7 +341,7 @@ describe("the complete terms renderer (contract)", () => {
       acceptance: [{ id: "c1", statement: "The statement words", how: null, evidence: ["check"] }], now: NOW });
     const scope = { ...store.getScope("full")!, releaseTerms: terms() };
     const text = approvalTermsOf(store, scope, { profile: () => "the permission words" }).map(line => `${line.label}: ${line.value}`).join("\n");
-    for (const value of ["Every field", "project (", "alex", "The goal words", "The exclusion words", "src/one.ts", "c1: The statement words", "claude · sonnet", "the permission words", "Checks:", "Check access: sandboxed", "$4.50", candidate,
+    for (const value of ["Every field", "project (", "alex", "The goal words", "The exclusion words", "src/one.ts", '"c1": "The statement words"', "claude · sonnet", "the permission words", "Checks:", "Check access: sandboxed", "$4.50", candidate,
       repo, "9.8.7", "release-x", "#4321", "Base: main", "a".repeat(40), "b".repeat(40), "Carry later commits: yes", "Protected: the whole project: no", "src/policy.ts, docs/secret.md", "lines: 111", "files: 22", "churn: 333", "Carry when checks aren't sandboxed: yes", "77", "grant-digest-xyz", "Release check access: sandboxed", "2026-10-28T12:00:00.000Z"]) {
       expect(text, value).toContain(value);
     }
@@ -361,25 +361,55 @@ describe("the complete terms renderer (contract)", () => {
       qualityMode: "standard" as QualityMode, candidate: filed.candidate ?? null, releaseTerms: filed.releaseTerms! }, profile, route: route! };
     type Inputs = typeof inputs;
     const digest = (one: Inputs) => digestOf(one.scope, one.profile, one.route);
-    const text = (one: Inputs) => termsText(approvalTermsOf(store, { ...filed, ...one.scope, profile: one.profile, proposedRouteJson: JSON.stringify(one.route) }, { profile: permissionPlainWords }));
+    // Every input key taken from `one`, an absent one included (as undefined), never left over from the filed scope.
+    const text = (one: Inputs) => termsText(approvalTermsOf(store, { ...filed, ...Object.fromEntries(Object.keys(inputs.scope).map(key => [key, (one.scope as Record<string, unknown>)[key]])),
+      profile: one.profile, proposedRouteJson: JSON.stringify(one.route) } as typeof filed, { profile: permissionPlainWords }));
     // Each leaf of every input, changed in turn: a string gains a letter, a number one, a flag flips, a list gains an entry.
     const variants: { path: string; changed: Inputs }[] = [];
-    const walk = (value: unknown, path: (string | number)[]): void => {
-      const set = (next: unknown) => {
-        const changed = structuredClone(inputs) as Record<string | number, unknown>;
+    const SEPARATORS = [": ", ", ", "; ", " (", ") ", "\n", '"', " · "];
+    /** A copy of the inputs with each [path, value] set (undefined deletes the key). */
+    const withSet = (label: string, changes: [(string | number)[], unknown][]) => {
+      const changed = structuredClone(inputs) as Record<string | number, unknown>;
+      for (const [path, next] of changes) {
         let at = changed;
         for (const key of path.slice(0, -1)) at = at[key] as Record<string | number, unknown>;
-        at[path.at(-1)!] = next;
-        variants.push({ path: path.join("."), changed: changed as unknown as Inputs });
-      };
-      if (Array.isArray(value)) { set([...value, value.every(one => typeof one === "string") ? "extra" : structuredClone(value[0])]); value.forEach((one, index) => walk(one, [...path, index])); }
+        if (next === undefined) delete at[path.at(-1)!]; else at[path.at(-1)!] = next;
+      }
+      variants.push({ path: label, changed: changed as unknown as Inputs });
+    };
+    const strings: { path: (string | number)[]; value: string }[] = [];
+    const walk = (value: unknown, path: (string | number)[]): void => {
+      const set = (next: unknown, label = path.join(".")) => withSet(label, [[path, next]]);
+      // Every leaf (and list) also null, absent and empty, so each shape is told apart.
+      // (A list entry is never absent: JSON has no holes.)
+      if (path.length > 1) { set(null, `${path.join(".")}=null`); if (typeof path.at(-1) === "string") set(undefined, `${path.join(".")}=absent`); }
+      if (Array.isArray(value)) {
+        set([], `${path.join(".")}=[]`);
+        set([...value, value.every(one => typeof one === "string") ? "extra" : structuredClone(value[0])]);
+        if (value.length >= 2 && value.every(one => typeof one === "string")) set([`${value[0]}, ${value[1]}`, ...value.slice(2)], `${path.join(".")}=joined`);
+        value.forEach((one, index) => walk(one, [...path, index]));
+      }
       else if (value !== null && typeof value === "object") for (const [key, one] of Object.entries(value)) walk(one, [...path, key]);
-      else if (typeof value === "string") set(`${value}x`);
+      else if (typeof value === "string") {
+        strings.push({ path, value });
+        set(`${value}x`);
+        set("", `${path.join(".")}=""`);
+        for (const separator of SEPARATORS) set(`${value}${separator}x`, `${path.join(".")}+${JSON.stringify(separator)}`);
+      }
       else if (typeof value === "number") set(value + 1);
       else if (typeof value === "boolean") set(!value);
       else set("set");
     };
     walk(inputs, []);
+    // Field boundaries: text moved across the boundary between each two neighbouring strings, with every separator.
+    for (const [index, a] of strings.entries()) {
+      const b = strings[index + 1];
+      if (b === undefined) continue;
+      for (const separator of SEPARATORS) {
+        withSet(`${a.path.join(".")}|${b.path.join(".")} left${JSON.stringify(separator)}`, [[a.path, `${a.value}${separator}moved`], [b.path, b.value]]);
+        withSet(`${a.path.join(".")}|${b.path.join(".")} right${JSON.stringify(separator)}`, [[a.path, a.value], [b.path, `moved${separator}${b.value}`]]);
+      }
+    }
     variants.push({ path: "scope.qualityMode=strict", changed: { ...inputs, scope: { ...inputs.scope, qualityMode: "strict" } } });
     // Values that could read alike: a comma inside one entry against two entries, a line break against a space, the
     // literal word "none" against nothing, a semicolon or parenthesis inside a criterion, a number-like string.
@@ -399,6 +429,16 @@ describe("the complete terms renderer (contract)", () => {
     tricky("readDeny=comma", one => { (one.profile as { readDeny: string[] }).readDeny = ["~/a, ~/b"]; });
     tricky("readDeny=two", one => { (one.profile as { readDeny: string[] }).readDeny = ["~/a", "~/b"]; });
     tricky("candidate=number", one => { one.scope.candidate = "12"; });
+    // The round-2 review's own pairs.
+    tricky("criterion id c1, statement Ready: ship", one => { one.scope.acceptance = [{ ...one.scope.acceptance[0]!, id: "c1", statement: "Ready: ship" }]; });
+    tricky("criterion id c1: Ready, statement ship", one => { one.scope.acceptance = [{ ...one.scope.acceptance[0]!, id: "c1: Ready", statement: "ship" }]; });
+    tricky("protect project, paths a", one => { one.scope.releaseTerms = { ...one.scope.releaseTerms, policy: { ...one.scope.releaseTerms.policy, protectProject: true, protectedPaths: ["src/a.ts"] } }; });
+    tricky("protect project, paths b", one => { one.scope.releaseTerms = { ...one.scope.releaseTerms, policy: { ...one.scope.releaseTerms.policy, protectProject: true, protectedPaths: ["src/b.ts"] } }; });
+    tricky("outOfScope empty", one => { one.scope.outOfScope = ""; });
+    tricky("unsandboxedCarry absent", one => { const { unsandboxedCarry: _gone, ...policy } = one.scope.releaseTerms.policy; one.scope.releaseTerms = { ...one.scope.releaseTerms, policy }; });
+    tricky("unsandboxedCarry false", one => { one.scope.releaseTerms = { ...one.scope.releaseTerms, policy: { ...one.scope.releaseTerms.policy, unsandboxedCarry: false } }; });
+    tricky("budget 9007199254740990", one => { one.scope.budgetMicrousd = 9_007_199_254_740_990; });
+    tricky("budget 9007199254740991", one => { one.scope.budgetMicrousd = 9_007_199_254_740_991; });
     // Lookalike letters from other scripts and direction marks: never plain, so never alike.
     tricky("outOfScope=cyrillic none", one => { one.scope.outOfScope = "n\u043ene"; });
     tricky("goal=latin", one => { one.scope.goal = "Pay the invoice"; });
@@ -407,8 +447,13 @@ describe("the complete terms renderer (contract)", () => {
     const seen = new Map<string, { digest: string; path: string }>([[text(inputs), { digest: digest(inputs), path: "original" }]]);
     const before = { digest: digest(inputs), text: text(inputs) };
     let signed = 0;
+    let skipped = 0;
     for (const { path, changed } of variants) {
-      const signedAs = digest(changed), shown = text(changed);
+      // A shape the signer itself can't take (a null goal, say) can't be signed, so it can't be shown either.
+      let signedAs: string, shown: string;
+      // Release terms are read through their schema before anything signs them: a shape it refuses is never signed.
+      if (changed.scope.releaseTerms !== undefined && changed.scope.releaseTerms !== null && !releaseTermsSchema.safeParse(changed.scope.releaseTerms).success) { skipped += 1; continue; }
+      try { signedAs = digest(changed); shown = text(changed); } catch { skipped += 1; continue; }
       if (signedAs !== before.digest) signed += 1;
       // Two different signed inputs never read the same.
       const other = seen.get(shown);
@@ -418,7 +463,14 @@ describe("the complete terms renderer (contract)", () => {
     // The profile's read denies and the evidence each criterion needs are among them (the review's two examples).
     expect(variants.some(one => one.path.startsWith("profile.readDeny"))).toBe(true);
     expect(variants.some(one => one.path.includes("acceptance.0.evidence"))).toBe(true);
-    expect(signed).toBeGreaterThan(40);
+    // The round-2 review's pairs, each told apart by name.
+    const named = (label: string) => text(variants.find(one => one.path === label)!.changed);
+    for (const [a, b] of [["criterion id c1, statement Ready: ship", "criterion id c1: Ready, statement ship"], ["protect project, paths a", "protect project, paths b"],
+      ["outOfScope empty", "outOfScope=null"], ["unsandboxedCarry absent", "unsandboxedCarry false"], ["budget 9007199254740990", "budget 9007199254740991"]] as const) {
+      expect(named(a), `${a} / ${b}`).not.toBe(named(b));
+    }
+    expect(signed).toBeGreaterThan(400);
+    expect(skipped).toBeLessThan(variants.length / 4);
     // Unnamed paths are no limit, said so.
     expect(text({ ...inputs, scope: { ...inputs.scope, touches: [] } })).toContain("Paths it may touch: any file in the project");
     // Ordinary values stay plain; only an ambiguous one is quoted.

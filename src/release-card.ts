@@ -33,26 +33,32 @@ import type { Store } from "./store.js";
 export type TermLine = { key: string; label: string; value: string };
 
 const NONE = "none";
-// Exact: a budget that isn't whole cents shows every digit it was signed with.
-const money = (micro: number): string => `$${(micro / 1_000_000).toFixed(micro % 10_000 === 0 ? 2 : 6)}`;
+/** A budget in dollars from integer micro-dollars, in integer arithmetic: cents when it is whole cents, else every digit. */
+const money = (micro: number): string => {
+  const exact = BigInt(micro), whole = exact / 1_000_000n, rest = (exact < 0n ? -exact : exact) % 1_000_000n;
+  const fraction = rest.toString().padStart(6, "0");
+  return `${exact < 0n && whole === 0n ? "-" : ""}$${whole}.${rest % 10_000n === 0n ? fraction.slice(0, 2) : fraction}`;
+};
 /** Words the card itself says in place of a value: a signed string spelled the same is quoted, never mistaken for one. */
-const RESERVED = new Set([NONE, "yes", "no", "any file in the project", "the whole project", "unreadable"]);
+const RESERVED = new Set([NONE, "yes", "no", "null", "empty", "not set", "any file in the project", "the whole project", "unreadable"]);
 /** Text that reads the same plain as quoted: ASCII letters, digits and ordinary punctuation only (no lookalike letters
  * from other scripts, no direction marks), never a comma, semicolon, parenthesis, quote, backslash, line break or
  * control character, nor a trailing space. */
 const PLAIN = /^[A-Za-z0-9~/.#$@][A-Za-z0-9 ._/@~+#=!?&%$*:<>|^-]*$/;
 /** JSON-quoted with everything outside printable ASCII \u-escaped (JSON.stringify leaves non-ASCII as it is). */
 const quoted = (value: string): string => JSON.stringify(value).replace(/[^\x20-\x7e]/g, one => `\\u${one.charCodeAt(0).toString(16).padStart(4, "0")}`);
-/** One signed string, unambiguous: as it is when plain, else quoted; a number-like string or one of the card's own
- * words is quoted too. */
+/** One signed string, unambiguous: as it is when plain, else quoted; an empty, number-like or colon-bearing string, or
+ * one of the card's own words, is quoted too. */
 const text = (value: string): string =>
   PLAIN.test(value) && !value.endsWith(" ") && !RESERVED.has(value.toLowerCase()) && !/^-?\d+(\.\d+)?$/.test(value) ? value : quoted(value);
-/** One signed value as the card says it: "none" only for one truly absent or empty. */
+/** One signed value as the card says it, every shape distinct: "none" for null, "not set" for absent, "empty" for an
+ * empty list, `""` for an empty string; a list's entries each said the same way, so a comma never joins two into one. */
 const said = (value: unknown): string => {
-  if (value === null || value === undefined || value === "") return NONE;
+  if (value === undefined) return "not set";
+  if (value === null) return NONE;
   if (typeof value === "boolean") return value ? "yes" : "no";
   if (typeof value === "number") return String(value);
-  if (Array.isArray(value)) return value.length === 0 ? NONE : value.map(one => typeof one === "string" ? text(one) : said(one)).join(", ");
+  if (Array.isArray(value)) return value.length === 0 ? "empty" : value.map(one => typeof one === "string" ? text(one) : one === null ? "null" : said(one)).join(", ");
   return text(String(value));
 };
 
@@ -71,7 +77,7 @@ function leavesOf(value: unknown, path: string): { path: string; value: string }
     : value.flatMap((one, index) => leavesOf(one, `${path}.${index}`));
   if (value !== null && typeof value === "object") {
     const keys = Object.keys(value).sort();
-    return keys.length === 0 ? [{ path, value: NONE }] : keys.flatMap(key => leavesOf((value as Record<string, unknown>)[key], `${path}.${key}`));
+    return keys.length === 0 ? [{ path, value: "no settings" }] : keys.flatMap(key => leavesOf((value as Record<string, unknown>)[key], `${path}.${key}`));
   }
   return [{ path, value: said(value) }];
 }
@@ -108,10 +114,12 @@ export function approvalTermsOf(store: Store, scope: Scope, words: { profile: (p
     project: repo === null ? NONE : `${text(projectName(repo))} (${text(repo)})`,
     filedBy: filer === null ? NONE : filer.name === null ? filer.kind : `${text(filer.name)}${filer.kind === "person" ? "" : ` (${filer.kind})`}`,
     goal: said(scope.goal),
+    // null (nothing excluded) and an empty exclusion are signed apart, and read apart.
     outOfScope: said(scope.outOfScope),
     // No paths named is no limit: the work may touch any file in the project.
     touches: scope.touches.length === 0 ? "any file in the project" : said(scope.touches),
-    acceptance: scope.acceptance.length === 0 ? NONE : scope.acceptance.map(one => `${text(one.id)}: ${text(one.statement)} (evidence: ${said(one.evidence)})`).join("; "),
+    // Each criterion's fields quoted, always: a colon or a parenthesis in one never moves the boundary to the next.
+    acceptance: scope.acceptance.length === 0 ? NONE : scope.acceptance.map(one => `${quoted(one.id)}: ${quoted(one.statement)} (evidence: ${said(one.evidence)})`).join("; "),
     qualityMode: scope.qualityMode === "strict" ? "strict" : "standard",
     agents: profile === null ? NONE : `${profile.provider} · ${text(profile.model)}`,
     permission: said(words.profile(profile)),
@@ -133,9 +141,11 @@ export function approvalTermsOf(store: Store, scope: Scope, words: { profile: (p
   const terms = scope.releaseTerms ?? null;
   for (const path of schemaLeaves(releaseTermsSchema)) {
     const label = RELEASE_TERM_LABELS[path] ?? path;
-    const value = terms === null ? NONE : path === "pr" ? `#${terms.pr}` : path === "policy.protectedPaths" && terms.policy.protectProject ? "the whole project"
-      // Absent (sealed before the setting existed) is off, never "none".
-      : path === "policy.unsandboxedCarry" ? said(terms.policy.unsandboxedCarry === true) : said(valueAt(terms, path));
+    const value = terms === null ? NONE : path === "pr" ? `#${terms.pr}`
+      // The whole project is protected, and the signed list is said too (it is part of what was signed).
+      : path === "policy.protectedPaths" && terms.policy.protectProject ? `the whole project (listed: ${said(terms.policy.protectedPaths)})`
+      // Absent (sealed before the setting existed) is off, said apart from a signed "no".
+      : path === "policy.unsandboxedCarry" && terms.policy.unsandboxedCarry === undefined ? "no (not set when sealed)" : said(valueAt(terms, path));
     lines.push({ key: `release.${path}`, label, value });
   }
   return lines;
