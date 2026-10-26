@@ -75,6 +75,9 @@ test("a clock never runs backwards from a start in the future", () => {
 });
 
 test("a swapped-in clock ticks at once; changes elsewhere on the page and the clocks' own writes do not rescan", async () => {
+  // Only the date is held still: a loaded machine can pass a second before the first tick, and "2:06" is not the point.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-10-22T12:00:00.000Z"));
   document.body.innerHTML = `<div id="board-region"></div><p id="elsewhere"></p>`;
   const scans = vi.spyOn(region(), "querySelectorAll");
   run(boardTickScript());
