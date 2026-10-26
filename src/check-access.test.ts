@@ -9,6 +9,7 @@ import { runOperate, EXIT } from "./operate.js";
 import { checkAccessHere, checkAccessOf, checkNetworkOf, narrowestAccess, narrowestNetwork, signInHostsMissing, signInsAvailable, signInsUnavailableWords, widerThan } from "./check-access.js";
 import { resolveScopeProfile } from "./agentconfig.js";
 import { checkLaunchOf } from "./builder.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 import { checkoutLaunchOf, checkoutRunner, keychainSignIns, ranAtLine, readKeychainSecret, signInsLaunch, widestRan } from "./invoke.js";
 
 const REPO = "/repo/main";
@@ -288,7 +289,9 @@ describe("sign-ins: on wherever the OS fence is (0.9.70, sandbox parity C10: the
     expect(keychainSignIns("darwin")).toEqual({});
   });
 
-  test.skipIf(process.platform !== "darwin")("macOS: a synthetic sign-in in a throwaway keychain is read by Toolroll's own reader", async () => {
+  // Inside the release check's fence (INSIDE_FENCE) a check is denied securityd outright (SEATBELT_NO_KEYCHAIN), so
+  // Toolroll's reader can't reach even a throwaway keychain there; CI and a developer's shell run it unfenced.
+  test.skipIf(process.platform !== "darwin" || INSIDE_FENCE)("macOS: a synthetic sign-in in a throwaway keychain is read by Toolroll's own reader", async () => {
     const { spawnSync } = await import("node:child_process");
     const keychain = join(dir, "signins.keychain-db");
     const security = (...args: string[]) => spawnSync("/usr/bin/security", args, { encoding: "utf8", timeout: 30_000 });
