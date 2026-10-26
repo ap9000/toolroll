@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { reportFromOutput } from "./check-report.js";
-import { buildReport, parseHandshake, reportLine } from "../scripts/release-check.mjs";
+import { buildReport, checkDeadline, failureExcerpt, parseHandshake, reportLine } from "../scripts/release-check.mjs";
 
 const ROOT = resolve(import.meta.dirname, "..");
 const script = join(ROOT, "scripts", "release-check.mjs");
@@ -122,9 +122,72 @@ describe("the release check's report (phase A)", () => {
     expect(read.report.journeys.map(one => one.script)).toEqual(["app"]);
     expect(ran.stdout).toContain('journey runner argv ["scripts/app-e2e.mjs","--skip-build","--journeys","scripted","--at-once","1","--run-groups","beta"');
   });
+
+  // Release check 3249: a part kept running into the plane's 60-minute limit, so no log and no report was ever printed,
+  // and the failed flows part's log never reached the stored output.
+  test("a release run stops whatever still runs at its own limit, before the plane's, and still prints every log and its report", () => {
+    const { at, base } = fixture();
+    writeFileSync(join(at, "scripts", "e2e-parallel.mjs"), [
+      "import { result } from './check-results.mjs';",
+      "const script = process.argv[2].includes('app') ? 'app' : 'flows';",
+      "if (script === 'flows') { console.log('flows: waiting for a card that never comes'); setInterval(() => {}, 1000); }",
+      "else {",
+      "  result({ kind: 'journey-inventory', script, journeys: 'scripted', groups: ['beta'] });",
+      "  console.log('- ✅ Opens the board [scripted] — 1 s');",
+      "  console.log('- ❌ Saves a card [scripted] — 31.9 s');",
+      "  console.log('  - apiRequestContext.post: Timeout 30000ms exceeded.');",
+      "  result({ kind: 'journey-end', script, journeys: 'scripted' });",
+      "  process.exitCode = 1;",
+      "}",
+    ].join("\n"));
+    const nonce = randomBytes(32).toString("hex");
+    const started = Date.now();
+    const ran = spawnSync(process.execPath, [script, "--base", base], { cwd: at, encoding: "utf8", env: cleanEnv(), timeout: 120_000, killSignal: "SIGKILL",
+      input: JSON.stringify({ nonce, mode: "full", plan: null, watch: [], limitMs: 40_000 }), maxBuffer: 64 * 1024 * 1024 });
+    // Ended by itself, inside the plane's limit, with its report last.
+    expect(ran.signal).toBeNull();
+    expect(Date.now() - started).toBeLessThan(40_000);
+    expect(ran.status).toBe(1);
+    const read = reportFromOutput(ran.stdout, nonce);
+    expect(read.ok, read.ok ? "" : read.problem).toBe(true);
+    if (!read.ok) return;
+    expect(read.report.parts.find(one => one.part === "flows")).toMatchObject({ ran: true, timedOut: true });
+    expect(read.report.parts.find(one => one.part === "app")).toMatchObject({ ran: true, code: 1, timedOut: false });
+    expect(ran.stderr).toContain("Release check stopped: the check reached its own limit");
+    expect(ran.stdout).toContain("flows was stopped: the check reached its own limit");
+    // The failed part's log, as it failed, on stderr: what failed and why, not what passed.
+    expect(ran.stderr).toContain("== app failed (exit 1)");
+    expect(ran.stderr).toContain("apiRequestContext.post: Timeout 30000ms exceeded.");
+    expect(ran.stderr).not.toContain("Opens the board");
+  }, 150_000);
 });
 
 describe("the handshake and the report line", () => {
+  test("the plane's limit rides on the handshake; the check stops a tenth before it (three minutes at least, half at most)", () => {
+    const nonce = "c".repeat(64);
+    expect(parseHandshake(JSON.stringify({ nonce, mode: "full", plan: null, watch: [], limitMs: 3_600_000 }))?.limitMs).toBe(3_600_000);
+    for (const bad of [0, -5, 1.5, "60", null]) expect(parseHandshake(JSON.stringify({ nonce, mode: "full", plan: null, watch: [], limitMs: bad }))?.limitMs, String(bad)).toBeNull();
+    expect(checkDeadline(0, 3_600_000)).toBe(3_600_000 - 360_000);
+    expect(checkDeadline(0, 20 * 60_000)).toBe(17 * 60_000);
+    expect(checkDeadline(0, 40_000)).toBe(20_000);
+    // An older plane says nothing: the approved release check's own 60 minutes.
+    expect(checkDeadline(1000, null)).toBe(1000 + 54 * 60_000);
+  });
+
+  test("a failed part's excerpt keeps what failed and why, bounded, keeping the end", () => {
+    const log = ["\x1b[32m✓\x1b[39m src/a.test.ts", " FAIL  src/b.test.ts > breaks", "- ✅ Opens [scripted] — 1 s", "- ❌ Saves [scripted] — 92 s",
+      "  - Timed out after 90 s waiting for the worker", "  - skipped: Saves", "Model calls: 1 scripted"].join("\n");
+    const excerpt = failureExcerpt("flows", 1, log);
+    expect(excerpt.split("\n")).toEqual(["== flows failed (exit 1); what its log says failed:", " FAIL  src/b.test.ts > breaks", "- ❌ Saves [scripted] — 92 s", "  - Timed out after 90 s waiting for the worker"]);
+    // Nothing that says what failed: the log's end. Over the bound: the last lines that fit.
+    expect(failureExcerpt("unit", 2, "one\ntwo\n")).toBe("== unit failed (exit 2); the end of its log:\none\ntwo");
+    const long = Array.from({ length: 1000 }, (_, i) => `  - Timed out after 90 s waiting for step ${i}`).join("\n");
+    const bounded = failureExcerpt("app", 1, long, 2048);
+    expect(Buffer.byteLength(bounded)).toBeLessThan(2048 + 200);
+    expect(bounded).toContain("step 999");
+    expect(bounded).not.toContain("step 0\n");
+  });
+
   test("a handshake needs a 64-hex nonce, a mode and a plan only when targeted", () => {
     const nonce = "a".repeat(64);
     expect(parseHandshake(JSON.stringify({ nonce, mode: "full", plan: null, watch: [] }))).toMatchObject({ nonce, mode: "full", plan: null });

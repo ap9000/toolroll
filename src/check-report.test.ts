@@ -67,7 +67,7 @@ describe("the check attempt, sealed before the check runs", () => {
     const prepared = prepareCheckAttempt(store, root, { runId, repo, head, command, access: "sandboxed" }, NOW)!;
     expect(prepared).not.toBeNull();
     const handshake = JSON.parse(prepared.stdin) as { nonce: string; mode: string; plan: unknown };
-    expect(handshake).toEqual({ nonce: prepared.nonce, mode: "full", plan: null, watch: [] });
+    expect(handshake).toEqual({ nonce: prepared.nonce, mode: "full", plan: null, watch: [], limitMs: 60_000 });
     const row = checkAttemptOf(store, runId)!;
     expect(row).toMatchObject({ mode: "full", baseRun: null, planDigest: null, inventoryDigest: payloadDigest(prepared.inventory), contextDigest: payloadDigest(prepared.context) });
     expect(row.nonceHash).toBe(createHash("sha256").update(prepared.nonce).digest("hex"));

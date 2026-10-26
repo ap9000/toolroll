@@ -212,7 +212,9 @@ export function parseHandshake(text) {
     if (lists.some(key => !Array.isArray(plan[key]) || plan[key].some(one => typeof one !== "string"))) return null;
     if (!Array.isArray(plan.groups) || plan.groups.some(one => one === null || typeof one !== "object" || typeof one.script !== "string" || typeof one.kind !== "string" || !Array.isArray(one.groups))) return null;
   }
-  return { nonce: value.nonce, mode: value.mode, plan, watch, planDigest: plan === null ? null : createHash("sha256").update(JSON.stringify(plan)).digest("hex") };
+  // The plane's own limit on the command (its approved timeout), when it says: the check ends itself before it.
+  const limitMs = Number.isSafeInteger(value.limitMs) && value.limitMs > 0 ? value.limitMs : null;
+  return { nonce: value.nonce, mode: value.mode, plan, watch, limitMs, planDigest: plan === null ? null : createHash("sha256").update(JSON.stringify(plan)).digest("hex") };
 }
 
 /** A unit file from the identities the plane asks about (`unit:<file>::<name>`, `file:<file>`). */
@@ -319,9 +321,10 @@ export function loadWords(samples, cores, budget) {
 
 /** A part runs past this, and it is stopped (with everything it started) and fails. */
 const PART_MS = (Number(process.env.TOOLROLL_CHECK_PART_MINUTES) || 120) * 60_000;
-export function partRunner(dir, { timeoutMs = PART_MS, graceMs = 15_000, failFast = true } = {}) {
+export function partRunner(dir, { timeoutMs = PART_MS, graceMs = 15_000, failFast = true, say = line => process.stderr.write(`${line}\n`) } = {}) {
   const abort = new AbortController();
-  let failure = null;
+  let failure = null, stopped = null;
+  const running = new Set();
   // `failFast` false (a release run, docs/plans/release-once.md): the first failure is still said and kept, and every
   // other part runs on; the part timeout and cancel still stop what they own.
   const fail = (label, detail) => {
@@ -330,8 +333,18 @@ export function partRunner(dir, { timeoutMs = PART_MS, graceMs = 15_000, failFas
     console.error(`Release check failed: ${failure}${failFast ? "; stopping other parts" : "; the other parts keep running"}`);
     if (failFast) abort.abort();
   };
+  // The check's own limit (a release run, checkDeadline): every part still running is stopped, so the check still
+  // prints every log and its report before the plane stops the whole command (release check 3249 lost both).
+  const stop = why => {
+    if (stopped !== null) return;
+    stopped = why;
+    if (failure === null) failure = why;
+    console.error(`Release check stopped: ${why}; stopping ${running.size === 0 ? "nothing (no part is running)" : [...running].join(", ")}`);
+    abort.abort();
+  };
   const run = (label, command, argv, env = {}, onResult = null) => {
     let partial = "";
+    running.add(label);
     return runSuite({ command, args: argv, env: { TOOLROLL_CHECK_GATE: undefined, ...env },
       signal: abort.signal, prefix: `so-check-${label}-`, timeoutMs, graceMs, tempRoot: partTempRoot(label),
       ...(onResult === null ? {} : { onResult }),
@@ -341,12 +354,46 @@ export function partRunner(dir, { timeoutMs = PART_MS, graceMs = 15_000, failFas
         for (const line of lines) if (/^(app|flows)(-real)?$|^upgrade$/.test(label) && line.includes("TOOLROLL_CHECK_FAILURE ")) fail(label, line.slice(line.indexOf("TOOLROLL_CHECK_FAILURE ") + 23));
       },
     }).then(one => {
+      running.delete(label);
       const log = join(dir, `${label}.log`);
-      writeFileSync(log, one.timedOut ? Buffer.concat([one.output, Buffer.from(`\n${label} timed out and was stopped\n`)]) : one.output);
-      return { label, code: one.code, log, ms: one.ms, timedOut: one.timedOut === true, cancelled: one.cancelled === true };
+      // Stopped at the check's limit: it timed out, as a part that ran past its own timeout does.
+      const limited = stopped !== null && one.cancelled !== true && one.code !== 0;
+      const ending = one.timedOut ? `\n${label} timed out and was stopped\n` : limited ? `\n${label} was stopped: ${stopped}\n` : "";
+      writeFileSync(log, ending === "" ? one.output : Buffer.concat([one.output, Buffer.from(ending)]));
+      // A failed part's log, as it fails: on stderr, which the plane keeps whole when the command is stopped before its
+      // end (release check 3249: the flows log was only ever printed at the end, so it was never stored).
+      if (one.code !== 0 && one.cancelled !== true) say(failureExcerpt(label, one.code, readFileSync(log, "utf8")));
+      return { label, code: one.code, log, ms: one.ms, timedOut: one.timedOut === true || limited, cancelled: one.cancelled === true };
     });
   };
-  return { run, signal: abort.signal, failure: () => failure };
+  return { run, stop, signal: abort.signal, failure: () => failure, stopped: () => stopped };
+}
+
+/** Lines of a part's log that say what failed: a failed journey and why, a failed test file or test, an error. */
+const FAILURE_LINE = /❌|✗|^\s+- (?!skipped:)|\bFAIL\b|\bfailed\b|[Tt]imed out|Error\b|TOOLROLL_CHECK_FAILURE|exit \d+|stopped/;
+/**
+ * A failed part's log in brief, for stderr: the lines that say what failed (ANSI colours removed), and when none do, the
+ * log's last lines; at most `max` bytes, keeping the end.
+ */
+export function failureExcerpt(label, code, text, max = 8 * 1024) {
+  const lines = String(text).replace(/\x1b\[[0-9;]*m/g, "").split("\n").map(line => line.trimEnd()).filter(line => line !== "");
+  const failing = lines.filter(line => FAILURE_LINE.test(line));
+  let kept = failing.length > 0 ? failing : lines.slice(-40), size = 0, from = kept.length;
+  while (from > 0 && size + Buffer.byteLength(kept[from - 1]) + 1 <= max) size += Buffer.byteLength(kept[--from]) + 1;
+  kept = kept.slice(from);
+  return [`== ${label} failed (exit ${code}); ${failing.length > 0 ? "what its log says failed" : "the end of its log"}${from > 0 ? ` (the last ${kept.length} of ${failing.length > 0 ? failing.length : Math.min(40, lines.length)} lines)` : ""}:`, ...kept].join("\n");
+}
+
+/** The plane's limit when its handshake doesn't say (the approved release check's timeout, 60 minutes). */
+export const RELEASE_LIMIT_MS = 60 * 60_000;
+/**
+ * When a release run stops whatever still runs: before the plane's own limit on the command (`limitMs`, from the
+ * handshake), with room to stop the parts and print every log and the report — a tenth of the limit, at least three
+ * minutes, never more than half of it.
+ */
+export function checkDeadline(started, limitMs = null) {
+  const limit = Number.isSafeInteger(limitMs) && limitMs > 0 ? limitMs : RELEASE_LIMIT_MS;
+  return started + limit - Math.min(Math.max(3 * 60_000, Math.round(limit / 10)), Math.round(limit / 2));
 }
 // Units and browser lanes make their own roots. An outer root adds a redundant level to their Unix socket paths.
 export const partTempRoot = label => !/^(unit|app|flows)(-|$)/.test(label);
@@ -448,6 +495,11 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   console.log(`Units: ${ci.passed ? "reuse CI; macOS tests still run locally" : "local"} (${ci.why}).`);
   const dir = makeTempRoot("release-check-");
   const parts = partRunner(dir, { failFast: !releaseRun }), run = parts.run;
+  // A release run ends itself before the plane's limit: whatever still runs then is stopped, and every log and the report
+  // are still printed (release check 3249: a doomed real-model journey ran it into the plane's 60 minutes).
+  const deadline = releaseRun ? checkDeadline(started, handshake.limitMs) : null;
+  const limiter = deadline === null ? null : setTimeout(() => parts.stop(`the check reached its own limit, ${took(deadline - started)} after it started, before the plane's`), Math.max(0, deadline - Date.now()));
+  limiter?.unref?.();
   // One provider gate for both real-model runners (they find it in TOOLROLL_CHECK_GATE); scripted runs take none.
   let gate = null;
   if (journeyRuns.some(each => each.kind === "real")) {
@@ -519,11 +571,12 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     const lines = readFileSync(one.log, "utf8").split("\n").filter(line => /FAIL|Test Files|passed, |^[✓✗] |^upgrade path:|^Model calls:|^No .*journeys to run/.test(line));
     for (const line of lines.slice(-5)) console.log(line);
   }
-  if (held) console.log("browser journeys not run: the typecheck or build failed");
+  if (held) console.log(`browser journeys not run: ${parts.stopped() !== null ? `the check stopped first (${parts.stopped()})` : "the typecheck or build failed"}`);
   if (upgradeHeld) console.log("upgrade path not run: the build failed");
   if (results.length === 0 && first.every(one => one.code === 0)) console.log("typecheck and build passed; nothing else to run");
   // The load it ran under, so a failure on a busy machine can be judged — never used to excuse one.
   clearInterval(sampler);
+  if (limiter !== null) clearTimeout(limiter);
   console.log(loadWords(samples, cores, budget));
   console.log(`took: ${[...first, ...results].map(one => `${one.label} ${took(one.ms)}`).join(", ")}; whole check ${took(Date.now() - started)}`);
   if (gate !== null) { console.log(gateWords(gate.facts())); gate.close(); }
