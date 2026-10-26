@@ -179,12 +179,17 @@ type VerifiedReader = { format: "sha1" | "sha256"; hexLength: number; read(ids: 
   git(args: readonly string[]): ReturnType<typeof spawnSync> };
 export type Verified<T> = { ok: true; value: T } | { ok: false; message: string };
 
+/** Which Git runs and with what environment: the release path's fixed absolute Git and its own environment, or by
+ * default the checkout Git environment's. The hardening settings are added over either. */
+export type GitRunner = { git?: string; env?: NodeJS.ProcessEnv };
+
 /** A reader over the project's object store that hashes every object it hands back, or why it can't be one. */
-function verifiedReader(gitDir: string): Verified<VerifiedReader> {
+function verifiedReader(gitDir: string, runner: GitRunner = {}): Verified<VerifiedReader> {
   const refuse = (message: string): Verified<VerifiedReader> => ({ ok: false, message });
-  const env = { ...checkoutGitEnv(), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_ATTR_NOSYSTEM: "1" };
+  const env = { ...(runner.env ?? checkoutGitEnv()), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_ATTR_NOSYSTEM: "1" };
+  // The commit-graph file is a cache a build can write: parents come from the objects themselves, never from it.
   const git = (args: readonly string[], input?: Buffer) =>
-    spawnSync("git", ["--git-dir", gitDir, "--no-replace-objects", ...HARDENED_GIT_ARGS, ...args], { env, input, maxBuffer: MAX_BYTES, timeout: 300_000 });
+    spawnSync(runner.git ?? "git", ["--git-dir", gitDir, "--no-replace-objects", ...HARDENED_GIT_ARGS, "-c", "core.commitGraph=false", ...args], { cwd: "/", env, input, maxBuffer: MAX_BYTES, timeout: 300_000 });
   // History a build could have rewritten around the objects: a shallow boundary, grafts, or replacement refs. Each is
   // refused outright, so no reader here ever has to decide whether to believe one.
   if (existsSync(join(gitDir, "shallow"))) return refuse("The project's history is shallow, so the commits between the approval and this one can't all be read.");
@@ -413,8 +418,9 @@ export function verifiedBlobs(gitDir: string, tree: string, paths: readonly stri
  * through verified parents within `reach` commits, so history a build rewrote around the objects can't shorten the
  * list. A shallow boundary, grafts or replacement refs refuse (verifiedReader), as does a range longer than `max`.
  */
-export function verifiedRange(gitDir: string, from: string, to: string, max = 1_000, reach = 5_000): Verified<VerifiedCommit[]> {
-  const reader = verifiedReader(gitDir);
+export function verifiedRange(gitDir: string, from: string, to: string, options: GitRunner & { max?: number; reach?: number } = {}): Verified<VerifiedCommit[]> {
+  const { max = 1_000, reach = 5_000 } = options;
+  const reader = verifiedReader(gitDir, options);
   if (!reader.ok) return reader;
   const { git, read, hexLength } = reader.value;
   const id = new RegExp(`^[0-9a-f]{${hexLength}}$`);
@@ -447,8 +453,9 @@ export function verifiedRange(gitDir: string, from: string, to: string, max = 1_
     commits.push(commit);
   }
   if (inside.length > 0 && !listed.has(to)) return { ok: false, message: `${to.slice(0, 7)} isn't in its own range.` };
-  // Where the range stops: each must be `from` or one of its verified ancestors.
-  const wanted = [...stops].filter(one => one !== from);
+  // Where the range stops: each must be `from` or one of its verified ancestors. An empty range says `to` is already in
+  // the last release: that too is proved, never taken from Git's listing.
+  const wanted = [...stops, ...(inside.length === 0 ? [to] : [])].filter(one => one !== from);
   if (wanted.length === 0) return { ok: true, value: commits };
   const before = listing([`--max-count=${reach}`, from, "--"]);
   if (before === null) return { ok: false, message: "The last release's history couldn't be listed." };

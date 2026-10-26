@@ -5,9 +5,9 @@
  * plain plan card and any other chat seal refuse; a group, another chat or a nightly check does nothing; the change list
  * comes from the plane's record of the last verified release, never a tag; and the terms renderer names every field.
  */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, releaseAuthorityOfTask, type Store } from "./store.js";
@@ -180,6 +180,19 @@ describe("the release card", () => {
     expect(decideOffer(store, { kind: "plan", taskId }, who(), NOW, "telegram", root)?.rows.flat().some(one => "act" in one && one.act === "approve") ?? false).toBe(false);
   });
 
+  test("the change list runs the release path's own Git by its absolute path, never one a PATH names first", () => {
+    const taskId = fileGate();
+    const bin = join(dir, "planted-bin"), ran = join(dir, "planted-ran");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "git"), `#!/bin/sh\ntouch ${JSON.stringify(ran)}\nexit 1\n`, { mode: 0o755 });
+    vi.stubEnv("PATH", `${bin}:${process.env["PATH"] ?? ""}`);
+    try {
+      const card = releaseCardOf(store, store.getScope(taskId)!, "form", { profile: () => null });
+      expect(card.changes.commits?.map(one => one.subject)).toEqual(["Add the release card", "Fix the queue"]);
+      expect(existsSync(ran)).toBe(false);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   test("the range is proved to stop only in the last release's own history, within reach; past it the list refuses", async () => {
     const { verifiedRange } = await import("./commit-extract.js");
     // A side line from the baseline, two commits long, merged into main: the merge's range stops at the baseline.
@@ -193,7 +206,7 @@ describe("the release card", () => {
     expect(range.ok && range.value.map(one => one.message.split("\n")[0]).sort()).toEqual(["Add the release card", "Fix the queue", "Merge side", "More side work", "Side work"]);
     // Measured from the side line's tip, the range stops at the baseline, two commits back: proved within reach, not within one.
     expect(verifiedRange(join(repo, ".git"), side, candidate)).toMatchObject({ ok: true });
-    expect(verifiedRange(join(repo, ".git"), side, candidate, 1_000, 1)).toMatchObject({ ok: false, message: expect.stringContaining("isn't verified as part of the last release's history") });
+    expect(verifiedRange(join(repo, ".git"), side, candidate, { reach: 1 })).toMatchObject({ ok: false, message: expect.stringContaining("isn't verified as part of the last release's history") });
   });
 
   test("no earlier verified release: the card says so", () => {

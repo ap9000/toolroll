@@ -142,7 +142,7 @@ export function commitsBetween(repo: string, from: string, to: string): { sha: s
   const env = { ...releaseGitEnv(), PATH: RELEASE_PATH };
   const listing = spawnSync(tools.git, [`--git-dir=${gitDir}`, "--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], { cwd: "/", env, encoding: "utf8", timeout: 15_000 });
   if (listing.status !== 0 || releaseConfigProblem(listing.stdout) !== null) return null;
-  const range = verifiedRange(gitDir, from, to);
+  const range = verifiedRange(gitDir, from, to, { git: tools.git, env });
   if (!range.ok) return null;
   return range.value.map(one => ({ sha: one.id, subject: one.message.split("\n")[0]!.trim() }));
 }

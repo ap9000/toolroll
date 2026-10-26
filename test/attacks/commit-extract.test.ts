@@ -173,6 +173,34 @@ describe("attack: rewritten history hides a release's commits", () => {
     expect(verifiedRange(h.gitDir, h.baseline, h.candidate)).toMatchObject({ ok: false });
   });
 
+  test("a commit-graph rewritten to skip the hidden commit: the range still lists it, from the objects", () => {
+    const h = history();
+    // One more commit on top, so the rewritten parent link is one Git reads from the graph (a tip it reads from its object).
+    writeFileSync(join(h.repo, "top"), "top\n"); git(h.repo, "add", "-A"); git(h.repo, "commit", "-q", "-m", "top");
+    const top = git(h.repo, "rev-parse", "HEAD");
+    git(h.repo, "commit-graph", "write", "--reachable");
+    const file = join(h.gitDir, "objects", "info", "commit-graph");
+    const graph = readFileSync(file);
+    // The chunk table: 12-byte entries (id, offset) after the 8-byte header; OIDL lists the ids in order, CDAT their parents.
+    const chunk = (id: string) => { for (let at = 8; ; at += 12) { if (graph.toString("latin1", at, at + 4) === id) return Number(graph.readBigUInt64BE(at + 4)); } };
+    const ids = [h.baseline, h.hidden, h.candidate, top].sort();
+    chmodSync(file, 0o644);
+    graph.writeUInt32BE(ids.indexOf(h.baseline), chunk("CDAT") + ids.indexOf(h.candidate) * 36 + 20);
+    writeFileSync(file, graph);
+    // Git reading the graph believes it: the hidden commit drops out of its own listing.
+    expect(git(h.repo, "rev-list", `${h.baseline}..${top}`).split("\n")).toEqual([top, h.candidate]);
+    const range = verifiedRange(h.gitDir, h.baseline, top);
+    expect(range.ok && range.value.map(one => one.id)).toEqual([top, h.candidate, h.hidden]);
+  });
+
+  test("an empty range is proved too: `to` must be the last release or its verified ancestor", () => {
+    const h = history();
+    expect(verifiedRange(h.gitDir, h.candidate, h.candidate)).toMatchObject({ ok: true, value: [] });
+    expect(verifiedRange(h.gitDir, h.candidate, h.baseline)).toMatchObject({ ok: true, value: [] });
+    // Two commits back, past a reach of one: not proved, refused (Git's empty listing alone is never taken).
+    expect(verifiedRange(h.gitDir, h.candidate, h.baseline, { reach: 1 })).toMatchObject({ ok: false });
+  });
+
   test("the candidate's commit object rewritten under its id to skip the hidden commit: the range refuses", () => {
     const h = history();
     const loose = join(h.gitDir, "objects", h.candidate.slice(0, 2), h.candidate.slice(2));
