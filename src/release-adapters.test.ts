@@ -274,8 +274,8 @@ describe("the release adapters", () => {
     else await deletion;
     // The recorded URL, never the checkout's origin, with the hardened settings ahead of the push.
     expect(calls.filter(one => one.includes("push")).map(one => one.slice(one.indexOf("push")))).toEqual(head === SHA
-      ? [["push", "--no-verify", `--force-with-lease=refs/heads/release-me:${SHA}`, REPO.remote, ":refs/heads/release-me"]] : []);
-    expect(calls.filter(one => one.includes("push")).every(one => one[0] === "--git-dir=/rv/.git" && one.includes("protocol.allow=never"))).toBe(true);
+      ? [["push", "--no-verify", `--force-with-lease=refs/heads/release-me:${SHA}`, "toolroll-release", ":refs/heads/release-me"]] : []);
+    expect(calls.filter(one => one.includes("push")).every(one => one[0] === "--git-dir=/rv/.git" && one.includes("protocol.allow=never") && one.includes(`remote.toolroll-release.pushurl=${REPO.remote}`))).toBe(true);
   });
 
   test.each([[null, "resolves"], [SHA, "rejects"]] as const)("a failed delete is fine only when the branch is gone after it (%s)", async (after, outcome) => {

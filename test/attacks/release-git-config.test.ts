@@ -50,6 +50,16 @@ function poisons(at: ReturnType<typeof fixture>): Array<{ key: string; plant: ()
     { key: "remote.origin.url", plant: set("remote.origin.url", `ext::${at.script} %S`) },
     { key: "remote.origin.vcs", plant: () => { git(at.gate, "config", "--local", "remote.origin.url", RECORDED); git(at.gate, "config", "--local", "remote.origin.vcs", "marker"); } },
     { key: "credential.helper", plant: set("credential.helper", `!${at.script}`) },
+    // What could send the GitHub token elsewhere, or point a fetch or push at another repository.
+    { key: "http.proxy", plant: set("http.proxy", "http://127.0.0.1:9") },
+    { key: "http.sslverify", plant: set("http.sslVerify", "false") },
+    { key: "http.extraheader", plant: set("http.extraHeader", "Authorization: bearer planted") },
+    { key: "http.cookiefile", plant: set("http.cookieFile", join(at.root, "cookies")) },
+    { key: "remote.origin.proxy", plant: set("remote.origin.proxy", "http://127.0.0.1:9") },
+    { key: `remote.${RECORDED}.url`, plant: set(`remote.${RECORDED}.url`, "https://github.com/attacker/elsewhere.git") },
+    { key: `remote.${RECORDED}.pushurl`, plant: set(`remote.${RECORDED}.pushurl`, "https://github.com/attacker/elsewhere.git") },
+    { key: "remote.toolroll-release.url", plant: set("remote.toolroll-release.url", "https://github.com/attacker/elsewhere.git") },
+    { key: "url.https://github.com/attacker/.insteadof", plant: set("url.https://github.com/attacker/.insteadOf", "https://github.com/example-invalid/") },
   ];
 }
 
@@ -88,7 +98,9 @@ describe("the release coordinator's Git: a poisoned gate checkout runs nothing",
     for (const url of ["ext::sh -c touch% /tmp/x github.com/a/b", "file:///tmp/x", "https://github.com.evil.example/a/b", "https://user:secret@github.com/a/b", "https://github.com/../b"]) expect(releaseRemote(url), url).toBeNull();
   });
 
-  test.each(["include.path", "core.sshcommand", "core.fsmonitor", "core.hookspath", "remote.origin.url", "remote.origin.vcs", "credential.helper"])("%s: preflight and resume stop naming it, and the marker never runs", async key => {
+  test.each(["include.path", "core.sshcommand", "core.fsmonitor", "core.hookspath", "remote.origin.url", "remote.origin.vcs", "credential.helper",
+    "http.proxy", "http.sslverify", "http.extraheader", "http.cookiefile", "remote.origin.proxy", `remote.${RECORDED}.url`, `remote.${RECORDED}.pushurl`,
+    "remote.toolroll-release.url", "url.https://github.com/attacker/.insteadof"])("%s: preflight and resume stop naming it, and the marker never runs", async key => {
     const at = fixture();
     poisons(at).find(one => one.key === key)!.plant();
     // Preflight (begin): the first Git command refuses.
@@ -113,7 +125,7 @@ describe("the release coordinator's Git: a poisoned gate checkout runs nothing",
     expect(existsSync(at.ran), `the marker ran for ${key}`).toBe(false);
   });
 
-  test("the setting check: only local and worktree scope count, and each of these is named", () => {
+  test("the setting check is an allowlist: only local and worktree scope count, and anything else is named", () => {
     const listing = (scope: string, key: string, value: string) => `${scope}\0${key}\n${value}\0`;
     expect(releaseConfigProblem(listing("local", "remote.origin.url", RECORDED))).toBeNull();
     expect(releaseConfigProblem(listing("local", "core.hookspath", "/x"))).toBe("core.hookspath");
@@ -121,6 +133,8 @@ describe("the release coordinator's Git: a poisoned gate checkout runs nothing",
     expect(releaseConfigProblem(listing("local", "remote.origin.pushurl", "fd::3"))).toBe("remote.origin.pushurl");
     expect(releaseConfigProblem(listing("worktree", "core.sshcommand", "x"))).toBe("core.sshcommand");
     expect(releaseConfigProblem(listing("global", "core.sshcommand", "x"))).toBeNull();
+    expect(releaseConfigProblem(listing("local", "branch.main.remote", "origin") + listing("local", "core.bare", "false") + listing("worktree", "core.fsmonitor", "false"))).toBeNull();
+    expect(releaseConfigProblem(listing("local", "gc.something-new", "x"))).toBe("gc.something-new");
   });
 });
 

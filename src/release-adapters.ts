@@ -30,7 +30,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { deploymentGate } from "./deploy-gate.js";
 import { extractCommit } from "./commit-extract.js";
 import { HARDENED_GIT_ARGS } from "./agent-fence.js";
-import { checkoutIncludes, commandSetting, TEARDOWN_FLAGS } from "./teardown-git.js";
+import { checkoutIncludes, TEARDOWN_FLAGS } from "./teardown-git.js";
 import { accessSync, constants as fsConstants, statSync } from "node:fs";
 import { isAbsolute } from "node:path";
 
@@ -245,23 +245,43 @@ export function releaseGitArgs(repo: ReleaseRepo, tools: ReleaseTools): string[]
   return [`--git-dir=${repo.gitDir}`, `--work-tree=${repo.checkout}`, "--no-replace-objects", "--no-pager", ...HARDENED_GIT_ARGS, ...TEARDOWN_FLAGS,
     "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", ...(repo.ssh ? ["-c", "protocol.ssh.allow=always"] : []),
     "-c", `core.sshCommand=${tools.ssh}`, "-c", "core.askPass=", "-c", "fetch.recurseSubmodules=false", "-c", "core.pager=cat",
+    // Where it connects and what it sends: verified TLS, no proxy, no extra header or cookie file. (An empty CA file
+    // or path can't be given here, Git then trusts nothing; a checkout setting either stops the release instead.)
+    "-c", "http.sslVerify=true", "-c", "http.proxy=", "-c", "http.extraHeader=", "-c", "http.cookieFile=",
+    // The recorded URL, as a remote that exists only here.
+    "-c", `remote.${RELEASE_REMOTE}.url=${repo.remote}`, "-c", `remote.${RELEASE_REMOTE}.pushurl=${repo.remote}`, "-c", `remote.${RELEASE_REMOTE}.proxy=`,
     ...(repo.ssh ? [] : ["-c", `credential.helper=!'${tools.gh.replace(/'/g, "'\\''")}' auth git-credential`])];
 }
 
-/** Settings a gate checkout's own config may not hold for a release, beyond those that name a command or include a file
- * (teardown-git.ts commandSetting): a hooks folder, a URL rewrite, or a remote over a transport helper. */
+/** The named remote the coordinator fetches, looks and pushes through: defined only on its own command line (`-c`), so
+ * no checkout setting names or rewrites it. */
+export const RELEASE_REMOTE = "toolroll-release";
+
+/** The local and worktree settings a gate checkout may hold for a release (an allowlist): plain values Git writes
+ * itself and that never decide where it connects, what it sends or what it runs. Anything else stops the release. */
+const RELEASE_KEYS: readonly RegExp[] = [
+  /^core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode|symlinks|autocrlf|eol|safecrlf|quotepath|longpaths|checkstat|trustctime)$/,
+  /^extensions\.(worktreeconfig|objectformat|refstorage)$/,
+  /^remote\.[^/:\\]+\.(url|fetch|pushurl|tagopt|prune)$/,
+  /^branch\..+\.(remote|merge|rebase|pushremote|description|vscode-merge-base)$/,
+  /^(user\.(name|email)|pull\.(rebase|ff)|init\.defaultbranch|lfs\.repositoryformatversion)$/,
+];
+
+/** The first local or worktree setting a gate checkout's config holds that a release won't run with, or null: one
+ * outside the allowlist (an include, a command, a proxy, TLS or header setting, a credential helper, a URL rewrite, a
+ * hooks folder), a remote named like a URL or after the coordinator's own, or a remote over a transport helper. */
 export function releaseConfigProblem(listing: string): string | null {
-  const named = commandSetting(listing);
-  if (named !== null) return named;
   const fields = listing.split("\0");
   for (let at = 0; at + 1 < fields.length; at += 2) {
     if (fields[at] !== "local" && fields[at] !== "worktree") continue;
     const entry = fields[at + 1]!;
     const newline = entry.indexOf("\n");
     const key = (newline < 0 ? entry : entry.slice(0, newline)).toLowerCase();
-    const value = newline < 0 ? "" : entry.slice(newline + 1);
-    if (key === "core.hookspath" || /^url\..+\.(insteadof|pushinsteadof)$/.test(key)) return key;
-    if (/^remote\..+\.(url|pushurl)$/.test(key) && /^[A-Za-z][A-Za-z0-9+.-]*::/.test(value.trim())) return key;
+    const value = (newline < 0 ? "" : entry.slice(newline + 1)).trim();
+    if (key.includes(RELEASE_REMOTE)) return key;
+    if (key === "core.fsmonitor" && /^(false|no|off|0)$/i.test(value)) continue;
+    if (!RELEASE_KEYS.some(pattern => pattern.test(key))) return key;
+    if (/^remote\./.test(key) && /^[A-Za-z][A-Za-z0-9+.-]*::/.test(value)) return key;
   }
   return null;
 }
@@ -324,11 +344,11 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
     const listing = await run(tools.git, [`--git-dir=${repo.gitDir}`, "--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], { cwd: "/", env: gitEnv });
     if (listing.code !== 0) throw stop("its Git config couldn't be read");
     const setting = releaseConfigProblem(listing.stdout);
-    if (setting !== null) throw stop(`its Git config sets ${setting}, which can run a command or redirect where it fetches`);
+    if (setting !== null) throw stop(`its Git config sets ${setting}, which a release doesn't run with (it could run a command, or change where Git connects or what it sends)`);
     return run(tools.git, [...releaseGitArgs(repo, tools), ...args], { cwd: repo.checkout, env: gitEnv });
   };
-  /** The recorded URL every fetch, look and push names explicitly. */
-  const remoteUrl = () => releaseRepo().remote;
+  /** The remote every fetch, look and push names: the recorded URL, defined only on the command line. */
+  const remoteUrl = () => RELEASE_REMOTE;
   const liveOwner = () => {
     if (!existsSync(database)) return null;
     const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
