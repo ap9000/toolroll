@@ -252,6 +252,41 @@ describe("the release card", () => {
     expect(continueCard(sandboxed).tapped?.edit?.rows[0]![0]!.label).toBe("Approve");
   });
 
+  test("a plain plan whose checks run outside the sandbox: no Approve in chat, the card links to Toolroll, a crafted tap refuses", () => {
+    const plain = (taskId: string) => {
+      store.createTask({ id: taskId, title: "Fix the queue" }, NOW);
+      store.placeTask(store.refFor("built-in", taskId).id, repo, {}, NOW);
+      propose(store, { taskId, goal: "Fix the queue", acceptance: [{ id: "c1", statement: "The tests pass", how: null, evidence: ["check"] }], now: NOW });
+      expect(deployGateScope(store.getScope(taskId)!)).toBe(false);
+      return taskId;
+    };
+    expect(store.setProjectCheckAccess(repo, "unsandboxed", "alex", NOW, { may: "widen" })).not.toBeNull();
+    const taskId = plain("fix-queue");
+    expect(store.getScope(taskId)!.profile).toMatchObject({ checkAccess: "unsandboxed" });
+    const offer = decideOffer(store, { kind: "plan", taskId }, who(), NOW, "telegram", root)!;
+    expect(offer.text).toContain("This plan's checks run outside the sandbox, so it's approved in Toolroll with your password.");
+    expect(offer.rows.flat()).toEqual([expect.objectContaining({ label: "Approve in Toolroll", path: expect.stringContaining(taskId) })]);
+    // A crafted Approve for its current digest: the first tap refuses, and so does a Yes minted for it.
+    const digest = planInChatDigest(taskId);
+    const minted = mintDecideButtons(store, seat(), { kind: "plan", taskId }, { text: null, rows: [[{ act: "approve", run: null, digest }]] }, NOW, "p1");
+    const first = applyDecideTap(store, seat(), { token: minted.tokens[0]!, message: "p1", shown: "", repos: [repo], root, now: NOW });
+    expect(first?.edit?.rows.flat().some(one => "token" in one) ?? false).toBe(false);
+    const crafted = store.handle.prepare("INSERT INTO chat_decide_action (token, channel, binding, chat, message, act, phase, task_id, run, digest, created_at, expires_at) VALUES ('d:abababababababababababab','telegram',1,'4242','p1','approve','yes',?,NULL,?,?,?)");
+    crafted.run(taskId, digest, NOW.toISOString(), new Date(NOW.getTime() + 60_000).toISOString());
+    const yes = applyDecideTap(store, seat(), { token: "d:abababababababababababab", message: "p1", shown: "", repos: [repo], root, now: NOW });
+    expect(JSON.stringify(yes)).toContain("approved in Toolroll with your password");
+    expect(store.getScope(taskId)!.approvedAt).toBeNull();
+    // Control: the same plan with sandboxed checks reaches Approve and seals.
+    expect(store.setProjectCheckAccess(repo, "sandboxed", "alex", NOW, { may: "narrow" })).not.toBeNull();
+    const control = plain("fix-queue-sandboxed");
+    const card = decideOffer(store, { kind: "plan", taskId: control }, who(), NOW, "telegram", root)!;
+    const buttons = mintDecideButtons(store, seat(), { kind: "plan", taskId: control }, card, NOW, "p2");
+    const asked = applyDecideTap(store, seat(), { token: buttons.tokens[0]!, message: "p2", shown: card.text ?? "", repos: [repo], root, now: NOW });
+    const confirm = asked!.edit!.rows[0]![0]!;
+    const done = applyDecideTap(store, seat(), { token: "token" in confirm ? confirm.token : "", message: "p2", shown: asked!.edit!.text, repos: [repo], root, now: NOW });
+    expect(done?.edit?.text).toContain("✓ Approved");
+  });
+
   test("a tap from a group, another chat or a forwarded card does nothing; a nightly check is never approved from chat", () => {
     const taskId = fileGate();
     const offer = decideOffer(store, { kind: "plan", taskId }, who(), NOW, "telegram", root)!;

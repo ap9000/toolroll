@@ -254,16 +254,18 @@ export function decideOffer(store: Store, target: DecideTarget, who: VerifiedApp
     case "plan": {
       const plan = planInChat(store, target.taskId, who.name, now, channel, root);
       if (!plan.ok) return null;
+      const release = deployGateScope(plan.scope);
+      // Checks beyond the sandbox seal only on the person's password (store.ts sealScopeApproval): the card says so and
+      // links to the approval in Toolroll, and offers no Continue or Approve that would dead-end. A release or a plan.
+      if (passwordOnlySeal(plan.scope)) {
+        let head: string[];
+        try { head = release ? releaseCardOf(store, plan.scope, plan.digest, { profile: permissionPlainWords }).short.split("\n").slice(0, 3)
+          : planCardText(store, target.taskId, plan.scope, root, channel).split("\n").slice(0, 1); }
+        catch { head = [title(store, target.taskId)]; }
+        return { text: [...head, "", needsPassword(plan.scope)].join("\n"), rows: [[{ label: "Approve in Toolroll", path: chatControlHref("approval", target.taskId) }]] };
+      }
       // A deploy gate is approved from chat only through its release card (chat-management.md §0a.5).
-      if (deployGateScope(plan.scope)) {
-        // Checks beyond the sandbox seal only on the person's password (store.ts sealScopeApproval): the card says so and
-        // links to the approval in Toolroll, and offers no Approve that would dead-end.
-        if (passwordOnlySeal(plan.scope)) {
-          let head: string[];
-          try { head = releaseCardOf(store, plan.scope, plan.digest, { profile: permissionPlainWords }).short.split("\n").slice(0, 3); }
-          catch { head = [`Release: ${title(store, target.taskId)}`]; }
-          return { text: [...head, "", RELEASE_NEEDS_PASSWORD].join("\n"), rows: [[{ label: "Approve in Toolroll", path: chatControlHref("approval", target.taskId) }]] };
-        }
+      if (release) {
         const release = releaseInChat(store, target.taskId, who.name, now, channel, "offer", root);
         if (!release.ok) return null;
         const card = release.card;
@@ -394,7 +396,8 @@ export type ChatMerge = { runId: number; taskId: string; by: string; repo: strin
 
 /** A release card's acts carry its card digest (release-card.ts), never a plan's. */
 const RELEASE_DIGEST = "release:";
-const RELEASE_NEEDS_PASSWORD = "This release's checks run outside the sandbox, so it's approved in Toolroll with your password.";
+/** Why a password-only scope (passwordOnlySeal) isn't approved from chat, for a release or a plan. */
+const needsPassword = (scope: Scope): string => `This ${deployGateScope(scope) ? "release" : "plan"}'s checks run outside the sandbox, so it's approved in Toolroll with your password.`;
 /** Whether only a person's password ceremony seals this scope (store.ts sealScopeApproval): checks that reach beyond the
  * sandbox (sign-ins, or none at all) or extra macOS services, sealed into its profile. */
 const passwordOnlySeal = (scope: Scope): boolean => {
@@ -433,7 +436,7 @@ export function releaseInChat(store: Store, taskId: string, approver: string, no
   const plan = planInChat(store, taskId, approver, now, channel, root);
   if (!plan.ok) return plan;
   if (!deployGateScope(plan.scope)) return { ok: false, why: "This plan isn't a release." };
-  if (passwordOnlySeal(plan.scope)) return { ok: false, why: RELEASE_NEEDS_PASSWORD };
+  if (passwordOnlySeal(plan.scope)) return { ok: false, why: needsPassword(plan.scope) };
   const ref = store.lookupRef(taskId);
   if (ref === null || nightlyTaskRef(store, ref.id)) return { ok: false, why: NIGHTLY_CHECK_ONLY };
   if (seat !== "offer" && (seat.channel !== channel || !privateReleaseChat(store, seat))) return { ok: false, why: "A release is approved only in your private chat with Toolroll." };
@@ -485,6 +488,7 @@ function staleWhy(store: Store, row: Pick<ActionRow, "act" | "taskId" | "run" | 
       if (!plan.ok) return plan.why;
       // A deploy gate's plain plan card never approves it: only its release card does.
       if (deployGateScope(plan.scope)) return "This is a release: approve it from its release card.";
+      if (passwordOnlySeal(plan.scope)) return needsPassword(plan.scope);
       return plan.digest === row.digest ? null : "The plan changed since this card was sent.";
     }
     case "merge": {
@@ -669,6 +673,7 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
       const plan = planInChat(store, row.taskId, who.name, now, seat.channel, input.root);
       if (!plan.ok) return notDone(plan.why);
       if (deployGateScope(plan.scope)) return notDone("This is a release: approve it from its release card.");
+      if (passwordOnlySeal(plan.scope)) return notDone(needsPassword(plan.scope));
       // The owner's own yes, sealed as theirs ("chat"), never as a mode's: it stands like the console's after the mode or setting ends.
       if (!store.sealScopeApproval(row.taskId, who.name, now, {}, { kind: "chat", modeDigest: plan.modeDigest })) return notDone("the plan couldn't be approved from chat. Open it in Toolroll.");
       // The person's proof beside the seal, bound to these exact words (approval policy §1.2): a paired-chat tap, never a
