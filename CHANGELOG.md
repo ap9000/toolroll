@@ -1,7 +1,29 @@
 # Changelog
 
-## Unreleased (0.9.72)
+## 0.9.72 — 2026-10-25
 
+- **One approval per release.** A person approves a release once. Later
+  commits on the same pull request carry that approval only when every change
+  since is unit tests, journey scripts, Markdown under docs/, the README or
+  the changelog, within 400 changed lines, 20 files and 800 lines of churn,
+  and the production build is byte-for-byte the approved one. Anything else
+  asks again, and so does any change after the deploy has started. The
+  approval sheet states the release and what asks again; the release summary
+  and the squash message list every commit that landed after the approval.
+  **Stop carrying later commits** on the task page (or `toolroll release
+  revoke`) ends it, and `toolroll release ask-every-commit on` makes a
+  project's releases ask for every commit. A release approval expires after
+  3 days.
+- **Re-checks of a release re-run only what failed.** On the second and later
+  release checks, only the failed unit files, journey groups and upgrade
+  versions run again, with every test changed since and a short sanity pass.
+  A check that can't prove it covered everything counts as failed, and a
+  test that disappears or is newly skipped stops carrying.
+- **A nightly full check of main.** `toolroll release nightly --repo <path>`
+  sets up a daily full check of main (03:00 local by default). A failure
+  becomes an attention notice naming what failed, holds re-checks that run
+  only part of the suite until a full check passes it again, and a nightly
+  that hasn't run for 26 hours says so.
 - **Sandboxed checks can start Chromium on macOS.** Playwright's default
   browser (its Chromium headless shell) now starts inside the check sandbox:
   the sandbox may register and look up Chromium's port rendezvous service,
@@ -53,8 +75,9 @@
   they no longer dispatch, and the task asks for a person's approval. Seals
   with no recorded authority stand on nothing. A standing order's firing is
   approved by its own authority (`schedule`), which stands only while its
-  approver can still approve in the project. Schema v134 only adds two
-  columns; `toolroll update` runs it in place.
+  approver can still approve in the project.
+- Schema v134 and v135 only add columns and tables; `toolroll update` runs
+  them in place.
 
 ## 0.9.71 — 2026-10-25
 
