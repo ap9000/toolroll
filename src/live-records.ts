@@ -445,11 +445,14 @@ function resultText(content: unknown): string {
     .join("\n");
 }
 
-export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
-  const clock = options.clock ?? (() => new Date());
+export function createLiveRecorder(given: LiveRecorderOptions): LiveRecorder {
+  // The settings are read once, here: nothing the caller (or a callback) changes later reaches the recording.
+  const options: Readonly<LiveRecorderOptions> = Object.freeze({ base: given.base, commands: given.commands === true });
+  const notifyStep = given.onStep;
+  const clock = given.clock ?? (() => new Date());
   let sequence = 0;
   /** A key block the agent began in one message stays hidden through the next, until it ends or a new session starts. */
-  const keyState: KeyState = options.keyState ?? { inKey: false };
+  const keyState: KeyState = given.keyState ?? { inKey: false };
   /** Provider call id → our step, while it is open. */
   const open = new Map<string, { id: string; kind: LiveActivityKind }>();
 
@@ -464,7 +467,8 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
     const id = `s${++sequence}`;
     const keyed = keyedTarget(target, keyState);
     const step: LiveRecord = { k: "step", at, id, kind, ...(keyed === null ? {} : { target: keyed }) };
-    try { options.onStep?.(call, id, keyed); } catch { /* observation only */ }
+    // Detached: called with no receiver, so it never sees (or changes) the settings above.
+    try { if (notifyStep !== undefined) notifyStep(call, id, keyed); } catch { /* observation only */ }
     if (call === null) return [{ ...step, once: true } as LiveRecord];
     if (open.size >= OPEN_STEPS_CAP) return [{ ...step, once: true } as LiveRecord];
     open.set(call, { id, kind });

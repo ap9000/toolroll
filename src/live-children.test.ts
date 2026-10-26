@@ -188,3 +188,40 @@ describe("review round 1 (Codex av3)", () => {
   });
 });
 
+
+describe("review round 2 (Codex av3)", () => {
+  const bashes = (n: number, parent: string): Event => ({ type: "assistant", parent_tool_use_id: parent,
+    message: { content: Array.from({ length: n }, (_, i) => ({ type: "tool_use", id: `b${i}`, name: "Bash", input: { command: `echo ${i}` } })) } });
+  const results = (n: number, parent: string, text: string): Event => ({ type: "user", parent_tool_use_id: parent,
+    message: { content: Array.from({ length: n }, (_, i) => ({ type: "tool_result", tool_use_id: `b${i}`, content: text })) } });
+  const quoted = Array.from({ length: 16 }, () => '"'.repeat(255)).join("\n"); // 4 KiB of output: over 8 KiB as JSON
+
+  test("#3 a batch of closes stays within the event's budget: every close lands, output goes first", () => {
+    const records = recorder(true)([task("t1", "a"), bashes(32, "t1"), results(32, "t1", quoted)]);
+    const closes = records.filter(record => record.k === "done");
+    expect(closes.map(record => record.k === "done" && record.id)).toEqual(Array.from({ length: 32 }, (_, i) => `c1s${i + 1}`));
+    const batch = records.slice(records.findIndex(record => record.k === "done"));
+    expect(batch.reduce((sum, record) => sum + JSON.stringify(record).length, 0)).toBeLessThan(80 * 1024);
+    expect(batch.some(record => record.k === "cut")).toBe(true);
+  });
+
+  test("#8 a close too long for one line keeps its id and outcome; replaying the file closes every step it opened", () => {
+    const log = openLiveLog(root, 5, { commands: true, clock: () => T })!;
+    for (const event of [task("t1", "a"), bashes(1, "t1"), results(1, "t1", quoted)]) log.observe(event);
+    log.close();
+    const lines = readFileSync(liveSubLogPath(root, 5), "utf8").trim().split("\n").map(line => JSON.parse(line) as ChildRecord);
+    expect(lines.filter(record => record.k === "cut")).toEqual([]);
+    expect(lines.find(record => record.k === "done")).toMatchObject({ id: "c1s1", ok: true, s: 1 });
+    const opened = lines.filter(record => record.k === "step" && record.once !== true).map(record => record.k === "step" && record.id);
+    const closed = lines.filter(record => record.k === "done").map(record => record.k === "done" && record.id);
+    expect(closed).toEqual(opened);
+  });
+
+  test("#9 the step callback can't change what is recorded: it has no receiver, and the settings were read once", () => {
+    const options = { base: "/w", commands: false, clock: () => T, onStep(this: unknown) { (this as { commands: boolean }).commands = true; } };
+    const r = createLiveRecorder(options);
+    r.observe(call("x", "Read", { file_path: "/w/a" }));
+    options.commands = true; // and a change after the fact reaches nothing either
+    expect(JSON.stringify([...r.observe(call("y", "Bash", { command: "cat .env" })), ...r.observe(answer("y", "SECRET=1"))])).not.toMatch(/cat \.env|SECRET/);
+  });
+});

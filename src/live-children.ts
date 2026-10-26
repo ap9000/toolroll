@@ -82,8 +82,15 @@ export function createChildRecorder(options: Omit<LiveRecorderOptions, "keyState
     const out: ChildRecord[] = [];
     const total = () => streams.reduce((sum, one) => sum + one.open.size, 0);
     let bytes = 0, cut = false;
-    for (const record of records) {
+    for (let record of records) {
       if (record.k === "open") continue;
+      // A close always lands, with its id and outcome; its output counts against the budget and goes first when over.
+      if (record.k === "done" && record.out !== undefined && bytes + Buffer.byteLength(JSON.stringify(record), "utf8") > CHILD_EVENT_WORDS_CAP) {
+        const { out: _out, ...bare } = record;
+        record = bare;
+        if (!cut) out.push({ k: "cut", at, s: stream.s });
+        cut = true;
+      }
       bytes += Buffer.byteLength(JSON.stringify(record), "utf8");
       // Past the event's budget, words and one-off steps give way to one `cut`; tracked steps and closes still land.
       const over = bytes > CHILD_EVENT_WORDS_CAP;
@@ -210,9 +217,16 @@ export function childLogWriter(root: string, runId: number): {
   const write = (line: string): boolean => {
     try { writeSync(fd!, line); written += Buffer.byteLength(line, "utf8"); return true; } catch { failed = true; return false; }
   };
+  const fits = (text: string) => Buffer.byteLength(text, "utf8") <= 8 * 1024;
+  /** One record as its line. A close too long to keep sheds output lines until it fits — never itself, its id or its
+   * outcome — so replaying the file stays consistent; anything else too long becomes a `cut` of its stream. */
   const line = (record: ChildRecord): string => {
-    const text = JSON.stringify(record);
-    return `${Buffer.byteLength(text, "utf8") <= 8 * 1024 ? text : JSON.stringify({ k: "cut", at: record.at, ...("s" in record ? { s: record.s } : {}) })}\n`;
+    let text = JSON.stringify(record);
+    if (!fits(text) && record.k === "done") {
+      const out = [...(record.out ?? [])];
+      do { out.pop(); text = JSON.stringify(out.length === 0 ? (({ out: _out, ...bare }) => bare)(record) : { ...record, out }); } while (!fits(text) && out.length > 0);
+    }
+    return `${fits(text) ? text : JSON.stringify({ k: "cut", at: record.at, ...("s" in record ? { s: record.s } : {}) })}\n`;
   };
   const one = (record: ChildRecord): void => {
     const text = line(record);
