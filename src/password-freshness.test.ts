@@ -357,8 +357,8 @@ describe("where freshness may be honoured", () => {
     // checkApproverPassword), which proves through proveAccountNow. The counts make a new call site a reviewed change.
     expect(hits["checkApproverPassword()"]).toEqual({ "src/server/guards.ts": 2 });
     // Passwordless: credential acts moved to authenticateCredential / credentialApprover / proveCredential (pinned below).
-    expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/nightly-check.ts": 1, "src/operate.ts": 58, "src/pull-request-flow.ts": 1,
-      "src/release-cli.ts": 2, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 8, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 23,
+    expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1, "src/operate.ts": 58, "src/pull-request-flow.ts": 1,
+      "src/release-cli.ts": 2, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 9, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 23,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
@@ -504,7 +504,11 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/flows.ts#createFlowsHandlers@1>answerSubagentQuestionSend@22": 1,
     "src/server/flows.ts#createFlowsHandlers@1>createFromGallery@25": 1,
     "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 3,
-    "src/server/flows.ts#createFlowsHandlers@1>kitAct@21><anonymous>@1": 1,
+    // …and a kit's tools, given only with that proof (0.9.73 review, finding 1).
+    "src/server/flows.ts#createFlowsHandlers@1>kitAct@21><anonymous>@1": 2,
+    // A trigger from anyone from the command line: only the person's own proof, never a machine credential (finding 2).
+    "src/flows-cli.ts#<module>": 2,
+    "src/flows-cli.ts#runFlowsCommand@3>widening@15": 1,
     "src/server/flows.ts#createFlowsHandlers@1>subagentAct@24><anonymous>@1": 1,
     "src/server/flows.ts#createFlowsHandlers@1>subagentAct@24><anonymous>@1>changed@3": 1,
     "src/server/guards.ts#<module>": 1,

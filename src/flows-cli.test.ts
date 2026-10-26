@@ -302,3 +302,27 @@ test("unattended on signs the owner's grant, show says until when, off revokes i
     .toEqual(["flow runs on its own: signed", "flow stopped running on its own: revoked"]);
 });
 
+
+test("a remote run's API token never counts as the person's proof for a trigger from anyone (0.9.73 review, finding 2)", async () => {
+  const { runFlowsCommand } = await import("./flows-cli.js");
+  const { withRemote } = await import("./remote-run.js");
+  const store = openStore(file);
+  try {
+    const id = store.createFlow({ repo, name: "Inbound", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ id: "inbox", title: "Inbox", kind: "inbox" }], null)) }, NOW);
+    const run = { account: "alex", scope: "act" as const, tokenName: "ci", source: "api" as const, secret: "remote-run-secret-0123456789abcdef", allows: () => true, lens: null, noteTask: () => {}, files: {} };
+    const said: string[] = [];
+    const context = (token: string) => ({ store, write: (line: string) => { said.push(line); }, json: true, clock: () => NOW, credentials: { name: "alex", token }, projects: [repo],
+      configDir: dir, evidenceRoot: dir, triggerIo: {} }) as unknown as Parameters<typeof runFlowsCommand>[2];
+    const anyone = JSON.stringify({ kind: "github", repo: "example/shop", watch: "issues", from: "anyone" });
+    const yes = new Map<string, string | boolean>([["yes", true]]);
+    // The remote token passes the approver check, but a trigger from anyone is refused and nothing is added.
+    expect(await withRemote(run, () => runFlowsCommand(["trigger", "add", String(id), anyone], yes, context(run.secret)))).not.toBe(0);
+    expect(said.at(-1)).toContain("takes your password");
+    expect(store.flowTriggers(id)).toEqual([]);
+    // A team-only trigger needs no step-up: the same token adds it.
+    expect(await withRemote(run, () => runFlowsCommand(["trigger", "add", String(id), JSON.stringify({ kind: "github", repo: "example/shop", watch: "issues", from: "team" })], yes, context(run.secret)))).toBe(0);
+    // The person's own password: the trigger from anyone is added.
+    expect(await runFlowsCommand(["trigger", "add", String(id), anyone], yes, context(alex))).toBe(0);
+    expect(store.flowTriggers(id).map(one => JSON.parse(one.configJson).from)).toEqual(["team", "anyone"]);
+  } finally { store.close(); }
+});
