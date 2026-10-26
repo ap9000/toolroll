@@ -167,9 +167,11 @@ export class LiveInput {
 
   /** Every parsed stdout event, in order. */
   observe(event: Record<string, unknown>): void {
+    // A subagent's events (parent_tool_use_id set) are never the session's: not its words, its control answers or its
+    // result (stream-scope.ts).
+    if (!topLevelEvent(event)) return;
     const type = String(event["type"] ?? "");
-    // The session's own words count; a subagent's (parent_tool_use_id set) or a background task's never do.
-    if (type === "assistant" && topLevelEvent(event)) {
+    if (type === "assistant") {
       this.#turnActive = true;
       const message = event["message"] as Record<string, unknown> | undefined;
       const id = typeof message?.["id"] === "string" ? message["id"] : `turn-${this.#turns.size + 1}`;

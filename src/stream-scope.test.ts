@@ -8,6 +8,8 @@ import { observeClaudeBilling, type ClaudeBillingSeen } from "./invoke.js";
 import { LiveInput, type LiveCloseReason } from "./live-input.js";
 import { liveActivityKind } from "./live.js";
 import { adapterFor } from "./provider.js";
+import { claudeStreamReader } from "./lead-progress.js";
+import { touchesPlanFile } from "./scout.js";
 import { primaryResultEvent, topLevelEvent } from "./stream-scope.js";
 import { performSubscriptionLeadRequest } from "./subscription-chat.js";
 
@@ -91,6 +93,53 @@ describe("a subagent's events are not the parent's", () => {
     expect(parsed.costUsd).toBe(0.25);
     expect(parsed.protocolError ?? null).toBeNull(); // no identity conflict
     expect(JSON.stringify(parsed)).not.toContain("s-child");
+  });
+});
+
+describe("a subagent's events are not the parent's (round 1 review)", () => {
+  const parentResult = { type: "result", subtype: "success", is_error: false, result: "parent done", session_id: "s-parent", total_cost_usd: 0.25 };
+  const parse = (events: Record<string, unknown>[]) => adapterFor("claude").parse(events.map(event => JSON.stringify(event)).join("\n"));
+
+  test("the envelope parser: a child's legacy envelope or overflow witness never stands; the transport's own witness does", () => {
+    const childLegacy = { result: "child envelope", session_id: "s-child", total_cost_usd: 9, parent_tool_use_id: CHILD };
+    const witness = { type: "result", subtype: "standing-orders-stream-event-overflow", is_error: true };
+    expect(parse([childLegacy, parentResult])).toMatchObject({ sessionId: "s-parent", finalMessage: "parent done", costUsd: 0.25 });
+    expect(parse([parentResult, { ...witness, parent_tool_use_id: CHILD }]).structuralTerminal).not.toMatchObject({ failed: true });
+    expect(parse([parentResult, witness]).structuralTerminal).toMatchObject({ failed: true, code: "standing-orders-stream-event-overflow" });
+  });
+
+  test("a child's control answer never reports the parent paused", () => {
+    let paused = 0;
+    const session = new LiveInput({ maxTurns: 50, onPaused: () => { paused += 1; } });
+    session.begin("brief");
+    session.attach({ write: () => {}, end: () => {} });
+    session.observe({ type: "assistant", message: { id: "m1" }, parent_tool_use_id: null });
+    expect(session.interrupt("pause-1")).toBe("sent");
+    const answer = { type: "control_response", response: { subtype: "success", request_id: "pause-1" } };
+    session.observe({ ...answer, parent_tool_use_id: CHILD });
+    expect(paused).toBe(0);
+    session.observe(answer);
+    expect(paused).toBe(1);
+  });
+
+  test("the lead's streamed reply: a child's frames neither show nor suppress the parent's text", () => {
+    const frame = (inner: Record<string, unknown>, parent: string | null = null) => JSON.stringify({ type: "stream_event", event: inner, parent_tool_use_id: parent }) + "\n";
+    const start = { type: "content_block_start", content_block: { type: "tool_use", name: "StructuredOutput", input: {} } };
+    const other = { type: "content_block_start", content_block: { type: "text" } };
+    const delta = (partial: string) => ({ type: "content_block_delta", delta: { type: "input_json_delta", partial_json: partial } });
+    const seen: string[] = [];
+    const read = claudeStreamReader(text => seen.push(text));
+    read(frame(start, CHILD) + frame(delta('{"text": "Child'), CHILD));
+    read(frame(start) + frame(other, CHILD) + frame(delta('{"text": "Par')) + frame(delta(' child', ), CHILD) + frame(delta('ent"')));
+    expect(seen).toEqual(["Par", "Parent"]);
+  });
+
+  test("the scout's plan-file mark: a child's ExitPlanMode or plan-file write is not the scout's", () => {
+    const call = (block: Record<string, unknown>, parent: string | null) => ({ type: "assistant", message: { content: [{ type: "tool_use", ...block }] }, parent_tool_use_id: parent });
+    const exit = { name: "ExitPlanMode", input: {} };
+    const write = { name: "Write", input: { file_path: "/Users/a/.claude/plans/p.md" } };
+    expect([call(exit, CHILD), call(write, CHILD)].map(touchesPlanFile)).toEqual([false, false]);
+    expect([call(exit, null), call(write, null)].map(touchesPlanFile)).toEqual([true, true]);
   });
 });
 

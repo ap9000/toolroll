@@ -2,6 +2,8 @@
  * and the reply as it is written. Nothing here is durable or authoritative —
  * the finished turn's saved message and cards remain the record. */
 
+import { topLevelEvent } from "./stream-scope.js";
+
 export type LeadProgress =
   | { kind: "started"; turn: number }
   | { kind: "step"; turn: number; step: number }
@@ -124,7 +126,8 @@ export function claudeStreamReader(onText: (text: string) => void, capBytes = 1_
       pending = pending.slice(newline + 1);
       let event: unknown;
       try { event = JSON.parse(line); } catch { continue; }
-      if (!record(event) || event["type"] !== "stream_event" || !record(event["event"])) continue;
+      // A subagent's frames (parent_tool_use_id set) are not the lead's reply: they never start, feed or end it.
+      if (!record(event) || !topLevelEvent(event) || event["type"] !== "stream_event" || !record(event["event"])) continue;
       const inner = event["event"];
       if (inner["type"] === "content_block_start") {
         const block = inner["content_block"];

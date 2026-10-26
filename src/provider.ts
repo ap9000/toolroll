@@ -584,14 +584,15 @@ function claudeParse(stdout: string): ParsedEnvelope {
       continue;
     }
     if (event === null || typeof event !== "object") continue;
+    // A subagent's object (parent_tool_use_id set) is never the session's envelope, init, result or overflow witness
+    // (stream-scope.ts). The transport's own witness carries no parent and still counts.
+    if (!topLevelEvent(event)) continue;
     const type = event["type"];
     if (type === undefined) {
       // Legacy buffered envelope: one JSON object, no event framing.
       return claudeEnvelopeOf(event as ClaudeResultShape, null, null);
     }
-    // A subagent's init and result (parent_tool_use_id set) are not the session's: they never name, conflict or
-    // account for it (stream-scope.ts).
-    if (String(type) === "system" && String(event["subtype"] ?? "") === "init" && topLevelEvent(event)) {
+    if (String(type) === "system" && String(event["subtype"] ?? "") === "init") {
       initSeen = true;
       const id = sessionIdOf(event["session_id"]);
       if (id !== null) {

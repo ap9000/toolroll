@@ -51,6 +51,7 @@ import { grantOf, researchToolsOf, type ResearchTools } from "./mcp-connect.js";
 import { startScoutProxy } from "./scout-net.js";
 import * as browserCheck from "./scout-browser.js";
 import { invokeAgent } from "./invoke.js";
+import { topLevelEvent } from "./stream-scope.js";
 
 const GIT = "git";
 const AGENT_ENV_DENYLIST: readonly string[] = [...TELEGRAM_TOKEN_ENVS];
@@ -828,8 +829,9 @@ export function shortenReportBrief(over: readonly ReportProblem[], reportFile: s
 
 /** Whether a stream event shows the session writing its plan-mode plan
  * file (~/.claude/plans/…) or handing a plan to ExitPlanMode. */
-function touchesPlanFile(event: Record<string, unknown>): boolean {
-  if (event["type"] !== "assistant") return false;
+export function touchesPlanFile(event: Record<string, unknown>): boolean {
+  // The session's own calls only: a subagent's (parent_tool_use_id set) is not the scout's plan (stream-scope.ts).
+  if (event["type"] !== "assistant" || !topLevelEvent(event)) return false;
   const message = event["message"];
   if (typeof message !== "object" || message === null) return false;
   const content = (message as Record<string, unknown>)["content"];
