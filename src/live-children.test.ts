@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { CHILD_OPEN_STEPS_CAP, CHILD_STREAMS_CAP, createChildRecorder, type ChildRecord } from "./live-children.js";
-import { createLiveRecorder, serializeLiveRecord } from "./live-records.js";
+import { createLiveRecorder, HIDDEN_TARGET, serializeLiveRecord, type LiveRecord } from "./live-records.js";
 import { liveLogPath, liveSubLogPath, openLiveLog } from "./live.js";
 
 const T = new Date("2026-10-26T12:00:00.000Z");
@@ -19,10 +19,10 @@ const say = (text: string, parent: string | null = null): Event => ({ type: "ass
 const done = (parent: string | null = null): Event => ({ type: "result", subtype: "success", is_error: false, parent_tool_use_id: parent });
 const task = (id: string, description: string, parent: string | null = null) => call(id, "Task", { description, prompt: "p" }, parent);
 
-const recorder = (commands = false) => {
-  const parent = createLiveRecorder({ base: "/w", commands, clock: () => T });
+const recorder = (commands = false, seen: LiveRecord[] = []) => {
   const child = createChildRecorder({ base: "/w", commands, clock: () => T });
-  return (events: Event[]): ChildRecord[] => events.flatMap(event => child.observe(event, parent.observe(event)));
+  const parent = createLiveRecorder({ base: "/w", commands, clock: () => T, onStep: child.parentStep });
+  return (events: Event[]): ChildRecord[] => events.flatMap(event => { seen.push(...parent.observe(event)); return child.observe(event); });
 };
 const of = (records: ChildRecord[], s: number) => records.filter(record => "s" in record && record.s === s);
 
@@ -136,5 +136,55 @@ describe("the subagents' file", () => {
     const bytes = (from: number, to: number) => lines.slice(from, to).reduce((sum, record) => sum + JSON.stringify(record).length + 1, 0);
     for (let n = 1; n < at.length; n += 1) expect(bytes(at[n - 1]! + 1, at[n]!)).toBeLessThan(32 * 1024 + 8 * 1024);
     expect(lines.at(-1)).toEqual({ k: "end", s: 1, at: T.toISOString(), ok: null }); // the process ended with it open
+    expect(lines[0]).toMatchObject({ k: "child", s: 1, parent: "s1", desc: "chatty" }); // named for the run's own step
   });
 });
+
+describe("review round 1 (Codex av3)", () => {
+  test("#1 a nested delegation's description goes through its owner's redaction, key state included", () => {
+    const records = recorder()([task("t1", "outer"), say("-----BEGIN PRIVATE KEY-----\nMIIEvQ", "t1"), task("t2", "SECRET-DESCRIPTION", "t1"), say("x", "t2")]);
+    expect(JSON.stringify(records)).not.toContain("SECRET-DESCRIPTION");
+    expect(records.find(record => record.k === "child" && record.s === 2)).toMatchObject({ desc: HIDDEN_TARGET });
+  });
+
+  test("#2 a reference that isn't a plain string id routes nowhere; an id two callers used is quarantined", () => {
+    const coerced = recorder()([task("7", "seven"), say("number", 7 as never), say("array", ["7"] as never)]);
+    expect(coerced).toEqual([]);
+    const siblings = recorder()([task("t1", "a"), task("t2", "b"), say("a speaks", "t1"), say("b speaks", "t2"),
+      task("same", "from a", "t1"), task("same", "from b", "t2"), say("whose?", "same")]);
+    expect(JSON.stringify(siblings)).not.toContain("whose?");
+    expect(siblings.filter(record => record.k === "child").map(record => record.s)).toEqual([1, 2]);
+  });
+
+  test("#4 a delegation that never spoke before the main query ended never opens", () => {
+    const records = recorder()([task("a", "never started"), done(), say("too late", "a")]);
+    expect(records).toEqual([]);
+  });
+
+  test("#5 a subagent is named for the step the parent really wrote for its call", () => {
+    const seen: LiveRecord[] = [];
+    const records = recorder(false, seen)([task("A", "first"), answer("A", "ok"),
+      { type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "A", name: "Task", input: { description: "first again" } }, { type: "tool_use", id: "B", name: "Task", input: { description: "second" } }] } },
+      say("b speaks", "B")]);
+    const bStep = seen.find(record => record.k === "step" && record.target === "second");
+    expect(records.find(record => record.k === "child")).toMatchObject({ parent: bStep?.k === "step" ? bStep.id : "missing", desc: "second" });
+    // A duplicate ordinary call before a Task never shifts the naming either.
+    const seen2: LiveRecord[] = [];
+    const two = recorder(false, seen2)([call("r", "Read", { file_path: "/w/a" }),
+      { type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "tool_use", id: "r", name: "Read", input: { file_path: "/w/a" } }, { type: "tool_use", id: "C", name: "Task", input: { description: "third" } }] } },
+      say("c speaks", "C")]);
+    const cStep = seen2.find(record => record.k === "step" && record.target === "third");
+    expect(two.find(record => record.k === "child")).toMatchObject({ parent: cStep?.k === "step" ? cStep.id : "missing" });
+  });
+
+  test("#6 a subagent repeating a delegation id opens no new step", () => {
+    const records = recorder()([task("t1", "outer"), task("n1", "inner", "t1"), answer("n1", "ok", "t1"), task("n1", "inner again", "t1"), task("n1", "and again", "t1")]);
+    expect(records.filter(record => record.k === "step").map(record => record.k === "step" && record.id)).toEqual(["c1s1"]);
+  });
+
+  test("#7 a subagent's init forgets a half-seen key marker", () => {
+    const records = recorder()([task("t1", "a"), say("look -----BE", "t1"), { type: "system", subtype: "init", parent_tool_use_id: "t1" }, say("GIN harmless", "t1"), say("still visible", "t1")]);
+    expect(JSON.stringify(records)).toContain("still visible");
+  });
+});
+

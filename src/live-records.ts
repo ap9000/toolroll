@@ -418,6 +418,9 @@ export type LiveRecorderOptions = {
   clock?: () => Date;
   /** The key-block state to carry (the caller's, so it can write it down in a checkpoint); a fresh one by default. */
   keyState?: KeyState;
+  /** Told of each step as it is recorded: the provider's call id (null when it has none), our id, and the target as
+   * written (redacted, under the key state). Observation only: it changes nothing recorded. */
+  onStep?: (call: string | null, id: string, target: string | null) => void;
 };
 
 export type LiveRecorder = {
@@ -461,6 +464,7 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
     const id = `s${++sequence}`;
     const keyed = keyedTarget(target, keyState);
     const step: LiveRecord = { k: "step", at, id, kind, ...(keyed === null ? {} : { target: keyed }) };
+    try { options.onStep?.(call, id, keyed); } catch { /* observation only */ }
     if (call === null) return [{ ...step, once: true } as LiveRecord];
     if (open.size >= OPEN_STEPS_CAP) return [{ ...step, once: true } as LiveRecord];
     open.set(call, { id, kind });
