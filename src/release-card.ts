@@ -6,8 +6,9 @@
  * - `approvalTermsOf`: every signed term of the scope and every field of its release terms, one line each, "none" for
  *   an empty one (a contract test holds it to the schemas, so a field added later and left out fails).
  * - `releaseChangeList`: what changed since the last verified release, from the plane's own record of it (the merge
- *   commit of the newest merged release whose merge operation succeeded), read as Git objects through the hardened
- *   release runner from the project's recorded Git directory: never a tag or a ref, so moving one changes nothing.
+ *   commit of the newest merged release whose merge operation succeeded), read as verified Git objects from the
+ *   project's recorded Git directory: never a tag or a ref, so moving one changes nothing, and history rewritten around
+ *   the objects (a shallow boundary, grafts, replacement refs) refuses the list rather than shortening it.
  *   With no earlier release on record, the pull request's own commits from GitHub, for the recorded owner/name.
  * - `releaseCardOf`: the short card, the full terms (sent as a file where the chat app limits a message), and
  *   `cardDigest`, which binds the scope digest, the plan form's digest, the baseline and the change list: Continue and
@@ -17,9 +18,9 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { HARDENED_GIT_ARGS } from "./agent-fence.js";
 import { checkAccessWords } from "./check-access.js";
 import { CHECK_LEVEL_WORDS, effectiveCheckLevel } from "./check-levels.js";
+import { verifiedRange } from "./commit-extract.js";
 import { releaseTermsSchema, type ReleaseTerms } from "./contracts/release-terms.js";
 import { projectName } from "./project.js";
 import { RELEASE_PATH, releaseConfigProblem, releaseGitEnv, releaseRemote, releaseTools } from "./release-git.js";
@@ -125,9 +126,11 @@ export function releaseBaseline(store: Store, repo: string): string | null {
   return ref !== null && SHA.test(ref) ? ref : null;
 }
 
-/** The commits after `from` up to `to`, as Git objects only, from the project's recorded Git directory through the
- * release coordinator's hardened settings (its checkout config allowlist first). Null when they can't be read. */
-export function commitsBetween(repo: string, from: string, to: string, limit = 200): { sha: string; subject: string }[] | null {
+/** The commits after `from` up to `to`, as verified Git objects only, from the project's recorded Git directory: the
+ * release coordinator's checkout config allowlist first, then commit-extract's verified range (every commit hashed here,
+ * a shallow boundary, grafts or replacement refs refused, and the range proved to stop only in the last release's own
+ * history). Null when they can't be read, so a card never shows a shortened list. */
+export function commitsBetween(repo: string, from: string, to: string): { sha: string; subject: string }[] | null {
   if (!SHA.test(from) || !SHA.test(to)) return null;
   let gitDir: string;
   try {
@@ -139,13 +142,9 @@ export function commitsBetween(repo: string, from: string, to: string, limit = 2
   const env = { ...releaseGitEnv(), PATH: RELEASE_PATH };
   const listing = spawnSync(tools.git, [`--git-dir=${gitDir}`, "--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], { cwd: "/", env, encoding: "utf8", timeout: 15_000 });
   if (listing.status !== 0 || releaseConfigProblem(listing.stdout) !== null) return null;
-  const read = spawnSync(tools.git, [`--git-dir=${gitDir}`, "--no-replace-objects", "--no-pager", ...HARDENED_GIT_ARGS, "-c", "core.pager=cat", "-c", "log.showSignature=false",
-    "rev-list", `--max-count=${limit}`, "--format=%H%x09%s", `${from}..${to}`], { cwd: "/", env, encoding: "utf8", timeout: 15_000, maxBuffer: 16 * 1024 * 1024 });
-  if (read.status !== 0) return null;
-  return read.stdout.split("\n").filter(line => line !== "" && !line.startsWith("commit ")).map(line => {
-    const tab = line.indexOf("\t");
-    return { sha: line.slice(0, tab), subject: line.slice(tab + 1) };
-  }).filter(one => SHA.test(one.sha));
+  const range = verifiedRange(gitDir, from, to);
+  if (!range.ok) return null;
+  return range.value.map(one => ({ sha: one.id, subject: one.message.split("\n")[0]!.trim() }));
 }
 
 /** A pull request's own commits from GitHub, for the recorded owner/name. Null when GitHub can't be read. */

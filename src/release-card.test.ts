@@ -145,7 +145,9 @@ describe("the release card", () => {
     if (what === "changes") git("config", "--local", "http.proxy", "http://127.0.0.1:9");
     const done = applyDecideTap(store, seat(), { token: "token" in approve ? approve.token : "", message: "m1", shown: tapped!.edit!.text, repos: [repo], root, now: NOW });
     expect(store.getScope(taskId)!.approvedAt).toBeNull();
-    expect(done?.ack).toMatch(/changed/);
+    // (A list that can't be read now refuses the card outright.)
+    if (what === "changes") expect(done?.edit?.text).toContain("list of changes couldn't be read");
+    else expect(done?.ack).toMatch(/changed/);
   });
 
   test("a moved tag changes nothing: the list comes from the recorded merge commit, as objects", () => {
@@ -161,6 +163,37 @@ describe("the release card", () => {
     // The baseline is bound into the digest.
     expect(cardDigestOf("s", "f", { baseline, digest: "x" })).not.toBe(cardDigestOf("s", "f", { baseline: candidate, digest: "x" }));
     expect(releaseBaseline(store, repo)).toBe(baseline);
+  });
+
+  test.each(["shallow", "grafts", "replace"] as const)("history rewritten around the objects (%s) refuses the list and the card, never shortens it (0.9.73 review, finding 4)", how => {
+    const taskId = fileGate();
+    const gitDir = join(repo, ".git");
+    // What a build can write in its checkout's .git after filing: a boundary at the candidate hides the commits before it.
+    if (how === "shallow") writeFileSync(join(gitDir, "shallow"), `${candidate}\n`);
+    if (how === "grafts") { mkdirSync(join(gitDir, "info"), { recursive: true }); writeFileSync(join(gitDir, "info", "grafts"), `${candidate} ${baseline}\n`); }
+    if (how === "replace") git("replace", "--graft", candidate, baseline);
+    const card = releaseCardOf(store, store.getScope(taskId)!, "form", { profile: () => null });
+    expect(card.changes.commits).toBeNull();
+    expect(card.short).toContain("The change list couldn't be read.");
+    expect(card.short).not.toContain("Add the release card");
+    // No Continue leads to Approve on it: the offer refuses.
+    expect(decideOffer(store, { kind: "plan", taskId }, who(), NOW, "telegram", root)?.rows.flat().some(one => "act" in one && one.act === "approve") ?? false).toBe(false);
+  });
+
+  test("the range is proved to stop only in the last release's own history, within reach; past it the list refuses", async () => {
+    const { verifiedRange } = await import("./commit-extract.js");
+    // A side line from the baseline, two commits long, merged into main: the merge's range stops at the baseline.
+    git("checkout", "-q", "-b", "side", baseline);
+    commit("d.txt", "Side work");
+    const side = commit("e.txt", "More side work");
+    git("checkout", "-q", "main");
+    git("merge", "-q", "--no-ff", "-m", "Merge side", side);
+    const merged = git("rev-parse", "HEAD");
+    const range = verifiedRange(join(repo, ".git"), baseline, merged);
+    expect(range.ok && range.value.map(one => one.message.split("\n")[0]).sort()).toEqual(["Add the release card", "Fix the queue", "Merge side", "More side work", "Side work"]);
+    // Measured from the side line's tip, the range stops at the baseline, two commits back: proved within reach, not within one.
+    expect(verifiedRange(join(repo, ".git"), side, candidate)).toMatchObject({ ok: true });
+    expect(verifiedRange(join(repo, ".git"), side, candidate, 1_000, 1)).toMatchObject({ ok: false, message: expect.stringContaining("isn't verified as part of the last release's history") });
   });
 
   test("no earlier verified release: the card says so", () => {

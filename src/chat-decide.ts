@@ -421,6 +421,8 @@ export function releaseInChat(store: Store, taskId: string, approver: string, no
   let card: ReleaseCard;
   try { card = releaseCardOf(store, plan.scope, plan.digest, { profile: permissionPlainWords }); }
   catch { return { ok: false, why: "This release's terms can't be shown here, so you approve it in Toolroll." }; }
+  // What changed is part of what's approved: a list that couldn't be read (or was refused as rewritten history) is no card.
+  if (plan.scope.releaseTerms != null && card.changes.commits === null) return { ok: false, why: "This release's list of changes couldn't be read, so you approve it in Toolroll." };
   return { ok: true, card, modeDigest: plan.modeDigest, source: plan.source, scope: plan.scope };
 }
 
