@@ -1239,7 +1239,12 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const started = await startConnect({ service: service.id, repo: target, by: who.name, origin, kit: also === null ? kit : null, template, readOnly }, options.connectFetch ?? fetch);
     if (!started.ok) return back(started.said);
     for (const [key, visit] of connectVisits) if (visit.expires < Date.now()) connectVisits.delete(key);
-    connectVisits.set(started.state, started.visit);
+    // The password above proves one thing: this connection, by this account as it is now, and (from a kit whose subagent
+    // is set up) letting that subagent use this tool in this project. The callback holds the visit to exactly that.
+    const kitSet = kit === null || also !== null ? null : kitOf(kit);
+    const installed = kitSet === null || !kitSet.tools.some(one => one.tool === service.id) ? null : kitInstalled(store, kitSet, target);
+    connectVisits.set(started.state, { ...started.visit, generation: store.accountOf(who.name)?.generation ?? -1,
+      grant: installed === null ? null : { subagent: installed.mate.id, tool: service.id, repo: target } });
     return goOutside(response, started.go, `Going to ${service.label} to sign in…`, { state: started.state, path: CONNECT_CALLBACK, secure: origin.startsWith("https:") });
   }
   async function toolsChange(ctx: HandlerContext): Promise<void> {
@@ -2092,7 +2097,14 @@ ${modeWords(terms)
     if (!startedHere(request, state)) return done("/settings/tools", "problem", "That sign-in was started in another browser. Connect again from this one.");
     const visit = connectVisits.get(state);
     connectVisits.delete(state);
-    if (visit === undefined || visit.expires < Date.now() || store.accountOf(visit.by)?.role !== "approver") return done("/settings/tools", "problem", "That sign-in expired. Connect again.");
+    // The signer as at Connect: still an approver, not revoked, the same generation, still in the project. Checked here,
+    // before the connection changes, and again at the grant, after every wait.
+    const standing = (): boolean => {
+      const account = visit === undefined ? null : store.accountOf(visit.by);
+      return visit !== undefined && account !== null && account.role === "approver" && account.revokedAt === null && visit.generation !== undefined
+        && account.generation === visit.generation && store.accountCanAccess(visit.by, visit.repo);
+    };
+    if (visit === undefined || visit.expires < Date.now() || !standing()) return done("/settings/tools", "problem", "That sign-in expired. Connect again.");
     const service = oneClickOf(visit.service)!;
     const kit = visit.kit === null ? null : kitOf(visit.kit);
     // Started from a gallery template's page: back to it, for the same project.
@@ -2105,13 +2117,16 @@ ${modeWords(terms)
     if (!/^[\x21-\x7e]{4,2048}$/.test(code)) return done(back, "problem", `${service.label} didn't send a sign-in code. Connect again.`);
     const now = clock();
     if (!adapterPolicy({ caller: "service", capability: "none" }).ok) return respond(response, 403, "text/plain", "Forbidden");
-    const finished = await finishConnect(store, visit, code, now, { fetcher: options.connectFetch ?? fetch, home: toolHome, omitEnv: ALL_CREDENTIAL_ENV });
+    const finished = await finishConnect(store, visit, code, now, { fetcher: options.connectFetch ?? fetch, home: toolHome, omitEnv: ALL_CREDENTIAL_ENV, stillStanding: standing });
     if (!finished.ok) return done(back, "problem", finished.said);
     // From a kit: its teammate may use the tool now (reading freely, the rest after a person approves each call).
     const set = kit === null || !kit.tools.some(one => one.tool === service.id) ? null : kitInstalled(store, kit, visit.repo);
-    if (set !== null && store.subagentGrant(set.mate.id, service.id) === null) {
-      // The password at Connect (toolsConnect) is this grant's proof: the visit is ours, single-use and short-lived.
-      const granted = await grantTool(store, set.mate, service.id, visit.by, now, { toolHome }, { widening: "proved" });
+    const bound = visit.grant ?? null;
+    if (set !== null && bound !== null && bound.subagent === set.mate.id && bound.tool === service.id && bound.repo === visit.repo && set.mate.repo === visit.repo
+      && store.subagentGrant(set.mate.id, service.id) === null && standing()) {
+      // The password at Connect (toolsConnect) is this grant's proof, for exactly the grant the visit names, while the
+      // signer still stands: re-checked after the tool's listing, in the step that saves the grant.
+      const granted = await grantTool(store, set.mate, service.id, visit.by, now, { toolHome }, { widening: "proved", stillProved: standing });
       if (granted.ok) return done(back, "said", `${service.label} is connected to ${to}, and ${nameOf(set.mate)} can use it: reading freely, the rest after you approve each call.`);
     }
     return done(back, "said", finished.said);

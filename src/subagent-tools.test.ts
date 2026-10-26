@@ -279,3 +279,15 @@ test.each(["revoke", "tighten"] as const)("a refresh whose listing waits never u
   if (change === "revoke") expect(store.subagentGrant(mate.id, "shop")).toBeNull();
   else expect(store.subagentGrant(mate.id, "shop")!.rules["lookup_order"]).toEqual({ use: "never" });
 });
+
+test("a proved grant whose proof lapses while the tool is listed is refused (0.9.73 review round 2, finding 2)", async () => {
+  expect(revokeTool(store, mate, "shop", "alex", T0)).toMatchObject({ ok: true });
+  let standing = true, resume: () => void = () => {};
+  const paused = new Promise<void>(resolve => { resume = resolve; });
+  const granting = grantTool(store, mate, "shop", "alex", T0, { toolHome: dir, listTools: async () => { await paused; return { ok: true, actions: [{ name: "lookup_order", about: "", input: null, readOnly: true }] }; } },
+    { widening: "proved", stillProved: () => standing });
+  standing = false;
+  resume();
+  expect(await granting).toMatchObject({ ok: false, said: expect.stringContaining("takes your password") });
+  expect(store.subagentGrant(mate.id, "shop")).toBeNull();
+});

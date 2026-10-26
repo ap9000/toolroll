@@ -29,6 +29,7 @@ const stripe = (async (input: string | URL | Request, init?: RequestInit) => {
   if (url === "https://access.stripe.com/.well-known/oauth-authorization-server/mcp") return reply(200, { authorization_endpoint: "https://access.stripe.com/mcp/oauth2/authorize", token_endpoint: "https://access.stripe.com/mcp/oauth2/token",
     registration_endpoint: "https://access.stripe.com/mcp/oauth2/register", code_challenge_methods_supported: ["S256"] });
   if (url === "https://access.stripe.com/mcp/oauth2/register") { signIns.push(url); return reply(201, { client_id: "client-7" }); }
+  if (url === "https://access.stripe.com/mcp/oauth2/token") return reply(200, { access_token: "synthetic-access-token", token_type: "bearer" });
   // PostHog's, for Reconnect read-only.
   if (url === "https://mcp.posthog.com/mcp" && method === "POST") return reply(401, {}, { "www-authenticate": 'Bearer resource_metadata="https://mcp.posthog.com/.well-known/oauth-protected-resource/mcp"' });
   if (url === "https://mcp.posthog.com/.well-known/oauth-protected-resource/mcp") return reply(200, { resource: "https://mcp.posthog.com/mcp", authorization_servers: ["https://oauth.posthog.com"], scopes_supported: ["openid", "insight:read", "insight:write", "user:read"] });
@@ -213,4 +214,24 @@ test("Build access says plainly when a project's tools can't be read", async () 
   const failed = htmlString(projectSettingsHtml({ ...view, access: { problem: "Couldn't read this project's tools right now." } } as never, {}));
   expect(failed).toContain('<p class="problem" role="alert">Couldn&#39;t read this project&#39;s tools right now.</p>');
   expect(failed).toContain(">Manage tools</a>");
+});
+
+test.each(["revoked", "generation", "project access"] as const)("a Connect whose signer lost standing mid-visit (%s) connects nothing and grants nothing (0.9.73 review round 2, finding 2)", async lost => {
+  const { setUpKit, kitOf, kitInstalled } = await import("./kits.js");
+  const kit = kitOf("support-desk")!;
+  await setUpKit(store, kit, BENTO, "alex", T0, home);
+  const mate = kitInstalled(store, kit, BENTO)!.mate;
+  const cookie = await login();
+  const fields = formOf(await page(cookie, `?repo=${encodeURIComponent(BENTO)}&kit=${kit.id}`), "/settings/tools/connect");
+  const started = await post(cookie, "/settings/tools/connect", { ...fields, kit: kit.id, service: "stripe", password: token });
+  expect(started.status).toBe(200);
+  // While the person is away at Stripe's sign-in, their standing changes (as the store records each, synthetic here).
+  if (lost === "revoked") store.handle.prepare("UPDATE approver SET revoked_at = ? WHERE name = 'alex'").run(T0.toISOString());
+  if (lost === "generation") store.handle.prepare("UPDATE approver SET generation = generation + 1 WHERE name = 'alex'").run();
+  if (lost === "project access") store.handle.prepare("UPDATE approver SET projects_json = ? WHERE name = 'alex'").run(JSON.stringify([ORDERS]));
+  const [, name = "", state = ""] = /^([^=;]+)=([^;]+); Path=\/settings\/tools\/connected/.exec(started.headers.get("set-cookie") ?? "") ?? [];
+  const back = await (await fetch(`${base}/settings/tools/connected?state=${state}&code=synthetic-code-1234`, { headers: { cookie: `${name}=${state}` } })).text();
+  expect(back).toContain("That sign-in expired");
+  expect(projectToolsOf(store, BENTO).map(one => one.name)).not.toContain("stripe");
+  expect(store.subagentGrant(mate.id, "stripe")).toBeNull();
 });

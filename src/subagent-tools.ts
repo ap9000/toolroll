@@ -147,13 +147,16 @@ const namesOnly = (tool: ProjectTool): ToolActionInfo[] => (tool.lastTest?.tools
 /** Let a subagent use one of the project's tools. Its actions start at their defaults: reading is free, everything else asks first.
  * A grant widens what it does unasked, so it takes the person's proof (a password, or a session under Passwordless):
  * `widening: "proved"` (chat-management.md §0a.3). */
-export async function grantTool(store: Store, mate: SubagentRow, tool: string, by: string, now: Date, io: ToolIo = {}, options: { widening?: "proved" } = {}): Promise<Done> {
+export async function grantTool(store: Store, mate: SubagentRow, tool: string, by: string, now: Date, io: ToolIo = {},
+  /** `stillProved`: the proof re-checked after the listing's wait, in the same synchronous step as the save. */
+  options: { widening?: "proved"; stillProved?: () => boolean } = {}): Promise<Done> {
   if (options.widening !== "proved") return grantRefused(tool);
   const found = projectToolsOf(store, mate.repo).find(one => one.name === tool);
   if (found === undefined) return { ok: false, said: `This project has no tool called ${tool}. Add it on the Tools page first.` };
   if (store.subagentGrant(mate.id, tool) !== null) return { ok: true, said: `It can already use ${tool}.` };
   const listed = await listed_(store, found, mate.repo, io);
-  return grantListed(store, mate, found, listed.ok ? listed.actions : null, by, now, options);
+  if (options.stillProved !== undefined && !options.stillProved()) return grantRefused(tool);
+  return grantListed(store, mate, found, listed.ok ? listed.actions : null, by, now, { widening: "proved" });
 }
 
 const grantRefused = (tool: string): Done => ({ ok: false, said: `Letting it use ${tool} takes your password. Do it on its page in Toolroll.` });
