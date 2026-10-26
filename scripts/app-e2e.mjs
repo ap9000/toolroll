@@ -1193,7 +1193,9 @@ await journey("mail", SCRIPTED, "Follow-ups: a card emails someone and waits; th
     await page.waitForSelector('[data-flow-zone-panel="wait"]');
     await shot("wait-zone-settings");
     await page.click('button:has-text("Discard")');
-    const gave = await until("Sam's card to finish without a reply", async () => { const one = await cardOf("order 43"); return one?.state === "done" ? one : null; }, { timeoutMs: (WAIT + 3) * 60_000, everyMs: 5000 });
+    // The wait zone decides how long this takes (WAIT minutes, then the nudge), so the release's 90-second cap on
+    // scripted waits can't apply; its own limit still bounds it.
+    const gave = await until("Sam's card to finish without a reply", async () => { const one = await cardOf("order 43"); return one?.state === "done" ? one : null; }, { timeoutMs: (WAIT + 3) * 60_000, everyMs: 5000, capped: false });
     if (gave.comments.length > 0) throw new Error("the stranger's message was taken as Sam's reply");
     if (!gave.history.some(one => one.text.includes(`No reply after ${WAIT} minutes`))) throw new Error(`its history: ${gave.history.map(one => one.text).join(" | ")}`);
     const nudge = (await mail.inbox("sam@example.com")).find(one => one.subject === "Re: Question about order 43");
