@@ -617,7 +617,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/browser/views/flow-view.tsx#stepUpReady@45": 1,
     "src/budget-alerts.ts#budgetAlertPass@1": 2,
     "src/chat-decide.ts#decideOffer@11": 5,
-    "src/chat-decide.ts#staleWhy@33": 6,
+    "src/chat-decide.ts#staleWhy@34": 6,
     "src/chat-flow.ts#answerChatFlowPrompt@18>store.transact(_)@1": 2,
     "src/checkout-cleanup.ts#cleanCheckouts@14>wanted@2": 3,
     "src/checkout-cleanup.ts#slimKeptCheckouts@15>wanted@3": 2,

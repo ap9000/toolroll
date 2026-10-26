@@ -50,16 +50,19 @@ beforeEach(() => {
   store.setVerifyCommand({ repo, command: "node scripts/release-check.mjs --full", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
   if (!setChatApproval(store, { approver: "alex", scope: "*", enabled: true, limits: { fullAccess: true, capMicrousd: null }, via: "test" }, NOW).ok) throw new Error("chat approval");
   // The last verified release on the plane's record, so the card's change list reads from Git objects.
-  const id = Number(store.handle.prepare(`INSERT INTO release_authority (repo, generation, version, pr, branch, base, anchor_task, anchor_digest, approved_sha, approved_tree, tip_sha, tip_task,
-    policy_json, policy_digest, verify_command, verify_digest, access_digest, state, expires_at, created_at) VALUES (?,1,'0.9.72',1,'b','main','t','d',?,?,?,'t','{}','p',1,'v','a','merged',?,?)`)
-    .run(repo, baseline, baseline, baseline, NOW.toISOString(), NOW.toISOString()).lastInsertRowid);
-  store.handle.prepare("INSERT INTO release_operation (id, authority, kind, task_id, candidate, epoch, state, external_ref, reserved_at, finished_at) VALUES (?,?, 'merge', 't', ?, 1, 'succeeded', ?, ?, ?)")
-    .run(`op-${id}`, id, baseline, baseline, NOW.toISOString(), NOW.toISOString());
+  recordRelease(baseline, "0.9.72");
   // A private chat: Telegram makes its id the person's own.
   const code = mintPairingCode();
   store.createTelegramPairing({ codeHash: hashPairingCode(code), approver: "alex", by: "alex", ttlMs: PAIRING_TTL_MS }, NOW);
   if (!store.consumeTelegramPairing({ codeHash: hashPairingCode(code), botId: BOT, chatId: String(USER), userId: String(USER), updateId: 1 }, NOW).ok) throw new Error("pairing");
 });
+function recordRelease(merge: string, version: string): void {
+  const id = Number(store.handle.prepare(`INSERT INTO release_authority (repo, generation, version, pr, branch, base, anchor_task, anchor_digest, approved_sha, approved_tree, tip_sha, tip_task,
+    policy_json, policy_digest, verify_command, verify_digest, access_digest, state, expires_at, created_at) VALUES (?,1,?,1,'b','main','t','d',?,?,?,'t','{}','p',1,'v','a','merged',?,?)`)
+    .run(repo, version, merge, merge, merge, NOW.toISOString(), NOW.toISOString()).lastInsertRowid);
+  store.handle.prepare("INSERT INTO release_operation (id, authority, kind, task_id, candidate, epoch, state, external_ref, reserved_at, finished_at) VALUES (?,?, 'merge', 't', ?, 1, 'succeeded', ?, ?, ?)")
+    .run(`op-${id}`, id, merge, merge, NOW.toISOString(), NOW.toISOString());
+}
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
 /** A deploy gate filed as `toolroll release` files one, and its card's Continue, on message 77. */
@@ -79,7 +82,7 @@ function continueToken(): string {
   return mintDecideButtons(store, seat, { kind: "plan", taskId: "release-0.9.73" }, offer, NOW, "77").tokens[0]!;
 }
 let nextUpdate = 10;
-async function tapContinue(token: string): Promise<{ labels: string[]; tokens: string[]; text: string }> {
+async function tap(token: string): Promise<{ labels: string[]; tokens: string[]; text: string }> {
   updates.push([{ update_id: nextUpdate++, callback_query: { id: "cb", data: token, from: { id: USER }, message: { message_id: 77, chat: { id: USER } } } }]);
   await bridgePass(store, { botId: BOT, transport, clock: () => NOW, deliver: false, readProjects: async () => [repo],
     conversation: { evidenceRoot: root, subscriptionRunner: async () => { throw new Error("no turns here"); }, phoneOrigin: () => null } } as Parameters<typeof bridgePass>[1]);
@@ -92,7 +95,7 @@ const sealed = () => store.getScope("release-0.9.73")!.approvedAt !== null;
 
 test.each(["refuse", "throw"] as const)("a terms file Telegram %ss leaves no Approve; Continue sends it again, and only then is Approve shown", async fault => {
   documentFault = fault;
-  const first = await tapContinue(continueToken());
+  const first = await tap(continueToken());
   expect(calls.filter(call => call.method === "sendDocument")).toHaveLength(1);
   expect(first.labels).toEqual(["Continue"]);
   expect(first.text).toContain("The terms file didn't arrive, so Approve isn't shown.");
@@ -102,9 +105,28 @@ test.each(["refuse", "throw"] as const)("a terms file Telegram %ss leaves no App
   expect(sealed()).toBe(false);
   // Delivered now: the file first, then Approve.
   documentFault = null;
-  const again = await tapContinue(first.tokens[0]!);
+  const again = await tap(first.tokens[0]!);
   expect(calls.filter(call => call.method === "sendDocument")).toHaveLength(2);
   expect(again.labels).toEqual(["Approve", "Cancel"]);
   expect(again.tokens.every(live)).toBe(true);
   expect(live(first.tokens[0]!)).toBe(false);
+});
+
+test.each([null, "refuse", "throw"] as const)("a release that changed while it was read is shown again through the same gate (upload %s) (0.9.73 review round 2, finding 4)", async fault => {
+  const continued = await tap(continueToken());
+  expect(continued.labels).toEqual(["Approve", "Cancel"]);
+  // The release changes before Approve: a later release is now the last verified one, so the change list differs.
+  recordRelease(git("rev-parse", "HEAD"), "0.9.72-1");
+  documentFault = fault;
+  const documents = calls.filter(call => call.method === "sendDocument").length;
+  const refreshed = await tap(continued.tokens[0]!);
+  // The new terms were sent; Approve (bound to the new card) only when they arrived, else a Continue to send them again.
+  expect(calls.filter(call => call.method === "sendDocument")).toHaveLength(documents + 1);
+  expect(refreshed.text).toContain("This release changed while you were reading.");
+  expect(refreshed.labels).toEqual(fault === null ? ["Approve", "Cancel"] : ["Continue"]);
+  expect(refreshed.tokens.every(live)).toBe(true);
+  expect(sealed()).toBe(false);
+  if (fault === null) return;
+  documentFault = null;
+  expect((await tap(refreshed.tokens[0]!)).labels).toEqual(["Approve", "Cancel"]);
 });

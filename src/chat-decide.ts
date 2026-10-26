@@ -465,6 +465,25 @@ function targetOf(row: Pick<ActionRow, "act" | "taskId" | "run">): DecideTarget 
 }
 
 /** Why the card's act no longer applies, or null while it still does — checked at the offer and again at the yes. */
+/**
+ * A release card's terms, then its Approve (Continue, and a release card refreshed after it changed): the full terms
+ * (a file on Telegram, where a message is limited; inline elsewhere), Approve and Cancel bound to this card's digest,
+ * and on Telegram the card to show instead when the file didn't arrive: no Approve, a Continue to send it again.
+ */
+function releaseContinue(store: Store, seat: DecideSeat, message: string, taskId: string, name: string, card: ReleaseCard, now: Date, ack: string, lead: string | null): DecideTapOutcome {
+  const spec: ActSpec = { act: "approve", run: null, digest: releaseDigest(card) };
+  const yes = mint(store, seat, message, spec, taskId, "yes", now);
+  const cancel = mint(store, seat, message, spec, taskId, "cancel", now);
+  const text = `${seat.channel === "telegram" ? card.short : `${card.short}\n\n${card.full}`}${lead === null ? "" : `\n\n${lead}`}`;
+  // Telegram carries the terms only as the file: Approve shows only once that file has arrived (telegram.ts).
+  const again = seat.channel === "telegram" ? mint(store, seat, message, spec, taskId, "offer", now) : null;
+  return { ack, file: { name: card.fileName, text: card.full },
+    edit: { text: `${text}\n\nApprove release "${name}"? This approves exactly these terms${seat.channel === "telegram" ? `, every one in ${card.fileName}` : ""}.`,
+      rows: [[{ label: "Approve", token: yes }, { label: DECIDE_LABELS.cancel, token: cancel }]], tokens: [yes, cancel] },
+    ...(again === null ? {} : { unsent: { text: `${text}\n\nThe terms file didn't arrive, so Approve isn't shown. Tap Continue to send it again.`,
+      rows: [[{ label: "Continue", token: again }]], tokens: [again] } }) };
+}
+
 function staleWhy(store: Store, row: Pick<ActionRow, "act" | "taskId" | "run" | "digest"> & { chat?: string; binding?: number }, who: VerifiedApprover, now: Date, channel: DecideChannel, root?: string): string | null {
   switch (row.act) {
     case "accept": case "changes": {
@@ -586,12 +605,17 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
   const why = staleWhy(store, row, who, now, seat.channel, input.root);
   if (why !== null) {
     // A release that changed while it was read: the new card, with fresh buttons, so the person reads it again.
+    // Through the same gate as Continue: the new terms go first (as a file where the chat app limits a message), and
+    // Approve shows only once they arrived; else a Continue to send them again. A release that is now password-only
+    // gets its card with the link to Toolroll.
     if (row.digest.startsWith(RELEASE_DIGEST) && row.act === "approve" && why === "This release changed while you were reading.") {
       spend();
+      const release = releaseInChat(store, row.taskId, who.name, now, seat.channel, seat, input.root);
+      if (release.ok) return releaseContinue(store, seat, input.message, row.taskId, name, release.card, now, why, `${why} Here it is now.`);
       const offer = decideOffer(store, target, who, now, seat.channel, input.root);
-      if (offer !== null) {
+      if (offer !== null && offer.file === undefined) {
         const minted = mintDecideButtons(store, seat, target, offer, now, input.message);
-        return { ack: why, edit: { text: `${offer.text ?? body}\n\n${why} Here it is now.`, ...minted }, ...(offer.file === undefined ? {} : { file: offer.file }) };
+        return { ack: why, edit: { text: `${offer.text ?? body}\n\n${why} Here it is now.`, ...minted } };
       }
     }
     return stale(why);
@@ -612,18 +636,7 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
       const release = releaseInChat(store, row.taskId, who.name, now, seat.channel, seat, input.root);
       if (!release.ok) return stale(release.why);
       spend();
-      const spec: ActSpec = { act: "approve", run: null, digest: row.digest };
-      const yes = mint(store, seat, input.message, spec, row.taskId, "yes", now);
-      const cancel = mint(store, seat, input.message, spec, row.taskId, "cancel", now);
-      const card = release.card;
-      const text = seat.channel === "telegram" ? card.short : `${card.short}\n\n${card.full}`;
-      // Telegram carries the terms only as the file: Approve shows only once that file has arrived (telegram.ts).
-      const again = seat.channel === "telegram" ? mint(store, seat, input.message, spec, row.taskId, "offer", now) : null;
-      return { ack: "Read the terms, then approve.", file: { name: card.fileName, text: card.full },
-        edit: { text: `${text}\n\nApprove release "${name}"? This approves exactly these terms${seat.channel === "telegram" ? `, every one in ${card.fileName}` : ""}.`,
-          rows: [[{ label: "Approve", token: yes }, { label: DECIDE_LABELS.cancel, token: cancel }]], tokens: [yes, cancel] },
-        ...(again === null ? {} : { unsent: { text: `${text}\n\nThe terms file didn't arrive, so Approve isn't shown. Tap Continue to send it again.`,
-          rows: [[{ label: "Continue", token: again }]], tokens: [again] } }) };
+      return releaseContinue(store, seat, input.message, row.taskId, name, release.card, now, "Read the terms, then approve.", null);
     }
     // The first tap asks; only the yes acts, bound to exactly what this button was.
     spend();
