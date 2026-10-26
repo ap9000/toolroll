@@ -462,10 +462,11 @@ with a time limit.
 ## What it does, in order
 
 1. **gate**: before filing, looks at the pull request's checks on the
-   branch's exact commit: a required check that already failed stops here,
-   before anything is filed or sent for approval. Checks not started or
-   still running, or GitHub not answering, only get a line; the ci step
-   still waits for them. A task already filed for the commit is kept and
+   branch's exact commit: a required check that failed stops here, before
+   anything is filed or sent for approval. Checks not started or still
+   running are named and waited for (GitHub not answering is waited out
+   too); if they don't finish within the gate's limit (60 min, \`--limit
+   gate=<min>\`), it stops here as well. A task already filed for the commit is kept and
    not looked at again. Then it files task \`release-<version>-<sha7>\` pinned to the
    branch's exact commit with \`--checks full\`, regardless of the project's default.
 2. **approval**: waits for the owner to approve that exact scope

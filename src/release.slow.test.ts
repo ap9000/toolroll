@@ -33,6 +33,9 @@ function world(options: { crashAfter?: Mutation } = {}) {
     gateId: null as string | null,
     /** What a person or the worker does while the release waits: applied on each sleep. */
     onSleep: [] as ((state: typeof s) => void)[],
+    /** Whether the gate's look (before anything is filed) sees `checks` as set. Off: it sees them all passing, so a test
+     * about a later step can start with failing or pending checks. */
+    gateSeesChecks: false,
     checks: new Map<string, CheckRun[]>([[SHA, passing(REQUIRED_PR_CHECKS)], [`brew:${OTHER}`, passing(["brew test"]).map(run => ({ ...run, app: "github-actions" }))]]),
     installed: { services: [OLD], clis: [{ name: "toolroll", runtime: OLD as string | null }, { name: "standing-orders", runtime: OLD as string | null }] },
     /** Where each CLI name's link points, and whether moving them fails its check. */
@@ -111,7 +114,8 @@ function world(options: { crashAfter?: Mutation } = {}) {
     github: {
       authenticated: async () => true,
       pullRequest: async () => ({ ...s.pr }),
-      checks: async (repo, sha) => structuredClone(s.checks.get(`${repo === "ap9000/homebrew-toolroll" ? "brew:" : ""}${sha}`) ?? []),
+      checks: async (repo, sha) => !s.gateSeesChecks && repo !== "ap9000/homebrew-toolroll" && !(s.gate.exists && s.gate.candidate === sha) && sha !== MERGE ? passing(REQUIRED_PR_CHECKS)
+        : structuredClone(s.checks.get(`${repo === "ap9000/homebrew-toolroll" ? "brew:" : ""}${sha}`) ?? []),
       merge: async (_repo, _pr, head) => {
         if (head !== s.pr.head) throw new Error("Head branch was modified");
         s.pr = { ...s.pr, state: "merged", mergeCommit: MERGE };
@@ -400,30 +404,40 @@ describe("toolroll release", () => {
     });
 
     // The gate's early look, before anyone is asked to approve: only an already failed required check stops there.
-    const STILL_RUNNING = "haven't started or are still running", UNREADABLE = "Couldn't read the pull request checks";
-    const early: [string, (w: ReturnType<typeof world>) => void, { stop: boolean; line: string | null }][] = [
-      ["a failed required check stops before filing or approval", w => { w.s.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "failure" }]); }, { stop: true, line: null }],
-      ["a cancelled required check stops before filing or approval", w => { w.s.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "cancelled" }]); }, { stop: true, line: null }],
-      ["pending checks say so and continue", w => {
+    const NOT_FINISHED = "not finished yet", UNREADABLE = "Couldn't read the pull request checks";
+    const failing = (conclusion: string) => [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "completed" as const, conclusion }];
+    const early: [string, (w: ReturnType<typeof world>) => void, { stop: string | null; line: string | null }][] = [
+      ["a failed required check stops before filing or approval", w => { w.s.checks.set(SHA, failing("failure")); }, { stop: "ci-failed", line: null }],
+      ["a cancelled required check stops before filing or approval", w => { w.s.checks.set(SHA, failing("cancelled")); }, { stop: "ci-failed", line: null }],
+      ["checks not started are named, waited for, and go on once they pass", w => {
         w.s.checks.set(SHA, passing(REQUIRED_PR_CHECKS.slice(0, 2)));
-        w.s.onSleep.push(state => { if (state.gate.result !== null) state.checks.set(SHA, passing(REQUIRED_PR_CHECKS)); });
-      }, { stop: false, line: STILL_RUNNING }],
-      ["unreadable checks say so and continue", w => {
+        w.s.onSleep.push(state => { if (state.checks.get(SHA)!.length < REQUIRED_PR_CHECKS.length) state.checks.set(SHA, passing(REQUIRED_PR_CHECKS)); });
+      }, { stop: null, line: `${REQUIRED_PR_CHECKS[2]} (not started)` }],
+      ["a check that fails while the gate waits stops it", w => {
+        w.s.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "in_progress", conclusion: null }]);
+        w.s.onSleep.push(state => { if (state.gate.result === null && state.calls.length === 0) state.checks.set(SHA, failing("failure")); });
+      }, { stop: "ci-failed", line: `${REQUIRED_PR_CHECKS[0]} (in_progress)` }],
+      ["checks that never start stop at the gate's limit, named", w => { w.s.checks.set(SHA, passing(REQUIRED_PR_CHECKS.slice(1))); }, { stop: "ci-missing", line: `${REQUIRED_PR_CHECKS[0]} (not started)` }],
+      ["unreadable checks are waited out, never taken for a pass", w => {
         const checks = w.adapters.github.checks;
         let first = true;
         w.adapters.github.checks = async (repo, sha) => { if (first) { first = false; throw new Error("HTTP 502"); } return checks(repo, sha); };
-      }, { stop: false, line: UNREADABLE }],
-      ["passed checks continue", () => {}, { stop: false, line: null }],
+      }, { stop: null, line: UNREADABLE }],
+      ["passed checks continue", () => {}, { stop: null, line: null }],
     ];
     test.each(early)("at the gate, %s", async (_what, setup, { stop, line }) => {
       const dir = stateDir();
       const w = world();
+      w.s.gateSeesChecks = true;
       setup(w);
-      const outcome = await runRelease(options(dir), w.adapters);
-      if (stop) {
-        expect(outcome).toMatchObject({ ok: false, step: "gate", reason: "ci-failed", message: expect.stringContaining(REQUIRED_PR_CHECKS[0]) });
+      const outcome = await runRelease(options(dir, { limits: { gate: 1 } }), w.adapters);
+      const said = w.s.said.join("\n");
+      if (line !== null) expect(said).toContain(line);
+      if (stop !== null) {
+        // A red or unfinished pull request never reaches the approval step: nothing filed, nobody asked.
+        expect(outcome).toMatchObject({ ok: false, step: "gate", reason: stop, message: expect.stringContaining(REQUIRED_PR_CHECKS[0]) });
         expect(w.s.calls).toEqual([]);
-        expect(w.s.said.join("\n")).not.toContain("needs your approval");
+        expect(said).not.toContain("needs your approval");
         // Once the job passes on a rerun, the same command goes on from the gate.
         w.s.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
         expect(await runRelease(options(dir), w.adapters)).toMatchObject({ ok: true });
@@ -431,8 +445,7 @@ describe("toolroll release", () => {
         return;
       }
       expect(outcome).toMatchObject({ ok: true });
-      const said = w.s.said.join("\n");
-      for (const one of [STILL_RUNNING, UNREADABLE]) expect(said.includes(one), one).toBe(one === line);
+      if (line === null) for (const one of [NOT_FINISHED, UNREADABLE]) expect(said).not.toContain(one);
     });
 
     test("a gate whose filed task lost its answer resumes with that task even after a check failed", async () => {
