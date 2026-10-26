@@ -65,6 +65,18 @@ describe("attack: the candidate's own scope.js approves its deployment", () => {
       for (const extra of [{}, { installedScope: { personApprovalOf } }]) {
         expect(() => deploymentCandidate(store, { runId: person, head: HEAD, evidenceRoot: join(dir, "evidence"), now: NOW }, { ...deps, ...extra })).toThrow("Native check unavailable");
       }
+      // A plane from before lead tokens has no task_act table (the 0.5.0 upgrade path), shown here by a store that has none: the records are still read, the
+      // proof rows still decide, and nothing throws on the missing table.
+      const handle = new Proxy(store.handle, { get: (target, key) => key !== "prepare" ? Reflect.get(target, key) : (sql: string) => {
+        if (!sql.includes("task_act")) return target.prepare(sql);
+        if (sql.includes("sqlite_master")) return { get: () => undefined };
+        throw new Error("no such table: task_act");
+      } });
+      // The store's own methods keep its real handle; only what the gate reads itself sees the older plane.
+      const old = new Proxy(store, { get: (target, key) => { const value = Reflect.get(target, key); return key === "handle" ? handle : typeof value === "function" ? value.bind(target) : value; } });
+      expect(() => deploymentCandidate(old, { runId: lead, head: HEAD, evidenceRoot: join(dir, "evidence"), now: NOW }, deps))
+        .toThrow("A person has to approve this candidate's scope: approved by the lead, not by a person.");
+      expect(() => deploymentCandidate(old, { runId: person, head: HEAD, evidenceRoot: join(dir, "evidence"), now: NOW }, deps)).toThrow("Native check unavailable");
     } finally { store.close(); }
   });
 

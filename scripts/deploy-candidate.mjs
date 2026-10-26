@@ -106,7 +106,10 @@ export function personApprovalFromRecords(store, taskId) {
   // makes it a machine's seal, whatever else is on record; an older proof never vouches for a later seal.
   const rows = store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE task_id = ? AND action = 'approval proved' AND actor = ? AND at = ? ORDER BY id DESC")
     .all(taskId, scope.approvedBy, scope.approvedAt);
-  const leadAct = store.handle.prepare(`SELECT 1 AS hit FROM task_act a JOIN task_ref r ON r.id = a.task_ref AND r.backend = 'built-in'
+  // A plane from before lead tokens has no task_act table (it came with them, store.ts LEAD_QUIET_SCHEMA): no lead
+  // could have approved there. The proof rows above still have to show a person's yes.
+  const hasActs = store.handle.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = 'task_act'").get() !== undefined;
+  const leadAct = hasActs && store.handle.prepare(`SELECT 1 AS hit FROM task_act a JOIN task_ref r ON r.id = a.task_ref AND r.backend = 'built-in'
       WHERE r.external_id = ? AND a.act = 'approved' AND a.lead = 1 AND a.account = ? AND a.at = ?`).get(taskId, scope.approvedBy, scope.approvedAt) !== undefined;
   const machine = rows.filter(row => !PERSON_PROOFS.has(String(row.outcome)));
   if (leadAct || machine.length > 0) return { ok: false, why: leadAct || machine.some(row => row.outcome === 'lead-token') ? 'approved by the lead, not by a person' : 'approved with a machine credential, not by a person' };

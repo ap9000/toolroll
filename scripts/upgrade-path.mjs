@@ -79,6 +79,11 @@ export function lastPublished(versions, count = Infinity) {
 
 /** The oldest release the rollback leg runs on: the ones a person may go back to from raised text limits (Oct 4). */
 export const ROLLBACK_FROM = "0.9.23";
+/** The oldest release that records a person's proof for each approval (0.9.64). A plane older than that can't say who
+ * approved, so the deploy refuses its candidate (docs/plans/approval-policy.md; the changelog says to update first). */
+export const PERSON_PROOF_FROM = "0.9.64";
+/** The deploy's refusal over a plane with no proof on record: the facts check must end in exactly this. */
+export const NO_PROOF_REFUSAL = "A person has to approve this candidate's scope: no record shows a person approved these exact words; approve it again.";
 /** Whether `version` is at or after `from`. */
 export function atLeast(version, from) {
   const [a, b] = [version, from].map(v => v.split(".").map(Number));
@@ -243,7 +248,7 @@ async function seed({ dist, stateDir, repo }) {
 }
 
 /** scripts/deploy-browser.mjs's facts(): the candidate's code over the installed release's store, before migration. */
-async function facts({ installed, candidate, databaseFile, evidenceRoot, runId, head }) {
+async function facts({ installed, candidate, databaseFile, evidenceRoot, runId, head, refusalAllowed = false }) {
   const { DatabaseSync } = await import("node:sqlite");
   const oldStore = await load(installed, "store.js"), oldEvidence = await load(installed, "verification-evidence.js");
   const installedAssignment = await load(installed, "assignment.js");
@@ -252,9 +257,16 @@ async function facts({ installed, candidate, databaseFile, evidenceRoot, runId, 
   const db = new DatabaseSync(databaseFile, { readOnly: true });
   try {
     db.exec("PRAGMA busy_timeout=5000");
-    const result = deploymentCandidate(new oldStore.Store(db), { runId, head, evidenceRoot, now: NOW() }, {
-      assignmentOf: installedAssignment.assignmentOf, verificationEvidence: oldEvidence.verificationEvidence, installedScope,
-    });
+    let result;
+    try {
+      result = deploymentCandidate(new oldStore.Store(db), { runId, head, evidenceRoot, now: NOW() }, {
+        assignmentOf: installedAssignment.assignmentOf, verificationEvidence: oldEvidence.verificationEvidence, installedScope,
+      });
+    } catch (error) {
+      // Only a plane older than PERSON_PROOF_FROM may end in a refusal, and only the caller decides it was the right one.
+      if (!refusalAllowed) throw error;
+      return { ok: false, why: String(error?.message ?? error) };
+    }
     return { ok: true, completion: result.completion.digest };
   } finally { db.close(); }
 }
@@ -524,7 +536,13 @@ async function onePath(version, { candidate, candidateDist, candidateVersion, ta
   // The same database and installation, kept apart for the npm route.
   const npmHome = join(work, `home-${version}-npm`), npmPrefix = join(npmHome, "global"), npmState = join(npmHome, ".toolroll");
   cpSync(home, npmHome, { recursive: true, verbatimSymlinks: true });
-  step("facts check", () => child("facts", { installed, candidate, databaseFile: seeded.databaseFile, evidenceRoot: seeded.evidenceRoot, runId: seeded.candidateRun, head: seeded.head }, env, "the deploy's facts check (the candidate's code over the installed store)"));
+  // From PERSON_PROOF_FROM on, the candidate deploys; before it, the candidate's code reads the older store and refuses
+  // for exactly the missing proof (anything else, a crash included, fails the path).
+  step("facts check", () => {
+    const proved = atLeast(version, PERSON_PROOF_FROM);
+    const fact = child("facts", { installed, candidate, databaseFile: seeded.databaseFile, evidenceRoot: seeded.evidenceRoot, runId: seeded.candidateRun, head: seeded.head, refusalAllowed: !proved }, env, "the deploy's facts check (the candidate's code over the installed store)");
+    if (proved ? fact?.ok !== true : fact?.ok !== false || fact.why !== NO_PROOF_REFUSAL) throw Error(`the deploy's facts check over ${version} ended ${JSON.stringify(fact)}`);
+  });
 
   // toolroll update, by the candidate's own updater, then the switched command opens the database.
   const staged = step("stage", () => child("stage", { candidateDist, stateDir, databaseFile: seeded.databaseFile, from: { version, dist: installed }, version: candidateVersion, tarball }, env, "staging the update"));
