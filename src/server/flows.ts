@@ -308,6 +308,8 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
       return page(made.ok ? "said" : "problem", made.said);
     }
     if (step === "github") {
+      // Issues from anyone on GitHub come into a flow: a widening, so it takes a password (chat-management.md §0a.3).
+      if (!authenticateApprover(who, body.get("password") ?? "", repo).ok) return page("problem", "Enter your Toolroll password to bring in GitHub issues. Nothing changed.");
       const made = addKitGithubTrigger(store, kit, repo, who.name, now, options.configDir ?? null);
       return page(made.ok ? "said" : "problem", made.said);
     }
@@ -395,6 +397,11 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
       // v94: which project tools it may use, and its rule for each action.
       const tool = body.get("tool") ?? "", op = body.get("op");
       const grant = store.subagentGrant(mate.id, tool);
+      // Giving a subagent a tool widens what it does unasked: a password (chat-management.md §0a.3). Revoking and
+      // tightening a rule don't need one.
+      if (op === "grant" && !authenticateApprover(who, body.get("password") ?? "", mate.repo).ok) {
+        return redirect(response, `${back}?problem=${encodeURIComponent(`Enter your Toolroll password to let ${nameOf(mate)} use ${tool}. Nothing changed.`)}#tools`);
+      }
       const changed = op === "grant" ? await grantTool(store, mate, tool, who.name, now, { toolHome })
         : op === "revoke" ? revokeTool(store, mate, tool, who.name, now)
         : grant === null ? { ok: false as const, said: `${nameOf(mate)} doesn't use ${tool}.` } : setToolRules(store, mate, tool, rulesFromForm(grant, key => body.sent.get(key)), who.name, now);

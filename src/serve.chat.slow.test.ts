@@ -2186,10 +2186,19 @@ describe("scout tasks and the digest card on the console (mate arc §10)", () =>
     expect(settingsData.view).toMatchObject({ kind: "settings", permission: { mode: "auto", canManage: true }, quality: { mode: "default", canManage: true } });
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(settings)?.[1] ?? "";
 
-    const global = await fetch(`${base}/settings/permission-default`, {
+    // Widening to Full access takes the password (chat-management.md §0a.3): without it nothing changes.
+    const unproved = await fetch(`${base}/settings/permission-default`, {
       method: "POST",
       headers: { cookie, origin: base },
       body: new URLSearchParams({ csrf, "permission-mode": "bypassPermissions" }),
+      redirect: "manual",
+    });
+    expect(unproved.status).toBe(303);
+    expect(store.permissionDefault().mode).toBe("auto");
+    const global = await fetch(`${base}/settings/permission-default`, {
+      method: "POST",
+      headers: { cookie, origin: base },
+      body: new URLSearchParams({ csrf, "permission-mode": "bypassPermissions", password: approverToken }),
       redirect: "manual",
     });
     expect(global.status).toBe(303);

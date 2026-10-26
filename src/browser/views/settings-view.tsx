@@ -172,6 +172,29 @@ function DefaultChoice({ title, description, action, field, value, canManage, ch
   </Section>;
 }
 
+/** The starting permission for new tasks. Moving to Full access widens every new task, so it asks for the password
+ * (an ordinary step-up: under Passwordless the signed-in session is enough); moving back to Auto saves at once. */
+function PermissionChoice({ value, canManage, changed, csrf }: { value: string; canManage: boolean; changed: string | null; csrf: string }) {
+  const base = useId();
+  const [chosen, setChosen] = useState(value);
+  const form = useRef<HTMLFormElement>(null);
+  const widening = chosen === "bypassPermissions" && value !== "bypassPermissions";
+  const options = [{ value: "auto", title: "Auto", description: "Asks before risky actions." }, { value: "bypassPermissions", title: "Full access", description: "Never asks and can change files anywhere on this computer. Trusted repositories only." }];
+  return <Section title="Unattended permissions" description="The starting choice for new tasks. Approved tasks keep their setting.">
+    {canManage && csrf ? <PostForm ref={form} action="/settings/permission-default">
+      <RadioGroup name="permission-mode" defaultValue={value} onValueChange={next => { setChosen(next); if (next !== "bypassPermissions" && next !== value) setTimeout(() => form.current?.requestSubmit(), 0); }} className="grid gap-2 desk:grid-cols-2" aria-label="Unattended permissions">
+        {options.map(one => <RadioCard key={one.value} id={`${base}-${one.value}`} value={one.value} title={one.title} description={one.description} />)}
+      </RadioGroup>
+      {widening && <div className="mt-3 flex flex-wrap items-end gap-3">
+        <Reauth><div className="grid min-w-56 flex-1 gap-2"><Label htmlFor={`${base}-password`}>Your password</Label><Input id={`${base}-password`} type="password" name="password" autoComplete="current-password" /></div></Reauth>
+        <Button type="submit">Use Full access</Button>
+      </div>}
+      <noscript><Button type="submit" className="mt-3">Save</Button></noscript>
+    </PostForm> : <p className="text-sm"><strong>{value === "bypassPermissions" ? "Full access" : "Auto"}</strong> <span className="text-muted-foreground">· an approver can change this</span></p>}
+    {changed && <p className="text-body text-muted-foreground">{changed}</p>}
+  </Section>;
+}
+
 /** The email account: Send email steps send from it and Email inbox triggers read it — a mail server, or a
  * Google account instead. Passwords and the Google client secret are written here and never shown again. */
 function Email({ email, csrf }: { email: NonNullable<BrowserSettingsView["email"]>; csrf: string }) {
@@ -471,9 +494,7 @@ export function SettingsView({ view, csrf }: { view: BrowserSettingsView; csrf: 
     </nav>
     <Section title="Appearance"><Themes view={view} csrf={csrf} /></Section>
     <Section id="accent" title="Accent colour" description="The one colour that marks what needs you."><AccentPicker view={view} csrf={csrf} /></Section>
-    {view.permission && <DefaultChoice title="Unattended permissions" description="The starting choice for new tasks. Approved tasks keep their setting." action="/settings/permission-default" field="permission-mode"
-      value={view.permission.mode} canManage={view.permission.canManage} changed={view.permission.changed} csrf={csrf}
-      options={[{ value: "auto", title: "Auto", description: "Asks before risky actions." }, { value: "bypassPermissions", title: "Full access", description: "Never asks and can change files anywhere on this computer. Trusted repositories only." }]} />}
+    {view.permission && <PermissionChoice value={view.permission.mode} canManage={view.permission.canManage} changed={view.permission.changed} csrf={csrf} />}
     {view.quality && <DefaultChoice title="Quality mode" description="Publishing and deploying still need their own approval." action="/settings/quality-default" field="quality-mode"
       value={view.quality.mode} canManage={view.quality.canManage} changed={view.quality.changed} csrf={csrf}
       options={[{ value: "default", title: "Default", description: "Everyday agents and the repository check." }, { value: "strict", title: "Strict / release", description: "Strongest agents. Release approval stays separate." }]} />}

@@ -23,6 +23,7 @@ import {
 } from "./chat-actions.js";
 import { confirmLeadProposal } from "./lead-doors.js";
 import { projectToolsOf } from "./project-tools.js";
+import { grantListed } from "./subagent-tools.js";
 import { skillsView, importSkill, changeSkills } from "./project-skills.js";
 import { knowledgeView, changeKnowledge } from "./project-knowledge.js";
 import { executeLeadTool, LEAD_TOOLS } from "./lead-tools.js";
@@ -260,17 +261,11 @@ describe("shared chat action lifecycle", () => {
     expect(confirm(proposal("tool_add", { repo, catalog: "github" }), true)).toMatchObject({ ok: true });
     expect(() => prepareSharedAction(store, who, "subagent_tools", { subagent: mate, tool: "github", change: "grant" }, root, now)).toThrow("github hasn't said what it can do yet. Test it on the Tools page first.");
     store.recordProjectToolTest(repo, "github", JSON.stringify({ at: now.toISOString(), ok: true, tools: ["list_issues", "create_issue"], problem: null }));
-    const grantRequest = { subagent: mate, tool: "github", change: "grant", action: null, use: null, undoWith: null, limitField: null, limitOver: null };
-    const grant = proposal("subagent_tools", grantRequest);
-    const { version: _version, ...legacy } = store.getLeadProposal(grant)!.payload;
-    const read = readSharedAction(legacy);
-    expect(read).toMatchObject({ ok: true, value: { request: grantRequest, stamp: legacy["stamp"] } });
-    expect(JSON.stringify(legacy["request"])).toBe(JSON.stringify(grantRequest));
-    expect(store.getLeadProposal(grant)!.payload).toMatchObject({ title: "Let Maya use github", terms: expect.arrayContaining(["list_issues: does it", "create_issue: asks you first"]) });
-    const stale = proposal("subagent_tools", { subagent: mate, tool: "github", change: "grant" });
-    expect(confirm(grant)).toMatchObject({ ok: true });
+    // Giving it a tool takes the person's password on its page (chat-management.md §0a.3): never a card.
+    expect(() => prepareSharedAction(store, who, "subagent_tools", { subagent: mate, tool: "github", change: "grant" }, root, now)).toThrow("Giving Maya a tool takes your password. Open Maya's page in Toolroll, then Tools → Let Maya use github.");
+    const listed = projectToolsOf(store, repo).find(one => one.name === "github")!;
+    expect(grantListed(store, store.getSubagent(mate)!, listed, null, who.name, now)).toMatchObject({ ok: true });
     expect(store.subagentGrant(mate, "github")?.rules).toEqual({ list_issues: { use: "free" }, create_issue: { use: "ask" } });
-    expect(confirm(stale)).toMatchObject({ ok: false });
     expect(() => prepareSharedAction(store, who, "subagent_tools", { subagent: mate, tool: "github", change: "rule", action: "delete_repo", use: "free" }, root, now)).toThrow("github has no action called delete_repo. Its actions: list_issues, create_issue.");
     const rule = proposal("subagent_tools", { subagent: mate, tool: "github", change: "rule", action: "create_issue", use: "never", undoWith: null, limitField: null, limitOver: null });
     expect(store.getLeadProposal(rule)!.payload).toMatchObject({ title: "Maya: create_issue — never" });

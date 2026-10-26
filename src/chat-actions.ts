@@ -490,12 +490,9 @@ export function prepareSharedAction(
         const named = projectToolsOf(store, repo).map(one => one.name);
         if (found === undefined) throw Error(`${project} has no tool called ${tool}.${named.length === 0 ? " Add it on the Tools page first." : ` Its tools: ${named.join(", ")}.`}${uses}`);
         if (grant !== null) throw Error(`${name} can already use ${tool}.`);
-        const actions = found.lastTest?.tools ?? [];
-        if (actions.length === 0) throw Error(`${tool} hasn't said what it can do yet. Test it on the Tools page first.`);
-        state = { rules: "" };
-        title = `Let ${name} use ${tool}`;
-        terms.push(...actions.map(one => `${one}: ${defaultRule({ name: one, readOnly: false }).use === "free" ? "does it" : "asks you first"}`),
-          `${name} asks for each call on its turn; Toolroll makes it by these rules, and every call is kept on the card. Change a rule any time.`);
+        if ((found.lastTest?.tools ?? []).length === 0) throw Error(`${tool} hasn't said what it can do yet. Test it on the Tools page first.`);
+        // Giving a subagent a tool takes the person's password (chat-management.md §0a.3), which never goes in chat.
+        throw Error(`Giving ${name} a tool takes your password. Open ${name}'s page in Toolroll, then Tools → Let ${name} use ${tool}.`);
       } else if (change === "revoke") {
         if (grant === null) throw Error(`${name} doesn't use a tool called ${tool}.${uses}`);
         state = { rules: JSON.stringify(grant.rules) };
@@ -1536,6 +1533,8 @@ function runSubagentAction(store: Store, payload: SharedAction, actor: string, n
     const grant = store.subagentGrant(mate.id, tool);
     if ((grant === null ? "" : JSON.stringify(grant.rules)) !== payload.state["rules"]) throw Error("Someone changed its tools since. Ask for a fresh proposal.");
     const found = projectToolsOf(store, mate.repo).find(one => one.name === tool);
+    // A grant takes the person's password on the subagent's page (chat-management.md §0a.3): never from a card.
+    if (req["change"] === "grant") throw Error("Giving a subagent a tool takes your password. Do it on its page in Toolroll.");
     const done = req["change"] === "grant" ? found === undefined ? { ok: false as const, said: `There's no tool called ${tool} any more.` } : grantListed(store, mate, found, null, actor, now)
       : req["change"] === "revoke" ? revokeTool(store, mate, tool, actor, now)
       : setToolRules(store, mate, tool, { [String(req["action"])]: { use: req["use"], limit: req["limitField"] === undefined || req["limitField"] === null || req["limitField"] === "" ? null : { field: req["limitField"], over: req["limitOver"] },

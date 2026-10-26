@@ -1699,6 +1699,11 @@ ${postForm("/settings/chat-approval/save", html`\
     if (wanted !== "auto" && wanted !== "bypassPermissions") {
       return refuse(response, who, 400, "permissions must be Auto or Full access", "/settings");
     }
+    // Widening every new task to Full access takes a password (chat-management.md §0a.3): an ordinary step-up, so a
+    // signed-in session does under Passwordless. Back to Auto narrows, and needs none.
+    if (wanted === "bypassPermissions" && store.permissionDefault().mode !== "bypassPermissions" && !authenticateApprover(who, body.get("password") ?? "").ok) {
+      return redirect(response, `/settings?said=${encodeURIComponent("Enter your Toolroll password to start new tasks with Full access. Nothing changed.")}`);
+    }
     store.setPermissionDefault(wanted, who.name, now);
     return redirect(
       response,

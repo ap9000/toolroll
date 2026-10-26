@@ -110,3 +110,42 @@ test("with it on, adding a webhook trigger (an address) still takes a typed pass
   expect(await add({ kind: "webhook" }, { password })).toMatchObject({ body: { ok: true } });
   expect(await add({ kind: "schedule", schedule: "daily 09:00", title: "Standup" })).toMatchObject({ body: { ok: true } });
 });
+
+test("the three widening actions take a password (an ordinary step-up: with Passwordless on, the session does)", async () => {
+  await new Promise<void>(resolve => server.close(() => resolve()));
+  // Settings → Unattended permissions answers only on a console with chat settings.
+  server = createDecisionServer({ store, evidenceRoot: home, repos: [home], terminalHost: null, configDir: home, telegramTokenFile: join(home, "telegram-token") } as Parameters<typeof createDecisionServer>[0]);
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+  const { setUpKit, kitOf, kitInstalled } = await import("./kits.js");
+  const kit = kitOf("support-desk")!;
+  expect(await setUpKit(store, kit, home, "alex", T0, home)).toMatchObject({ ok: true });
+  const mate = kitInstalled(store, kit, home)!.mate;
+  const cookie = await login();
+  const csrf = csrfOf(await page(cookie, "/settings/passwordless"));
+  const widen = {
+    fullAccess: (extra: Record<string, string> = {}) => post(cookie, "/settings/permission-default", { csrf, "permission-mode": "bypassPermissions", ...extra }),
+    toolGrant: (extra: Record<string, string> = {}) => post(cookie, `/settings/lead/subagents/${mate.id}/tools`, { csrf, op: "grant", tool: "stripe", ...extra }),
+    kitGithub: (extra: Record<string, string> = {}) => post(cookie, `/kits/${kit.id}/github`, { csrf, repo: home, ...extra }),
+  };
+  // No password: refused, nothing changes.
+  expect((await widen.fullAccess()).location).toMatch(/Enter your Toolroll password to start new tasks with Full access/);
+  expect(store.permissionDefault().mode).toBe("auto");
+  expect((await widen.toolGrant()).location).toMatch(/Enter your Toolroll password to let .* use stripe/);
+  expect((await widen.kitGithub()).location).toMatch(/Enter your Toolroll password to bring in GitHub issues/);
+  // A wrong one: the same.
+  expect((await widen.kitGithub({ password: "wrong" })).location).toMatch(/Enter your Toolroll password/);
+  // The password: each goes past the check (the tool and GitHub answers are this fixture's own).
+  expect((await widen.toolGrant({ password })).location).not.toMatch(/Enter your Toolroll password/);
+  expect((await widen.kitGithub({ password })).location).not.toMatch(/Enter your Toolroll password/);
+  expect((await widen.fullAccess({ password })).status).toBe(303);
+  expect(store.permissionDefault().mode).toBe("bypassPermissions");
+  // Back to Auto narrows: no password.
+  await post(cookie, "/settings/permission-default", { csrf, "permission-mode": "auto" });
+  expect(store.permissionDefault().mode).toBe("auto");
+  // Passwordless on: the signed-in session is the step-up.
+  await post(cookie, "/settings/passwordless", { csrf, action: "on", password });
+  await widen.fullAccess();
+  expect(store.permissionDefault().mode).toBe("bypassPermissions");
+  expect((await widen.kitGithub()).location).not.toMatch(/Enter your Toolroll password/);
+});
