@@ -89,11 +89,31 @@ describe("attack 2: the build's output is untrusted", () => {
     expect(result).toMatchObject({ ok: false, reason: "build", message: expect.stringContaining("symlink") });
   });
 
-  test("a background writer still running after the build refuses", async () => {
-    const f = open({ build: `import { spawn } from "node:child_process"; import { mkdirSync, writeFileSync } from "node:fs";
+  /** A build that leaves a detached writer behind (its own session, outside the build's process group). */
+  const lingering = (marker: string) => `import { spawn } from "node:child_process"; import { mkdirSync, writeFileSync } from "node:fs";
 mkdirSync("dist", { recursive: true }); writeFileSync("dist/index.js", "1");
-spawn(process.execPath, ["-e", "setTimeout(() => require('fs').writeFileSync('dist/late.js', '2'), 1500)"], { detached: true, stdio: "ignore" }).unref();\n` });
+spawn(process.execPath, ["-e", "/*${marker}*/ setTimeout(() => require('fs').writeFileSync('dist/late.js', '2'), 1500)"], { detached: true, stdio: "ignore" }).unref();\n`;
+  const alive = (marker: string) => { try { return execFileSync("pgrep", ["-f", marker], { encoding: "utf8" }).trim() !== ""; } catch { return false; } };
+
+  test("a background writer still running after the fenced build refuses (macOS); on Linux the sandbox kills it first", async () => {
+    const marker = `late-writer-${process.pid}-${Date.now()}`;
+    const f = open({ build: lingering(marker) });
     const result = await proveCarry(f.store, { authority: f.authority().id, to: f.commit(testOnly), now: LATER });
+    if (process.platform === "linux") {
+      // The build's PID namespace ended with it: no writer remains, so the digest is of output nothing can change.
+      expect(alive(marker)).toBe(false);
+      if (!result.ok) expect(result.message).toMatch(/still running|still writing/);
+    } else {
+      expect(result).toMatchObject({ ok: false, reason: "build" });
+      expect(result.ok === false && result.message).toMatch(/still running|still writing/);
+    }
+  });
+
+  test("a background writer that outlives an unfenced build is found, on every platform, and refuses", async () => {
+    const marker = `late-writer-${process.pid}-${Date.now()}-unfenced`;
+    const f = open({ build: lingering(marker) });
+    const { runner } = countingRunner();
+    const result = await proveCarry(f.store, { authority: f.authority().id, to: f.commit(testOnly), now: LATER, runner });
     expect(result).toMatchObject({ ok: false, reason: "build" });
     expect(result.ok === false && result.message).toMatch(/still running|still writing/);
   });

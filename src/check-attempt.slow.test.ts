@@ -33,6 +33,8 @@ describe("a prepared candidate's Full check carries the handshake", () => {
     const REPO = realpathSync(mkdtempSync(join(tmpdir(), "so-attempt-repo-")));
     const sh = (...args: string[]) => execFileSync("git", ["-C", REPO, "-c", "user.name=t", "-c", "user.email=t@x", ...args], { encoding: "utf8" }).trim();
     sh("init", "-q", "-b", "main");
+    // The builder commits in the linked worktree: the repository's own identity, as CI has no global one.
+    sh("config", "user.name", "t"); sh("config", "user.email", "t@x");
     writeFileSync(join(REPO, ".gitignore"), ".evidence/\n");
     writeFileSync(join(REPO, "README.md"), "base\n");
     sh("add", "."); sh("commit", "-q", "-m", "base"); const base = sh("rev-parse", "HEAD");

@@ -20,7 +20,7 @@
  * explicit decision; nothing here does.)
  */
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -255,19 +255,42 @@ export function fencedBuildRunner(store: Store): BuildRunner {
   };
 }
 
-/** Pids whose working folder is inside `root` (lsof on macOS, /proc on Linux). */
-function processesInside(root: string): number[] {
+/**
+ * Pids whose working folder is inside `root` (lsof on macOS, /proc on Linux), or null when that can't be read (the
+ * caller refuses: nothing is digested unless it is shown that no writer remains).
+ *
+ * On Linux a fenced build can't leave one at all: the sandbox runtime starts every launch in a PID namespace of its own
+ * (bwrap --unshare-pid, --die-with-parent), and when the build's process ends the kernel kills everything left in that
+ * namespace, a detached or new-session child included, before the launch returns. The scan is the check for whatever
+ * runs outside such a namespace (an unfenced runner) and the proof on macOS, where Seatbelt has no PID namespace.
+ */
+function processesInside(root: string): number[] | null {
   const inside = (cwd: string) => cwd === root || cwd.startsWith(`${root}/`);
   if (process.platform === "linux") {
+    let names: string[];
+    try { names = readdirSync("/proc").filter(one => /^\d+$/.test(one)); } catch { return null; }
     const found: number[] = [];
-    for (const name of readdirSync("/proc").filter(one => /^\d+$/.test(one))) {
-      try { if (inside(realpathSync(`/proc/${name}/cwd`))) found.push(Number(name)); } catch { /* gone */ }
+    for (const name of names) {
+      if (Number(name) === process.pid) continue;
+      let cwd: string;
+      try { cwd = readlinkSync(`/proc/${name}/cwd`); }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        // Gone since the listing, or a process of another user (whose folder can't be one this build made).
+        if (code === "ENOENT" || code === "ESRCH" || code === "EACCES" || code === "EPERM") continue;
+        return null;
+      }
+      if (inside(cwd)) found.push(Number(name));
     }
     return found;
   }
   let text = "";
   try { text = execFileSync("lsof", ["-nP", "-d", "cwd", "-Fpn"], { encoding: "utf8", timeout: 20_000, maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "ignore"] }); }
-  catch (error) { text = String((error as { stdout?: unknown }).stdout ?? ""); }
+  catch (error) {
+    // lsof exits 1 when some processes can't be read; its output still lists every one it could. No output at all: unknown.
+    text = String((error as { stdout?: unknown }).stdout ?? "");
+    if (text === "") return null;
+  }
   const found: number[] = [];
   let pid = 0;
   for (const line of text.split("\n")) {
@@ -363,6 +386,7 @@ export async function artifactDigest(gitDir: string, sha: string, runner: BuildR
     } catch { return { ok: false, message: "The packed file list couldn't be read." }; }
     // The build's process group is gone; anything still running from the folder (a background writer) refuses.
     const left = processesInside(dir);
+    if (left === null) return { ok: false, message: "It can't be shown that nothing the build started is still running, so its output isn't trusted." };
     if (left.length > 0) return { ok: false, message: `Something the build started is still running (process ${left.join(", ")}).` };
     const paths = [...walk(src, "dist"), ...packed];
     const first = digestTree(src, paths);
