@@ -18,6 +18,7 @@ import type { Store } from "./store.js";
 import { claudeLimitsOf, noteLimits } from "./provider-limits.js";
 import type { LiveInput } from "./live-input.js";
 import { sleep as defaultSleep } from "./sleep.js";
+import { primaryResultEvent, topLevelEvent } from "./stream-scope.js";
 
 export type ExecResult = {
   /** Process exit code, or one of the synthetic codes below. */
@@ -1893,21 +1894,17 @@ function syntheticMessageLine(content: string, truncated: boolean): string {
  *
  *   - a bounded identity witness for `system`/`init`: the first init signal,
  *     the first usable session id, and one conflicting id
- *   - the FIRST primary `result` event, selected STRUCTURALLY (finding 10):
- *     origin absent or `origin.kind === "human"` — an allowlist, so a
- *     background task's result (or any future origin kind) can never be
- *     mistaken for the main query's accounting. Later results are dropped.
+ *   - the FIRST primary `result` event, selected STRUCTURALLY (finding 10;
+ *     stream-scope.ts `primaryResultEvent`): top-level, and origin absent or
+ *     `origin.kind === "human"` — an allowlist, so a subagent's or background
+ *     task's result (or any future origin kind) can never be mistaken for the
+ *     main query's accounting. Later results are dropped. A subagent's init
+ *     never enters the identity witness.
  *
  * The result's stdout is the retained lines joined — a synthetic, bounded
  * envelope `claudeParse` reads exactly like test fixtures. Timeout,
  * process-group, kill, and spawn semantics match `runStreamJsonl`.
  */
-function primaryResultOrigin(event: Record<string, unknown>): boolean {
-  const origin = event["origin"];
-  if (origin === undefined || origin === null) return true;
-  if (typeof origin === "object" && String((origin as Record<string, unknown>)["kind"] ?? "") === "human") return true;
-  return false; // task-notification, channel, peer, coordinator, unknown: never the envelope
-}
 
 /** The usage fields Claude reports per message (not per session): a live session's account adds them up. */
 const LIVE_SUMMED_USAGE = ["input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"] as const;
@@ -2059,7 +2056,10 @@ export function runClaudeStreamJsonl(
       }
       if (event === null || typeof event !== "object") return;
       const type = String(event["type"] ?? "");
-      if (type === "system" && String(event["subtype"] ?? "") === "init") {
+      // A subagent's init, words and result are not the session's (stream-scope.ts): they never witness its identity,
+      // name its session, fire its receipt or stand as its result. They still reach the observers below, which filter
+      // for themselves.
+      if (type === "system" && String(event["subtype"] ?? "") === "init" && topLevelEvent(event)) {
         if (initLine === null) initLine = line;
         const id = transportSessionId(event["session_id"]);
         let identityWitness = false;
@@ -2084,12 +2084,11 @@ export function runClaudeStreamJsonl(
         // Top-level only (finding 11): assistant events carry no origin;
         // parent_tool_use_id is the correlation field, and a subagent's
         // words prove nothing about the main prompt.
-        const parent = event["parent_tool_use_id"];
-        if (parent === undefined || parent === null) fireReceipt();
+        if (topLevelEvent(event)) fireReceipt();
       } else if (type === "rate_limit_event") {
         // v105: the plan's usage windows, as Claude says them each turn (the Tasks page's limits).
         noteLimits(claudeLimitsOf(event));
-      } else if (type === "result" && (resultLine === null || live !== null) && primaryResultOrigin(event)) {
+      } else if (type === "result" && (resultLine === null || live !== null) && primaryResultEvent(event)) {
         // A live session ends a turn with a result each time: the run's account is the last one, with every main
         // result's usage and turns added up (account). After an oversized main result the retained result stays the
         // fail-closed overflow, but later results still count toward its cost.

@@ -49,6 +49,7 @@ import type { BrokerOptions } from "./tool-broker.js";
 import { proxyEnv, providerOnlyNetwork, repositoryEcosystems, resolveNetwork, startEgressProxy, type EgressProxy, type NetworkProfile } from "./egress.js";
 import { claudeConfigDir, claudeDefaults, codexDefaults, codexHomeDir, isolatedCodexHome, type ProviderDefaults } from "./provider-home.js";
 import { billingOf, claudeBillingFrom, seenBilling, type Billing } from "./spend.js";
+import { primaryResultEvent, topLevelEvent } from "./stream-scope.js";
 
 export type { ProviderRunner } from "./provider.js";
 
@@ -562,7 +563,7 @@ export async function invokeAgent(
   // given, and the sandbox engine and version it runs in.
   if (invocation.phase !== "review") store.recordRunFence(runId, { method: fenced.method, paths: fence.length, policy: (launchSandbox ?? LEGACY_SANDBOX).policy,
     digest: fenceDigest(fence, grants), engine: sandboxRuntimeWords() }, clock());
-  const billingSeen: { keySource: string | null; model: string | null; planWindows: boolean; answered: boolean } = { keySource: null, model: null, planWindows: false, answered: false };
+  const billingSeen: ClaudeBillingSeen = { keySource: null, model: null, planWindows: false, answered: false };
   // v105: a Codex run on its sign-in bills as Codex says it's signed in (a ChatGPT plan, or a saved key, or Bedrock),
   // read right before it runs. Never with an injected runner: tests don't start a real Codex.
   const codexLogin = spec.provider === "codex" && authMode === "subscription" && runner === undefined
@@ -609,14 +610,7 @@ export async function invokeAgent(
     ...(workspace === null ? {} : { cwd: workspace }),
     // v105: how the CLI really billed this turn (its key source, its plan's windows), read off its own stream.
     onStreamEvent: event => {
-      if (event["type"] === "system" && event["subtype"] === "init") {
-        if (typeof event["apiKeySource"] === "string") billingSeen.keySource = event["apiKeySource"].slice(0, 80);
-        if (typeof event["model"] === "string") billingSeen.model = event["model"].slice(0, 200);
-      } else if (event["type"] === "rate_limit_event") {
-        billingSeen.planWindows = true;
-      } else if (event["type"] === "result" && event["is_error"] !== true && event["subtype"] === "success") {
-        billingSeen.answered = true;
-      }
+      observeClaudeBilling(billingSeen, event);
       runOptions.onStreamEvent?.(event);
     },
     owner: runOwnerTag(store, runId),
@@ -1385,4 +1379,23 @@ export function checkoutSandboxOf(store: Store, repo: string, runIds: readonly n
 /** The digest of a launch's whole fence (its denied paths and grants, canonical), as stamped on its run (C11). */
 export function fenceDigest(fence: readonly string[], grants: FenceGrants): string {
   return createHash("sha256").update(`toolroll:fence:${canonicalJson({ fence: [...fence], grants: grants as unknown as Record<string, unknown> })}`).digest("hex").slice(0, 32);
+}
+
+/** What a Claude turn's own stream says about how it billed (v105). */
+export type ClaudeBillingSeen = { keySource: string | null; model: string | null; planWindows: boolean; answered: boolean };
+
+/**
+ * One stream event's billing observation: the key source and model from the session's own init, plan windows from a
+ * rate-limit event, and whether the main query answered. The session's own events only (stream-scope.ts): a
+ * subagent's init or result says nothing about this turn's billing.
+ */
+export function observeClaudeBilling(seen: ClaudeBillingSeen, event: Record<string, unknown>): void {
+  if (event["type"] === "system" && event["subtype"] === "init" && topLevelEvent(event)) {
+    if (typeof event["apiKeySource"] === "string") seen.keySource = event["apiKeySource"].slice(0, 80);
+    if (typeof event["model"] === "string") seen.model = event["model"].slice(0, 200);
+  } else if (event["type"] === "rate_limit_event") {
+    seen.planWindows = true;
+  } else if (primaryResultEvent(event) && event["is_error"] !== true && event["subtype"] === "success") {
+    seen.answered = true;
+  }
 }

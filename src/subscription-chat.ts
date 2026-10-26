@@ -33,6 +33,7 @@ import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import type { SubscriptionChatProviderId } from "./store.js";
 import { claudeLimitsOf, noteLimits } from "./provider-limits.js";
 import { claudeBillingFrom } from "./spend.js";
+import { primaryResultEvent, topLevelEvent } from "./stream-scope.js";
 
 export type SubscriptionLeadRequest = {
   provider: SubscriptionChatProviderId;
@@ -204,7 +205,8 @@ function lastResultLine(stdout: string): string {
     if (line === "") continue;
     try {
       const event = JSON.parse(line) as unknown;
-      if (typeof event === "object" && event !== null && (event as Record<string, unknown>)["type"] === "result") return line;
+      // The main query's result, never a subagent's or a background task's (stream-scope.ts).
+      if (typeof event === "object" && event !== null && primaryResultEvent(event as Record<string, unknown>)) return line;
     } catch { /* not an event line */ }
   }
   return "";
@@ -269,10 +271,10 @@ export async function performSubscriptionLeadRequest(
         try { event = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
         const reading = claudeLimitsOf(event);
         if (reading !== null) { seen.planWindows = true; noteLimits(reading); }
-        else if (event["type"] === "system" && event["subtype"] === "init") {
+        else if (event["type"] === "system" && event["subtype"] === "init" && topLevelEvent(event)) {
           seen.keySource = typeof event["apiKeySource"] === "string" ? event["apiKeySource"] : null;
           seen.model = typeof event["model"] === "string" ? event["model"] : null;
-        } else if (event["type"] === "result") answered = true;
+        } else if (primaryResultEvent(event)) answered = true;
       }
       const billing = answered ? claudeBillingFrom(seen) : null;
       if (billing !== null) noteLimits({ provider: "claude", plan: null, windows: [], partial: true, billing });

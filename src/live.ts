@@ -18,6 +18,7 @@ import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSy
 import { join } from "node:path";
 import { scanForSecrets } from "./evidence.js";
 import { createLiveRecorder, parseLiveRecords, redactLiveLines, projectLiveText, serializeLiveRecord, type KeyState, type LiveActivityKind, type LiveRecord, type LiveRecorderOptions } from "./live-records.js";
+import { topLevelEvent } from "./stream-scope.js";
 
 export const LIVE_LINE_CAP = 2 * 1024;
 export const LIVE_FILE_CAP = 4 * 1024 * 1024;
@@ -70,6 +71,8 @@ const toolKind = (name: unknown): LiveActivityKind => TOOL_KINDS.get(typeof name
  */
 export function liveActivityKind(event: Record<string, unknown>): LiveActivityKind | null {
   try {
+    // A subagent's events, of every type, are not this run's activity (stream-scope.ts).
+    if (!topLevelEvent(event)) return null;
     const type = String(event["type"] ?? "");
     if ((type === "system" && String(event["subtype"] ?? "") === "init") || type === "thread.started" || type === "init") return "session";
     if (type === "item.completed") {
@@ -80,8 +83,6 @@ export function liveActivityKind(event: Record<string, unknown>): LiveActivityKi
     if (type === "message") return String(event["role"] ?? "") === "assistant" && event["delta"] !== true ? "message" : null;
     if (type === "tool_call" || type === "tool_use") return toolKind(event["name"] ?? (event["tool"] as Record<string, unknown> | undefined)?.["name"]);
     if (type !== "assistant") return null;
-    const parent = event["parent_tool_use_id"];
-    if (parent !== undefined && parent !== null) return null;
     const content = (event["message"] as Record<string, unknown> | undefined)?.["content"];
     if (!Array.isArray(content)) return null;
     let last: LiveActivityKind | null = null;

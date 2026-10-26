@@ -16,6 +16,7 @@
 
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { scanForSecrets } from "./evidence.js";
+import { topLevelEvent } from "./stream-scope.js";
 
 /**
  * The fixed tool vocabulary: known harness tools map to OUR kinds; anything
@@ -482,8 +483,7 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
   const claude = (event: Record<string, unknown>, at: string): LiveRecord[] => {
     const type = event["type"];
     // A subagent's words, tools, turns and sessions are not this run's conversation — and never close its steps.
-    const parent = event["parent_tool_use_id"];
-    if (parent !== undefined && parent !== null) return [];
+    if (!topLevelEvent(event)) return [];
     if (type === "system") return event["subtype"] === "init" ? (keyState.inKey = false, [...closeAll(at), { k: "start", at }]) : [];
     if (type === "result") return closeAll(at);
     const content = object(event["message"])?.["content"];

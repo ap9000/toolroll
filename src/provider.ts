@@ -30,6 +30,7 @@ import { REVIEW_OUTPUT_LIMITS } from "./structured-output.js";
 import { ACP_AGENTS, isAcpProvider, withAcp, type AcpProviderId, type KeyedProviderId } from "./acp-agents.js";
 import { acpParse } from "./acp-client.js";
 import { agentSpecSchema, MODEL_ID, modelIdSchema, PROVIDER_ID_VALUES, providerIdSchema, type AgentSpec, type ProviderId } from "./contracts/provider.js";
+import { primaryResultEvent, topLevelEvent } from "./stream-scope.js";
 
 export type { AgentSpec, ProviderId } from "./contracts/provider.js";
 export const PROVIDER_IDS: readonly ProviderId[] = PROVIDER_ID_VALUES;
@@ -501,17 +502,6 @@ function claudeFinalMessage(result: ClaudeResultShape | null): string | null {
   return typeof result.result === "string" ? result.result : null;
 }
 
-/**
- * The primary-result allowlist (arc 1 finding 10): only an absent origin or
- * an explicit human origin can be the main query's accounting envelope.
- * Every other kind — task-notification, channel, peer, coordinator, and
- * anything the SDK grows later — fails closed as a non-primary result.
- */
-function claudePrimaryOrigin(event: ClaudeResultShape): boolean {
-  if (event.origin === undefined || event.origin === null) return true;
-  return typeof event.origin === "object" && String((event.origin as Record<string, unknown>)["kind"] ?? "") === "human";
-}
-
 function claudeEnvelopeOf(
   result: ClaudeResultShape | null,
   sessionFromInit: string | null,
@@ -599,7 +589,9 @@ function claudeParse(stdout: string): ParsedEnvelope {
       // Legacy buffered envelope: one JSON object, no event framing.
       return claudeEnvelopeOf(event as ClaudeResultShape, null, null);
     }
-    if (String(type) === "system" && String(event["subtype"] ?? "") === "init") {
+    // A subagent's init and result (parent_tool_use_id set) are not the session's: they never name, conflict or
+    // account for it (stream-scope.ts).
+    if (String(type) === "system" && String(event["subtype"] ?? "") === "init" && topLevelEvent(event)) {
       initSeen = true;
       const id = sessionIdOf(event["session_id"]);
       if (id !== null) {
@@ -619,7 +611,7 @@ function claudeParse(stdout: string): ParsedEnvelope {
         // replacement for the primary result's usage/accounting envelope.
         transportFailure = result;
       }
-      if (primary === null && claudePrimaryOrigin(result)) primary = result;
+      if (primary === null && primaryResultEvent(event)) primary = result;
     }
   }
   const envelope = claudeEnvelopeOf(primary, sessionFromInit, initSeen, initSessionConflict);
