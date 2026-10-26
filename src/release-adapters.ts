@@ -20,7 +20,7 @@ import { activeUpdateWork } from "./desktop-update-gate.js";
 import { BEFORE_SWAP, gateOwner } from "./release-gate.js";
 import { findCliLinks, switchCliLinks } from "./release-links.js";
 import {
-  databasePath, finishReleaseOperation, openStore, releaseAuthorityOfTask, releaseCarries, releaseOperations, renewReleaseLease, reserveRelease, runReleaseOperation,
+  databasePath, finishReleaseOperation, requireFreshReleaseApproval, openStore, releaseAuthorityOfTask, releaseCarries, releaseOperations, renewReleaseLease, reserveRelease, runReleaseOperation,
   Store, takeReleaseLease, type Database,
 } from "./store.js";
 import { liveReleaseOf } from "./scope.js";
@@ -591,9 +591,10 @@ export function storeReleaseAdapter(open: () => Store, done: (store: Store) => v
       });
     },
     async start(operation, epoch) { return withStore(store => runReleaseOperation(store, operation, epoch, now())); },
-    async finish(operation, outcome, facts = {}) { withStore(store => finishReleaseOperation(store, operation, outcome, facts, now())); },
+    async finish(operation, outcome, facts, epoch) { return withStore(store => finishReleaseOperation(store, operation, outcome, facts, now(), epoch)); },
+    async needsApproval(authority, reason, epoch) { return withStore(store => requireFreshReleaseApproval(store, authority, reason, epoch, now())); },
     async operations(authority) {
-      return withStore(store => releaseOperations(store, authority).map(op => ({ id: op.id, kind: op.kind, state: op.state, candidate: op.candidate, externalRef: op.externalRef })));
+      return withStore(store => releaseOperations(store, authority).map(op => ({ id: op.id, kind: op.kind, state: op.state, candidate: op.candidate, externalRef: op.externalRef, reservedAt: op.reservedAt })));
     },
   };
 }

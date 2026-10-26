@@ -15,6 +15,7 @@ import { deploymentGate } from "../../src/deploy-gate.js";
 import { assignmentOf, checkAssignmentAsOperator } from "../../src/assignment.js";
 import { mergePullRequest } from "../../src/pull-request-flow.js";
 import { verifyApproverByPassword } from "../../src/principal.js";
+import { recordTrustedMain } from "../../src/store.js";
 import type { StandingOrder } from "../../src/contracts/flow.js";
 
 let fixture: ReleaseFixture | null = null;
@@ -23,9 +24,13 @@ const LATER = new Date(RELEASE_NOW.getTime() + 60_000);
 const UNITS = ["src/browser/app.test.ts", "src/index.test.ts", "test/attacks/fence.test.ts"];
 const SCHEDULE = "daily:03:00@UTC";
 
-/** A project whose main is the fixture's approved commit, with the nightly check approved by alex. */
+const REMOTE = "https://example.invalid/r.git";
+
+/** A project whose main (as the plane read it from the recorded remote) is the fixture's approved commit, with the
+ * nightly check approved by alex. */
 function nightly() {
   const f = (fixture = releaseFixture());
+  recordTrustedMain(f.store, f.repo, f.approved, REMOTE, RELEASE_NOW);
   const made = createNightlyCheckFlow(f.store, { repo: f.repo, schedule: SCHEDULE, as: "alex", token: f.password, start: true }, RELEASE_NOW);
   if (!made.ok) throw new Error(made.message);
   const order = () => (triggerConfigOf(f.store.flowTriggers(made.flow).find(one => one.id === made.trigger)!) as { order: StandingOrder }).order;
@@ -73,8 +78,8 @@ describe("the nightly full check on main", () => {
     expect(open()).toEqual(["unit:src/browser/app.test.ts::app", "unit:src/index.test.ts::answer"]);
     const notice = f.store.handle.prepare("SELECT body, push_class FROM notification WHERE dedupe_key LIKE 'nightly-failed:%'").get();
     expect(notice).toMatchObject({ push_class: "attention", body: `Nightly full check failed on main at ${f.approved.slice(0, 7)}: 2 unit files.` });
-    // The release's own full check passes src/index.test.ts and still fails app: item 1 clears, item 2 stays.
-    sealedCheck(f, f.taskId, f.approved, () => reportOf(UNITS.map(file => file === "src/browser/app.test.ts" ? { file, failed: ["app"] } : file === "src/index.test.ts" ? { file, passed: ["answer"] } : { file })));
+    // The release's own full check passes, naming `answer` but not `app`: item 1 clears, item 2 stays.
+    sealedCheck(f, f.taskId, f.approved, () => reportOf(UNITS.map(file => file === "src/index.test.ts" ? { file, passed: ["answer"] } : { file })));
     settleReleaseChecks(f.store, EVIDENCE(f), LATER);
     expect(open()).toEqual(["unit:src/browser/app.test.ts::app"]);
     // A composed pass of the other: nothing clears.
@@ -191,7 +196,7 @@ describe("security review: clearing main's debt", () => {
     const { f, open } = failedNightly();
     f.git("checkout", "-q", "main");
     const next = f.commit({ "docs/main.md": "# main\n" });
-    expect(next).toBeTruthy();
+    recordTrustedMain(f.store, f.repo, next, REMOTE, LATER);
     sideCheck(f, next, passing);
     settleReleaseChecks(f.store, EVIDENCE(f), LATER);
     expect(open()).toEqual([]);
@@ -203,6 +208,7 @@ describe("security review: clearing main's debt", () => {
   ])("on main, %s clears nothing, even with its whole part passing", (_name, report) => {
     const { f, open } = failedNightly();
     const next = f.commit({ "docs/main.md": "# main\n" });
+    recordTrustedMain(f.store, f.repo, next, REMOTE, LATER);
     sideCheck(f, next, report);
     settleReleaseChecks(f.store, EVIDENCE(f), LATER);
     expect(open()).toEqual(["unit:src/index.test.ts::answer"]);

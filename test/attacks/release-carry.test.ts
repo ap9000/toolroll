@@ -300,13 +300,13 @@ describe("attack 10: a stale coordinator's operation never starts", () => {
     if (!one.ok) throw new Error(one.why);
     expect(reserveRelease(f.store, { authority: id, kind: "deploy", taskId: f.taskId, candidate: f.approved, epoch: one.epoch, operationId: "d1", now: RELEASE_NOW }).ok).toBe(true);
     expect(runReleaseOperation(f.store, "d1", one.epoch, RELEASE_NOW)).toBe(true);
-    finishReleaseOperation(f.store, "d1", "succeeded", {}, RELEASE_NOW);
+    finishReleaseOperation(f.store, "d1", "succeeded", {}, RELEASE_NOW, one.epoch);
     expect(reserveRelease(f.store, { authority: id, kind: "merge", taskId: f.taskId, candidate: f.approved, epoch: one.epoch, operationId: "m1", now: RELEASE_NOW }).ok).toBe(true);
     // Paused past its lease; coordinator 2 takes over (the epoch goes up) and reconciles the reserved merge.
     const two = takeReleaseLease(f.store, id, "coordinator-2", new Date(RELEASE_NOW.getTime() + 120_000), 60_000);
     if (!two.ok) throw new Error(two.why);
     expect(two.epoch).toBe(one.epoch + 1);
-    finishReleaseOperation(f.store, "m1", "failed", { detail: "reconciled: never started" }, new Date(RELEASE_NOW.getTime() + 120_000));
+    finishReleaseOperation(f.store, "m1", "failed", { detail: "reconciled: never started" }, new Date(RELEASE_NOW.getTime() + 120_000), two.epoch);
     // Coordinator 1 wakes up: its compare-and-swap fails and the call never starts.
     expect(runReleaseOperation(f.store, "m1", one.epoch, new Date(RELEASE_NOW.getTime() + 130_000))).toBe(false);
     expect(releaseOperations(f.store, id).find(op => op.id === "m1")?.state).toBe("failed");
@@ -462,7 +462,7 @@ describe("security review, round 2", () => {
     // The reserved deploy can't start now…
     expect(runReleaseOperation(f.store, "d1", lease.epoch, after)).toBe(false);
     // …nor can a new one be reserved…
-    finishReleaseOperation(f.store, "d1", "failed", { detail: "reconciled: never started" }, after);
+    finishReleaseOperation(f.store, "d1", "failed", { detail: "reconciled: never started" }, after, lease.epoch);
     expect(reserveRelease(f.store, { authority: id, kind: "deploy", taskId: f.taskId, candidate: f.approved, epoch: lease.epoch, operationId: "d2", now: after })).toMatchObject({ ok: false, why: "The release approval expired." });
     // …but reconciliation settled the reserved one.
     expect(releaseOperations(f.store, id).find(op => op.id === "d1")?.state).toBe("failed");

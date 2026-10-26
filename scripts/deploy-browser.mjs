@@ -343,7 +343,12 @@ function reserveReleaseDeploy(taskId) {
 function settleReleaseDeploy(outcome, detail) {
   if (releaseOperation === null || !releaseOperation.own || typeof oldRt.store.finishReleaseOperation !== "function") return;
   const db = openDeploymentDatabase(database);
-  try { oldRt.store.finishReleaseOperation(new oldRt.store.Store(db), releaseOperation.id, outcome, { detail }, new Date()); }
+  try {
+    const store = new oldRt.store.Store(db);
+    // Settled at the epoch it was reserved at: if a coordinator took the release over since, it reconciles instead.
+    const op = oldRt.store.releaseOperation(store, releaseOperation.id);
+    if (op !== null) oldRt.store.finishReleaseOperation(store, releaseOperation.id, outcome, { detail }, new Date(), op.epoch);
+  }
   finally { db.close(); }
 }
 

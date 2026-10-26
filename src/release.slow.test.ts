@@ -387,6 +387,12 @@ describe("toolroll release", () => {
       expect(s.calls).toEqual(["fileGate", "complete", "deploy", "switchLinks"]);
       if (reason === "ci-failed") expect(result).toMatchObject({ message: expect.stringContaining(repeat) });
       s.checks.get(SHA)!.push(...passing([repeat]));
+      // A failure after the deploy needs a person's fresh approval (Alex, 2026-10-25): green checks alone don't resume.
+      if (reason === "ci-failed") {
+        expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, reason: "ci-failed", message: expect.stringContaining("needs a person's approval again") });
+        expect(s.calls).not.toContain("merge");
+        return;
+      }
       expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
       for (const mutation of MUTATIONS) expect(s.calls.filter(one => one === mutation), mutation).toHaveLength(1);
     });
@@ -690,7 +696,8 @@ function releaseWorld(options: { carryRefused?: string } = {}) {
   const { s, adapters } = w;
   const rel = {
     id: 1, generation: 1, state: "open", tipSha: SHA, tipTask: "", tasks: new Set<string>(), landed: [] as { sha: string; files: { path: string; added: number; deleted: number }[] }[],
-    epoch: 0, owner: null as string | null, ops: new Map<string, { id: string; kind: "deploy" | "merge"; state: "reserved" | "running" | "succeeded" | "failed" | "unknown"; candidate: string; externalRef: string | null }>(),
+    epoch: 0, owner: null as string | null, owners: [] as string[], approvalsNeeded: [] as string[],
+    ops: new Map<string, { id: string; kind: "deploy" | "merge"; state: "reserved" | "running" | "succeeded" | "failed" | "unknown"; candidate: string; externalRef: string | null; reservedAt: string }>(),
     /** Override what the live predicate says. */
     live: null as null | ((taskId: string, action: string) => { applies: boolean; ok: boolean; why: string | null }),
     /** Override what authority() answers. */
@@ -722,7 +729,7 @@ function releaseWorld(options: { carryRefused?: string } = {}) {
       if (!states[action]!.includes(rel.state)) return { applies: true, ok: false, why: `the release is ${rel.state}` };
       return { applies: true, ok: true, why: null };
     },
-    async lease(_id, owner) { if (rel.owner !== owner) { rel.epoch += 1; rel.owner = owner; } return { ok: true, epoch: rel.epoch }; },
+    async lease(_id, owner) { rel.owners.push(owner); if (rel.owner !== owner) { rel.epoch += 1; rel.owner = owner; } return { ok: true, epoch: rel.epoch }; },
     async renew(_id, owner, epoch) { return rel.owner === owner && rel.epoch === epoch; },
     async carry(_id, to) {
       rel.carries.push(to);
@@ -741,14 +748,17 @@ function releaseWorld(options: { carryRefused?: string } = {}) {
       if (next === null) return { ok: false, why: `The release is ${rel.state}, so it can't ${input.kind}.` };
       rel.state = next;
       const id = `${input.kind}-${rel.ops.size + 1}`;
-      rel.ops.set(id, { id, kind: input.kind, state: "reserved", candidate: input.candidate, externalRef: null });
+      rel.ops.set(id, { id, kind: input.kind, state: "reserved", candidate: input.candidate, externalRef: null, reservedAt: new Date(s.now).toISOString() });
       return { ok: true, operation: id };
     },
     async start(id, epoch) { const op = rel.ops.get(id)!; if (op.state !== "reserved" || epoch !== rel.epoch) return false; op.state = "running"; return true; },
-    async finish(id, outcome, facts = {}) {
+    async needsApproval(_id, reason) { rel.approvalsNeeded.push(reason); rel.state = "revoked"; },
+    async finish(id, outcome, facts, epoch) {
+      if (epoch !== rel.epoch) return false;
       const op = rel.ops.get(id)!; op.state = outcome; op.externalRef = facts.externalRef ?? op.externalRef; rel.finished.push(`${id}:${outcome}`);
       if (op.kind === "merge" && outcome === "succeeded") rel.state = "merged";
       if (op.kind === "merge" && outcome === "failed") rel.state = "deploying";
+      return true;
     },
     async operations() { return [...rel.ops.values()]; },
   };
@@ -895,7 +905,7 @@ describe("toolroll release: one approval per release", () => {
       const first = await runRelease(options(dir, { limits: { ci: 1 } }), w.adapters);
       expect(first).toMatchObject({ ok: false, step: "ci" });
       w.s.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
-      const op = { id: `${kind}-x`, kind, state, candidate: SHA, externalRef: null };
+      const op = { id: `${kind}-x`, kind, state, candidate: SHA, externalRef: null, reservedAt: new Date(w.s.now - 60 * 60_000).toISOString() };
       w.rel.ops.set(op.id, op);
       if (kind === "merge") w.rel.state = "merge-reserved";
       world(w);
@@ -930,5 +940,48 @@ describe("toolroll release: one approval per release", () => {
       expect(op.state).toBe("unknown");
       expect(second).toMatchObject({ ok: false, reason: "merge-unknown" });
     });
+  });
+});
+
+describe("toolroll release: Codex review round 1", () => {
+  test("finding 3: two runs of the same journal hold the release under different owners", async () => {
+    const dir = stateDir();
+    const { s, adapters, rel } = releaseWorld();
+    s.checks.set(SHA, []);
+    expect(await runRelease(options(dir, { limits: { ci: 1 } }), adapters)).toMatchObject({ ok: false, step: "ci" });
+    expect(await runRelease(options(dir, { limits: { ci: 1 } }), adapters)).toMatchObject({ ok: false, step: "ci" });
+    expect(new Set(rel.owners).size).toBe(2);
+  });
+
+  test("finding 3: a merge that started and may still be running is never declared failed while its call could land", async () => {
+    const dir = stateDir();
+    const w = releaseWorld();
+    w.s.checks.set(SHA, []);
+    expect(await runRelease(options(dir, { limits: { ci: 1 } }), w.adapters)).toMatchObject({ ok: false, step: "ci" });
+    w.s.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
+    w.rel.state = "merge-reserved";
+    w.rel.ops.set("merge-y", { id: "merge-y", kind: "merge", state: "running", candidate: SHA, externalRef: null, reservedAt: new Date(w.s.now).toISOString() });
+    expect(await runRelease(options(dir), w.adapters)).toMatchObject({ ok: false, reason: "merge-in-flight" });
+    expect(w.rel.ops.get("merge-y")?.state).toBe("running");
+    expect(w.s.calls).not.toContain("merge");
+  });
+
+  test("finding 4: a CI failure after the deploy needs a person's fresh approval, even on the same commit", async () => {
+    const dir = stateDir();
+    const { s, adapters, rel } = releaseWorld();
+    s.checks.set(SHA, passing(REQUIRED_PR_CHECKS).map((run, i) => i === 0 ? { ...run, conclusion: "failure" } : run));
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, reason: "ci-failed" });
+    expect(rel.approvalsNeeded).toHaveLength(1);
+    expect(rel.state).toBe("revoked");
+    // CI turns green: resuming still doesn't merge under the old approval.
+    s.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, reason: "ci-failed" });
+    expect(s.calls).not.toContain("merge");
+    // --new files the same commit for a person again, as a fresh task.
+    const filed: string[] = [];
+    const fileGate = adapters.toolroll.fileGate;
+    adapters.toolroll.fileGate = async input => { filed.push(input.taskId); return fileGate(input); };
+    await runRelease(options(dir, { fresh: true, limits: { approval: 1 } }), adapters);
+    expect(filed).toEqual([`${gateTaskId("0.9.52", SHA)}-2`]);
   });
 });

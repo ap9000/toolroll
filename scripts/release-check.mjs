@@ -494,7 +494,8 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   });
   // The upgrade path packs the built candidate: it starts once the build passed. A targeted check runs only the
   // versions its plan names, or the whole part again.
-  const upgradeArgs = targeted === null ? (full ? ["--full"] : []) : targeted.parts.includes("upgrade") ? [] : ["--versions", targeted.versions.join(",")];
+  // A whole-upgrade obligation runs every published version (--full): never a smaller selection than the full check owed.
+  const upgradeArgs = targeted === null ? (full ? ["--full"] : []) : targeted.parts.includes("upgrade") ? ["--full"] : ["--versions", targeted.versions.join(",")];
   const upgradeSelected = existsSync(join("scripts", "upgrade-path.mjs")) && (targeted === null ? upgrade : targeted.parts.includes("upgrade") || targeted.versions.length > 0);
   let upgradeHeld = false;
   const upgraded = build.then(async one => {

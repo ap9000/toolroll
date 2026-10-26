@@ -15,8 +15,6 @@
  * - A missed, stalled or disabled nightly gives no signal but its flow's own health notice after 26 hours.
  */
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
-import { checkoutGitEnv, HARDENED_GIT_ARGS } from "./agent-fence.js";
 import { projectGitDir } from "./check-report.js";
 import { readVerifiedCommit, verifiedFirstParentWalk } from "./commit-extract.js";
 import { fileIdentity, groupIdentity, journeyIdentity, partIdentity, unitIdentity, versionIdentity, type CheckReport } from "./contracts/release-check.js";
@@ -24,7 +22,10 @@ import type { StandingOrder } from "./contracts/flow.js";
 import { propose, authenticateApprover, liveReleaseOf, personProof } from "./scope.js";
 import { failedIdentities, sealedRun } from "./release-recheck.js";
 import { verificationEvidence } from "./verification-evidence.js";
-import { BUILT_IN, type Store } from "./store.js";
+import { BUILT_IN, TRUSTED_MAIN_ACTION, recordTrustedMain, type Store } from "./store.js";
+import { RemoteMains } from "./remote-main.js";
+import { run } from "./exec.js";
+import type { Runner } from "./worktree.js";
 import type { StandingFiring } from "./flow-schedule.js";
 
 /** How long a nightly may be missing before its flow says so. */
@@ -62,19 +63,43 @@ export function nightlyApprovalOf(store: Store, trigger: number): { digest: stri
   return null;
 }
 
-/** Main's head as the project's own Git directory records it (origin's main as the last fetch saw it, else the local
- * main), read with the hardened environment and verified as a commit. Never a release branch. */
-export function mainHeadOf(repo: string): { ok: true; sha: string } | { ok: false; why: string } {
-  const gitDir = projectGitDir(repo);
-  if (gitDir === null) return { ok: false, why: "the project's Git directory can't be read" };
-  const env = { ...checkoutGitEnv(), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1" };
-  const listed = spawnSync("git", ["--git-dir", gitDir, "--no-replace-objects", ...HARDENED_GIT_ARGS, "for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes/origin/main", "refs/heads/main"], { env, encoding: "utf8", timeout: 30_000 });
-  if (listed.status !== 0) return { ok: false, why: "main can't be read" };
-  const refs = new Map(listed.stdout.trim().split("\n").filter(Boolean).map(line => line.split(" ") as [string, string]));
-  const sha = refs.get("refs/remotes/origin/main") ?? refs.get("refs/heads/main");
-  if (sha === undefined || !/^[0-9a-f]{40}$/.test(sha)) return { ok: false, why: "the project has no main" };
-  const commit = readVerifiedCommit(gitDir, sha);
-  return commit.ok ? { ok: true, sha } : { ok: false, why: commit.message };
+/** How old a trusted read of main may be when a nightly fires, and how often the watch loop reads it again. */
+export const TRUSTED_MAIN_FIRE_MS = 2 * 60 * 60_000;
+export const TRUSTED_MAIN_REFRESH_MS = 30 * 60_000;
+/** How old a trusted read may be when debt is cleared against it. */
+export const TRUSTED_MAIN_CLEAR_MS = 26 * 60 * 60_000;
+
+/**
+ * Main's head as Toolroll's own process last read it from the project's RECORDED remote (remote-main.ts: the recorded
+ * URL, a private plane-owned Git directory, objects that arrive only by fetch) — never a ref in the project's Git
+ * directory, which a build shares and can move (review round 1). Null when there is no read young enough.
+ */
+export function trustedMainOf(store: Store, repo: string, now: Date, maxAgeMs: number): string | null {
+  const row = store.handle.prepare("SELECT outcome, at FROM action_ledger WHERE repo = ? AND action = ? ORDER BY id DESC LIMIT 1").get(repo, TRUSTED_MAIN_ACTION);
+  if (row === undefined || now.getTime() - Date.parse(String(row["at"])) > maxAgeMs) return null;
+  const sha = String(row["outcome"]);
+  return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+}
+
+/** The watch loop's read of each project's recorded remote main that the nightly check or main's debt needs, at most
+ * every 30 minutes. Each read is a fresh fetch into a private directory; failures record nothing. */
+export async function refreshTrustedMains(store: Store, root: string, now: Date, runner: Runner = run): Promise<number> {
+  const repos = new Set<string>([
+    ...store.handle.prepare("SELECT DISTINCT repo FROM main_check_failure WHERE cleared_at IS NULL").all().map(row => String(row["repo"])),
+    ...store.handle.prepare("SELECT DISTINCT repo FROM action_ledger WHERE action = ?").all(NIGHTLY_APPROVED).map(row => String(row["repo"])),
+  ]);
+  let read = 0;
+  const remotes = new RemoteMains(store, runner, root);
+  try {
+    for (const repo of repos) {
+      if (trustedMainOf(store, repo, now, TRUSTED_MAIN_REFRESH_MS) !== null) continue;
+      const got = await remotes.read(repo);
+      if (!got.ok) continue;
+      recordTrustedMain(store, repo, got.remote.main, got.remote.url, now);
+      read++;
+    }
+  } finally { remotes.close(); }
+  return read;
 }
 
 /**
@@ -122,8 +147,12 @@ export function fileNightlyCheck(store: Store, input: { flowId: number; repo: st
   if (store.projectCheckAccess(repo) !== "sandboxed") return { made: "skipped", note: "Skipped: the project's checks run outside the sandbox." };
   const blocker = store.standingOrderBlocker(input.trigger, order.routine, now);
   if (blocker !== null) return { made: "skipped", note: `Skipped: the last one (${blocker.taskId}, ${blocker.state}) hasn't finished.` };
-  const head = mainHeadOf(repo);
-  if (!head.ok) return { made: "skipped", note: `Skipped: ${head.why}.` };
+  // Main as the plane read it from the recorded remote, recently; never a ref in the shared Git directory.
+  const trusted = trustedMainOf(store, repo, now, TRUSTED_MAIN_FIRE_MS);
+  if (trusted === null) return { made: "skipped", note: "Skipped: main hasn't been read from the project's recorded remote lately." };
+  const gitDir = projectGitDir(repo);
+  if (gitDir === null || !readVerifiedCommit(gitDir, trusted).ok) return { made: "skipped", note: `Skipped: main's ${trusted.slice(0, 7)} isn't in the project's history yet.` };
+  const head = { sha: trusted };
   const taskId = `${NIGHTLY_STEM}-${now.toISOString().slice(0, 10).replace(/-/g, "")}-${head.sha.slice(0, 7)}`;
   if (store.getTask(taskId) !== null) return { made: "skipped", note: `Skipped: ${head.sha.slice(0, 7)} was already checked today (${taskId}).` };
   store.createTask({ id: taskId, title: `Nightly check of main at ${head.sha.slice(0, 7)}`, filedBy: { name: null, kind: "automation" } }, now);
@@ -234,19 +263,21 @@ export function settleReleaseChecks(store: Store, root: string, now: Date): numb
       // Only a full pass with coverage full clears anything; a composed result never does.
       const gate = verificationEvidence(store, root, runId);
       if (!gate.ok || gate.bytes === null) return;
-      let coverage: unknown;
-      try { coverage = (JSON.parse(gate.bytes) as { coverage?: unknown }).coverage; } catch { return; }
-      if (coverage !== "full") return;
+      // A SUCCESSFUL executed full check only (review round 1): its receipt says it ran and passed, its coverage is full,
+      // and its own report exited 0. A failed full check clears nothing, whatever items it reports passed.
+      let receipt: { coverage?: unknown; result?: { ran?: unknown; exitCode?: unknown } };
+      try { receipt = JSON.parse(gate.bytes) as typeof receipt; } catch { return; }
+      if (receipt.coverage !== "full" || receipt.result?.ran !== true || receipt.result.exitCode !== 0) return;
       const report = sealedRun(store, root, runId)?.report ?? null;
-      if (report === null) return;
+      if (report === null || report.exitCode !== 0) return;
       const gitDir = projectGitDir(repo);
       if (gitDir === null) return;
       const head = String(row["head_revision"]);
       // The pass has to be on main (its head an ancestor of, or main's head itself) or the exact candidate of a release
       // whose approval stands: a pass on a side branch clears nothing (security review).
       const task = store.refById(Number(row["task_ref"]))?.externalId ?? null;
-      const main = mainHeadOf(repo);
-      const onMain = main.ok && (head === main.sha || verifiedFirstParentWalk(gitDir, main.sha, head, 5000).ok);
+      const main = trustedMainOf(store, repo, now, TRUSTED_MAIN_CLEAR_MS);
+      const onMain = main !== null && (head === main || verifiedFirstParentWalk(gitDir, main, head, 5000).ok);
       const release = task === null ? null : liveReleaseOf(store, task, "dispatch", now);
       const candidate = task === null ? null : store.getScope(task)?.candidate ?? null;
       // The run must have checked that very candidate: its head is the candidate, or the commit a prepared build recorded

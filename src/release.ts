@@ -52,6 +52,8 @@ type WaitingStep = "approval" | "check" | "quiet" | "deploy" | "ci" | "publish" 
 /** How long each waiting step may take, in minutes, before the release stops there (rerunning continues from it). */
 export const RELEASE_LIMITS: Readonly<Record<WaitingStep, number>> = { approval: 24 * 60, check: 120, quiet: 60, deploy: 30, ci: 60, publish: 45, homebrew: 45 };
 const POLL_MS = 15_000;
+/** How long one merge call may take before it has surely ended (gh's own time limit, with room). */
+export const MERGE_CALL_LIMIT_MS = 10 * 60_000;
 
 /** One check attempt; `app` is the GitHub App that made it (github-actions for a workflow), when known. */
 export type CheckRun = { name: string; status: string; conclusion: string | null; app?: string | null };
@@ -84,7 +86,7 @@ export type LandedCommit = { sha: string; files: { path: string; added: number; 
 /** A release's authority record as the coordinator reads it (store.ts release_authority). */
 export type AuthorityView = { id: number; generation: number; state: string; tipSha: string; tipTask: string; version: string; pr: number; landed: LandedCommit[] };
 export type ReleaseAction = "dispatch" | "deploy" | "merge" | "complete";
-export type OperationView = { id: string; kind: "deploy" | "merge"; state: "reserved" | "running" | "succeeded" | "failed" | "unknown"; candidate: string; externalRef: string | null };
+export type OperationView = { id: string; kind: "deploy" | "merge"; state: "reserved" | "running" | "succeeded" | "failed" | "unknown"; candidate: string; externalRef: string | null; reservedAt: string };
 /** The release's authority record, through the plane's store (release-once.md). Absent: a plane too old to carry, and
  * every commit asks for a person as before. */
 export type ReleaseAuthorityAdapter = {
@@ -96,7 +98,10 @@ export type ReleaseAuthorityAdapter = {
   /** `secret`: proves a deploy run is this reservation's (handed to deploy-browser on stdin). */
   reserve(input: { authority: number; kind: "deploy" | "merge"; taskId: string; candidate: string; epoch: number }): Promise<{ ok: true; operation: string; secret?: string } | { ok: false; why: string }>;
   start(operation: string, epoch: number): Promise<boolean>;
-  finish(operation: string, outcome: "succeeded" | "failed" | "unknown", facts?: { detail?: string | null; externalRef?: string | null }): Promise<void>;
+  /** Settle an operation at the epoch this coordinator holds; false: it no longer holds the release. */
+  finish(operation: string, outcome: "succeeded" | "failed" | "unknown", facts: { detail?: string | null; externalRef?: string | null }, epoch: number): Promise<boolean>;
+  /** A CI failure after the deploy (Alex's decision): the release stops and needs a person's fresh approval. */
+  needsApproval(authority: number, reason: string, epoch: number): Promise<void>;
   operations(authority: number): Promise<OperationView[]>;
 };
 
@@ -198,6 +203,8 @@ export type ReleaseJournal = {
   landed?: LandedCommit[];
   /** The deploy and merge operations this coordinator reserved (store.ts release_operation). */
   operations?: { deploy?: string; merge?: string };
+  /** A pull request check failed after the deploy: nothing continues until a person approves again (--new). */
+  needsApproval?: boolean;
   /** When each step was about to change something outside this machine: what a resume must look for before acting. */
   intents: Partial<Record<ReleaseStep, string>>;
   stopped: { step: ReleaseStep; reason: string; message: string; at: string } | null;
@@ -307,6 +314,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
   const say = adapters.say;
   let journal: ReleaseJournal | null = null;
   let step: ReleaseStep | "preflight" = "preflight";
+  let freshApproval = false;
 
   const save = () => { journal!.updatedAt = adapters.now().toISOString(); writeJournal(file, journal!); };
   const advance = (next: ReleaseStep) => { journal!.step = next; journal!.stopped = null; save(); };
@@ -342,6 +350,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       const aside = file.replace(/\.json$/, `.superseded-${adapters.now().toISOString().replace(/[:.]/g, "-")}.json`);
       renameSync(file, aside);
       say(`Kept the earlier release journal at ${aside}.`);
+      freshApproval = journal.needsApproval === true;
       journal = null;
     }
     if (journal?.step === "done") {
@@ -350,7 +359,15 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
     }
 
     if (!await adapters.github.authenticated()) throw new Stop("github-auth", "GitHub CLI is not signed in: run `gh auth login`, then rerun.");
-    if (journal === null) journal = await begin(options, adapters, adapters.now());
+    if (journal === null) {
+      journal = await begin(options, adapters, adapters.now());
+      // The earlier attempt needs a person's fresh approval (a CI failure after its deploy): this one files a task of its
+      // own for the same commit, so the old approval can't carry it.
+      if (freshApproval) {
+        const base = journal.task.id;
+        for (let n = 2; n < 50; n++) { const id = `${base}-${n}`; if (!(await adapters.toolroll.gate(id)).exists) { journal.task = { id, scopeDigest: null }; break; } }
+      }
+    }
     else say(`Resuming the release of ${journal.tag} (${journal.candidate.sha.slice(0, 7)}) at ${journal.step}.`);
     const j = journal;
     if (j.checkout !== options.checkout) throw new Stop("checkout", `This release runs in ${j.checkout}; rerun with --repo ${j.checkout}.`);
@@ -367,10 +384,12 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
     // ---- one approval per release (release-once.md) -------------------------------------------------------------
     const rel = adapters.release;
     let epoch: number | null = null;
+    // This invocation's own lease owner (review round 1): two runs of the same journal never share an epoch.
+    const owner = `${j.id}:${randomUUID()}`;
     /** Take the release's lease (a takeover raises its epoch), then settle every operation still open before any new work. */
     const hold = async () => {
       if (rel === undefined || !j.authority) return;
-      const lease = await rel.lease(j.authority.id, j.id);
+      const lease = await rel.lease(j.authority.id, owner);
       if (!lease.ok) throw new Stop("lease", lease.why);
       epoch = lease.epoch;
       await reconcile();
@@ -380,14 +399,20 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       for (const op of (await rel.operations(j.authority.id)).filter(one => one.state === "reserved" || one.state === "running" || one.state === "unknown")) {
         if (op.kind === "deploy") {
           // Reserved and never started: nothing to undo. Running or unknown: the services tell, else recovery restores.
-          if (op.state === "reserved") { await rel.finish(op.id, "failed", { detail: "the call never started" }); continue; }
-          if (await served(adapters, builtHead()) !== null) { await rel.finish(op.id, "succeeded", { detail: "reconciled: the services run the candidate" }); continue; }
+          if (op.state === "reserved") { await rel.finish(op.id, "failed", { detail: "the call never started" }, epoch!); continue; }
+          if (await served(adapters, builtHead()) !== null) { await rel.finish(op.id, "succeeded", { detail: "reconciled: the services run the candidate" }, epoch!); continue; }
           await recoverDeploy();
-          await rel.finish(op.id, "failed", { detail: "reconciled: recovered the previous build" });
+          await rel.finish(op.id, "failed", { detail: "reconciled: recovered the previous build" }, epoch!);
         } else {
           const pr = await adapters.github.pullRequest(j.github, j.branch);
-          if (pr?.state === "merged" && pr.number === j.pr && pr.head === op.candidate && pr.mergeCommit !== null) await rel.finish(op.id, "succeeded", { externalRef: pr.mergeCommit, detail: "reconciled: the pull request is merged from the gated head" });
-          else if (op.state === "reserved" || (pr?.state === "open" && pr.number === j.pr && pr.head === op.candidate)) await rel.finish(op.id, "failed", { detail: "reconciled: the pull request is still open at the gated head" });
+          if (pr?.state === "merged" && pr.number === j.pr && pr.head === op.candidate && pr.mergeCommit !== null) await rel.finish(op.id, "succeeded", { externalRef: pr.mergeCommit, detail: "reconciled: the pull request is merged from the gated head" }, epoch!);
+          else if (op.state === "reserved") await rel.finish(op.id, "failed", { detail: "reconciled: the merge never started" }, epoch!);
+          // A merge call that started may still land: it is declared failed only once it has surely ended (the call's
+          // own time limit has passed since it was reserved); before that the release waits.
+          else if (pr?.state === "open" && pr.number === j.pr && pr.head === op.candidate) {
+            if (adapters.now().getTime() - Date.parse(op.reservedAt) < MERGE_CALL_LIMIT_MS) throw new Stop("merge-in-flight", `An earlier merge of pull request #${j.pr} may still be running. Rerun in a few minutes.`);
+            await rel.finish(op.id, "failed", { detail: "reconciled: the merge call ended and the pull request is still open at the gated head" }, epoch!);
+          }
           else throw new Stop("merge-unknown", `The merge of pull request #${j.pr} can't be reconciled: it is ${pr?.state ?? "gone"}. Check it on GitHub before rerunning.`);
         }
       }
@@ -412,11 +437,21 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
         const live = await rel.live(j.task.id, action);
         // Fail closed: once the release has an authority, its task must be one the predicate applies to AND accepts.
         if (!live.applies || !live.ok) throw new Stop("release", `Task ${j.task.id} can't ${action === "dispatch" ? "go on" : action}: ${live.applies ? live.why ?? "its release approval doesn't stand" : "it belongs to no release approval this plane can find"}.`);
-        if (epoch !== null && !await rel.renew(j.authority.id, j.id, epoch)) throw new Stop("lease", "Another release coordinator took over this release.");
+        if (epoch !== null && !await rel.renew(j.authority.id, owner, epoch)) throw new Stop("lease", "Another release coordinator took over this release.");
       }
     };
     /** The head moved before the deploy reservation: carry the approval to it, or file it for a person. Nothing kept from
      * the old step is used afterwards: the journal is rewritten and the state machine runs again. */
+    /**
+     * A pull request check failed after the deploy reservation (Alex, 2026-10-25): the candidate froze at deploy, so the
+     * release needs a person's fresh approval, even for the same commit. It is persisted (the authority stops; the
+     * journal says so) before the release stops; `--new` files the commit for a person again.
+     */
+    const ciFailedAfterDeploy = async (what: string): Promise<never> => {
+      if (rel !== undefined && j.authority && epoch !== null) await rel.needsApproval(j.authority.id, "a pull request check failed after the deploy", epoch);
+      j.needsApproval = true; save();
+      throw new Stop("ci-failed", `${what}. Nothing was merged. The deploy had already started, so this commit needs a person's approval again: run \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
+    };
     /** identity(), on a plane that keeps release authority; a legacy plane keeps the old rules. */
     const watch = async (action: ReleaseAction) => { if (rel !== undefined) await identity(action, true); };
     const restart = async (head: string) => {
@@ -470,6 +505,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       fullCheck(gate);
     };
 
+    if (j.needsApproval === true) throw new Stop("ci-failed", `A pull request check failed after the deploy, so ${j.candidate.sha.slice(0, 7)} needs a person's approval again: run \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
     // A resumed release that already has an authority takes its lease and settles every open operation first.
     await hold();
     while (j.step !== "done") {
@@ -479,6 +515,16 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       switch (j.step) {
         case "gate": {
           await pinned();
+          // The same commit's earlier gate belongs to a release that no longer stands (a CI failure after its deploy, a
+          // revoke): a fresh task asks a person again, and their yes opens a new generation.
+          if (rel !== undefined) {
+            const base = gateTaskId(j.packageVersion, j.candidate.sha);
+            for (let n = 1; n < 50; n++) {
+              const id = n === 1 ? base : `${base}-${n}`;
+              const live = await rel.live(id, "dispatch");
+              if (!live.applies || live.ok) { if (j.task.id !== id) { j.task = { id, scopeDigest: null }; save(); } break; }
+            }
+          }
           const existing = await adapters.toolroll.gate(j.task.id);
           if (existing.exists) {
             if (existing.candidate !== j.candidate.sha) throw new Stop("conflict", `Task ${j.task.id} exists for a different commit (${existing.candidate?.slice(0, 7) ?? "none"}).`);
@@ -571,6 +617,18 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           await checked(await adapters.toolroll.gate(j.task.id), "deploy");
           // A deployment that finished but whose answer was lost: the services already run a runtime of this commit.
           let runtime = await served(adapters, builtHead());
+          // Already running this candidate (a new generation after a CI failure, or a lost answer): the release still
+          // reserves its deploy, so its merge has a deploy to stand on.
+          if (runtime !== null && rel !== undefined && j.authority && epoch !== null) {
+            const authority = await rel.authority(j.task.id);
+            if (authority !== null && authority.state === "open") {
+              await watch("deploy");
+              const reserved = await rel.reserve({ authority: j.authority.id, kind: "deploy", taskId: j.task.id, candidate: j.candidate.sha, epoch });
+              if (!reserved.ok) throw new Stop("release", `The deploy couldn't be reserved: ${reserved.why}`);
+              if (!await rel.start(reserved.operation, epoch)) throw new Stop("lease", "Another release coordinator took over this release.");
+              await rel.finish(reserved.operation, "succeeded", { detail: "the services already run this candidate" }, epoch);
+            }
+          }
           if (runtime === null) {
             // The last moment a moved head restarts; then the deploy reservation freezes the candidate in the store.
             await watch("deploy");
@@ -588,7 +646,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             j.deployAttempt = { stage: join(options.stateDir, "staged-upgrades", `browser-${j.candidate.sha.slice(0, 7)}-${randomUUID()}`) };
             intend("deploy");
             const result = await adapters.toolroll.deploy({ run: check.run, worktree: check.worktree, stage: j.deployAttempt.stage, ...(operation === undefined ? {} : { operation: { id: operation, secret } }) });
-            if (operation !== undefined) await rel!.finish(operation, result.ok ? "succeeded" : "failed", { detail: result.ok ? result.runtime : result.message.slice(0, 500) });
+            if (operation !== undefined) await rel!.finish(operation, result.ok ? "succeeded" : "failed", { detail: result.ok ? result.runtime : result.message.slice(0, 500) }, epoch!);
             if (!result.ok) throw deployStop("deploy", `The deployment of run ${check.run} stopped: ${result.message}`, result);
             if (!/[\\/]dist$/.test(result.runtime)) throw new Stop("deploy", `The deployment named ${result.runtime} as its runtime, which is not a dist folder.`);
             runtime = result.runtime;
@@ -624,7 +682,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           await waitFor("ci", `the pull request checks on ${j.candidate.sha.slice(0, 7)}`, async () => {
             await pinned();
             const verdict = checksVerdict(await adapters.github.checks(j.github, j.candidate.sha), REQUIRED_PR_CHECKS);
-            if (verdict.state === "failed") throw new Stop("ci-failed", `Pull request checks failed on ${j.candidate.sha.slice(0, 7)}: ${verdict.failed.join(", ")}. Nothing was merged. Rerun the failed job on GitHub, then rerun this command.`);
+            if (verdict.state === "failed") await ciFailedAfterDeploy(`Pull request checks failed on ${j.candidate.sha.slice(0, 7)}: ${verdict.failed.join(", ")}`);
             return verdict.state === "passed" ? true : null;
           });
           j.ci = { checks: [...REQUIRED_PR_CHECKS], at: adapters.now().toISOString() };
@@ -647,7 +705,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             if (!await adapters.repo.contains(j.candidate.sha, main)) throw new Stop("base-moved", `main moved to ${main.slice(0, 7)}, which ${j.branch} doesn't contain, so the merge wouldn't be the gated tree. Nothing was merged: update the branch and release the new commit with --new.`);
             // The checks again, at the moment of merging: a rerun that failed since must not merge.
             const verdict = checksVerdict(await adapters.github.checks(j.github, j.candidate.sha), REQUIRED_PR_CHECKS);
-            if (verdict.state !== "passed") throw new Stop("ci-failed", `Pull request checks are no longer all passing on ${j.candidate.sha.slice(0, 7)}; nothing was merged.`);
+            if (verdict.state !== "passed") await ciFailedAfterDeploy(`Pull request checks are no longer all passing on ${j.candidate.sha.slice(0, 7)}`);
             let operation: string | undefined;
             if (rel !== undefined && j.authority && epoch !== null) {
               const reserved = await rel.reserve({ authority: j.authority.id, kind: "merge", taskId: j.task.id, candidate: j.candidate.sha, epoch });
@@ -661,8 +719,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             const message = landedWords(j.landed ?? []).join("\n");
             let merged: string;
             try { merged = await adapters.github.merge(j.github, j.pr, j.candidate.sha, ...(message === "" ? [] : [message])); }
-            catch (error) { if (operation !== undefined) await rel!.finish(operation, "unknown", { detail: String((error as Error)?.message ?? error).slice(0, 500) }); throw error; }
-            if (operation !== undefined) await rel!.finish(operation, "succeeded", { externalRef: merged });
+            catch (error) { if (operation !== undefined) await rel!.finish(operation, "unknown", { detail: String((error as Error)?.message ?? error).slice(0, 500) }, epoch!); throw error; }
+            if (operation !== undefined) await rel!.finish(operation, "succeeded", { externalRef: merged }, epoch!);
             j.merge = { sha: merged, tree: null };
           }
           save();

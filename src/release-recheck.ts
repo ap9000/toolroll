@@ -240,7 +240,8 @@ export function planTargetedRecheck(store: Store, root: string, input: { runId: 
   const found = releaseAuthorityOfTask(store, input.taskId);
   if (found === null) return { mode: "full", authority: null, why: "not a release task", watch: mainOpen.sort() };
   const a = found.authority;
-  const full = (why: string, watch: string[] = []): RecheckDecision => ({ mode: "full", authority: a.id, why, watch: [...new Set([...watch, ...mainOpen])].sort() });
+  const owed = owedIdentities(store, root, a.id, input.runId);
+  const full = (why: string, watch: string[] = []): RecheckDecision => ({ mode: "full", authority: a.id, why, watch: [...new Set([...watch, ...owed, ...mainOpen])].sort() });
   const live = liveReleaseOf(store, input.taskId, "dispatch", input.now);
   if (!live.applies || !live.ok) return full("the release approval doesn't stand");
   const based = baseOf(store, root, a.id, input.runId);
@@ -269,7 +270,8 @@ export function planTargetedRecheck(store: Store, root: string, input: { runId: 
   if (payloadDigest(checkContextOf(facts.facts, input.command, input.access)) !== payloadDigest(base.context)) return full("the check runs somewhere other than the last full check did", watch);
   if (base.inventory.sealed.units.some(file => !facts.facts.units.includes(file))) return full("a unit file the last full check had is gone", watch);
   const journeysRan = base.report!.parts.filter(one => one.ran).map(one => one.part);
-  const plan = planFrom(base.run, obligations, snapshot, changed, facts.facts.units, journeysRan);
+  const plan = planFrom(base.run, { ...obligations, required: [...new Set([...obligations.required, ...owed])].sort(),
+    units: [...new Set([...obligations.units, ...owed.flatMap(id => /^unit:(.+?)::/.exec(id)?.[1] ?? /^file:(.+)$/.exec(id)?.[1] ?? [])])].sort() }, snapshot, changed, facts.facts.units, journeysRan);
   return { mode: "targeted", authority: a.id, plan, snapshot, watch: plan.required };
 }
 
@@ -311,6 +313,29 @@ export function coverageOf(input: { a: { report: CheckReport; inventory: SealedI
   for (const id of skippedNow) if (!obligations.skipped.includes(id)) return "identity-removed";
   if (plan.required.some(identity => !passed.has(identity))) return "partial";
   if (input.b.exitCode !== 0) return "partial";
+  // Every owed whole part ran whole and finished, its inventory complete and every item passed (review round 1).
+  for (const owedPart of plan.parts) {
+    const ran = report.parts.find(one => one.part === owedPart);
+    if (ran === undefined || !ran.ran || ran.code !== 0) return "partial";
+    if (owedPart === "unit") {
+      const u = report.units;
+      if (u === null || u.reusedFromCI || !u.finished || u.runErrors > 0) return "partial";
+      const states = new Map(u.files.map(one => [one.file, one.state]));
+      if (b.inventory.sealed.units.some(file => states.get(file) === undefined || states.get(file) === "failed")) return "partial";
+    } else if (owedPart === "upgrade") {
+      const up = report.upgrades;
+      if (up === null || !up.finished || up.versions.length === 0 || up.versions.some(one => one.state !== "passed")) return "partial";
+      const versions = new Set(up.versions.map(one => one.version));
+      if (a.inventory.declared.versions.some(version => !versions.has(version))) return "partial";
+    } else if (owedPart !== "typecheck" && owedPart !== "build") {
+      const lane = JOURNEY_PARTS.find(one => one.label === owedPart)!;
+      const run = report.journeys.find(one => one.script === lane.script && one.kind === lane.kind);
+      if (run === undefined || !run.finished || run.groups.length === 0 || run.groups.some(one => one.state !== "passed" || one.unattributed)) return "partial";
+      const declared = a.inventory.declared.groups.find(one => one.script === lane.script && one.kind === lane.kind)?.groups ?? [];
+      const groups = new Set(run.groups.map(one => one.group));
+      if (declared.some(group => !groups.has(group))) return "partial";
+    }
+  }
   // Conservation, unit files: passed at A (not flaky) and not owed again, or passed here.
   const aFiles = new Map((a.report.units?.files ?? []).map(one => [one.file, one]));
   const bFiles = new Map((report.units?.files ?? []).map(one => [one.file, one]));
@@ -379,12 +404,9 @@ export function settleCoverage(store: Store, root: string, input: { runId: numbe
   if (b.attempt.mode === "full") {
     // The rule on removed or skipped required identities applies to full runs too.
     if (b.attempt.authority !== null) {
-      const based = baseOf(store, root, b.attempt.authority, input.runId);
-      if (!("problem" in based)) {
-        const snapshot = obligationSnapshot(store, root, b.attempt.authority, based.base.run, input.runId);
-        const watch = [...new Set([...based.obligations.required, ...snapshot.earlier.flatMap(one => one.failed)])];
-        if (fullRunRemovedIdentity(b.report, watch, based.obligations.skipped)) return removed();
-      }
+      // Owed whatever made the last full check ineligible as a base: a failed typecheck never wipes them.
+      const watch = owedIdentities(store, root, b.attempt.authority, input.runId);
+      if (fullRunRemovedIdentity(b.report, watch, [])) return removed();
     }
     return { coverage: "full", composed: null };
   }
@@ -432,4 +454,35 @@ export function releaseObligationsOf(store: Store, root: string, authority: numb
   const sealed = sealedRun(store, root, Number(newest["run"]));
   if (sealed?.report == null) return [];
   return sealed.report.exitCode === 0 ? [] : failedIdentities(sealed.report);
+}
+
+/**
+ * The identities a release generation still owes, independent of whether a targeted check is allowed (review round
+ * 1): every identity that failed in any of its checks before `before`, until a later check reported it PASSED by name.
+ * A failed typecheck or build doesn't wipe them, and a full fallback keeps them: each must be reported again, and a
+ * check that drops or newly skips one asks a person again.
+ */
+export function owedIdentities(store: Store, root: string, authority: number, before: number): string[] {
+  const owed = new Set<string>();
+  for (const row of store.handle.prepare("SELECT run FROM release_check_attempt WHERE authority = ? AND run < ? ORDER BY run").all(authority, before)) {
+    const sealed = sealedRun(store, root, Number(row["run"]));
+    const report = sealed?.report ?? null;
+    if (report === null) continue;
+    for (const identity of passedIdentities(report)) owed.delete(identity);
+    for (const identity of failedIdentities(report)) owed.add(identity);
+  }
+  return [...owed].sort();
+}
+
+/** The identities a report shows passed by name. */
+function passedIdentities(report: CheckReport): string[] {
+  const out: string[] = [];
+  for (const one of report.units?.identities ?? []) if (one.state === "passed") out.push(unitIdentity(one.file, one.name));
+  for (const file of report.units?.files ?? []) if (file.state === "passed" && file.failed === 0) out.push(fileIdentity(file.file));
+  for (const run of report.journeys) for (const group of run.groups) {
+    if (group.state === "passed" && !group.unattributed) out.push(groupIdentity(run.script, run.kind, group.group));
+    for (const journey of group.journeys) if (journey.state === "passed") out.push(journeyIdentity(run.script, run.kind, group.group, journey.name));
+  }
+  for (const one of report.upgrades?.versions ?? []) if (one.state === "passed") out.push(versionIdentity(one.version));
+  return out;
 }

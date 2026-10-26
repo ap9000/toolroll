@@ -26,6 +26,7 @@ import { authenticateApprover, personProof } from "./scope.js";
 import { BRANCH_PREFIX, headWithin } from "./names.js";
 import type { VerifiedApprover } from "./principal.js";
 import type { Publication, Store } from "./store.js";
+import { belongsToRelease } from "./release-authority.js";
 import { fullCheckGate, requestFollowUpChecks } from "./result-follow-ups.js";
 
 export type MergeMethod = "squash" | "merge" | "rebase";
@@ -414,6 +415,9 @@ export async function mergePullRequest(
   const mergedRun = store.getRun(input.runId);
   const mergedTask = mergedRun === null ? null : store.refById(mergedRun.taskRef)?.externalId ?? null;
   if (mergedTask !== null && store.handle.prepare("SELECT 1 AS hit FROM nightly_check WHERE task = ?").get(mergedTask) !== undefined) return refuse("check-only", "The nightly check of main is only a check; it never merges.");
+  // A release's task merges only through `toolroll release` (release-once.md), which proves the live release, reserves
+  // the merge at its lease's epoch and checks the exact pull request: never here, by hand or automatically.
+  if (mergedTask !== null && belongsToRelease(store, mergedTask)) return refuse("release", "This result belongs to a release; it merges only through `toolroll release`.");
   const publication = store.publicationForRun(input.runId);
   const follow = publication === null ? null : followOf(store, publication.id);
   if (publication === null || follow === null || publication.prNumber === null) return refuse("no-pr", "This result has no open pull request to merge.");

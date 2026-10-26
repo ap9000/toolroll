@@ -1127,6 +1127,8 @@ CREATE TABLE IF NOT EXISTS release_operation (
   external_ref    TEXT,
   -- The sha256 of a secret only the reserving coordinator holds: a deploy run adopting this operation proves it.
   secret_hash     TEXT,
+  -- 1: reserved by a person's own deploy run with no coordinator holding the release (its epoch is the one it found).
+  direct          INTEGER NOT NULL DEFAULT 0,
   reserved_at     TEXT NOT NULL,
   finished_at     TEXT,
   detail          TEXT
@@ -24278,14 +24280,18 @@ export function reserveRelease(store: Store, input: { authority: number; kind: "
     if (input.epoch === null ? leased : input.epoch !== a.leaseEpoch || !leased) return { ok: false as const, why: input.epoch === null ? `A release coordinator (${a.leaseOwner}) holds this release; let it deploy.` : "This coordinator no longer holds the release's lease." };
     const outstanding = outstandingReleaseOperations(store, a.id);
     if (outstanding.length > 0) return { ok: false as const, why: `An earlier ${outstanding[0]!.kind} (${outstanding[0]!.id}) hasn't been settled yet.` };
+    // The whole live-release predicate, inside this transaction, at this moment (review round 1): the approver's
+    // standing and access, the grant and the sandbox, the generation and the tip, and open main-check debt.
+    const live = liveReleaseOf(store, input.taskId, input.kind, input.now);
+    if (!live.applies || !live.ok) return { ok: false as const, why: `The release can't ${input.kind}: ${live.applies && !live.ok ? live.why : "the task isn't part of it"}.` };
     const next = input.kind === "deploy"
       ? a.state === "open" || a.state === "deploying" ? "deploying" : null
       : a.state === "deploying" || a.state === "merge-reserved" ? "merge-reserved" : null;
     if (next === null) return { ok: false as const, why: `The release is ${a.state}, so it can't ${input.kind}.` };
     const changed = store.handle.prepare("UPDATE release_authority SET state = ?, rev = rev + 1 WHERE id = ? AND rev = ?").run(next, a.id, a.rev);
     if (Number(changed.changes) !== 1) return { ok: false as const, why: "The release changed while reserving; try again." };
-    store.handle.prepare("INSERT INTO release_operation (id, authority, kind, task_id, candidate, epoch, state, secret_hash, reserved_at) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?)")
-      .run(input.operationId, a.id, input.kind, input.taskId, input.candidate, a.leaseEpoch, input.secret === undefined ? null : createHash("sha256").update(input.secret).digest("hex"), at);
+    store.handle.prepare("INSERT INTO release_operation (id, authority, kind, task_id, candidate, epoch, state, secret_hash, direct, reserved_at) VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?)")
+      .run(input.operationId, a.id, input.kind, input.taskId, input.candidate, a.leaseEpoch, input.secret === undefined ? null : createHash("sha256").update(input.secret).digest("hex"), input.epoch === null ? 1 : 0, at);
     store.recordAction({ at, actor: "toolroll", repo: a.repo, taskId: input.taskId, runId: null, action: `release ${input.kind} reserved`, outcome: next, source: "work", detail: `release ${a.id} · operation ${input.operationId} · epoch ${a.leaseEpoch}` });
     return { ok: true as const, operation: releaseOperation(store, input.operationId)! };
   });
@@ -24300,6 +24306,14 @@ export function runReleaseOperation(store: Store, id: string, epoch: number, now
     if (op === null || a === null || op.state !== "reserved" || op.epoch !== epoch || a.leaseEpoch !== epoch) return false;
     // Past the expiry nothing new starts; the reserved operation is settled by reconciliation instead.
     if (a.expiresAt <= now.toISOString()) return false;
+    // The lease that reserved it still holds (a person's direct deploy: still no coordinator holding the release), and
+    // the live-release predicate still accepts it, at this moment (review round 1).
+    const at = now.toISOString();
+    const leased = a.leaseOwner !== null && a.leaseExpires !== null && a.leaseExpires > at;
+    const direct = Number(store.handle.prepare("SELECT direct FROM release_operation WHERE id = ?").get(id)?.["direct"] ?? 0) === 1;
+    if (direct ? leased : !leased) return false;
+    const live = liveReleaseOf(store, op.taskId, op.kind, now);
+    if (!live.applies || !live.ok) return false;
     const changed = store.handle.prepare("UPDATE release_operation SET state = 'running' WHERE id = ? AND state = 'reserved' AND epoch = ?").run(id, epoch);
     if (Number(changed.changes) === 1) store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: op.taskId, runId: null, action: `release ${op.kind} started`, outcome: "running", source: "work", detail: `operation ${id}` });
     return Number(changed.changes) === 1;
@@ -24308,10 +24322,12 @@ export function runReleaseOperation(store: Store, id: string, epoch: number, now
 
 /** Settle an operation: `succeeded`, `failed` or `unknown` (reconciled later). A merge that succeeded ends the release
  * as `merged`; one that failed puts it back to `deploying`. */
-export function finishReleaseOperation(store: Store, id: string, outcome: "succeeded" | "failed" | "unknown", facts: { externalRef?: string | null; detail?: string | null }, now: Date): boolean {
+export function finishReleaseOperation(store: Store, id: string, outcome: "succeeded" | "failed" | "unknown", facts: { externalRef?: string | null; detail?: string | null }, now: Date, epoch: number): boolean {
   return store.transact(() => {
     const op = releaseOperation(store, id);
     if (op === null || op.state === "succeeded" || op.state === "failed") return false;
+    // Fenced by the epoch that holds the release now (review round 1): a coordinator that lost the lease settles nothing.
+    if (releaseAuthority(store, op.authority)?.leaseEpoch !== epoch) return false;
     store.handle.prepare("UPDATE release_operation SET state = ?, external_ref = COALESCE(?, external_ref), detail = ?, finished_at = ? WHERE id = ?")
       .run(outcome, facts.externalRef ?? null, facts.detail ?? null, outcome === "unknown" ? null : now.toISOString(), id);
     const a = releaseAuthority(store, op.authority)!;
@@ -24431,4 +24447,24 @@ export function nightlyTaskRef(store: Store, taskRef: number): boolean {
 export function nightlyPublication(store: Store, publication: number): boolean {
   const row = store.handle.prepare("SELECT task_ref FROM publication WHERE id = ?").get(publication);
   return row !== undefined && nightlyTaskRef(store, Number(row["task_ref"]));
+}
+
+/** The ledger act that records a trusted read of a project's recorded remote main (remote-main.ts). */
+export const TRUSTED_MAIN_ACTION = "remote main read";
+/** Record the commit the project's recorded remote main was at, as Toolroll's own process fetched it just now. */
+export function recordTrustedMain(store: Store, repo: string, sha: string, url: string, now: Date): void {
+  store.recordAction({ at: now.toISOString(), actor: "toolroll", repo, taskId: null, runId: null, action: TRUSTED_MAIN_ACTION, outcome: sha, source: "work", detail: JSON.stringify({ v: 1, sha, url }) });
+}
+
+/**
+ * A pull request check failed after the deploy reservation (Alex, 2026-10-25): the candidate froze at deploy, so the
+ * release stops and asks a person again — even for the same commit, a new person-approved generation continues it.
+ */
+export function requireFreshReleaseApproval(store: Store, id: number, reason: string, epoch: number, now: Date): void {
+  store.transact(() => {
+    const a = releaseAuthority(store, id);
+    if (a === null || a.leaseEpoch !== epoch || !LIVE_RELEASE_STATES.includes(a.state) || a.state === "merge-reserved") return;
+    store.handle.prepare("UPDATE release_authority SET state = 'revoked', ended_at = ?, ended_by = ?, rev = rev + 1 WHERE id = ? AND rev = ?").run(now.toISOString(), `toolroll: ${reason}; a person approves it again`, id, a.rev);
+    store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: a.tipTask, runId: null, action: "release revoked", outcome: "needs-approval", source: "work", detail: `release ${id}: ${reason}` });
+  });
 }
