@@ -25,8 +25,13 @@ export const LIVE_FILE_CAP = 4 * 1024 * 1024;
 export const LIVE_REDACTED_LINE = "[a credential-shaped line was redacted]";
 /** Finalized runs keep their live file this long for the final drain. */
 export const LIVE_RETAIN_MS = 24 * 60 * 60 * 1000;
-/** The bounded sweep: at most this many FINALIZED files survive a pass. */
+/** The bounded sweep: at most this many FINALIZED runs' files survive a pass (a run's records and its subagents' file
+ * count as one). */
 export const LIVE_FILE_BOUND = 500;
+/** A run's subagent file (docs/plans/agents-view.md §2.3) is never larger than this; its writer stops there. */
+export const LIVE_SUB_FILE_CAP = 16 * 1024 * 1024;
+/** All finished and orphan live files together stay under this; the oldest runs go first past it. */
+export const LIVE_TOTAL_BYTES = 1024 * 1024 * 1024;
 
 export function liveDir(root: string): string {
   return join(root, "live");
@@ -37,6 +42,11 @@ export function liveDir(root: string): string {
  * run writes now; the name is the format. */
 export function liveLogPath(root: string, runId: number): string {
   return join(liveDir(root), `${Math.trunc(runId)}.jsonl`);
+}
+
+/** A run's subagents' records (docs/plans/agents-view.md §2.3): the run's file, swept with it. */
+export function liveSubLogPath(root: string, runId: number): string {
+  return join(liveDir(root), `${Math.trunc(runId)}.sub.jsonl`);
 }
 
 /** The plain-text file runs wrote before the live conversation; read until it ages out. */
@@ -376,6 +386,10 @@ export type LiveSweepVerdict = {
   runId: number | null;
   fileName: string;
   mtimeMs: number;
+  /** Its size when listed; a file that isn't a plain file reads 0 and goes by age alone. */
+  bytes: number;
+  /** The most a file of this name is ever written to (records, subagents, older text); null for a name we never write. */
+  cap: number | null;
 };
 
 /**
@@ -393,35 +407,43 @@ export function listLiveFiles(root: string): LiveSweepVerdict[] {
   }
   const out: LiveSweepVerdict[] = [];
   for (const name of names) {
-    let mtimeMs = 0;
+    let mtimeMs = 0, bytes = 0;
     try {
-      mtimeMs = statSync(join(liveDir(root), name)).mtimeMs;
+      const stat = lstatSync(join(liveDir(root), name));
+      mtimeMs = stat.mtimeMs;
+      bytes = stat.isFile() ? stat.size : 0;
     } catch {
       continue;
     }
-    const match = /^(\d{1,15})\.(?:jsonl|log)$/.exec(name);
-    out.push({ runId: match === null ? null : Number(match[1]), fileName: name, mtimeMs });
+    const match = /^(\d{1,15})\.(jsonl|log|sub\.jsonl)$/.exec(name);
+    // The writer stops at its cap and adds one last record; anything far past it is no file this plane wrote.
+    const cap = match === null ? null : (match[2] === "sub.jsonl" ? LIVE_SUB_FILE_CAP : LIVE_FILE_CAP) + 64 * 1024;
+    out.push({ runId: match === null ? null : Number(match[1]), fileName: name, mtimeMs, bytes, cap });
   }
   return out;
 }
 
-/** Remove one live file, silently: a sweep never throws over display state. */
-export function removeLiveFile(root: string, fileName: string): void {
+/** Remove one live file, silently: a sweep never throws over display state. True when it is gone now. */
+export function removeLiveFile(root: string, fileName: string): boolean {
   // The name comes from listLiveFiles' own readdir, never from user input.
-  if (fileName.includes("/") || fileName.includes("\\") || fileName.includes("..")) return;
+  if (fileName.includes("/") || fileName.includes("\\") || fileName.includes("..")) return false;
   try {
     unlinkSync(join(liveDir(root), fileName));
-  } catch {
-    // already gone
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
   }
 }
 
 /**
  * The reconcile sweep (arc 1 §2): ACTIVE runs are exempt ABSOLUTELY — the
- * transport's no-truncation assumption depends on it. Finalized runs age
- * from finished_at; orphans (no run row, or a name this plane never
- * writes) age from mtime; and the 500-file bound applies only WITHIN the
- * finalized-or-orphan set, oldest first.
+ * transport's no-truncation assumption depends on it — and a run's files
+ * (its records, its subagents' file, an older text file) go together, as one.
+ * Finalized runs age from finished_at; orphans (no run row, or a name this
+ * plane never writes) age from mtime. Among the finalized-or-orphan: a file
+ * far past its own cap goes at once, then the day's retention, then the
+ * 500-run bound, then the total byte limit, oldest first. Each file stands
+ * alone: one that can't be read or removed never stops the rest.
  */
 export function sweepLiveLogs(
   store: { getRun(id: number): { outcome: string | null; finishedAt: string | null } | null },
@@ -429,36 +451,40 @@ export function sweepLiveLogs(
   now: Date,
 ): { removed: string[] } {
   const removed: string[] = [];
-  const removable: { fileName: string; ageAnchorMs: number }[] = [];
+  const remove = (fileName: string) => { if (removeLiveFile(root, fileName)) removed.push(fileName); };
+  // One group per finished run (keyed by id) or per orphan file, aged from the run's end or the file's mtime.
+  const groups = new Map<string, { files: LiveSweepVerdict[]; ageAnchorMs: number }>();
   for (const entry of listLiveFiles(root)) {
+    let key = `file:${entry.fileName}`, anchor = entry.mtimeMs;
     if (entry.runId !== null) {
-      const run = store.getRun(entry.runId);
+      let run: { outcome: string | null; finishedAt: string | null } | null;
+      try { run = store.getRun(entry.runId); } catch { continue; } // unknown this pass: kept, never guessed
       if (run !== null && run.outcome === null) continue; // live: untouchable
       const finished = run?.finishedAt === null || run?.finishedAt === undefined ? null : Date.parse(run.finishedAt);
-      removable.push({
-        fileName: entry.fileName,
-        ageAnchorMs: finished === null || Number.isNaN(finished) ? entry.mtimeMs : finished,
-      });
-    } else {
-      removable.push({ fileName: entry.fileName, ageAnchorMs: entry.mtimeMs });
+      key = `run:${entry.runId}`;
+      anchor = finished === null || Number.isNaN(finished) ? entry.mtimeMs : finished;
     }
+    if (entry.cap !== null && entry.bytes > entry.cap) { remove(entry.fileName); continue; }
+    const group = groups.get(key) ?? { files: [], ageAnchorMs: anchor };
+    group.files.push(entry);
+    group.ageAnchorMs = Math.min(group.ageAnchorMs, anchor);
+    groups.set(key, group);
   }
-  removable.sort((a, b) => a.ageAnchorMs - b.ageAnchorMs);
+  const ordered = [...groups.values()].sort((a, b) => a.ageAnchorMs - b.ageAnchorMs);
   const cutoff = now.getTime() - LIVE_RETAIN_MS;
-  const survivors: typeof removable = [];
-  for (const one of removable) {
-    if (one.ageAnchorMs <= cutoff) {
-      removeLiveFile(root, one.fileName);
-      removed.push(one.fileName);
-    } else {
-      survivors.push(one);
-    }
-  }
+  let survivors = ordered.filter(group => {
+    if (group.ageAnchorMs > cutoff) return true;
+    for (const file of group.files) remove(file.fileName);
+    return false;
+  });
   // Oldest-first beyond the bound — still never touching an active run.
-  for (let index = 0; index < survivors.length - LIVE_FILE_BOUND; index += 1) {
-    const one = survivors[index] as { fileName: string };
-    removeLiveFile(root, one.fileName);
-    removed.push(one.fileName);
+  for (const group of survivors.slice(0, Math.max(0, survivors.length - LIVE_FILE_BOUND))) for (const file of group.files) remove(file.fileName);
+  survivors = survivors.slice(Math.max(0, survivors.length - LIVE_FILE_BOUND));
+  // Then the total, oldest first, counting only what is still kept.
+  let total = survivors.reduce((sum, group) => sum + group.files.reduce((one, file) => one + file.bytes, 0), 0);
+  for (const group of survivors) {
+    if (total <= LIVE_TOTAL_BYTES) break;
+    for (const file of group.files) { remove(file.fileName); total -= file.bytes; }
   }
   return { removed };
 }

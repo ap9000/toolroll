@@ -8,10 +8,10 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { legacyLiveLogPath, liveDir, liveLogPath, liveWindowLines, openLiveLog, readLiveWindow, sweepLiveLogs } from "./live.js";
+import { LIVE_FILE_BOUND, LIVE_SUB_FILE_CAP, LIVE_TOTAL_BYTES, legacyLiveLogPath, liveDir, liveLogPath, liveSubLogPath, liveWindowLines, openLiveLog, readLiveWindow, sweepLiveLogs } from "./live.js";
 import { advanceTail } from "./peek-cli.js";
 import { parseLiveRecords } from "./live-records.js";
 
@@ -172,5 +172,57 @@ describe("the sweep", () => {
     const swept = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, new Date("2026-10-18T12:00:00.000Z"));
     expect(swept.removed).toEqual(["11.log"]);
     expect(existsSync(liveLogPath(root, 10))).toBe(true);
+  });
+
+  // docs/plans/agents-view.md N3: a run's subagents' file is the run's own, swept with it and never an orphan.
+  const NOW = new Date("2026-10-18T12:00:00.000Z");
+  const finishedAt = (hoursAgo: number) => new Date(NOW.getTime() - hoursAgo * 3_600_000).toISOString();
+  const put = (name: string, bytes = 1, mtime = new Date("2026-01-01T00:00:00.000Z")) => {
+    mkdirSync(liveDir(root), { recursive: true });
+    const path = join(liveDir(root), name);
+    writeFileSync(path, "x");
+    if (bytes !== 1) truncateSync(path, bytes);
+    utimesSync(path, mtime, mtime);
+  };
+
+  test("an active run's subagents' file survives age pressure; a finished run's goes with its records", () => {
+    for (const name of ["7.jsonl", "7.sub.jsonl", "8.jsonl", "8.sub.jsonl", "9.sub.jsonl"]) put(name);
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = { 7: { outcome: null, finishedAt: null }, 8: { outcome: "built", finishedAt: finishedAt(30) } };
+    const swept = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, NOW);
+    expect(swept.removed.sort()).toEqual(["8.jsonl", "8.sub.jsonl", "9.sub.jsonl"]); // 9 has no run row: an orphan by age
+    expect(existsSync(liveSubLogPath(root, 7))).toBe(true);
+    expect(existsSync(liveLogPath(root, 7))).toBe(true);
+  });
+
+  test("under file-count pressure a run's two files count once and go together; an active run's never go", () => {
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = { 1: { outcome: null, finishedAt: null } };
+    put("1.jsonl"); put("1.sub.jsonl");
+    for (let id = 2; id <= LIVE_FILE_BOUND + 3; id += 1) {
+      runs[id] = { outcome: "built", finishedAt: finishedAt(10 - id / 1000) }; // oldest first, all within the day
+      put(`${id}.jsonl`);
+      if (id <= 3) put(`${id}.sub.jsonl`);
+    }
+    const swept = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, NOW);
+    expect(swept.removed.sort()).toEqual(["2.jsonl", "2.sub.jsonl", "3.jsonl", "3.sub.jsonl"]);
+    expect(existsSync(liveSubLogPath(root, 1))).toBe(true);
+  });
+
+  test("a finished file far past its cap goes at once, the total stays bounded oldest first, and an active run is exempt", () => {
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = { 1: { outcome: null, finishedAt: null } };
+    put("1.sub.jsonl", LIVE_SUB_FILE_CAP * 2); // active: its writer owns the cap
+    runs[2] = { outcome: "built", finishedAt: finishedAt(1) };
+    put("2.sub.jsonl", LIVE_SUB_FILE_CAP * 2); // finished and no file this plane writes: gone now
+    const count = Math.ceil(LIVE_TOTAL_BYTES / LIVE_SUB_FILE_CAP) + 2;
+    for (let id = 10; id < 10 + count; id += 1) { runs[id] = { outcome: "built", finishedAt: finishedAt(5 - id / 1000) }; put(`${id}.sub.jsonl`, LIVE_SUB_FILE_CAP); }
+    const swept = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, NOW);
+    expect(swept.removed.sort()).toEqual(["10.sub.jsonl", "11.sub.jsonl", "2.sub.jsonl"]);
+    expect(existsSync(liveSubLogPath(root, 1))).toBe(true);
+  });
+
+  test("a run that can't be looked up is kept this pass; the rest are swept", () => {
+    for (const name of ["4.jsonl", "4.sub.jsonl", "5.jsonl"]) put(name);
+    const swept = sweepLiveLogs({ getRun: id => { if (id === 4) throw new Error("busy"); return { outcome: "built", finishedAt: finishedAt(30) }; } }, root, NOW);
+    expect(swept.removed).toEqual(["5.jsonl"]);
+    expect(existsSync(liveSubLogPath(root, 4))).toBe(true);
   });
 });
