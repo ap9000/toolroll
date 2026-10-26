@@ -12,7 +12,7 @@
  * The same in every chat app: Telegram's bridge and the shared engine Slack, Discord and Teams run on (chat-delivery.ts)
  * offer, mint and answer these through the same tokens (the `channel` column). Every act runs through the door the
  * console uses. */
-import { NIGHTLY_CHECK_ONLY, nightlyTaskRef } from "./store.js";
+import { NIGHTLY_CHECK_ONLY, RELEASE_MERGES_ONLY, nightlyTaskRef, releaseTaskRef } from "./store.js";
 import { isAcpProfile } from "./acp-agents.js";
 import { DECIDE_ACTS, readDecideActionRow, type DecideActionRow } from "./contracts/chat-callback-rows.js";
 import type { ContractResult } from "./contracts/contract.js";
@@ -165,6 +165,8 @@ export function mergeInChat(store: Store, taskId: string, run: number, approver:
   const ref = store.lookupRef(taskId);
   // The nightly check of main never merges (release-once.md, part 3).
   if (ref !== null && nightlyTaskRef(store, ref.id)) return { ok: false, why: NIGHTLY_CHECK_ONLY };
+  // A release's result merges only through its coordinator.
+  if (ref !== null && releaseTaskRef(store, ref.id)) return { ok: false, why: RELEASE_MERGES_ONLY };
   const publication = store.publicationForRun(run);
   const follow = publication === null ? null : pullRequestFollowOf(store, publication.id);
   if (ref === null || ref.repo === null || publication === null || follow === null || publication.prNumber === null) return { ok: false, why: "This result has no pull request to merge." };

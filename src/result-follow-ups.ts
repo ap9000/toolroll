@@ -311,7 +311,9 @@ export function fullCheckGate(store: Store, runId: number, now: Date): FullCheck
     const targeted = store.handle.prepare("SELECT 1 AS hit FROM release_check_attempt WHERE run = ? AND mode = 'targeted'").get(runId) !== undefined;
     if (targeted) return { state: "failed", message: "This result's check re-ran only what failed; it merges only through its release." };
     const own = store.handle.prepare("SELECT status FROM run_check WHERE run = ?").get(runId);
-    if (own !== undefined && own["status"] !== "passed") return { state: "failed", message: "The full check didn't pass on this commit. Fix it, or merge anyway." };
+    // No row is a check pending or never requested, never a pass (security review).
+    if (own === undefined) return { state: "not-requested", message: "The full check hasn't run on this commit yet. Merge once it passes, or merge anyway." };
+    if (own["status"] !== "passed") return { state: "failed", message: "The full check didn't pass on this commit. Fix it, or merge anyway." };
     return { state: "clear" };
   }
   if (!batched && store.liveVerifyCommand(repo) === null) return { state: "clear" };

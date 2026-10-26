@@ -752,7 +752,7 @@ function releaseWorld(options: { carryRefused?: string } = {}) {
       return { ok: true, operation: id };
     },
     async start(id, epoch) { const op = rel.ops.get(id)!; if (op.state !== "reserved" || epoch !== rel.epoch) return false; op.state = "running"; return true; },
-    async needsApproval(_id, reason) { rel.approvalsNeeded.push(reason); rel.state = "revoked"; },
+    async needsApproval(_id, reason, epoch) { if (epoch !== rel.epoch || rel.state === "merge-reserved") return false; rel.approvalsNeeded.push(reason); rel.state = "revoked"; return true; },
     async finish(id, outcome, facts, epoch) {
       if (epoch !== rel.epoch) return false;
       const op = rel.ops.get(id)!; op.state = outcome; op.externalRef = facts.externalRef ?? op.externalRef; rel.finished.push(`${id}:${outcome}`);
@@ -983,5 +983,38 @@ describe("toolroll release: Codex review round 1", () => {
     adapters.toolroll.fileGate = async input => { filed.push(input.taskId); return fileGate(input); };
     await runRelease(options(dir, { fresh: true, limits: { approval: 1 } }), adapters);
     expect(filed).toEqual([`${gateTaskId("0.9.52", SHA)}-2`]);
+  });
+
+  test("security review: --new after a CI failure files an id that never existed, never a task whose approval stands", async () => {
+    const dir = stateDir();
+    const { s, adapters, rel } = releaseWorld();
+    s.checks.set(SHA, passing(REQUIRED_PR_CHECKS).map((run, i) => i === 0 ? { ...run, conclusion: "failure" } : run));
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, reason: "ci-failed" });
+    s.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
+    // `<base>-2` already exists, approved, and its approval still stands under the release.
+    const standing = `${gateTaskId("0.9.52", SHA)}-2`;
+    const approvedGate = { exists: true, candidate: SHA, scopeDigest: DIGEST, approval: { by: "alex", at: new Date(s.now).toISOString(), digest: DIGEST, basis: "person", role: "approver", active: true }, result: null, failed: null, completion: null };
+    const gate = adapters.toolroll.gate;
+    adapters.toolroll.gate = async id => (id === standing ? structuredClone(approvedGate) as never : gate(id));
+    rel.live = taskId => (taskId === standing ? { applies: true, ok: true, why: null } : { applies: true, ok: false, why: "revoked" });
+    const filed: string[] = [];
+    const fileGate = adapters.toolroll.fileGate;
+    adapters.toolroll.fileGate = async input => { filed.push(input.taskId); return fileGate(input); };
+    await runRelease(options(dir, { fresh: true, limits: { approval: 1 } }), adapters);
+    expect(filed).toEqual([`${gateTaskId("0.9.52", SHA)}-3`]);
+    expect(s.calls).not.toContain("merge");
+  });
+
+  test("security review: when the release's approval can't be stopped after a CI failure, the release fails closed", async () => {
+    const dir = stateDir();
+    const { s, adapters } = releaseWorld();
+    s.checks.set(SHA, passing(REQUIRED_PR_CHECKS).map((run, i) => i === 0 ? { ...run, conclusion: "failure" } : run));
+    adapters.release!.needsApproval = async () => false;
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, reason: "lease" });
+    expect(s.calls).not.toContain("merge");
+    // The journal still says a person must approve again: resuming refuses.
+    s.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, reason: "ci-failed" });
+    expect(s.calls).not.toContain("merge");
   });
 });

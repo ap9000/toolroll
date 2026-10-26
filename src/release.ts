@@ -100,8 +100,9 @@ export type ReleaseAuthorityAdapter = {
   start(operation: string, epoch: number): Promise<boolean>;
   /** Settle an operation at the epoch this coordinator holds; false: it no longer holds the release. */
   finish(operation: string, outcome: "succeeded" | "failed" | "unknown", facts: { detail?: string | null; externalRef?: string | null }, epoch: number): Promise<boolean>;
-  /** A CI failure after the deploy (Alex's decision): the release stops and needs a person's fresh approval. */
-  needsApproval(authority: number, reason: string, epoch: number): Promise<void>;
+  /** A CI failure after the deploy (Alex's decision): the release stops and needs a person's fresh approval. False when
+   * the authority could not be stopped (a stale epoch, a merge already reserved): the coordinator fails closed. */
+  needsApproval(authority: number, reason: string, epoch: number): Promise<boolean>;
   operations(authority: number): Promise<OperationView[]>;
 };
 
@@ -205,6 +206,8 @@ export type ReleaseJournal = {
   operations?: { deploy?: string; merge?: string };
   /** A pull request check failed after the deploy: nothing continues until a person approves again (--new). */
   needsApproval?: boolean;
+  /** This journal's task was picked fresh after a CI failure after the deploy: an id that never existed, never another. */
+  freshTask?: boolean;
   /** When each step was about to change something outside this machine: what a resume must look for before acting. */
   intents: Partial<Record<ReleaseStep, string>>;
   stopped: { step: ReleaseStep; reason: string; message: string; at: string } | null;
@@ -315,6 +318,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
   let journal: ReleaseJournal | null = null;
   let step: ReleaseStep | "preflight" = "preflight";
   let freshApproval = false;
+  let supersededTask: string | null = null;
 
   const save = () => { journal!.updatedAt = adapters.now().toISOString(); writeJournal(file, journal!); };
   const advance = (next: ReleaseStep) => { journal!.step = next; journal!.stopped = null; save(); };
@@ -351,6 +355,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       renameSync(file, aside);
       say(`Kept the earlier release journal at ${aside}.`);
       freshApproval = journal.needsApproval === true;
+      supersededTask = journal.task.id;
       journal = null;
     }
     if (journal?.step === "done") {
@@ -363,9 +368,18 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       journal = await begin(options, adapters, adapters.now());
       // The earlier attempt needs a person's fresh approval (a CI failure after its deploy): this one files a task of its
       // own for the same commit, so the old approval can't carry it.
+      // Only an id that has never existed, numbered after the superseded one: never a task whose approval still stands.
       if (freshApproval) {
         const base = journal.task.id;
-        for (let n = 2; n < 50; n++) { const id = `${base}-${n}`; if (!(await adapters.toolroll.gate(id)).exists) { journal.task = { id, scopeDigest: null }; break; } }
+        const suffix = supersededTask === null ? null : supersededTask === base ? 1 : supersededTask.startsWith(`${base}-`) ? Number(supersededTask.slice(base.length + 1)) : null;
+        let picked: string | null = null;
+        for (let n = suffix !== null && Number.isInteger(suffix) && suffix > 0 ? suffix + 1 : 2; n < 1000; n++) {
+          const id = `${base}-${n}`;
+          if (!(await adapters.toolroll.gate(id)).exists) { picked = id; break; }
+        }
+        if (picked === null) throw new Stop("approval", `No unused task id is left for a fresh approval of ${base}.`);
+        journal.task = { id: picked, scopeDigest: null };
+        journal.freshTask = true;
       }
     }
     else say(`Resuming the release of ${journal.tag} (${journal.candidate.sha.slice(0, 7)}) at ${journal.step}.`);
@@ -448,8 +462,11 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
      * journal says so) before the release stops; `--new` files the commit for a person again.
      */
     const ciFailedAfterDeploy = async (what: string): Promise<never> => {
-      if (rel !== undefined && j.authority && epoch !== null) await rel.needsApproval(j.authority.id, "a pull request check failed after the deploy", epoch);
       j.needsApproval = true; save();
+      // Fail closed: the authority must have stopped; otherwise its approval could still carry the commit.
+      if (rel !== undefined && j.authority && (epoch === null || !await rel.needsApproval(j.authority.id, "a pull request check failed after the deploy", epoch))) {
+        throw new Stop("lease", `${what}. Nothing was merged, but this release's approval couldn't be stopped (another coordinator holds it, or a merge is reserved). Check it with \`toolroll release ${j.branch} --repo ${j.checkout}\` before going on.`);
+      }
       throw new Stop("ci-failed", `${what}. Nothing was merged. The deploy had already started, so this commit needs a person's approval again: run \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
     };
     /** identity(), on a plane that keeps release authority; a legacy plane keeps the old rules. */
@@ -517,7 +534,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           await pinned();
           // The same commit's earlier gate belongs to a release that no longer stands (a CI failure after its deploy, a
           // revoke): a fresh task asks a person again, and their yes opens a new generation.
-          if (rel !== undefined) {
+          if (rel !== undefined && j.freshTask !== true) {
             const base = gateTaskId(j.packageVersion, j.candidate.sha);
             for (let n = 1; n < 50; n++) {
               const id = n === 1 ? base : `${base}-${n}`;
@@ -526,6 +543,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             }
           }
           const existing = await adapters.toolroll.gate(j.task.id);
+          // A fresh task this journal never filed has appeared under its id: it isn't ours, and isn't a fresh approval.
+          if (existing.exists && j.freshTask === true && j.intents.gate === undefined) throw new Stop("approval", `Task ${j.task.id} appeared before this release filed it; rerun with --new.`);
           if (existing.exists) {
             if (existing.candidate !== j.candidate.sha) throw new Stop("conflict", `Task ${j.task.id} exists for a different commit (${existing.candidate?.slice(0, 7) ?? "none"}).`);
             j.task.scopeDigest = existing.scopeDigest;

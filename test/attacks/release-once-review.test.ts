@@ -9,7 +9,7 @@ import { releaseFixture, sealedCheck, reportOf, builtRun, RELEASE_NOW, EVIDENCE,
 import { proveCarry } from "../../src/release-carry.js";
 import { coverageOf, requiredSet, owedIdentities } from "../../src/release-recheck.js";
 import {
-  finishReleaseOperation, releaseOperations, reserveRelease, revokeRelease, runReleaseOperation, takeReleaseLease, recordTrustedMain,
+  finishReleaseOperation, releaseOperations, reserveRelease, revokeRelease, runReleaseOperation, takeReleaseLease, recordTrustedMain, requireFreshReleaseApproval,
 } from "../../src/store.js";
 import { mergePullRequest } from "../../src/pull-request-flow.js";
 import { fullCheckGate } from "../../src/result-follow-ups.js";
@@ -176,3 +176,76 @@ describe("finding 8: only a successful full check clears debt", () => {
 });
 
 export { writeFileSync };
+
+describe("security review of f7912c15: every merge road refuses a release task", () => {
+  /** A release task's run with a publication planted under it, as a merge road would see it. */
+  const planted = (f: ReleaseFixture) => {
+    const run = builtRun(f.store, f.taskId, f.approved);
+    const ref = f.store.refFor("built-in", f.taskId).id;
+    f.store.handle.prepare("INSERT INTO publication (run, task_ref, github_repo, remote, base, head, head_sha, body_hash, draft, state, created_at, updated_at) VALUES (?, ?, 'o/r', 'origin', 'main', 'b', ?, 'h', 0, 'intended', ?, ?)")
+      .run(run, ref, f.approved, LATER.toISOString(), LATER.toISOString());
+    const publication = Number(f.store.handle.prepare("SELECT id FROM publication WHERE run = ?").get(run)!["id"]);
+    return { run, publication };
+  };
+
+  test("no merge intent can be made for it", () => {
+    const f = (fixture = releaseFixture());
+    const { publication } = planted(f);
+    expect(() => f.store.createMergeIntent({ publication, repo: f.repo, grantTermsHash: "g", headSha: f.approved, method: "squash", deleteBranch: false }, LATER)).toThrow("toolroll release");
+  });
+
+  test("a planted, claimed merge intent is refused at firing and settled as refused", () => {
+    const f = (fixture = releaseFixture());
+    const { publication } = planted(f);
+    f.store.handle.prepare("INSERT INTO merge_intent (publication, grant_terms_hash, head_sha, method, state, claimed_by, claimed_until, generation, created_at) VALUES (?, 'g', ?, 'squash', 'claimed', 'w', ?, 1, ?)").run(publication, f.approved, LATER.toISOString(), LATER.toISOString());
+    const intent = Number(f.store.handle.prepare("SELECT id FROM merge_intent WHERE publication = ?").get(publication)!["id"]);
+    expect(f.store.fireMergeIntent(intent, 1, { repo: f.repo, headSha: f.approved, liveGrantTermsHash: "g", graceMs: 0 }, LATER)).toMatchObject({ ok: false, why: expect.stringContaining("toolroll release") });
+    expect(f.store.handle.prepare("SELECT state FROM merge_intent WHERE id = ?").get(intent)?.["state"]).toBe("refused");
+  });
+
+  test("the chat merge refuses it", async () => {
+    const f = (fixture = releaseFixture());
+    const { run } = planted(f);
+    const { mergeInChat } = await import("../../src/chat-decide.js");
+    expect(mergeInChat(f.store, f.taskId, run, "alex", LATER, "telegram" as never)).toMatchObject({ ok: false, why: expect.stringContaining("toolroll release") });
+  });
+
+  test("a carried release task is refused the same way", async () => {
+    const f = (fixture = releaseFixture());
+    const to = f.commit({ "docs/guide.md": "# Guide\nnow\n" });
+    const carried = await proveCarry(f.store, { authority: f.authority().id, to, now: LATER });
+    if (!carried.ok) throw new Error(carried.message);
+    const run = builtRun(f.store, carried.taskId, to);
+    const ref = f.store.refFor("built-in", carried.taskId).id;
+    f.store.handle.prepare("INSERT INTO publication (run, task_ref, github_repo, remote, base, head, head_sha, body_hash, draft, state, created_at, updated_at) VALUES (?, ?, 'o/r', 'origin', 'main', 'b', ?, 'h', 0, 'intended', ?, ?)")
+      .run(run, ref, to, LATER.toISOString(), LATER.toISOString());
+    const publication = Number(f.store.handle.prepare("SELECT id FROM publication WHERE run = ?").get(run)!["id"]);
+    expect(() => f.store.createMergeIntent({ publication, repo: f.repo, grantTermsHash: "g", headSha: to, method: "squash", deleteBranch: false }, LATER)).toThrow("toolroll release");
+  }, 120_000);
+});
+
+describe("security review of f7912c15: a missing check is never a pass", () => {
+  test("a Full build with no check row of its own isn't clear", () => {
+    const f = (fixture = releaseFixture());
+    const run = builtRun(f.store, f.taskId, f.approved);
+    recordRunCheckLevel(f.store, { id: run, taskId: f.taskId, repo: f.repo }, "full", "project", RELEASE_NOW);
+    f.store.handle.prepare("DELETE FROM run_check WHERE run = ?").run(run);
+    expect(fullCheckGate(f.store, run, LATER).state).not.toBe("clear");
+  });
+});
+
+describe("security review of f7912c15: the fresh-approval stop reports whether it took", () => {
+  test("a stale epoch leaves the release standing and says so; the holder's epoch revokes it", () => {
+    const f = (fixture = releaseFixture());
+    const id = f.authority().id;
+    const one = takeReleaseLease(f.store, id, "c1", RELEASE_NOW, 60_000);
+    if (!one.ok) throw new Error(one.why);
+    const two = takeReleaseLease(f.store, id, "c2", new Date(RELEASE_NOW.getTime() + 120_000), 60_000);
+    if (!two.ok) throw new Error(two.why);
+    const at = new Date(RELEASE_NOW.getTime() + 130_000);
+    expect(requireFreshReleaseApproval(f.store, id, "ci failed", one.epoch, at)).toBe(false);
+    expect(f.authority().state).toBe("open");
+    expect(requireFreshReleaseApproval(f.store, id, "ci failed", two.epoch, at)).toBe(true);
+    expect(f.authority().state).toBe("revoked");
+  });
+});

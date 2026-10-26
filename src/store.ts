@@ -17793,6 +17793,8 @@ export class Store {
     this.transact(() => {
       // The nightly check of main is a check only (release-once.md, part 3): nothing merges it.
       if (nightlyPublication(this, intent.publication)) throw new Error(NIGHTLY_CHECK_ONLY);
+      // A release's result merges only through its coordinator (release-once.md; security review): no intent for it.
+      if (releasePublication(this, intent.publication)) throw new Error(RELEASE_MERGES_ONLY);
       const mode = this.activeMode(intent.repo, now);
       let state = "pending";
       let basis = "grant";
@@ -17930,6 +17932,11 @@ export class Store {
       if (row !== undefined && nightlyPublication(this, Number(row["publication"]))) {
         this.settleMergeIntent(id, generation, "refused", now, { error: NIGHTLY_CHECK_ONLY, from: "claimed" });
         return { ok: false as const, outcome: "superseded" as const, why: NIGHTLY_CHECK_ONLY };
+      }
+      // Nor does a release's result, whatever intent was planted for it: only `toolroll release` merges it.
+      if (row !== undefined && releasePublication(this, Number(row["publication"]))) {
+        this.settleMergeIntent(id, generation, "refused", now, { error: RELEASE_MERGES_ONLY, from: "claimed" });
+        return { ok: false as const, outcome: "superseded" as const, why: RELEASE_MERGES_ONLY };
       }
       if (row === undefined || String(row["state"]) !== "claimed" || Number(row["generation"]) !== generation) {
         return { ok: false as const, outcome: "raced" as const, why: "the claim moved" };
@@ -24201,7 +24208,7 @@ export {
   type ReleaseAuthority, type ReleaseCarry, type ReleaseOperation, type ReleaseState,
 } from "./release-authority.js";
 import {
-  LIVE_RELEASE_STATES, newestReleaseGeneration, outstandingReleaseOperations, releaseAuthority, releaseCarryTo, releaseOperation, releaseSealProblem,
+  LIVE_RELEASE_STATES, belongsToRelease, newestReleaseGeneration, outstandingReleaseOperations, releaseAuthority, releaseCarryTo, releaseOperation, releaseSealProblem,
   type ReleaseCarry, type ReleaseOperation,
 } from "./release-authority.js";
 
@@ -24449,6 +24456,19 @@ export function nightlyPublication(store: Store, publication: number): boolean {
   return row !== undefined && nightlyTaskRef(store, Number(row["task_ref"]));
 }
 
+/** A release's result merges only through its coordinator: every other merge road refuses it. */
+export const RELEASE_MERGES_ONLY = "This result belongs to a release; it merges only through `toolroll release`.";
+/** Whether a task reference is a release's anchor or a carried release task. */
+export function releaseTaskRef(store: Store, taskRef: number): boolean {
+  const row = store.handle.prepare("SELECT external_id FROM task_ref WHERE id = ? AND backend = 'built-in'").get(taskRef);
+  return row !== undefined && belongsToRelease(store, String(row["external_id"]));
+}
+/** Whether a publication belongs to a release's task. */
+export function releasePublication(store: Store, publication: number): boolean {
+  const row = store.handle.prepare("SELECT task_ref FROM publication WHERE id = ?").get(publication);
+  return row !== undefined && releaseTaskRef(store, Number(row["task_ref"]));
+}
+
 /** The ledger act that records a trusted read of a project's recorded remote main (remote-main.ts). */
 export const TRUSTED_MAIN_ACTION = "remote main read";
 /** Record the commit the project's recorded remote main was at, as Toolroll's own process fetched it just now. */
@@ -24460,11 +24480,16 @@ export function recordTrustedMain(store: Store, repo: string, sha: string, url: 
  * A pull request check failed after the deploy reservation (Alex, 2026-10-25): the candidate froze at deploy, so the
  * release stops and asks a person again — even for the same commit, a new person-approved generation continues it.
  */
-export function requireFreshReleaseApproval(store: Store, id: number, reason: string, epoch: number, now: Date): void {
-  store.transact(() => {
+export function requireFreshReleaseApproval(store: Store, id: number, reason: string, epoch: number, now: Date): boolean {
+  return store.transact(() => {
     const a = releaseAuthority(store, id);
-    if (a === null || a.leaseEpoch !== epoch || !LIVE_RELEASE_STATES.includes(a.state) || a.state === "merge-reserved") return;
-    store.handle.prepare("UPDATE release_authority SET state = 'revoked', ended_at = ?, ended_by = ?, rev = rev + 1 WHERE id = ? AND rev = ?").run(now.toISOString(), `toolroll: ${reason}; a person approves it again`, id, a.rev);
+    if (a === null) return false;
+    // Already ended (revoked, expired, superseded, merged): no approval of it stands to carry the commit.
+    if (!LIVE_RELEASE_STATES.includes(a.state)) return a.state !== "merged";
+    if (a.leaseEpoch !== epoch || a.state === "merge-reserved") return false;
+    const changed = store.handle.prepare("UPDATE release_authority SET state = 'revoked', ended_at = ?, ended_by = ?, rev = rev + 1 WHERE id = ? AND rev = ?").run(now.toISOString(), `toolroll: ${reason}; a person approves it again`, id, a.rev);
+    if (Number(changed.changes) !== 1) return false;
     store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: a.tipTask, runId: null, action: "release revoked", outcome: "needs-approval", source: "work", detail: `release ${id}: ${reason}` });
+    return true;
   });
 }
