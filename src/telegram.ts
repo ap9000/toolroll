@@ -1061,6 +1061,9 @@ async function deliverOutboxTo(
         let keyboard = own !== null ? [own] : viewKeyboard(phoneOrigin, view);
         const shown = createHash("sha256").update(JSON.stringify(offer === null ? [view.text, keyboard] : [text, offerFingerprint(offer)])).digest("hex");
         let tokens: string[] = [];
+        // A release card's terms go as a file first, on this road as on a lone delivery: no file accepted, no buttons.
+        const termsFirst = async (): Promise<{ ok: false; error: string } | null> =>
+          offer?.file === undefined || (fileSender !== undefined && await fileSender(offer.file)) ? null : { ok: false, error: "The release's terms file wasn't accepted" };
         // Minted unplaced: they ride a message only once it shows them, and until then the old card's buttons work.
         const mintFor = (): void => {
           if (offer === null) return;
@@ -1075,6 +1078,8 @@ async function deliverOutboxTo(
           }
           const problem = (await readAccess()) ?? fence();
           if (problem !== null) return { ok: false, error: problem };
+          const terms = await termsFirst();
+          if (terms !== null) return terms;
           mintFor();
           const edited = await editProgress(wire, binding.chatId, batch.message, text, keyboard);
           if (edited.ok) {
@@ -1093,6 +1098,7 @@ async function deliverOutboxTo(
           if (!edited.replace) return edited;
         }
         // A new message: its buttons are minted for it, never the ones a failed edit was given.
+        if (batch.message === null) { const terms = await termsFirst(); if (terms !== null) return terms; }
         mintFor();
         const sent = await sender(text, keyboard.length === 0 ? undefined : keyboard, [fact]);
         const placed = sent.ok ? sent.messageId : store.telegramMessageOf(fact.id, fact.destination);
@@ -2316,12 +2322,24 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
     if (tapped === null) { report.ignored++; ack("That button doesn't do anything now."); return; }
     if (tapped.ignored === true) report.ignored++;
     ack(tapped.ack.slice(0, 190));
-    // A release card's terms, as a file, before its Approve is shown (chat-management.md §0a.5).
-    if (tapped.file !== undefined) {
-      const file = tapped.file;
-      effects.push(async () => { await transport("sendDocument", { chat_id: binding.chatId, caption: "Every term of this release, read again just now" }, undefined, termsUpload(file)); });
-    }
-    if (tapped.edit !== undefined) editText(tapped.edit.text.slice(0, 4000), decideKeyboard(context.conversation?.phoneOrigin, tapped.edit.rows));
+    // A release card's terms, as a file, before its Approve is shown (chat-management.md §0a.5): Approve appears only
+    // once Telegram has accepted this file; a refused or failed upload shows the card without it, Continue to try again.
+    if (tapped.file !== undefined && tapped.edit !== undefined && tapped.unsent !== undefined) {
+      const file = tapped.file, edit = tapped.edit, unsent = tapped.unsent;
+      effects.push(async () => {
+        let sent = false;
+        try { sent = (await transport("sendDocument", { chat_id: binding.chatId, caption: "Every term of this release, read again just now" }, undefined, termsUpload(file))).ok === true; }
+        catch { sent = false; }
+        const shown = sent ? edit : unsent;
+        dropDecideTokens(store, (sent ? unsent : edit).tokens, clock());
+        await transport("editMessageText", { chat_id: binding.chatId, message_id: message.message_id, text: shown.text.slice(0, 4000), link_preview_options: { is_disabled: true },
+          reply_markup: { inline_keyboard: decideKeyboard(context.conversation?.phoneOrigin, shown.rows) } });
+      });
+    } else if (tapped.file !== undefined) {
+      // A file without its gate never reaches here (chat-decide pairs them); fail closed: nothing that approves is shown.
+      if (tapped.edit !== undefined) dropDecideTokens(store, tapped.edit.tokens, clock());
+      editText(`${message.text ?? ""}\n\nThis release can't be approved here. Open it in Toolroll.`.trim().slice(0, 4000), []);
+    } else if (tapped.edit !== undefined) editText(tapped.edit.text.slice(0, 4000), decideKeyboard(context.conversation?.phoneOrigin, tapped.edit.rows));
     if (tapped.prompt !== undefined) {
       const prompt = tapped.prompt;
       effects.push(async () => {

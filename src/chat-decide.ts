@@ -369,6 +369,9 @@ export type DecideTapOutcome = {
   file?: { name: string; text: string };
   /** The card repainted: its text and buttons now. */
   edit?: { text: string; rows: DecideButton[][]; tokens: string[] };
+  /** With `file`, where the chat app carries the terms only as a file: the card instead of `edit` when the file didn't
+   * arrive. No Approve, a fresh Continue to send it again; the channel drops whichever set it doesn't show. */
+  unsent?: { text: string; rows: DecideButton[][]; tokens: string[] };
   /** Ask "What should change?": the person's next message is the feedback. `id` names the prompt, so the channel can
    * record the message it sent (a reply to anything else is not the feedback). */
   prompt?: { id: number; text: string };
@@ -594,9 +597,13 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
       const cancel = mint(store, seat, input.message, spec, row.taskId, "cancel", now);
       const card = release.card;
       const text = seat.channel === "telegram" ? card.short : `${card.short}\n\n${card.full}`;
+      // Telegram carries the terms only as the file: Approve shows only once that file has arrived (telegram.ts).
+      const again = seat.channel === "telegram" ? mint(store, seat, input.message, spec, row.taskId, "offer", now) : null;
       return { ack: "Read the terms, then approve.", file: { name: card.fileName, text: card.full },
         edit: { text: `${text}\n\nApprove release "${name}"? This approves exactly these terms${seat.channel === "telegram" ? `, every one in ${card.fileName}` : ""}.`,
-          rows: [[{ label: "Approve", token: yes }, { label: DECIDE_LABELS.cancel, token: cancel }]], tokens: [yes, cancel] } };
+          rows: [[{ label: "Approve", token: yes }, { label: DECIDE_LABELS.cancel, token: cancel }]], tokens: [yes, cancel] },
+        ...(again === null ? {} : { unsent: { text: `${text}\n\nThe terms file didn't arrive, so Approve isn't shown. Tap Continue to send it again.`,
+          rows: [[{ label: "Continue", token: again }]], tokens: [again] } }) };
     }
     // The first tap asks; only the yes acts, bound to exactly what this button was.
     spend();
