@@ -93,3 +93,21 @@ test("the peek reads under the run's own answer", () => {
   captureRunLiveDetail(store, run, true, T0);
   expect(advanceTail(root, run, start, runLiveCommands(store, run)).lines.join("\n")).toContain("curl");
 });
+
+test("lines the peek cached under an answer that has since resolved off are dropped, on every path (Codex av2 #2)", () => {
+  const { run } = admit();
+  mkdirSync(join(root, "live"), { recursive: true });
+  writeFileSync(liveLogPath(root, run), forgedText);
+  const start = { offset: 0, lines: [], state: "not-yet" as const };
+  const on = advanceTail(root, run, start, true);
+  expect(on.lines.join("\n")).toContain("curl");
+  // The answer now resolves off (here: its table can't be read): the cached lines go, reprojected without command detail.
+  store.handle.exec("DROP TABLE run_live_detail");
+  const off = advanceTail(root, run, on, runLiveCommands(store, run));
+  expect(off.lines.join("\n")).not.toContain("curl");
+  expect(off.lines.join("\n")).toContain("src/app.ts");
+  // And when the file is gone, the error path keeps nothing made under the old answer either.
+  rmSync(liveLogPath(root, run));
+  expect(advanceTail(root, run, on, false).lines.join("\n")).not.toContain("curl");
+});
+

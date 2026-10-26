@@ -41,28 +41,36 @@ export type PeekPane = {
   transcript: "live" | "not-yet" | "replaced" | "unreadable";
 };
 
-type Tail = { offset: number; lines: string[]; state: PeekPane["transcript"]; gen?: string; inKey?: boolean; keyTail?: string };
+type Tail = { offset: number; lines: string[]; state: PeekPane["transcript"]; gen?: string; inKey?: boolean; keyTail?: string;
+  /** The "Show commands" answer the cached lines were made under; absent is unknown (treated as on: never trusted). */
+  commands?: boolean };
 
 const REPLACED: Tail = { offset: 0, lines: ["[the live view was replaced — starting over]"], state: "replaced" };
 
 /**
  * Advance one run's tail from its offset; `replaced` resets visibly. The
- * offset always moves by the bytes read, even when nothing in them shows. `commands` is the run's own captured
- * "Show commands" answer (store.ts runLiveCommands)
+ * offset always moves by the bytes read, even when nothing in them shows
  * (a finished step, a skipped line), and an offset is only ever used
- * against the file it came from.
+ * against the file it came from. `commands` is the run's own captured
+ * "Show commands" answer (store.ts runLiveCommands), read now: lines cached
+ * under any other answer are dropped and the file is read again from its
+ * start under this one, on every path, so nothing projected with command
+ * detail outlives the answer turning off.
  */
-export function advanceTail(root: string, runId: number, tail: Tail, commands: boolean): Tail {
+export function advanceTail(root: string, runId: number, previous: Tail, commands: boolean): Tail {
+  const tail: Tail = !commands && previous.commands !== false && (previous.lines.length > 0 || previous.offset > 0)
+    ? { offset: 0, lines: [], state: "not-yet" }
+    : previous;
   const read = readLiveWindow(root, runId, tail.offset);
   if (!read.ok) {
-    if (read.reason === "replaced") return REPLACED;
-    return { ...tail, keyTail: validKeyTail(tail.keyTail ?? "") ? tail.keyTail ?? "" : "", state: read.reason === "missing" ? (tail.lines.length === 0 ? "not-yet" : tail.state) : "unreadable" };
+    if (read.reason === "replaced") return { ...REPLACED, commands };
+    return { ...tail, commands, keyTail: validKeyTail(tail.keyTail ?? "") ? tail.keyTail ?? "" : "", state: read.reason === "missing" ? (tail.lines.length === 0 ? "not-yet" : tail.state) : "unreadable" };
   }
-  if (tail.gen !== undefined && tail.gen !== read.gen) return { ...REPLACED, gen: read.gen };
+  if (tail.gen !== undefined && tail.gen !== read.gen) return { ...REPLACED, gen: read.gen, commands };
   const keys = { inKey: tail.inKey === true, tail: validKeyTail(tail.keyTail ?? "") ? tail.keyTail ?? "" : "" };
   const fresh = liveWindowLines(read, commands, keys);
   const lines = [...tail.lines, ...fresh].slice(-PEEK_TAIL_LINES);
-  return { offset: read.nextOffset, lines, state: lines.length === 0 ? "not-yet" : "live", gen: read.gen, inKey: keys.inKey, keyTail: keys.tail };
+  return { offset: read.nextOffset, lines, state: lines.length === 0 ? "not-yet" : "live", gen: read.gen, inKey: keys.inKey, keyTail: keys.tail, commands };
 }
 
 /** The stage word for a pane: the machine's own phase, or what precedes it. */

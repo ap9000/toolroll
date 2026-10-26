@@ -385,18 +385,14 @@ export type LiveSweepVerdict = {
   /** run id, or null when the name is not a run's file. */
   runId: number | null;
   fileName: string;
-  mtimeMs: number;
-  /** Its size when listed; a file that isn't a plain file reads 0 and goes by age alone. */
-  bytes: number;
   /** The most a file of this name is ever written to (records, subagents, older text); null for a name we never write. */
   cap: number | null;
 };
 
 /**
- * Enumerate the live directory for the reconcile sweep. Pure listing — the
- * CALLER decides which runs are finalized and when; this module only
- * refuses to guess. Non-run names are reported with runId null (orphans
- * from nothing this plane wrote; aged on mtime like everything else).
+ * Enumerate the live directory for the reconcile sweep: names only. Pure listing — the CALLER settles which runs are
+ * finalized before it measures anything; this module only refuses to guess. Non-run names are reported with runId
+ * null (orphans from nothing this plane wrote; aged on mtime like everything else).
  */
 export function listLiveFiles(root: string): LiveSweepVerdict[] {
   let names: string[];
@@ -405,86 +401,119 @@ export function listLiveFiles(root: string): LiveSweepVerdict[] {
   } catch {
     return [];
   }
-  const out: LiveSweepVerdict[] = [];
-  for (const name of names) {
-    let mtimeMs = 0, bytes = 0;
-    try {
-      const stat = lstatSync(join(liveDir(root), name));
-      mtimeMs = stat.mtimeMs;
-      bytes = stat.isFile() ? stat.size : 0;
-    } catch {
-      continue;
-    }
+  return names.map(name => {
     const match = /^(\d{1,15})\.(jsonl|log|sub\.jsonl)$/.exec(name);
     // The writer stops at its cap and adds one last record; anything far past it is no file this plane wrote.
     const cap = match === null ? null : (match[2] === "sub.jsonl" ? LIVE_SUB_FILE_CAP : LIVE_FILE_CAP) + 64 * 1024;
-    out.push({ runId: match === null ? null : Number(match[1]), fileName: name, mtimeMs, bytes, cap });
-  }
-  return out;
+    return { runId: match === null ? null : Number(match[1]), fileName: name, cap };
+  });
 }
 
 /** Remove one live file, silently: a sweep never throws over display state. True when it is gone now. */
-export function removeLiveFile(root: string, fileName: string): boolean {
+export function removeLiveFile(root: string, fileName: string, unlink: (path: string) => void = unlinkSync): boolean {
   // The name comes from listLiveFiles' own readdir, never from user input.
   if (fileName.includes("/") || fileName.includes("\\") || fileName.includes("..")) return false;
   try {
-    unlinkSync(join(liveDir(root), fileName));
+    unlink(join(liveDir(root), fileName));
     return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT";
   }
 }
 
+type SweepRun = { outcome: string | null; finishedAt: string | null };
+/** What the sweep reads of the store: a run's state, and (production) the write lock run admission also takes. */
+export type LiveSweepStore = { getRun(id: number): SweepRun | null; transact?<T>(body: () => T): T };
+/** A file as measured once its run was settled finished (or it has no run): the identity a removal re-proves. */
+type Measured = { fileName: string; runId: number | null; dev: number; ino: number; size: number; mtimeMs: number; bytes: number };
+
 /**
  * The reconcile sweep (arc 1 §2): ACTIVE runs are exempt ABSOLUTELY — the
  * transport's no-truncation assumption depends on it — and a run's files
  * (its records, its subagents' file, an older text file) go together, as one.
+ * A run is settled finished (or absent) BEFORE its files are measured.
  * Finalized runs age from finished_at; orphans (no run row, or a name this
  * plane never writes) age from mtime. Among the finalized-or-orphan: a file
  * far past its own cap goes at once, then the day's retention, then the
- * 500-run bound, then the total byte limit, oldest first. Each file stands
- * alone: one that can't be read or removed never stops the rest.
+ * 500-run bound, then the total byte limit, oldest first, until each limit is
+ * really met or nothing eligible is left. Each removal re-proves, under the
+ * store's write lock (the one run admission takes), that the run is still
+ * not active and the file is the very one measured; otherwise it is kept. A
+ * file that can't be removed stays counted and never stops the rest.
  */
 export function sweepLiveLogs(
-  store: { getRun(id: number): { outcome: string | null; finishedAt: string | null } | null },
+  store: LiveSweepStore,
   root: string,
   now: Date,
+  io: { unlink?: (path: string) => void; beforeRemove?: (fileName: string) => void } = {},
 ): { removed: string[] } {
   const removed: string[] = [];
-  const remove = (fileName: string) => { if (removeLiveFile(root, fileName)) removed.push(fileName); };
+  const settled = (runId: number | null): SweepRun | null | "active" | "unknown" => {
+    if (runId === null) return null;
+    try { const run = store.getRun(runId); return run !== null && run.outcome === null ? "active" : run; } catch { return "unknown"; }
+  };
+  const measure = (fileName: string, runId: number | null): Measured | null => {
+    try {
+      const stat = lstatSync(join(liveDir(root), fileName));
+      return { fileName, runId, dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, bytes: stat.isFile() ? stat.size : 0 };
+    } catch { return null; }
+  };
+  /** Remove one measured file only if its run is still not active and the name still holds exactly what was measured. */
+  const remove = (file: Measured): boolean => {
+    io.beforeRemove?.(file.fileName);
+    const attempt = (): boolean => {
+      const state = settled(file.runId);
+      if (state === "active" || state === "unknown") return false;
+      const again = measure(file.fileName, file.runId);
+      if (again === null) return true; // already gone
+      if (again.dev !== file.dev || again.ino !== file.ino || again.size !== file.size || again.mtimeMs !== file.mtimeMs) return false;
+      return removeLiveFile(root, file.fileName, io.unlink);
+    };
+    let gone: boolean;
+    try { gone = store.transact === undefined ? attempt() : store.transact(attempt); } catch { gone = false; }
+    if (gone) removed.push(file.fileName);
+    return gone;
+  };
   // One group per finished run (keyed by id) or per orphan file, aged from the run's end or the file's mtime.
-  const groups = new Map<string, { files: LiveSweepVerdict[]; ageAnchorMs: number }>();
+  const groups = new Map<string, { files: Measured[]; ageAnchorMs: number }>();
+  // Settle every listed run first, then list again and measure: a file a run wrote (or grew) before it finished is
+  // seen at its final size, and one its run created after the first listing is counted with it.
+  const states = new Map<number, ReturnType<typeof settled>>();
+  for (const entry of listLiveFiles(root)) if (entry.runId !== null && !states.has(entry.runId)) states.set(entry.runId, settled(entry.runId));
   for (const entry of listLiveFiles(root)) {
-    let key = `file:${entry.fileName}`, anchor = entry.mtimeMs;
-    if (entry.runId !== null) {
-      let run: { outcome: string | null; finishedAt: string | null } | null;
-      try { run = store.getRun(entry.runId); } catch { continue; } // unknown this pass: kept, never guessed
-      if (run !== null && run.outcome === null) continue; // live: untouchable
-      const finished = run?.finishedAt === null || run?.finishedAt === undefined ? null : Date.parse(run.finishedAt);
-      key = `run:${entry.runId}`;
-      anchor = finished === null || Number.isNaN(finished) ? entry.mtimeMs : finished;
-    }
-    if (entry.cap !== null && entry.bytes > entry.cap) { remove(entry.fileName); continue; }
+    if (entry.runId !== null && !states.has(entry.runId)) states.set(entry.runId, settled(entry.runId));
+    const state = entry.runId === null ? null : states.get(entry.runId)!;
+    if (state === "active" || state === "unknown") continue; // live, or unknown this pass: kept, never guessed
+    // Measured only now, after the run is settled finished: its writer is done.
+    const file = measure(entry.fileName, entry.runId);
+    if (file === null) continue;
+    if (entry.cap !== null && file.bytes > entry.cap && remove(file)) continue;
+    const finished = state === null || state.finishedAt === null ? null : Date.parse(state.finishedAt);
+    const anchor = finished === null || Number.isNaN(finished) ? file.mtimeMs : finished;
+    const key = entry.runId === null ? `file:${entry.fileName}` : `run:${entry.runId}`;
     const group = groups.get(key) ?? { files: [], ageAnchorMs: anchor };
-    group.files.push(entry);
+    group.files.push(file);
     group.ageAnchorMs = Math.min(group.ageAnchorMs, anchor);
     groups.set(key, group);
   }
-  const ordered = [...groups.values()].sort((a, b) => a.ageAnchorMs - b.ageAnchorMs);
+  /** Remove a group's files; what can't be removed stays in it (and in every count after). True when it's empty. */
+  const removeGroup = (group: { files: Measured[] }): boolean => {
+    group.files = group.files.filter(file => !remove(file));
+    return group.files.length === 0;
+  };
   const cutoff = now.getTime() - LIVE_RETAIN_MS;
-  let survivors = ordered.filter(group => {
-    if (group.ageAnchorMs > cutoff) return true;
-    for (const file of group.files) remove(file.fileName);
-    return false;
-  });
-  // Oldest-first beyond the bound — still never touching an active run.
-  for (const group of survivors.slice(0, Math.max(0, survivors.length - LIVE_FILE_BOUND))) for (const file of group.files) remove(file.fileName);
-  survivors = survivors.slice(Math.max(0, survivors.length - LIVE_FILE_BOUND));
-  // Then the total, oldest first, counting only what is still kept.
-  let total = survivors.reduce((sum, group) => sum + group.files.reduce((one, file) => one + file.bytes, 0), 0);
-  for (const group of survivors) {
+  let kept = [...groups.values()].sort((a, b) => a.ageAnchorMs - b.ageAnchorMs).filter(group => group.ageAnchorMs > cutoff || !removeGroup(group));
+  // Oldest-first beyond the bound, continuing past any that can't go — still never touching an active run.
+  let excess = kept.length - LIVE_FILE_BOUND;
+  kept = kept.filter(group => excess <= 0 || !removeGroup(group) || (excess -= 1, false));
+  // Then the total, oldest first, counting only what is really still there.
+  const bytesOf = (group: { files: Measured[] }) => group.files.reduce((sum, file) => sum + file.bytes, 0);
+  let total = kept.reduce((sum, group) => sum + bytesOf(group), 0);
+  for (const group of kept) {
     if (total <= LIVE_TOTAL_BYTES) break;
-    for (const file of group.files) { remove(file.fileName); total -= file.bytes; }
+    const before = bytesOf(group);
+    removeGroup(group);
+    total -= before - bytesOf(group);
   }
   return { removed };
 }

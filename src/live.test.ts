@@ -11,7 +11,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LIVE_FILE_BOUND, LIVE_SUB_FILE_CAP, LIVE_TOTAL_BYTES, legacyLiveLogPath, liveDir, liveLogPath, liveSubLogPath, liveWindowLines, openLiveLog, readLiveWindow, sweepLiveLogs } from "./live.js";
+import { LIVE_FILE_BOUND, LIVE_FILE_CAP, LIVE_SUB_FILE_CAP, LIVE_TOTAL_BYTES, legacyLiveLogPath, liveDir, liveLogPath, liveSubLogPath, liveWindowLines, openLiveLog, readLiveWindow, sweepLiveLogs } from "./live.js";
 import { advanceTail } from "./peek-cli.js";
 import { parseLiveRecords } from "./live-records.js";
 
@@ -93,7 +93,7 @@ describe("the window reader", () => {
     if (!first.ok || !second.ok) throw new Error("unread");
     expect(first.gen).not.toBe(second.gen);
     // peek starts over visibly instead of reading the new file from the old offset.
-    const tail = advanceTail(root, 5, { offset: first.nextOffset, lines: ["old"], state: "live", gen: "records:0:0" }, false);
+    const tail = advanceTail(root, 5, { offset: first.nextOffset, lines: ["old"], state: "live", gen: "records:0:0", commands: false }, false);
     expect(tail).toMatchObject({ offset: 0, state: "replaced" });
   });
 
@@ -217,6 +217,50 @@ describe("the sweep", () => {
     const swept = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, NOW);
     expect(swept.removed.sort()).toEqual(["10.sub.jsonl", "11.sub.jsonl", "2.sub.jsonl"]);
     expect(existsSync(liveSubLogPath(root, 1))).toBe(true);
+  });
+
+  test("a file replaced, or whose run turned active, between classifying and removing is kept (Codex av2 #1)", () => {
+    put("900.sub.jsonl"); put("901.sub.jsonl");
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = {};
+    let locked = 0;
+    const store = { getRun: (id: number) => runs[id] ?? null, transact: <T>(body: () => T): T => { locked += 1; return body(); } };
+    const swept = sweepLiveLogs(store, root, NOW, { beforeRemove: name => {
+      // Another process admits run 900 and its writer replaces the old file; run 901's file is swapped under the same name.
+      if (name === "900.sub.jsonl") { runs[900] = { outcome: null, finishedAt: null }; unlinkSync(join(liveDir(root), name)); writeFileSync(join(liveDir(root), name), "new run's own records\n"); }
+      if (name === "901.sub.jsonl") { unlinkSync(join(liveDir(root), name)); writeFileSync(join(liveDir(root), name), "someone else's\n"); }
+    } });
+    expect(swept.removed).toEqual([]);
+    expect(readFileSync(liveSubLogPath(root, 900), "utf8")).toBe("new run's own records\n");
+    expect(existsSync(liveSubLogPath(root, 901))).toBe(true);
+    expect(locked).toBe(2); // each removal re-proves under the store's write lock
+  });
+
+  test("a removal that fails stays counted: the sweep goes on until the bound and the total are really met (Codex av2 #3)", () => {
+    const denied = (name: string) => (path: string) => { if (path.endsWith(name)) throw Object.assign(new Error("denied"), { code: "EACCES" }); unlinkSync(path); };
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = {};
+    for (let id = 2; id <= LIVE_FILE_BOUND + 3; id += 1) { runs[id] = { outcome: "built", finishedAt: finishedAt(10 - id / 1000) }; put(`${id}.jsonl`); }
+    const counted = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, NOW, { unlink: denied("/2.jsonl") });
+    expect(counted.removed.sort()).toEqual(["3.jsonl", "4.jsonl"]);
+    rmSync(liveDir(root), { recursive: true, force: true });
+    const count = Math.ceil(LIVE_TOTAL_BYTES / LIVE_SUB_FILE_CAP) + 2;
+    for (let id = 10; id < 10 + count; id += 1) { runs[id] = { outcome: "built", finishedAt: finishedAt(5 - id / 1000) }; put(`${id}.sub.jsonl`, LIVE_SUB_FILE_CAP); }
+    const bytes = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, NOW, { unlink: denied("/10.sub.jsonl") });
+    expect(bytes.removed.sort()).toEqual(["11.sub.jsonl", "12.sub.jsonl"]);
+  });
+
+  test("files are measured after their run is settled finished: grown, or created, before it finished (Codex av2 #4)", () => {
+    const count = Math.ceil(LIVE_TOTAL_BYTES / LIVE_SUB_FILE_CAP) + 1;
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = {};
+    for (let id = 10; id < 10 + count; id += 1) { runs[id] = { outcome: "built", finishedAt: finishedAt(5 - id / 1000) }; put(`${id}.jsonl`); }
+    const seen = new Set<number>();
+    const store = { getRun: (id: number) => {
+      // The first look at each run: its writer was still finishing — the oldest grows its records, the rest add a subagents' file.
+      if (!seen.has(id)) { seen.add(id); if (id === 10) truncateSync(liveLogPath(root, id), LIVE_FILE_CAP); else put(`${id}.sub.jsonl`, LIVE_SUB_FILE_CAP); }
+      return runs[id] ?? null;
+    } };
+    const swept = sweepLiveLogs(store, root, NOW);
+    // 64 subagent files of 16 MiB plus 4 MiB of records: over 1 GiB, so the oldest runs go until it isn't.
+    expect(swept.removed.sort()).toEqual(["10.jsonl", "11.jsonl", "11.sub.jsonl"]);
   });
 
   test("a run that can't be looked up is kept this pass; the rest are swept", () => {
