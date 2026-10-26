@@ -6,12 +6,15 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { installUpdateGate } from "./desktop-update-gate.js";
-import { BRANCH_GONE_LOOKS, BRANCH_GONE_PAUSE_MS, bumpFormula, cliRuntimes, deployedRuntime, gateStateOf, githubSlug, releaseAdapters, serviceRuntimes, stageGate, workflowRunsOnChange, type Exec } from "./release-adapters.js";
+import { BRANCH_GONE_LOOKS, BRANCH_GONE_PAUSE_MS, bumpFormula, cliRuntimes, deployedRuntime, gateStateOf, githubSlug, releaseAdapters, serviceRuntimes, stageGate, workflowRunsOnChange, type Exec, type ReleaseRepo, type ReleaseTools } from "./release-adapters.js";
 import { openStore, type Database } from "./store.js";
 import { fakePid } from "../test/fake-pid.js";
 
 const root = () => mkdtempSync(join(tmpdir(), "so-release-adapters-"));
 const SHA = "a".repeat(40);
+/** The repository as the plane records it and the programs by absolute path (release-adapters.ts recordedReleaseRepo). */
+const REPO: ReleaseRepo = { checkout: "/rv", gitDir: "/rv/.git", remote: "https://github.com/ap9000/toolroll.git", slug: "ap9000/toolroll", ssh: false };
+const TOOLS: ReleaseTools = { git: "/usr/bin/git", gh: "/opt/homebrew/bin/gh", ssh: "/usr/bin/ssh" };
 
 describe("the release adapters", () => {
   test("read a GitHub remote, https or ssh", () => {
@@ -246,9 +249,9 @@ describe("the release adapters", () => {
       if (joined.includes("git/ref/tags/v0.9.52")) return { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" };
       return { code: 1, stdout: "", stderr: "unexpected" };
     };
-    const adapters = releaseAdapters({ checkout: "/rv", run });
+    const adapters = releaseAdapters({ checkout: "/rv", run, tools: TOOLS });
     expect(await adapters.github.merge("ap9000/toolroll", 170, SHA)).toBe("m".repeat(40));
-    expect(calls[0]).toEqual(["gh", "api", "-X", "PUT", "repos/ap9000/toolroll/pulls/170/merge", "-f", "merge_method=squash", "-f", `sha=${SHA}`]);
+    expect(calls[0]).toEqual([TOOLS.gh, "api", "-X", "PUT", "repos/ap9000/toolroll/pulls/170/merge", "-f", "merge_method=squash", "-f", `sha=${SHA}`]);
     expect((await adapters.github.checks("ap9000/toolroll", SHA)).map(one => [one.conclusion, one.app])).toEqual([["failure", null], ["success", "github-actions"]]);
     expect(await adapters.github.tag("ap9000/toolroll", "v0.9.52")).toBeNull();
   });
@@ -266,23 +269,26 @@ describe("the release adapters", () => {
       calls.push(args);
       return { code: 0, stderr: "", stdout: args.includes("ls-remote") && head !== null ? `${head}\trefs/heads/release-me\n` : "" };
     };
-    const deletion = releaseAdapters({ checkout: "/rv", run }).repo.deleteBranch("release-me", SHA);
+    const deletion = releaseAdapters({ checkout: "/rv", run, releaseRepo: REPO, tools: TOOLS }).repo.deleteBranch("release-me", SHA);
     if (head !== null && head !== SHA) await expect(deletion).rejects.toThrow(/not deleted/);
     else await deletion;
-    expect(calls.filter(one => one.includes("push"))).toEqual(head === SHA
-      ? [["-C", "/rv", "push", `--force-with-lease=refs/heads/release-me:${SHA}`, "origin", ":refs/heads/release-me"]] : []);
+    // The recorded URL, never the checkout's origin, with the hardened settings ahead of the push.
+    expect(calls.filter(one => one.includes("push")).map(one => one.slice(one.indexOf("push")))).toEqual(head === SHA
+      ? [["push", "--no-verify", `--force-with-lease=refs/heads/release-me:${SHA}`, REPO.remote, ":refs/heads/release-me"]] : []);
+    expect(calls.filter(one => one.includes("push")).every(one => one[0] === "--git-dir=/rv/.git" && one.includes("protocol.allow=never"))).toBe(true);
   });
 
   test.each([[null, "resolves"], [SHA, "rejects"]] as const)("a failed delete is fine only when the branch is gone after it (%s)", async (after, outcome) => {
     let looks = 0;
     const run: Exec = async (_command, args) => {
       if (args.includes("push")) return { code: 1, stderr: "error: unable to delete 'release-me': remote ref does not exist", stdout: "" };
+      if (args.includes("config")) return { code: 0, stderr: "", stdout: "" };
       looks += 1;
       const head = looks === 1 ? SHA : after;
       return { code: 0, stderr: "", stdout: head === null ? "" : `${head}\trefs/heads/release-me\n` };
     };
     const paused: number[] = [];
-    const deletion = releaseAdapters({ checkout: "/rv", run, sleep: async ms => { paused.push(ms); } }).repo.deleteBranch("release-me", SHA);
+    const deletion = releaseAdapters({ checkout: "/rv", run, releaseRepo: REPO, tools: TOOLS, sleep: async ms => { paused.push(ms); } }).repo.deleteBranch("release-me", SHA);
     if (outcome === "resolves") await deletion;
     else await expect(deletion).rejects.toThrow(/deleting merged branch release-me failed: error: unable to delete/);
     expect(looks).toBe(outcome === "resolves" ? 2 : 1 + BRANCH_GONE_LOOKS);
@@ -294,10 +300,11 @@ describe("the release adapters", () => {
     let looks = 0;
     const run: Exec = async (_command, args) => {
       if (args.includes("push")) return { code: 1, stderr: "! [remote rejected] release-me (cannot lock ref 'refs/heads/release-me': unable to resolve reference)", stdout: "" };
+      if (args.includes("config")) return { code: 0, stderr: "", stdout: "" };
       looks += 1;
       return { code: 0, stderr: "", stdout: looks <= 3 ? `${SHA}\trefs/heads/release-me\n` : "" };
     };
-    await releaseAdapters({ checkout: "/rv", run, sleep: async () => {} }).repo.deleteBranch("release-me", SHA);
+    await releaseAdapters({ checkout: "/rv", run, releaseRepo: REPO, tools: TOOLS, sleep: async () => {} }).repo.deleteBranch("release-me", SHA);
     expect(looks).toBe(4);
   });
 

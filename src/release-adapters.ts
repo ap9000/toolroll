@@ -29,6 +29,10 @@ import { proveCarry, type BuildRunner } from "./release-carry.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { deploymentGate } from "./deploy-gate.js";
 import { extractCommit } from "./commit-extract.js";
+import { HARDENED_GIT_ARGS } from "./agent-fence.js";
+import { checkoutIncludes, commandSetting, TEARDOWN_FLAGS } from "./teardown-git.js";
+import { accessSync, constants as fsConstants, statSync } from "node:fs";
+import { isAbsolute } from "node:path";
 
 export type Exec = (command: string, args: readonly string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; input?: string }) =>
   Promise<{ code: number; stdout: string; stderr: string }>;
@@ -159,8 +163,115 @@ export function stageGate(stage: string, owner: () => string | null): { id: stri
   return id !== null && phase !== null && BEFORE_SWAP.includes(phase) && owner() === id ? { id, phase } : null;
 }
 
+/**
+ * The release's repository as Toolroll records it (docs/plans/chat-management.md §0a.2), never as the gate checkout
+ * says: the checkout is one of the plane's recorded projects (by real path), its Git directory is that project's own
+ * plain `.git` folder, and its GitHub `owner/name` and the URL fetched from come from the recorded remote
+ * (`project.remote_url`), not the checkout's `origin`. The checkout is where the release check ran the build's own code,
+ * so its `.git/config` is treated as build-written.
+ */
+export type ReleaseRepo = { checkout: string; gitDir: string; remote: string; slug: string; ssh: boolean };
+/** The programs the coordinator runs, by absolute path, found once when it starts. */
+export type ReleaseTools = { git: string; gh: string; ssh: string };
+
+/** owner/name and transport of a recorded GitHub remote, read strictly (https or ssh to github.com, nothing else). */
+export function releaseRemote(url: string): { slug: string; ssh: boolean } | null {
+  const part = "([A-Za-z0-9_.-]+)";
+  const https = new RegExp(`^https://github\\.com/${part}/${part}?(?:\\.git)?/?$`).exec(url);
+  const ssh = new RegExp(`^(?:ssh://)?git@github\\.com[:/]${part}/${part}?(?:\\.git)?/?$`).exec(url);
+  const match = https ?? ssh;
+  if (match === null || match[2] === undefined || match[1]!.startsWith(".") || match[2].startsWith(".")) return null;
+  return { slug: `${match[1]}/${match[2].replace(/\.git$/, "")}`, ssh: https === null };
+}
+
+/** The recorded repository for a gate checkout, from the plane's database; throws in plain words when there is none. */
+export function recordedReleaseRepo(database: string, checkout: string): ReleaseRepo {
+  const real = (path: string): string | null => { try { return realpathSync(path); } catch { return null; } };
+  const at = real(checkout);
+  if (at === null) throw new Error(`${checkout} isn't there.`);
+  if (!existsSync(database)) throw new Error("The plane's database isn't here, so the release's repository can't be read from its records.");
+  const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
+  let project: string | null = null, remote: string | null = null;
+  try {
+    const store = new Store(db);
+    project = store.listProjects().map(one => one.path).find(path => real(path) === at) ?? null;
+    remote = project === null ? null : store.projectRemote(project);
+  } finally { db.close(); }
+  if (project === null) throw new Error(`${checkout} isn't one of the projects Toolroll records, so it can't be released from here.`);
+  if (remote === null) throw new Error(`${project} has no recorded remote. Record it with \`toolroll repos add ${project} --remote <url>\` first.`);
+  const parsed = releaseRemote(remote);
+  if (parsed === null) throw new Error(`${project}'s recorded remote (${remote}) isn't a GitHub repository over https or ssh.`);
+  const named = join(at, ".git");
+  let gitDir: string;
+  try {
+    if (!lstatSync(named).isDirectory()) throw new Error("not a folder");
+    gitDir = realpathSync(named);
+  } catch { throw new Error(`${project}'s Git directory isn't a plain folder, so the release won't read it.`); }
+  return { checkout: at, gitDir, remote, ...parsed };
+}
+
+const executable = (path: string): boolean => { try { accessSync(path, fsConstants.X_OK); return statSync(path).isFile(); } catch { return false; } };
+/** Fixed system folders: the only PATH the coordinator's Git and gh run with. */
+export const RELEASE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
+
+/** Git, gh and ssh by absolute path: the system's Git (or the first in the fixed system folders), the installed gh as
+ * this process's PATH finds it now, and the system ssh. Resolved once; never looked up again. */
+export function releaseTools(path: string = process.env["PATH"] ?? ""): ReleaseTools {
+  const find = (name: string, dirs: readonly string[]): string | null => {
+    for (const dir of dirs) { if (!isAbsolute(dir)) continue; const candidate = join(dir, name); if (executable(candidate)) return candidate; }
+    return null;
+  };
+  const system = ["/usr/bin", "/bin", "/usr/local/bin", "/opt/homebrew/bin"];
+  return {
+    git: find("git", system) ?? "/usr/bin/git",
+    gh: find("gh", [...path.split(delimiter), ...system]) ?? "/usr/bin/gh",
+    ssh: find("ssh", ["/usr/bin", "/bin"]) ?? "/usr/bin/ssh",
+  };
+}
+
+/** The coordinator's Git and gh environment: an allowlist, a fixed PATH, no system or global Git config, no prompts. */
+export function releaseGitEnv(base: Readonly<NodeJS.ProcessEnv> = process.env): NodeJS.ProcessEnv {
+  const kept = ["HOME", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "USER", "LOGNAME", "SSH_AUTH_SOCK", "GH_CONFIG_DIR", "XDG_CONFIG_HOME", "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST"];
+  return {
+    ...Object.fromEntries(kept.flatMap(name => base[name] === undefined ? [] : [[name, base[name]!]])),
+    PATH: RELEASE_PATH, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", GH_PROMPT_DISABLED: "1", GIT_ASKPASS: "", SSH_ASKPASS: "",
+  };
+}
+
+/** Every coordinator Git command's fixed settings, ahead of its own arguments: the recorded Git directory and checkout,
+ * no hooks, fsmonitor, replacement objects, pager or submodule recursion, only https (and ssh for an ssh remote), the
+ * system ssh, and gh as the only credential helper. */
+export function releaseGitArgs(repo: ReleaseRepo, tools: ReleaseTools): string[] {
+  return [`--git-dir=${repo.gitDir}`, `--work-tree=${repo.checkout}`, "--no-replace-objects", "--no-pager", ...HARDENED_GIT_ARGS, ...TEARDOWN_FLAGS,
+    "-c", "protocol.allow=never", "-c", "protocol.https.allow=always", ...(repo.ssh ? ["-c", "protocol.ssh.allow=always"] : []),
+    "-c", `core.sshCommand=${tools.ssh}`, "-c", "core.askPass=", "-c", "fetch.recurseSubmodules=false", "-c", "core.pager=cat",
+    ...(repo.ssh ? [] : ["-c", `credential.helper=!'${tools.gh.replace(/'/g, "'\\''")}' auth git-credential`])];
+}
+
+/** Settings a gate checkout's own config may not hold for a release, beyond those that name a command or include a file
+ * (teardown-git.ts commandSetting): a hooks folder, a URL rewrite, or a remote over a transport helper. */
+export function releaseConfigProblem(listing: string): string | null {
+  const named = commandSetting(listing);
+  if (named !== null) return named;
+  const fields = listing.split("\0");
+  for (let at = 0; at + 1 < fields.length; at += 2) {
+    if (fields[at] !== "local" && fields[at] !== "worktree") continue;
+    const entry = fields[at + 1]!;
+    const newline = entry.indexOf("\n");
+    const key = (newline < 0 ? entry : entry.slice(0, newline)).toLowerCase();
+    const value = newline < 0 ? "" : entry.slice(newline + 1);
+    if (key === "core.hookspath" || /^url\..+\.(insteadof|pushinsteadof)$/.test(key)) return key;
+    if (/^remote\..+\.(url|pushurl)$/.test(key) && /^[A-Za-z][A-Za-z0-9+.-]*::/.test(value.trim())) return key;
+  }
+  return null;
+}
+
 export type AdapterOptions = {
   checkout: string;
+  /** The recorded repository and the programs, when a caller (a test) supplies them; otherwise read from the plane's
+   * records and found on this machine when the first Git command runs. */
+  releaseRepo?: ReleaseRepo;
+  tools?: ReleaseTools;
   /** The live database (default: this installation's). */
   database?: string;
   processes?: typeof processes;
@@ -186,9 +297,11 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   const { checkout } = options;
   const tap = options.tap ?? "ap9000/homebrew-toolroll";
   const formula = options.formula ?? "Formula/toolroll.rb";
-  const git = (...args: string[]) => run("git", ["-C", checkout, ...args]);
   const pause = options.sleep ?? ((ms: number) => new Promise<void>(done => setTimeout(done, ms)));
-  const gh = (...args: string[]) => run("gh", args);
+  const tools = options.tools ?? releaseTools();
+  const gitEnv = releaseGitEnv();
+  // Never a PATH lookup or the checkout's Git config: gh by its absolute path, from a neutral folder, naming the repo.
+  const gh = (...args: string[]) => run(tools.gh, args, { cwd: "/", env: gitEnv });
   const ghJson = async (what: string, ...args: string[]) => JSON.parse(await must(gh(...args), what)) as unknown;
   const toolroll = async (...args: string[]): Promise<Json> => {
     const result = await run("toolroll", [...args, "--json"], { env: cleanEnv(), timeoutMs: 120_000 });
@@ -196,6 +309,26 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   };
   const refused = (answer: Json) => `${String(answer["message"] ?? answer["reason"] ?? "refused")}`;
   const database = options.database ?? databasePath(process.env, homedir());
+  let recorded: ReleaseRepo | null = options.releaseRepo ?? null;
+  /** The recorded repository, read once (chat-management.md §0a.2). */
+  const releaseRepo = (): ReleaseRepo => recorded ??= recordedReleaseRepo(database, checkout);
+  /**
+   * The coordinator's one way to run Git (§0a.2): on the recorded Git directory, hardened, with an allowlisted
+   * environment and the absolute Git. Before every command the checkout's own config is read with includes off and
+   * as plain files; one that includes a file, names a command or redirects a remote stops the release, naming it.
+   */
+  const git = async (...args: string[]) => {
+    const repo = releaseRepo();
+    const stop = (why: string) => new Error(`Toolroll won't run Git in ${repo.checkout} for a release: ${why}. Remove it from the project's Git config, then rerun.`);
+    if (options.releaseRepo === undefined && checkoutIncludes(repo.checkout)) throw stop("its Git config includes another file, or couldn't be read as a plain file");
+    const listing = await run(tools.git, [`--git-dir=${repo.gitDir}`, "--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], { cwd: "/", env: gitEnv });
+    if (listing.code !== 0) throw stop("its Git config couldn't be read");
+    const setting = releaseConfigProblem(listing.stdout);
+    if (setting !== null) throw stop(`its Git config sets ${setting}, which can run a command or redirect where it fetches`);
+    return run(tools.git, [...releaseGitArgs(repo, tools), ...args], { cwd: repo.checkout, env: gitEnv });
+  };
+  /** The recorded URL every fetch, look and push names explicitly. */
+  const remoteUrl = () => releaseRepo().remote;
   const liveOwner = () => {
     if (!existsSync(database)) return null;
     const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
@@ -270,15 +403,12 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
     sleep: options.sleep ?? sleep,
     say: options.say ?? (line => process.stdout.write(`${line}\n`)),
     repo: {
-      async github() {
-        const slug = githubSlug(await must(git("remote", "get-url", "origin"), "git remote get-url origin"));
-        if (slug === null) throw new Error(`${checkout}'s origin is not a GitHub repository`);
-        return slug;
-      },
+      // The recorded owner/name, never the checkout's origin.
+      async github() { return releaseRepo().slug; },
       async sync(branch) {
-        await must(git("fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main"), "git fetch origin main");
+        await must(git("fetch", "--quiet", "--no-tags", remoteUrl(), "+refs/heads/main:refs/remotes/origin/main"), "git fetch main");
         // A merged branch may be gone from GitHub; its commit is already here.
-        await git("fetch", "--quiet", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`);
+        await git("fetch", "--quiet", "--no-tags", remoteUrl(), `+refs/heads/${branch}:refs/remotes/origin/${branch}`);
         const current = (await git("symbolic-ref", "--quiet", "--short", "HEAD")).stdout.trim();
         if (current === "main") { await must(git("merge", "--ff-only", "--quiet", "origin/main"), "git merge --ff-only origin/main"); return; }
         const local = (await git("rev-parse", "--verify", "--quiet", "refs/heads/main")).stdout.trim();
@@ -287,21 +417,21 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         } else throw new Error(`${checkout}'s local main has commits origin/main doesn't; the gate diffs from it, so fix it first`);
       },
       async remoteHead(branch) {
-        const out = await must(git("ls-remote", "origin", `refs/heads/${branch}`), "git ls-remote");
+        const out = await must(git("ls-remote", remoteUrl(), `refs/heads/${branch}`), "git ls-remote");
         return out.trim().split(/\s+/)[0] || null;
       },
       async deleteBranch(branch, head) {
         const ref = `refs/heads/${branch}`;
-        const current = (await must(git("ls-remote", "origin", ref), "git ls-remote")).trim().split(/\s+/)[0] || null;
+        const current = (await must(git("ls-remote", remoteUrl(), ref), "git ls-remote")).trim().split(/\s+/)[0] || null;
         if (current === null) return;
         if (current !== head) throw new Error(`${branch} moved after merging; its new head was not deleted.`);
-        const pushed = await git("push", `--force-with-lease=${ref}:${head}`, "origin", `:${ref}`);
+        const pushed = await git("push", "--no-verify", `--force-with-lease=${ref}:${head}`, remoteUrl(), `:${ref}`);
         if (pushed.code === 0) return;
         // GitHub may delete a merged branch itself between the look and the push; gone is what was wanted. Its refs can
         // lag the deletion by a few seconds, so look a few times before calling it a failure.
         for (let look = 0; look < BRANCH_GONE_LOOKS; look++) {
           if (look > 0) await pause(BRANCH_GONE_PAUSE_MS);
-          const after = (await must(git("ls-remote", "origin", ref), "git ls-remote")).trim().split(/\s+/)[0] || null;
+          const after = (await must(git("ls-remote", remoteUrl(), ref), "git ls-remote")).trim().split(/\s+/)[0] || null;
           if (after === null) return;
         }
         throw new Error(`deleting merged branch ${branch} failed: ${pushed.stderr.trim() || `exit ${pushed.code}`}`);
