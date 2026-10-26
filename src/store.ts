@@ -473,6 +473,16 @@ CREATE TABLE IF NOT EXISTS run_resume (
 CREATE INDEX IF NOT EXISTS run_resume_by_run ON run_resume (run, id);
 `;
 
+/** v136: a run's own "Show commands in the live view" answer, captured once before its live file opens (live-detail.ts).
+ * Absent, unreadable or anything but 1 means off. */
+export const RUN_LIVE_DETAIL_SCHEMA = `
+CREATE TABLE IF NOT EXISTS run_live_detail (
+  run         INTEGER PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE,
+  commands    INTEGER NOT NULL CHECK (commands IN (0,1)),
+  captured_at TEXT NOT NULL
+);
+`;
+
 /** A project's "Show commands in the live view" (live-detail.ts): absent means off. */
 export const LIVE_DETAIL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS live_detail_setting (
@@ -787,7 +797,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // release_operation), each release check attempt's intended mode, sealed before it runs (release_check_attempt), the
 // nightly full check on main and its open failures (nightly_check, main_check_failure), and a scope's release terms
 // (task_scope.release_terms_json; saved rows read NULL: no release terms).
-export const SCHEMA_VERSION = 135;
+// v136 adds, and changes no saved row: each run's own "Show commands in the live view" answer, captured once before its
+// live file opens (run_live_detail; docs/plans/agents-view.md §2.4). Saved runs have none, which every reader takes as
+// commands off: permission is never recovered from a transcript or the project's current setting.
+export const SCHEMA_VERSION = 136;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -925,7 +938,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -5318,6 +5331,8 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   for (const [table, columns] of Object.entries(V135_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   }
+  // v136: each run's own live-view answer (a new table only; saved runs have none: commands off).
+  db.exec(RUN_LIVE_DETAIL_SCHEMA);
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
