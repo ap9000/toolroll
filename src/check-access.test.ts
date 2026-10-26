@@ -9,7 +9,7 @@ import { runOperate, EXIT } from "./operate.js";
 import { checkAccessHere, checkAccessOf, checkNetworkOf, narrowestAccess, narrowestNetwork, signInHostsMissing, signInsAvailable, signInsUnavailableWords, widerThan } from "./check-access.js";
 import { resolveScopeProfile } from "./agentconfig.js";
 import { checkLaunchOf } from "./builder.js";
-import { checkoutLaunchOf, checkoutRunner, ranAtLine, signInsLaunch, widestRan } from "./invoke.js";
+import { checkoutLaunchOf, checkoutRunner, ranAtLine, signInsKeychain, signInsLaunch, widestRan } from "./invoke.js";
 
 const REPO = "/repo/main";
 let dir: string, db: string, store: Store, lines: string[];
@@ -289,4 +289,27 @@ describe("sign-ins: on wherever the OS fence is (0.9.70, sandbox parity C10: the
     expect(await run(["--repo", REPO, "--json"], "darwin")).toBe(EXIT.ok);
     expect(payload().runsAs).toBeUndefined();
   });
+});
+
+test("a check with sign-ins reaches the keychain only while the sign-ins level stands as an instance operator set it", () => {
+  // Sandboxed (or nothing set): no keychain.
+  expect(signInsKeychain(store, REPO)).toBe(false);
+  expect(signInsKeychain(store, null)).toBe(false);
+  // Widened by alex, an instance operator (the roads require a password typed now): the keychain too.
+  expect(store.setProjectCheckAccess(REPO, "sign-ins", "alex", new Date(), { may: "widen" })).toMatchObject({ after: "sign-ins" });
+  expect(signInsKeychain(store, REPO)).toBe(true);
+  // A row that names someone who isn't an instance operator (written past the roads): no keychain.
+  store.handle.prepare("UPDATE project_check_access SET updated_by = 'sam' WHERE repo = ?").run(REPO);
+  expect(signInsKeychain(store, REPO)).toBe(false);
+  store.handle.prepare("UPDATE project_check_access SET updated_by = 'nobody' WHERE repo = ?").run(REPO);
+  expect(signInsKeychain(store, REPO)).toBe(false);
+  // The one who set it no longer an instance operator: no keychain.
+  store.handle.prepare("UPDATE project_check_access SET updated_by = 'alex' WHERE repo = ?").run(REPO);
+  expect(signInsKeychain(store, REPO)).toBe(true);
+  store.handle.prepare("UPDATE approver SET projects_json = ? WHERE name = 'alex'").run(JSON.stringify([REPO]));
+  expect(signInsKeychain(store, REPO)).toBe(false);
+  store.handle.prepare("UPDATE approver SET projects_json = NULL WHERE name = 'alex'").run();
+  // Narrowed back: none.
+  expect(store.setProjectCheckAccess(REPO, "sandboxed", "alex", new Date(), { may: "narrow" })).toMatchObject({ after: "sandboxed" });
+  expect(signInsKeychain(store, REPO)).toBe(false);
 });

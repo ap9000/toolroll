@@ -23,7 +23,7 @@ import {
 } from "./tool-secret-store.js";
 import { readLinearKey, readHookSecret, saveLinearKey } from "./flow-triggers.js";
 import { readGoogleMail } from "./google-mail.js";
-import { agentFence, macosFenceAvailable, sandboxedSpawn } from "./agent-fence.js";
+import { agentFence, macosFenceAvailable, NO_GRANTS, sandboxedSpawn } from "./agent-fence.js";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
@@ -237,18 +237,24 @@ describe.skipIf(!MAC)("the macOS Keychain, through security -i", () => {
     expect(agentFence({ databaseFile: join(state, "orders.db"), worktree: null, home }).some(path => key.startsWith(`${path}/`))).toBe(true);
   });
 
-  test.skipIf(!macosFenceAvailable())("bypass, in the real sandbox: a fenced shell reads an item's ciphertext but not the key that opens it", () => {
+  test.skipIf(!macosFenceAvailable())("bypass, in the real sandbox: a build's fenced shell reads an item's ciphertext but not the key that opens it; any other launch reaches no keychain", () => {
     setToolSecrets(REPO, "sentry", { SENTRY_ACCESS_TOKEN: CANARY }, state);
     const key = join(toolSecretsDir(state), ".keychain-key");
     const dump = spawnSync("/usr/bin/security", ["dump-keychain", keychain], { encoding: "utf8" }).stdout;
     const head = [...dump.matchAll(/"acct"<blob>="([^"]+)"/g)].map(match => match[1]!).find(account => /^[0-9a-f]{16}\.sentry$/.test(account))!;
     const service = /"svce"<blob>="([^"]+)"/.exec(dump)![1]!;
-    const wrapped = sandboxedSpawn("/bin/sh", ["-c",
-      `/usr/bin/security find-generic-password -a '${head}' -s '${service}' -w '${keychain}'; echo "key: $(head -c 32 '${key}' 2>/dev/null | od -An -tx1 | tr -d ' \n' || true)"`], agentFence({ databaseFile: join(state, "orders.db"), worktree: null, home }));
-    const fenced = spawnSync(wrapped.file, wrapped.args, { encoding: "utf8" });
+    const script = `/usr/bin/security find-generic-password -a '${head}' -s '${service}' -w '${keychain}'; echo "key: $(head -c 32 '${key}' 2>/dev/null | od -An -tx1 | tr -d ' \n' || true)"`;
+    const fence = agentFence({ databaseFile: join(state, "orders.db"), worktree: null, home });
+    // A build's agent keeps the keychain (fenceFor gives it keychain: true).
+    const build = sandboxedSpawn("/bin/sh", ["-c", script], fence, { ...NO_GRANTS, keychain: true });
+    const fenced = spawnSync(build.file, build.args, { encoding: "utf8" });
     expect(fenced.stdout).toMatch(/^v1\./);
     expect(fenced.stdout).not.toContain("canary");
     expect(fenced.stdout).toContain("key: \n");
+    // Any other launch (a check, a flow, a tool server) is denied securityd: not even the sealed item.
+    const other = sandboxedSpawn("/bin/sh", ["-c", script], fence, NO_GRANTS);
+    const denied = spawnSync(other.file, other.args, { encoding: "utf8" });
+    expect(denied.stdout).toMatch(/^key: \n$/);
   });
 
   test("a change replaces the value whole, and clearing removes every item it used", () => {

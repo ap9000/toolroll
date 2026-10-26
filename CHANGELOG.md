@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.9.71 — 2026-10-25
+
+- **Sandboxed launches can open a terminal of their own on macOS.** A check
+  or build that drives a pseudo-terminal (node-pty, `script`, a test that
+  runs a shell) now works inside the sandbox. Only terminals the sandboxed
+  process made itself open: Toolroll doesn't turn on the sandbox runtime's
+  `allowPty`, which also opens your other open terminals, and it now denies
+  reading those by name, which the runtime's baseline allowed. Nothing
+  sandboxed can type into a terminal, and every sandboxed launch starts in a
+  session of its own, so a console started from your terminal doesn't hand
+  it that terminal.
+- **Only a build's agent reaches your keychain.** The sandbox runtime lets
+  every sandboxed process ask macOS's keychain service, so it could read
+  keychain items any program may read (anthropics/sandbox-runtime#755). A
+  build's setup and check commands, a project's checks, flows and tool
+  servers are now denied it. A build's agent keeps it (Claude Code signs in
+  from the keychain), and so does a check whose project gave it
+  **sign-ins**, while the instance operator who chose that still is one. The
+  sign-ins choice now says it includes Keychain access.
+
 ## 0.9.70 — 2026-10-24
 
 - **Every sandbox is now Anthropic's sandbox-runtime.** Builds, their setup
