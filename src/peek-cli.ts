@@ -53,12 +53,13 @@ const REPLACED: Tail = { offset: 0, lines: ["[the live view was replaced — sta
  * (a finished step, a skipped line), and an offset is only ever used
  * against the file it came from. `commands` is the run's own captured
  * "Show commands" answer (store.ts runLiveCommands), read now: lines cached
- * under any other answer are dropped and the file is read again from its
- * start under this one, on every path, so nothing projected with command
- * detail outlives the answer turning off.
+ * under any other answer (off, on, or unknown) are dropped and the file is
+ * read again from its start under this one, on every path — nothing
+ * projected with command detail outlives the answer turning off, and a
+ * recovered answer shows the detail again.
  */
 export function advanceTail(root: string, runId: number, previous: Tail, commands: boolean): Tail {
-  const tail: Tail = !commands && previous.commands !== false && (previous.lines.length > 0 || previous.offset > 0)
+  const tail: Tail = previous.commands !== commands && (previous.lines.length > 0 || previous.offset > 0)
     ? { offset: 0, lines: [], state: "not-yet" }
     : previous;
   const read = readLiveWindow(root, runId, tail.offset);

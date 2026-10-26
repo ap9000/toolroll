@@ -14,7 +14,8 @@
  * break, slow, or reclassify a build.
  */
 
-import { closeSync, constants, fstatSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, statSync, unlinkSync, writeSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { closeSync, constants, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, renameSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { scanForSecrets } from "./evidence.js";
 import { createLiveRecorder, parseLiveRecords, redactLiveLines, projectLiveText, serializeLiveRecord, type KeyState, type LiveActivityKind, type LiveRecord, type LiveRecorderOptions } from "./live-records.js";
@@ -401,7 +402,9 @@ export function listLiveFiles(root: string): LiveSweepVerdict[] {
   } catch {
     return [];
   }
-  return names.map(name => {
+  // A sweep's private claim (QUARANTINE_PREFIX) is never listed: it is the sweep's own, and one it couldn't restore
+  // stays for a person to look at rather than be aged out under a name nobody chose.
+  return names.filter(name => !name.startsWith(QUARANTINE_PREFIX)).map(name => {
     const match = /^(\d{1,15})\.(jsonl|log|sub\.jsonl)$/.exec(name);
     // The writer stops at its cap and adds one last record; anything far past it is no file this plane wrote.
     const cap = match === null ? null : (match[2] === "sub.jsonl" ? LIVE_SUB_FILE_CAP : LIVE_FILE_CAP) + 64 * 1024;
@@ -422,10 +425,14 @@ export function removeLiveFile(root: string, fileName: string, unlink: (path: st
 }
 
 type SweepRun = { outcome: string | null; finishedAt: string | null };
+/** The prefix of a sweep's private claim on a file it is about to remove (never a name a writer uses). */
+const QUARANTINE_PREFIX = ".sweep-claim-";
 /** What the sweep reads of the store: a run's state, and (production) the write lock run admission also takes. */
 export type LiveSweepStore = { getRun(id: number): SweepRun | null; transact?<T>(body: () => T): T };
 /** A file as measured once its run was settled finished (or it has no run): the identity a removal re-proves. */
-type Measured = { fileName: string; runId: number | null; dev: number; ino: number; size: number; mtimeMs: number; bytes: number };
+type Measured = { fileName: string; runId: number | null; dev: number; ino: number; size: number; mtimeMs: number; bytes: number;
+  /** A removal of it already failed this pass: it stays, counted, and is not tried again. */
+  failed?: true };
 
 /**
  * The reconcile sweep (arc 1 §2): ACTIVE runs are exempt ABSOLUTELY — the
@@ -445,34 +452,59 @@ export function sweepLiveLogs(
   store: LiveSweepStore,
   root: string,
   now: Date,
-  io: { unlink?: (path: string) => void; beforeRemove?: (fileName: string) => void } = {},
+  io: {
+    unlink?: (path: string) => void;
+    lstat?: (path: string) => import("node:fs").Stats;
+    /** Test seams: before a removal starts, and right after its run-state check (before the claim). */
+    beforeRemove?: (fileName: string) => void;
+    afterCheck?: (fileName: string) => void;
+  } = {},
 ): { removed: string[] } {
   const removed: string[] = [];
   const settled = (runId: number | null): SweepRun | null | "active" | "unknown" => {
     if (runId === null) return null;
     try { const run = store.getRun(runId); return run !== null && run.outcome === null ? "active" : run; } catch { return "unknown"; }
   };
-  const measure = (fileName: string, runId: number | null): Measured | null => {
+  const at = (name: string) => join(liveDir(root), name);
+  const lstat = io.lstat ?? ((path: string) => lstatSync(path));
+  /** A file as it is now: measured, confirmed gone (ENOENT only), or unknown (any other failure: never taken as gone). */
+  const measure = (fileName: string, runId: number | null, path = at(fileName)): Measured | "gone" | "unknown" => {
     try {
-      const stat = lstatSync(join(liveDir(root), fileName));
+      const stat = lstat(path);
       return { fileName, runId, dev: stat.dev, ino: stat.ino, size: stat.size, mtimeMs: stat.mtimeMs, bytes: stat.isFile() ? stat.size : 0 };
-    } catch { return null; }
+    } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? "gone" : "unknown"; }
   };
-  /** Remove one measured file only if its run is still not active and the name still holds exactly what was measured. */
+  const same = (a: Measured, b: Measured) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs;
+  /** The run is still not active, proved under the store's write lock (the one run admission takes) — and only that. */
+  const stillSweepable = (runId: number | null): boolean => {
+    const check = () => { const state = settled(runId); return state !== "active" && state !== "unknown"; };
+    try { return store.transact === undefined ? check() : store.transact(check); } catch { return false; }
+  };
+  /** Put a claimed file back under its name without overwriting whatever may be there now. */
+  const restore = (claim: string, fileName: string): void => {
+    try { linkSync(at(claim), at(fileName)); unlinkSync(at(claim)); } catch { /* the name is taken: the claim stays, unlisted */ }
+  };
+  /**
+   * Remove one measured file: its run still not active, then the name atomically claimed under a private name in the
+   * live directory, then the claim proved to be the very file measured (dev, inode, size, mtime) and the run still not
+   * active — and only then is the private claim deleted. A mismatch is put back without overwriting anything. The
+   * store's lock covers the run-state checks only; the filesystem work runs outside it.
+   */
   const remove = (file: Measured): boolean => {
+    if (file.failed === true) return false;
+    const done = (gone: boolean): boolean => { if (gone) removed.push(file.fileName); else file.failed = true; return gone; };
     io.beforeRemove?.(file.fileName);
-    const attempt = (): boolean => {
-      const state = settled(file.runId);
-      if (state === "active" || state === "unknown") return false;
-      const again = measure(file.fileName, file.runId);
-      if (again === null) return true; // already gone
-      if (again.dev !== file.dev || again.ino !== file.ino || again.size !== file.size || again.mtimeMs !== file.mtimeMs) return false;
-      return removeLiveFile(root, file.fileName, io.unlink);
-    };
-    let gone: boolean;
-    try { gone = store.transact === undefined ? attempt() : store.transact(attempt); } catch { gone = false; }
-    if (gone) removed.push(file.fileName);
-    return gone;
+    if (file.fileName.includes("/") || file.fileName.includes("..") || !stillSweepable(file.runId)) return done(false);
+    io.afterCheck?.(file.fileName);
+    const claim = `${QUARANTINE_PREFIX}${randomBytes(12).toString("hex")}`;
+    try { renameSync(at(file.fileName), at(claim)); }
+    catch (error) { return done((error as NodeJS.ErrnoException).code === "ENOENT"); }
+    const claimed = measure(file.fileName, file.runId, at(claim));
+    if (claimed === "gone") return done(true);
+    if (claimed === "unknown" || !same(claimed, file) || !stillSweepable(file.runId)) { restore(claim, file.fileName); return done(false); }
+    if (removeLiveFile(root, claim, io.unlink)) return done(true);
+    restore(claim, file.fileName);
+    return done(false);
   };
   // One group per finished run (keyed by id) or per orphan file, aged from the run's end or the file's mtime.
   const groups = new Map<string, { files: Measured[]; ageAnchorMs: number }>();
@@ -481,12 +513,13 @@ export function sweepLiveLogs(
   const states = new Map<number, ReturnType<typeof settled>>();
   for (const entry of listLiveFiles(root)) if (entry.runId !== null && !states.has(entry.runId)) states.set(entry.runId, settled(entry.runId));
   for (const entry of listLiveFiles(root)) {
-    if (entry.runId !== null && !states.has(entry.runId)) states.set(entry.runId, settled(entry.runId));
+    // A run first seen in this listing waits for the next pass: it was never settled before its files were listed.
+    if (entry.runId !== null && !states.has(entry.runId)) continue;
     const state = entry.runId === null ? null : states.get(entry.runId)!;
     if (state === "active" || state === "unknown") continue; // live, or unknown this pass: kept, never guessed
     // Measured only now, after the run is settled finished: its writer is done.
     const file = measure(entry.fileName, entry.runId);
-    if (file === null) continue;
+    if (file === "gone" || file === "unknown") continue;
     if (entry.cap !== null && file.bytes > entry.cap && remove(file)) continue;
     const finished = state === null || state.finishedAt === null ? null : Date.parse(state.finishedAt);
     const anchor = finished === null || Number.isNaN(finished) ? file.mtimeMs : finished;

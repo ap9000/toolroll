@@ -8,7 +8,7 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, truncateSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LIVE_FILE_BOUND, LIVE_FILE_CAP, LIVE_SUB_FILE_CAP, LIVE_TOTAL_BYTES, legacyLiveLogPath, liveDir, liveLogPath, liveSubLogPath, liveWindowLines, openLiveLog, readLiveWindow, sweepLiveLogs } from "./live.js";
@@ -236,15 +236,18 @@ describe("the sweep", () => {
   });
 
   test("a removal that fails stays counted: the sweep goes on until the bound and the total are really met (Codex av2 #3)", () => {
-    const denied = (name: string) => (path: string) => { if (path.endsWith(name)) throw Object.assign(new Error("denied"), { code: "EACCES" }); unlinkSync(path); };
+    // The removal of `name` is denied (whatever private name the sweep has claimed it under).
+    let current = "";
+    const denied = (name: string) => ({ beforeRemove: (file: string) => { current = file; }, unlink: (path: string) => { if (`/${current}` === name) throw Object.assign(new Error("denied"), { code: "EACCES" }); unlinkSync(path); } });
     const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = {};
     for (let id = 2; id <= LIVE_FILE_BOUND + 3; id += 1) { runs[id] = { outcome: "built", finishedAt: finishedAt(10 - id / 1000) }; put(`${id}.jsonl`); }
-    const counted = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, NOW, { unlink: denied("/2.jsonl") });
+    const counted = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, NOW, denied("/2.jsonl"));
     expect(counted.removed.sort()).toEqual(["3.jsonl", "4.jsonl"]);
+    expect(existsSync(liveLogPath(root, 2))).toBe(true); // put back under its own name
     rmSync(liveDir(root), { recursive: true, force: true });
     const count = Math.ceil(LIVE_TOTAL_BYTES / LIVE_SUB_FILE_CAP) + 2;
     for (let id = 10; id < 10 + count; id += 1) { runs[id] = { outcome: "built", finishedAt: finishedAt(5 - id / 1000) }; put(`${id}.sub.jsonl`, LIVE_SUB_FILE_CAP); }
-    const bytes = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, NOW, { unlink: denied("/10.sub.jsonl") });
+    const bytes = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, NOW, denied("/10.sub.jsonl"));
     expect(bytes.removed.sort()).toEqual(["11.sub.jsonl", "12.sub.jsonl"]);
   });
 
@@ -261,6 +264,44 @@ describe("the sweep", () => {
     const swept = sweepLiveLogs(store, root, NOW);
     // 64 subagent files of 16 MiB plus 4 MiB of records: over 1 GiB, so the oldest runs go until it isn't.
     expect(swept.removed.sort()).toEqual(["10.jsonl", "11.jsonl", "11.sub.jsonl"]);
+  });
+
+  test("a swap right after the final check is caught on the private claim: the active run's file survives (Codex av2 r2 #1)", () => {
+    put("900.sub.jsonl");
+    openLiveLog(root, 50)!.close();
+    const active = statSync(liveLogPath(root, 50)).ino;
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = { 50: { outcome: null, finishedAt: null } };
+    let locked = 0;
+    const store = { getRun: (id: number) => runs[id] ?? null, transact: <T>(body: () => T): T => { locked += 1; return body(); } };
+    // Between the run-state check and the claim, another process renames an active run's file onto the candidate name.
+    const swept = sweepLiveLogs(store, root, NOW, { afterCheck: name => renameSync(liveLogPath(root, 50), join(liveDir(root), name)) });
+    expect(swept.removed).toEqual([]);
+    expect(statSync(liveSubLogPath(root, 900)).ino).toBe(active);
+    expect(readdirSync(liveDir(root)).filter(name => name.startsWith("."))).toEqual([]); // nothing left under a claim
+    expect(locked).toBe(1); // the lock covered only the run-state check that passed; the claim never reached the second
+  });
+
+  test("only a confirmed absence counts as gone: a claim that can't be measured is put back and stays counted (Codex av2 r2 #2)", () => {
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = {};
+    let current = "";
+    for (const code of ["EACCES", "EIO"]) {
+      rmSync(liveDir(root), { recursive: true, force: true });
+      for (let id = 2; id <= LIVE_FILE_BOUND + 3; id += 1) { runs[id] = { outcome: "built", finishedAt: finishedAt(10 - id / 1000) }; put(`${id}.jsonl`); }
+      const swept = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, NOW, { beforeRemove: file => { current = file; },
+        lstat: path => { if (current === "2.jsonl" && path.includes(".sweep-claim-")) throw Object.assign(new Error(code), { code }); return statSync(path, { throwIfNoEntry: true })!; } });
+      expect(existsSync(liveLogPath(root, 2))).toBe(true);
+      expect(swept.removed.sort()).toEqual(["3.jsonl", "4.jsonl"]);
+      expect(readdirSync(liveDir(root)).length).toBe(LIVE_FILE_BOUND);
+    }
+  });
+
+  test("a run first seen while the sweep measures waits for the next pass (Codex av2 r2 #3)", () => {
+    put("20.jsonl");
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = { 20: { outcome: "built", finishedAt: finishedAt(30) } };
+    // While run 20 is settled, run 21 starts, writes its files and finishes.
+    const store = { getRun: (id: number) => { if (id === 20 && runs[21] === undefined) { put("21.jsonl"); put("21.sub.jsonl"); runs[21] = { outcome: "built", finishedAt: finishedAt(30) }; } return runs[id] ?? null; } };
+    expect(sweepLiveLogs(store, root, NOW).removed).toEqual(["20.jsonl"]);
+    expect(sweepLiveLogs(store, root, NOW).removed.sort()).toEqual(["21.jsonl", "21.sub.jsonl"]);
   });
 
   test("a run that can't be looked up is kept this pass; the rest are swept", () => {

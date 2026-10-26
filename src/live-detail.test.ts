@@ -111,3 +111,15 @@ test("lines the peek cached under an answer that has since resolved off are drop
   expect(advanceTail(root, run, on, false).lines.join("\n")).not.toContain("curl");
 });
 
+test("the peek reprojects on every change of answer, including recovery to on (Codex av2 r2 #4)", () => {
+  const { run } = admit();
+  mkdirSync(join(root, "live"), { recursive: true });
+  writeFileSync(liveLogPath(root, run), forgedText);
+  const on = advanceTail(root, run, { offset: 0, lines: [], state: "not-yet" }, true);
+  const unavailable = advanceTail(root, run, on, false);
+  expect(unavailable.lines.join("\n")).not.toContain("curl");
+  const back = advanceTail(root, run, unavailable, true);
+  expect(back.lines.join("\n")).toContain("curl");
+  expect(back.lines.filter(line => line.includes("curl"))).toHaveLength(1); // read once, not doubled
+});
+
