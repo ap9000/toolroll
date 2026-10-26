@@ -49,12 +49,16 @@ function plane() {
     override: write(join(root, "op-config", "config"), marker("op")),
     // A Firefox profile profiles.ini places outside its root.
     firefox: write(join(root, "ff-profile", "cookies.sqlite"), marker("firefox")),
+    // A profile moved to the home folder under its own name: shaped like a container's system mirror (`X` → `~/X`), but
+    // inside a browser's folder, so it is the profile, not the system's (Codex review of 0.9.73, finding 3).
+    mirrored: write(join(home, "Profile 1", "Cookies"), marker("chrome-profile")),
     // Not protected: the home folder's ordinary files stay readable under policy 2.
     ordinary: write(join(home, "notes.txt"), marker("ordinary")),
   };
   symlinkSync(join(root, "relocated", "discord"), join(home, AT.discord), "dir");
   mkdirSync(join(home, AT.chrome), { recursive: true });
   symlinkSync(join(root, "profiles", "chrome-default"), join(home, AT.chrome, "Default"), "dir");
+  symlinkSync(join(home, "Profile 1"), join(home, AT.chrome, "Profile 1"), "dir");
   write(join(home, AT.firefox, "profiles.ini"), `[Profile0]\nName=default\nIsRelative=0\nPath=${join(root, "ff-profile")}\n`);
   // An alias: a link the build made in its own checkout, into a protected root.
   symlinkSync(join(home, AT.slack), join(worktree, "alias"), "dir");
@@ -78,7 +82,26 @@ describe("protected storage: chat apps, browser profiles and password managers, 
       // Never the home folder itself, nor the ordinary files beside the listed roots.
       expect(denies).not.toContain(home);
       expect(denies.some(path => canary.ordinary.startsWith(`${path}/`))).toBe(false);
+      // A mirror-shaped link in a browser's folder is where its profile went: denied on every platform.
+      expect(denies).toContain(join(home, "Profile 1"));
     } finally { vi.unstubAllEnvs(); }
+  });
+
+  test("only macOS's own links in an app container are passed over; any other outward link there is denied", () => {
+    const { home } = plane();
+    const slack = join(home, "Library/Containers/com.tinyspeck.slackmacgap"), teams = join(home, "Library/Group Containers/UBF8T346G9.com.microsoft.teams");
+    for (const [container, at, name] of [[slack, "Data/Desktop", "Desktop"], [slack, "Data/Library/Fonts", "Library/Fonts"],
+      [slack, "Data/Library/Application Scripts/com.tinyspeck.slackmacgap", "Library/Application Scripts/com.tinyspeck.slackmacgap"], [teams, "Downloads", "Downloads"],
+      // Not the system's: an unknown name, another app's scripts, a system name outside Data/, and a system name leading elsewhere.
+      [slack, "Data/Stash", "Stash"], [slack, "Data/Library/Application Scripts/com.other.app", "Library/Application Scripts/com.other.app"], [slack, "Desktop", "Desktop-moved"],
+      [teams, "Pictures", "Elsewhere/Pictures"]] as const) {
+      mkdirSync(join(home, name), { recursive: true });
+      mkdirSync(join(container, at, ".."), { recursive: true });
+      symlinkSync(join(home, name), join(container, at), "dir");
+    }
+    const denies = protectedStorageDenies(home, {}, "darwin", () => {});
+    for (const kept of ["Desktop", "Library/Fonts", "Library/Application Scripts/com.tinyspeck.slackmacgap", "Downloads"]) expect(denies, kept).not.toContain(join(home, kept));
+    for (const denied of ["Stash", "Library/Application Scripts/com.other.app", "Desktop-moved", "Elsewhere/Pictures"]) expect(denies, denied).toContain(join(home, denied));
   });
 
   test("a project read grant or write grant inside protected storage is dropped, whatever the project set", () => {
@@ -110,7 +133,7 @@ describe("protected storage: chat apps, browser profiles and password managers, 
         const first = fence(policy);
         needs(ctx, osFence());
         const paths = [canary.direct, join(worktree, "alias", "storage", "token"), join(home, AT.discord, "Local Storage", "leveldb"), canary.relocated,
-          join(home, AT.chrome, "Default", "Cookies"), canary.nested, canary.override, canary.firefox, canary.ordinary];
+          join(home, AT.chrome, "Default", "Cookies"), canary.nested, canary.override, canary.firefox, canary.mirrored, canary.ordinary];
         const result = underSandbox(readScript(paths), first.fence, first.fenceGrants, { cwd: worktree });
         // Every protected path denied; the ordinary home file read under v2 and denied by nothing it names under v1.
         expect(lines(result), result.stderr).toEqual([...paths.slice(0, -1).map(() => "denied"), "read"]);
@@ -155,7 +178,7 @@ describe("protected storage: chat apps, browser profiles and password managers, 
       const { root, home, worktree, canary, fence } = plane();
       const launch = fence(policy);
       needs(ctx, codexSandbox());
-      const paths = [canary.direct, join(worktree, "alias", "storage", "token"), canary.relocated, join(home, AT.chrome, "Default", "Cookies"), canary.nested, canary.firefox];
+      const paths = [canary.direct, join(worktree, "alias", "storage", "token"), canary.relocated, join(home, AT.chrome, "Default", "Cookies"), canary.nested, canary.firefox, canary.mirrored];
       const result = underCodex(readScript(paths), launch.fence, false, launch.fenceGrants, { cwd: worktree, codexHome: join(root, "codex-home") });
       expect(lines(result), result.stderr).toEqual(paths.map(() => "denied"));
     });

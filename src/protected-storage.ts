@@ -146,8 +146,8 @@ const unwalkedSaid = new Set<string>();
 /**
  * Every protected path one launch denies: each root by name and by real path, every link inside a present root that
  * leads outward (where it leads, by real path and as spelled), and the overrides. Resolved at each launch, never kept.
- * A link a sandboxed app's container makes to the same place under the home folder (its Desktop, Downloads, Fonts…)
- * is the system's own mirror of the person's folders, not the app's data, and isn't followed.
+ * A link macOS makes in a sandboxed app's container to the same place under the home folder (its Desktop, Downloads,
+ * Fonts…) is the system's own mirror of the person's folders, not the app's data, and isn't followed (systemMirror).
  */
 export function protectedStorageDenies(home: string = homedir(), env: Readonly<Record<string, string | undefined>> = process.env, platform: NodeJS.Platform = process.platform,
   say: (line: string) => void = line => process.stderr.write(`${line}\n`)): string[] {
@@ -195,9 +195,27 @@ function outwardLinks(name: string, root: string, home: string, say: (line: stri
   return found;
 }
 
-/** A sandboxed app container's own redirect: `<container>/Data/X` (or a group container's `X`) leading to `~/X`. */
+/** The links macOS makes in every sandboxed app's container (`Data/X` → `~/X`), as found on a real Mac (2026-10-26). */
+const CONTAINER_MIRRORS: ReadonlySet<string> = new Set([".CFUserTextEncoding", "Desktop", "Downloads", "Movies", "Music", "Pictures",
+  ...["Audio", "Calendars", "ColorPickers", "ColorSync", "Colors", "Components", "Compositions", "Dictionaries", "Favorites", "Filters", "FontCollections", "Fonts",
+    "Input Methods", "KeyBindings", "Keyboard Layouts", "Keychains", "Mail", "PDF Services", "QuickLook", "Sounds", "Spelling", "Images/People",
+    "Application Support/AddressBook", "Application Support/iCloud", "Application Support/SyncServices",
+    "Preferences/com.apple.security.plist", "Preferences/com.apple.security_common.plist"].map(one => `Library/${one}`)]);
+
+/**
+ * The system's own redirect in a sandboxed app's container, and nothing else: the root is an app container (its links
+ * under `Data/`) or a group container, directly in the home folder's Library, and the link is one macOS makes there
+ * (CONTAINER_MIRRORS, or the app's own Application Scripts folder) leading to the same place under the home folder.
+ * Any other outward link — in a browser profile, a password manager's folder, or an unknown name in a container — is
+ * where that app's data was moved, and is denied.
+ */
 function systemMirror(link: string, root: string, target: string, home: string): boolean {
+  const app = dirname(root) === real(join(home, CONTAINERS)), group = dirname(root) === real(join(home, GROUPS));
+  if (!app && !group) return false;
   const rel = relative(root, link).split(sep);
-  const under = rel[0] === "Data" ? rel.slice(1) : rel;
-  return under.length > 0 && target === join(home, ...under);
+  if (app && rel[0] !== "Data") return false;
+  const under = app ? rel.slice(1) : rel;
+  const named = under.join("/");
+  const known = CONTAINER_MIRRORS.has(named) || named === `Library/Application Scripts/${root.split(sep).at(-1)}`;
+  return known && target === join(home, ...under);
 }
