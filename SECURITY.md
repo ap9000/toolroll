@@ -148,6 +148,22 @@ Known limits:
   which admits every local service on that Mac (the macOS sandbox can't admit
   some local ports and refuse others). Linux builds always have a loopback of
   their own.
+- On a Mac, a project's checks may register and look up one macOS service
+  name pattern so Playwright's Chromium headless shell can start sandboxed:
+  `org.chromium.Chromium.MachPortRendezvousServer.<pid>` (builds, flows and
+  tool servers can't). Chromium picks that name itself, and the sandbox can't
+  tie the pid in it to the process asking. So a hostile check can reach
+  across launches: register the name for another process's pid, so a
+  default-named Chromium started outside its sandbox with that pid (your own
+  Playwright or Puppeteer headless shell, another project's check browser)
+  fails to start; or look up a running one's rendezvous server and send it
+  messages. That server picks what it hands out by the sender's pid, as the
+  kernel reports it, and may answer an unknown sender with an empty reply;
+  what more it checks depends on how Chromium was built. Assessed against
+  Playwright's Chromium headless shell 156.0.8078.4: no port theft or escape
+  was found, but there is no guarantee beyond that, so treat it as
+  cross-launch messaging and denial of service you accept by running browser
+  checks sandboxed.
 - On a Mac, a build's agent can reach the keychain's services (securityd):
   Claude Code signs in from the keychain. The sandbox runtime allows that to
   every sandboxed process (anthropics/sandbox-runtime#755), so a build's
@@ -155,10 +171,10 @@ Known limits:
   access list lets any program read it; items that ask, or that name their
   programs, stay closed. Toolroll denies those services to everything else
   it sandboxes: a build's setup and check commands, a project's checks,
-  flows and tool servers. A check a project gave **sign-ins** keeps them
-  (Claude Code's sign-in is there), and so reaches those keychain items too,
-  not only the sign-ins; the sign-ins warning says so. Only while that level
-  stands as an instance operator set it, with their password typed then.
+  flows and tool servers, a check a project gave **sign-ins** included:
+  Toolroll itself reads Claude Code's and gh's sign-ins from the keychain,
+  outside the sandbox, and hands just those tokens to the check in its
+  environment (Claude's current access token, which the check can't renew).
 - Every sandboxed launch on a Mac can open terminals of its own and no
   other, can't type into a terminal (TIOCSTI), and starts in a session of
   its own, so it has no terminal of whoever started Toolroll. A program

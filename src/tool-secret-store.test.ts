@@ -28,9 +28,14 @@ import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
 import { T0 } from "../test/serve-kit.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 import { connectedSpec } from "./mcp-connect.js";
 
-const MAC = process.platform === "darwin" && existsSync("/usr/bin/security");
+// A keychain of the test's own, never the developer's. These make one (create-keychain), which a sandbox refuses:
+// Security.framework reads the sandbox's sysctl (security.mac.sandbox.sentinel), is denied, and won't create a keychain
+// file. (That proves nothing about reaching existing keychains: a check is denied securityd outright, SEATBELT_NO_KEYCHAIN.)
+// So they run where nothing fences them (CI, a developer's shell) and skip inside the release check's fence.
+const MAC = process.platform === "darwin" && existsSync("/usr/bin/security") && !INSIDE_FENCE;
 /** A canary long enough to need several keychain chunks, starting with "-" so a chunk could pass for an option. */
 const CANARY = `-canary-${"k3y".repeat(2_600)}-end`;
 const REPO = "/repo/shop";

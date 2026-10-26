@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { fakePid } from "../test/fake-pid.js";
 import { createRequire } from "node:module";
-import { loadPtySpawn, MAX_PENDING_INPUT, membersOf, parseTerminalFrame, pendingInputOf, ScreenMirror, TerminalHost, type PtySpawn, type TerminalControl, type TerminalLedger } from "./live-terminal.js";
+import { CLOSE_GRACE_MS, loadPtySpawn, MAX_PENDING_INPUT, membersOf, parseTerminalFrame, pendingInputOf, ScreenMirror, TerminalHost, type PtySpawn, type TerminalControl, type TerminalLedger } from "./live-terminal.js";
 import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const ALEX = { name: "alex", generation: 1 };
@@ -173,16 +173,74 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
 
   // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
   test.skipIf(INSIDE_FENCE)("a child started during the close is caught too (round 2, finding 3)", async () => {
-    const started = await host.start(ALEX, repo, "shell");
-    const late = join(dir, "late.txt");
-    const { seen, viewer } = watcher();
-    host.attach(started.id, viewer);
-    host.input(started.id, `(trap 'sleep 61 & echo $! > ${late}' HUP; while :; do sleep 0.1; done) & echo armed\n`);
-    await until(() => seen.out.includes("armed"));
-    await host.close(started.id);
-    await until(() => { try { return readFileSync(late, "utf8").trim() !== ""; } catch { return false; } });
-    expect(gone(Number(readFileSync(late, "utf8")))).toBe(true);
-    expect(host.get(started.id)).toMatchObject({ cleanup: "clean" });
+    // The product's own grace: the job's trap must get to run before the kill, on a loaded machine too.
+    const slow = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "slow"), closeGraceMs: CLOSE_GRACE_MS, programs: { shell: { file: "/bin/sh", args: [] } }, env: () => ({ PATH: process.env["PATH"] ?? "", HOME: dir }) });
+    try {
+      const started = await slow.start(ALEX, repo, "shell");
+      const late = join(dir, "late.txt");
+      const { seen, viewer } = watcher();
+      slow.attach(started.id, viewer);
+      // "armed-42" is printed by the job itself once its trap is set: the terminal's echo of the typed line says
+      // "armed-$((6*7))", so a close can't start before the shell has run the line (it once did, and raced it).
+      slow.input(started.id, `(trap 'sleep 61 & echo $! > ${late}' HUP; echo armed-$((6*7)); while :; do sleep 0.1; done) &\n`);
+      await until(() => seen.out.includes("armed-42"));
+      await slow.close(started.id);
+      await until(() => { try { return readFileSync(late, "utf8").trim() !== ""; } catch { return false; } });
+      expect(gone(Number(readFileSync(late, "utf8")))).toBe(true);
+      expect(slow.get(started.id)).toMatchObject({ cleanup: "clean" });
+    } finally { await slow.stop(); }
+  });
+
+  // A real process stands in for "someone else's": the injected table says what the sweep sees of it. Never signalled.
+  type Inner = { sessions: Map<string, { leader: number; tty: string | null }> };
+  const bystander = () => spawnChild("/bin/sleep", ["30"], { stdio: "ignore" });
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+  test.skipIf(INSIDE_FENCE)("a pid used again between the read and the signal is never signalled, and the close is uncertain", async () => {
+    const other = bystander();
+    let phase: "running" | "observed" | "reused" = "running";
+    const real = await import("./live-terminal.js");
+    const host2 = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "reused-pid"), closeGraceMs: 200, programs: { shell: { file: "/bin/sleep", args: ["30"] } }, env: () => ({ PATH: "" }),
+      processes: () => {
+        const table = real.readProcessTable();
+        if (table === null || phase === "running") return table;
+        const session = [...(host2 as unknown as Inner).sessions.values()][0]!;
+        // First read of the close: the program's child. Every read after: the same pid, started later, nobody's child.
+        table.set(other.pid!, phase === "observed" ? { ppid: session.leader, uid: process.getuid!(), tty: "??", started: "Tue Oct 20 10:00:00 2026" } : { ppid: 1, uid: process.getuid!(), tty: "??", started: "Tue Oct 20 11:00:00 2026" });
+        phase = "reused";
+        return table;
+      } });
+    try {
+      const started = await host2.start(ALEX, repo, "shell");
+      phase = "observed";
+      await host2.close(started.id);
+      expect(alive(other.pid!)).toBe(true);
+      expect(host2.get(started.id)).toMatchObject({ cleanup: "uncertain" });
+    } finally { await host2.stop(); other.kill("SIGKILL"); }
+  });
+
+  test.skipIf(INSIDE_FENCE)("a process on its terminal's device after the program ended, never noted, is never signalled; the close is uncertain", async () => {
+    const other = bystander();
+    let ended = false;
+    const real = await import("./live-terminal.js");
+    const host2 = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "reused-tty"), closeGraceMs: 200, programs: { shell: { file: "/bin/sh", args: ["-c", "exit 0"] } }, env: () => ({ PATH: "" }),
+      processes: () => {
+        const table = real.readProcessTable();
+        if (table === null || !ended) return table;
+        const session = [...(host2 as unknown as Inner).sessions.values()][0]!;
+        // The device given out again: someone else's process, on it, started just after the program ended.
+        table.set(other.pid!, { ppid: 1, uid: process.getuid!(), tty: session.tty ?? "ttys999", started: new Date().toString() });
+        return table;
+      } });
+    try {
+      const started = await host2.start(ALEX, repo, "shell");
+      const session = (host2 as unknown as Inner).sessions.get(started.id)!;
+      expect(session.tty).not.toBeNull();
+      ended = true;
+      await until(() => host2.get(started.id)?.cleanup != null, 10_000);
+      expect(alive(other.pid!)).toBe(true);
+      expect(host2.get(started.id)).toMatchObject({ cleanup: "uncertain" });
+    } finally { await host2.stop(); other.kill("SIGKILL"); }
   });
 
   test("an unreadable process table is uncertain, never clean: the worktree stays and stop says so (round 2, findings 4 and 6)", async () => {
@@ -241,7 +299,7 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     expect(execFileSync("git", ["-C", repo, "branch", "--list", "toolroll/live-*"]).toString().trim()).toBe("");
   });
 
-  test("membership: noted by start time, the leader only while it runs, its terminal only before it ended", () => {
+  test("membership: noted by start time, the leader only while it runs, its terminal only while it runs", () => {
     const [P0, P1, P2, P3, P4, P5] = [0, 1, 2, 3, 4, 5].map(fakePid) as [number, number, number, number, number, number];
     const table = new Map([
       [P0, { ppid: 1, uid: 0, tty: "ttys009", started: "Tue Oct 20 10:00:00 2026" }],
@@ -252,7 +310,14 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
       [P5, { ppid: 1, uid: 0, tty: "??", started: "Tue Oct 20 10:10:00 2026" }],
     ]);
     const ended = Date.parse("Tue Oct 20 10:30:00 2026");
-    expect([...membersOf(table, { leader: P4, tty: "ttys009", known: new Map([[P2, "Tue Oct 20 10:00:02 2026"]]), exitedAt: ended }).keys()].sort()).toEqual([P0, P1, P2]);
+    // Running: its terminal, its leader and their descendants, and what was noted.
+    expect([...membersOf(table, { leader: P4, tty: "ttys009", known: new Map([[P2, "Tue Oct 20 10:00:02 2026"]]), exitedAt: null }).keys()].sort()).toEqual([P0, P1, P2, P3, P4]);
+    // Ended: only what was noted (by start time) and its descendants. The terminal's name proves nothing any more, even
+    // for a process that started before the end (the device may be someone else's by now): ambiguous, never a member.
+    const ambiguous = new Set<number>();
+    expect([...membersOf(table, { leader: P4, tty: "ttys009", known: new Map([[P2, "Tue Oct 20 10:00:02 2026"]]), exitedAt: ended }, ambiguous).keys()]).toEqual([P2]);
+    expect([...ambiguous].sort()).toEqual([P0, P3]);
+    // Noted under another start time: a pid used again, not a member.
     expect([...membersOf(table, { leader: P4, tty: null, known: new Map([[P2, "a different start"]]), exitedAt: null }).keys()]).toEqual([P4]);
   });
 

@@ -1,7 +1,30 @@
 # Changelog
 
-## Unreleased
+## Unreleased (0.9.72)
 
+- **Sandboxed checks can start Chromium on macOS.** Playwright's default
+  browser (its Chromium headless shell) now starts inside the check sandbox:
+  the sandbox may register and look up Chromium's port rendezvous service,
+  `org.chromium.Chromium.MachPortRendezvousServer.<pid>`, and nothing else.
+  Builds, flows and tool servers don't get this; SECURITY.md says what a
+  hostile check could do with it. A project set to **Not sandboxed** only for
+  a headless browser check can go back to **Sandboxed** in Settings → Project
+  → Check access. Chrome for Testing (`channel: "chromium"`, headed runs)
+  still needs **Not sandboxed**.
+- **Checks with sign-ins no longer reach your keychain.** Toolroll reads
+  Claude Code's and gh's sign-ins from the keychain itself, outside the
+  sandbox, and hands the check just those tokens in its environment. A check
+  gets Claude's current access token and can't renew it.
+- **A wrong password on an approval says "That password didn't match."**
+  instead of "not approved: not-an-approver". Someone who isn't an approver
+  gets the same answer.
+- **Closing a live terminal signals only its own processes.** It stops them
+  before it kills them, so a child one starts at that moment can't slip out
+  from under the close; each signal goes only to a process still the one it
+  saw (same pid, same start); and after the program ends, its terminal's
+  name no longer counts as proof, since the device may already be someone
+  else's. A process it can't prove is its own is never signalled, and the
+  close says it's uncertain (the worktree stays).
 - **Only a person approves work.** The lead's token used to approve a task's
   scope and be recorded as its owner's password approval, including on a
   release. Now `task approve` (and `task repair --yes`) with a lead token, or

@@ -4,8 +4,8 @@
  * its own code, per launch, from a small static config (read denies with exact re-allows, write roots with denies
  * inside them, mach services, the run's proxy). Toolroll adds only what that config says (agent-fence.ts srtTermsOf),
  * plus, on macOS, a few static rules of its own appended to the end of the profile (seatbeltRulesFor: a terminal of the
- * launch's own and no other, no keystrokes pushed into a terminal, the keychain's services only for builds); the rest
- * of the rules, their baseline and their limits are the runtime's.
+ * launch's own and no other, no keystrokes pushed into a terminal, a check's Chromium service, the keychain's services
+ * only for builds); the rest of the rules, their baseline and their limits are the runtime's.
  *
  * macOS: its profile builder runs in this process (it is synchronous), with this process's working folder set to the
  * launch's for the call, because the runtime anchors its mandatory write denies (.git/hooks, .vscode, shell profiles)
@@ -47,9 +47,11 @@ export type SrtTerms = {
   readConfig: FsReadRestrictionConfig;
   writeConfig: FsWriteRestrictionConfig;
   allowMachLookup: string[];
-  /** macOS: the launch may reach the keychain's services (securityd). Only a build's agent and a check with sign-ins:
-   * every other launch is denied them (SEATBELT_NO_KEYCHAIN). */
+  /** macOS: the launch may reach the keychain's services (securityd). Only a build's agent: every other launch is
+   * denied them (SEATBELT_NO_KEYCHAIN). */
   keychain?: boolean;
+  /** macOS: a project check's launch, whose Chromium may register and reach its own service (SEATBELT_CHROMIUM). */
+  browser?: boolean;
   network: { kind: "open" } | { kind: "proxy"; httpPort: number; socksPort?: number; token?: string; localServices: boolean; unixSockets: string[] };
 };
 
@@ -124,13 +126,26 @@ export const SEATBELT_NO_OTHER_TERMINAL = [
 ].join("\n");
 
 /**
- * Last in every launch's profile but a build agent's and a check with sign-ins: the keychain's services. The runtime's
+ * Last in every launch's profile but a build agent's: the keychain's services. The runtime's
  * baseline lets every sandboxed process ask securityd, so it reads the login keychain's items whose access list lets
  * any program read them (anthropics/sandbox-runtime#755). Build agents keep it (Claude Code signs in from the keychain).
  */
 export const SEATBELT_NO_KEYCHAIN = [
   "; Toolroll: no keychain",
   "(deny mach-lookup (global-name \"com.apple.SecurityServer\") (global-name \"com.apple.securityd.xpc\"))",
+].join("\n");
+
+/**
+ * Chromium, a project check's launch only: Playwright's default browser (its Chromium headless shell) registers its
+ * port rendezvous service as org.chromium.Chromium.MachPortRendezvousServer.<its pid> at start, and its helpers look
+ * it up. Exactly that name. Chromium takes the prefix from its bundle id with no switch or variable to change it, and
+ * Seatbelt can't tie the pid to the caller, so the residual (another pid's name registered or looked up) is written
+ * up in SECURITY.md. Chrome for Testing (`channel: "chromium"`, headed runs) gets nothing: such a check runs Not
+ * sandboxed.
+ */
+export const SEATBELT_CHROMIUM = [
+  "; Toolroll: the Chromium headless shell port rendezvous service",
+  "(allow mach-register mach-lookup (global-name-regex #\"^org\\.chromium\\.Chromium\\.MachPortRendezvousServer\\.[0-9]+$\"))",
 ].join("\n");
 
 /** Whether a read deny covers the launch's own terminal devices (/dev/ptmx, /dev/ttys*): then it gets none. */
@@ -142,11 +157,12 @@ function deniesTerminals(deny: string): boolean {
   return path === "" || path === "/dev" || devices.includes(path) || /^\/dev\/ttys[0-9]*$/.test(path);
 }
 
-/** Toolroll's rules for a launch's terms, in order: its own terminal (unless its read denies cover the devices), then
- * the denies that must come last. */
+/** Toolroll's rules for a launch's terms, in order: its own terminal (unless its read denies cover the devices), a
+ * check's Chromium service, then the denies that must come last. */
 export function seatbeltRulesFor(terms: SrtTerms): string {
   const denied = [...terms.readConfig.denyOnly, ...terms.readConfig.literalDenyOnly ?? []].some(one => deniesTerminals(typeof one === "string" ? one : String(one)));
-  return [...denied ? [] : [SEATBELT_PTY], SEATBELT_NO_OTHER_TERMINAL, ...terms.keychain === true ? [] : [SEATBELT_NO_KEYCHAIN]].join("\n");
+  return [...denied ? [] : [SEATBELT_PTY], ...terms.browser === true ? [SEATBELT_CHROMIUM] : [], SEATBELT_NO_OTHER_TERMINAL,
+    ...terms.keychain === true ? [] : [SEATBELT_NO_KEYCHAIN]].join("\n");
 }
 
 const BARE_WORD = /^[A-Za-z0-9_./:@+,-][A-Za-z0-9_./:=@+,-]*$/;

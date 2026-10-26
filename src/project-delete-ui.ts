@@ -126,7 +126,7 @@ function checkAccessHtml(view: ProjectSettingsView): Html | "" {
   const setting: CheckAccess = unavailable !== null && saved === "sign-ins" ? "sandboxed" : saved;
   const network = view.network?.setting ?? null;
   const names: Record<CheckAccess, string> = { sandboxed: "Sandboxed", "sign-ins": "Sandboxed, with model and GitHub sign-ins", unsandboxed: "Not sandboxed" };
-  const meaning: Record<CheckAccess, string | null> = { sandboxed: null, "sign-ins": "Checks can read your Claude, Codex and GitHub sign-ins, and on a Mac your Keychain (any item every program may read).", unsandboxed: "Checks run with your full access to this machine and to Toolroll." };
+  const meaning: Record<CheckAccess, string | null> = { sandboxed: null, "sign-ins": "Checks can read your Claude, Codex and GitHub sign-ins.", unsandboxed: "Checks run with your full access to this machine and to Toolroll." };
   // The sign-ins never widen the network: how many hosts they'd still need, and where to add them (a change of its own).
   const missing = setting === "sign-ins" && network !== null ? signInHostsMissing(network) : [];
   const hosts = missing.length === 0 ? "" : html`<p class="meta" data-sign-in-hosts>${missing.length} sign-in ${missing.length === 1 ? "host isn't" : "hosts aren't"} allowed yet · <a href="#network">Add them</a></p><details class="hosts"><summary>Show hosts</summary><p class="tool-name">${missing.join(", ")}</p></details>`;
