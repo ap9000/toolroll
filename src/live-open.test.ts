@@ -80,3 +80,17 @@ describe("the line reader", () => {
     closeSync(file.fd);
   });
 });
+
+describe("the run's own file, read mid-file (live-main-read.ts)", () => {
+  test("a block seen open stays open across an unreadable line and text-less records", async () => {
+    const { readMainWindow } = await import("./live-main-read.js");
+    const at = "2026-10-27T12:00:00.000Z";
+    put("40.jsonl", [JSON.stringify({ k: "open", at, detail: "base" }), JSON.stringify({ k: "say", at, t: ["-----BEGIN PRIVATE KEY-----"] }), "{broken",
+      ...Array.from({ length: 9 }, () => JSON.stringify({ k: "cut", at, pad: "x".repeat(8000) })), JSON.stringify({ k: "say", at, t: ["MIIEvQsecret"] })].join("\n") + "\n");
+    const key = Buffer.alloc(32, 1);
+    let got = readMainWindow(root, 40, null, { key, commands: false });
+    let text = "";
+    for (let n = 0; n < 5 && got.ok; n += 1) { text += JSON.stringify(got.records); if (!got.more) break; got = readMainWindow(root, 40, got.cursor, { key, commands: false }); }
+    expect(text).not.toContain("MIIEvQsecret");
+  });
+});

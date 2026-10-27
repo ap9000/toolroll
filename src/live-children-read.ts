@@ -24,8 +24,9 @@ export const CURSOR_CAP = 4 * 1024;
 export const UNKNOWN_KEY_BYTES = 64 * 1024;
 const RECORD_CAP = 8 * 1024;
 
-/** `unknown`: bytes of this stream's text still read as if inside a key block, because its key state can't be known
- * (read from a mid-file start, or after a line that couldn't be read): until an END marker, or this many bytes pass. */
+/** `inKey`: a key block this reader saw open (it stays until a valid END, nothing else ends it). `unknown`: bytes of
+ * this stream's text still read as if inside a block because its state can't be known (a mid-file start, a line that
+ * couldn't be read): it runs down only by text actually scanned, and an END marker ends it too. */
 type StreamState = { s: number; parent: string | null; via?: number; open: string[]; inKey: boolean; tail: string; ended: boolean; unknown: number };
 type ReadState = { run: number; gen: string; off: number; skipping: boolean; awaiting: boolean; streams: StreamState[] };
 
@@ -76,7 +77,8 @@ function streamsOf(value: unknown): StreamState[] | null {
     if (via !== undefined && (streamNo(via) === null || !out.some(prior => prior.s === via))) return null;
     if (!Array.isArray(ids) || !ids.every(id => typeof id === "string" && childStep(s).test(id)) || new Set(ids).size !== ids.length) return null;
     if (typeof one["inKey"] !== "boolean" || typeof tail !== "string" || !validKeyTail(tail)) return null;
-    const ended = one["ended"] ?? false, unknown = one["unknown"] ?? 0;
+    // Absent means the default; an explicit null (or anything else) is not a value these fields take.
+    const ended = one["ended"] === undefined ? false : one["ended"], unknown = one["unknown"] === undefined ? 0 : one["unknown"];
     if (typeof ended !== "boolean" || !Number.isSafeInteger(unknown) || (unknown as number) < 0 || (unknown as number) > UNKNOWN_KEY_BYTES) return null;
     open += ids.length;
     out.push({ s, parent: parent as string | null, ...(via === undefined ? {} : { via: via as number }), open: ids as string[], inKey: one["inKey"] as boolean, tail, ended, unknown: unknown as number });
@@ -130,7 +132,7 @@ function bootstrap(fd: number, size: number, run: number, gen: string): { state:
   for (let at = first + 1; at > 0 && at < got;) {
     const lf = buffer.indexOf(0x0a, at);
     if (lf === -1) break;
-    if (buffer.indexOf('"k":"ckpt"', at) !== -1 && buffer.indexOf('"k":"ckpt"', at) < lf) {
+    if (buffer.subarray(at, lf).indexOf('"k":"ckpt"') !== -1) {
       // A checkpoint this reader can use: one record, within the record cap, whose streams pass every bound.
       try {
         const record = lf - at <= RECORD_CAP ? object(JSON.parse(buffer.subarray(at, lf).toString("utf8"))) : null;
@@ -145,9 +147,15 @@ function bootstrap(fd: number, size: number, run: number, gen: string): { state:
 }
 
 /** One line under the state: what it shows, or null when it is quarantined (`counted` says whether it counts). */
+/** The bytes of text a record carries (its words or its output): what uncertainty about a key block runs down by. */
+function scannedText(record: Record<string, unknown>): number {
+  const lines = record["k"] === "say" ? record["t"] : record["k"] === "done" ? record["out"] : undefined;
+  return Array.isArray(lines) ? lines.reduce((sum: number, line) => sum + (typeof line === "string" ? Buffer.byteLength(line, "utf8") : 0), 0) : 0;
+}
+
 /** A line that couldn't be read may have carried a key marker for any stream: every stream's key state is unknown. */
 function unknowable(state: ReadState): void {
-  for (const one of state.streams) { one.unknown = UNKNOWN_KEY_BYTES; one.inKey = true; }
+  for (const one of state.streams) one.unknown = UNKNOWN_KEY_BYTES;
 }
 
 function apply(state: ReadState, text: string, commands: boolean): ChildView[] | null {
@@ -157,14 +165,16 @@ function apply(state: ReadState, text: string, commands: boolean): ChildView[] |
   if (record === null) return null;
   if (record["k"] === "ckpt") {
     const streams = streamsOf(record["streams"]);
-    if (streams === null) return null;
+    // A checkpoint names every stream this reader already follows: one that drops a stream would let its number (and
+    // its open key block) be reused.
+    if (streams === null || !state.streams.every(known => streams.some(next => next.s === known.s))) return null;
     // The file's own word on key state never weakens what this reader knows: a stream it has followed keeps its own
     // key state (the checkpoint can only add caution); one it first learns of here starts unknown.
     state.streams = streams.map(next => {
       const known = state.streams.find(one => one.s === next.s);
       return known === undefined
-        ? { ...next, inKey: true, tail: "", unknown: UNKNOWN_KEY_BYTES }
-        : { ...next, inKey: known.inKey || next.inKey, tail: known.tail, unknown: known.unknown };
+        ? { ...next, inKey: false, tail: "", unknown: UNKNOWN_KEY_BYTES }
+        : { ...next, inKey: known.inKey, tail: known.tail, unknown: next.inKey ? Math.max(known.unknown, UNKNOWN_KEY_BYTES) : known.unknown };
     });
     state.awaiting = false;
     return [];
@@ -206,6 +216,9 @@ function apply(state: ReadState, text: string, commands: boolean): ChildView[] |
   // Read on a copy of the key state; it is kept only if the record passes every check below.
   const keys: KeyState = { inKey: stream.inKey || stream.unknown > 0, tail: stream.tail };
   const parsed = parseLiveRecord(body, keys);
+  // The block as actually observed (not forced by uncertainty): the same record read under the observed state.
+  const observed: KeyState = { inKey: stream.inKey, tail: stream.tail };
+  parseLiveRecord(body, observed);
   if (parsed === null || parsed.k === "open") return null;
   if (parsed.k === "step" && parsed.once !== true) {
     const total = state.streams.reduce((sum, one) => sum + one.open.length, 0);
@@ -216,12 +229,9 @@ function apply(state: ReadState, text: string, commands: boolean): ChildView[] |
     if (at === -1) return null; // never one this stream has open
     stream.open.splice(at, 1);
   }
-  if (stream.unknown > 0) {
-    // Unknown key state ends at an END marker, or once more text than any key block has passed.
-    const left = keys.inKey ? Math.max(0, stream.unknown - Buffer.byteLength(body, "utf8")) : 0;
-    stream.unknown = left;
-    stream.inKey = left > 0 ? true : false;
-  } else stream.inKey = keys.inKey;
+  // An observed block ends only at a valid END; uncertainty also runs down by the text this record actually carried.
+  stream.inKey = keys.inKey ? observed.inKey : false;
+  stream.unknown = keys.inKey ? Math.max(0, stream.unknown - scannedText(record)) : 0;
   stream.tail = keys.tail ?? "";
   if (parsed.k === "say" && parsed.t.length === 0) return []; // all inside a key block: nothing to show
   const [shown] = withholdCommands([parsed], commands);

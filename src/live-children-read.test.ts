@@ -246,3 +246,37 @@ describe("review round 1 (Codex av4)", () => {
   });
 });
 
+
+describe("review round 2 (Codex av4)", () => {
+  const file = (run: number, lines: string[]) => { mkdirSync(liveDir(root), { recursive: true }); writeFileSync(liveSubLogPath(root, run), lines.join(""), { mode: 0o600 }); };
+  const BEGIN = "-----BEGIN PRIVATE KEY-----";
+
+  test("a checkpoint that drops a stream this reader follows is refused: its number and open block can't be reused", () => {
+    file(30, [line({ k: "child", s: 1, parent: null }), line({ k: "say", s: 1, t: [BEGIN] }), line({ k: "ckpt", dropped: 0, streams: [] }),
+      line({ k: "child", s: 1, parent: null }), line({ k: "say", s: 1, t: ["MIIEvQsecret"] })]);
+    const got = read(30);
+    expect(JSON.stringify(got.records)).not.toContain("MIIEvQsecret");
+    expect(got.quarantined).toBe(2); // the checkpoint, and the second child 1
+  });
+
+  test("an explicit null is not a default: ended or unknown null refuse the checkpoint", () => {
+    for (const extra of [{ ended: null }, { unknown: null }]) {
+      file(31, [line({ k: "ckpt", dropped: 0, streams: [{ s: 1, parent: null, open: [], inKey: false, ...extra }] })]);
+      expect(read(31).quarantined).toBe(1);
+    }
+  });
+
+  test("a block seen open stays open until a valid END: records that carry no text never run it down", () => {
+    file(32, [line({ k: "child", s: 1, parent: null }), line({ k: "say", s: 1, t: [BEGIN] }), "{broken\n",
+      ...Array.from({ length: 9 }, () => line({ k: "cut", s: 1, pad: "x".repeat(8000) })), line({ k: "say", s: 1, t: ["MIIEvQsecret"] })]);
+    let got = read(32);
+    let text = JSON.stringify(got.records);
+    for (let n = 0; n < 5 && got.more; n += 1) { got = read(32, got.cursor); text += JSON.stringify(got.records); }
+    expect(text).not.toContain("MIIEvQsecret");
+  });
+
+  test("a bootstrap over a tail of bare newlines finishes and fails closed", () => {
+    file(33, [line({ k: "child", s: 1, parent: null }), "\n".repeat(300 * 1024)]);
+    expect(read(33)).toMatchObject({ records: [], earlier: true });
+  });
+});

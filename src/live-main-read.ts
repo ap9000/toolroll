@@ -28,6 +28,15 @@ function unseal(cursor: string, key: Buffer, run: number, gen: string): MainStat
   return { run, gen, off: off as number, skipping, inKey, tail, unknown: unknown as number };
 }
 
+/** The bytes of text a record line carries (its words or output, as written): what uncertainty runs down by. */
+function rawText(line: string): number {
+  try {
+    const record = JSON.parse(line) as Record<string, unknown>;
+    const lines = record["k"] === "say" ? record["t"] : record["k"] === "done" ? record["out"] : undefined;
+    return Array.isArray(lines) ? lines.reduce((sum: number, one) => sum + (typeof one === "string" ? Buffer.byteLength(one, "utf8") : 0), 0) : 0;
+  } catch { return 0; }
+}
+
 /** One window of a run's own live file. `commands` is the run's own captured answer (store.ts runLiveCommands). */
 export function readMainWindow(root: string, runId: number, cursor: string | null, options: { key: Buffer; commands: boolean }): MainWindow {
   const opened = openLiveTrusted(root, `${Math.trunc(runId)}.jsonl`);
@@ -40,12 +49,12 @@ export function readMainWindow(root: string, runId: number, cursor: string | nul
       // A small file from its start (its state is known there); a large one from its last 256 KiB, key state unknown.
       earlier = opened.size > SCAN_BUDGET;
       state = earlier
-        ? { run: runId, gen: opened.gen, off: opened.size - SCAN_BUDGET, skipping: true, inKey: true, tail: "", unknown: UNKNOWN_KEY_BYTES }
+        ? { run: runId, gen: opened.gen, off: opened.size - SCAN_BUDGET, skipping: true, inKey: false, tail: "", unknown: UNKNOWN_KEY_BYTES }
         : { run: runId, gen: opened.gen, off: 0, skipping: false, inKey: false, tail: "", unknown: 0 };
     }
     const from = state.off;
     const read = readLiveLines(opened.fd, opened.size, state.off, state.skipping);
-    const unknowable = () => { state!.unknown = UNKNOWN_KEY_BYTES; state!.inKey = true; };
+    const unknowable = () => { state!.unknown = UNKNOWN_KEY_BYTES; };
     if (read.skipped > 0) unknowable();
     const records: LiveRecord[] = [];
     let quarantined = 0;
@@ -53,11 +62,12 @@ export function readMainWindow(root: string, runId: number, cursor: string | nul
       const keys: KeyState = { inKey: state.inKey || state.unknown > 0, tail: state.tail };
       const parsed = parseLiveRecord(line.text, keys);
       if (parsed === null) { quarantined += 1; unknowable(); continue; }
-      if (state.unknown > 0) {
-        const left = keys.inKey ? Math.max(0, state.unknown - Buffer.byteLength(line.text, "utf8")) : 0;
-        state.unknown = left;
-        state.inKey = left > 0;
-      } else state.inKey = keys.inKey;
+      // `inKey` is a block actually seen open (only a valid END ends it); `unknown` is uncertainty, which also runs
+      // down by the text the record actually carried.
+      const observed: KeyState = { inKey: state.inKey, tail: state.tail };
+      parseLiveRecord(line.text, observed);
+      state.inKey = keys.inKey ? observed.inKey : false;
+      state.unknown = keys.inKey ? Math.max(0, state.unknown - rawText(line.text)) : 0;
       state.tail = keys.tail ?? "";
       if (parsed.k === "say" && parsed.t.length === 0) continue; // all inside a key block
       records.push(...withholdCommands([parsed], options.commands));
