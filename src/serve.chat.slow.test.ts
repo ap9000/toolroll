@@ -782,6 +782,31 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect((await fetch(url('/live?room=chat'), { redirect: 'manual' })).status).not.toBe(200);
   });
 
+  test('agents view slice 8: the Live grid shows the owner\'s own running reply, and only to them', async () => {
+    const cookie = await login(), csrf = await mint(cookie);
+    const robin = addApprover(store, 'robin', T0, { name: 'alex', token: approverToken });
+    if (!robin.ok) throw new Error(robin.reason);
+    const robinCookie = ((await fetch(url('/login'), { method: 'POST', body: new URLSearchParams({ name: 'robin', token: robin.token }), redirect: 'manual' })).headers.get('set-cookie') ?? '').split(';')[0]!;
+    const leadsOf = async (who: string) => ((await (await fetch(url('/agents/live'), { headers: { cookie: who } })).json()) as { leads: { thread: number; turn: number | null; state: string; scope: string; title: string; lines: string[]; chatHref: string; taskHref: string | null; stepAt: string[] }[] }).leads;
+    let finish!: (value: Response) => void;
+    script.push(() => new Promise<Response>(resolve => { finish = resolve; }) as unknown as Response);
+    expect((await sendJson(cookie, { csrf, task: 'a', message: 'Where is this?', request: 'd'.repeat(32), 'request-session': '1' })).status).toBe(202);
+    let leads = await leadsOf(cookie);
+    for (let i = 0; i < 100 && leads.length === 0; i++) { await new Promise(resolve => setTimeout(resolve, 10)); leads = await leadsOf(cookie); }
+    expect(leads).toMatchObject([{ scope: 'task', title: 'task a', state: 'working', chatHref: '/chat?task=a', taskHref: '/t/a' }]);
+    expect(leads[0]!.turn).toEqual(expect.any(Number));
+    expect(leads[0]!.stepAt.length).toBeGreaterThan(0);
+    // Another approver never sees it.
+    expect(await leadsOf(robinCookie)).toEqual([]);
+    finish(answer([{ type: 'text', text: 'Here.' }]));
+    await settle();
+    leads = await leadsOf(cookie);
+    expect(leads).toMatchObject([{ state: 'done' }]);
+    // The account loses the project: the ended turn's tile goes with it.
+    store.handle.prepare("UPDATE approver SET projects_json = '[]' WHERE name = 'alex'").run();
+    expect(await leadsOf(cookie)).toEqual([]);
+  });
+
   test('a revoked browser stream gets no reply started later by another session', async () => {
     const oldCookie = await login(); await mint(oldCookie);
     const old = await chatRoom(oldCookie, 'chat?task=a');

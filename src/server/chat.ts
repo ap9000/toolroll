@@ -1095,14 +1095,16 @@ export function createChatHandlers(runtime: ServerRuntime) {
   function beginLiveTurn(thread: number): (event: LeadProgress) => void {
     const previous = liveTurns.get(thread);
     if (previous?.expiry) clearTimeout(previous.expiry);
-    const live: LiveTurn = { steps: [], done: false, ok: false, listeners: previous?.listeners ?? new Set() };
+    const live: LiveTurn = { steps: [], done: false, ok: false, listeners: previous?.listeners ?? new Set(), startedAt: clock().getTime(), stepAt: [] };
     liveTurns.set(thread, live);
     // A page that has this conversation open follows the reply (GET /live, its chat room).
     runtime.liveTurnStarted(thread);
-    const current = () => live.steps.at(-1) ?? (live.steps.push({ tools: [], toolCalls: [], text: "" }), live.steps.at(-1)!);
+    const newStep = () => { live.steps.push({ tools: [], toolCalls: [], text: "" }); live.stepAt!.push(clock().getTime()); };
+    const current = () => live.steps.at(-1) ?? (newStep(), live.steps.at(-1)!);
     const progress = (event: LeadProgress): void => {
       if (live.done) return;
-      if (event.kind === "step") live.steps.push({ tools: [], toolCalls: [], text: "" });
+      live.turn ??= event.turn;
+      if (event.kind === "step") newStep();
       else if (event.kind === "tool") {
         current().tools.push(event.label);
         current().toolCalls.push({ id: event.id, label: event.label, state: "running" });
@@ -1126,6 +1128,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     if (progress !== undefined && progressOf.get(progress) !== live) return;
     live.done = true;
     live.ok = ok;
+    live.endedAt = clock().getTime();
     for (const listener of live.listeners) listener();
     live.expiry = setTimeout(() => { if (liveTurns.get(thread) === live) liveTurns.delete(thread); }, 60_000);
     live.expiry.unref();

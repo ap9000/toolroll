@@ -35,6 +35,7 @@ import { requestContext } from "./request-context.js";
 import type { ServerRuntime } from "./runtime.js";
 import type { Who } from "./session.js";
 import { createAgentsLiveRooms } from "./agents-live-room.js";
+import { leadTilesFor } from "./agents-live-lead.js";
 
 /** A page asks for a few rooms at once: its workspace, what it shows, its conversation. */
 export const LIVE_ROOMS_PER_PAGE = 6;
@@ -135,7 +136,10 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
   // One agent's open view (Agents board): what it shows, keyed by the exact run.
   const agentRooms = createLiveRooms<number, Viewer>(run => agentRunFingerprint(store, run), null, { bus: live.bus });
   // The Live grid: one room per viewer and scope, watching only (no lease, no seen mark).
-  const agentsLive = createAgentsLiveRooms<Viewer>({ store, bus: live.bus, evidenceRoot: runtime.evidenceRoot, localRunner: runtime.options.localRunner, clock, visible });
+  // Each Live page's own lead tiles, read as its viewer's saved session now (a page's room key carries the page).
+  const liveLeads = new Map<string, () => unknown>();
+  const agentsLive = createAgentsLiveRooms<Viewer>({ store, bus: live.bus, evidenceRoot: runtime.evidenceRoot, localRunner: runtime.options.localRunner, clock, visible,
+    leads: key => liveLeads.get(key)?.() ?? null });
 
   const readBrowser = (request: IncomingMessage, who: Who & { via: "cookie" }) => rereadBrowser(runtime, request, who);
   const sameBrowser = (request: IncomingMessage, who: Who & { via: "cookie" }) => () => readBrowser(request, who) !== null;
@@ -249,7 +253,10 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
           try { ok = valid(); } catch { ok = false; }
           if (!ok) { connection.send(name, "gone"); refusedJoin = true; return; }
           // Each page's own room (its key carries this connection): a newcomer is never handed a digest computed earlier.
-          agentsLive.rooms.join(agentsLive.keyOf(who.name, scope, randomBytes(9).toString("hex")), { name: who.name, room: name, connection, valid });
+          const key = agentsLive.keyOf(who.name, scope, randomBytes(9).toString("hex"));
+          liveLeads.set(key, () => { const again = readBrowser(request, browser); return again === null ? null : leadTilesFor(runtime, again); });
+          connection.onClose(() => liveLeads.delete(key));
+          agentsLive.rooms.join(key, { name: who.name, room: name, connection, valid });
         });
       } else if (room.kind === "task") {
         const browser = who as Who & { via: "cookie" };

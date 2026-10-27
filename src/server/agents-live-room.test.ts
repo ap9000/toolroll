@@ -115,3 +115,21 @@ test("Codex av5 r2: attempts are throttled too, and a run that leaves view durin
   expect(first[0]).toBe(none[0]);
   moved.rooms.close(); empty.rooms.close();
 });
+
+test("slice 8: a page's own lead tiles move its digest, and only that page's", () => {
+  const bus = createLiveBus();
+  let words = "one";
+  const mine = new Map<string, () => unknown>();
+  const room = createAgentsLiveRooms({ store, bus, evidenceRoot: root, localRunner: "mac", clock: () => new Date(), visible: () => true, leads: key => mine.get(key)?.() ?? null });
+  const a: string[] = [], b: string[] = [];
+  const keyA = room.keyOf("alex", "all", "page-a"), keyB = room.keyOf("alex", "all", "page-b");
+  mine.set(keyA, () => [{ lines: [words] }]);
+  room.rooms.join(keyA, viewer("alex", a));
+  room.rooms.join(keyB, viewer("alex", b));
+  const [firstA, firstB] = [a.length, b.length];
+  words = "two";
+  bus.publish({ revision: "1" });
+  expect(a.length).toBeGreaterThan(firstA);
+  expect(b.length).toBe(firstB);
+  room.rooms.close();
+});
