@@ -538,7 +538,7 @@ describe("the Live grid's reads (docs/plans/agents-view.md §3)", () => {
       expiresAt: new Date(Date.now() + 86_400_000).toISOString(), by: "alex" }, new Date());
     const lead = store.mintLeadCredential("alex", "alex", new Date()).token;
     for (const bearer of [lead, "tok-builder-1", remote.token]) {
-      for (const path of [`/agents/live/${run}?file=main`, `/agents/live/${run}?file=sub`, "/agents/live"]) {
+      for (const path of [`/agents/live/${run}?file=main`, `/agents/live/${run}?file=sub`, "/agents/live", "/agents?view=live", "/live?room=agents-live"]) {
         const response = await fetch(`${localBase}${path}`, { headers: { authorization: `Bearer ${bearer}` }, redirect: "manual" });
         expect([303, 401, 403], `${path} as ${bearer.slice(0, 3)}`).toContain(response.status);
         expect(await response.text()).not.toMatch(/planning|running them|Check the tests/);

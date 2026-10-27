@@ -224,6 +224,7 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
 
     // Admit every room before the stream opens, with the answers each page's own stream gave.
     const joins: Array<(connection: LiveConnection) => void> = [];
+    let refusedJoin = false;
     for (const { name, room } of rooms as Array<{ name: string; room: LiveRoom }>) {
       if (room.kind !== "team" && who.via !== "cookie") return json(response, 403, { error: "session" });
       if (room.kind === "workspace") {
@@ -246,8 +247,9 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
           // Proved before the room is made or read: an invalid viewer never causes a look at a file.
           let ok = false;
           try { ok = valid(); } catch { ok = false; }
-          if (!ok) { connection.send(name, "gone"); return; }
-          agentsLive.rooms.join(agentsLive.keyOf(who.name, scope), { name: who.name, room: name, connection, valid });
+          if (!ok) { connection.send(name, "gone"); refusedJoin = true; return; }
+          // Each page's own room (its key carries this connection): a newcomer is never handed a digest computed earlier.
+          agentsLive.rooms.join(agentsLive.keyOf(who.name, scope, randomBytes(9).toString("hex")), { name: who.name, room: name, connection, valid });
         });
       } else if (room.kind === "task") {
         const browser = who as Who & { via: "cookie" };
@@ -340,6 +342,8 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
     const connection = new LiveConnection(response);
     // Each join below adds its room before the next speaks; a chat room alone keeps the stream open too.
     for (const join of joins) if (connection.open) join(connection);
+    // A page whose only room was refused at its join ends now (`ended`), its keep-alive stopped, not left open.
+    if (refusedJoin && connection.rooms === 0) connection.refuse(() => connection.close());
     request.once("close", () => connection.close());
   }
 

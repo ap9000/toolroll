@@ -85,3 +85,33 @@ test("the fingerprint is read as the keyed account, whoever's write woke the bus
   expect(sent).toHaveLength(1); // only the join's own change: robin's signal moved nothing for alex
   room.rooms.close();
 });
+
+test("Codex av5 r2: attempts are throttled too, and a run that leaves view during its looks is not in the digest", () => {
+  const run = running("t-4");
+  const bus = createLiveBus();
+  let remote = false;
+  // Each look at the main file moves the run to another computer; it is back before the next signal.
+  onOpen = name => { if (name === `${run}.jsonl`) { remote = true; store.handle.prepare("UPDATE run SET runner = 'elsewhere' WHERE id = ?").run(run); } };
+  const room = createAgentsLiveRooms({ store, bus, evidenceRoot: root, localRunner: "mac", clock: () => new Date(), visible: () => true });
+  room.rooms.join(room.keyOf("alex", "all"), viewer("alex", []));
+  for (let n = 0; n < 100; n += 1) {
+    if (remote) { store.handle.prepare("UPDATE run SET runner = 'mac' WHERE id = ?").run(run); remote = false; }
+    bus.publish({ revision: String(n) });
+  }
+  expect(opened.filter(name => name === `${run}.jsonl`).length).toBe(1);
+  room.rooms.close();
+
+  // A run moved out of the viewer's projects while its second file is looked at: the digest is the one without it.
+  const other = running("t-5");
+  let away = false;
+  onOpen = name => { if (name === `${other}.sub.jsonl`) away = true; };
+  const sees = (repo: string | null) => !(away && repo === REPO);
+  const first: string[] = [];
+  const moved = createAgentsLiveRooms({ store, bus: createLiveBus(), evidenceRoot: root, localRunner: "mac", clock: () => new Date(), visible: sees });
+  moved.rooms.join(moved.keyOf("alex", "all"), viewer("alex", first));
+  const none: string[] = [];
+  const empty = createAgentsLiveRooms({ store, bus: createLiveBus(), evidenceRoot: root, localRunner: "mac", clock: () => new Date(), visible: () => false });
+  empty.rooms.join(empty.keyOf("alex", "all"), viewer("alex", none));
+  expect(first[0]).toBe(none[0]);
+  moved.rooms.close(); empty.rooms.close();
+});

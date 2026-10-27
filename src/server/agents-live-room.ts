@@ -36,20 +36,24 @@ export function createAgentsLiveRooms<V extends LiveViewer>(input: {
   visible: (repo: string | null) => boolean;
 }) {
   const { store, evidenceRoot, localRunner, clock, visible } = input;
-  const keyOf = (account: string, scope: string) => JSON.stringify([account, scope]);
+  const keyOf = (account: string, scope: string, page = "") => JSON.stringify([account, scope, page]);
   /** One look at a run's two files, shared by every viewer's room: at most once per LIVE_POLL_MS per run, however
    * many viewers or bus signals there are (a burst of writes re-proves at once, but never opens files more often). */
-  const looked = new Map<number, { at: number; marks: [string, string] }>();
+  const looked = new Map<number, { at: number; marks: [string, string] | null }>();
   const marksOf = (runId: number, stillSees: () => boolean): [string, string] | null => {
     // A run's files are this viewer's to look at (or have looked at) only while the run is still theirs and this
     // computer's, proved from its row now — a look another viewer's room took included.
     if (!stillSees()) return null;
     const now = Date.now();
     const kept = looked.get(runId);
+    // One attempt per run per poll, whether it looked or stopped part-way: nothing makes files opened more often.
     if (kept !== undefined && now - kept.at < LIVE_POLL_MS) return kept.marks;
+    looked.set(runId, { at: now, marks: null });
     const main = fileMark(evidenceRoot, `${runId}.jsonl`);
     if (!stillSees()) return null;
-    const marks: [string, string] = [main, fileMark(evidenceRoot, `${runId}.sub.jsonl`)];
+    const sub = fileMark(evidenceRoot, `${runId}.sub.jsonl`);
+    if (!stillSees()) return null;
+    const marks: [string, string] = [main, sub];
     looked.set(runId, { at: now, marks });
     return marks;
   };
@@ -68,8 +72,16 @@ export function createAgentsLiveRooms<V extends LiveViewer>(input: {
       });
       const marks = tiles.filter(tile => tile.local).slice(0, LIVE_WATCHED_RUNS).map(tile => [tile.runId, marksOf(tile.runId, sees(tile.runId))]);
       for (const [runId] of [...looked]) if (Date.now() - looked.get(runId)!.at > 10 * LIVE_POLL_MS) looked.delete(runId);
-      const seen = tiles.map(tile => [tile.runId, tile.state, tile.why, tile.endedAt]);
-      return createHash("sha256").update(JSON.stringify([seen, marks])).digest("base64url");
+      // The digest's every run proved again from its current row after the looks: one that left view isn't in it.
+      const still = (runId: number) => {
+        const run = store.getRun(runId);
+        const repo = run === null ? null : store.refForId(run.taskRef)?.repo ?? null;
+        return repo !== null && visible(repo) && store.accountCanAccess(account, repo);
+      };
+      const kept = new Set(tiles.filter(tile => still(tile.runId)).map(tile => tile.runId));
+      const seen = tiles.filter(tile => kept.has(tile.runId)).map(tile => [tile.runId, tile.state, tile.why, tile.endedAt]);
+      const shownMarks = marks.filter(([runId]) => kept.has(runId as number) && (!tiles.find(tile => tile.runId === runId)?.local || sees(runId as number)()));
+      return createHash("sha256").update(JSON.stringify([seen, shownMarks])).digest("base64url");
     });
   }, null, { bus: input.bus, safetyNetMs: LIVE_POLL_MS });
   return { rooms, keyOf, looked: () => looked.size };
