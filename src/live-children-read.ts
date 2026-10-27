@@ -104,8 +104,8 @@ function unseal(cursor: string, key: Buffer, run: number, gen: string): ReadStat
 /** Where a read with no usable cursor begins: the file's start when it is small, else the newest checkpoint in its last
  * SCAN_BUDGET bytes; with none there, nothing is shown until the next checkpoint (fails closed). */
 function bootstrap(fd: number, size: number, run: number, gen: string): { state: ReadState; earlier: boolean } {
-  const fresh: ReadState = { run, gen, off: 0, skipping: false, awaiting: false, streams: [] };
-  if (size <= SCAN_BUDGET) return { state: fresh, earlier: false };
+  const empty: ReadState = { run, gen, off: 0, skipping: false, awaiting: false, streams: [] };
+  if (size <= SCAN_BUDGET) return { state: empty, earlier: false };
   const from = size - SCAN_BUDGET;
   const buffer = Buffer.alloc(SCAN_BUDGET);
   let got = 0;
@@ -119,8 +119,8 @@ function bootstrap(fd: number, size: number, run: number, gen: string): { state:
     at = lf + 1;
   }
   return found === -1
-    ? { state: { ...fresh, off: from, skipping: true, awaiting: true }, earlier: true }
-    : { state: { ...fresh, off: from + found, awaiting: true }, earlier: true };
+    ? { state: { ...empty, off: from, skipping: true, awaiting: true }, earlier: true }
+    : { state: { ...empty, off: from + found, awaiting: true }, earlier: true };
 }
 
 /** One line under the state: what it shows, or null when it is quarantined (`counted` says whether it counts). */
