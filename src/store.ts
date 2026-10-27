@@ -24617,10 +24617,11 @@ export type AgentsLiveRun = Run & { taskId: string; title: string; repo: string 
 
 /**
  * The Live grid's runs: every role's running run (no outcome yet) and every run that ended at or after `endedSince`,
- * newest first, at most `limit`. Two indexed reads (run_live_open, run_live_recent), never a scan of all runs.
+ * newest first — all of them (no cutoff before the caller's visibility filter: a viewer's agent is never hidden behind
+ * others'). Two indexed reads (run_live_open, run_live_recent), never a scan of all runs.
  * Visibility is the caller's: it filters each by the console's ceiling and the viewer's access.
  */
-export function agentsLiveRuns(store: Store, endedSince: Date, limit = 200): AgentsLiveRun[] {
+export function agentsLiveRuns(store: Store, endedSince: Date): AgentsLiveRun[] {
   const rows = store.handle.prepare(
     `SELECT run.*, task_ref.external_id AS live_task_id, task_ref.repo AS live_task_repo, task.title AS live_task_title
        FROM (SELECT id FROM run INDEXED BY run_live_open WHERE outcome IS NULL AND id > 0
@@ -24628,9 +24629,8 @@ export function agentsLiveRuns(store: Store, endedSince: Date, limit = 200): Age
        JOIN run ON run.id = picked.id
        JOIN task_ref ON task_ref.id = run.task_ref
        LEFT JOIN task ON task_ref.backend = ? AND task.id = task_ref.external_id
-      ORDER BY run.id DESC
-      LIMIT ?`,
-  ).all(endedSince.toISOString(), BUILT_IN, Math.max(1, Math.min(limit, 500))) as Record<string, unknown>[];
+      ORDER BY run.id DESC`,
+  ).all(endedSince.toISOString(), BUILT_IN) as Record<string, unknown>[];
   return rows.map(row => ({
     ...readRun(row),
     taskId: String(row["live_task_id"]),

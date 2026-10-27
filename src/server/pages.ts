@@ -59,6 +59,7 @@ import { browsePage,fleetBody,fleetScript,githubIdentityOf,githubReposPage,homeP
 import { capsPage } from "./render-settings.js";
 import { decisionAnswerScript,taskBody } from "./render-tasks.js";
 import { type Who } from "./session.js";
+import { rereadBrowser } from "./live.js";
 export function createPagesHandlers(runtime: ServerRuntime) {
   const { clock, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession } = runtime;
 
@@ -485,6 +486,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     // The Live grid only watches (docs/plans/agents-view.md §3): it branches off before an opened agent is built, so
     // viewing it never marks a run seen, takes a watch or offers a composer — a reload of ?view=live&run=… included.
     const watching = url.searchParams.get("view") === "live";
+    // Live is a browser session's only, like its reads (no token sees the grid).
+    if (watching && who.via !== "cookie") return respond(response, 403, "text/plain; charset=utf-8", "The Live view is for a signed-in browser.");
     let selected: BrowserAgentDetail | null = null;
     if (!watching && asked !== null && /^[1-9][0-9]{0,9}$/.test(asked)) {
       const run = store.getRun(Number(asked));
@@ -1036,15 +1039,18 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   /** The Live grid's tiles (JSON, read-only): every role's running agents and those that just ended, that this viewer
    * may see — the console's ceiling and the account's own access, proved per run, on every request. */
   async function agentsLive(ctx: HandlerContext): Promise<void> {
-    const { who, response } = ctx;
+    const { who, request, response } = ctx;
+    response.setHeader("cache-control", "no-store");
     // A browser session only (the route says so too): live output is never a token's to read.
     if (who.via !== "cookie") return respond(response, 403, "application/json", JSON.stringify({ error: "session" }));
-    const tiles = agentsLiveOf(store, clock(), {
-      canSee: run => run.repo !== null && runVisible(run) && store.accountCanAccess(who.name, run.repo),
-      localRunner: options.localRunner,
-    });
-    response.setHeader("cache-control", "no-store");
-    return respond(response, 200, "application/json", JSON.stringify({ tiles }));
+    const browser = who as typeof who & { via: "cookie" };
+    const signedIn = () => rereadBrowser(runtime, request, browser) !== null;
+    const canSee = (run: { taskRef: number }) => { const repo = taskRepoOf(run.taskRef); return repo !== null && visible(repo) && store.accountCanAccess(who.name, repo); };
+    const tiles = agentsLiveOf(store, clock(), { canSee, localRunner: options.localRunner });
+    // Re-proved right before delivery: the session still held, and each tile's run still in view from its current row.
+    if (!signedIn()) return respond(response, 401, "application/json", JSON.stringify({ error: "session" }));
+    const shown = tiles.filter(tile => { const run = store.getRun(tile.runId); return run !== null && canSee(run); });
+    return respond(response, 200, "application/json", JSON.stringify({ tiles: shown }));
   }
 
   /** This console's key for the Live grid's read cursors: random, in memory only (never where a build can reach), so a
@@ -1064,13 +1070,18 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     if ((file !== "main" && file !== "sub") || [...url.searchParams.keys()].some(key => key !== "file" && key !== "cursor")) {
       return respond(response, 400, "application/json", JSON.stringify({ error: "request" }));
     }
+    const browser = who as typeof who & { via: "cookie" };
+    // The saved session still held (not just the cookie), and the run still in view from its current row.
     const allowed = (): boolean => {
+      if (rereadBrowser(runtime, ctx.request, browser) === null) return false;
       const run = store.getRun(runId);
       const repo = run === null ? null : taskRepoOf(run.taskRef);
       return run !== null && repo !== null && runVisible(run) && store.accountCanAccess(who.name, repo);
     };
     if (!allowed()) return respond(response, 404, "application/json", JSON.stringify({ error: "run" }));
-    if (options.localRunner === undefined || store.getRun(runId)?.runner !== options.localRunner) return respond(response, 200, "application/json", JSON.stringify({ error: "off" }));
+    if (options.localRunner === undefined || store.getRun(runId)?.runner !== options.localRunner) {
+      return allowed() ? respond(response, 200, "application/json", JSON.stringify({ error: "off" })) : respond(response, 404, "application/json", JSON.stringify({ error: "run" }));
+    }
     const read = { key: liveCursorKey, commands: runLiveCommands(store, runId) };
     const window = file === "sub" ? readChildWindow(evidenceRoot, runId, cursor, read) : readMainWindow(evidenceRoot, runId, cursor, read);
     // Re-proved after the read: a narrowed account or a run gone from view gets nothing it read.

@@ -12,6 +12,7 @@ import { agentsLiveOf } from "../agents-live.js";
 import { createLiveRooms, type LiveBus, type LiveViewer } from "../live-bus.js";
 import { openLiveTrusted } from "../live-open.js";
 import type { Store } from "../store.js";
+import { requestContext } from "./request-context.js";
 
 /** How often a viewer's runs and files are looked at again. */
 export const LIVE_POLL_MS = 2_000;
@@ -36,16 +37,40 @@ export function createAgentsLiveRooms<V extends LiveViewer>(input: {
 }) {
   const { store, evidenceRoot, localRunner, clock, visible } = input;
   const keyOf = (account: string, scope: string) => JSON.stringify([account, scope]);
+  /** One look at a run's two files, shared by every viewer's room: at most once per LIVE_POLL_MS per run, however
+   * many viewers or bus signals there are (a burst of writes re-proves at once, but never opens files more often). */
+  const looked = new Map<number, { at: number; marks: [string, string] }>();
+  const marksOf = (runId: number, stillSees: () => boolean): [string, string] | null => {
+    // A run's files are this viewer's to look at (or have looked at) only while the run is still theirs and this
+    // computer's, proved from its row now — a look another viewer's room took included.
+    if (!stillSees()) return null;
+    const now = Date.now();
+    const kept = looked.get(runId);
+    if (kept !== undefined && now - kept.at < LIVE_POLL_MS) return kept.marks;
+    const main = fileMark(evidenceRoot, `${runId}.jsonl`);
+    if (!stillSees()) return null;
+    const marks: [string, string] = [main, fileMark(evidenceRoot, `${runId}.sub.jsonl`)];
+    looked.set(runId, { at: now, marks });
+    return marks;
+  };
   const rooms = createLiveRooms<string, V>(key => {
     const [account] = JSON.parse(key) as [string, string];
-    const tiles = agentsLiveOf(store, clock(), {
-      canSee: run => run.repo !== null && visible(run.repo) && store.accountCanAccess(account, run.repo),
-      localRunner,
+    // Read as the keyed account (its own request context), never as whoever's write woke the bus.
+    return requestContext.run({ actor: account, csrf: "", returnTo: "/agents" }, () => {
+      const sees = (runId: number) => () => {
+        const run = store.getRun(runId);
+        const repo = run === null ? null : store.refForId(run.taskRef)?.repo ?? null;
+        return run !== null && repo !== null && visible(repo) && store.accountCanAccess(account, repo) && localRunner !== undefined && run.runner === localRunner;
+      };
+      const tiles = agentsLiveOf(store, clock(), {
+        canSee: run => run.repo !== null && visible(run.repo) && store.accountCanAccess(account, run.repo),
+        localRunner,
+      });
+      const marks = tiles.filter(tile => tile.local).slice(0, LIVE_WATCHED_RUNS).map(tile => [tile.runId, marksOf(tile.runId, sees(tile.runId))]);
+      for (const [runId] of [...looked]) if (Date.now() - looked.get(runId)!.at > 10 * LIVE_POLL_MS) looked.delete(runId);
+      const seen = tiles.map(tile => [tile.runId, tile.state, tile.why, tile.endedAt]);
+      return createHash("sha256").update(JSON.stringify([seen, marks])).digest("base64url");
     });
-    const marks = tiles.filter(tile => tile.local).slice(0, LIVE_WATCHED_RUNS)
-      .map(tile => [tile.runId, fileMark(evidenceRoot, `${tile.runId}.jsonl`), fileMark(evidenceRoot, `${tile.runId}.sub.jsonl`)]);
-    const seen = tiles.map(tile => [tile.runId, tile.state, tile.why, tile.endedAt]);
-    return createHash("sha256").update(JSON.stringify([seen, marks])).digest("base64url");
   }, null, { bus: input.bus, safetyNetMs: LIVE_POLL_MS });
-  return { rooms, keyOf };
+  return { rooms, keyOf, looked: () => looked.size };
 }

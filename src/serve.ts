@@ -772,7 +772,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Passive polls authenticate without extending the browser session.
     const fragmentName = url.searchParams.get("fragment");
     const workspaceRead = method === "GET" && url.searchParams.get('format') === 'workspace';
-    const touch = !(method === "GET" && (edgeRoute?.domain === 'live' || workspaceRead || (fragmentName !== null && NO_TOUCH_FRAGMENTS.has(fragmentName)) || /^\/code\/[a-f0-9]{32}\/state$/.test(url.pathname) || url.pathname === '/term/state'));
+    const touch = !(method === "GET" && (edgeRoute?.domain === 'live' || workspaceRead || (fragmentName !== null && NO_TOUCH_FRAGMENTS.has(fragmentName)) || /^\/code\/[a-f0-9]{32}\/state$/.test(url.pathname) || url.pathname === '/term/state'
+      // The Agents view's Live grid only watches: its polls never extend or write the session.
+      || url.pathname === '/agents/live' || /^\/agents\/live\/[0-9]{1,15}$/.test(url.pathname) || (url.pathname === '/agents' && url.searchParams.get('view') === 'live')));
     const refuseBudget = (admitted: Admission): boolean => {
       if (admitted.ok) return false;
       request.resume();

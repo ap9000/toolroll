@@ -1,7 +1,7 @@
 /** The Agents board through the server: /peek opens it, an agent's question shows on it and in Needs you, Reply
  * reaches the running agent through the steering mailbox and closes that question, and an open agent's room holds
  * its viewer's pings while it is open. */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -450,9 +450,10 @@ describe("the Live grid (docs/plans/agents-view.md §3)", () => {
 });
 
 describe("the Live grid's reads (docs/plans/agents-view.md §3)", () => {
-  let local: Server, localBase: string;
+  let local: Server, localBase: string, skew = 0;
   beforeEach(async () => {
-    local = createDecisionServer({ store, evidenceRoot, repos: [repoA, repoB], clock: () => new Date(), localRunner: "builder-1" });
+    skew = 0;
+    local = createDecisionServer({ store, evidenceRoot, repos: [repoA, repoB], clock: () => new Date(Date.now() + skew), localRunner: "builder-1" });
     await new Promise<void>(resolve => local.listen(0, "127.0.0.1", resolve));
     const address = local.address();
     if (typeof address !== "object" || address === null) throw new Error("no address");
@@ -546,6 +547,35 @@ describe("the Live grid's reads (docs/plans/agents-view.md §3)", () => {
     const cookie = await signIn("alex", alexToken);
     expect((await get(`/agents/live/${run}?file=main`, cookie)).status).toBe(200);
     expect((await get("/agents/live", cookie)).status).toBe(200);
+  });
+
+  test("Codex av5: an ended session reads nothing; the Live page is a browser's only; watching never touches the session", async () => {
+    const run = running("t-av5", repoA);
+    (await record(run)).close();
+    const cookie = await signIn("alex", alexToken);
+    // The saved session ended (another process signed it out): the cookie alone reads nothing.
+    const saved = store.handle.prepare("SELECT * FROM web_session").all();
+    store.handle.prepare("DELETE FROM web_session").run();
+    const status = async (path: string) => (await fetch(`${localBase}${path}`, { headers: { cookie }, redirect: "manual" })).status;
+    expect(await status(`/agents/live/${run}?file=main`)).not.toBe(200);
+    expect(await status("/agents/live")).not.toBe(200);
+    for (const row of saved) store.handle.prepare(`INSERT INTO web_session (${Object.keys(row).join(", ")}) VALUES (${Object.keys(row).map(() => "?").join(", ")})`).run(...Object.values(row) as never[]);
+    expect((await get(`/agents/live/${run}?file=main`, cookie)).status).toBe(200);
+    // ?view=live refuses a token; a cookie still opens it.
+    const { mintApiToken } = await import("./api-tokens.js");
+    const remote = mintApiToken();
+    store.createApiToken({ id: remote.id, account: "alex", name: "laptop2", secretHash: remote.hash, access: "act", projects: null, expiresAt: new Date(Date.now() + 86_400_000).toISOString(), by: "alex" }, new Date());
+    expect([401, 403]).toContain((await fetch(`${localBase}/agents?view=live`, { headers: { authorization: `Bearer ${remote.token}` }, redirect: "manual" })).status);
+    // Polling (a fresh session, past the persistence interval) writes nothing to it.
+    const watcher = await signIn("alex", alexToken);
+    const before = JSON.stringify(store.handle.prepare("SELECT id_hash, last_seen FROM web_session ORDER BY id_hash").all());
+    skew = 120_000;
+    const realNow = Date.now.bind(Date);
+    const later = vi.spyOn(Date, "now").mockImplementation(() => realNow() + 120_000); // past the session's once-a-minute save
+    try {
+      for (const path of [`/agents/live/${run}?file=main`, "/agents/live", "/agents?view=live"]) await fetch(`${localBase}${path}`, { headers: { cookie: watcher } });
+    } finally { later.mockRestore(); }
+    expect(JSON.stringify(store.handle.prepare("SELECT id_hash, last_seen FROM web_session ORDER BY id_hash").all())).toBe(before);
   });
 
   test("another project's run, an unknown file, another runner's run: refused or off, never read", async () => {

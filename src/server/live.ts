@@ -241,8 +241,14 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
         const scope = live.projectScopeFor(who.name);
         if (scope === null) return json(response, 404, { error: "agents-live" });
         const signedIn = sameBrowser(request, browser);
-        joins.push(connection => agentsLive.rooms.join(agentsLive.keyOf(who.name, scope), { name: who.name, room: name, connection,
-          valid: () => signedIn() && live.projectScopeFor(who.name) === scope }));
+        const valid = () => signedIn() && live.projectScopeFor(who.name) === scope;
+        joins.push(connection => {
+          // Proved before the room is made or read: an invalid viewer never causes a look at a file.
+          let ok = false;
+          try { ok = valid(); } catch { ok = false; }
+          if (!ok) { connection.send(name, "gone"); return; }
+          agentsLive.rooms.join(agentsLive.keyOf(who.name, scope), { name: who.name, room: name, connection, valid });
+        });
       } else if (room.kind === "task") {
         const browser = who as Who & { via: "cookie" };
         const family = familyOf(room.task);
