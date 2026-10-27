@@ -1168,3 +1168,72 @@ describe("toolroll release: Codex review round 1", () => {
     expect(s.calls).not.toContain("merge");
   });
 });
+
+describe("toolroll release: a regated check of the same approved commit (2026-10-27)", () => {
+  /** The check's own build commit: exactly the candidate's tree. */
+  const BUILT = "7".repeat(40);
+  /** A release whose first check (run 3251) failed on a flaky test, stopped at check. */
+  const failedOnce = async (withAuthority: boolean) => {
+    const dir = stateDir();
+    const w = withAuthority ? releaseWorld() : world();
+    const { s, adapters } = w;
+    s.trees.set(BUILT, TREE);
+    let failed = false;
+    s.onSleep.unshift(state => {
+      if (!failed && state.gate.approval !== null && state.gate.result === null) { failed = true; state.gate.result = { run: 3251, head: BUILT, check: "failed", level: "full", receipt: "r-3251", worktree: "/w/3251" }; }
+    });
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "check", reason: "check-failed" });
+    return { dir, s, adapters };
+  };
+  const passes = (state: ReturnType<typeof world>["s"]) => {
+    state.gate.pending = false;
+    state.gate.result = { run: 3252, head: BUILT, check: "passed", level: "full", receipt: "r-3252", worktree: "/w/3252" };
+  };
+
+  test.each([false, true])("fail, regate, pass: the release resumes on the rerun's result with no new approval (release authority: %s)", async withAuthority => {
+    const { dir, s, adapters } = await failedOnce(withAuthority);
+    const approvedAt = s.gate.approval!.at;
+    // `task regate`: the same candidate, scope and approval; the task is queued again.
+    s.gate.pending = true;
+    s.onSleep.push(state => { if (state.gate.pending === true) passes(state); });
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
+    const journal = readJournal(journalFile(dir, "toolroll/simplify-release"))!;
+    expect(journal).toMatchObject({ step: "done", candidate: { sha: SHA, tree: TREE }, task: { scopeDigest: DIGEST }, check: { run: 3252, receipt: "r-3252", head: BUILT } });
+    expect(s.gate.approval?.at).toBe(approvedAt);
+    expect(s.calls.filter(one => one === "fileGate")).toHaveLength(1);
+    expect(s.gate.completion?.digest).toBe("r-3252");
+    expect(s.commits.get(NEW)).toBe(BUILT);
+  });
+
+  test("attack: the failed run's result is never used after a regate; with no rerun on its way it still stops the release", async () => {
+    const { dir, s, adapters } = await failedOnce(false);
+    // Resumed with nothing queued: the old failure stands.
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, reason: "check-failed" });
+    // Queued again but the rerun never finishes: the release waits out its limit; nothing completes or deploys.
+    s.gate.pending = true;
+    expect(await runRelease(options(dir, { limits: { check: 5 } }), adapters)).toMatchObject({ ok: false, step: "check", reason: "timeout" });
+    expect(s.calls).not.toContain("complete");
+    expect(s.calls).not.toContain("deploy");
+  });
+
+  test.each([
+    ["the candidate was rewritten to the build commit (the 0.9.73 regate)", (state: ReturnType<typeof world>["s"]) => { state.gate.candidate = BUILT; }],
+    ["the scope was re-proposed under new words", (state: ReturnType<typeof world>["s"]) => { state.gate.scopeDigest = DIGEST2; }],
+  ])("attack: a regate where %s still refuses", async (_name, spoil) => {
+    const { dir, s, adapters } = await failedOnce(true);
+    spoil(s);
+    s.gate.pending = true;
+    s.onSleep.push(state => { if (state.gate.pending === true) passes(state); });
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, reason: "scope-changed" });
+    expect(s.calls).not.toContain("deploy");
+  });
+
+  test("attack: a passing rerun whose build commit holds other files is not the release", async () => {
+    const { dir, s, adapters } = await failedOnce(true);
+    s.trees.set(NEXT, TREE2);
+    s.gate.pending = true;
+    s.onSleep.push(state => { if (state.gate.pending === true) { passes(state); state.gate.result!.head = NEXT; } });
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, reason: "drift" });
+    expect(s.calls).not.toContain("complete");
+  });
+});

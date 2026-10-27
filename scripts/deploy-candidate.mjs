@@ -7,9 +7,12 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now }, {
   const scope = ref ? store.getScope(ref.externalId) : null;
   // `task regate` reruns the approved check on the last built commit and
   // records no-change. It is a candidate only for that same commit; its own
-  // receipt and completion are held to the checks below like any build.
-  const regated = run?.outcome === 'no-change' && scope?.candidate === head &&
-    store.runsFor(run.taskRef).find(one => one.id < runId && one.role === 'builder' && one.outcome === 'built')?.headRevision === head;
+  // receipt and completion are held to the checks below like any build. A
+  // prepared candidate's build records a commit of its own with exactly the
+  // candidate's tree; its rerun under the same signed scope is that check again.
+  const built = run ? store.runsFor(run.taskRef).find(one => one.id < runId && one.role === 'builder' && one.outcome === 'built') : undefined;
+  const regated = run?.outcome === 'no-change' && built?.headRevision === head &&
+    (scope?.candidate === head || ((scope?.candidate ?? null) !== null && built.scopeDigest === run.scopeDigest));
   requireFact(run?.role === 'builder' && (run.outcome === 'built' || regated) && run.headRevision === head,
     `Run ${runId} is not a built candidate at ${head.slice(0, 7)}.`);
   requireFact(scope && scope.approvedDigest === scope.digest && scope.digest === run.scopeDigest,

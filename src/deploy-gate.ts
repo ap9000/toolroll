@@ -21,8 +21,11 @@ export function deploymentGate(store: Store, input: { runId: number; evidenceRoo
   const head = run?.headRevision ?? null;
   if (run === null || ref === null || head === null) return refuse(`Run ${input.runId} is not a built candidate.`);
   // `task regate` reruns the approved check on the last built commit and records no-change: a candidate only for that commit.
-  const regated = run.outcome === "no-change" && scope?.candidate === head &&
-    store.runsFor(run.taskRef).find(one => one.id < input.runId && one.role === "builder" && one.outcome === "built")?.headRevision === head;
+  // A prepared candidate's build records a commit of its own holding exactly the candidate's tree; its rerun under the same
+  // signed scope is the same check of that commit (the digest is held to the approved one below).
+  const built = store.runsFor(run.taskRef).find(one => one.id < input.runId && one.role === "builder" && one.outcome === "built");
+  const regated = run.outcome === "no-change" && built?.headRevision === head &&
+    (scope?.candidate === head || ((scope?.candidate ?? null) !== null && built.scopeDigest === run.scopeDigest));
   if (run.role !== "builder" || !(run.outcome === "built" || regated)) return refuse(`Run ${input.runId} is not a built candidate at ${head.slice(0, 7)}.`);
   if (scope === null || scope.approvedDigest !== scope.digest || scope.digest !== run.scopeDigest) return refuse("The run's signed scope is no longer the approved one.");
   // One approval per release (release-once.md): a release's task deploys only while its authority stands for it — the

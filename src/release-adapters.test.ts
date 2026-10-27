@@ -33,7 +33,7 @@ describe("the release adapters", () => {
     expect(gateStateOf(show, [{ name: "alex", role: "approver", revokedAt: null }])).toEqual({
       exists: true, candidate: SHA, scopeDigest: "d1",
       approval: { by: "alex", at: "2026-10-08T09:00:00.000Z", digest: "d1", basis: "password", role: "approver", active: true },
-      result: { run: 7, head: SHA, check: "passed", level: "full", receipt: "r1", worktree: "/w/7" }, failed: null,
+      result: { run: 7, head: SHA, check: "passed", level: "full", receipt: "r1", worktree: "/w/7" }, failed: null, pending: false,
       completion: { actor: "lead:alex", at: "y", digest: "r1" },
     });
     // A follow-up check still running on that commit is not a result yet.
@@ -41,6 +41,11 @@ describe("the release adapters", () => {
     // A newer build that ended without a result failed before its check.
     expect(gateStateOf({ ...show, runs: [...show.runs, { id: 9, role: "builder", outcome: "failed", finishedAt: "z" }] }).failed).toBe("run 9 ended failed");
     expect(gateStateOf({ ok: false, command: "task show", reason: "unknown-task" })).toMatchObject({ exists: false });
+    // Queued again (a regate) or building past the result: that result is the one before the rerun.
+    expect(gateStateOf({ ...show, task: { state: "queued" } }).pending).toBe(true);
+    expect(gateStateOf({ ...show, task: { state: "running" } }).pending).toBe(true);
+    expect(gateStateOf({ ...show, task: { state: "done" }, runs: [...show.runs, { id: 9, role: "builder", outcome: null, finishedAt: null }] }).pending).toBe(true);
+    expect(gateStateOf({ ...show, task: { state: "done" } }).pending).toBe(false);
   });
 
   test("find which runtime the services and both CLI names run", () => {
