@@ -19,9 +19,10 @@
  * every launch's environment (`withoutProtectedEnv`, exec.ts).
  */
 import { spawnSync } from "node:child_process";
-import { closeSync, fstatSync, lstatSync, openSync, constants as fsConstants, readSync, readdirSync, readlinkSync, realpathSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, lstatSync, openSync, constants as fsConstants, readSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { configBase, namedFolder } from "./names.js";
 
 /** One app's storage, relative to the home folder, per platform. */
 export type ProtectedApp = { app: string; darwin: readonly string[]; linux: readonly string[] };
@@ -153,11 +154,14 @@ const unwalkedSaid = new Set<string>();
  * On a Mac, listing inside another app's container waits for the person to answer macOS's "access data from other apps"
  * prompt when the process asking has no answer yet (a plane run by launchd: every launch, and the console with it, hung
  * there in release check 3249). So the containers are walked only after a time-limited look in a child process
- * (`containers`, containersListable) shows they can be listed without waiting; otherwise they stay denied by name and
- * real path, the links inside them unchecked, and that is said once.
+ * (`containers`, containersListable) shows they can be listed without waiting. A look that fails any other way refuses
+ * the launch (it throws). When macOS is waiting on the person, the containers stay denied by name and real path, and
+ * the outward links the last complete walk found (kept in the plane's own state folder, linkCacheFile) stay denied too;
+ * with none kept, only the roots are denied, and that is said once.
  */
 export function protectedStorageDenies(home: string = homedir(), env: Readonly<Record<string, string | undefined>> = process.env, platform: NodeJS.Platform = process.platform,
-  say: (line: string) => void = line => process.stderr.write(`${line}\n`), containers: (roots: readonly string[]) => boolean = roots => containersListable(roots)): string[] {
+  say: (line: string) => void = line => process.stderr.write(`${line}\n`), containers: (roots: readonly string[]) => boolean = roots => containersListable(roots),
+  list: (path: string) => import("node:fs").Dirent[] = path => readdirSync(path, { withFileTypes: true })): string[] {
   const base = real(home);
   const out = new Set<string>();
   const add = (path: string) => { if (!tooWide(path, base)) out.add(path); };
@@ -170,27 +174,40 @@ export function protectedStorageDenies(home: string = homedir(), env: Readonly<R
     present.push({ name, root });
   }
   const held = platform === "darwin" ? present.filter(one => inAppContainer(one.root, base)).map(one => one.root) : [];
+  // Throws when the look itself failed: the launch is refused, never fenced with less.
   const listable = held.length === 0 || containers(held);
-  if (!listable && !unwalkedSaid.has(CONTAINERS_UNLISTED)) {
-    unwalkedSaid.add(CONTAINERS_UNLISTED);
-    say("toolroll: fence: macOS didn't let Toolroll look inside other apps' containers without asking you, so links inside them weren't checked (the containers themselves stay denied). Allow Toolroll's service to access data from other apps (Privacy & Security) to check them.");
+  const cache = held.length === 0 ? null : linkCacheFile(base, env);
+  if (!listable) {
+    const kept = cache === null ? null : readLinkCache(cache, base);
+    for (const target of kept ?? []) add(target);
+    if (!unwalkedSaid.has(CONTAINERS_UNLISTED)) {
+      unwalkedSaid.add(CONTAINERS_UNLISTED);
+      say(`toolroll: fence: macOS didn't let Toolroll look inside other apps' containers without asking you; they stay denied, ${kept === null ? "but links inside them weren't checked" : "with the links found inside them when they were last checked"}. Allow Toolroll's service to access data from other apps (Privacy & Security) to check them now.`);
+    }
   }
+  const walked = { complete: true }, inside: string[] = [];
   for (const { name, root } of present) {
-    if (!listable && held.includes(root)) continue;
-    for (const target of outwardLinks(name, root, base, say)) add(target);
+    const container = held.includes(root);
+    if (container && !listable) continue;
+    for (const target of outwardLinks(name, root, base, say, list, container ? walked : undefined)) { add(target); if (container) inside.push(target); }
   }
+  // Only a walk of every container that met no error but "not there" or "not allowed" is kept for later.
+  if (listable && held.length > 0 && walked.complete && cache !== null) writeLinkCache(cache, base, inside);
   return [...out].sort();
 }
 
 /** Where the links inside a present root lead, when outside it: a walk that never follows a link, bounded. */
-function outwardLinks(name: string, root: string, home: string, say: (line: string) => void): string[] {
+function outwardLinks(name: string, root: string, home: string, say: (line: string) => void, list: (path: string) => import("node:fs").Dirent[], walked?: { complete: boolean }): string[] {
   const found: string[] = [];
   let seen = 0;
   const queue: { path: string; depth: number }[] = [{ path: root, depth: 0 }];
   while (queue.length > 0) {
     const { path, depth } = queue.shift()!;
     let entries: import("node:fs").Dirent[];
-    try { entries = readdirSync(path, { withFileTypes: true }); } catch { continue; }
+    try { entries = list(path); } catch (error) {
+      if (walked !== undefined && !ANSWERED.has((error as NodeJS.ErrnoException)?.code ?? "")) walked.complete = false;
+      continue;
+    }
     for (const entry of entries) {
       if (++seen > PROTECTED_WALK.entries) {
         if (!unwalkedSaid.has(root)) { unwalkedSaid.add(root); say(`toolroll: fence: ${name} holds more than ${PROTECTED_WALK.entries.toLocaleString("en-US")} entries; links past that weren't checked (not fully walked)`); }
@@ -257,24 +274,84 @@ for(const root of roots){let seen=0;const queue=[{p:root,d:0}];while(queue.lengt
 try{entries=fs.readdirSync(p,{withFileTypes:true});}catch{continue;}for(const e of entries){if(++seen>Number(limit)){queue.length=0;break;}
 if(!e.isSymbolicLink()&&e.isDirectory()&&d+1<Number(depth))queue.push({p:path.join(p,e.name),d:d+1});}}}`;
 
+/** What a look at the containers found: listable without waiting, macOS waiting on the person (the look timed out), or
+ * the look itself failing (it couldn't start, crashed or was killed by anything but its own limit). */
+export type ContainerLook = "listable" | "waiting" | "failed";
+
 /**
  * Whether this process can list inside these app containers without macOS stopping to ask the person: the walk run
  * first in a child process that is killed at CONTAINER_LOOK_MS. Finishing in time (listed, or refused outright) means
- * the walk can run here too; taking longer means macOS is waiting on the person, and only the child waited. A yes is
- * kept (macOS keeps the person's answer); a no is looked at again after CONTAINER_RELOOK_MS.
+ * the walk can run here too; only running into that limit means macOS is waiting on the person (only the child waited).
+ * A look that fails any other way is tried once more, then throws: the launch is refused rather than fenced with less.
+ * A yes is kept (macOS keeps the person's answer); a no is looked at again after CONTAINER_RELOOK_MS.
  */
-export function containersListable(roots: readonly string[], look: (roots: readonly string[]) => boolean = lookInContainers, now: () => number = Date.now): boolean {
+export function containersListable(roots: readonly string[], look: (roots: readonly string[]) => ContainerLook = lookInContainers, now: () => number = Date.now): boolean {
   const key = [...roots].sort().join("\0");
   const last = containerLooks.get(key);
   if (last !== undefined && (last.listable || now() - last.at < CONTAINER_RELOOK_MS)) return last.listable;
-  const listable = look(roots);
+  let answer = look(roots);
+  if (answer === "failed") answer = look(roots);
+  if (answer === "failed") throw new Error("Toolroll couldn't look inside other apps' containers to fence them (the look failed twice), so nothing was launched.");
+  const listable = answer === "listable";
   containerLooks.set(key, { listable, at: now() });
   return listable;
 }
 
 /** The child-process look (containersListable): node (or Electron as node) walks the roots, killed at its limit. */
-function lookInContainers(roots: readonly string[]): boolean {
+function lookInContainers(roots: readonly string[]): ContainerLook {
   const result = spawnSync(process.execPath, ["-e", CONTAINER_LOOK, String(PROTECTED_WALK.depth), String(PROTECTED_WALK.entries), ...roots],
     { stdio: "ignore", timeout: CONTAINER_LOOK_MS, killSignal: "SIGKILL", env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" } });
-  return result.error === undefined && result.signal === null && result.status === 0;
+  return lookOutcome(result);
+}
+
+/** A look's outcome from its child's result: only its own limit (ETIMEDOUT) is macOS waiting; any other error, signal
+ * or exit code is a failed look. */
+export function lookOutcome(result: { error?: Error; signal: NodeJS.Signals | null; status: number | null }): ContainerLook {
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") return "waiting";
+  return result.error === undefined && result.signal === null && result.status === 0 ? "listable" : "failed";
+}
+
+/** The answers a container walk takes as complete: the folder isn't there, or macOS refused it outright. */
+const ANSWERED: ReadonlySet<string> = new Set(["ENOENT", "ENOTDIR", "EPERM", "EACCES"]);
+/** At most this much is ever read back from the link cache. */
+const LINK_CACHE_MAX = 256 * 1024;
+
+/** Where the outward links the last complete container walk found are kept: the plane's own state folder (fenced from
+ * every build), one file per user. */
+export function linkCacheFile(home: string, env: Readonly<Record<string, string | undefined>> = process.env): string {
+  return join(namedFolder(configBase({ ...env }, home)), "protected-links.json");
+}
+
+/** The kept links for this home: only a plain file of this user's (no link), at most LINK_CACHE_MAX, of exactly the
+ * kept shape; anything else is no cache at all. */
+export function readLinkCache(file: string, home: string): string[] | null {
+  let fd: number;
+  try {
+    const held = lstatSync(file);
+    if (!held.isFile() || held.size > LINK_CACHE_MAX || (process.getuid !== undefined && held.uid !== process.getuid())) return null;
+    fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0));
+  } catch { return null; }
+  try {
+    const opened = fstatSync(fd);
+    if (!opened.isFile() || opened.size > LINK_CACHE_MAX || (process.getuid !== undefined && opened.uid !== process.getuid())) return null;
+    const buffer = Buffer.alloc(opened.size);
+    const read = readSync(fd, buffer, 0, buffer.length, 0);
+    const value = JSON.parse(buffer.subarray(0, read).toString("utf8")) as unknown;
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+    const { version, home: kept, targets } = value as Record<string, unknown>;
+    if (version !== 1 || kept !== home || !Array.isArray(targets) || targets.some(one => typeof one !== "string" || !isAbsolute(one))) return null;
+    return targets as string[];
+  } catch { return null; }
+  finally { closeSync(fd); }
+}
+
+/** Keep a complete walk's links: written aside (owner-only) and renamed into place, only into a state folder that is
+ * already there. A failed write keeps whatever was kept before. */
+export function writeLinkCache(file: string, home: string, targets: readonly string[]): void {
+  if (!existsSync(dirname(file))) return;
+  const aside = `${file}.${process.pid}.part`;
+  try {
+    writeFileSync(aside, JSON.stringify({ version: 1, home, targets: [...new Set(targets)].sort() }), { mode: 0o600, flag: "wx" });
+    renameSync(aside, file);
+  } catch { rmSync(aside, { force: true }); }
 }
