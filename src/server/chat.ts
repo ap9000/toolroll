@@ -63,12 +63,13 @@ import { html,htmlString,postForm,reauth } from "../html.js";
 import { requestContext } from "./request-context.js";
 import { refuse,screen,whenTime,type Screen } from "./chrome.js";
 import { chatResultHref,chatReturnWithLatest,chatReturnWithSaid,projectChatHref,redirect,respond,safeChatReturn,safeReturn,taskChatHref,taskHref } from "./http.js";
-import { chatAckPage,chatPage,coordinatorProposalsSection,decisionsFor,leadAfterComposerHtml,leadChatVersion,leadMintCard,leadPage,leadThreadHtml,PHONE_CARD_FACT,TASK_COMPOSER_MODES,taskChatLiveRegion,teamProposalCardParts,type AssignmentChatSnapshot,type ChatEnablement,type LiveTurn,type TaskComposerMode } from "./render-chat.js";
+import { chatAckPage,chatPage,NOT_STARTED_SESSION,coordinatorProposalsSection,decisionsFor,leadAfterComposerHtml,leadChatVersion,leadMintCard,leadPage,leadThreadHtml,PHONE_CARD_FACT,TASK_COMPOSER_MODES,taskChatLiveRegion,teamProposalCardParts,type AssignmentChatSnapshot,type ChatEnablement,type LiveTurn,type TaskComposerMode } from "./render-chat.js";
 import { type ProjectPeek } from "./render-pages.js";
 import { completionForm,hardBlockerOf,homePhaseWords,owedAcceptanceOf,resultPanelHtml } from "./render-results.js";
 import { browserCaller,oneLineUa,type ChatCandidate,type Session,type Who } from "./session.js";
 export function createChatHandlers(runtime: ServerRuntime) {
   const { firstRunStepsNow, managedRepos, leadWords, store, options, phoneSetup, visible, liveTurns, leadSaid, evidenceRoot, clock, sessions, CHAT_CANDIDATE_TTL_MS, chatFetcher, CHAT_CANDIDATES_PER_APPROVER, chatCeilingDigest, workAccess, familyOf, firstTasks, leadPrincipal, taskChatFocus, chatScopeOf, leadConversationRows, demoLeadHere, sendScreen, chromeFor, teamBrowserReply, team, teamChatProvider, runVisible, runIsLive, resultDetailOf, pullRequestTargetOf, chatEnablement, startLeadConversation, projectFamilyPeek, needsYouBadge, liveRefreshSeconds, chatKeyFor, chatCatalog, providerHome, mintApprovalNonce, checkLocalAgents, agentSignInCommand, bustBadge, authenticateApprover, revisionDestination, armTaskResume, consumeApprovalNonce } = runtime;
+
 
   // The read-only refresh (package 2): the same JSON status as before —
   // session binding, the send receipt, the live turn — plus a version
@@ -79,24 +80,30 @@ export function createChatHandlers(runtime: ServerRuntime) {
   async function mateStatus(ctx: HandlerContext): Promise<void> {
     const { url, response, now } = ctx;
     const who = browserCaller(ctx.who);
-    const session = store.activeLeadSession(who.name);
+    const found = store.activeLeadSession(who.name);
     const principal = leadPrincipal(who);
-    if (session === null || principal === null || session.ceilingDigest !== principal.ceilingDigest || session.approverGeneration !== principal.generation) {
+    // Quiet page visits: a membership conversation not started yet is still a page to keep current (its task's
+    // progress and approval); it reads as session 0, and nothing here starts it.
+    const enabled = chatEnablement();
+    const notStarted = principal !== null && enabled.ok && enabled.billing === "subscription" && (found === null || found.ceilingDigest !== principal.ceilingDigest);
+    const session = notStarted ? null : found;
+    if (principal === null || (!notStarted && (session === null || session.ceilingDigest !== principal.ceilingDigest || session.approverGeneration !== principal.generation))) {
       return respond(response, 200, "application/json", JSON.stringify({ session: null }));
     }
+    const sessionId = session?.id ?? NOT_STARTED_SESSION;
     store.sweepStaleLeadTurns(now);
     const request = url.searchParams.get("request") ?? "";
     // Received: the engine took it, or the lead queue holds it (a queued acknowledgement lost on the way still frees the draft).
-    const received = /^[a-f0-9]{32}$/.test(request) && store.leadRequestReceived(session.id, request);
+    const received = session !== null && /^[a-f0-9]{32}$/.test(request) && store.leadRequestReceived(session.id, request);
     const requestedTask = url.searchParams.get("task");
     const focusTask = requestedTask === null || requestedTask === "" ? null : taskChatFocus(requestedTask, now, who, { mintNonce: false });
     if (requestedTask !== null && requestedTask !== "" && focusTask === null) {
       // The lens's task is gone or no longer admitted: the page keeps its
       // draft and says so; it never falls back to the unified thread.
-      return respond(response, 200, "application/json", JSON.stringify({ session: session.id, task: requestedTask, unavailable: true, received }));
+      return respond(response, 200, "application/json", JSON.stringify({ session: sessionId, task: requestedTask, unavailable: true, received }));
     }
     const chatProject = focusTask !== null ? null : chatProjectOf(url.searchParams.getAll("project").filter(one => one !== ""));
-    if (chatProject === undefined) return respond(response, 200, "application/json", JSON.stringify({ session: session.id, unavailable: true, received }));
+    if (chatProject === undefined) return respond(response, 200, "application/json", JSON.stringify({ session: sessionId, unavailable: true, received }));
     const rows = leadConversationRows(who, principal, focusTask, now, chatProject);
     const version = leadChatVersion({ ...rows, focusTask });
     const known = url.searchParams.get("version") ?? "";
@@ -104,12 +111,12 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const fragments = known === version
       ? null
       : {
-          thread: htmlString(leadThreadHtml({ ...rows, focusTask, csrf, now, problem: takeLeadNote(csrf, session.id), chatProject })),
+          thread: htmlString(leadThreadHtml({ ...rows, focusTask, csrf, now, problem: takeLeadNote(csrf, session?.id ?? null), chatProject })),
           after: htmlString(leadAfterComposerHtml({ messages: rows.messages, pending: rows.pending, focusTask })),
           live: focusTask === null ? null : htmlString(taskChatLiveRegion(focusTask, csrf, true, rows.pending !== null)),
         };
     return respond(response, 200, "application/json", JSON.stringify({
-      session: session.id,
+      session: sessionId,
       task: focusTask?.id ?? "",
       version,
       pending: rows.pending !== null,
@@ -251,24 +258,22 @@ export function createChatHandlers(runtime: ServerRuntime) {
     // The mate (mate arc §5): while a mate session is live, /chat IS the
     // thread — the same rows the CLI reads. Without one, fleet chat as
     // before, plus the card that mints a session.
-    let leadSession = enabled.ok && who.role === "approver" ? store.activeLeadSession(who.name) : null;
+    const leadSession = enabled.ok && who.role === "approver" ? store.activeLeadSession(who.name) : null;
     const principal = enabled.ok && who.role === "approver" ? leadPrincipal(who) : null;
     // Chat opens ready to talk (2026-09-23): an approver in good standing
-    // needs no second password to start their own conversation. The one
-    // exception to "a GET writes nothing": the strict same-site session
-    // cookie keeps other sites out, and starting spends nothing. Actions
-    // the lead proposes still go through their own confirmation cards.
-    // Membership chat only: it spends no dollars. Direct-API chat keeps a
-    // one-tap Start with its visible spending limit (no password).
+    // needs no second password to start their own conversation. Quiet page
+    // visits (2026-10-27): a visit only shows it. With no membership
+    // conversation yet (or only one under another ceiling), the page shows
+    // the composer and the first message starts one (chatSend); nothing
+    // here writes. Direct-API chat keeps a one-tap Start with its visible
+    // spending limit (no password).
     const settingsView = url.searchParams.get("settings") === "1";
-    if (!settingsView && enabled.ok && enabled.billing === "subscription" && principal !== null && (leadSession === null || leadSession.ceilingDigest !== principal.ceilingDigest) && !requestContext.getStore()?.workspaceRead) {
-      startLeadConversation(who, principal, enabled, 0, false, now);
-      leadSession = store.activeLeadSession(who.name);
-    }
+    const notStarted = !settingsView && enabled.ok && enabled.billing === "subscription" && principal !== null &&
+      (leadSession === null || leadSession.ceilingDigest !== principal.ceilingDigest);
     // A session under another ceiling is not continuable from here; a GET
     // writes nothing (slice-2 review, finding 7) — the mint card below
     // starts a new conversation, and minting ends the old session.
-    const ceilingStale = enabled.ok && leadSession !== null && principal !== null && leadSession.ceilingDigest !== principal.ceilingDigest;
+    const ceilingStale = !notStarted && enabled.ok && leadSession !== null && principal !== null && leadSession.ceilingDigest !== principal.ceilingDigest;
     const catchUp = leadBriefHtml(assignmentCatchUp(store, now, { principal: "operator", repos }, { limit: 6 }, evidenceRoot));
     const chatProjects = repos.map((repo, index) => {
       let peek: ProjectPeek | null = null;
@@ -301,14 +306,15 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const withFirstRun = (shown: Screen): Screen => firstRun === undefined && phone === undefined && home === null ? shown
       : { ...shown, ...(home === null ? {} : { refreshSeconds: liveRefreshSeconds() }),
         workspace: { ...shown.workspace, ...(firstRun === undefined ? {} : { firstRun }), ...(phone === undefined ? {} : { phone }), ...(home === null ? {} : { home }) } };
-    if (enabled.ok && leadSession !== null && principal !== null && !ceilingStale) {
+    if (enabled.ok && principal !== null && (notStarted || (leadSession !== null && !ceilingStale))) {
       {
-        const said = takeLeadNote(who.session.csrf, leadSession.id);
+        const said = takeLeadNote(who.session.csrf, notStarted ? null : leadSession?.id ?? null);
         return sendScreen(
           response,
           200,
           withFirstRun(leadPage(chromeFor(null, "chat", undefined, "all"), {
-            session: leadSession,
+            session: notStarted ? null : leadSession,
+            approver: who.name,
             ...leadConversationRows(who, principal, focusTask, now, chatProject),
             chatProject,
             latched,
@@ -655,7 +661,9 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.leadFollow);
     if (who.via !== "cookie") return refuse(response, who, 403, "Open the conversation to change automatic updates.");
-    const principal = leadPrincipal(who), session = store.activeLeadSession(who.name), thread = store.liveLeadThreadFor(who.name);
+    const principal = leadPrincipal(who), session = store.activeLeadSession(who.name);
+    // A conversation its first message started from a task or project page has no main thread yet: this act opens it.
+    const thread = principal && session && session.ceilingDigest === principal.ceilingDigest ? store.openLeadThread(who.name, principal.ceilingDigest, now).thread : null;
     if (!principal || !session || !thread || !configureLeadFollow(store, principal, session, thread, body.get("enabled") === "yes", now)) return refuse(response, who, 409, "Conversation access changed. Start chat again.", "/chat");
     return redirect(response, safeChatReturn(body.get("return")));
   }
@@ -844,10 +852,43 @@ export function createChatHandlers(runtime: ServerRuntime) {
     // A live mate session: the message is a mate turn — no password, the
     // session's ceremony already covered it (§1); the engine refuses on
     // its own terms and the thread shows why.
-    const leadSession = who.role === "approver" ? store.activeLeadSession(who.name) : null;
+    let leadSession = who.role === "approver" ? store.activeLeadSession(who.name) : null;
+    // Quiet page visits: a membership conversation starts with its first message, never with a page view. A page
+    // shown before one existed binds its sends to session 0; that send starts it (the same approver standing a visit
+    // used to need), and a retry or double submit of the same request lands in the conversation it started.
+    let startedHere = false;
+    const binding = body.getAll("request-session");
+    const unbound = binding.length === 0 || (binding.length === 1 && binding[0] === String(NOT_STARTED_SESSION));
+    if (who.role === "approver" && enabled.billing === "subscription" && unbound) {
+      const principal = leadPrincipal(who);
+      if (principal === null) return wantsJson ? said(403, "your approver standing changed — sign in again") : refuse(response, who, 403, "your approver standing changed — sign in again", back);
+      const sentRequest = body.get("request");
+      if (sentRequest !== null && (body.getAll("request").length !== 1 || !/^[a-f0-9]{32}$/.test(sentRequest))) return said(409, "This conversation changed. Reload it before sending your message.");
+      const usable = leadSession !== null && leadSession.ceilingDigest === principal.ceilingDigest && leadSession.approverGeneration === principal.generation;
+      // The conversation this very request started, if it started one: a retry or double submit lands only there.
+      const startedBy = sentRequest === null ? null : store.leadStartReceipt(who.name, sentRequest);
+      if (startedBy !== null) {
+        if (!usable || leadSession === null || leadSession.id !== startedBy.session) return said(409, "This conversation ended or changed. Reload it before sending your message.", leadSession?.id ?? null);
+        startedHere = true;
+      } else if (usable && leadSession !== null) {
+        // A page that showed no conversation never sends into one it did not start.
+        if (binding.length === 1) return said(409, "This conversation changed. Reload it before sending your message.", leadSession.id);
+      } else {
+        // Nothing starts for a message that would be refused anyway.
+        const message = (body.get("message") ?? "").trim();
+        if (message === "" || message.length > LEAD_MESSAGE_MAX_CHARS) return said(400, `a message is 1 to ${LEAD_MESSAGE_MAX_CHARS} characters`);
+        if (scanForSecrets(message).length > 0) return said(400, "that looks like a credential — chat never forwards or stores those");
+        const scope = chatScopeOf(focusTask, chatProject);
+        // The start and its record are one write: a retry finds it, and never starts a second conversation.
+        const started = startLeadConversation(who, principal, enabled, 0, false, now, scope, sentRequest ?? undefined);
+        leadSession = store.activeLeadSession(who.name);
+        if (leadSession === null || leadSession.id !== started) return said(409, "This conversation changed. Reload it before sending your message.");
+        startedHere = true;
+      }
+    }
     if (leadSession !== null) {
       const sentRequest = body.get("request");
-      if (sentRequest !== null && (body.getAll("request").length !== 1 || body.getAll("request-session").length !== 1 || body.get("request-session") !== String(leadSession.id))) {
+      if (sentRequest !== null && !startedHere && (body.getAll("request").length !== 1 || body.getAll("request-session").length !== 1 || body.get("request-session") !== String(leadSession.id))) {
         return said(409, "This conversation changed. Reload it before sending your message.");
       }
       // Every send has one identity (a form without one gets it here): a message that waits is known by it.

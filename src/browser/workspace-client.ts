@@ -105,8 +105,16 @@ export function rejectDraft(draft: ChatDraft, asked: string): ChatDraft {
   return draft.pending?.request === asked ? { ...draft, pending: null, submitted: false } : draft;
 }
 
-export function sameConversation(before: BrowserWorkspace, after: BrowserWorkspace): boolean {
-  return before.user === after.user && before.conversation?.sessionId === after.conversation?.sessionId
+/** A conversation shown before it existed carries session 0 (quiet page visits): the first send starts it, so a
+ * read that finds it started is the same conversation, not a changed one. */
+const NOT_STARTED_SESSION = 0;
+
+export function sameConversation(before: BrowserWorkspace, after: BrowserWorkspace,
+  /** The conversation this page's own send is known to have started: its acknowledgement, or its receipt there. */
+  startedBySend: number | null = null): boolean {
+  const started = before.conversation?.sessionId === NOT_STARTED_SESSION && after.conversation != null && after.conversation.sessionId > 0
+    && after.conversation.sessionId === startedBySend;
+  return before.user === after.user && (started || before.conversation?.sessionId === after.conversation?.sessionId)
     && before.conversation?.taskId === after.conversation?.taskId
     && before.conversation?.resultRunId === after.conversation?.resultRunId
     && (before.conversation?.project ?? null) === (after.conversation?.project ?? null);
@@ -197,7 +205,7 @@ export async function readWorkspace(workspace: BrowserWorkspace, request: string
 /** Exactly one POST. A lost response is resolved only through readWorkspace. */
 export async function sendMessage(workspace: BrowserWorkspace, message: PendingMessage, fetcher: typeof fetch = fetch,
   /** The task composer's mode ("build", "plan" or "answer"); the server refuses it anywhere else. */
-  mode: string | null = null): Promise<{ refused: boolean; message: string | null; queued?: boolean }> {
+  mode: string | null = null): Promise<{ refused: boolean; message: string | null; queued?: boolean; session?: number }> {
   const chat = workspace.conversation;
   if (!chat) throw new WorkspaceAuthError("Reconnect to the conversation before sending.");
   const body = new URLSearchParams({ csrf: workspace.csrf, message: message.text, request: message.request, "request-session": String(chat.sessionId) });
@@ -211,7 +219,11 @@ export async function sendMessage(workspace: BrowserWorkspace, message: PendingM
     const data: unknown = await response.json();
     if (record(data) && data.ok === false) return { refused: true, message: typeof data.said === "string" ? data.said : "Message not sent. Your draft is saved." };
     // Saved in the lead queue (the lead is busy): this request is durably accepted; it runs when the lead is free.
-    if (record(data) && data.ok === true && data.queued === true && data.request === message.request) return { refused: false, message: null, queued: true };
+    // The conversation that took it (a first send from a page that showed none starts one).
+    const session = record(data) && data.ok === true && data.request === message.request && typeof data.session === "number" && Number.isSafeInteger(data.session) && data.session > 0
+      ? { session: data.session } : {};
+    if (record(data) && data.ok === true && data.queued === true && data.request === message.request) return { refused: false, message: null, queued: true, ...session };
+    return { refused: false, message: null, ...session };
   }
   // A native 303 may have followed through to HTML. It is not a receipt.
   return { refused: false, message: null };

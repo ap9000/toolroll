@@ -150,7 +150,7 @@ test("with Claude Code signed in, the lead is on by default, says so in one line
   await until(() => store.getChatConfig() !== null);
   expect(store.getChatConfig()).toMatchObject({ provider: "claude-subscription", model: "default", dailyTurns: 50, weeklyCeilingMicrousd: 0, updatedBy: "toolroll" });
   const cookie = cookieOf((await raw(server.mintSignInLink("alex")!)).headers);
-  // The link lands on Chat, which opens ready to talk: no password, no form.
+  // The link lands on Chat, which opens ready to talk: no password, no form; the first message starts it.
   expect((await fetch(`${base}/chat`, { headers: { cookie } })).status).toBe(200);
   const shown = await workspace(cookie);
   expect(shown.conversation).not.toBeNull();

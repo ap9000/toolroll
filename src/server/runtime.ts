@@ -115,7 +115,7 @@ export interface ServerRuntime {
   teamChatProvider: TeamChatProviderResolver;
   pullRequestTargetOf: (runId: number) => string | null;
   chatEnablement: () => ChatEnablement;
-  startLeadConversation: (who: Who & { via: "cookie"; }, principal: VerifiedApprover, enabled: Extract<ChatEnablement, { ok: true; }>, ceilingUsd: number, follow: boolean, now: Date) => number;
+  startLeadConversation: (who: Who & { via: "cookie"; }, principal: VerifiedApprover, enabled: Extract<ChatEnablement, { ok: true; }>, ceilingUsd: number, follow: boolean, now: Date, scope?: LeadThreadScope, request?: string) => number;
   projectFamilyPeek: (repo: string, now: Date) => ProjectPeek;
   needsYouBadge: (project: string | null) => { count: number; saturated: boolean; };
   liveRefreshSeconds: () => number;
