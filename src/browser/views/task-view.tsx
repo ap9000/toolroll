@@ -507,9 +507,7 @@ function PinnedAction({ waiting }: { waiting: boolean }) {
   };
   return <div data-pinned-action role="region" aria-label="What this task needs from you"
     className="sticky bottom-0 z-20 -mx-1 mt-2 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 shadow-lg phone:-mx-4 phone:rounded-none phone:border-x-0 phone:border-b-0 phone:pb-[max(12px,var(--safe-bottom))]">
-    <span className="flex min-w-0 flex-1 items-center gap-2 text-sm font-medium">
-      <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-attention" />Needs you
-    </span>
+    <span className="flex min-w-0 flex-1 items-center"><Badge tone="needs" size="chip" dot>Needs you</Badge></span>
     <Button type="button" variant="attention" onClick={reach} className="shrink-0">{action.label}<ArrowRight /></Button>
   </div>;
 }

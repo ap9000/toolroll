@@ -11,7 +11,7 @@ import { STATUS_MORE, type DetailMark, type HeadlineTone, type StatusDetail, typ
 import { Button, Input, cn } from "../components/ui/index.js";
 
 export const HEADLINE_DOT: Record<HeadlineTone, string> = {
-  neutral: "bg-muted-foreground", live: "bg-info", attention: "bg-attention",
+  neutral: "bg-muted-foreground", live: "bg-info", attention: "bg-warning",
   ready: "bg-transparent ring-2 ring-inset ring-success", success: "bg-success", danger: "bg-destructive",
 };
 

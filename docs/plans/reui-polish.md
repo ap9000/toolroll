@@ -110,9 +110,9 @@ pass that, its split is mandatory and named.
 - `.chip-needs`, `.chip-live`, `.chip-done`, `.chip-failed` and `.chip-neutral`
 
 **Adoption** (one amber chip per screen, no amber row noise):
-- The task page status card and the result page status card: when the headline is "Needs you", it shows as the
-  amber chip with a dot, in place of today's ink dot. The words don't change.
-- The task page's pinned "Needs you" bar (`PinnedAction`) gets the same chip.
+- The task page's pinned "Needs you" bar (`PinnedAction`) becomes the amber chip with a dot.
+- The task and result status cards keep their 18px headline. Its dot turns amber (`HEADLINE_DOT.attention`) when
+  the headline is "Needs you", and the words don't change.
 - Crew (`CrewRows` in `app.tsx`) keeps its per-item glyph and label. No chip, because 15 amber chips in a rail is
   "amber everywhere".
 
