@@ -3,7 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FirstRequest, FirstRun, PhoneCard, rechecked, withSuggestion } from "./first-run.js";
-import { firstTaskJourney } from "../first-run.js";
+import { firstTaskJourney, taskRoad } from "../first-run.js";
 import type { BrowserFirstRun } from "../browser-workspace.js";
 
 const signedOut = (): BrowserFirstRun => ({
@@ -88,6 +88,24 @@ test("the first task's way to Ready fills in as it moves", () => {
   expect(states({ stage: "failed" }, true)).toEqual(["done", "done", "stuck", "todo", "todo"]);
   expect(states({ stage: "needs-you", need: "other" }, true)).toEqual(["done", "done", "stuck", "todo", "todo"]);
   expect(firstTaskJourney({ stage: "needs-you", need: "other" }, true, true).map(one => one.state)).toEqual(["done", "done", "done", "stuck", "todo"]);
+});
+
+test("a task's road says only what happened: no Checks for a report, skipped checks say so, the wait is the one amber step", () => {
+  const road = (...args: Parameters<typeof taskRoad>) => taskRoad(...args).map(one => `${one.key}:${one.state}${one.needsYou ? "!" : ""}:${one.label}`);
+  // A research report has no Checks step at all.
+  expect(road({ stage: "finished" }, true, true, { report: true })).toEqual(["plan:done:Plan", "approve:done:You approve", "build:done:Build", "ready:done:Ready"]);
+  // Past Checks without a passing check: the step is skipped and says why, never done.
+  expect(road({ stage: "finished" }, true, true, { checks: "none" })[3]).toBe("checks:skipped:Checks not run");
+  expect(road({ stage: "complete" }, true, true, { checks: "note" })[3]).toBe("checks:skipped:Checks unread");
+  expect(road({ stage: "finished" }, true, true, { checks: "failed" })[3]).toBe("checks:skipped:Checks failed");
+  expect(road({ stage: "finished" }, true, true, { checks: "ok" })[3]).toBe("checks:done:Checks");
+  // Unknown checks keep the stage's own reading.
+  expect(road({ stage: "finished" }, true, true, {})[3]).toBe("checks:done:Checks");
+  // The approval is the step that waits on a person; a failure stops at Build and waits on nobody.
+  expect(road({ stage: "needs-you", need: "approval" }, false, false, {})[1]).toBe("approve:current!:You approve");
+  expect(road({ stage: "failed" }, true, false, {})[2]).toBe("build:stuck:Build");
+  expect(road({ stage: "stopped" }, true, false, {}).some(one => one.includes("!"))).toBe(false);
+  expect(road({ stage: "needs-you", need: "other" }, true, true, {})[3]).toBe("checks:stuck!:Checks");
 });
 
 test("after the first result, the phone: a chat app or this console over Tailscale, and Not now puts it away", async () => {

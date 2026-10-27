@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import type { BrowserFirstRun, BrowserPhoneCard } from "../browser-workspace.js";
 import type { JourneyStep } from "../first-run.js";
 import { Frame, FrameHeader, FramePanel } from "./components/ui/frame.js";
+import { StatusGlyph, type GlyphKind } from "./components/ui/status-glyph.js";
 import { Button } from "./components/ui/button.js";
 import { PostForm } from "./ui/index.js";
 
@@ -116,12 +117,22 @@ export function PhoneCard({ phone, csrf, dismissable = true }: { phone: BrowserP
   </Frame></section>;
 }
 
-/** The first task's way to Ready: Plan → You approve → Build → Checks → Ready, filled in as it moves. */
+/** A task's road to Ready (after ReUI's Stepper, read-only): Plan → You approve → Build → Checks → Ready, filled in as it
+ * moves. Each step's mark is the shared status glyph: done is green, the step at work blue, the step that waits on a
+ * person amber (the only amber), a failure vermilion, a skipped or future step a dashed ring. The words carry it. */
+const ROAD_GLYPH = (step: JourneyStep): { kind: GlyphKind; className?: string } =>
+  step.state === "done" ? { kind: "done" }
+  : step.needsYou === true ? { kind: "decide", className: "text-warning" }
+  : step.state === "current" ? { kind: "building" }
+  : step.state === "stuck" ? { kind: "failed" }
+  : { kind: "idle" };
+const ROAD_WORD: Record<JourneyStep["state"], string> = { done: "done", current: "now", stuck: "stopped here", skipped: "skipped", todo: "next" };
 export function Journey({ steps }: { steps: JourneyStep[] }) {
   const current = steps.find(one => one.state === "current" || one.state === "stuck");
-  return <ol className="first-task-journey" aria-label={`Where this task is: ${current?.label ?? "Ready"}`} data-first-task-journey>
-    {steps.map(one => <li key={one.key} data-step={one.key} data-state={one.state} aria-current={one.state === "current" || one.state === "stuck" ? "step" : undefined}>
-      <span className="first-task-journey-mark" aria-hidden="true" /><span>{one.label}</span>
-    </li>)}
+  return <ol className="first-task-journey" aria-label={`Where this task is: ${current?.label ?? "Ready"}`} data-first-task-journey style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }}>
+    {steps.map(one => { const glyph = ROAD_GLYPH(one); return <li key={one.key} data-step={one.key} data-state={one.state} {...(one.needsYou ? { "data-needs-you": "" } : {})} aria-current={one.state === "current" || one.state === "stuck" ? "step" : undefined}>
+      <span className="first-task-journey-mark" aria-hidden="true"><StatusGlyph kind={glyph.kind} {...(glyph.className === undefined ? {} : { className: glyph.className })} /></span>
+      <span>{one.label}<span className="sr-only">{`, ${one.needsYou ? "waits on you" : ROAD_WORD[one.state]}`}</span></span>
+    </li>; })}
   </ol>;
 }

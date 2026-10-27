@@ -672,22 +672,16 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-phone-others { margin: var(--so-space-xs) 0 0; font-size: 12.5px; color: var(--so-muted); }
 .so-phone-others a, .so-phone-options .so-first-run-choice-hint a { color: var(--so-ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--so-input-line); }
 
-/* The first task's way to Ready (onboarding): five steps that fill in as it moves. */
+/* A task's road to Ready (after ReUI's Stepper, read-only): a glyph per step on a hairline, the words under it. The
+   glyph carries the hue (components/ui/status-glyph.tsx); amber only on the step that waits on a person. */
 .first-task-journey { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0 0 var(--so-space-lg); padding: 0; list-style: none; }
 .first-task-journey li { position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px; min-width: 0; text-align: center; font-size: 12px; font-weight: 500; line-height: 1.3; color: var(--so-muted); }
-.first-task-journey li::before { content: ""; position: absolute; top: 6px; right: 50%; left: -50%; height: 1.5px; background: var(--so-line); }
+.first-task-journey li::before { content: ""; position: absolute; top: 6.5px; right: calc(50% + 11px); left: calc(-50% + 11px); height: 1px; background: var(--so-line); }
 .first-task-journey li:first-child::before { display: none; }
 .first-task-journey li[data-state="done"]::before, .first-task-journey li[data-state="current"]::before, .first-task-journey li[data-state="stuck"]::before { background: var(--so-success); }
-.first-task-journey-mark { position: relative; z-index: 1; box-sizing: border-box; width: 14px; height: 14px; border: 1.5px solid var(--so-input-line); border-radius: 50%; background: var(--so-paper); }
-.first-task-journey li[data-state="done"] .first-task-journey-mark { border-color: var(--so-success); background: var(--so-success); }
-.first-task-journey li[data-state="current"] { color: var(--so-ink); font-weight: 600; }
-.first-task-journey li[data-state="current"] .first-task-journey-mark { border-color: var(--so-ink); box-shadow: inset 0 0 0 2.5px var(--so-paper); background: var(--so-ink); }
-.first-task-journey li[data-step="approve"][data-state="current"] .first-task-journey-mark { border-color: var(--so-signal); background: var(--so-signal); }
-.first-task-journey li[data-state="stuck"] { color: var(--so-ink); font-weight: 600; }
-.first-task-journey li[data-state="stuck"] .first-task-journey-mark { border-color: var(--so-warning); background: var(--so-warning); }
-@media (prefers-reduced-motion: no-preference) {
-  .first-task-journey li[data-state="current"]:not([data-step="approve"]) .first-task-journey-mark { animation: so-recheck-pulse 1.6s ease-in-out infinite; }
-}
+.first-task-journey-mark { position: relative; z-index: 1; display: flex; width: 14px; height: 14px; }
+.first-task-journey li[data-state="current"], .first-task-journey li[data-state="stuck"] { color: var(--so-ink); font-weight: 600; }
+.first-task-journey li[data-state="todo"] .first-task-journey-mark { opacity: .6; }
 @media (max-width: 760px) {
   .first-task-journey li { font-size: 11.5px; }
   .so-phone-options, .so-first-run-choices { grid-template-columns: 1fr; }

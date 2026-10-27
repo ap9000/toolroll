@@ -343,6 +343,10 @@ tokens:
 - `timeline.tsx` — cut to a read-only vertical list (item, indicator on a
   hairline rail, content, date); the active-step context, horizontal mode and
   styled indicators are omitted.
+- `stepper.tsx` — its read-only horizontal layout (indicator, separator,
+  title, `aria-current="step"`) is followed by the task page's road
+  (`src/browser/first-run.tsx` `Journey`); no stepper source is copied, and
+  the controlled state, keyboard navigation and triggers are omitted.
 
 No ReUI Pro blocks, icons or templates are included.
 
