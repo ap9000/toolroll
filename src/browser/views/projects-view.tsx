@@ -5,7 +5,7 @@
 import { PostForm } from "../ui/index.js";
 import { BookOpen, Copy, FolderOpen, GitBranch, GitPullRequest, ListChecks, Plus } from "lucide-react";
 import { threadWhen } from "./task-view.js";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { BrowserProjectRow, BrowserProjectsView } from "../../browser-workspace.js";
 import { GuardedHtml } from "../guarded-html.js";
 import { Badge, Button, Frame, FrameHeader, FramePanel, cn } from "../components/ui/index.js";
@@ -27,21 +27,38 @@ function openedWords(iso: string): string {
   return `Opened ${words}`;
 }
 
-/** A long path kept readable on one line: its start and its end, the middle elided. The full path stays in the title
- * and one tap copies it. */
-export function middlePath(path: string, max = 44): string {
-  if (path.length <= max) return path;
-  const tail = Math.ceil((max - 1) * 0.6);
-  return `${path.slice(0, max - 1 - tail)}…${path.slice(-tail)}`;
+/** A long path kept readable on one line: its start and its end, the middle elided, split so the end never clips.
+ * Cuts by code point (never half a character); a tiny limit keeps the whole path. */
+export function middlePath(path: string, max = 44): { head: string; tail: string } {
+  const points = Array.from(path);
+  if (points.length <= max || max < 8) return { head: path, tail: "" };
+  const tailLength = Math.ceil((max - 1) * 0.6);
+  return { head: `${points.slice(0, max - 1 - tailLength).join("")}…`, tail: points.slice(points.length - tailLength).join("") };
 }
 
 function CopyPath({ path, name }: { path: string; name: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => { void navigator.clipboard?.writeText(path).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }, () => {}); };
-  return <button type="button" onClick={copy} aria-label={`Copy ${name}'s path`} title={copied ? "Copied" : "Copy path"}
-    className="pointer-events-auto inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground phone:size-11 phone:-my-3 [&_svg]:size-3.5">
-    <Copy aria-hidden="true" /><span className="sr-only" aria-live="polite">{copied ? "Copied" : ""}</span>
-  </button>;
+  const [said, setSaid] = useState<"" | "Copied" | "Couldn't copy">("");
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const live = useRef(true);
+  useEffect(() => () => { live.current = false; if (timer.current !== null) clearTimeout(timer.current); }, []);
+  const show = (words: "Copied" | "Couldn't copy") => {
+    if (!live.current) return;
+    if (timer.current !== null) clearTimeout(timer.current);
+    setSaid(""); // a repeat still announces
+    queueMicrotask(() => { if (live.current) setSaid(words); });
+    timer.current = setTimeout(() => { if (live.current) setSaid(""); }, 2000);
+  };
+  const copy = () => {
+    if (navigator.clipboard === undefined) { show("Couldn't copy"); return; }
+    navigator.clipboard.writeText(path).then(() => show("Copied"), () => show("Couldn't copy"));
+  };
+  return <>
+    <button type="button" onClick={copy} aria-label={`Copy ${name}'s path`} title="Copy path"
+      className="pointer-events-auto inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground phone:size-11 [&_svg]:size-3.5">
+      <Copy aria-hidden="true" />
+    </button>
+    <span role="status" aria-atomic="true" className="shrink-0 text-caption text-muted-foreground">{said}</span>
+  </>;
 }
 
 function Row({ row, csrf, returnTo, choosing }: { row: BrowserProjectRow; csrf: string; returnTo: string; choosing: boolean }) {
@@ -66,8 +83,8 @@ function Row({ row, csrf, returnTo, choosing }: { row: BrowserProjectRow; csrf: 
               </OpenForm>)}
         </span>
       </div>
-      <p className="mt-0.5 flex min-w-0 items-center gap-1 text-body text-muted-foreground phone:pointer-events-none phone:col-span-full phone:row-start-3 phone:mt-1.5 phone:leading-[1.35]">
-        <span className="min-w-0 truncate font-mono text-xs" title={row.path}>{middlePath(row.shortPath)}</span><CopyPath path={row.path} name={row.name} />
+      <p className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1 text-body text-muted-foreground phone:pointer-events-none phone:col-span-full phone:row-start-3 phone:mt-1 phone:leading-[1.35]">
+        <span className="flex min-w-0 font-mono text-xs" title={row.path}><span className="truncate">{middlePath(row.shortPath).head}</span><span className="shrink-0">{middlePath(row.shortPath).tail}</span></span><CopyPath path={row.path} name={row.name} />
         {(row.openedAt !== null || row.peek === null) && <span className="shrink-0 whitespace-nowrap">
           {row.openedAt !== null && <>· {openedWords(row.openedAt)}</>}
           {row.peek === null && <>{row.openedAt !== null ? " " : ""}· Not scanned</>}
