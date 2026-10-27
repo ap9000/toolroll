@@ -2,7 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { FirstRequest, FirstRun, PhoneCard, rechecked, withSuggestion } from "./first-run.js";
+import { FirstRequest, FirstRun, Journey, PhoneCard, rechecked, withSuggestion } from "./first-run.js";
 import { firstTaskJourney, taskRoad } from "../first-run.js";
 import type { BrowserFirstRun } from "../browser-workspace.js";
 
@@ -107,11 +107,19 @@ test("a task's road says only what happened: no Checks for a report, skipped che
   expect(road({ stage: "needs-you", need: "replan" }, true, true, {}).slice(1, 3)).toEqual(["approve:current!:You approve", "build:todo:Build"]);
   // A report stopped where Checks would be stops at Ready.
   expect(road({ stage: "stopped" }, true, true, { report: true }).at(-1)).toBe("ready:stuck:Ready");
+  // At Checks now, a recorded failure reads as one, and a running check says so.
+  expect(road({ stage: "waiting" }, true, true, { checks: "failed" })[3]).toBe("checks:stuck:Checks failed");
+  expect(road({ stage: "checking" }, true, true, { checks: "running" })[3]).toBe("checks:current:Checks running");
   // The approval is the step that waits on a person; a failure stops at Build and waits on nobody.
   expect(road({ stage: "needs-you", need: "approval" }, false, false, {})[1]).toBe("approve:current!:You approve");
   expect(road({ stage: "failed" }, true, false, {})[2]).toBe("build:stuck:Build");
   expect(road({ stage: "stopped" }, true, false, {}).some(one => one.includes("!"))).toBe(false);
   expect(road({ stage: "needs-you", need: "other" }, true, true, {})[3]).toBe("checks:stuck!:Checks");
+});
+
+test("the road names where the task stands, never Ready for a step that stopped there", async () => {
+  await render(createElement(Journey, { steps: taskRoad({ stage: "stopped" }, true, true, { report: true }) }));
+  expect(document.querySelector("[data-first-task-journey]")!.getAttribute("aria-label")).toBe("Where this task is: Ready, stopped here");
 });
 
 test("after the first result, the phone: a chat app or this console over Tailscale, and Not now puts it away", async () => {

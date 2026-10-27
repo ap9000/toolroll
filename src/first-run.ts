@@ -171,7 +171,9 @@ export function taskRoad(read: Parameters<typeof firstTaskJourney>[0], approved:
   let steps: JourneyStep[] = firstTaskJourney(replan ? { stage: "needs-you", need: "approval" } : read, plainApproved, built);
   steps = steps.map(step => {
     if (step.key === "approve" && step.state === "done" && !plainApproved) return { ...step, state: "skipped" };
-    if (step.key !== "checks" || step.state !== "done") return step;
+    if (step.key !== "checks" || (step.state !== "done" && step.state !== "current")) return step;
+    // At Checks now: only a recorded failure or a running check changes how it reads.
+    if (step.state === "current") return facts.checks === "failed" ? { ...step, state: "stuck", label: "Checks failed" } : facts.checks === "running" ? { ...step, label: "Checks running" } : step;
     switch (facts.checks ?? null) {
       case "passed": return step;
       case "running": return { ...step, state: "current", label: "Checks running" };

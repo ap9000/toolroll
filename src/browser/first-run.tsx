@@ -129,7 +129,7 @@ const ROAD_GLYPH = (step: JourneyStep): { kind: GlyphKind; className?: string } 
 const ROAD_WORD: Record<JourneyStep["state"], string> = { done: "done", current: "now", stuck: "stopped here", skipped: "skipped", todo: "next" };
 export function Journey({ steps }: { steps: JourneyStep[] }) {
   const current = steps.find(one => one.state === "current" || one.state === "stuck");
-  const where = current?.label ?? (steps.every(one => one.state === "done" || one.state === "skipped") ? "Ready" : [...steps].reverse().find(one => one.state !== "todo")?.label ?? steps[0]?.label ?? "");
+  const where = current !== undefined ? `${current.label}${current.needsYou ? ", waits on you" : current.state === "stuck" ? ", stopped here" : ""}` : (steps.every(one => one.state === "done" || one.state === "skipped") ? "Ready" : [...steps].reverse().find(one => one.state !== "todo")?.label ?? steps[0]?.label ?? "");
   return <ol role="list" className="first-task-journey" aria-label={`Where this task is: ${where}`} data-first-task-journey style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }}>
     {steps.map(one => { const glyph = ROAD_GLYPH(one); return <li key={one.key} data-step={one.key} data-state={one.state} {...(one.needsYou ? { "data-needs-you": "" } : {})} aria-current={one.state === "current" || one.state === "stuck" ? "step" : undefined}>
       <span className="first-task-journey-mark" aria-hidden="true"><StatusGlyph kind={glyph.kind} {...(glyph.className === undefined ? {} : { className: glyph.className })} /></span>
