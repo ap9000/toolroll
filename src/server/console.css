@@ -1769,13 +1769,13 @@
      says which way it folds. */
   @media (max-width: 760px) {
     .board { display: flex; flex-direction: column; align-items: stretch; gap: .5rem; padding-bottom: 0; }
-    .board .lane { min-height: 0; padding: 0 .625rem .125rem; }
+    .board .lane { min-height: 0; padding: 0 .25rem .25rem; }
     .board .lane > summary {
       cursor: pointer; display: flex; align-items: center; min-height: 2.75rem; margin: 0;
       -webkit-tap-highlight-color: transparent;
     }
-    .board .lane > summary h2 { flex: 1; font-size: .75rem; }
-    .board .lane > summary .lane-count { border: 1px solid var(--border); border-radius: 999px; padding: .04rem .5rem; margin-left: .25rem; }
+    .board .lane > summary { padding: 0 .375rem; }
+    .board .lane > summary h2 { flex: 1; }
     .board .lane > summary::after {
       content: ""; width: .5rem; height: .5rem; flex: none; margin-right: .25rem;
       border-right: 1.5px solid var(--muted-foreground); border-bottom: 1.5px solid var(--muted-foreground);
@@ -1783,63 +1783,67 @@
     }
     .board .lane[open] > summary::after { transform: rotate(225deg) translateY(-.125rem); }
     .board .lane .hint { margin-bottom: .25rem; }
-    .board .lane .lane-card:last-of-type { margin-bottom: .5rem; }
+    .board .lane .lane-card:last-of-type { margin-bottom: 0; }
     .board .lane-attention { order: 0; }
     .board .lane-building { order: 1; }
     .board .lane-queued { order: 2; }
     .board .lane-waiting { order: 3; }
     .board .lane-done { order: 4; }
   }
+  /* A lane is a frame (components/ui/frame.tsx, after ReUI's Frame): a raised well with a hairline, its head a
+     status chip and a mono count on the well's fill, its cards paper panels at concentric corners. Only the lane
+     that waits on a person is amber: its chip, and each card's thin full outline. No fill, no stripe, no shadow. */
   .lane {
-    background: color-mix(in srgb, var(--card) 45%, var(--background)); border: 1px solid var(--border);
-    border-radius: var(--radius); padding: .625rem; min-height: 12rem;
+    background: var(--so-raised); border: 1px solid var(--so-line);
+    border-radius: var(--so-radius-card); padding: .25rem; min-height: 12rem;
   }
-  .lane > summary { list-style: none; cursor: default; margin: 0 0 .125rem; }
+  .lane > summary { list-style: none; cursor: default; margin: 0; padding: .375rem .375rem .125rem; }
   .lane > summary::-webkit-details-marker { display: none; }
-  .lane h2 { display: flex; align-items: center; gap: .4rem; margin: 0; font-size: .6875rem; }
+  .lane h2 { display: flex; align-items: center; gap: .5rem; margin: 0; font-size: .8125rem; font-weight: 600; }
   .lane h2 a { color: inherit; text-decoration: none; }
   @media (hover: hover) and (pointer: fine) { .lane h2 a:hover { text-decoration: underline; } }
-  .lane .hint { margin-top: 0; }
-  .lane-count { color: var(--muted-foreground); font-weight: 400; font-variant-numeric: tabular-nums; }
-  .lane h2::before {
-    content: ""; width: .375rem; height: .375rem; border-radius: var(--so-radius-full); flex: none;
-    background: var(--muted-foreground); opacity: .55;
-  }
-  .lane-attention h2::before { background: var(--brand); opacity: 1; }
-  .lane-building h2::before { background: var(--running); opacity: 1; }
-  .lane-done h2::before { background: var(--muted-foreground); opacity: 1; }
+  .lane .hint { margin: 0; padding: .125rem .375rem .375rem; }
+  .lane-count { color: var(--muted-foreground); font-family: var(--font-mono); font-size: .6875rem; font-weight: 500; font-variant-numeric: tabular-nums; }
   .lane-card {
-    display: block; text-decoration: none; color: inherit;
-    background: var(--card); border: 1px solid var(--border);
-    border-radius: calc(var(--radius) - 2px); padding: .5rem .625rem; margin-top: .5rem;
+    display: flex; flex-direction: column; text-decoration: none; color: inherit;
+    background: var(--so-paper); border: 1px solid var(--so-line);
+    border-radius: calc(var(--so-radius-card) - .25rem - 1px); padding: .625rem .75rem; margin-top: .25rem;
   }
-  @media (hover: hover) and (pointer: fine) { .lane-card:hover { border-color: color-mix(in srgb, var(--border) 55%, var(--muted-foreground)); } }
-  .lane-card .id { display: block; font-family: var(--font-mono); font-size: .6875rem; color: var(--muted-foreground); margin-bottom: .125rem; overflow-wrap: anywhere; }
-  .lane-card .t { display: block; font-size: .8125rem; font-weight: 500; line-height: 1.35; }
+  .lane-attention .lane-card { border-color: var(--so-warning); }
+  /* The order view's columns are frames too, with roomier insides (a form, a note) and a quiet dot by the name. */
+  .lane.queue-column { padding: .5rem; }
+  .queue-column > h2::before { content: ""; width: .375rem; height: .375rem; border-radius: var(--so-radius-full); flex: none; background: var(--muted-foreground); opacity: .55; }
+  @media (hover: hover) and (pointer: fine) { .lane-card:hover { background: var(--so-raised); } }
+  /* The title leads; the task id is a machine fact under it, in mono. */
+  .lane-card .t { order: 0; display: block; font-size: .8125rem; font-weight: 500; line-height: 1.35; }
+  .lane-card .why { order: 1; display: block; margin-top: .125rem; font-size: .75rem; color: var(--muted-foreground); }
+  .lane-card .steps, .lane-card .live-line { order: 1; }
+  .lane-card .id { order: 2; display: block; margin-top: .375rem; font-family: var(--font-mono); font-size: .6875rem; color: var(--muted-foreground); overflow-wrap: anywhere; }
+  .lane-card .facts { order: 3; }
+  .lane-card .chips { order: 4; }
   .lane-card .dot { margin-right: .4rem; }
   .lane-card .meta, .lane-card .mono { display: block; margin-top: .125rem; font-size: .75rem; }
-  .lane-card .why { display: block; margin-top: .125rem; font-size: .75rem; color: var(--muted-foreground); }
-  /* The facts: mono key–value pairs, keys dim, values ink — one grammar on every lane. */
-  .lane-card .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .0625rem .625rem; margin-top: .4rem; font-size: .6875rem; line-height: 1.5; }
+  /* The facts: a muted word, then the value; only a machine's own words (a name, a model, a branch, a clock) are mono. */
+  .lane-card .facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: .0625rem .625rem; margin-top: .25rem; font-size: .75rem; line-height: 1.5; }
   .lane-card .fact { display: contents; }
-  .lane-card .fact .k { color: var(--muted-foreground); font-family: var(--font-mono); }
-  .lane-card .fact .v { font-family: var(--font-mono); color: var(--foreground); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-  .lane-card .chips { display: flex; flex-wrap: wrap; gap: .25rem; margin-top: .4rem; }
+  .lane-card .fact .k { color: var(--muted-foreground); }
+  .lane-card .fact .v { color: var(--foreground); overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .lane-card .fact .v.mono { display: inline; margin: 0; font-family: var(--font-mono); font-size: .6875rem; }
+  .lane-card .chips { display: flex; flex-wrap: wrap; gap: .25rem; margin-top: .5rem; }
   .lane-card .chips .badge { margin: 0; }
-  /* The live strip on a building card: stage and clock in an inset well —
-     the run's own facts, never a percent. */
+  /* The live strip on a building card: the stage in words, the clock in mono, on a sunken well. */
   .lane-card .live-line {
     display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin-top: .375rem;
-    padding: .3rem .5rem; border-radius: calc(var(--radius) - 4px); background: var(--muted);
-    font-family: var(--font-mono); font-size: .6875rem; color: var(--running); font-variant-numeric: tabular-nums;
+    padding: .3rem .5rem; border-radius: var(--so-radius-sm); background: var(--so-raised);
+    font-size: .75rem; color: var(--so-info);
   }
-  .lane-card .live-line .clock { color: var(--muted-foreground); }
+  .lane-card .live-line .clock { color: var(--muted-foreground); font-family: var(--font-mono); font-size: .6875rem; font-variant-numeric: tabular-nums; }
   /* The build's steps — set up, writing, checking and committing: three quiet
      ticks, the current one in the running hue. A stage, never a percent. */
   .lane-card .steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .1875rem; margin-top: .5rem; }
-  .lane-card .steps i { height: .1875rem; border-radius: 999px; background: var(--border); }
-  .lane-card .steps i.on { background: color-mix(in srgb, var(--running) 45%, var(--border)); }
-  .lane-card .steps i.now { background: var(--running); }
+  .lane-card .steps i { height: .1875rem; border-radius: var(--so-radius-full); background: var(--so-line); }
+  .lane-card .steps i.on { background: color-mix(in srgb, var(--so-info) 45%, var(--so-line)); }
+  .lane-card .steps i.now { background: var(--so-info); }
 
   /* The worker strip: one quiet tile per worker above the lanes — what it is
      building here, the stage, the clock. Ink and lines only; the running dot

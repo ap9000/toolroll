@@ -1549,7 +1549,7 @@ describe("the board — the pipeline as lanes, live in place", () => {
 
     const cookie = await login();
     const board = await (await fetch(url("/board"), { headers: { cookie } })).text();
-    for (const lane of ["needs you", "queued", "waiting", "building", "done recently"]) {
+    for (const lane of ["Needs you", "Queued", "Waiting", "Building", "Done recently"]) {
       expect(board).toContain(lane);
     }
     expect(board).toContain("being built");

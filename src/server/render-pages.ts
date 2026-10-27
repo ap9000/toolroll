@@ -442,6 +442,12 @@ export function boardBody(
     return `${Math.round(minutes / (24 * 60))}d`;
   };
 
+  // A lane's head is a status chip in its own tone (after ReUI's badge with a dot): amber only for the lane that
+  // waits on a person, blue for building, green for done, neutral otherwise. The word carries the state.
+  const LANE_CHIP = { attention: "chip-needs", building: "chip-live", done: "chip-done", queued: "", waiting: "" } as const;
+  const laneChip = (key: keyof typeof LANE_CHIP, title: Html | string): Html =>
+    html`<span class="chip ${LANE_CHIP[key]}"><span class="chip-dot" aria-hidden="true"></span>${title}</span>`;
+
   const lane = (
     key: "attention" | "queued" | "waiting" | "building",
     title: string,
@@ -473,16 +479,17 @@ export function boardBody(
     // A lane is a section that can fold (board pass): open when it holds
     // cards, folded when empty, so a phone reads the counts first and a
     // desktop column never spends its height on "nothing here".
-    return html`<details class="lane lane-${key}"${shown.length === 0 ? null : html` open`}><summary><h2>${title} <span class="lane-count">${cards.length}${data.saturated ? "+" : ""}</span></h2></summary><p class="hint">${hint}</p>${shown.length === 0 ? html`<p class="meta lane-empty">nothing here</p>` : shown.map((card, index) => renderOne(card, index))}${more > 0 ? html`<a class="lane-more" href="/tasks">+${more} more in the task list</a>` : null}</details>`;
+    return html`<details class="lane lane-${key}"${shown.length === 0 ? null : html` open`}><summary><h2>${laneChip(key, title)} <span class="lane-count">${cards.length}${data.saturated ? "+" : ""}</span></h2></summary><p class="hint">${hint}</p>${shown.length === 0 ? html`<p class="meta lane-empty">nothing here</p>` : shown.map((card, index) => renderOne(card, index))}${more > 0 ? html`<a class="lane-more" href="/tasks">+${more} more in the task list</a>` : null}</details>`;
   };
 
   // The card's facts: mono key–value pairs under the title (board pass) —
   // task, worker, runtime — the same grammar on every lane, so the eye
   // learns one card. Chips carry the words (project, reservation).
-  const facts = (rows: [string, string][]): Html | null =>
+  // A value is mono only when a machine said it (a worker, model or branch name, a clock); words stay Geist.
+  const facts = (rows: ([string, string] | [string, string, "mono"])[]): Html | null =>
     rows.length === 0
       ? null
-      : html`<span class="facts">${rows.map(([k, v]) => html`<span class="fact"><span class="k">${k}</span><span class="v">${v}</span></span>`)}</span>`;
+      : html`<span class="facts">${rows.map(([k, v, mono]) => html`<span class="fact"><span class="k">${k}</span><span class="${mono === undefined ? "v" : "v mono"}">${v}</span></span>`)}</span>`;
   const chips = (parts: (Html | null)[]): Html | null => {
     const kept = parts.filter((one): one is Html => one !== null);
     return kept.length === 0 ? null : html`<span class="chips">${joinHtml(kept, " ")}</span>`;
@@ -490,7 +497,7 @@ export function boardBody(
 
   const plain = (card: BoardCard): Html =>
     html`<a class="lane-card" href="${card.href}" data-vt="${card.taskId}"><span class="id">${card.taskId}</span><span class="t">${card.title}</span><span class="why">${card.reason}</span>${facts([
-      ...(card.stalledSince === null ? [] : [["waiting", age(card.stalledSince)] as [string, string]]),
+      ...(card.stalledSince === null ? [] : [["waiting", age(card.stalledSince), "mono"] as [string, string, "mono"]]),
     ])}${chips([
       chip(card.repo),
     ])}</a>`;
@@ -509,7 +516,7 @@ export function boardBody(
   })();
   const queuedCard = (card: BoardCard): Html =>
     html`<a class="lane-card" href="${card.href}" data-vt="${card.taskId}"><span class="id">${card.taskId}</span><span class="t">${card.title}</span><span class="why">${card.reason}</span>${facts([
-      ["worker", card.assignedRunner === null ? "any free worker" : card.assignedRunner],
+      card.assignedRunner === null ? ["worker", "any free worker"] : ["worker", card.assignedRunner, "mono"],
     ])}${chips([
       queuedHeads.get(`${card.assignedRunner ?? ""}|${card.repo ?? ""}`) === card.taskId
         ? html`<span class="badge">${card.assignedRunner === null ? "next up" : `next for ${card.assignedRunner}`}</span>`
@@ -534,11 +541,11 @@ export function boardBody(
       ? null
       : html`<span class="steps" role="img" aria-label="${`step ${step + 1} of ${BUILD_STEPS.length}: ${BUILD_STEPS[step]}`}">${BUILD_STEPS.map((_, index) => html`<i class="${index < step ? "on" : index === step ? "now" : ""}"></i>`)}</span>`;
     return html`<a class="lane-card building" href="${card.href}" data-vt="${card.taskId}"><span class="id">${card.taskId}</span><span class="t"><span class="dot dot-ok pulse"></span>${card.title}</span>${steps}<span class="live-line"><span class="stage">${live}</span>${tickingClock(claim.claimedAt, data.now)}</span>${facts([
-      ["worker", claim.runner],
+      ["worker", claim.runner, "mono"],
       ...(claim.model === null
         ? []
-        : [["model", `${claim.provider !== null && claim.provider !== "claude" ? `${claim.provider} · ` : ""}${claim.model}`] as [string, string]]),
-      ...(claim.branch === null ? [] : [["branch", `${claim.branch}${workspace === null ? "" : ` · ${workspace}`}`] as [string, string]]),
+        : [["model", `${claim.provider !== null && claim.provider !== "claude" ? `${claim.provider} · ` : ""}${claim.model}`, "mono"] as [string, string, "mono"]]),
+      ...(claim.branch === null ? [] : [["branch", `${claim.branch}${workspace === null ? "" : ` · ${workspace}`}`, "mono"] as [string, string, "mono"]]),
     ])}${chips([
       card.attempt === null ? null : html`<span class="badge">Attempt ${card.attempt}</span>`,
       chip(card.repo),
@@ -554,7 +561,7 @@ export function boardBody(
               ? null
               : html`<span class="badge badge-open">PR #${row.prNumber}</span>${ciRed(row.prNumber) ? html` <span class="badge badge-failed">CI failing</span>` : null}`;
           return html`<a class="lane-card" href="${taskHref(row.taskId)}" data-vt="${row.taskId}"><span class="id">${row.taskId}</span><span class="t">${row.title}</span>${row.handoff === null ? null : html`<span class="why">${row.handoff.length > 120 ? row.handoff.slice(0, 120) + "…" : row.handoff}</span>`}${facts([
-            ...(row.ranMinutes === null ? [] : [["ran", `${row.ranMinutes}m`] as [string, string]]),
+            ...(row.ranMinutes === null ? [] : [["ran", `${row.ranMinutes}m`, "mono"] as [string, string, "mono"]]),
             ["usage", runCostWords({ authMode: row.authMode, costUsd: row.costUsd, tokensIn: null, tokensOut: null })],
           ])}${chips([
             html`<span class="badge badge-done">${row.outcome === "no-change" ? "No change" : "Built"}</span>`,
@@ -597,11 +604,11 @@ export function boardBody(
     toggle,
     workerStrip(data.workers, data.cards, data.now),
     html`<div class="board" data-now="${String(data.now.getTime())}">`,
-    lane("attention", "needs you", "these wait for a person", plain),
-    lane("queued", "queued", "starts when a worker is free", queuedCard),
-    lane("waiting", "waiting", "paused until a time, another task, or a requirement is ready", plain),
-    lane("building", "building", "one agent per card, in its own workspace", building),
-    html`<details class="lane lane-done"${data.done.length === 0 ? null : html` open`}><summary><h2><a href="/done">done recently</a></h2></summary><p class="hint">the most recent — the full list is under done</p>${doneCards}</details>`,
+    lane("attention", "Needs you", "These wait for a person.", plain),
+    lane("queued", "Queued", "Starts when a worker is free.", queuedCard),
+    lane("waiting", "Waiting", "Paused until a time, another task, or a requirement is ready.", plain),
+    lane("building", "Building", "One agent per card, in its own workspace.", building),
+    html`<details class="lane lane-done"${data.done.length === 0 ? null : html` open`}><summary><h2>${laneChip("done", html`<a href="/done">Done recently</a>`)}</h2></summary><p class="hint">The most recent. The full list is under Done.</p>${doneCards}</details>`,
     html`</div>`,
   ], "\n");
 }
