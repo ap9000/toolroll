@@ -31,7 +31,7 @@ test.each([119, -119])("v%s: a steering note's mailing and reading are added, an
   expect(updateSafeSchema(119)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(120);
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(135);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(136);
   expect(store.listSteerNotes(ref)).toMatchObject([{ note: "prefer the smaller diff", mailedRun: null, mailedAt: null, ackedAt: null, deliveredAt: null }]);
   expect(store.handle.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   expect(store.ledgerChain({ full: true })).toMatchObject({ ok: true, through: chain.through, head: chain.head });

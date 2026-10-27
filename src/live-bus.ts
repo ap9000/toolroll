@@ -229,7 +229,9 @@ export type LiveRooms<K, V extends LiveViewer> = {
 export type LiveRoomOptions = { bus?: LiveBus | null; safetyNetMs?: number; minIntervalMs?: number;
   /** A room whose read is costly reads at most once per this window after a signal; every viewer is still re-proved
    * the moment a signal arrives (and again at the read). */
-  readSettleMs?: number };
+  readSettleMs?: number;
+  /** Told when a room's last viewer has left and the room is gone (state kept per room can go with it). */
+  onEmpty?: (key: unknown) => void };
 
 const PRESENCE_SETTLE_MS = 150;
 
@@ -277,6 +279,7 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
     if (room.holding !== null) clearTimeout(room.holding);
     if (room.reading !== null) clearTimeout(room.reading);
     rooms.delete(key);
+    options.onEmpty?.(key);
     if (rooms.size === 0 && unsubscribe !== null) { unsubscribe(); unsubscribe = null; }
   };
   /** The final delivery boundary, including queued frames and sends that may overflow. */

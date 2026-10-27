@@ -46,7 +46,7 @@ const LIMITED_ACCESS = {
   'settings.telegram-retry': 'self', 'settings.chat-approval-confirm': 'self',
   'settings.chat-approval-save': 'self', 'settings.chat-approval-off': 'self',
   'settings.telegram-pair': 'self', 'settings.telegram-unpair': 'self',
-  'projects.select': 'unscoped', 'agents': 'unscoped', 'tasks.add': 'collection', 'decision.answer': 'resource',
+  'projects.select': 'unscoped', 'agents': 'unscoped', 'agents.live': 'unscoped', 'agents.live.read': 'unscoped', 'tasks.add': 'collection', 'decision.answer': 'resource',
   'task.act.hold': 'resource', 'task.act.unhold': 'resource', 'task.act.requeue': 'resource',
   'task.act.cancel': 'resource', 'task.act.scope': 'resource', 'task.act.approve': 'resource',
   'task.act.plan': 'resource', 'task.act.plan-edit': 'resource', 'task.act.next': 'resource',

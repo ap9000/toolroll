@@ -18,7 +18,9 @@
  */
 import { useEffect, useRef } from "react";
 
-export type LiveEventName = "change" | "here" | "gone" | "turn" | "reload" | "lost";
+/** `retrying`: the line dropped and the browser is reconnecting by itself (what is shown may be stale until the next
+ * `change`); `lost`: it gave up. */
+export type LiveEventName = "change" | "here" | "gone" | "turn" | "reload" | "lost" | "retrying";
 export type LiveListener = (event: LiveEventName, data: Record<string, unknown>) => void;
 export const LIVE_EVENT = "so:live";
 const EVENTS = ["change", "here", "gone", "turn"] as const;
@@ -137,7 +139,8 @@ export class LiveHub {
       window.setTimeout(() => this.reconcile(), RETRY_MS);
     });
     source.addEventListener("error", () => {
-      if (source.readyState !== EventSource.CLOSED || this.source !== source) return;
+      if (this.source !== source) return;
+      if (source.readyState !== EventSource.CLOSED) { deliver("retrying", "{}"); return; }
       this.source = null;
       this.url = "";
       deliver("lost", "{}");

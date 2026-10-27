@@ -773,7 +773,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
 
   // The live window (peek): the same transcript file the builder keeps,
   // so `toolroll peek` and the run page can watch this session too.
-  const liveLog = withRunActivity(openLiveLog(root, request.runId, liveLogContext(store, taskRef, worktree)), store, request.runId, clock);
+  const liveLog = withRunActivity(openLiveLog(root, request.runId, liveLogContext(store, request.runId, taskRef, worktree, clock())), store, request.runId, clock);
   // The durable run row, not a caller's duplicate options, is the route
   // every correction inherits.
   const provider = logicalRun.provider;

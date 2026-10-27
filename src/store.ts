@@ -473,6 +473,20 @@ CREATE TABLE IF NOT EXISTS run_resume (
 CREATE INDEX IF NOT EXISTS run_resume_by_run ON run_resume (run, id);
 `;
 
+/** v136: a run's own "Show commands in the live view" answer, captured once before its live file opens (live-detail.ts).
+ * Absent, unreadable or anything but 1 means off. */
+export const RUN_LIVE_DETAIL_SCHEMA = `
+CREATE TABLE IF NOT EXISTS run_live_detail (
+  run         INTEGER PRIMARY KEY REFERENCES run(id) ON DELETE CASCADE,
+  commands    INTEGER NOT NULL CHECK (commands IN (0,1)),
+  captured_at TEXT NOT NULL
+);
+-- The Agents view's Live grid (docs/plans/agents-view.md §2.5): every role's running runs and its recently ended ones.
+-- (id > 0 keeps them to the grid's own query, which names it: no other query's plan is offered them.)
+CREATE INDEX IF NOT EXISTS run_live_open ON run (id) WHERE outcome IS NULL AND id > 0;
+CREATE INDEX IF NOT EXISTS run_live_recent ON run (finished_at) WHERE outcome IS NOT NULL AND id > 0;
+`;
+
 /** A project's "Show commands in the live view" (live-detail.ts): absent means off. */
 export const LIVE_DETAIL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS live_detail_setting (
@@ -787,7 +801,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // release_operation), each release check attempt's intended mode, sealed before it runs (release_check_attempt), the
 // nightly full check on main and its open failures (nightly_check, main_check_failure), and a scope's release terms
 // (task_scope.release_terms_json; saved rows read NULL: no release terms).
-export const SCHEMA_VERSION = 135;
+// v136 adds, and changes no saved row: each run's own "Show commands in the live view" answer, captured once before its
+// live file opens (run_live_detail; docs/plans/agents-view.md §2.4). Saved runs have none, which every reader takes as
+// commands off: permission is never recovered from a transcript or the project's current setting.
+export const SCHEMA_VERSION = 136;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -925,7 +942,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -5318,6 +5335,8 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   for (const [table, columns] of Object.entries(V135_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   }
+  // v136: each run's own live-view answer (a new table only; saved runs have none: commands off).
+  db.exec(RUN_LIVE_DETAIL_SCHEMA);
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -24572,3 +24591,59 @@ function processStartedAt(pid: number): number | null {
     return Number.isFinite(at) ? at : null;
   } catch { return null; }
 }
+
+// A run's own "Show commands in the live view" answer (schema v136, docs/plans/agents-view.md §2.4). Free functions over
+// the store, kept together at the end.
+
+/**
+ * Capture a run's live-view answer once, before its live file opens: the first capture stands (a second never changes
+ * it). Returns the answer now saved for the run; any failure, or a saved row that isn't plainly 1, is commands off.
+ */
+export function captureRunLiveDetail(store: Store, runId: number, commands: boolean, now: Date): boolean {
+  try {
+    store.handle.prepare("INSERT OR IGNORE INTO run_live_detail (run, commands, captured_at) VALUES (?, ?, ?)").run(runId, commands ? 1 : 0, now.toISOString());
+  } catch {
+    return false;
+  }
+  return runLiveCommands(store, runId);
+}
+
+/** Whether a run's live view may show commands: only its own captured answer, and only when that is plainly 1. Absent
+ * (a run from before v136, or one whose capture failed), unreadable or anything else is off. */
+export function runLiveCommands(store: Store, runId: number): boolean {
+  try {
+    const row = store.handle.prepare("SELECT commands FROM run_live_detail WHERE run = ?").get(runId);
+    return row !== undefined && row["commands"] === 1;
+  } catch {
+    return false;
+  }
+}
+
+/** One run as the Agents view's Live grid reads it (docs/plans/agents-view.md §2.5). */
+export type AgentsLiveRun = Run & { taskId: string; title: string; repo: string | null; builtIn: boolean };
+
+/**
+ * The Live grid's runs: every role's running run (no outcome yet) and every run that ended at or after `endedSince`,
+ * newest first — all of them (no cutoff before the caller's visibility filter: a viewer's agent is never hidden behind
+ * others'). Two indexed reads (run_live_open, run_live_recent), never a scan of all runs.
+ * Visibility is the caller's: it filters each by the console's ceiling and the viewer's access.
+ */
+export function agentsLiveRuns(store: Store, endedSince: Date): AgentsLiveRun[] {
+  const rows = store.handle.prepare(
+    `SELECT run.*, task_ref.external_id AS live_task_id, task_ref.repo AS live_task_repo, task.title AS live_task_title, task_ref.backend AS live_task_backend
+       FROM (SELECT id FROM run INDEXED BY run_live_open WHERE outcome IS NULL AND id > 0
+             UNION SELECT id FROM run INDEXED BY run_live_recent WHERE outcome IS NOT NULL AND id > 0 AND finished_at >= ?) AS picked
+       JOIN run ON run.id = picked.id
+       JOIN task_ref ON task_ref.id = run.task_ref
+       LEFT JOIN task ON task_ref.backend = ? AND task.id = task_ref.external_id
+      ORDER BY run.id DESC`,
+  ).all(endedSince.toISOString(), BUILT_IN) as Record<string, unknown>[];
+  return rows.map(row => ({
+    ...readRun(row),
+    taskId: String(row["live_task_id"]),
+    builtIn: row["live_task_backend"] === BUILT_IN,
+    title: row["live_task_title"] === null || row["live_task_title"] === undefined ? String(row["live_task_id"]) : String(row["live_task_title"]),
+    repo: row["live_task_repo"] === null || row["live_task_repo"] === undefined ? null : String(row["live_task_repo"]),
+  }));
+}
+

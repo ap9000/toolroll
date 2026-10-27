@@ -1,4 +1,4 @@
-import { releaseAuthorityOfTask, revokeRelease } from "../store.js";
+import { releaseAuthorityOfTask, revokeRelease, runLiveCommands } from "../store.js";
 import { steerCapabilityOf } from "../steer-capabilities.js";
 import { canReveal, localCheckoutOf, revealInFinder } from "../checkout-proof.js";
 
@@ -841,11 +841,13 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       const tailRaw = url.searchParams.get("ktail") ?? "";
       const keys = { inKey: url.searchParams.get("inkey") === "1", tail: validKeyTail(tailRaw) ? tailRaw : "" };
       if (records) {
-        const shown = liveWindowRecords(window, keys);
+        // Command text and output only under this run's own captured answer, never the file's `open` record (v136).
+        const commands = runLiveCommands(store, found.id);
+        const shown = liveWindowRecords(window, commands, keys);
         return respond(response, 200, "application/json", JSON.stringify({ records: shown, nextOffset: window.nextOffset, gen: window.gen, inKey: keys.inKey, keyTail: keys.tail ?? "", final, ...notesOf() }));
       }
       // The plain words, whatever the file's format; the offset moves by the bytes read even when nothing shows.
-      const lines = liveWindowLines(window, keys);
+      const lines = liveWindowLines(window, runLiveCommands(store, found.id), keys);
       return respond(
         response,
         200,

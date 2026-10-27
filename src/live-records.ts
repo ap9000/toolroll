@@ -16,6 +16,7 @@
 
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { scanForSecrets } from "./evidence.js";
+import { topLevelEvent } from "./stream-scope.js";
 
 /**
  * The fixed tool vocabulary: known harness tools map to OUR kinds; anything
@@ -376,6 +377,8 @@ function liveHost(given: unknown): string | null {
 }
 
 const short = (given: unknown): string | null => (typeof given === "string" ? liveTarget(given.split(/\r?\n/)[0] ?? "", SHORT_CAP) : null);
+/** A short display form of one field: its first line, cleaned, redacted and cut (a delegated task's description). */
+export const liveShort = short;
 
 /** Claude tools: our kind, and whether it is a command. */
 const CLAUDE_KINDS: ReadonlyMap<string, LiveActivityKind> = new Map([
@@ -413,6 +416,11 @@ export type LiveRecorderOptions = {
   /** The project's "Show commands in the live view" setting, read at open. */
   commands: boolean;
   clock?: () => Date;
+  /** The key-block state to carry (the caller's, so it can write it down in a checkpoint); a fresh one by default. */
+  keyState?: KeyState;
+  /** Told of each step as it is recorded: the provider's call id (null when it has none), our id, and the target as
+   * written (redacted, under the key state). Observation only: it changes nothing recorded. */
+  onStep?: (call: string | null, id: string, target: string | null) => void;
 };
 
 export type LiveRecorder = {
@@ -437,11 +445,14 @@ function resultText(content: unknown): string {
     .join("\n");
 }
 
-export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
-  const clock = options.clock ?? (() => new Date());
+export function createLiveRecorder(given: LiveRecorderOptions): LiveRecorder {
+  // The settings are read once, here: nothing the caller (or a callback) changes later reaches the recording.
+  const options: Readonly<LiveRecorderOptions> = Object.freeze({ base: given.base, commands: given.commands === true });
+  const notifyStep = given.onStep;
+  const clock = given.clock ?? (() => new Date());
   let sequence = 0;
   /** A key block the agent began in one message stays hidden through the next, until it ends or a new session starts. */
-  const keyState: KeyState = { inKey: false };
+  const keyState: KeyState = given.keyState ?? { inKey: false };
   /** Provider call id → our step, while it is open. */
   const open = new Map<string, { id: string; kind: LiveActivityKind }>();
 
@@ -456,6 +467,8 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
     const id = `s${++sequence}`;
     const keyed = keyedTarget(target, keyState);
     const step: LiveRecord = { k: "step", at, id, kind, ...(keyed === null ? {} : { target: keyed }) };
+    // Detached: called with no receiver, so it never sees (or changes) the settings above.
+    try { if (notifyStep !== undefined) notifyStep(call, id, keyed); } catch { /* observation only */ }
     if (call === null) return [{ ...step, once: true } as LiveRecord];
     if (open.size >= OPEN_STEPS_CAP) return [{ ...step, once: true } as LiveRecord];
     open.set(call, { id, kind });
@@ -482,8 +495,7 @@ export function createLiveRecorder(options: LiveRecorderOptions): LiveRecorder {
   const claude = (event: Record<string, unknown>, at: string): LiveRecord[] => {
     const type = event["type"];
     // A subagent's words, tools, turns and sessions are not this run's conversation — and never close its steps.
-    const parent = event["parent_tool_use_id"];
-    if (parent !== undefined && parent !== null) return [];
+    if (!topLevelEvent(event)) return [];
     if (type === "system") return event["subtype"] === "init" ? (keyState.inKey = false, [...closeAll(at), { k: "start", at }]) : [];
     if (type === "result") return closeAll(at);
     const content = object(event["message"])?.["content"];

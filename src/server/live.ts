@@ -34,10 +34,12 @@ import { adapterPolicy } from "./route-policy.js";
 import { requestContext } from "./request-context.js";
 import type { ServerRuntime } from "./runtime.js";
 import type { Who } from "./session.js";
+import { createAgentsLiveRooms } from "./agents-live-room.js";
+import { leadTilesFor } from "./agents-live-lead.js";
 
 /** A page asks for a few rooms at once: its workspace, what it shows, its conversation. */
 export const LIVE_ROOMS_PER_PAGE = 6;
-const ROOM_NAME = /^(workspace|task|flow|chat|team|agent|summary)(?::([^?]{1,400}))?(?:\?([^#]{0,600}))?$/;
+const ROOM_NAME = /^(workspace|task|flow|chat|team|agent|summary|agents-live)(?::([^?]{1,400}))?(?:\?([^#]{0,600}))?$/;
 /** At most one workspace nudge a second: a burst of writes is one re-read, the first heard at once. */
 const WORKSPACE_SETTLE_MS = 1_000;
 /** A running reply's preview: at most one snapshot every 80 ms; the last one always goes out. */
@@ -50,7 +52,9 @@ export type LiveRoom =
   | { kind: "flow"; flow: number; card: number | null; editing: boolean }
   | { kind: "chat"; task: string | null; project: string | null }
   | { kind: "team"; conversation: string | null }
-  | { kind: "agent"; run: number };
+  | { kind: "agent"; run: number }
+  /** The Agents view's Live grid (agents-live-room.ts): per viewer, watching only. */
+  | { kind: "agents-live" };
 
 /** A room's name, read strictly: anything else is not a room. */
 export function parseLiveRoom(name: string): LiveRoom | null {
@@ -64,6 +68,7 @@ export function parseLiveRoom(name: string): LiveRoom | null {
   switch (kind) {
     case "workspace": return key === null && query === undefined ? { kind } : null;
     case "summary": return key === null && query === undefined ? { kind } : null;
+    case "agents-live": return key === null && query === undefined ? { kind } : null;
     case "task": return key !== null && key !== "" && query === undefined ? { kind, task: key } : null;
     case "flow": {
       const flow = Number(key), card = params.get("card");
@@ -130,6 +135,11 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
   const chatViewers = new Set<ChatViewer>();
   // One agent's open view (Agents board): what it shows, keyed by the exact run.
   const agentRooms = createLiveRooms<number, Viewer>(run => agentRunFingerprint(store, run), null, { bus: live.bus });
+  // The Live grid: one room per viewer and scope, watching only (no lease, no seen mark).
+  // Each Live page's own lead tiles, read as its viewer's saved session now (a page's room key carries the page).
+  const liveLeads = new Map<string, () => unknown>();
+  const agentsLive = createAgentsLiveRooms<Viewer>({ store, bus: live.bus, evidenceRoot: runtime.evidenceRoot, localRunner: runtime.options.localRunner, clock, visible,
+    leads: key => liveLeads.get(key)?.() ?? null, forget: key => liveLeads.delete(key) });
 
   const readBrowser = (request: IncomingMessage, who: Who & { via: "cookie" }) => rereadBrowser(runtime, request, who);
   const sameBrowser = (request: IncomingMessage, who: Who & { via: "cookie" }) => () => readBrowser(request, who) !== null;
@@ -214,10 +224,11 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
     const names = url.searchParams.getAll("room");
     if ([...url.searchParams.keys()].some(key => key !== "room") || names.length === 0 || names.length > LIVE_ROOMS_PER_PAGE || new Set(names).size !== names.length) return json(response, 400, { error: "room" });
     const rooms = names.map(name => ({ name, room: parseLiveRoom(name) }));
-    if (rooms.some(one => one.room === null) || rooms.filter(one => one.room?.kind === "agent").length > 1 || rooms.filter(one => one.room?.kind === "workspace").length > 1 || rooms.filter(one => one.room?.kind === "chat").length > 1 || rooms.filter(one => one.room?.kind === "team").length > 1 || rooms.filter(one => one.room?.kind === "summary").length > 1) return json(response, 400, { error: "room" });
+    if (rooms.some(one => one.room === null) || rooms.filter(one => one.room?.kind === "agent").length > 1 || rooms.filter(one => one.room?.kind === "workspace").length > 1 || rooms.filter(one => one.room?.kind === "chat").length > 1 || rooms.filter(one => one.room?.kind === "team").length > 1 || rooms.filter(one => one.room?.kind === "summary").length > 1 || rooms.filter(one => one.room?.kind === "agents-live").length > 1) return json(response, 400, { error: "room" });
 
     // Admit every room before the stream opens, with the answers each page's own stream gave.
     const joins: Array<(connection: LiveConnection) => void> = [];
+    let refusedJoin = false;
     for (const { name, room } of rooms as Array<{ name: string; room: LiveRoom }>) {
       if (room.kind !== "team" && who.via !== "cookie") return json(response, 403, { error: "session" });
       if (room.kind === "workspace") {
@@ -230,6 +241,22 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
         const signedIn = sameBrowser(request, browser);
         joins.push(connection => summaryRooms.join(summaryKey(who.name, scope), { name: who.name, room: name, connection,
           valid: () => signedIn() && live.projectScopeFor(who.name) === scope }));
+      } else if (room.kind === "agents-live") {
+        const browser = who as Who & { via: "cookie" };
+        const scope = live.projectScopeFor(who.name);
+        if (scope === null) return json(response, 404, { error: "agents-live" });
+        const signedIn = sameBrowser(request, browser);
+        const valid = () => signedIn() && live.projectScopeFor(who.name) === scope;
+        joins.push(connection => {
+          // Proved before the room is made or read: an invalid viewer never causes a look at a file.
+          let ok = false;
+          try { ok = valid(); } catch { ok = false; }
+          if (!ok) { connection.send(name, "gone"); refusedJoin = true; return; }
+          // Each page's own room (its key carries this connection): a newcomer is never handed a digest computed earlier.
+          const key = agentsLive.keyOf(who.name, scope, randomBytes(9).toString("hex"));
+          liveLeads.set(key, () => { const again = readBrowser(request, browser); return again === null ? null : leadTilesFor(runtime, again); });
+          agentsLive.rooms.join(key, { name: who.name, room: name, connection, valid });
+        });
       } else if (room.kind === "task") {
         const browser = who as Who & { via: "cookie" };
         const family = familyOf(room.task);
@@ -321,6 +348,8 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
     const connection = new LiveConnection(response);
     // Each join below adds its room before the next speaks; a chat room alone keeps the stream open too.
     for (const join of joins) if (connection.open) join(connection);
+    // A page whose only room was refused at its join ends now (`ended`), its keep-alive stopped, not left open.
+    if (refusedJoin && connection.rooms === 0) connection.refuse(() => connection.close());
     request.once("close", () => connection.close());
   }
 
@@ -336,6 +365,7 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
       summaryRooms.close();
       teamRooms.close();
       agentRooms.close();
+      agentsLive.rooms.close();
       for (const viewer of [...chatViewers]) viewer.connection.close();
     },
   };

@@ -8,10 +8,10 @@
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { legacyLiveLogPath, liveDir, liveLogPath, liveWindowLines, openLiveLog, readLiveWindow, sweepLiveLogs } from "./live.js";
+import { LIVE_FILE_BOUND, LIVE_FILE_CAP, LIVE_SUB_FILE_CAP, LIVE_TOTAL_BYTES, legacyLiveLogPath, liveDir, liveLogPath, liveSubLogPath, liveWindowLines, openLiveLog, readLiveWindow, sweepLiveLogs } from "./live.js";
 import { advanceTail } from "./peek-cli.js";
 import { parseLiveRecords } from "./live-records.js";
 
@@ -63,7 +63,7 @@ describe("the window reader", () => {
     for (let read = 0; read < 10; read += 1) {
       const window = readLiveWindow(root, 4, offset);
       if (!window.ok) throw new Error(window.reason);
-      lines = lines.concat(liveWindowLines(window));
+      lines = lines.concat(liveWindowLines(window, false));
       if (window.nextOffset === offset) break;
       offset = window.nextOffset;
     }
@@ -75,13 +75,13 @@ describe("the window reader", () => {
     appendFileSync(liveLogPath(root, 12), `${"y".repeat(2 * 1024 * 1024)}\n${JSON.stringify({ k: "say", at: "", t: ["after"] })}\n`);
     const read = (from: number, tail = false) => { const window = readLiveWindow(root, 12, from, tail); if (!window.ok) throw new Error(window.reason); return window; };
     let offset = read(0).nextOffset, lines: string[] = [];
-    for (let step = 0; step < 5; step += 1) { const window = read(offset); lines = lines.concat(liveWindowLines(window)); if (window.nextOffset === offset) break; offset = window.nextOffset; }
+    for (let step = 0; step < 5; step += 1) { const window = read(offset); lines = lines.concat(liveWindowLines(window, false)); if (window.nextOffset === offset) break; offset = window.nextOffset; }
     expect(lines).toEqual(["[a line was too long to show]", "after"]);
     // A finished run's drain over a huge line that never ends moves to the end.
     appendFileSync(liveLogPath(root, 12), "z".repeat(200 * 1024));
     const drained = read(offset, true);
     expect(drained).toMatchObject({ eof: true });
-    expect(liveWindowLines(drained)).toEqual(["[a line was too long to show]"]);
+    expect(liveWindowLines(drained, false)).toEqual(["[a line was too long to show]"]);
   });
 
   test("an offset belongs to its file: a different file is a different generation", () => {
@@ -93,7 +93,7 @@ describe("the window reader", () => {
     if (!first.ok || !second.ok) throw new Error("unread");
     expect(first.gen).not.toBe(second.gen);
     // peek starts over visibly instead of reading the new file from the old offset.
-    const tail = advanceTail(root, 5, { offset: first.nextOffset, lines: ["old"], state: "live", gen: "records:0:0" });
+    const tail = advanceTail(root, 5, { offset: first.nextOffset, lines: ["old"], state: "live", gen: "records:0:0", commands: false }, false);
     expect(tail).toMatchObject({ offset: 0, state: "replaced" });
   });
 
@@ -103,12 +103,12 @@ describe("the window reader", () => {
     const window = readLiveWindow(root, 6, 0);
     if (!window.ok) throw new Error(window.reason);
     expect(window.format).toBe("text");
-    expect(liveWindowLines(window)).toEqual(["plain words", "cleared flipped", "[a line was hidden]"]);
+    expect(liveWindowLines(window, false)).toEqual(["plain words", "cleared flipped", "[a line was hidden]"]);
     // An older writer hid only a key's BEGIN line: its body never shows, even as a finished file's unended tail.
     writeFileSync(legacyLiveLogPath(root, 13), "[a credential-shaped line was redacted]\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC\n-----BEGIN PRIVATE KEY-----\nSYNTHETIC_BODY_123");
     const tail = readLiveWindow(root, 13, 0, true);
     if (!tail.ok) throw new Error(tail.reason);
-    expect(liveWindowLines(tail).join("\n")).not.toMatch(/MIIEvQ|SYNTHETIC_BODY/);
+    expect(liveWindowLines(tail, false).join("\n")).not.toMatch(/MIIEvQ|SYNTHETIC_BODY/);
   });
 
   test("a key block split across reads stays hidden: each read hands the next whether it ended inside one", () => {
@@ -117,14 +117,14 @@ describe("the window reader", () => {
     const first = readLiveWindow(root, 14, 0);
     if (!first.ok) throw new Error(first.reason);
     const keys = { inKey: false };
-    expect(liveWindowLines(first, keys)).toEqual(["before", "[a key block was hidden]"]);
+    expect(liveWindowLines(first, false, keys)).toEqual(["before", "[a key block was hidden]"]);
     expect(keys.inKey).toBe(true);
     appendFileSync(legacyLiveLogPath(root, 14), "MIIEowIBAAKCAQEA\n-----END PRIVATE KEY-----\nafter\n");
     const second = readLiveWindow(root, 14, first.nextOffset);
     if (!second.ok) throw new Error(second.reason);
-    expect(liveWindowLines(second, keys)).toEqual(["after"]);
+    expect(liveWindowLines(second, false, keys)).toEqual(["after"]);
     // peek carries it the same way.
-    const tail = advanceTail(root, 14, { offset: 0, lines: [], state: "not-yet" });
+    const tail = advanceTail(root, 14, { offset: 0, lines: [], state: "not-yet" }, false);
     expect(tail.lines.join("\n")).not.toContain("MIIEow");
   });
 
@@ -134,27 +134,27 @@ describe("the window reader", () => {
     const first = readLiveWindow(root, 15, 0);
     if (!first.ok) throw new Error(first.reason);
     const keys = { inKey: false, tail: "" };
-    expect(liveWindowLines(first, keys)).toEqual(["look -----BEG"]);
+    expect(liveWindowLines(first, false, keys)).toEqual(["look -----BEG"]);
     appendFileSync(legacyLiveLogPath(root, 15), "IN PRIVATE KEY-----\nYWJjZGVm\n-----END PRIVATE KEY-----\nafter\n");
     const second = readLiveWindow(root, 15, first.nextOffset);
     if (!second.ok) throw new Error(second.reason);
-    expect(liveWindowLines(second, keys)).toEqual(["[a key block was hidden]", "after"]);
+    expect(liveWindowLines(second, false, keys)).toEqual(["[a key block was hidden]", "after"]);
     // What rides the cursor is only ever a marker fragment, never part of a line — let alone a hidden one.
     const carried = { inKey: false, tail: "" };
-    liveWindowLines({ format: "text", text: "-----BEGIN KEY-----\nMIIEowIBAAKCAQEAabcdef12\n" }, carried);
+    liveWindowLines({ format: "text", text: "-----BEGIN KEY-----\nMIIEowIBAAKCAQEAabcdef12\n" }, false, carried);
     expect(carried.tail).toBe("|||");
-    liveWindowLines({ format: "text", text: "-----END KEY-----\nplain words -----BE\n" }, carried);
+    liveWindowLines({ format: "text", text: "-----END KEY-----\nplain words -----BE\n" }, false, carried);
     expect(carried.tail).toBe("-----BE|-----BE|-----BE|");
   });
 
   test("peek never keeps a key tail it could not have produced", () => {
-    expect(advanceTail(root, 99, { offset: 0, lines: [], state: "not-yet", keyTail: "TOPSECRET" }).keyTail).toBe("");
+    expect(advanceTail(root, 99, { offset: 0, lines: [], state: "not-yet", keyTail: "TOPSECRET" }, false).keyTail).toBe("");
   });
 
   test("peek's cursor moves by the bytes read even when nothing in them shows", () => {
     const log = openLiveLog(root, 9)!;
     log.close();
-    const tail = advanceTail(root, 9, { offset: 0, lines: [], state: "not-yet" });
+    const tail = advanceTail(root, 9, { offset: 0, lines: [], state: "not-yet" }, false);
     expect(tail.offset).toBeGreaterThan(0);
     expect(tail.lines).toEqual([]);
   });
@@ -172,5 +172,142 @@ describe("the sweep", () => {
     const swept = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, new Date("2026-10-18T12:00:00.000Z"));
     expect(swept.removed).toEqual(["11.log"]);
     expect(existsSync(liveLogPath(root, 10))).toBe(true);
+  });
+
+  // docs/plans/agents-view.md N3: a run's subagents' file is the run's own, swept with it and never an orphan.
+  const NOW = new Date("2026-10-18T12:00:00.000Z");
+  const finishedAt = (hoursAgo: number) => new Date(NOW.getTime() - hoursAgo * 3_600_000).toISOString();
+  const put = (name: string, bytes = 1, mtime = new Date("2026-01-01T00:00:00.000Z")) => {
+    mkdirSync(liveDir(root), { recursive: true });
+    const path = join(liveDir(root), name);
+    writeFileSync(path, "x");
+    if (bytes !== 1) truncateSync(path, bytes);
+    utimesSync(path, mtime, mtime);
+  };
+
+  test("an active run's subagents' file survives age pressure; a finished run's goes with its records", () => {
+    for (const name of ["7.jsonl", "7.sub.jsonl", "8.jsonl", "8.sub.jsonl", "9.sub.jsonl"]) put(name);
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = { 7: { outcome: null, finishedAt: null }, 8: { outcome: "built", finishedAt: finishedAt(30) } };
+    const swept = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, NOW);
+    expect(swept.removed.sort()).toEqual(["8.jsonl", "8.sub.jsonl", "9.sub.jsonl"]); // 9 has no run row: an orphan by age
+    expect(existsSync(liveSubLogPath(root, 7))).toBe(true);
+    expect(existsSync(liveLogPath(root, 7))).toBe(true);
+  });
+
+  test("under file-count pressure a run's two files count once and go together; an active run's never go", () => {
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = { 1: { outcome: null, finishedAt: null } };
+    put("1.jsonl"); put("1.sub.jsonl");
+    for (let id = 2; id <= LIVE_FILE_BOUND + 3; id += 1) {
+      runs[id] = { outcome: "built", finishedAt: finishedAt(10 - id / 1000) }; // oldest first, all within the day
+      put(`${id}.jsonl`);
+      if (id <= 3) put(`${id}.sub.jsonl`);
+    }
+    const swept = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, NOW);
+    expect(swept.removed.sort()).toEqual(["2.jsonl", "2.sub.jsonl", "3.jsonl", "3.sub.jsonl"]);
+    expect(existsSync(liveSubLogPath(root, 1))).toBe(true);
+  });
+
+  test("a finished file far past its cap goes at once, the total stays bounded oldest first, and an active run is exempt", () => {
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = { 1: { outcome: null, finishedAt: null } };
+    put("1.sub.jsonl", LIVE_SUB_FILE_CAP * 2); // active: its writer owns the cap
+    runs[2] = { outcome: "built", finishedAt: finishedAt(1) };
+    put("2.sub.jsonl", LIVE_SUB_FILE_CAP * 2); // finished and no file this plane writes: gone now
+    const count = Math.ceil(LIVE_TOTAL_BYTES / LIVE_SUB_FILE_CAP) + 2;
+    for (let id = 10; id < 10 + count; id += 1) { runs[id] = { outcome: "built", finishedAt: finishedAt(5 - id / 1000) }; put(`${id}.sub.jsonl`, LIVE_SUB_FILE_CAP); }
+    const swept = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, NOW);
+    expect(swept.removed.sort()).toEqual(["10.sub.jsonl", "11.sub.jsonl", "2.sub.jsonl"]);
+    expect(existsSync(liveSubLogPath(root, 1))).toBe(true);
+  });
+
+  test("a file replaced, or whose run turned active, between classifying and removing is kept (Codex av2 #1)", () => {
+    put("900.sub.jsonl"); put("901.sub.jsonl");
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = {};
+    let locked = 0;
+    const store = { getRun: (id: number) => runs[id] ?? null, transact: <T>(body: () => T): T => { locked += 1; return body(); } };
+    const swept = sweepLiveLogs(store, root, NOW, { beforeRemove: name => {
+      // Another process admits run 900 and its writer replaces the old file; run 901's file is swapped under the same name.
+      if (name === "900.sub.jsonl") { runs[900] = { outcome: null, finishedAt: null }; unlinkSync(join(liveDir(root), name)); writeFileSync(join(liveDir(root), name), "new run's own records\n"); }
+      if (name === "901.sub.jsonl") { unlinkSync(join(liveDir(root), name)); writeFileSync(join(liveDir(root), name), "someone else's\n"); }
+    } });
+    expect(swept.removed).toEqual([]);
+    expect(readFileSync(liveSubLogPath(root, 900), "utf8")).toBe("new run's own records\n");
+    expect(existsSync(liveSubLogPath(root, 901))).toBe(true);
+    expect(locked).toBe(2); // each removal re-proves under the store's write lock
+  });
+
+  test("a removal that fails stays counted: the sweep goes on until the bound and the total are really met (Codex av2 #3)", () => {
+    // The removal of `name` is denied (whatever private name the sweep has claimed it under).
+    let current = "";
+    const denied = (name: string) => ({ beforeRemove: (file: string) => { current = file; }, unlink: (path: string) => { if (`/${current}` === name) throw Object.assign(new Error("denied"), { code: "EACCES" }); unlinkSync(path); } });
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = {};
+    for (let id = 2; id <= LIVE_FILE_BOUND + 3; id += 1) { runs[id] = { outcome: "built", finishedAt: finishedAt(10 - id / 1000) }; put(`${id}.jsonl`); }
+    const counted = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, NOW, denied("/2.jsonl"));
+    expect(counted.removed.sort()).toEqual(["3.jsonl", "4.jsonl"]);
+    expect(existsSync(liveLogPath(root, 2))).toBe(true); // put back under its own name
+    rmSync(liveDir(root), { recursive: true, force: true });
+    const count = Math.ceil(LIVE_TOTAL_BYTES / LIVE_SUB_FILE_CAP) + 2;
+    for (let id = 10; id < 10 + count; id += 1) { runs[id] = { outcome: "built", finishedAt: finishedAt(5 - id / 1000) }; put(`${id}.sub.jsonl`, LIVE_SUB_FILE_CAP); }
+    const bytes = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, NOW, denied("/10.sub.jsonl"));
+    expect(bytes.removed.sort()).toEqual(["11.sub.jsonl", "12.sub.jsonl"]);
+  });
+
+  test("files are measured after their run is settled finished: grown, or created, before it finished (Codex av2 #4)", () => {
+    const count = Math.ceil(LIVE_TOTAL_BYTES / LIVE_SUB_FILE_CAP) + 1;
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = {};
+    for (let id = 10; id < 10 + count; id += 1) { runs[id] = { outcome: "built", finishedAt: finishedAt(5 - id / 1000) }; put(`${id}.jsonl`); }
+    const seen = new Set<number>();
+    const store = { getRun: (id: number) => {
+      // The first look at each run: its writer was still finishing — the oldest grows its records, the rest add a subagents' file.
+      if (!seen.has(id)) { seen.add(id); if (id === 10) truncateSync(liveLogPath(root, id), LIVE_FILE_CAP); else put(`${id}.sub.jsonl`, LIVE_SUB_FILE_CAP); }
+      return runs[id] ?? null;
+    } };
+    const swept = sweepLiveLogs(store, root, NOW);
+    // 64 subagent files of 16 MiB plus 4 MiB of records: over 1 GiB, so the oldest runs go until it isn't.
+    expect(swept.removed.sort()).toEqual(["10.jsonl", "11.jsonl", "11.sub.jsonl"]);
+  });
+
+  test("a swap right after the final check is caught on the private claim: the active run's file survives (Codex av2 r2 #1)", () => {
+    put("900.sub.jsonl");
+    openLiveLog(root, 50)!.close();
+    const active = statSync(liveLogPath(root, 50)).ino;
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = { 50: { outcome: null, finishedAt: null } };
+    let locked = 0;
+    const store = { getRun: (id: number) => runs[id] ?? null, transact: <T>(body: () => T): T => { locked += 1; return body(); } };
+    // Between the run-state check and the claim, another process renames an active run's file onto the candidate name.
+    const swept = sweepLiveLogs(store, root, NOW, { afterCheck: name => renameSync(liveLogPath(root, 50), join(liveDir(root), name)) });
+    expect(swept.removed).toEqual([]);
+    expect(statSync(liveSubLogPath(root, 900)).ino).toBe(active);
+    expect(readdirSync(liveDir(root)).filter(name => name.startsWith("."))).toEqual([]); // nothing left under a claim
+    expect(locked).toBe(1); // the lock covered only the run-state check that passed; the claim never reached the second
+  });
+
+  test("only a confirmed absence counts as gone: a claim that can't be measured is put back and stays counted (Codex av2 r2 #2)", () => {
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = {};
+    let current = "";
+    for (const code of ["EACCES", "EIO"]) {
+      rmSync(liveDir(root), { recursive: true, force: true });
+      for (let id = 2; id <= LIVE_FILE_BOUND + 3; id += 1) { runs[id] = { outcome: "built", finishedAt: finishedAt(10 - id / 1000) }; put(`${id}.jsonl`); }
+      const swept = sweepLiveLogs({ getRun: id => runs[id] ?? null }, root, NOW, { beforeRemove: file => { current = file; },
+        lstat: path => { if (current === "2.jsonl" && path.includes(".sweep-claim-")) throw Object.assign(new Error(code), { code }); return statSync(path, { throwIfNoEntry: true })!; } });
+      expect(existsSync(liveLogPath(root, 2))).toBe(true);
+      expect(swept.removed.sort()).toEqual(["3.jsonl", "4.jsonl"]);
+      expect(readdirSync(liveDir(root)).length).toBe(LIVE_FILE_BOUND);
+    }
+  });
+
+  test("a run first seen while the sweep measures waits for the next pass (Codex av2 r2 #3)", () => {
+    put("20.jsonl");
+    const runs: Record<number, { outcome: string | null; finishedAt: string | null }> = { 20: { outcome: "built", finishedAt: finishedAt(30) } };
+    // While run 20 is settled, run 21 starts, writes its files and finishes.
+    const store = { getRun: (id: number) => { if (id === 20 && runs[21] === undefined) { put("21.jsonl"); put("21.sub.jsonl"); runs[21] = { outcome: "built", finishedAt: finishedAt(30) }; } return runs[id] ?? null; } };
+    expect(sweepLiveLogs(store, root, NOW).removed).toEqual(["20.jsonl"]);
+    expect(sweepLiveLogs(store, root, NOW).removed.sort()).toEqual(["21.jsonl", "21.sub.jsonl"]);
+  });
+
+  test("a run that can't be looked up is kept this pass; the rest are swept", () => {
+    for (const name of ["4.jsonl", "4.sub.jsonl", "5.jsonl"]) put(name);
+    const swept = sweepLiveLogs({ getRun: id => { if (id === 4) throw new Error("busy"); return { outcome: "built", finishedAt: finishedAt(30) }; } }, root, NOW);
+    expect(swept.removed).toEqual(["5.jsonl"]);
+    expect(existsSync(liveSubLogPath(root, 4))).toBe(true);
   });
 });

@@ -225,6 +225,10 @@ get("tasks", "tasks", "/tasks", { limited: "collection" });
 get("tasks", "queue", "/queue");
 get("pages", "peek", "/peek", free);
 get("pages", "agents", "/agents", { limited: "unscoped", ...free });
+// The Agents view's Live grid (docs/plans/agents-view.md §3): read-only, every request filtered to what the viewer may see.
+// Browser sessions only, like the transcript and the peek: no token (a lead's, a runner's, a remote one) reads live output.
+get("pages", "agents.live", "/agents/live", { limited: "unscoped", callers: ["cookie"], ...free });
+get("pages", "agents.live.read", `^\\/agents\\/live\\/${ID}$`, { limited: "unscoped", callers: ["cookie"], ...free, sample: "/agents/live/1" });
 get("pages", "fleet", "/fleet", free);
 get("tasks", "tasks.new", "/tasks/new", { limited: "collection", ...free });
 get("tasks", "task.page", `^\\/t\\/${TASK}$`, { project: "task", limited: "resource", ...free, sample: "/t/one" });

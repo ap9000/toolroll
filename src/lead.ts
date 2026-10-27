@@ -591,6 +591,10 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       return fail("malformed-reply", LEAD_FAILURE_COPY.unreadableUnknownCost, true);
     }
     const answer = result.answer;
+    // The streamed reply's finished text, once, secret-checked whole: only now may its last word show live.
+    if (!direct && input.onProgress !== undefined && !controller.signal.aborted && answer.text !== "" && scanForSecrets(answer.text).length === 0) {
+      progress({ kind: "text", turn: turnId, step: steps, text: answer.text, final: true });
+    }
     // Usage that cannot be true — more input tokens than bytes sent — is a
     // malformed reply with unknown cost, never a number to settle by.
     if (direct && answer.tokensIn > requestBytes) {

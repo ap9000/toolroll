@@ -284,9 +284,11 @@ describe("the lead's turn", () => {
     const outcome = await runLeadTurn({ store, who, session: live, thread: thread(), config, key: null, message: "what needs me?", subscriptionRunner, clock, onProgress: event => events.push(event) });
     expect(outcome).toMatchObject({ ok: true, reply: "One decision needs you." });
     if (!outcome.ok) throw new Error("unreachable");
-    expect(events.map(event => event.kind === "tool" ? `tool:${event.label}` : event.kind === "tool-result" ? `result:${event.outcome.state}` : event.kind === "text" ? `text:${event.step}:${event.text}` : event.kind === "step" ? `step:${event.step}` : event.kind)).toEqual([
-      "started", "step:1", "text:1:Let me look.", "tool:Recapping", "result:succeeded", `tool:${leadToolLabel("find_tools")}`, "result:succeeded",
+    expect(events.map(event => event.kind === "tool" ? `tool:${event.label}` : event.kind === "tool-result" ? `result:${event.outcome.state}` : event.kind === "text" ? `${event.final ? "final" : "text"}:${event.step}:${event.text}` : event.kind === "step" ? `step:${event.step}` : event.kind)).toEqual([
+      "started", "step:1", "text:1:Let me look.", "final:1:Let me look.", "tool:Recapping", "result:succeeded", `tool:${leadToolLabel("find_tools")}`, "result:succeeded",
       "step:2", "tool:Reading the flows", "result:failed", "step:3", "text:3:One decision", "text:3:One decision needs you.",
+      // Slice 8: each step's finished answer once more, secret-checked whole, so a live view may show its last word.
+      "final:3:One decision needs you.",
     ]);
     const starts = events.filter(event => event.kind === "tool");
     const results = events.filter(event => event.kind === "tool-result");
