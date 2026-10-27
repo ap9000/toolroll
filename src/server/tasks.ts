@@ -652,6 +652,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       .listTasksScoped(project, undefined, 100, null)
       .filter(one => one.state !== "done" && one.state !== "cancelled" && visible(one.repo))
       .map(one => ({ id: one.id, title: one.title }));
+    // A refused draft keeps the task it was to start after, even if the refreshed list no longer carries it.
+    const after = draft?.values?.get("after") ?? "";
+    if (after !== "" && !chainable.some(one => one.id === after)) chainable.unshift({ id: after, title: "(as submitted)" });
     const chrome = chromeFor(project, "tasks");
     const revision = draft?.values !== undefined ? undefined : who.via === "cookie" ? who.session.projectRevision : 0;
     return sendScreen(response, status, newTaskPage(chrome, project, revision, problem, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? [], draft));
@@ -669,7 +672,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const task = matchTaskPath(url.pathname, "");
     if (task === null) return noPage(who, response);
     const family = familyOf(task.taskId);
-    if (family === null) return refuse(response, who, 404, "no such task", "/tasks");
+    if (family === null) return refuse(response, who, 404, "no such task", "/work");
     const version = url.searchParams.get("version");
     if (version !== null && !family.versions.some(one => one.id === version)) return refuse(response, who, 404, "That version is not available for this task.", taskHref(family.root.id));
     // A version's own address lands on its family's page, still asking for the plan editor when it did (Chat's Edit plan).
@@ -717,10 +720,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (evidence === null) return noPage(who, response);
     const access = workAccess();
     const family = store.taskFamilyOf(evidence.taskId, access.repos, access.includeUnplaced);
-    if (family === null || !visible(family.root.repo)) return refuse(response, who, 404, "no such task", "/tasks");
+    if (family === null || !visible(family.root.repo)) return refuse(response, who, 404, "no such task", "/work");
     if (evidence.taskId !== family.root.id) return redirect(response, `${taskHref(family.root.id)}/evidence${url.search}`);
     const pack = evidencePack(store, family.root.id, access, who.name, now, evidenceRoot);
-    if (pack === null) return refuse(response, who, 404, "no such task", "/tasks");
+    if (pack === null) return refuse(response, who, 404, "no such task", "/work");
     if (url.searchParams.get("format") === "json") {
       response.writeHead(200, { "content-type": "application/json; charset=utf-8", "content-disposition": `attachment; filename="evidence-${family.root.id.replace(/[^A-Za-z0-9._-]/g, "_")}.json"`,
         "cache-control": "no-store", "x-content-type-options": "nosniff" });
@@ -1042,7 +1045,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (who.via === "cookie") {
       const seen = body.get("projectRevision");
       if (seen !== null && seen !== String(who.session.projectRevision)) {
-        return refuse(response, who, 409, "the open project changed since this form was rendered — reload and try again", "/tasks");
+        return refuse(response, who, 409, "the open project changed since this form was rendered — reload and try again", "/tasks/new");
       }
     }
     const id = (body.get("id") ?? "").trim();
@@ -1061,8 +1064,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // finding 1): the form's `required` is a courtesy, not the guard — a
     // direct POST with no project open must not mint an unplaced task
     // under a ceiling. Unscoped mode keeps its historic unplaced filings.
+    // A refusal from here on is the add page again with the person's own words (the old task list kept them too).
+    const draft: TaskComposerPrefill = { title, goal: body.get("goal") ?? "", not: body.get("not") ?? "", touches: body.get("touches") ?? "", acceptance: body.get("acceptance") ?? "", values: body.sent };
     if (!unscopedMode && effective === "") {
-      return newTaskScreen(ctx, 400, "name a repository — no project is open, so the task must say where it belongs", null);
+      return newTaskScreen(ctx, 400, "name a repository — no project is open, so the task must say where it belongs", draft);
     }
     let repo = effective;
     let admitted: string[] | null = unscopedMode ? null : admissionList() ?? [];
@@ -1070,7 +1075,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (rootMode && effective !== "") {
       const canonical = (await authorizedProject(liveCeiling(), effective)) ? canonicalProject(effective) : null;
       if (canonical === null || canonical === undefined) {
-        return newTaskScreen(ctx, 403, `${effective} is outside what this server was configured to show`, null);
+        return newTaskScreen(ctx, 403, `${effective} is outside what this server was configured to show`, draft);
       }
       repo = canonical;
       admitted = [canonical];
@@ -1314,7 +1319,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // record as `toolroll run settle`, refused while anything of the run may still be running.
     const back = taskHref(act.taskId);
     const ref = store.lookupRef(act.taskId);
-    if (ref === null || !visible(ref.repo)) return refuse(response, who, 404, "no such task", "/tasks");
+    if (ref === null || !visible(ref.repo)) return refuse(response, who, 404, "no such task", "/work");
     const named = (body.get("run") ?? "").trim();
     const run = /^[0-9]{1,15}$/.test(named) ? store.getRun(Number(named)) : null;
     const runTask = run === null ? null : store.externalIdFor(run.taskRef);
@@ -1347,7 +1352,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // result's pull request. The flow re-reads GitHub before merging and records who merged in the ledger.
     if (store.isDemo()) return taskScreen(response, who, act.taskId, "The demo merges nothing.", 403);
     const ref = store.lookupRef(act.taskId);
-    if (ref === null || !visible(ref.repo)) return refuse(response, who, 404, "no such task", "/tasks");
+    if (ref === null || !visible(ref.repo)) return refuse(response, who, 404, "no such task", "/work");
     const named = (body.get("run") ?? "").trim();
     const run = /^[0-9]{1,15}$/.test(named) ? store.getRun(Number(named)) : null;
     const runTask = run === null ? null : store.externalIdFor(run.taskRef);
@@ -1799,10 +1804,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
   ): void {
     const ref = store.lookupRef(taskId);
     if (ref === null || store.getTask(taskId) === null) {
-      return refuse(response, who, 404, "no such task", "/tasks");
+      return refuse(response, who, 404, "no such task", "/work");
     }
     if (!visible(ref.repo)) {
-      return refuse(response, who, 404, "no such task", "/tasks");
+      return refuse(response, who, 404, "no such task", "/work");
     }
 
     switch (verb) {

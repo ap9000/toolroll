@@ -1305,7 +1305,6 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       { label: "flows", href: "/flows" },
       { label: "done", href: "/done" },
       { label: "review cockpit", href: "/review" },
-      { label: "task list", href: "/tasks" },
       { label: "fleet", href: "/fleet" },
       { label: "activity", href: "/activity" },
       { label: "action ledger", href: "/ledger" },
@@ -1320,8 +1319,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       entries.push({ label: `${one.id} — ${one.title}`, href: `/t/${encodeURIComponent(one.id)}` });
     }
     const saturated = open.length > 200;
-    const safeEntries = restricted() ? entries.filter(one => ["/work", "/work?view=needs-you", "/", "/board", "/flows", "/done", "/review", "/tasks", "/runs", "/projects", "/ledger"].includes(one.href) || one.href.startsWith("/t/")) : entries;
-    return jsonScript(saturated ? [...safeEntries, { label: "… more in the task list", href: "/tasks" }] : safeEntries, { id: "palette-index" });
+    const safeEntries = restricted() ? entries.filter(one => ["/work", "/work?view=needs-you", "/", "/board", "/flows", "/done", "/review", "/runs", "/projects", "/ledger"].includes(one.href) || one.href.startsWith("/t/")) : entries;
+    return jsonScript(saturated ? [...safeEntries, { label: "… more in Tasks", href: "/work" }] : safeEntries, { id: "palette-index" });
   }
 
   /**
