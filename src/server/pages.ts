@@ -27,6 +27,9 @@ import { ledgerBody } from "../ledger-view.js";
 import { agentLanesOf, agentRowOf, agentsBoardOf, agentFactsFor, laneWindowOf, sealedDiffOf } from "../agents-board.js";
 import { markAgentSeen } from "../agent-board.js";
 import { agentsLiveOf } from "../agents-live.js";
+import { readChildWindow } from "../live-children-read.js";
+import { readMainWindow } from "../live-main-read.js";
+import { runLiveCommands } from "../store.js";
 import type { BrowserAgentDetail,BrowserAgentsView } from "../browser-workspace.js";
 import { prometheusMetrics } from "../metrics.js";
 import { readMonitoring } from "../monitoring-settings.js";
@@ -536,18 +539,6 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     return sendScreen(response, 200, screen("Agents", fallback, { chrome: chromeFor(project, "runs"), workspace: { view } }));
   }
 
-  /** The Live grid's tiles (JSON, read-only): every role's running agents and those that just ended, that this viewer
-   * may see — the console's ceiling and the account's own access, proved per run, on every request. */
-  async function agentsLive(ctx: HandlerContext): Promise<void> {
-    const { who, response } = ctx;
-    const tiles = agentsLiveOf(store, clock(), {
-      canSee: run => run.repo !== null && runVisible(run) && store.accountCanAccess(who.name, run.repo),
-      localRunner: options.localRunner,
-    });
-    response.setHeader("cache-control", "no-store");
-    return respond(response, 200, "application/json", JSON.stringify({ tiles }));
-  }
-
   async function fleetPage(ctx: HandlerContext): Promise<void> {
     const { url, response, project } = ctx;
     // Cross-project by design: which agent is on which project is the
@@ -1041,6 +1032,48 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     return respond(response, 200, "application/json", JSON.stringify({ proof: createHmac("sha256", Buffer.from(identity, "hex")).update(challenge).digest("hex") }));
   }
 
+  // The Live grid (docs/plans/agents-view.md §3), kept after every other handler.
+  /** The Live grid's tiles (JSON, read-only): every role's running agents and those that just ended, that this viewer
+   * may see — the console's ceiling and the account's own access, proved per run, on every request. */
+  async function agentsLive(ctx: HandlerContext): Promise<void> {
+    const { who, response } = ctx;
+    const tiles = agentsLiveOf(store, clock(), {
+      canSee: run => run.repo !== null && runVisible(run) && store.accountCanAccess(who.name, run.repo),
+      localRunner: options.localRunner,
+    });
+    response.setHeader("cache-control", "no-store");
+    return respond(response, 200, "application/json", JSON.stringify({ tiles }));
+  }
+
+  /** This console's key for the Live grid's read cursors: random, in memory only (never where a build can reach), so a
+   * restart makes old cursors start over visibly. A cursor is state, never permission. */
+  const liveCursorKey = randomBytes(32);
+
+  /** One window of a run's live output for the Live grid (JSON, read-only): its own records or its subagents'. Access
+   * is proved before the read (ceiling, account, this computer's run) and again after it, before a byte is sent. */
+  async function agentsLiveRead(ctx: HandlerContext): Promise<void> {
+    const { url, who, response } = ctx;
+    response.setHeader("cache-control", "no-store");
+    const runId = Number(url.pathname.slice("/agents/live/".length));
+    const file = url.searchParams.get("file");
+    const cursor = url.searchParams.get("cursor");
+    if ((file !== "main" && file !== "sub") || [...url.searchParams.keys()].some(key => key !== "file" && key !== "cursor")) {
+      return respond(response, 400, "application/json", JSON.stringify({ error: "request" }));
+    }
+    const allowed = (): boolean => {
+      const run = store.getRun(runId);
+      const repo = run === null ? null : taskRepoOf(run.taskRef);
+      return run !== null && repo !== null && runVisible(run) && store.accountCanAccess(who.name, repo);
+    };
+    if (!allowed()) return respond(response, 404, "application/json", JSON.stringify({ error: "run" }));
+    if (options.localRunner === undefined || store.getRun(runId)?.runner !== options.localRunner) return respond(response, 200, "application/json", JSON.stringify({ error: "off" }));
+    const read = { key: liveCursorKey, commands: runLiveCommands(store, runId) };
+    const window = file === "sub" ? readChildWindow(evidenceRoot, runId, cursor, read) : readMainWindow(evidenceRoot, runId, cursor, read);
+    // Re-proved after the read: a narrowed account or a run gone from view gets nothing it read.
+    if (!allowed() || store.getRun(runId)?.runner !== options.localRunner) return respond(response, 404, "application/json", JSON.stringify({ error: "run" }));
+    return respond(response, 200, "application/json", JSON.stringify(window.ok ? window : { error: window.reason }));
+  }
+
   const registrations = handlersOf("pages", {
     "projects.browse": projectsBrowse,
     "projects.github": projectsGithub,
@@ -1054,6 +1087,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "peek": peekPage,
     "agents": agentsPage,
     "agents.live": agentsLive,
+    "agents.live.read": agentsLiveRead,
     "fleet": fleetPage,
     "ledger.export": ledgerExport,
     "menu": menuPage,

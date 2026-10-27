@@ -448,3 +448,62 @@ describe("the Live grid (docs/plans/agents-view.md §3)", () => {
     expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(1);
   });
 });
+
+describe("the Live grid's reads (docs/plans/agents-view.md §3)", () => {
+  let local: Server, localBase: string;
+  beforeEach(async () => {
+    local = createDecisionServer({ store, evidenceRoot, repos: [repoA, repoB], clock: () => new Date(), localRunner: "builder-1" });
+    await new Promise<void>(resolve => local.listen(0, "127.0.0.1", resolve));
+    const address = local.address();
+    if (typeof address !== "object" || address === null) throw new Error("no address");
+    localBase = `http://127.0.0.1:${address.port}`;
+  });
+  afterEach(async () => { local.closeAllConnections?.(); await new Promise<void>(resolve => local.close(() => resolve())); });
+  const signIn = async (name: string, token: string) => {
+    const response = await fetch(`${localBase}/login`, { method: "POST", body: new URLSearchParams({ name, token }), redirect: "manual" });
+    return (response.headers.get("set-cookie") ?? "").split(";")[0] as string;
+  };
+  const get = async (path: string, cookie: string) => {
+    const response = await fetch(`${localBase}${path}`, { headers: { cookie } });
+    return { status: response.status, body: await response.json() as Record<string, unknown> & { records?: unknown[]; cursor?: string } };
+  };
+  const record = async (run: number) => {
+    const { openLiveLog } = await import("./live.js");
+    const log = openLiveLog(evidenceRoot, run, { base: worktree, commands: false })!;
+    log.observe({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "planning" }, { type: "tool_use", id: "t1", name: "Task", input: { description: "Check the tests" } }] } });
+    log.observe({ type: "assistant", parent_tool_use_id: "t1", message: { content: [{ type: "text", text: "running them" }, { type: "tool_use", id: "b1", name: "Bash", input: { command: "cat ~/.ssh/id_ed25519" } }] } });
+    return log;
+  };
+
+  test("the run's own records and its subagents', a window at a time, from a cursor; command detail withheld", async () => {
+    const run = running("t-read", repoA);
+    const log = await record(run);
+    const cookie = await signIn("alex", alexToken);
+    const main = await get(`/agents/live/${run}?file=main`, cookie);
+    expect(main.status).toBe(200);
+    expect(JSON.stringify(main.body.records)).toContain("planning");
+    const sub = await get(`/agents/live/${run}?file=sub`, cookie);
+    expect(sub.body.records).toEqual(expect.arrayContaining([expect.objectContaining({ k: "child", s: 1, desc: "Check the tests" }), expect.objectContaining({ k: "say", s: 1, t: ["running them"] })]));
+    expect(JSON.stringify(sub.body)).not.toContain("id_ed25519");
+    log.observe({ type: "assistant", parent_tool_use_id: "t1", message: { content: [{ type: "text", text: "all green" }] } });
+    log.close();
+    const next = await get(`/agents/live/${run}?file=sub&cursor=${encodeURIComponent(sub.body.cursor!)}`, cookie);
+    expect(JSON.stringify(next.body.records)).toContain("all green");
+    expect(JSON.stringify(next.body.records)).not.toContain("running them");
+    expect((await get(`/agents/live/${run}?file=sub&cursor=forged.cursor`, cookie)).body).toMatchObject({ restarted: true });
+  });
+
+  test("another project's run, an unknown file, another runner's run: refused or off, never read", async () => {
+    const run = running("t-other", repoA);
+    (await record(run)).close();
+    expect((await get(`/agents/live/${run}?file=main`, await signIn("robin", robinToken))).status).toBe(404);
+    const cookie = await signIn("alex", alexToken);
+    expect((await get(`/agents/live/${run}?file=../etc`, cookie)).status).toBe(400);
+    expect((await get(`/agents/live/${run}?file=main&extra=1`, cookie)).status).toBe(400);
+    store.handle.prepare("UPDATE run SET runner = 'elsewhere' WHERE id = ?").run(run);
+    expect((await get(`/agents/live/${run}?file=main`, cookie)).body).toEqual({ error: "off" });
+    // Reading changes nothing: no seen mark, no watch.
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(0);
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_view").get()?.["n"]).toBe(0);
+  });
+});

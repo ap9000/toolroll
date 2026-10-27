@@ -84,20 +84,28 @@ function streamsOf(value: unknown): StreamState[] | null {
   return open <= CHILD_OPEN_STEPS_CAP ? out : null;
 }
 
-function seal(state: ReadState, key: Buffer): string {
+/** Seal a reader's state under the caller's key (the same form for the run's own file and its subagents'). */
+export function sealCursor(state: object, key: Buffer): string {
   const body = Buffer.from(JSON.stringify(state), "utf8").toString("base64url");
   return `${body}.${createHmac("sha256", key).update(body).digest("base64url")}`;
 }
 
-function unseal(cursor: string, key: Buffer, run: number, gen: string): ReadState | null {
+/** A sealed state's object when the seal holds and it is within the cap; null otherwise (the caller re-checks it). */
+export function openCursor(cursor: string, key: Buffer): Record<string, unknown> | null {
   if (cursor.length > CURSOR_CAP) return null;
   const [body, mac, extra] = cursor.split(".");
   if (body === undefined || mac === undefined || extra !== undefined) return null;
   const want = createHmac("sha256", key).update(body).digest();
   const given = Buffer.from(mac, "base64url");
   if (given.length !== want.length || !timingSafeEqual(given, want)) return null;
+  try { return object(JSON.parse(Buffer.from(body, "base64url").toString("utf8"))); } catch { return null; }
+}
+
+const seal = (state: ReadState, key: Buffer): string => sealCursor(state, key);
+
+function unseal(cursor: string, key: Buffer, run: number, gen: string): ReadState | null {
   try {
-    const raw = object(JSON.parse(Buffer.from(body, "base64url").toString("utf8")));
+    const raw = openCursor(cursor, key);
     const streams = streamsOf(raw?.["streams"]);
     if (raw === null || streams === null || raw["run"] !== run || raw["gen"] !== gen) return null;
     const off = raw["off"];
