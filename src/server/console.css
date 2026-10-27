@@ -178,16 +178,18 @@
   .chip {
     display: inline-flex; align-items: center; gap: .375rem; height: 1.25rem; padding: 0 .375rem; border-radius: var(--so-radius-sm);
     font-family: var(--font-sans); font-size: .71875rem; font-weight: 500; line-height: 1; white-space: nowrap; vertical-align: middle;
-    background: var(--so-neutral-soft); color: var(--so-neutral-ink);
+    background: var(--so-neutral-soft); color: var(--so-ink);
   }
-  .chip-dot { width: .375rem; height: .375rem; flex-shrink: 0; border-radius: var(--so-radius-full); background: currentColor; }
+  /* Ink words, the tone in the dot (the Agents → Live chip); Needs you keeps amber words leaned toward ink. */
+  .chip-dot { width: .375rem; height: .375rem; flex-shrink: 0; border-radius: var(--so-radius-full); background: var(--so-neutral-ink); }
   .chip-needs { background: var(--so-warning-soft); color: color-mix(in oklab, var(--so-warning) 85%, var(--so-ink)); }
   .chip-needs .chip-dot { background: var(--so-warning); }
-  .chip-live { background: var(--so-info-soft); color: color-mix(in oklab, var(--so-info) 85%, var(--so-ink)); }
+  .chip-live { background: var(--so-info-soft); }
   .chip-live .chip-dot { background: var(--so-info); }
-  .chip-done { background: var(--so-success-soft); color: color-mix(in oklab, var(--so-success) 85%, var(--so-ink)); }
+  .chip-done { background: var(--so-success-soft); }
   .chip-done .chip-dot { background: var(--so-success); }
-  .chip-failed { background: var(--so-danger-soft); color: var(--so-danger); }
+  .chip-failed { background: var(--so-danger-soft); }
+  .chip-failed .chip-dot { background: var(--so-danger); }
   /* The frame (components/ui/frame.tsx, after ReUI's Frame): a raised well with a hairline, its heading on the
      well's fill, and paper panels whose corners sit concentric inside it. No shadow on a panel. */
   .frame { display: flex; flex-direction: column; gap: .25rem; padding: .25rem; border: 1px solid var(--so-line); border-radius: var(--so-radius-card); background: var(--so-raised); }

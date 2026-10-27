@@ -461,7 +461,7 @@ Quiet, compact, and ink by default. The colour is saved for the one verb that se
 ### Badges (status chips)
 - **Style:** 5px corners, 1px by 6px padding, 11.5px / 500 on an 18px line, in sentence case. The text is the hue and the fill is its soft wash. There is no border.
 - **Tones:** neutral (the default, for any fact), attention (accent, a person is needed), danger, warning, info and success. A status's tone comes from one mapping (`toneOf`), so a task reads the same in the list, in the Crew sheet and on its own page.
-- **Status chip:** 20px tall, 6px corners, 11.5px / 500 words with 6px between a 6px dot and the word, on the tone's soft wash (`Badge size="chip" dot`, and `.chip` with `.chip-dot` on server pages; after ReUI's light badge). The dot is decoration; the word carries the state.
+- **Status chip:** 20px tall, 6px corners, 11.5px / 500 words with 6px between a 6px dot and the word, on the tone's soft wash with ink words and the tone in the dot (`Badge size="chip" dot`, and `.chip` with `.chip-dot` on server pages; after ReUI's light badge; the Agents → Live chip), so every chip reads at 4.5:1 whatever its hue. The dot is decoration; the word carries the state.
 - **Needs you chip:** the amber wash with an amber dot. Its words lean 15% toward ink (`text-needs`), because amber text alone reads 4.21:1 on its wash in light; mixed it reads above 5:1, and above 9:1 in dark. It sits on the thing that waits (the pinned "Needs you" bar, a waiting tile or card), once per thing, never on every row of a list.
 - **Peek chips:** on the Projects page, only "N waiting on you" takes colour (attention). Running, queued and built today are neutral facts.
 
