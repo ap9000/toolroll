@@ -104,12 +104,15 @@ export function useWorkspace(initial: BrowserWorkspace) {
   const mounted = useRef(true);
   const sendLatch = useRef(false);
 
+  /** The conversation this page's own send started, by its acknowledgement (quiet page visits). */
+  const startedBySend = useRef<number | null>(null);
   const updateDraft = useCallback((next: ChatDraft) => {
     state.current.draft = next;
     setDraft(next);
-    const owner = scopeOf(initial);
+    // The draft lives with the conversation shown now: once a first send started it, a reload restores it from there.
+    const owner = scopeOf(state.current.workspace);
     if (owner) setStorageAvailable(saveDraft(browserStorage(), owner, next));
-  }, [initial]);
+  }, []);
 
   // A task page follows its task's room (live-task.tsx); a conversation or a live page follows the workspace's.
   const liveTask = initial.view?.kind === "task" && initial.view.live != null && !initial.sensitive;
@@ -135,15 +138,24 @@ export function useWorkspace(initial: BrowserWorkspace) {
         return;
       }
       const next = read.workspace;
-      if (!sameConversation(initial, next)) {
+      // A page that showed no conversation accepts the one its own send started: acknowledged, or holding its receipt.
+      const started = startedBySend.current ?? (asked !== null && next.receipt?.request === asked && next.receipt.received ? next.conversation?.sessionId ?? null : null);
+      if (!sameConversation(state.current.workspace, next, started)) {
+        // A read that lands while this page's first send is still on its way decides nothing: the send's own
+        // acknowledgement, or the read it asks for afterwards, says whether the started conversation is this one.
+        if (state.current.workspace.conversation?.sessionId === 0 && sendLatch.current) return;
         state.current.stale = true;
         setStale(true);
         setNotice("This conversation changed or ended. Reconnect to continue with your draft.");
         return;
       }
       const received = receiveDraft(state.current.draft, asked, next.receipt);
-      if (received !== state.current.draft) updateDraft(received);
+      const before = scopeOf(state.current.workspace);
+      const moved = state.current.workspace.conversation?.sessionId !== next.conversation?.sessionId;
       state.current.workspace = next;
+      if (received !== state.current.draft || moved) updateDraft(received);
+      // The draft moved with the conversation its first send started: the record kept under session 0 goes.
+      if (moved && before) saveDraft(browserStorage(), before, emptyDraft(""));
       setWorkspace(next);
       setNotice(received.pending ? "Delivery is not confirmed. Check again before sending another message." : "");
     } catch (error) {
@@ -215,6 +227,7 @@ export function useWorkspace(initial: BrowserWorkspace) {
     setNotice("");
     try {
       const result = await sendMessage(current.workspace, next.pending, fetch, mode);
+      if (current.workspace.conversation?.sessionId === 0 && result.session !== undefined) startedBySend.current = result.session;
       if (!mounted.current) return result.refused ? "refused" : result.queued === true ? "queued" : "accepted";
       if (result.refused) {
         updateDraft(rejectDraft(state.current.draft, next.pending.request));
@@ -243,7 +256,7 @@ export function useWorkspace(initial: BrowserWorkspace) {
   };
 
   const reconnect = () => {
-    const owner = scopeOf(initial);
+    const owner = scopeOf(state.current.workspace);
     if (owner) carryDraft(browserStorage(), owner, state.current.draft.text);
     window.location.reload();
   };

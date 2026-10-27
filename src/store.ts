@@ -22611,6 +22611,14 @@ export class Store {
 
   // ---- idempotency --------------------------------------------------------
 
+  /** Which conversation a page's first send started (quiet page visits): recorded with the start, in the same
+   * transaction, so a retry of that send never starts another, even after a restart or once that one has ended. */
+  leadStartReceipt(approver: string, request: string): { session: number } | null {
+    const row = this.db.prepare("SELECT result FROM mutation WHERE idempotency_key = ? AND operation = 'mate-start'")
+      .get(`mate-start:${approver}:${request}`);
+    return row === undefined ? null : parseStoreColumn("mutation.result", row["result"]) as { session: number };
+  }
+
   /** A chat send receipt contains no message text. The session is part of
    * its namespace; callers must prove that session before reading it. */
   leadRequestReceipt(session: number, request: string): { digest: string; turn: number } | null {

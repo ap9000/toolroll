@@ -168,7 +168,7 @@ import { createSettingsHandlers } from './server/settings.js';
 import { requestContext } from "./server/request-context.js";
 import { chromeScript,DEMO_BANNER,DEMO_BANNER_SHORT,focusDocument,KBD_HELP,pinnedTheme,QUEUE_VIEW,refuse,screen,SENSITIVE_INPUT,shell,sidebarScript,type Chrome,type Screen } from "./server/chrome.js";
 import { BODY_CAP,form,loginHref,matchTaskPath,page,projectChatHref,redactedPath,redirect,respond,safeReturn,SHUTDOWN_WAIT_MS,taskChatHref,type ServeOptions } from "./server/http.js";
-import { decisionsFor,LEAD_BY_DEFAULT_FACT,leadBrowserMessages,leadChatVersion,TASK_COMPOSER_MODES,teamProposalCardParts,type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./server/render-chat.js";
+import { decisionsFor,LEAD_BY_DEFAULT_FACT,leadBrowserMessages,leadChatVersion,NOT_STARTED_SESSION,TASK_COMPOSER_MODES,teamProposalCardParts,type ChatEnablement,type LiveTurn,type ReplacedThread,type TaskChatFocus } from "./server/render-chat.js";
 import { type ProjectPeek } from "./server/render-pages.js";
 import { ssoStepUps,wrongHostPage } from "./server/render-people.js";
 import { NO_PROJECT,NO_TOUCH_FRAGMENTS,NONCE_CAP,NONCE_TTL_MS,PersistentSessions,SESSION_ABSOLUTE_MS,SESSION_IDLE_MS,sessionWithinLifetime,SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type ApprovalNonce,type DecisionServer,type SsoIntent,type Who } from "./server/session.js";
@@ -1118,12 +1118,15 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const allCoordinatorRows = store.listCoordinatorProposals({ repos: managedRepos(), states: ["pending", "confirmed", "refused"], limit: 30 });
     const coordinatorProposals = focusTask !== null ? allCoordinatorRows.filter(one => focusTask.family.versions.some(version => version.id === one.payload["task"]))
       : chatProject !== null ? allCoordinatorRows.filter(one => one.repo === chatProject) : allCoordinatorRows;
-    const opened = store.openLeadThread(who.name, principal.ceilingDigest, now, chatScopeOf(focusTask, chatProject));
-    const proposals = store.listLeadProposals(opened.thread.id);
+    // A visit only reads (quiet page visits): this opens no thread. The first message opens it (chatSend), and a
+    // live thread kept under another ceiling is what that message replaces, so it reads here as the earlier one.
+    const found = store.liveLeadThreadFor(who.name, chatScopeOf(focusTask, chatProject));
+    const thread = found !== null && found.ceilingDigest === principal.ceilingDigest ? found : null;
+    const proposals = thread === null ? [] : store.listLeadProposals(thread.id);
     // One reply runs at a time per person; this thread shows it only when
     // the reply is its own.
     const live = store.liveLeadTurnFor(who.name);
-    const messages = store.listLeadMessages(opened.thread.id, 40);
+    const messages = thread === null ? [] : store.listLeadMessages(thread.id, 40);
     // The lead's question with buttons, while its reply is the last word in the thread.
     const last = messages.at(-1);
     const asking = last?.role === "assistant" && last.turn !== null && store.getLeadTurn(last.turn)?.approver === who.name ? store.leadAskOpen(last.turn, now) : null;
@@ -1134,9 +1137,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // Answered questions stay readable above the answer; only their buttons go.
     const asks = new Map(messages.flatMap(one => { const asked = one.role === "assistant" && one.turn !== null ? store.leadAsk(one.turn) : null; return asked === null ? [] : [[asked.turn, asked] as const]; }));
     // The person's queued messages in this thread: each shows waiting (with Remove) or why it was not sent.
-    const queue = new Map(personalQueue.queue.forThread(opened.thread.id).map(row => [row.message, row] as const));
-    // The thread a ceiling change replaced (ruling 9): read after the open, display only.
-    const replaced = store.replacedLeadThread(opened.thread);
+    const queue = new Map(thread === null ? [] : personalQueue.queue.forThread(thread.id).map(row => [row.message, row] as const));
+    // The thread a ceiling change replaced (ruling 9), display only: closed already, or still live under the old ceiling.
+    const replaced = thread !== null ? store.replacedLeadThread(thread)
+      : found !== null && found.scope.kind === "lead" && store.listLeadMessages(found.id, 1).length > 0 ? found : null;
     const previousProposals = replaced === null ? [] : store.listLeadProposals(replaced.id);
     return {
       previous: replaced === null ? null : { messages: store.listLeadMessages(replaced.id, 40), proposals: previousProposals, decisions: decisionsFor(store, previousProposals) },
@@ -1148,7 +1152,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       proposals,
       decisions: decisionsFor(store, [...proposals, ...coordinatorProposals]),
       coordinatorProposals,
-      pending: live !== null && live.thread === opened.thread.id ? live : null,
+      pending: live !== null && thread !== null && live.thread === thread.id ? live : null,
       recent: store.recentLeadTurns(who.name, 5),
     };
   }
@@ -1162,21 +1166,21 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** The Ask panel (v77): the conversation a task, result or project page
    * docks beside itself — that page's own thread, the same session and
    * cards as /chat. Null when this person has no lead chat here. A page
-   * view may start a membership conversation, as /chat does. */
+   * view starts nothing (quiet page visits): with no membership
+   * conversation yet, the panel binds its sends to NOT_STARTED_SESSION and
+   * the first message starts one (chatSend). */
   function dockedConversation(who: Who, focusTask: TaskChatFocus | null, chatProject: string | null, now: Date, back: string, resultRunId: number | null = null): import("./browser-workspace.js").BrowserConversation | null {
     if (who.via !== "cookie" || who.role !== "approver" || (focusTask === null && chatProject === null)) return null;
     const enabled = chatEnablement();
     const principal = enabled.ok ? leadPrincipal(who) : null;
     if (!enabled.ok || principal === null) return null;
-    let session = store.activeLeadSession(who.name);
-    if ((session === null || session.ceilingDigest !== principal.ceilingDigest) && enabled.billing === "subscription" && !requestContext.getStore()?.workspaceRead) {
-      startLeadConversation(who, principal, enabled, 0, false, now);
-      session = store.activeLeadSession(who.name);
-    }
-    if (session === null || session.ceilingDigest !== principal.ceilingDigest || session.approverGeneration !== principal.generation) return null;
+    const found = store.activeLeadSession(who.name);
+    const notStarted = (found === null || found.ceilingDigest !== principal.ceilingDigest) && enabled.billing === "subscription";
+    const session = notStarted ? null : found;
+    if (!notStarted && (session === null || session.ceilingDigest !== principal.ceilingDigest || session.approverGeneration !== principal.generation)) return null;
     const rows = leadConversationRows(who, principal, focusTask, now, chatProject);
     return {
-      sessionId: session.id, user: session.approver, version: leadChatVersion({ ...rows, focusTask }),
+      sessionId: session?.id ?? NOT_STARTED_SESSION, user: session?.approver ?? who.name, version: leadChatVersion({ ...rows, focusTask }),
       messages: leadBrowserMessages(rows, back, { task: focusTask?.id ?? null, project: chatProject }),
       pendingTurnId: rows.pending?.id ?? null, requestId: randomBytes(16).toString("hex"), maxChars: LEAD_MESSAGE_MAX_CHARS,
       taskId: focusTask?.id ?? null, resultRunId, project: focusTask === null ? chatProject : null,
@@ -1187,14 +1191,21 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   /** Start the person's lead conversation: the session every later turn
    * debits (a membership spends nothing; direct API gets a per-conversation
    * ceiling) and its thread. Starting ends any older session. */
-  function startLeadConversation(who: Who & { via: "cookie" }, principal: VerifiedApprover, enabled: Extract<ChatEnablement, { ok: true }>, ceilingUsd: number, follow: boolean, now: Date): number {
+  function startLeadConversation(who: Who & { via: "cookie" }, principal: VerifiedApprover, enabled: Extract<ChatEnablement, { ok: true }>, ceilingUsd: number, follow: boolean, now: Date, scope: LeadThreadScope = LEAD_THREAD, request?: string): number {
+    // A page's first send (quiet page visits) starts it under that send's request: the start and its record are one
+    // write, so a retry of the same request finds the conversation it started and never starts another.
+    if (request !== undefined) {
+      return store.transact(() => store.replay({ idempotencyKey: `mate-start:${who.name}:${request}`, actor: who.name, at: now }, "mate-start",
+        () => ({ session: startLeadConversation(who, principal, enabled, ceilingUsd, follow, now, scope) })).session);
+    }
     const ceilingMicrousd = enabled.billing === "subscription" ? 0 : Math.round(ceilingUsd * 1_000_000);
     const termsDigest = createHash("sha256").update(`${ceilingMicrousd}\n${principal.ceilingDigest}`).digest("hex");
     const sessionId = store.mintLeadSession(
       { approver: who.name, approverGeneration: principal.generation, credentialKey: enabled.credentialKey, ceilingMicrousd, ceilingDigest: principal.ceilingDigest, termsDigest },
       now,
     );
-    const thread = store.openLeadThread(who.name, principal.ceilingDigest, now).thread;
+    // The thread the first message goes to (quiet page visits: a task's first message opens only the task's thread).
+    const thread = store.openLeadThread(who.name, principal.ceilingDigest, now, scope).thread;
     if (follow) configureLeadFollow(store, principal, store.getLeadSession(sessionId)!, thread, true, now);
     leadSaid.delete(who.session.csrf);
     return sessionId;
