@@ -204,6 +204,14 @@ for (const [name, viewport] of [['desktop', { width: 1440, height: 900 }], ['tab
   const path = join(out, `final-${name}.png`);
   await page.screenshot({ path, fullPage: true });
   report.screenshots.push({ path, caption: `${name} ${viewport.width}×${viewport.height}` });
+  // Full screen: open the build with the subagents, as a person would (its title), then Escape back.
+  if (name !== 'tablet') {
+    await page.click('[data-live-tile] [data-live-open]:text("Make the checkout tests pass on Safari")');
+    check(`${name}: full screen opens with its subagents`, await until(page, () => document.querySelectorAll('[role="dialog"] [data-live-child]').length >= 2, 5_000));
+    await page.screenshot({ path: join(out, `final-full-${name}.png`), fullPage: false });
+    await page.keyboard.press('Escape');
+    check(`${name}: Escape returns to the tile`, await until(page, () => document.querySelector('[role="dialog"]') === null && document.activeElement?.hasAttribute('data-live-open'), 5_000));
+  }
   await ctx.close();
 }
 quietLog.lead?.close();
