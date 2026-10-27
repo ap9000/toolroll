@@ -111,6 +111,8 @@ function TaskRow({ row, grouped = false }: { row: BrowserTasksView["rows"][numbe
         {row.project && <span className="text-foreground/80">{row.project}</span>}
         {row.project && <span aria-hidden="true">·</span>}
         <span className="tabular-nums">{row.age}</span>
+        <span aria-hidden="true">·</span>
+        <span className="font-mono text-mono" data-task-id>{row.id}</span>
       </p>
       {/* A failed row's problem line is vermilion; every other detail stays muted. */}
       {row.detail && <p className={cn("mt-1 text-[12.5px] phone:col-span-full phone:leading-[1.35]", row.status.label === "Failed" ? "text-destructive" : "text-muted-foreground")}
@@ -184,6 +186,18 @@ function ScrollStrip({ label, className, children }: { label: string; className:
     style={fade === undefined ? undefined : { maskImage: fade, WebkitMaskImage: fade }}>{children}</nav>;
 }
 
+/** The stored-state filter (the old task list's): a menu of real links, so Back and bookmarks keep it. */
+function StateFilter({ states }: { states: NonNullable<BrowserTasksView["states"]> }) {
+  const current = states.find(one => one.active) ?? states[0];
+  return <DropdownMenu>
+    <DropdownMenuTrigger asChild><Button variant="ghost" size="sm" className="ml-2 shrink-0" aria-label={`State: ${current?.label ?? "Any state"}`} data-state-filter>
+      {current?.label ?? "Any state"}<ChevronDown /></Button></DropdownMenuTrigger>
+    <DropdownMenuContent align="start">
+      {states.map(one => <DropdownMenuItem key={one.href} asChild><a href={one.href} aria-current={one.active ? "page" : undefined}>{one.label}</a></DropdownMenuItem>)}
+    </DropdownMenuContent>
+  </DropdownMenu>;
+}
+
 export function TasksView({ view }: { view: BrowserTasksView }) {
   const [usageOpen, setUsageOpen] = useState(false);
   const usageId = useId();
@@ -218,6 +232,7 @@ export function TasksView({ view }: { view: BrowserTasksView }) {
           </li>)}
         </ul>
       </ScrollStrip>
+      {view.states !== undefined && <StateFilter states={view.states} />}
     </div>
 
     {view.empty !== null ? <Card className="items-start py-10">

@@ -628,6 +628,14 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect(await page(cookie, "/t/t-pr")).toContain('href="https://github.com/owner/repo/pull/482"');
     // Bad view values fall back to All; an unknown view is never an error.
     expect(await page(cookie, "/work?view=bogus")).toMatch(/<a href="\/work" class="active" aria-current="page"[^>]*>All/);
+    // The old task list's stored-state filter lives here now: only that state, every view link keeps it, an unknown
+    // state is refused as it was there.
+    const cancelledOnly = workspaceOf(await page(cookie, "/work?state=cancelled")).view as typeof needing;
+    expect(cancelledOnly.rows.map(row => row.id)).toEqual(["t-cancelled"]);
+    expect(cancelledOnly.states?.find(one => one.active)?.label).toBe("Cancelled");
+    expect(cancelledOnly.tabs.every(tab => tab.href.includes("state=cancelled"))).toBe(true);
+    expect(cancelledOnly.states?.[0]).toMatchObject({ label: "Any state", href: "/work" });
+    expect((await fetch(url("/work?state=nope"), { headers: { cookie } })).status).toBe(400);
     // Every shortcut view has its own honest empty state.
     store.cancelTask("t-live", now); // a live claim refuses; the row stays — so check the empty copy on a fresh project instead
     await openProject(cookie, beta);

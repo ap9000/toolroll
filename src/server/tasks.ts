@@ -228,12 +228,17 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // up like the inbox: admission binds the query and every row's repo
     // is re-proved here.
     const view = parseWorkView(url.searchParams.get("view"));
+    // The stored-state filter the old task list had (`?state=`): an unknown state is refused, as it was there.
+    const wantedState = url.searchParams.get("state");
+    if (wantedState !== null && !TASK_STATES.includes(wantedState as TaskState)) return refuse(response, who, 400, "no such state", "/work");
+    const state = wantedState as TaskState | null;
     const rollup = project === null && !unscopedMode;
     let work: WorkIndexPage;
     try {
-      work = workIndexPage(store, now, workAccess(), { view, limit: 40, cursor: url.searchParams.get('cursor'), project, root: evidenceRoot });
+      work = workIndexPage(store, now, workAccess(), { view, limit: 40, cursor: url.searchParams.get('cursor'), project, root: evidenceRoot, ...(state === null ? {} : { state }) });
       const facts = requestContext.getStore();
-      if (facts !== undefined) {
+      // A filtered page never stands in for the counts or the Crew: those read the unfiltered work.
+      if (facts !== undefined && state === null) {
         // These counts cover the exact admitted project lens, including
         // unplaced tasks where permitted. Crew excludes unplaced rows.
         if (project === null) facts.workCounts = work.projects;
@@ -273,6 +278,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       previous: url.searchParams.has('cursor'),
       multiProject: new Set(work.items.map(task => task.repo ?? "")).size > 1,
       now,
+      state,
       // v105: subscription windows and monthly budgets, for whoever runs the installation.
       limits: store.isInstanceOperator(who.name)
         ? limitsView(store.providerLimits(), store.budgets().length === 0 ? [] : store.monthSpendCached(now).budgets, { project: projectName, subagent: id => subagentNamesOf(store.handle).get(id) ?? `Subagent ${id}` }, now)

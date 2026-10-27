@@ -867,12 +867,14 @@ export const TASK_GROUP_LABEL: Readonly<Record<WorkIndexGroup, string>> = { ...A
 
 export function workPage(
   chrome: Chrome,
-  data: { view: WorkView; projectFilter?: string; work: WorkIndexPage; previous: boolean; multiProject: boolean; now: Date; limits?: BrowserLimits | null },
+  data: { view: WorkView; projectFilter?: string; work: WorkIndexPage; previous: boolean; multiProject: boolean; now: Date; limits?: BrowserLimits | null; state?: TaskState | null },
 ): Screen {
-  const href = (view: WorkView, cursor?: string): string => {
+  // The stored-state filter (the old task list's) rides every link but a change of state, which starts on page one.
+  const href = (view: WorkView, cursor?: string, state: TaskState | null = data.state ?? null): string => {
     const query = new URLSearchParams();
     if (data.projectFilter !== undefined) query.set('project', data.projectFilter);
     if (view !== 'all') query.set('view', view);
+    if (state !== null) query.set('state', state);
     if (cursor !== undefined) query.set('cursor', cursor);
     return `/work${query.size ? `?${query}` : ''}`;
   };
@@ -929,6 +931,8 @@ export function workPage(
     tools: toolLinks.map(([path, label]) => ({ label: label!, href: path! })),
     newTask: { label: 'New task', href: '/tasks/new' },
     limits: data.limits ?? null,
+    states: [{ label: 'Any state', href: href(data.view, undefined, null), active: (data.state ?? null) === null },
+      ...TASK_STATES.map(one => ({ label: one.charAt(0).toUpperCase() + one.slice(1), href: href(data.view, undefined, one), active: data.state === one }))],
   };
   return screen('work', html`<div class="work-head"><h1>Tasks</h1>${tools}</div>${limitsHtml(data.limits ?? null)}${tabs}${list}${pages}`, { chrome, workspace: { view } });
 }
