@@ -32,13 +32,18 @@ export type OpenSeams = { afterOpen?: () => void };
 export function openLiveTrusted(root: string, name: string, seams: OpenSeams = {}): LiveOpened | "missing" | "unavailable" {
   if (!/^\d{1,15}\.(?:jsonl|sub\.jsonl)$/.test(name)) return "unavailable";
   const dir = liveDir(root);
+  /** The live directory as it must be: a real directory of this user's, writable by no one else, inside the root. */
+  const trustedDir = (): BigIntStats | null => {
+    const stat = lstatSync(dir, { bigint: true });
+    const real = realpathSync(dir), base = realpathSync(root), me = uid();
+    if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o022n) !== 0n || !real.startsWith(base + sep)) return null;
+    return me !== null && stat.uid !== me ? null : stat;
+  };
   let before: BigIntStats;
   try {
-    before = lstatSync(dir, { bigint: true });
-    const real = realpathSync(dir), base = realpathSync(root);
-    if (!before.isDirectory() || before.isSymbolicLink() || (before.mode & 0o022n) !== 0n || !real.startsWith(base + sep)) return "unavailable";
-    const me = uid();
-    if (me !== null && before.uid !== me) return "unavailable";
+    const checked = trustedDir();
+    if (checked === null) return "unavailable";
+    before = checked;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unavailable";
   }
@@ -48,11 +53,17 @@ export function openLiveTrusted(root: string, name: string, seams: OpenSeams = {
   catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unavailable"; }
   try {
     seams.afterOpen?.();
-    const file = fstatSync(fd, { bigint: true });
     const me = uid();
-    if (!file.isFile() || file.nlink !== 1n || file.dev !== before.dev || (me !== null && file.uid !== me)) throw new Error("not ours");
-    if (!same(lstatSync(dir, { bigint: true }), before) || !same(lstatSync(path, { bigint: true }), file)) throw new Error("moved");
-    return { fd, gen: `${file.dev}:${file.ino}:${file.birthtimeNs}`, size: Number(file.size) };
+    const ours = (stat: BigIntStats) => stat.isFile() && stat.nlink === 1n && stat.dev === before.dev && (me === null || stat.uid === me);
+    const file = fstatSync(fd, { bigint: true });
+    if (!ours(file)) throw new Error("not ours");
+    // After the open: the whole directory predicate again (not just its identity), the path still naming this file,
+    // and the descriptor still this user's single-link plain file, right before it is accepted.
+    const after = trustedDir();
+    if (after === null || !same(after, before) || !same(lstatSync(path, { bigint: true }), file)) throw new Error("moved");
+    const now = fstatSync(fd, { bigint: true });
+    if (!ours(now) || !same(now, file)) throw new Error("changed");
+    return { fd, gen: `${now.dev}:${now.ino}:${now.birthtimeNs}`, size: Number(now.size) };
   } catch {
     try { closeSync(fd); } catch { /* already */ }
     return "unavailable";

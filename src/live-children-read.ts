@@ -15,14 +15,18 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { closeSync, readSync } from "node:fs";
 import { withholdCommands } from "./live.js";
-import { openLiveTrusted, readLiveLines, SCAN_BUDGET } from "./live-open.js";
+import { openLiveTrusted, READ_WINDOW, readLiveLines, SCAN_BUDGET } from "./live-open.js";
 import { parseLiveRecord, redactLiveLines, validKeyTail, type KeyState, type LiveRecord } from "./live-records.js";
 import { CHILD_OPEN_STEPS_CAP, CHILD_STREAMS_CAP } from "./live-children.js";
 
 export const CURSOR_CAP = 4 * 1024;
+/** Longer than any real key block: past this much of a stream's text with no END marker, its key state is known again. */
+export const UNKNOWN_KEY_BYTES = 64 * 1024;
 const RECORD_CAP = 8 * 1024;
 
-type StreamState = { s: number; parent: string | null; via?: number; open: string[]; inKey: boolean; tail: string; ended: boolean };
+/** `unknown`: bytes of this stream's text still read as if inside a key block, because its key state can't be known
+ * (read from a mid-file start, or after a line that couldn't be read): until an END marker, or this many bytes pass. */
+type StreamState = { s: number; parent: string | null; via?: number; open: string[]; inKey: boolean; tail: string; ended: boolean; unknown: number };
 type ReadState = { run: number; gen: string; off: number; skipping: boolean; awaiting: boolean; streams: StreamState[] };
 
 export type ChildView =
@@ -68,11 +72,14 @@ function streamsOf(value: unknown): StreamState[] | null {
     if (one === null || s === null || out.some(prior => prior.s === s)) return null;
     const parent = one["parent"], via = one["via"], ids = one["open"], tail = one["tail"] ?? "";
     if (!(parent === null || (typeof parent === "string" && PARENT.test(parent)))) return null;
-    if (via !== undefined && streamNo(via) === null) return null;
-    if (!Array.isArray(ids) || !ids.every(id => typeof id === "string" && childStep(s).test(id))) return null;
+    // A subagent nests under one listed before it: no cycles, nothing dangling.
+    if (via !== undefined && (streamNo(via) === null || !out.some(prior => prior.s === via))) return null;
+    if (!Array.isArray(ids) || !ids.every(id => typeof id === "string" && childStep(s).test(id)) || new Set(ids).size !== ids.length) return null;
     if (typeof one["inKey"] !== "boolean" || typeof tail !== "string" || !validKeyTail(tail)) return null;
+    const ended = one["ended"] ?? false, unknown = one["unknown"] ?? 0;
+    if (typeof ended !== "boolean" || !Number.isSafeInteger(unknown) || (unknown as number) < 0 || (unknown as number) > UNKNOWN_KEY_BYTES) return null;
     open += ids.length;
-    out.push({ s, parent: parent as string | null, ...(via === undefined ? {} : { via: via as number }), open: [...new Set(ids as string[])], inKey: one["inKey"] as boolean, tail, ended: one["ended"] === true });
+    out.push({ s, parent: parent as string | null, ...(via === undefined ? {} : { via: via as number }), open: ids as string[], inKey: one["inKey"] as boolean, tail, ended, unknown: unknown as number });
   }
   return open <= CHILD_OPEN_STEPS_CAP ? out : null;
 }
@@ -115,7 +122,13 @@ function bootstrap(fd: number, size: number, run: number, gen: string): { state:
   for (let at = first + 1; at > 0 && at < got;) {
     const lf = buffer.indexOf(0x0a, at);
     if (lf === -1) break;
-    if (buffer.subarray(at, Math.min(lf, at + 12)).toString("utf8") === '{"k":"ckpt",') found = at;
+    if (buffer.indexOf('"k":"ckpt"', at) !== -1 && buffer.indexOf('"k":"ckpt"', at) < lf) {
+      // A checkpoint this reader can use: one record, within the record cap, whose streams pass every bound.
+      try {
+        const record = lf - at <= RECORD_CAP ? object(JSON.parse(buffer.subarray(at, lf).toString("utf8"))) : null;
+        if (record?.["k"] === "ckpt" && streamsOf(record["streams"]) !== null) found = at;
+      } catch { /* not one */ }
+    }
     at = lf + 1;
   }
   return found === -1
@@ -124,15 +137,27 @@ function bootstrap(fd: number, size: number, run: number, gen: string): { state:
 }
 
 /** One line under the state: what it shows, or null when it is quarantined (`counted` says whether it counts). */
+/** A line that couldn't be read may have carried a key marker for any stream: every stream's key state is unknown. */
+function unknowable(state: ReadState): void {
+  for (const one of state.streams) { one.unknown = UNKNOWN_KEY_BYTES; one.inKey = true; }
+}
+
 function apply(state: ReadState, text: string, commands: boolean): ChildView[] | null {
-  if (Buffer.byteLength(text, "utf8") > RECORD_CAP) return null;
+  if (Buffer.byteLength(text, "utf8") > RECORD_CAP) { unknowable(state); return null; }
   let record: Record<string, unknown> | null;
-  try { record = object(JSON.parse(text)); } catch { return null; }
+  try { record = object(JSON.parse(text)); } catch { unknowable(state); return null; }
   if (record === null) return null;
   if (record["k"] === "ckpt") {
     const streams = streamsOf(record["streams"]);
     if (streams === null) return null;
-    state.streams = streams;
+    // The file's own word on key state never weakens what this reader knows: a stream it has followed keeps its own
+    // key state (the checkpoint can only add caution); one it first learns of here starts unknown.
+    state.streams = streams.map(next => {
+      const known = state.streams.find(one => one.s === next.s);
+      return known === undefined
+        ? { ...next, inKey: true, tail: "", unknown: UNKNOWN_KEY_BYTES }
+        : { ...next, inKey: known.inKey || next.inKey, tail: known.tail, unknown: known.unknown };
+    });
     state.awaiting = false;
     return [];
   }
@@ -147,7 +172,7 @@ function apply(state: ReadState, text: string, commands: boolean): ChildView[] |
     if (!(parent === null || (typeof parent === "string" && PARENT.test(parent)))) return null;
     if (via !== undefined && !state.streams.some(one => one.s === via)) return null;
     if (desc !== undefined && (typeof desc !== "string" || desc.length > 200)) return null;
-    state.streams.push({ s, parent: parent as string | null, ...(via === undefined ? {} : { via: via as number }), open: [], inKey: false, tail: "", ended: false });
+    state.streams.push({ s, parent: parent as string | null, ...(via === undefined ? {} : { via: via as number }), open: [], inKey: false, tail: "", ended: false, unknown: 0 });
     const shown = typeof desc === "string" ? redactLiveLines([desc])[0] : undefined;
     return [{ k: "child", s, parent: parent as string | null, ...(via === undefined ? {} : { via: via as number }), ...(shown === undefined ? {} : { desc: shown }) }];
   }
@@ -169,21 +194,28 @@ function apply(state: ReadState, text: string, commands: boolean): ChildView[] |
     local = match[1];
   }
   const { s: _s, ...rest } = record;
-  const keys: KeyState = { inKey: stream.inKey, tail: stream.tail };
-  const parsed = parseLiveRecord(JSON.stringify(local === undefined ? rest : { ...rest, id: local }), keys);
+  const body = JSON.stringify(local === undefined ? rest : { ...rest, id: local });
+  // Read on a copy of the key state; it is kept only if the record passes every check below.
+  const keys: KeyState = { inKey: stream.inKey || stream.unknown > 0, tail: stream.tail };
+  const parsed = parseLiveRecord(body, keys);
   if (parsed === null || parsed.k === "open") return null;
-  stream.inKey = keys.inKey;
-  stream.tail = keys.tail ?? "";
-  if (parsed.k === "say" && parsed.t.length === 0) return []; // all inside a key block: nothing to show
   if (parsed.k === "step" && parsed.once !== true) {
     const total = state.streams.reduce((sum, one) => sum + one.open.length, 0);
-    if (total >= CHILD_OPEN_STEPS_CAP) return null;
+    if (total >= CHILD_OPEN_STEPS_CAP || stream.open.includes(id as string)) return null; // full, or already open
     stream.open.push(id as string);
   } else if (parsed.k === "done") {
     const at = stream.open.indexOf(id as string);
     if (at === -1) return null; // never one this stream has open
     stream.open.splice(at, 1);
   }
+  if (stream.unknown > 0) {
+    // Unknown key state ends at an END marker, or once more text than any key block has passed.
+    const left = keys.inKey ? Math.max(0, stream.unknown - Buffer.byteLength(body, "utf8")) : 0;
+    stream.unknown = left;
+    stream.inKey = left > 0 ? true : false;
+  } else stream.inKey = keys.inKey;
+  stream.tail = keys.tail ?? "";
+  if (parsed.k === "say" && parsed.t.length === 0) return []; // all inside a key block: nothing to show
   const [shown] = withholdCommands([parsed], commands);
   return [{ ...shown!, ...(local === undefined ? {} : { id: id as string }), s } as ChildView];
 }
@@ -197,9 +229,14 @@ export function readChildWindow(root: string, runId: number, cursor: string | nu
     let state = cursor === null ? null : unseal(cursor, options.key, runId, opened.gen);
     let earlier = false;
     const restarted = cursor !== null && (state === null || state.off > opened.size);
-    if (state === null || state.off > opened.size) ({ state, earlier } = bootstrap(opened.fd, opened.size, runId, opened.gen));
-    else earlier = state.awaiting;
+    if (state === null || state.off > opened.size) {
+      ({ state, earlier } = bootstrap(opened.fd, opened.size, runId, opened.gen));
+      // One request's reading budget: a bootstrap that scanned the end of the file reads nothing more now.
+      if (earlier) return { ok: true, records: [], cursor: seal(state, options.key), restarted, earlier, quarantined: 0, skipped: 0, more: true };
+    } else earlier = state.awaiting;
+    const from = state.off;
     const read = readLiveLines(opened.fd, opened.size, state.off, state.skipping);
+    if (read.skipped > 0) unknowable(state);
     const records: ChildView[] = [];
     let quarantined = 0;
     for (const line of read.lines) {
@@ -209,7 +246,9 @@ export function readChildWindow(root: string, runId: number, cursor: string | nu
     }
     state.off = read.next;
     state.skipping = read.skipping;
-    return { ok: true, records, cursor: seal(state, options.key), restarted, earlier: earlier || state.awaiting, quarantined, skipped: read.skipped, more: read.next < opened.size };
+    // More only when this read stopped short of what is written and moved: an unfinished last line waits for growth.
+    const more = read.next < opened.size && (read.next > from) && (read.skipping || opened.size - from > READ_WINDOW);
+    return { ok: true, records, cursor: seal(state, options.key), restarted, earlier: earlier || state.awaiting, quarantined, skipped: read.skipped, more };
   } catch {
     return { ok: false, reason: "unavailable" };
   } finally {

@@ -1,13 +1,14 @@
 /** Reading the subagents' file (live-children-read.ts; docs/plans/agents-view.md §2.3, N1): what the writer wrote, in
  * order, from a sealed cursor or the newest checkpoint; never a forged record, never a guess, never command detail the
  * run's own answer withholds. */
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { readChildWindow, CURSOR_CAP, type ChildView } from "./live-children-read.js";
 import { HIDDEN_KEY_BLOCK } from "./live-records.js";
 import { liveDir, liveSubLogPath, openLiveLog } from "./live.js";
+import { openLiveTrusted } from "./live-open.js";
 
 const T = new Date("2026-10-27T12:00:00.000Z");
 const at = T.toISOString();
@@ -129,7 +130,9 @@ describe("starting mid-file", () => {
     expect(seen).toEqual([]); // not even the `over`: nothing until a checkpoint
     expect(quarantined).toBe(0); // waited out, not taken for forgeries
     expect(got.earlier).toBe(true);
-    appendFileSync(liveSubLogPath(root, 8), line({ k: "ckpt", dropped: 0, streams: [{ s: 1, parent: null, open: [], inKey: false }] }) + line({ k: "say", s: 1, t: ["now"] }));
+    // A checkpoint brings the stream back, but its key state is the file's word: unknown until an END marker.
+    appendFileSync(liveSubLogPath(root, 8), line({ k: "ckpt", dropped: 0, streams: [{ s: 1, parent: null, open: [], inKey: false }] })
+      + line({ k: "say", s: 1, t: ["not yet"] }) + line({ k: "say", s: 1, t: ["-----END PRIVATE KEY-----"] }) + line({ k: "say", s: 1, t: ["now"] }));
     expect(read(8, got.cursor).records).toEqual([{ k: "say", at, t: ["now"], s: 1 }]);
   });
 });
@@ -164,3 +167,82 @@ describe("quarantine", () => {
     expect(read(10)).toMatchObject({ quarantined: 8 });
   });
 });
+
+describe("review round 1 (Codex av4)", () => {
+  const file = (run: number, lines: string[]) => { mkdirSync(liveDir(root), { recursive: true }); writeFileSync(liveSubLogPath(root, run), lines.join(""), { mode: 0o600 }); };
+  const BEGIN = "-----BEGIN PRIVATE KEY-----";
+
+  test("#1 a checkpoint never clears a key block this reader saw open, nor a half-seen marker", () => {
+    file(20, [line({ k: "child", s: 1, parent: null }), line({ k: "say", s: 1, t: [BEGIN] }),
+      line({ k: "ckpt", dropped: 0, streams: [{ s: 1, parent: null, open: [], inKey: false }] }), line({ k: "say", s: 1, t: ["MIIEvQsecret"] })]);
+    expect(JSON.stringify(read(20).records)).not.toContain("MIIEvQsecret");
+    file(21, [line({ k: "child", s: 1, parent: null }), line({ k: "say", s: 1, t: ["look -----BE"] }),
+      line({ k: "ckpt", dropped: 0, streams: [{ s: 1, parent: null, open: [], inKey: false }] }), line({ k: "say", s: 1, t: ["GIN PRIVATE KEY-----", "MIIEvQsecret"] })]);
+    expect(JSON.stringify(read(21).records)).not.toContain("MIIEvQsecret");
+  });
+
+  test("#1 from a mid-file start a stream's key state is unknown: a BEGIN before the scan region still hides its body", () => {
+    const filler = Array.from({ length: 500 }, (_, i) => line({ k: "say", s: 2, t: [`${"filler ".repeat(100)}${i}`] }));
+    file(22, [line({ k: "child", s: 1, parent: null }), line({ k: "child", s: 2, parent: null }), line({ k: "say", s: 1, t: [BEGIN] }), ...filler,
+      line({ k: "ckpt", dropped: 0, streams: [{ s: 1, parent: null, open: [], inKey: false }, { s: 2, parent: null, open: [], inKey: false }] }),
+      line({ k: "say", s: 1, t: ["MIIEvQsecret"] })]);
+    let got = read(22);
+    let text = "";
+    for (let n = 0; n < 10; n += 1) { text += JSON.stringify(got.records); if (!got.more) break; got = read(22, got.cursor); }
+    expect(text).not.toContain("MIIEvQsecret");
+  });
+
+  test("#2 a rejected record never changes key state: a forged close carrying an END keeps the block closed", () => {
+    file(23, [line({ k: "child", s: 1, parent: null }), line({ k: "say", s: 1, t: [BEGIN] })]);
+    const first = read(23);
+    appendFileSync(liveSubLogPath(root, 23), line({ k: "done", s: 1, id: "c1s1", ok: true, out: ["-----END PRIVATE KEY-----"] }) + line({ k: "say", s: 1, t: ["MIIEvQsecret"] }));
+    const next = read(23, first.cursor);
+    expect(next.quarantined).toBe(1);
+    expect(JSON.stringify(next.records)).not.toContain("MIIEvQsecret");
+  });
+
+  test("#2 a line that can't be read makes every stream's key state unknown", () => {
+    file(24, [line({ k: "child", s: 1, parent: null }), '{"k":"say","s":1,"t":["-----BEGIN PRIVATE KEY-----" broken\n', line({ k: "say", s: 1, t: ["MIIEvQsecret"] })]);
+    expect(JSON.stringify(read(24).records)).not.toContain("MIIEvQsecret");
+  });
+
+  test("#3 an unfinished last line doesn't ask for another read until it grows; once finished it is read once", () => {
+    file(25, [line({ k: "child", s: 1, parent: null }), `{"k":"say","at":"${at}","s":1,"t":["half`]);
+    const first = read(25);
+    expect(first.more).toBe(false);
+    expect(read(25, first.cursor)).toMatchObject({ more: false, records: [] });
+    appendFileSync(liveSubLogPath(root, 25), ` done"]}\n`);
+    expect(read(25, first.cursor).records).toEqual([{ k: "say", at, t: ["half done"], s: 1 }]);
+  });
+
+  test("#4 a live directory loosened right after the open is unavailable", () => {
+    file(26, [line({ k: "child", s: 1, parent: null })]);
+    expect(openLiveTrusted(root, "26.sub.jsonl", { afterOpen: () => chmodSync(liveDir(root), 0o777) })).toBe("unavailable");
+    chmodSync(liveDir(root), 0o700);
+  });
+
+  test("#5 a step id already open, and its second close, are quarantined", () => {
+    file(27, [line({ k: "child", s: 1, parent: null }), line({ k: "step", s: 1, id: "c1s1", kind: "read" }), line({ k: "step", s: 1, id: "c1s1", kind: "read" }),
+      line({ k: "done", s: 1, id: "c1s1", ok: true }), line({ k: "done", s: 1, id: "c1s1", ok: true })]);
+    const got = read(27);
+    expect(kinds(got.records)).toEqual(["child", "step", "done"]);
+    expect(got.quarantined).toBe(2);
+  });
+
+  test("checkpoint validation: a dangling or cyclic nesting, duplicate open ids or a non-boolean `ended` are refused", () => {
+    for (const streams of [[{ s: 1, parent: null, via: 2, open: [], inKey: false }], [{ s: 1, parent: null, open: ["c1s1", "c1s1"], inKey: false }],
+      [{ s: 1, parent: null, open: [], inKey: false, ended: "yes" }]]) {
+      file(28, [line({ k: "ckpt", dropped: 0, streams })]);
+      expect(read(28).quarantined).toBe(1);
+    }
+  });
+
+  test("one request reads within one budget: a bootstrap that scanned the end reads nothing more now", () => {
+    const filler = Array.from({ length: 600 }, (_, i) => line({ k: "say", s: 1, t: [`${"filler ".repeat(100)}${i}`] }));
+    file(29, [line({ k: "child", s: 1, parent: null }), ...filler, line({ k: "ckpt", dropped: 0, streams: [{ s: 1, parent: null, open: [], inKey: false }] }), line({ k: "child", s: 2, parent: null })]);
+    const first = read(29);
+    expect(first).toMatchObject({ records: [], earlier: true, more: true });
+    expect(read(29, first.cursor).records).toEqual([{ k: "child", s: 2, parent: null }]);
+  });
+});
+
