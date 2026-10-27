@@ -6,7 +6,7 @@ import { HIDDEN_KEY_BLOCK, HIDDEN_LINE } from "../live-records.js";
 import type { VerifiedApprover } from "../principal.js";
 import { addApprover } from "../scope.js";
 import { openStore, type LeadThreadScope, type Store, type TaskFamily } from "../store.js";
-import { LEAD_LINES, leadLines, leadTilesFor } from "./agents-live-lead.js";
+import { LEAD_LINES, leadLines, leadsStillAdmitted, leadTilesFor } from "./agents-live-lead.js";
 import type { LiveTurn } from "./render-chat.js";
 import type { Session, Who } from "./session.js";
 
@@ -17,30 +17,42 @@ const turnOf = (steps: LeadLiveStep[], done = false): LiveTurn => ({ steps, done
 
 describe("the lead redactor", () => {
   test("a key block opened in one step stays hidden into the next, and lines after its end show", () => {
-    const { lines } = leadLines([step("Here it is\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA"), step("c2VjcmV0Ym9keQ\n-----END OPENSSH PRIVATE KEY-----\nAll done.")], false);
+    const { lines } = leadLines([step("Here it is\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA"), step("c2VjcmV0Ym9keQ\n-----END OPENSSH PRIVATE KEY-----\nAll done.\n")]);
     expect(lines).toEqual(["Here it is", HIDDEN_KEY_BLOCK, "All done."]);
   });
 
   test("a marker split across steps still opens the block", () => {
-    const { lines } = leadLines([step("start -----BEG"), step("IN RSA PRIVATE KEY-----\nMIIEsecretbody\n-----END RSA PRIVATE KEY-----\nafter")], false);
+    const { lines } = leadLines([step("start -----BEG"), step("IN RSA PRIVATE KEY-----\nMIIEsecretbody\n-----END RSA PRIVATE KEY-----\nafter\n")]);
     expect(lines.join("\n")).not.toContain("MIIEsecretbody");
     expect(lines.at(-1)).toBe("after");
   });
 
-  test("while a step is being written its last word waits, so a credential is never shown half-written", () => {
-    const half = leadLines([step("The key is AKIAIOSFODNN7EX")], true).lines;
+  test("a step's last word waits for the space after it, so a credential is never shown half-written", () => {
+    const half = leadLines([step("The key is AKIAIOSFODNN7EX")]).lines;
     expect(half.join("\n")).not.toContain("AKIA");
     expect(half).toEqual(["The key is"]);
-    const whole = leadLines([step("The key is AKIAIOSFODNN7EXAMPLE and more")], true).lines;
-    expect(whole).toEqual([HIDDEN_LINE]);
-    // A finished turn shows its last word once whole.
-    expect(leadLines([step("Done here")], false).lines).toEqual(["Done here"]);
+    expect(leadLines([step("The key is AKIAIOSFODNN7EXAMPLE and more")]).lines).toEqual([HIDDEN_LINE]);
+    expect(leadLines([step("Done here.\n")]).lines).toEqual(["Done here."]);
+  });
+
+  test("Codex av8 #2: ending the turn or starting the next step confirms nothing: an unconfirmed tail stays held", () => {
+    // lead.ts drops the snapshot that completes the token, so the one kept ends one character short of it.
+    const almost = `ghp_${"a1B2c3D4e5".repeat(3)}a1B2c`;
+    expect(leadLines([step(`Here is ${almost}`)]).lines.join("\n")).not.toContain("ghp_");
+    expect(leadLines([step(`Here is ${almost}`), step("Next step.\n")]).lines.join("\n")).not.toContain("ghp_");
+  });
+
+  test("Codex av8 #3: an invisible character never stands in for the space", () => {
+    const almost = `ghp_${"a1B2c3D4e5".repeat(3)}a1B2c`;
+    for (const invisible of ["\uFEFF", "\u200B", "\u2060", "\u202E"]) {
+      expect(leadLines([step(`Here is ${almost}${invisible}9`)]).lines.join("\n")).not.toContain("ghp_");
+    }
   });
 
   test("each snapshot is redacted from the turn's start: a shorter later snapshot shows nothing of the longer one", () => {
-    const first = leadLines([step("one\ntwo\nthree ")], true).lines;
+    const first = leadLines([step("one\ntwo\nthree ")]).lines;
     expect(first).toEqual(["one", "two", "three"]);
-    expect(leadLines([step("again ")], true).lines).toEqual(["again"]);
+    expect(leadLines([step("again ")]).lines).toEqual(["again"]);
   });
 
   test("controls, escapes and direction overrides are stripped; tools are fixed words", () => {
@@ -48,13 +60,13 @@ describe("the lead redactor", () => {
       { id: "1", label: "Reading the task", state: "running" },
       { id: "2", label: "Checking an action", state: "failed", reason: "That step didn't work (Checking an action)." },
       { id: "3", label: "Listing projects", state: "succeeded" },
-    ])], false);
+    ])]);
     expect(lines).toEqual(["· Reading the task…", "· That step didn't work (Checking an action).", "· Listing projects", "red evil"]);
   });
 
   test("only the newest lines are kept, within the cap", () => {
-    const many = Array.from({ length: LEAD_LINES + 50 }, (_, index) => `line ${index}`).join("\n");
-    const { lines, earlier } = leadLines([step(many)], false);
+    const many = Array.from({ length: LEAD_LINES + 50 }, (_, index) => `line ${index}\n`).join("");
+    const { lines, earlier } = leadLines([step(many)]);
     expect(lines).toHaveLength(LEAD_LINES);
     expect(lines.at(-1)).toBe(`line ${LEAD_LINES + 49}`);
     expect(earlier).toBe(true);
@@ -88,7 +100,7 @@ describe("lead tiles: the owner's own turns only", () => {
 
   test("the owner sees their running turn: its id, start, step times and words; nobody else does", () => {
     const thread = open("alex");
-    liveTurns.set(thread, turnOf([step("Looking"), step("Here is the plan.\n")]));
+    liveTurns.set(thread, turnOf([step("Looking\n"), step("Here is the plan.\n")]));
     const [tile] = leadTilesFor(deps(), who("alex"));
     expect(tile).toMatchObject({ thread, turn: 7, scope: "lead", title: "Lead chat", state: "working", startedAt: T0.toISOString(), endedAt: null,
       stepAt: [T0.toISOString(), new Date(T0.getTime() + 1000).toISOString()], chatHref: "/chat", taskHref: null, lines: ["Looking", "Here is the plan."] });
@@ -145,5 +157,23 @@ describe("lead tiles: the owner's own turns only", () => {
     store.handle.prepare("UPDATE approver SET projects_json = NULL WHERE name = 'alex'").run();
     families.clear();
     expect(leadTilesFor(deps(), who("alex")).map(tile => tile.scope)).toEqual(["project"]);
+  });
+
+  test("Codex av8 #1: what was projected is proved again at delivery: a thread closed, a turn gone or a narrowed account delivers nothing", () => {
+    const thread = open("alex"), project = open("alex", { kind: "project", key: REPO });
+    liveTurns.set(thread, turnOf([step("private words\n")]));
+    liveTurns.set(project, turnOf([step("project words\n")]));
+    const projected = leadTilesFor(deps(), who("alex"));
+    expect(projected).toHaveLength(2);
+    store.handle.prepare("UPDATE lead_thread SET closed_at = ? WHERE id = ?").run(T0.toISOString(), thread);
+    expect(leadsStillAdmitted(deps(), who("alex"), projected).map(tile => tile.thread)).toEqual([project]);
+    liveTurns.delete(project);
+    expect(leadsStillAdmitted(deps(), who("alex"), projected)).toEqual([]);
+    liveTurns.set(project, turnOf([step("project words\n")]));
+    store.handle.prepare("UPDATE approver SET projects_json = ? WHERE name = 'alex'").run(JSON.stringify([OTHER]));
+    expect(leadsStillAdmitted(deps(), who("alex"), projected)).toEqual([]);
+    store.handle.prepare("UPDATE approver SET projects_json = NULL WHERE name = 'alex'").run();
+    digest = null;
+    expect(leadsStillAdmitted(deps(), who("alex"), projected)).toEqual([]);
   });
 });

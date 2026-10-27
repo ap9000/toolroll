@@ -51,7 +51,7 @@ import type { EdgeContext,HandlerContext } from './handler-context.js';
 import { serveInstallAsset } from "./pages-assets.js";
 import { healthz } from "./remote-hooks.js";
 import type { ServerRuntime } from './runtime.js';
-import { leadTilesFor } from './agents-live-lead.js';
+import { leadsStillAdmitted, leadTilesFor } from './agents-live-lead.js';
 import { refuse, regionScript, screen, settingsRows, WORKSPACE_STYLE, workToolRows, type NavRow } from "./chrome.js";
 import { redirect,respond,safeReturn,SAFETY,taskHref } from "./http.js";
 import { assignmentOf } from "../assignment.js";
@@ -1050,16 +1050,17 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     // A browser session only (the route says so too): live output is never a token's to read.
     if (who.via !== "cookie") return respond(response, 403, "application/json", JSON.stringify({ error: "session" }));
     const browser = who as typeof who & { via: "cookie" };
-    const signedIn = () => rereadBrowser(runtime, request, browser) !== null;
     const canSee = (run: { taskRef: number }) => { const repo = taskRepoOf(run.taskRef); return repo !== null && visible(repo) && store.accountCanAccess(who.name, repo); };
     const tiles = agentsLiveOf(store, clock(), { canSee, localRunner: options.localRunner });
     // The viewer's own lead turns, admitted as their chat is, from the session as it is saved now.
     const current = rereadBrowser(runtime, request, browser);
     const leads = current === null ? [] : leadTilesFor(runtime, current);
-    // Re-proved right before delivery: the session still held, and each tile's run still in view from its current row.
-    if (current === null || !signedIn()) return respond(response, 401, "application/json", JSON.stringify({ error: "session" }));
+    // Re-proved right before delivery: the session still held, each tile's run still in view from its current row, and
+    // each lead turn still admitted, from the session as it is saved now.
+    const again = current === null ? null : rereadBrowser(runtime, request, browser);
+    if (again === null) return respond(response, 401, "application/json", JSON.stringify({ error: "session" }));
     const shown = tiles.filter(tile => { const run = store.getRun(tile.runId); return run !== null && canSee(run); });
-    return respond(response, 200, "application/json", JSON.stringify({ tiles: shown, leads }));
+    return respond(response, 200, "application/json", JSON.stringify({ tiles: shown, leads: leadsStillAdmitted(runtime, again, leads) }));
   }
 
   /** This console's key for the Live grid's read cursors: random, in memory only (never where a build can reach), so a

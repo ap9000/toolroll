@@ -1,11 +1,12 @@
 /** The Live grid's room (agents-live-room.ts; docs/plans/agents-view.md §3): files looked at on the poll only, once per
  * run however many viewers or signals; each look proved from the run's current row; read as the keyed account. */
+import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { acquire } from "../claim.js";
-import { createLiveBus, type LiveConnection } from "../live-bus.js";
+import { createLiveBus, LiveConnection } from "../live-bus.js";
 import { liveDir } from "../live.js";
 import { register } from "../runner.js";
 import { addApprover } from "../scope.js";
@@ -131,5 +132,22 @@ test("slice 8: a page's own lead tiles move its digest, and only that page's", (
   bus.publish({ revision: "1" });
   expect(a.length).toBeGreaterThan(firstA);
   expect(b.length).toBe(firstB);
+  room.rooms.close();
+});
+
+test("Codex av8 #4: a page's lead state goes with its room, and a viewer that leaves closes its connection", () => {
+  const bus = createLiveBus();
+  const forgotten: string[] = [];
+  const room = createAgentsLiveRooms({ store, bus, evidenceRoot: root, localRunner: "mac", clock: () => new Date(), visible: () => true, leads: () => null, forget: key => forgotten.push(key) });
+  let valid = true;
+  const key = room.keyOf("alex", "all", "page-a");
+  const response = Object.assign(new EventEmitter(), { write: () => true, end: () => {}, writableLength: 0, writableEnded: false, destroyed: false });
+  const connection = new LiveConnection(response as never);
+  room.rooms.join(key, { name: "alex", room: "agents-live", connection, valid: () => valid });
+  expect(connection.rooms).toBe(1);
+  valid = false;
+  bus.publish({ revision: "1" });
+  expect(forgotten).toEqual([key]);
+  expect(connection.rooms).toBe(0);
   room.rooms.close();
 });

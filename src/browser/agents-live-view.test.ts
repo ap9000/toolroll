@@ -475,7 +475,7 @@ test("slice 8: the owner's lead turn is a tile, full screen with its chat and ta
   await flush();
   const lead = host.querySelector('[data-live-lead="9"]')!;
   expect(lead.textContent).toContain("Fix the login");
-  expect(lead.textContent).toContain("lead · shop-web · step 2");
+  expect(lead.textContent).toContain("lead chat · shop-web · step 2");
   expect(lead.textContent).toContain("Reading the task");
   expect(lead.querySelector("[data-live-lines]")?.textContent).toBe("· Reading the task…\nLooking at the login form.");
   expect(host.querySelector("[data-live-headline]")?.textContent).toContain("2 agents working");
@@ -489,4 +489,26 @@ test("slice 8: the owner's lead turn is a tile, full screen with its chat and ta
   await act(async () => { (full.querySelector("button") as HTMLButtonElement).click(); });
   expect(document.querySelector("[data-live-full]")).toBeNull();
   expect(requests.every(one => one.method === "GET")).toBe(true);
+});
+
+const leadOf = (thread: number) => ({ thread, turn: 4, scope: "lead", title: "Lead chat", project: null, state: "working", startedAt: iso(40), endedAt: null,
+  stepAt: [iso(40)], doing: "Thinking", lines: ["Reading the queue."], earlier: false, chatHref: "/chat", taskHref: null });
+
+test("Codex av8 #6: a lost connection is said inside the lead dialog too", async () => {
+  leads = [leadOf(9)];
+  history.replaceState(null, "", "/agents?view=live&lead=9");
+  await render7();
+  await act(async () => { Events.latest!.dispatchEvent(new MessageEvent("ended")); });
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Reconnecting… these lines may not be the latest.");
+  history.replaceState(null, "", "/agents?view=live");
+});
+
+test("Codex av8 #7: an address naming both a run and a lead opens one dialog, the run's", async () => {
+  tiles = [tile(1)];
+  leads = [leadOf(9)];
+  history.replaceState(null, "", "/agents?view=live&run=1&lead=9");
+  await render7();
+  expect(document.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+  expect(document.querySelector("[data-live-full-title]")?.textContent).toBe("Task 1");
+  history.replaceState(null, "", "/agents?view=live");
 });

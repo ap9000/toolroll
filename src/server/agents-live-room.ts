@@ -36,6 +36,8 @@ export function createAgentsLiveRooms<V extends LiveViewer>(input: {
   visible: (repo: string | null) => boolean;
   /** The keyed viewer's own lead tiles as they stand now (agents-live-lead.ts), proved from their saved session. */
   leads?: (key: string) => unknown;
+  /** Told when a page's room is gone. */
+  forget?: (key: string) => void;
 }) {
   const { store, evidenceRoot, localRunner, clock, visible } = input;
   const keyOf = (account: string, scope: string, page = "") => JSON.stringify([account, scope, page]);
@@ -85,6 +87,6 @@ export function createAgentsLiveRooms<V extends LiveViewer>(input: {
       const shownMarks = marks.filter(([runId]) => kept.has(runId as number) && (!tiles.find(tile => tile.runId === runId)?.local || sees(runId as number)()));
       return createHash("sha256").update(JSON.stringify([seen, shownMarks, input.leads?.(key) ?? null])).digest("base64url");
     });
-  }, null, { bus: input.bus, safetyNetMs: LIVE_POLL_MS });
+  }, null, { bus: input.bus, safetyNetMs: LIVE_POLL_MS, onEmpty: key => input.forget?.(key as string) });
   return { rooms, keyOf, looked: () => looked.size };
 }

@@ -139,7 +139,7 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
   // Each Live page's own lead tiles, read as its viewer's saved session now (a page's room key carries the page).
   const liveLeads = new Map<string, () => unknown>();
   const agentsLive = createAgentsLiveRooms<Viewer>({ store, bus: live.bus, evidenceRoot: runtime.evidenceRoot, localRunner: runtime.options.localRunner, clock, visible,
-    leads: key => liveLeads.get(key)?.() ?? null });
+    leads: key => liveLeads.get(key)?.() ?? null, forget: key => liveLeads.delete(key) });
 
   const readBrowser = (request: IncomingMessage, who: Who & { via: "cookie" }) => rereadBrowser(runtime, request, who);
   const sameBrowser = (request: IncomingMessage, who: Who & { via: "cookie" }) => () => readBrowser(request, who) !== null;
@@ -255,7 +255,6 @@ export function createLiveHandlers(runtime: ServerRuntime, live: { bus: LiveBus;
           // Each page's own room (its key carries this connection): a newcomer is never handed a digest computed earlier.
           const key = agentsLive.keyOf(who.name, scope, randomBytes(9).toString("hex"));
           liveLeads.set(key, () => { const again = readBrowser(request, browser); return again === null ? null : leadTilesFor(runtime, again); });
-          connection.onClose(() => liveLeads.delete(key));
           agentsLive.rooms.join(key, { name: who.name, room: name, connection, valid });
         });
       } else if (room.kind === "task") {

@@ -316,7 +316,7 @@ function FullScreen({ runId, tile, stream, streamed, now, lost, onClose, showLiv
 /** A lead chat turn of the viewer's own (agents-live-lead.ts): its words already redacted on the server, kept there. */
 type Lead = { thread: number; turn: number | null; scope: "lead" | "project" | "task"; title: string; project: string | null; state: "working" | "done" | "failed";
   startedAt: string; endedAt: string | null; stepAt: string[]; doing: string | null; lines: string[]; earlier: boolean; chatHref: string; taskHref: string | null };
-const leadMeta = (lead: Lead) => ["lead", lead.project?.split("/").pop(), lead.stepAt.length > 1 ? `step ${lead.stepAt.length}` : null].filter(Boolean).join(" · ");
+const leadMeta = (lead: Lead) => ["lead chat", lead.project?.split("/").pop(), lead.stepAt.length > 1 ? `step ${lead.stepAt.length}` : null].filter(Boolean).join(" · ");
 
 /** A lead's tile: what it is doing, how long, its lines. Watching only; the title opens it full screen. */
 function LeadTile({ lead, now, openLead }: { lead: Lead; now: number; openLead: (thread: number) => void }) {
@@ -340,7 +340,7 @@ function LeadTile({ lead, now, openLead }: { lead: Lead; now: number; openLead: 
 }
 
 /** A lead turn full screen: the same dialog as an agent's, with its chat (and its task, for a task's chat) a link away. */
-function LeadFull({ thread, lead, now, onClose }: { thread: number; lead: Lead | null; now: number; onClose: () => void }) {
+function LeadFull({ thread, lead, now, lost, onClose }: { thread: number; lead: Lead | null; now: number; lost: boolean; onClose: () => void }) {
   const close = useRef<HTMLButtonElement>(null);
   const link = "shrink-0 text-[12.5px] underline decoration-border underline-offset-4 hover:decoration-current phone:inline-flex phone:min-h-11 phone:items-center";
   return <DialogPrimitive.Root open onOpenChange={open => { if (!open) onClose(); }}>
@@ -369,6 +369,7 @@ function LeadFull({ thread, lead, now, onClose }: { thread: number; lead: Lead |
             <a href={lead.chatHref} className={link}>Open chat</a>
             {lead.taskHref !== null && <a href={lead.taskHref} className={link}>Open task</a>}
           </p>
+          {lost && <p className="text-[11.5px] text-muted-foreground">Reconnecting… these lines may not be the latest.</p>}
           {lead.earlier && <p className="text-[11.5px] text-muted-foreground">Earlier lines aren't shown.</p>}
           <Lines lines={lead.lines} short={false} tall />
         </>}
@@ -461,7 +462,7 @@ export function LiveGrid() {
     });
   }, [openRunId]);
   // A lead turn open full screen (?view=live&lead=…), the same way.
-  const leadOf = () => { const thread = Number(new URLSearchParams(location.search).get("lead")); return Number.isSafeInteger(thread) && thread > 0 ? thread : null; };
+  const leadOf = () => { if (runOf() !== null) return null; const thread = Number(new URLSearchParams(location.search).get("lead")); return Number.isSafeInteger(thread) && thread > 0 ? thread : null; };
   const [openLeadId, setOpenLeadId] = useState<number | null>(leadOf);
   const leadRef = useRef<number | null>(openLeadId);
   leadRef.current = openLeadId;
@@ -563,7 +564,7 @@ export function LiveGrid() {
       </ul>}
     {openRunId !== null && <FullScreen key={openRunId} runId={openRunId} tile={[...tiles, ...shown].find(tile => tile.runId === openRunId) ?? null} stream={streams.get(openRunId) ?? EMPTY}
       streamed={streamedIds.has(openRunId)} now={now} lost={lost} onClose={closeRun} showLive={() => showLive(openRunId)} />}
-    {openLeadId !== null && <LeadFull key={`lead-${openLeadId}`} thread={openLeadId} lead={leads.find(lead => lead.thread === openLeadId) ?? null} now={now} onClose={closeLead} />}
+    {openLeadId !== null && <LeadFull key={`lead-${openLeadId}`} thread={openLeadId} lead={leads.find(lead => lead.thread === openLeadId) ?? null} now={now} lost={lost} onClose={closeLead} />}
     {terminals > 0 && <p className="border-t border-border pt-3 text-[12px] text-muted-foreground">
       <a href="/term" className="inline-block underline decoration-border underline-offset-4 hover:text-foreground hover:decoration-current phone:min-h-11 phone:py-3"><span className="tabular-nums">{terminals}</span> {terminals === 1 ? "terminal" : "terminals"} you're driving</a></p>}
   </section>;

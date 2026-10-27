@@ -173,7 +173,18 @@ seed();
 const terminal = { id: 'a'.repeat(32), owner: 'alex', generation: store.accountOf('alex').generation, repo: shop, program: 'shell', branch: 'toolroll/live-a', worktree: join(root, 'live-a'),
   startedAt: ago(20).toISOString(), endedAt: null, exit: null, endedBy: null, cleanup: null };
 const terminalHost = { list: owner => owner === 'alex' ? [terminal] : [], get: id => id === terminal.id ? terminal : null, stop: () => {} };
-const server = createDecisionServer({ store, evidenceRoot, repos: [shop, payments], clock: () => new Date(), localRunner: 'mac-studio', terminalHost });
+// The person's own lead, answering in the build's task chat: a stand-in Claude sign-in that writes its reply word by
+// word and stays mid-answer (a labelled synthetic reply; no model runs).
+store.setChatConfig({ provider: 'claude-subscription', model: 'default', dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, 'alex', now());
+const REPLY = "I read the task and its latest run.\n\nThe build is split in two: one helper is reproducing the Safari failure in WebKit, and the other already found the cause. new Date(\"2026-10-27 09:00\") is invalid in Safari; an ISO string with a T works everywhere.\n\nOnce the repro confirms it, the fix is a one-line change in parseDeliveryDate plus a test for the Safari format. ";
+let finishReply = () => {};
+const subscriptionChatRunner = request => new Promise(resolve_ => {
+  let shown = 0;
+  const words = REPLY.split(/(?<= )/);
+  const timer = setInterval(() => { if (shown < words.length - 6) request.onText?.(words.slice(0, ++shown).join('')); }, 40);
+  finishReply = () => { clearInterval(timer); resolve_({ ok: true, answer: { text: REPLY, calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null } }); };
+});
+const server = createDecisionServer({ store, evidenceRoot, repos: [shop, payments], clock: () => new Date(), localRunner: 'mac-studio', terminalHost, subscriptionChatRunner });
 await new Promise(resolve_ => server.listen(0, '127.0.0.1', resolve_));
 const base = `http://127.0.0.1:${server.address().port}`;
 const { chromium } = await loadPlaywright();
@@ -188,6 +199,17 @@ async function context(viewport) {
   await page.fill('input[name="token"]', login.token);
   await Promise.all([page.waitForNavigation(), page.click('button[type="submit"]')]);
   return { ctx, page, errors };
+}
+// Start the lead's reply through the console, as the person would: sign in, start the lead, ask in the task's chat.
+{
+  const signedIn = await fetch(`${base}/login`, { method: 'POST', body: new URLSearchParams({ name: 'alex', token: login.token }), redirect: 'manual' });
+  const cookie = (signedIn.headers.get('set-cookie') ?? '').split(';')[0];
+  const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(`${base}/chat`, { headers: { cookie } })).text())?.[1] ?? '';
+  const minted = await fetch(`${base}/chat/mate/mint`, { method: 'POST', headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, token: login.token }), redirect: 'manual' });
+  check('the lead starts', minted.status === 303, `status ${minted.status}`);
+  const asked = await fetch(`${base}/chat`, { method: 'POST', headers: { cookie, origin: base, accept: 'application/json' }, redirect: 'manual',
+    body: new URLSearchParams({ csrf, task: 'checkout-tests', message: 'Where does the Safari fix stand?', request: 'c'.repeat(32), 'request-session': String(store.activeLeadSession('alex')?.id) }) });
+  check('the lead is asked in the task chat', asked.status === 202, `status ${asked.status}`);
 }
 const until = async (page, test, ms = 15_000) => { try { await page.waitForFunction(test, null, { timeout: ms }); return true; } catch { return false; } };
 for (const [name, viewport] of [['desktop', { width: 1440, height: 900 }], ['tablet', { width: 900, height: 1100 }], ['phone', { width: 390, height: 844 }]]) {
@@ -213,8 +235,20 @@ for (const [name, viewport] of [['desktop', { width: 1440, height: 900 }], ['tab
     await page.keyboard.press('Escape');
     check(`${name}: Escape returns to the tile`, await until(page, () => document.querySelector('[role="dialog"]') === null && document.activeElement?.hasAttribute('data-live-open'), 5_000));
   }
+  // The lead's own reply: its tile on the grid, then full screen.
+  if (name !== 'tablet') {
+    check(`${name}: the lead's reply is a tile`, await until(page, () => (document.querySelector('[data-live-lead] [data-live-lines]')?.textContent ?? '').includes('helper'), 10_000));
+    await page.locator('[data-live-lead]').first().screenshot({ path: join(out, `lead-tile-${name}.png`) });
+    await page.click('[data-live-open-lead]');
+    check(`${name}: the lead full screen links to its chat and task`, await until(page, () => document.querySelector('[role="dialog"] a[href^="/chat?task="]') !== null && document.querySelector('[role="dialog"] a[href^="/t/"]') !== null, 5_000));
+    await page.waitForTimeout(400);
+    await page.screenshot({ path: join(out, `lead-full-${name}.png`), fullPage: false });
+    await page.keyboard.press('Escape');
+    check(`${name}: Escape returns to the lead tile`, await until(page, () => document.querySelector('[role="dialog"]') === null && document.activeElement?.hasAttribute('data-live-open-lead'), 5_000));
+  }
   await ctx.close();
 }
+finishReply();
 quietLog.lead?.close();
 await browser.close();
 server.close();
