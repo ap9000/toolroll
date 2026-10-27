@@ -479,7 +479,7 @@ export function boardBody(
     // A lane is a section that can fold (board pass): open when it holds
     // cards, folded when empty, so a phone reads the counts first and a
     // desktop column never spends its height on "nothing here".
-    return html`<details class="lane lane-${key}"${shown.length === 0 ? null : html` open`}><summary><h2>${laneChip(key, title)} <span class="lane-count">${cards.length}${data.saturated ? "+" : ""}</span></h2></summary><p class="hint">${hint}</p>${shown.length === 0 ? html`<p class="meta lane-empty">nothing here</p>` : shown.map((card, index) => renderOne(card, index))}${more > 0 ? html`<a class="lane-more" href="/tasks">+${more} more in the task list</a>` : null}</details>`;
+    return html`<details class="lane lane-${key}"${shown.length === 0 ? null : html` open`}><summary><h2>${laneChip(key === "attention" && cards.length === 0 ? "queued" : key, title)} <span class="lane-count">${cards.length}${data.saturated ? "+" : ""}</span></h2></summary><p class="hint">${hint}</p>${shown.length === 0 ? html`<p class="meta lane-empty">nothing here</p>` : shown.map((card, index) => renderOne(card, index))}${more > 0 ? html`<a class="lane-more" href="/tasks">+${more} more in the task list</a>` : null}</details>`;
   };
 
   // The card's facts: mono key–value pairs under the title (board pass) —
@@ -496,7 +496,7 @@ export function boardBody(
   };
 
   const plain = (card: BoardCard): Html =>
-    html`<a class="lane-card" href="${card.href}" data-vt="${card.taskId}"><span class="id">${card.taskId}</span><span class="t">${card.title}</span><span class="why">${card.reason}</span>${facts([
+    html`<a class="lane-card" href="${card.href}" data-vt="${card.taskId}"><span class="t">${card.title}</span><span class="why">${card.reason}</span><span class="id">${card.taskId}</span>${facts([
       ...(card.stalledSince === null ? [] : [["waiting", age(card.stalledSince), "mono"] as [string, string, "mono"]]),
     ])}${chips([
       chip(card.repo),
@@ -515,7 +515,7 @@ export function boardBody(
     return heads;
   })();
   const queuedCard = (card: BoardCard): Html =>
-    html`<a class="lane-card" href="${card.href}" data-vt="${card.taskId}"><span class="id">${card.taskId}</span><span class="t">${card.title}</span><span class="why">${card.reason}</span>${facts([
+    html`<a class="lane-card" href="${card.href}" data-vt="${card.taskId}"><span class="t">${card.title}</span><span class="why">${card.reason}</span><span class="id">${card.taskId}</span>${facts([
       card.assignedRunner === null ? ["worker", "any free worker"] : ["worker", card.assignedRunner, "mono"],
     ])}${chips([
       queuedHeads.get(`${card.assignedRunner ?? ""}|${card.repo ?? ""}`) === card.taskId
@@ -540,13 +540,15 @@ export function boardBody(
     const steps = step === null
       ? null
       : html`<span class="steps" role="img" aria-label="${`step ${step + 1} of ${BUILD_STEPS.length}: ${BUILD_STEPS[step]}`}">${BUILD_STEPS.map((_, index) => html`<i class="${index < step ? "on" : index === step ? "now" : ""}"></i>`)}</span>`;
-    return html`<a class="lane-card building" href="${card.href}" data-vt="${card.taskId}"><span class="id">${card.taskId}</span><span class="t"><span class="dot dot-ok pulse"></span>${card.title}</span>${steps}<span class="live-line"><span class="stage">${live}</span>${tickingClock(claim.claimedAt, data.now)}</span>${facts([
-      ["worker", claim.runner, "mono"],
-      ...(claim.model === null
-        ? []
-        : [["model", `${claim.provider !== null && claim.provider !== "claude" ? `${claim.provider} · ` : ""}${claim.model}`, "mono"] as [string, string, "mono"]]),
-      ...(claim.branch === null ? [] : [["branch", `${claim.branch}${workspace === null ? "" : ` · ${workspace}`}`, "mono"] as [string, string, "mono"]]),
-    ])}${chips([
+    // Who, which model and which branch, as one muted line: words in Geist, the model and branch in mono.
+    const model = claim.model === null ? null : `${claim.provider !== null && claim.provider !== "claude" ? `${claim.provider} · ` : ""}${claim.model}`;
+    const branch = claim.branch === null ? null : `${claim.branch}${workspace === null ? "" : ` · ${workspace}`}`;
+    const who = joinHtml([
+      html`<span>${claim.runner}</span>`,
+      model === null ? null : html`<span class="mono">${model}</span>`,
+      branch === null ? null : html`<span class="mono">${branch}</span>`,
+    ].filter((one): one is Html => one !== null), html`<span aria-hidden="true"> · </span>`);
+    return html`<a class="lane-card building" href="${card.href}" data-vt="${card.taskId}"><span class="t"><span class="dot dot-ok pulse"></span>${card.title}</span>${steps}<span class="live-line"><span class="stage">${live}</span>${tickingClock(claim.claimedAt, data.now)}</span><span class="id">${card.taskId}</span><span class="who">${who}</span>${chips([
       card.attempt === null ? null : html`<span class="badge">Attempt ${card.attempt}</span>`,
       chip(card.repo),
     ])}</a>`;
@@ -560,7 +562,7 @@ export function boardBody(
             row.prNumber === null
               ? null
               : html`<span class="badge badge-open">PR #${row.prNumber}</span>${ciRed(row.prNumber) ? html` <span class="badge badge-failed">CI failing</span>` : null}`;
-          return html`<a class="lane-card" href="${taskHref(row.taskId)}" data-vt="${row.taskId}"><span class="id">${row.taskId}</span><span class="t">${row.title}</span>${row.handoff === null ? null : html`<span class="why">${row.handoff.length > 120 ? row.handoff.slice(0, 120) + "…" : row.handoff}</span>`}${facts([
+          return html`<a class="lane-card" href="${taskHref(row.taskId)}" data-vt="${row.taskId}"><span class="t">${row.title}</span>${row.handoff === null ? null : html`<span class="why">${row.handoff.length > 120 ? row.handoff.slice(0, 120) + "…" : row.handoff}</span>`}<span class="id">${row.taskId}</span>${facts([
             ...(row.ranMinutes === null ? [] : [["ran", `${row.ranMinutes}m`, "mono"] as [string, string, "mono"]]),
             ["usage", runCostWords({ authMode: row.authMode, costUsd: row.costUsd, tokensIn: null, tokensOut: null })],
           ])}${chips([

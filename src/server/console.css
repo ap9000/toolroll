@@ -183,8 +183,10 @@
   .chip-dot { width: .375rem; height: .375rem; flex-shrink: 0; border-radius: var(--so-radius-full); background: currentColor; }
   .chip-needs { background: var(--so-warning-soft); color: color-mix(in oklab, var(--so-warning) 85%, var(--so-ink)); }
   .chip-needs .chip-dot { background: var(--so-warning); }
-  .chip-live { background: var(--so-info-soft); color: var(--so-info); }
-  .chip-done { background: var(--so-success-soft); color: var(--so-success); }
+  .chip-live { background: var(--so-info-soft); color: color-mix(in oklab, var(--so-info) 85%, var(--so-ink)); }
+  .chip-live .chip-dot { background: var(--so-info); }
+  .chip-done { background: var(--so-success-soft); color: color-mix(in oklab, var(--so-success) 85%, var(--so-ink)); }
+  .chip-done .chip-dot { background: var(--so-success); }
   .chip-failed { background: var(--so-danger-soft); color: var(--so-danger); }
   /* The frame (components/ui/frame.tsx, after ReUI's Frame): a raised well with a hairline, its heading on the
      well's fill, and paper panels whose corners sit concentric inside it. No shadow on a panel. */
@@ -1815,12 +1817,11 @@
   .queue-column > h2::before { content: ""; width: .375rem; height: .375rem; border-radius: var(--so-radius-full); flex: none; background: var(--muted-foreground); opacity: .55; }
   @media (hover: hover) and (pointer: fine) { .lane-card:hover { background: var(--so-raised); } }
   /* The title leads; the task id is a machine fact under it, in mono. */
-  .lane-card .t { order: 0; display: block; font-size: .8125rem; font-weight: 500; line-height: 1.35; }
-  .lane-card .why { order: 1; display: block; margin-top: .125rem; font-size: .75rem; color: var(--muted-foreground); }
-  .lane-card .steps, .lane-card .live-line { order: 1; }
-  .lane-card .id { order: 2; display: block; margin-top: .375rem; font-family: var(--font-mono); font-size: .6875rem; color: var(--muted-foreground); overflow-wrap: anywhere; }
-  .lane-card .facts { order: 3; }
-  .lane-card .chips { order: 4; }
+  .lane-card .t { display: block; font-size: .84375rem; font-weight: 500; line-height: 1.35; }
+  .lane-card .why { display: block; margin-top: .125rem; font-size: .75rem; color: var(--muted-foreground); }
+  .lane-card .id { display: block; margin-top: .375rem; font-family: var(--font-mono); font-size: .75rem; color: var(--muted-foreground); overflow-wrap: anywhere; }
+  .lane-card .who { display: block; margin-top: .125rem; font-size: .75rem; color: var(--muted-foreground); overflow-wrap: anywhere; }
+  .lane-card .who .mono { display: inline; margin: 0; font-family: var(--font-mono); font-size: .6875rem; }
   .lane-card .dot { margin-right: .4rem; }
   .lane-card .meta, .lane-card .mono { display: block; margin-top: .125rem; font-size: .75rem; }
   /* The facts: a muted word, then the value; only a machine's own words (a name, a model, a branch, a clock) are mono. */
@@ -2637,8 +2638,9 @@ button { min-height: 44px; }
   .chat-workspace.projects-open::before { animation: fade 180ms ease-out; }
   .switcher[open] .switcher-menu { animation: rise 160ms ease-out; }
   @media (hover: hover) and (pointer: fine) {
-    .lane-card, .decide-card, .menu-row, .chat-overview-item, .proposal { transition: border-color .15s, transform .15s, box-shadow .15s; }
-    .lane-card:hover, .decide-card:hover, .menu-row:hover {
+    .lane-card, .decide-card, .menu-row, .chat-overview-item, .proposal { transition: border-color .15s, background-color .15s, transform .15s, box-shadow .15s; }
+    /* Board cards are panels in a frame: a hover fills them raised, never a shadow. */
+    .decide-card:hover, .menu-row:hover {
      
       box-shadow: 0 2px 8px -2px rgb(0 0 0 / .35);
     }
