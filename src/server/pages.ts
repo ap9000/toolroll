@@ -1037,6 +1037,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
    * may see — the console's ceiling and the account's own access, proved per run, on every request. */
   async function agentsLive(ctx: HandlerContext): Promise<void> {
     const { who, response } = ctx;
+    // A browser session only (the route says so too): live output is never a token's to read.
+    if (who.via !== "cookie") return respond(response, 403, "application/json", JSON.stringify({ error: "session" }));
     const tiles = agentsLiveOf(store, clock(), {
       canSee: run => run.repo !== null && runVisible(run) && store.accountCanAccess(who.name, run.repo),
       localRunner: options.localRunner,
@@ -1054,6 +1056,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   async function agentsLiveRead(ctx: HandlerContext): Promise<void> {
     const { url, who, response } = ctx;
     response.setHeader("cache-control", "no-store");
+    // A browser session only (the route says so too): live output is never a token's to read.
+    if (who.via !== "cookie") return respond(response, 403, "application/json", JSON.stringify({ error: "session" }));
     const runId = Number(url.pathname.slice("/agents/live/".length));
     const file = url.searchParams.get("file");
     const cursor = url.searchParams.get("cursor");

@@ -528,6 +528,26 @@ describe("the Live grid's reads (docs/plans/agents-view.md §3)", () => {
     expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(0);
   }, 20_000);
 
+  test("only a browser session reads: a lead's, a runner's and a remote token are each refused", async () => {
+    const run = running("t-tokens", repoA);
+    (await record(run)).close();
+    const { mintApiToken } = await import("./api-tokens.js");
+    const remote = mintApiToken();
+    store.createApiToken({ id: remote.id, account: "alex", name: "laptop", secretHash: remote.hash, access: "act", projects: null,
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(), by: "alex" }, new Date());
+    const lead = store.mintLeadCredential("alex", "alex", new Date()).token;
+    for (const bearer of [lead, "tok-builder-1", remote.token]) {
+      for (const path of [`/agents/live/${run}?file=main`, `/agents/live/${run}?file=sub`, "/agents/live"]) {
+        const response = await fetch(`${localBase}${path}`, { headers: { authorization: `Bearer ${bearer}` }, redirect: "manual" });
+        expect([303, 401, 403], `${path} as ${bearer.slice(0, 3)}`).toContain(response.status);
+        expect(await response.text()).not.toMatch(/planning|running them|Check the tests/);
+      }
+    }
+    const cookie = await signIn("alex", alexToken);
+    expect((await get(`/agents/live/${run}?file=main`, cookie)).status).toBe(200);
+    expect((await get("/agents/live", cookie)).status).toBe(200);
+  });
+
   test("another project's run, an unknown file, another runner's run: refused or off, never read", async () => {
     const run = running("t-other", repoA);
     (await record(run)).close();

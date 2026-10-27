@@ -482,8 +482,9 @@ CREATE TABLE IF NOT EXISTS run_live_detail (
   captured_at TEXT NOT NULL
 );
 -- The Agents view's Live grid (docs/plans/agents-view.md §2.5): every role's running runs and its recently ended ones.
-CREATE INDEX IF NOT EXISTS run_live_open ON run (id) WHERE outcome IS NULL;
-CREATE INDEX IF NOT EXISTS run_live_recent ON run (finished_at) WHERE outcome IS NOT NULL;
+-- (id > 0 keeps them to the grid's own query, which names it: no other query's plan is offered them.)
+CREATE INDEX IF NOT EXISTS run_live_open ON run (id) WHERE outcome IS NULL AND id > 0;
+CREATE INDEX IF NOT EXISTS run_live_recent ON run (finished_at) WHERE outcome IS NOT NULL AND id > 0;
 `;
 
 /** A project's "Show commands in the live view" (live-detail.ts): absent means off. */
@@ -24622,8 +24623,8 @@ export type AgentsLiveRun = Run & { taskId: string; title: string; repo: string 
 export function agentsLiveRuns(store: Store, endedSince: Date, limit = 200): AgentsLiveRun[] {
   const rows = store.handle.prepare(
     `SELECT run.*, task_ref.external_id AS live_task_id, task_ref.repo AS live_task_repo, task.title AS live_task_title
-       FROM (SELECT id FROM run INDEXED BY run_live_open WHERE outcome IS NULL
-             UNION SELECT id FROM run INDEXED BY run_live_recent WHERE outcome IS NOT NULL AND finished_at >= ?) AS picked
+       FROM (SELECT id FROM run INDEXED BY run_live_open WHERE outcome IS NULL AND id > 0
+             UNION SELECT id FROM run INDEXED BY run_live_recent WHERE outcome IS NOT NULL AND id > 0 AND finished_at >= ?) AS picked
        JOIN run ON run.id = picked.id
        JOIN task_ref ON task_ref.id = run.task_ref
        LEFT JOIN task ON task_ref.backend = ? AND task.id = task_ref.external_id
