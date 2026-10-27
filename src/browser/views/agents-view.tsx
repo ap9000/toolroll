@@ -19,10 +19,11 @@ import { freshDraft, loadDraft, saveDraft, SteerControls, type SteerDraft } from
 import { LiveGrid } from "./agents-live-view.js";
 
 const CHIP: Record<AgentGroupKey, string> = {
-  // Needs you is amber (DESIGN.md): its wash, its words leaned toward ink for 4.5:1.
-  "needs-you": "bg-warning-soft text-needs",
+  // A list row's badge stays the ink attention badge: amber marks the thing that waits (the live tile, the task head),
+  // never every row of a list (DESIGN.md, Badges).
+  "needs-you": "bg-attention-soft text-attention",
   working: "bg-info-soft text-info",
-  stuck: "bg-warning-soft text-warning",
+  stuck: "bg-warning-soft text-foreground", // ink words on the amber wash: warning text alone reads 4.21:1
   done: "bg-success-soft text-success",
   idle: "bg-neutral-soft text-neutral-ink",
 };
