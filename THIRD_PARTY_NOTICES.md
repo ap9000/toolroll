@@ -337,6 +337,12 @@ tokens:
 - `frame.tsx` — the well of panels: one geometry (a raised well, hairline,
   concentric panel corners) with the style variants, spacing scale, stacking
   modes and panel shadows omitted; `FramePanel` can render as its child.
+- `alert.tsx` — cut to a neutral and a destructive tone with an icon column;
+  the info, warning, success and invert tones, the title/action slots and the
+  style variants are omitted.
+- `timeline.tsx` — cut to a read-only vertical list (item, indicator on a
+  hairline rail, content, date); the active-step context, horizontal mode and
+  styled indicators are omitted.
 
 No ReUI Pro blocks, icons or templates are included.
 

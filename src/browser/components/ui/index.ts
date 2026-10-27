@@ -11,3 +11,5 @@ export * from "./collapsible.js";
 export * from "./sonner.js";
 export * from "./dropdown-menu.js";
 export * from "./frame.js";
+export * from "./alert.js";
+export * from "./timeline.js";

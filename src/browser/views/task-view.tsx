@@ -14,7 +14,7 @@ import type { AssignmentCard } from "../../assignment-ui.js";
 import type { BrowserTaskDetailGroup, BrowserTaskFact, BrowserTaskMore, BrowserTaskSection, BrowserTaskTab, BrowserTaskThreadItem, BrowserTaskView } from "../../browser-workspace.js";
 import { GuardedHtml } from "../guarded-html.js";
 import { Journey } from "../first-run.js";
-import { Badge, Button, Card, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, Textarea, cn } from "../components/ui/index.js";
+import { Badge, Button, Card, Timeline, TimelineItem, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, Textarea, cn } from "../components/ui/index.js";
 import { ConfirmStoppedForm, HEADLINE_GLYPH, RebuildForm, StatusDetails, StatusHeadline, StatusWhy } from "./status-summary.js";
 import { RETRY_NOTE_LIMIT } from "../../needs-you.js";
 import { TEXT_LIMITS } from "../../text-limits.js";
@@ -333,18 +333,13 @@ export function TaskDetails({ view }: { view: BrowserTaskView }) {
     {attempts !== null && <section aria-labelledby="details-attempts" className="flex flex-col gap-2 border-t border-border pt-4 text-body">
       <h2 id="details-attempts" className="flex items-center gap-1.5 text-caption text-muted-foreground">Attempts <Badge>{attempts.attempts.length}</Badge></h2>
       {/* A timeline (after Linear's activity log): one status glyph per attempt on a hairline, oldest first. */}
-      <ol className="flex flex-col" data-attempt-timeline>
-        {attempts.attempts.map((attempt, index) => <li key={attempt.taskId} data-attempt-task={attempt.taskId}
-          className="relative grid grid-cols-[14px_minmax(0,1fr)] gap-x-2.5 pb-3 last:pb-0">
-          {index < attempts.attempts.length - 1 && <span aria-hidden="true" className="absolute bottom-0 left-[6.5px] top-[19px] w-px bg-border" />}
-          <StatusGlyph kind={attemptGlyph(attempt.label)} className="mt-[3px]" />
-          <div className="min-w-0">
-            <a href={attempt.href} className="font-medium hover:underline hover:underline-offset-4 phone:inline-flex phone:min-h-11 phone:items-center">{attempt.label}</a>
-            {attempt.runId !== null && <> · <a href={`/r/${attempt.runId}`} className="text-muted-foreground hover:underline">Run #{attempt.runId}</a></>}
-            {attempt.detail !== null && <p className="text-muted-foreground">{attempt.detail}</p>}
-          </div>
-        </li>)}
-      </ol>
+      <Timeline data-attempt-timeline>
+        {attempts.attempts.map(attempt => <TimelineItem key={attempt.taskId} data-attempt-task={attempt.taskId} indicator={<StatusGlyph kind={attemptGlyph(attempt.label)} />}>
+          <a href={attempt.href} className="font-medium hover:underline hover:underline-offset-4 phone:inline-flex phone:min-h-11 phone:items-center">{attempt.label}</a>
+          {attempt.runId !== null && <> · <a href={`/r/${attempt.runId}`} className="text-muted-foreground hover:underline">Run #{attempt.runId}</a></>}
+          {attempt.detail !== null && <p className="text-muted-foreground">{attempt.detail}</p>}
+        </TimelineItem>)}
+      </Timeline>
       {attempts.lead !== null && <p className="text-muted-foreground">Lead: {attempts.lead.label}{attempts.lead.active ? "" : " · access ended"}</p>}
     </section>}
   </div>;
