@@ -442,6 +442,12 @@ export function boardBody(
     return `${Math.round(minutes / (24 * 60))}d`;
   };
 
+  // A lane's head is a status chip in its own tone (after ReUI's badge with a dot): amber only for the lane that
+  // waits on a person, blue for building, green for done, neutral otherwise. The word carries the state.
+  const LANE_CHIP = { attention: "chip-needs", building: "chip-live", done: "chip-done", queued: "", waiting: "" } as const;
+  const laneChip = (key: keyof typeof LANE_CHIP, title: Html | string): Html =>
+    html`<span class="chip ${LANE_CHIP[key]}"><span class="chip-dot" aria-hidden="true"></span>${title}</span>`;
+
   const lane = (
     key: "attention" | "queued" | "waiting" | "building",
     title: string,
@@ -473,24 +479,25 @@ export function boardBody(
     // A lane is a section that can fold (board pass): open when it holds
     // cards, folded when empty, so a phone reads the counts first and a
     // desktop column never spends its height on "nothing here".
-    return html`<details class="lane lane-${key}"${shown.length === 0 ? null : html` open`}><summary><h2>${title} <span class="lane-count">${cards.length}${data.saturated ? "+" : ""}</span></h2></summary><p class="hint">${hint}</p>${shown.length === 0 ? html`<p class="meta lane-empty">nothing here</p>` : shown.map((card, index) => renderOne(card, index))}${more > 0 ? html`<a class="lane-more" href="/tasks">+${more} more in the task list</a>` : null}</details>`;
+    return html`<details class="lane lane-${key}"${shown.length === 0 ? null : html` open`}><summary><h2>${laneChip(key === "attention" && cards.length === 0 ? "queued" : key, title)} <span class="lane-count">${cards.length}${data.saturated ? "+" : ""}</span></h2></summary><p class="hint">${hint}</p>${shown.length === 0 ? html`<p class="meta lane-empty">nothing here</p>` : shown.map((card, index) => renderOne(card, index))}${more > 0 ? html`<a class="lane-more" href="/work">+${more} more in Tasks</a>` : null}</details>`;
   };
 
   // The card's facts: mono key–value pairs under the title (board pass) —
   // task, worker, runtime — the same grammar on every lane, so the eye
   // learns one card. Chips carry the words (project, reservation).
-  const facts = (rows: [string, string][]): Html | null =>
+  // A value is mono only when a machine said it (a worker, model or branch name, a clock); words stay Geist.
+  const facts = (rows: ([string, string] | [string, string, "mono"])[]): Html | null =>
     rows.length === 0
       ? null
-      : html`<span class="facts">${rows.map(([k, v]) => html`<span class="fact"><span class="k">${k}</span><span class="v">${v}</span></span>`)}</span>`;
+      : html`<span class="facts">${rows.map(([k, v, mono]) => html`<span class="fact"><span class="k">${k}</span><span class="${mono === undefined ? "v" : "v mono"}">${v}</span></span>`)}</span>`;
   const chips = (parts: (Html | null)[]): Html | null => {
     const kept = parts.filter((one): one is Html => one !== null);
     return kept.length === 0 ? null : html`<span class="chips">${joinHtml(kept, " ")}</span>`;
   };
 
   const plain = (card: BoardCard): Html =>
-    html`<a class="lane-card" href="${card.href}" data-vt="${card.taskId}"><span class="id">${card.taskId}</span><span class="t">${card.title}</span><span class="why">${card.reason}</span>${facts([
-      ...(card.stalledSince === null ? [] : [["waiting", age(card.stalledSince)] as [string, string]]),
+    html`<a class="lane-card" href="${card.href}" data-vt="${card.taskId}"><span class="t">${card.title}</span><span class="why">${card.reason}</span><span class="id">${card.taskId}</span>${facts([
+      ...(card.stalledSince === null ? [] : [["waiting", age(card.stalledSince), "mono"] as [string, string, "mono"]]),
     ])}${chips([
       chip(card.repo),
     ])}</a>`;
@@ -508,8 +515,8 @@ export function boardBody(
     return heads;
   })();
   const queuedCard = (card: BoardCard): Html =>
-    html`<a class="lane-card" href="${card.href}" data-vt="${card.taskId}"><span class="id">${card.taskId}</span><span class="t">${card.title}</span><span class="why">${card.reason}</span>${facts([
-      ["worker", card.assignedRunner === null ? "any free worker" : card.assignedRunner],
+    html`<a class="lane-card" href="${card.href}" data-vt="${card.taskId}"><span class="t">${card.title}</span><span class="why">${card.reason}</span><span class="id">${card.taskId}</span>${facts([
+      card.assignedRunner === null ? ["worker", "any free worker"] : ["worker", card.assignedRunner, "mono"],
     ])}${chips([
       queuedHeads.get(`${card.assignedRunner ?? ""}|${card.repo ?? ""}`) === card.taskId
         ? html`<span class="badge">${card.assignedRunner === null ? "next up" : `next for ${card.assignedRunner}`}</span>`
@@ -533,13 +540,15 @@ export function boardBody(
     const steps = step === null
       ? null
       : html`<span class="steps" role="img" aria-label="${`step ${step + 1} of ${BUILD_STEPS.length}: ${BUILD_STEPS[step]}`}">${BUILD_STEPS.map((_, index) => html`<i class="${index < step ? "on" : index === step ? "now" : ""}"></i>`)}</span>`;
-    return html`<a class="lane-card building" href="${card.href}" data-vt="${card.taskId}"><span class="id">${card.taskId}</span><span class="t"><span class="dot dot-ok pulse"></span>${card.title}</span>${steps}<span class="live-line"><span class="stage">${live}</span>${tickingClock(claim.claimedAt, data.now)}</span>${facts([
-      ["worker", claim.runner],
-      ...(claim.model === null
-        ? []
-        : [["model", `${claim.provider !== null && claim.provider !== "claude" ? `${claim.provider} · ` : ""}${claim.model}`] as [string, string]]),
-      ...(claim.branch === null ? [] : [["branch", `${claim.branch}${workspace === null ? "" : ` · ${workspace}`}`] as [string, string]]),
-    ])}${chips([
+    // Who, which model and which branch, as one muted line: words in Geist, the model and branch in mono.
+    const model = claim.model === null ? null : `${claim.provider !== null && claim.provider !== "claude" ? `${claim.provider} · ` : ""}${claim.model}`;
+    const branch = claim.branch === null ? null : `${claim.branch}${workspace === null ? "" : ` · ${workspace}`}`;
+    const who = joinHtml([
+      html`<span>${claim.runner}</span>`,
+      model === null ? null : html`<span class="mono">${model}</span>`,
+      branch === null ? null : html`<span class="mono">${branch}</span>`,
+    ].filter((one): one is Html => one !== null), html`<span aria-hidden="true"> · </span>`);
+    return html`<a class="lane-card building" href="${card.href}" data-vt="${card.taskId}"><span class="t"><span class="dot dot-ok pulse"></span>${card.title}</span>${steps}<span class="live-line"><span class="stage">${live}</span>${tickingClock(claim.claimedAt, data.now)}</span><span class="id">${card.taskId}</span><span class="who">${who}</span>${chips([
       card.attempt === null ? null : html`<span class="badge">Attempt ${card.attempt}</span>`,
       chip(card.repo),
     ])}</a>`;
@@ -553,8 +562,8 @@ export function boardBody(
             row.prNumber === null
               ? null
               : html`<span class="badge badge-open">PR #${row.prNumber}</span>${ciRed(row.prNumber) ? html` <span class="badge badge-failed">CI failing</span>` : null}`;
-          return html`<a class="lane-card" href="${taskHref(row.taskId)}" data-vt="${row.taskId}"><span class="id">${row.taskId}</span><span class="t">${row.title}</span>${row.handoff === null ? null : html`<span class="why">${row.handoff.length > 120 ? row.handoff.slice(0, 120) + "…" : row.handoff}</span>`}${facts([
-            ...(row.ranMinutes === null ? [] : [["ran", `${row.ranMinutes}m`] as [string, string]]),
+          return html`<a class="lane-card" href="${taskHref(row.taskId)}" data-vt="${row.taskId}"><span class="t">${row.title}</span>${row.handoff === null ? null : html`<span class="why">${row.handoff.length > 120 ? row.handoff.slice(0, 120) + "…" : row.handoff}</span>`}<span class="id">${row.taskId}</span>${facts([
+            ...(row.ranMinutes === null ? [] : [["ran", `${row.ranMinutes}m`, "mono"] as [string, string, "mono"]]),
             ["usage", runCostWords({ authMode: row.authMode, costUsd: row.costUsd, tokensIn: null, tokensOut: null })],
           ])}${chips([
             html`<span class="badge badge-done">${row.outcome === "no-change" ? "No change" : "Built"}</span>`,
@@ -597,11 +606,11 @@ export function boardBody(
     toggle,
     workerStrip(data.workers, data.cards, data.now),
     html`<div class="board" data-now="${String(data.now.getTime())}">`,
-    lane("attention", "needs you", "these wait for a person", plain),
-    lane("queued", "queued", "starts when a worker is free", queuedCard),
-    lane("waiting", "waiting", "paused until a time, another task, or a requirement is ready", plain),
-    lane("building", "building", "one agent per card, in its own workspace", building),
-    html`<details class="lane lane-done"${data.done.length === 0 ? null : html` open`}><summary><h2><a href="/done">done recently</a></h2></summary><p class="hint">the most recent — the full list is under done</p>${doneCards}</details>`,
+    lane("attention", "Needs you", "These wait for a person.", plain),
+    lane("queued", "Queued", "Starts when a worker is free.", queuedCard),
+    lane("waiting", "Waiting", "Paused until a time, another task, or a requirement is ready.", plain),
+    lane("building", "Building", "One agent per card, in its own workspace.", building),
+    html`<details class="lane lane-done"${data.done.length === 0 ? null : html` open`}><summary><h2>${laneChip("done", html`<a href="/done">Done recently</a>`)}</h2></summary><p class="hint">The most recent. The full list is under Done.</p>${doneCards}</details>`,
     html`</div>`,
   ], "\n");
 }
@@ -748,7 +757,7 @@ export function homePage(chrome: Chrome, data: {
       ? joinHtml([
           html`<div class="card">`,
           html`<p><strong>Nothing is queued yet — here is the whole loop:</strong></p>`,
-          html`<p>1. <a href="/tasks">Add a task</a> — plain words for work you want done${data.repo === null ? null : html` in <span class="mono">${data.repo}</span>`}.</p>`,
+          html`<p>1. <a href="/tasks/new">Add a task</a> — plain words for work you want done${data.repo === null ? null : html` in <span class="mono">${data.repo}</span>`}.</p>`,
           html`<p>2. Open it and write its scope — the goal, and what it must not become. Approve exactly that.</p>`,
           html`<p>3. Keep Toolroll running on the builder machine. Approved tasks build unattended, each on its own branch.</p>`,
           html`<p class="meta">When an agent is unsure it stops and asks — those questions land here, under “waiting on you”.</p>`,
@@ -858,12 +867,14 @@ export const TASK_GROUP_LABEL: Readonly<Record<WorkIndexGroup, string>> = { ...A
 
 export function workPage(
   chrome: Chrome,
-  data: { view: WorkView; projectFilter?: string; work: WorkIndexPage; previous: boolean; multiProject: boolean; now: Date; limits?: BrowserLimits | null },
+  data: { view: WorkView; projectFilter?: string; work: WorkIndexPage; previous: boolean; multiProject: boolean; now: Date; limits?: BrowserLimits | null; state?: TaskState | null },
 ): Screen {
-  const href = (view: WorkView, cursor?: string): string => {
+  // The stored-state filter (the old task list's) rides every link but a change of state, which starts on page one.
+  const href = (view: WorkView, cursor?: string, state: TaskState | null = data.state ?? null): string => {
     const query = new URLSearchParams();
     if (data.projectFilter !== undefined) query.set('project', data.projectFilter);
     if (view !== 'all') query.set('view', view);
+    if (state !== null) query.set('state', state);
     if (cursor !== undefined) query.set('cursor', cursor);
     return `/work${query.size ? `?${query}` : ''}`;
   };
@@ -877,16 +888,22 @@ export function workPage(
       : browserWorkActionHref(row);
     const action = actionHref === null || row.primaryAction === null ? null : html`<a class="work-action" data-primary-action href="${actionHref}">${row.primaryAction.label} →</a>`;
     const project = data.multiProject || row.repo === null ? html`<span class="project-label">${row.repo === null ? 'Unplaced' : projectName(row.repo)}</span>` : null;
-    return html`<article class="work-row" data-task="${row.rootId}" data-work-status="${row.status.token}" data-work-views="${row.status.views.join(' ')}"><div class="work-row-main"><a class="work-title" href="${taskHref(row.rootId)}">${row.title}</a><p class="work-meta">${project}<span>${relativeAge(row.updatedAt, data.now)}</span></p></div><div class="work-row-status">${statusLineHtml(row.status)}${action}${row.familyProblem === null ? null : html`<p class="problem">${row.familyProblem}</p>`}${row.status.views.includes('needs-you') && !['write-scope', 'approve-scope'].includes(row.primaryAction?.code ?? '') && row.status.detail !== row.status.label && row.status.detail !== row.familyProblem ? html`<p class="work-detail">${row.status.detail}</p>` : null}${workDiagnosticsHtml(row.status.diagnostics)}</div></article>`;
+    return html`<article class="work-row" data-task="${row.rootId}" data-work-status="${row.status.token}" data-work-views="${row.status.views.join(' ')}"><div class="work-row-main"><a class="work-title" href="${taskHref(row.rootId)}">${row.title}</a><p class="work-meta">${project}<span>${relativeAge(row.updatedAt, data.now)}</span><span class="mono">${row.rootId}</span></p></div><div class="work-row-status">${statusLineHtml(row.status)}${action}${row.familyProblem === null ? null : html`<p class="problem">${row.familyProblem}</p>`}${row.status.views.includes('needs-you') && !['write-scope', 'approve-scope'].includes(row.primaryAction?.code ?? '') && row.status.detail !== row.status.label && row.status.detail !== row.familyProblem ? html`<p class="work-detail">${row.status.detail}</p>` : null}${workDiagnosticsHtml(row.status.diagnostics)}</div></article>`;
   };
   const current = WORK_VIEWS.find(one => one.key === data.view)!;
-  const list = data.work.items.length === 0
+  const filtered = (data.state ?? null) !== null;
+  // The state filter, as real links (the old task list's), so a page without the React view can still change it.
+  const stateLinks = html`<nav class="work-states" aria-label="Task state"><span class="meta">State:</span> ${joinHtml([html`<a href="${href(data.view, undefined, null)}"${filtered ? null : html` aria-current="page"`}>Any</a>`,
+    ...TASK_STATES.map(one => html`<a href="${href(data.view, undefined, one)}"${data.state === one ? html` aria-current="page"` : null}>${one}</a>`)], html` · `)}</nav>`;
+  const list = data.work.items.length === 0 && filtered && !data.previous
+    ? html`<div class="work-empty" data-work-empty="${data.view}"><p>No tasks are ${data.state} in this view.</p><a href="${href(data.view, undefined, null)}">Show every state →</a></div>`
+    : data.work.items.length === 0
     ? html`<div class="work-empty" data-work-empty="${data.view}"><p>${data.previous ? 'There are no more tasks on this page.' : current.empty}</p>${data.view === 'all' && !data.previous ? html`<p><a class="button-link" href="${chrome.chat === true ? '/chat' : '/tasks/new'}">${chrome.chat === true ? 'Start in chat' : 'Add a task'}</a></p>` : html`<a href="${href('all')}">See all tasks →</a>`}</div>`
     : html`<div class="work-list">${data.work.items.map(rowHtml)}</div>`;
   const pages = !data.previous && data.work.nextCursor === null ? null : html`<nav class="row work-pagination" aria-label="Task pages">${data.previous ? html`<a class="button-link" href="${href(data.view)}">First page</a>` : null}${data.work.nextCursor === null ? null : html`<a class="button-link" rel="next" href="${href(data.view, data.work.nextCursor)}">Next page</a>`}</nav>`;
-  const tools = html`<details class="work-tools"><summary>Work tools${CHEVRON_ICON}</summary><nav class="work-tools-menu">${[['/inbox', 'Inbox'], ['/board', 'Board'], ['/board?view=order', 'Order'], ['/tasks', 'Task list'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']]), ['/ledger', 'Action ledger']]
+  const tools = html`<details class="work-tools"><summary>Work tools${CHEVRON_ICON}</summary><nav class="work-tools-menu">${[['/inbox', 'Inbox'], ['/board', 'Board'], ['/board?view=order', 'Order'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']]), ['/ledger', 'Action ledger']]
       .map(([path, label]) => html`<a href="${path}">${label}</a>`)}</nav></details>`;
-  const toolLinks = [['/inbox', 'Inbox'], ['/board', 'Board'], ['/board?view=order', 'Order'], ['/tasks', 'Task list'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']])];
+  const toolLinks = [['/inbox', 'Inbox'], ['/board', 'Board'], ['/board?view=order', 'Order'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']])];
   const view: BrowserTasksView = {
     kind: 'tasks',
     tabs: WORK_VIEWS.map(one => ({ label: one.label, href: href(one.key), count: data.work.totals[one.key], active: one.key === data.view })),
@@ -912,7 +929,7 @@ export function workPage(
         notes: (row.status.diagnostics ?? []).map(one => `${one.label} · ${one.detail}`),
       };
     }),
-    empty: data.work.items.length > 0 ? null : {
+    empty: data.work.items.length > 0 ? null : filtered && !data.previous ? { text: `No tasks are ${data.state} in this view.`, action: { label: "Show every state", href: href(data.view, undefined, null) } } : {
       text: data.previous ? 'There are no more tasks on this page.' : current.empty,
       action: data.view === 'all' && !data.previous ? { label: chrome.chat === true ? 'Start in chat' : 'Add a task', href: chrome.chat === true ? '/chat' : '/tasks/new' } : { label: 'See all tasks', href: href('all') },
     },
@@ -920,47 +937,11 @@ export function workPage(
     tools: toolLinks.map(([path, label]) => ({ label: label!, href: path! })),
     newTask: { label: 'New task', href: '/tasks/new' },
     limits: data.limits ?? null,
+    states: [{ label: 'Any state', href: href(data.view, undefined, null), active: (data.state ?? null) === null },
+      ...TASK_STATES.map(one => ({ label: one.charAt(0).toUpperCase() + one.slice(1), href: href(data.view, undefined, one), active: data.state === one }))],
   };
-  return screen('work', html`<div class="work-head"><h1>Tasks</h1>${tools}</div>${limitsHtml(data.limits ?? null)}${tabs}${list}${pages}`, { chrome, workspace: { view } });
+  return screen('work', html`<div class="work-head"><h1>Tasks</h1>${tools}</div>${limitsHtml(data.limits ?? null)}${tabs}${stateLinks}${list}${pages}`, { chrome, workspace: { view } });
 }
-
-export function tasksPage(
-  chrome: Chrome,
-  tasks: Task[],
-  state: TaskState | null,
-  problem: string | null,
-  repo: string | null = null,
-  prefill: TaskComposerPrefill | null = null,
-  permissionDefault: UnattendedPermissionMode = "auto",
-  qualityDefault: QualityMode = "default",
-  replaced: ReadonlyMap<string, string> = new Map(),
-): Screen {
-  const filters = joinHtml(TASK_STATES.map(
-    one => (one === state ? html`<strong>${one}</strong>` : html`<a href="/tasks?state=${one}">${one}</a>`),
-  ), " · ");
-  const rows =
-    tasks.length === 0
-      ? html`<p class="meta">${
-          state === null
-            ? "The queue is empty — add the first task below. It builds once you approve its scope."
-            : `Nothing is ${state}.`
-        }</p>`
-      : joinHtml(tasks.map(
-          task =>
-            html`<a class="row" href="${taskHref(task.id)}"><span class="mono">${task.id}</span> ${task.title} <span class="right badge badge-${task.state}">${task.state === "cancelled" && replaced.has(task.id) ? `replaced by ${replaced.get(task.id)}` : task.state}</span></a>`,
-        ), "\n");
-  return screen("tasks", joinHtml([
-    html`<h1>Tasks</h1>`,
-    html`<p class="meta">Work you want done${repo === null ? null : html` in <strong>${projectName(repo)}</strong>`} — a task builds unattended only after its scope is approved; open one to write or approve its scope</p>`,
-    repo === null ? null : html`<p class="meta path-words"><span class="mono">${repo}</span></p>`,
-    problem === null ? null : html`<div class="problem">${problem}</div>`,
-    html`<p class="meta">Filter: <a href="/tasks">all</a> · ${filters}</p>`,
-    rows,
-    html`<h2>Add a task</h2>`,
-    taskComposerHtml({ project: repo, prefill, permissionDefault, qualityDefault }),
-  ], "\n"), { chrome });
-}
-
 
 export function browsePage(chrome: Chrome, data: {
   at: string;
@@ -1764,12 +1745,15 @@ export function queueScript(): string {
 export function newTaskPage(
   chrome: Chrome,
   project: string | null,
-  projectRevision: number,
+  /** undefined: keep the revision the refused form posted (its draft), so a project switch since still refuses. */
+  projectRevision: number | undefined,
   problem: string | null,
   candidates: { id: string; title: string }[] = [],
   permissionDefault: UnattendedPermissionMode = "auto",
   qualityDefault: QualityMode = "default",
   projects: { path: string; name: string }[] = [],
+  /** A shipped template's fields, or a refused filing's own words, back in the form. */
+  prefill: TaskComposerPrefill | null = null,
 ): Screen {
   return screen("New task", joinHtml([
     html`<section class="task-intake">`,
@@ -1778,7 +1762,8 @@ export function newTaskPage(
     problem === null ? null : html`<div class="problem">${problem}</div>`,
     taskComposerHtml({
       project,
-      projectRevision,
+      ...(projectRevision === undefined ? {} : { projectRevision }),
+      prefill,
       candidates,
       permissionDefault,
       qualityDefault,

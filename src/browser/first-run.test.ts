@@ -2,8 +2,8 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { FirstRequest, FirstRun, PhoneCard, rechecked, withSuggestion } from "./first-run.js";
-import { firstTaskJourney } from "../first-run.js";
+import { FirstRequest, FirstRun, Journey, PhoneCard, rechecked, withSuggestion } from "./first-run.js";
+import { firstTaskJourney, taskRoad } from "../first-run.js";
 import type { BrowserFirstRun } from "../browser-workspace.js";
 
 const signedOut = (): BrowserFirstRun => ({
@@ -88,6 +88,38 @@ test("the first task's way to Ready fills in as it moves", () => {
   expect(states({ stage: "failed" }, true)).toEqual(["done", "done", "stuck", "todo", "todo"]);
   expect(states({ stage: "needs-you", need: "other" }, true)).toEqual(["done", "done", "stuck", "todo", "todo"]);
   expect(firstTaskJourney({ stage: "needs-you", need: "other" }, true, true).map(one => one.state)).toEqual(["done", "done", "done", "stuck", "todo"]);
+});
+
+test("a task's road says only what happened: no Checks for a report, skipped checks say so, the wait is the one amber step", () => {
+  const road = (...args: Parameters<typeof taskRoad>) => taskRoad(...args).map(one => `${one.key}:${one.state}${one.needsYou ? "!" : ""}:${one.label}`);
+  // A research report has no Checks step at all.
+  expect(road({ stage: "finished" }, true, true, { report: true })).toEqual(["plan:done:Plan", "approve:done:You approve", "build:done:Build", "ready:done:Ready"]);
+  // Past Checks without a passing check: the step is skipped and says why, never done.
+  expect(road({ stage: "finished" }, true, true, { checks: "not-run" })[3]).toBe("checks:skipped:Checks not run");
+  expect(road({ stage: "complete" }, true, true, { checks: "unread" })[3]).toBe("checks:skipped:Checks unread");
+  expect(road({ stage: "finished" }, true, true, { checks: "failed" })[3]).toBe("checks:stuck:Checks failed");
+  expect(road({ stage: "finished" }, true, true, { checks: "running" })[3]).toBe("checks:current:Checks running");
+  expect(road({ stage: "finished" }, true, true, { checks: "passed" })[3]).toBe("checks:done:Checks");
+  // With no checks fact the step is never shown done.
+  expect(road({ stage: "finished" }, true, true, {})[3]).toBe("checks:skipped:Checks");
+  // You approve is done only when the plan was approved; a rewritten plan waits on approval again.
+  expect(road({ stage: "building" }, false, false, {})[1]).toBe("approve:skipped:You approve");
+  expect(road({ stage: "needs-you", need: "replan" }, true, true, {}).slice(1, 3)).toEqual(["approve:current!:You approve", "build:todo:Build"]);
+  // A report stopped where Checks would be stops at Ready.
+  expect(road({ stage: "stopped" }, true, true, { report: true }).at(-1)).toBe("ready:stuck:Ready");
+  // At Checks now, a recorded failure reads as one, and a running check says so.
+  expect(road({ stage: "waiting" }, true, true, { checks: "failed" })[3]).toBe("checks:stuck:Checks failed");
+  expect(road({ stage: "checking" }, true, true, { checks: "running" })[3]).toBe("checks:current:Checks running");
+  // The approval is the step that waits on a person; a failure stops at Build and waits on nobody.
+  expect(road({ stage: "needs-you", need: "approval" }, false, false, {})[1]).toBe("approve:current!:You approve");
+  expect(road({ stage: "failed" }, true, false, {})[2]).toBe("build:stuck:Build");
+  expect(road({ stage: "stopped" }, true, false, {}).some(one => one.includes("!"))).toBe(false);
+  expect(road({ stage: "needs-you", need: "other" }, true, true, {})[3]).toBe("checks:stuck!:Checks");
+});
+
+test("the road names where the task stands, never Ready for a step that stopped there", async () => {
+  await render(createElement(Journey, { steps: taskRoad({ stage: "stopped" }, true, true, { report: true }) }));
+  expect(document.querySelector("[data-first-task-journey]")!.getAttribute("aria-label")).toBe("Where this task is: Ready, stopped here");
 });
 
 test("after the first result, the phone: a chat app or this console over Tailscale, and Not now puts it away", async () => {

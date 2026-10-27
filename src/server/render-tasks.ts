@@ -21,7 +21,7 @@ import { CHAT_TASK_ACTIONS } from "../chat-task-actions.js";
 import { type FormView } from "../contracts/console-api.js";
 import { type DispatchDiagnosis } from "../dispatch.js";
 import { type ReportView } from "../evidence.js";
-import { firstTaskJourney } from "../first-run.js";
+import { taskRoad, type RoadChecks } from "../first-run.js";
 import { starterForWork } from "../flow-starters.js";
 import { type Gap } from "../gaps.js";
 import { readAuthModeStrict } from "../keys.js";
@@ -2842,10 +2842,17 @@ export function taskBodyParts(data: {
       { id: "task-diagnostics", title: "Task options", html: htmlString(optionsHtml), open: optionsOpen, count: null },
     ],
     cancel: cancelForm === "" ? null : { html: htmlString(cancelForm), open: data.cancelDraft !== undefined },
-    journey: data.guide !== true || task.state === "cancelled" || data.status === undefined ? null : (() => {
+    // Every task's road (the first task's guide used to be the only one): facts only, so the checks step says when
+    // checks didn't run, and a research report has none.
+    journey: task.state === "cancelled" || data.status === undefined ? null : (() => {
       const planning = data.plan === "requested" && approveForm === "";
       const read = data.assignment != null ? assignmentStageOf(data.assignment, { token: data.status.token }, planning) : stageOfCode(data.status.token, { planning });
-      return firstTaskJourney(read, scope !== null && approvalOf(scope).approved, task.state === "done");
+      // The checks fact the status card shows, read as what happened: a "note" is a failure when its words say so.
+      const shown = statusCard?.status.details.find(one => one.key === "checks") ?? null;
+      const checks: RoadChecks = shown === null ? null : shown.mark === "ok" ? "passed" : shown.mark === "running" ? "running"
+        : shown.mark === "failed" || /\bfailed\b/i.test(shown.text) ? "failed" : shown.mark === "none" ? "not-run" : "unread";
+      const report = data.deliverable === "report" || data.report != null;
+      return taskRoad(read, scope !== null && approvalOf(scope).approved, task.state === "done", { checks, report });
     })(),
     // "Do this every time…": the starter flow that does this kind of work on its own, one yes away.
     thread,

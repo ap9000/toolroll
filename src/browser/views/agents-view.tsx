@@ -19,9 +19,11 @@ import { freshDraft, loadDraft, saveDraft, SteerControls, type SteerDraft } from
 import { LiveGrid } from "./agents-live-view.js";
 
 const CHIP: Record<AgentGroupKey, string> = {
+  // A list row's badge stays the ink attention badge: amber marks the thing that waits (the live tile, the task head),
+  // never every row of a list (DESIGN.md, Badges).
   "needs-you": "bg-attention-soft text-attention",
   working: "bg-info-soft text-info",
-  stuck: "bg-warning-soft text-warning",
+  stuck: "bg-warning-soft text-foreground", // ink words on the amber wash: warning text alone reads 4.21:1
   done: "bg-success-soft text-success",
   idle: "bg-neutral-soft text-neutral-ink",
 };
@@ -203,9 +205,9 @@ function Composer({ detail }: { detail: BrowserAgentDetail }) {
  * whose own form acts (docs/plans/one-page-task-and-agent.md). The same words on both pages. */
 function TaskHead({ task }: { task: NonNullable<BrowserAgentDetail["task"]> }) {
   const attention = task.headline === "Needs you";
-  return <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-2 rounded-card border px-3.5 py-3", attention ? "border-attention/40 bg-attention-soft" : "border-border bg-card")} data-agent-task={task.headline}>
+  return <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-2 rounded-card border px-3.5 py-3", attention ? "border-warning bg-card" : "border-border bg-card")} data-agent-task={task.headline}>
     <div className="min-w-0 flex-1 basis-56">
-      <p className="text-caption font-medium text-muted-foreground">Task · <span className={cn(attention ? "text-attention" : task.headline === "Failed" ? "text-destructive" : "text-foreground")}>{task.headline}</span></p>
+      <p className="text-caption font-medium text-muted-foreground">Task · <span className={cn(attention ? "text-needs" : task.headline === "Failed" ? "text-destructive" : "text-foreground")}>{task.headline}</span></p>
       <p className="mt-0.5 text-body break-words">{task.sentence}</p>
     </div>
     <Button asChild variant={attention ? "attention" : "outline"} className="h-10 shrink-0 phone:h-11 phone:w-full"><a href={task.action.href} data-agent-task-action>{task.action.label}<ArrowUpRight /></a></Button>

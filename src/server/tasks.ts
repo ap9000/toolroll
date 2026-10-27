@@ -92,7 +92,7 @@ import type { ServerRuntime } from './runtime.js';
 import { requestContext } from "./request-context.js";
 import { boardTickScript,oneLineOf,QUEUE_VIEW,refuse,regionScript,screen,transcriptScript,whenTime } from "./chrome.js";
 import { chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
-import { boardBody,boardWorkers,donePage,inboxFingerprints,inboxPage,newTaskPage,nextPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,tasksPage,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
+import { type TaskComposerPrefill,boardBody,boardWorkers,donePage,inboxFingerprints,inboxPage,newTaskPage,nextPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
 import { runEfficiencyOf } from "../run-efficiency.js";
 import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQueue,RESULT_REFUSALS,REVIEW_QUEUE_CAP,reviewCockpitDetailParts,reviewCockpitPage,reviewPriorityOf,runFactsFragment,runOutcomeBadge,runPage,RUNS_PAGE,runsPage,withRefusal,type CompletedWorkRow,type RankedReviewRow,type ReviewCockpitView } from "./render-results.js";
 import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,decisionPage,nonceHashOf,PermissionsWouldChange,requirementsFromEditor,resumeDigestOf,taskOf } from "./render-tasks.js";
@@ -228,12 +228,17 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // up like the inbox: admission binds the query and every row's repo
     // is re-proved here.
     const view = parseWorkView(url.searchParams.get("view"));
+    // The stored-state filter the old task list had (`?state=`): an unknown state is refused, as it was there.
+    const wantedState = url.searchParams.get("state");
+    if (wantedState !== null && !TASK_STATES.includes(wantedState as TaskState)) return refuse(response, who, 400, "no such state", "/work");
+    const state = wantedState as TaskState | null;
     const rollup = project === null && !unscopedMode;
     let work: WorkIndexPage;
     try {
-      work = workIndexPage(store, now, workAccess(), { view, limit: 40, cursor: url.searchParams.get('cursor'), project, root: evidenceRoot });
+      work = workIndexPage(store, now, workAccess(), { view, limit: 40, cursor: url.searchParams.get('cursor'), project, root: evidenceRoot, ...(state === null ? {} : { state }) });
       const facts = requestContext.getStore();
-      if (facts !== undefined) {
+      // A filtered page never stands in for the counts or the Crew: those read the unfiltered work.
+      if (facts !== undefined && state === null) {
         // These counts cover the exact admitted project lens, including
         // unplaced tasks where permitted. Crew excludes unplaced rows.
         if (project === null) facts.workCounts = work.projects;
@@ -273,6 +278,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       previous: url.searchParams.has('cursor'),
       multiProject: new Set(work.items.map(task => task.repo ?? "")).size > 1,
       now,
+      state,
       // v105: subscription windows and monthly budgets, for whoever runs the installation.
       limits: store.isInstanceOperator(who.name)
         ? limitsView(store.providerLimits(), store.budgets().length === 0 ? [] : store.monthSpendCached(now).budgets, { project: projectName, subagent: id => subagentNamesOf(store.handle).get(id) ?? `Subagent ${id}` }, now)
@@ -611,39 +617,16 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     );
   }
 
+  /** The old task list, retired into /work (docs/plans/reui-polish.md slice 7): its address keeps answering, as a
+   * redirect, so links and bookmarks still land. `state` carries over (an unknown one is still refused); `template`
+   * goes to the add page, which now pre-fills it. Anything else is dropped. */
   async function showTasks(ctx: HandlerContext): Promise<void> {
-    const { url, who, response, project } = ctx;
+    const { url, who, response } = ctx;
     const wanted = url.searchParams.get("state");
-    if (wanted !== null && !TASK_STATES.includes(wanted as TaskState)) {
-      return refuse(response, who, 400, "no such state", "/tasks");
-    }
-    // ?template=<name> pre-fills the add form from the shipped library —
-    // a pre-filled form and nothing more; the submission path is the
-    // same guarded handler either way.
-    const fromTemplate = url.searchParams.get("template");
-    const picked = fromTemplate === null ? null : templateByName(fromTemplate);
-    const prefill =
-      picked !== null && picked.kind === "task"
-        ? {
-            title: picked.title, goal: picked.goal, not: picked.outOfScope ?? "", touches: picked.touches.join(", "),
-            acceptance: acceptanceToLines(picked.acceptance).join("\n"),
-          }
-        : null;
-    return sendScreen(
-      response,
-      200,
-      tasksPage(
-        chromeFor(project, "tasks"),
-        familyTasksInView(project, wanted === null ? undefined : (wanted as TaskState)).slice(0, 200),
-        wanted as TaskState | null,
-        null,
-        project,
-        prefill,
-        store.permissionDefault().mode,
-        store.qualityDefault().mode,
-        store.replacements(),
-      ),
-    );
+    if (wanted !== null && !TASK_STATES.includes(wanted as TaskState)) return refuse(response, who, 400, "no such state", "/work");
+    const template = url.searchParams.get("template");
+    if (template !== null) return redirect(response, `/tasks/new?template=${encodeURIComponent(template)}`);
+    return redirect(response, wanted === null ? "/work" : `/work?state=${encodeURIComponent(wanted)}`);
   }
 
   async function showQueue(ctx: HandlerContext): Promise<void> {
@@ -662,14 +645,11 @@ export function createTasksHandlers(runtime: ServerRuntime) {
   }
 
   async function showNewTask(ctx: HandlerContext): Promise<void> {
-    const { who, response, project } = ctx;
-    const revision = who.via === "cookie" ? who.session.projectRevision : 0;
-    const chainable = store
-      .listTasksScoped(project, undefined, 100, null)
-      .filter(one => one.state !== "done" && one.state !== "cancelled" && visible(one.repo))
-      .map(one => ({ id: one.id, title: one.title }));
-    const chrome = chromeFor(project, "tasks");
-    return sendScreen(response, 200, newTaskPage(chrome, project, revision, null, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? []));
+    const picked = (() => { const name = ctx.url.searchParams.get("template"); return name === null ? null : templateByName(name); })();
+    const prefill = picked !== null && picked.kind === "task"
+      ? { title: picked.title, goal: picked.goal, not: picked.outOfScope ?? "", touches: picked.touches.join(", "), acceptance: acceptanceToLines(picked.acceptance).join("\n") }
+      : null;
+    return newTaskScreen(ctx, 200, null, prefill);
   }
 
   async function showTask(ctx: HandlerContext): Promise<void> {
@@ -677,7 +657,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const task = matchTaskPath(url.pathname, "");
     if (task === null) return noPage(who, response);
     const family = familyOf(task.taskId);
-    if (family === null) return refuse(response, who, 404, "no such task", "/tasks");
+    if (family === null) return refuse(response, who, 404, "no such task", "/work");
     const version = url.searchParams.get("version");
     if (version !== null && !family.versions.some(one => one.id === version)) return refuse(response, who, 404, "That version is not available for this task.", taskHref(family.root.id));
     // A version's own address lands on its family's page, still asking for the plan editor when it did (Chat's Edit plan).
@@ -725,10 +705,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (evidence === null) return noPage(who, response);
     const access = workAccess();
     const family = store.taskFamilyOf(evidence.taskId, access.repos, access.includeUnplaced);
-    if (family === null || !visible(family.root.repo)) return refuse(response, who, 404, "no such task", "/tasks");
+    if (family === null || !visible(family.root.repo)) return refuse(response, who, 404, "no such task", "/work");
     if (evidence.taskId !== family.root.id) return redirect(response, `${taskHref(family.root.id)}/evidence${url.search}`);
     const pack = evidencePack(store, family.root.id, access, who.name, now, evidenceRoot);
-    if (pack === null) return refuse(response, who, 404, "no such task", "/tasks");
+    if (pack === null) return refuse(response, who, 404, "no such task", "/work");
     if (url.searchParams.get("format") === "json") {
       response.writeHead(200, { "content-type": "application/json; charset=utf-8", "content-disposition": `attachment; filename="evidence-${family.root.id.replace(/[^A-Za-z0-9._-]/g, "_")}.json"`,
         "cache-control": "no-store", "x-content-type-options": "nosniff" });
@@ -1050,7 +1030,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (who.via === "cookie") {
       const seen = body.get("projectRevision");
       if (seen !== null && seen !== String(who.session.projectRevision)) {
-        return refuse(response, who, 409, "the open project changed since this form was rendered — reload and try again", "/tasks");
+        return refuse(response, who, 409, "the open project changed since this form was rendered — reload and try again", "/tasks/new");
       }
     }
     const id = (body.get("id") ?? "").trim();
@@ -1069,12 +1049,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // finding 1): the form's `required` is a courtesy, not the guard — a
     // direct POST with no project open must not mint an unplaced task
     // under a ceiling. Unscoped mode keeps its historic unplaced filings.
+    // A refusal from here on is the add page again with the person's own words (the old task list kept them too).
+    const draft: TaskComposerPrefill = { title, goal: body.get("goal") ?? "", not: body.get("not") ?? "", touches: body.get("touches") ?? "", acceptance: body.get("acceptance") ?? "", values: body.sent };
     if (!unscopedMode && effective === "") {
-      return sendScreen(
-        response,
-        400,
-        tasksPage(chromeFor(project, "tasks"), familyTasksInView(project).slice(0, 200), null, "name a repository — no project is open, so the task must say where it belongs", project, null, store.permissionDefault().mode, store.qualityDefault().mode, store.replacements()),
-      );
+      return newTaskScreen(ctx, 400, "name a repository — no project is open, so the task must say where it belongs", draft);
     }
     let repo = effective;
     let admitted: string[] | null = unscopedMode ? null : admissionList() ?? [];
@@ -1082,11 +1060,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (rootMode && effective !== "") {
       const canonical = (await authorizedProject(liveCeiling(), effective)) ? canonicalProject(effective) : null;
       if (canonical === null || canonical === undefined) {
-        return sendScreen(
-          response,
-          403,
-          tasksPage(chromeFor(project, "tasks"), familyTasksInView(project).slice(0, 200), null, `${effective} is outside what this server was configured to show`, project, null, store.permissionDefault().mode, store.qualityDefault().mode, store.replacements()),
-        );
+        return newTaskScreen(ctx, 403, `${effective} is outside what this server was configured to show`, draft);
       }
       repo = canonical;
       admitted = [canonical];
@@ -1145,11 +1119,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       return filed;
     });
     if (!made.ok) {
-      return sendScreen(
-        response,
-        made.reason === "backlog-full" ? 429 : 400,
-        tasksPage(chromeFor(project, "tasks"), familyTasksInView(project).slice(0, 200), null, made.message, project, { title, goal, not: notThis, touches: body.get("touches") ?? "", acceptance: body.get("acceptance") ?? "", values: body.sent }, store.permissionDefault().mode, store.qualityDefault().mode, store.replacements()),
-      );
+      return newTaskScreen(ctx, made.reason === "backlog-full" ? 429 : 400, made.message, { title, goal, not: notThis, touches: body.get("touches") ?? "", acceptance: body.get("acceptance") ?? "", values: body.sent });
     }
     const actionContext = requestContext.getStore();
     if (actionContext !== undefined) actionContext.createdTask = made.id;
@@ -1334,7 +1304,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // record as `toolroll run settle`, refused while anything of the run may still be running.
     const back = taskHref(act.taskId);
     const ref = store.lookupRef(act.taskId);
-    if (ref === null || !visible(ref.repo)) return refuse(response, who, 404, "no such task", "/tasks");
+    if (ref === null || !visible(ref.repo)) return refuse(response, who, 404, "no such task", "/work");
     const named = (body.get("run") ?? "").trim();
     const run = /^[0-9]{1,15}$/.test(named) ? store.getRun(Number(named)) : null;
     const runTask = run === null ? null : store.externalIdFor(run.taskRef);
@@ -1367,7 +1337,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // result's pull request. The flow re-reads GitHub before merging and records who merged in the ledger.
     if (store.isDemo()) return taskScreen(response, who, act.taskId, "The demo merges nothing.", 403);
     const ref = store.lookupRef(act.taskId);
-    if (ref === null || !visible(ref.repo)) return refuse(response, who, 404, "no such task", "/tasks");
+    if (ref === null || !visible(ref.repo)) return refuse(response, who, 404, "no such task", "/work");
     const named = (body.get("run") ?? "").trim();
     const run = /^[0-9]{1,15}$/.test(named) ? store.getRun(Number(named)) : null;
     const runTask = run === null ? null : store.externalIdFor(run.taskRef);
@@ -1819,10 +1789,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
   ): void {
     const ref = store.lookupRef(taskId);
     if (ref === null || store.getTask(taskId) === null) {
-      return refuse(response, who, 404, "no such task", "/tasks");
+      return refuse(response, who, 404, "no such task", "/work");
     }
     if (!visible(ref.repo)) {
-      return refuse(response, who, 404, "no such task", "/tasks");
+      return refuse(response, who, 404, "no such task", "/work");
     }
 
     switch (verb) {
@@ -3091,5 +3061,20 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     "session.editor-links": sessionEditorLinks,
     "incident.resolve": resolveIncident,
   });
+  /** The add page, once more: blank, from a shipped template (`?template=`, as the old task list did), or with a refused
+   * filing's own words and status (the draft keeps the project revision it was written against). */
+  function newTaskScreen(ctx: HandlerContext, status: number, problem: string | null, draft: TaskComposerPrefill | null): Promise<void> | void {
+    const { who, response, project } = ctx;
+    const chainable = store
+      .listTasksScoped(project, undefined, 100, null)
+      .filter(one => one.state !== "done" && one.state !== "cancelled" && visible(one.repo))
+      .map(one => ({ id: one.id, title: one.title }));
+    // A refused draft keeps the task it was to start after, even if the refreshed list no longer carries it.
+    const after = draft?.values?.get("after") ?? "";
+    if (after !== "" && !chainable.some(one => one.id === after)) chainable.unshift({ id: after, title: "(as submitted)" });
+    const chrome = chromeFor(project, "tasks");
+    const revision = draft?.values !== undefined ? undefined : who.via === "cookie" ? who.session.projectRevision : 0;
+    return sendScreen(response, status, newTaskPage(chrome, project, revision, problem, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? [], draft));
+  }
   return { registrations, runListPane, peekFragment, taskMutation, queueRegionFor, ciFailingFor, completedRowFor, attemptRowFor, resultRowOf, reviewCockpitViewOf, decisionEvidence, runEvidence, sendArtifact, peekGuards, liveRunIds };
 }

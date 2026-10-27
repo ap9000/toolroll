@@ -1,7 +1,7 @@
 /** The shared task status (task-status.ts) as React: one headline with its
  * dot, one plain sentence, then quiet detail rows — neutral words, a small
- * icon, colour only on the icon. A problem that doesn't undo the outcome is an
- * amber icon and one action on its own row; red belongs to Failed alone. The
+ * icon, colour only on the icon. A problem that doesn't undo the outcome is a
+ * muted icon and one action on its own row (amber is for Needs you); red belongs to Failed alone. The
  * exact technical reasons sit behind More. */
 import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
 import { PostForm, Reauth } from "../ui/index.js";
@@ -11,7 +11,7 @@ import { STATUS_MORE, type DetailMark, type HeadlineTone, type StatusDetail, typ
 import { Button, Input, cn } from "../components/ui/index.js";
 
 export const HEADLINE_DOT: Record<HeadlineTone, string> = {
-  neutral: "bg-muted-foreground", live: "bg-info", attention: "bg-attention",
+  neutral: "bg-muted-foreground", live: "bg-info", attention: "bg-warning",
   ready: "bg-transparent ring-2 ring-inset ring-success", success: "bg-success", danger: "bg-destructive",
 };
 
@@ -19,7 +19,7 @@ const MARK_ICON: Record<DetailMark, ReactNode> = {
   ok: <Check className="size-3.5 text-success" aria-hidden="true" />,
   running: <CircleDot className="size-3.5 text-info" aria-hidden="true" />,
   none: <Circle className="size-3 text-muted-foreground" aria-hidden="true" />,
-  note: <AlertTriangle className="size-3.5 text-warning" aria-hidden="true" />,
+  note: <AlertTriangle className="size-3.5 text-muted-foreground" aria-hidden="true" />,
   failed: <X className="size-3.5 text-destructive" aria-hidden="true" />,
 };
 
@@ -54,8 +54,7 @@ function DetailRow({ detail, runChecks, csrf }: { detail: StatusDetail; runCheck
           </PostForm>
         : detail.action.href === null
         ? <span className="font-medium">{detail.action.label}</span>
-        : <a href={detail.action.href} data-detail-action className={cn("whitespace-nowrap font-medium underline-offset-4 hover:underline", TAP,
-            detail.mark === "note" && "text-warning")}>{detail.action.label}</a>)}
+        : <a href={detail.action.href} data-detail-action className={cn("whitespace-nowrap font-medium underline-offset-4 hover:underline", TAP)}>{detail.action.label}</a>)}
     </span>
   </li>;
 }

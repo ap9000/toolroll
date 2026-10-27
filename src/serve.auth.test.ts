@@ -4,6 +4,7 @@
  * and provider keys over real HTTP.
  */
 
+import { TEMPLATES } from "./templates.js";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, readFileSync, writeFileSync } from "node:fs";
@@ -1129,6 +1130,9 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
       });
       expect(await refused.text()).toContain("outside what this server was configured to show");
       expect(store.getTask("smuggled")).toBeNull();
+      // A shipped template pre-fills the add page, as ?template= did on the old list.
+      const lint = TEMPLATES.find(one => one.name === "lint-sweep")!;
+      expect(await (await fetch(url("/tasks/new?template=lint-sweep"), { headers: { cookie } })).text()).toContain(lint.title);
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }

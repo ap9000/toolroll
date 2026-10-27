@@ -131,7 +131,9 @@ export function firstResultWords(since: string, at: string): string | null {
 export const JOURNEY_STEPS = [["plan", "Plan"], ["approve", "You approve"], ["build", "Build"], ["checks", "Checks"], ["ready", "Ready"]] as const;
 export type JourneyKey = (typeof JOURNEY_STEPS)[number][0];
 /** `stuck`: the step it stopped at (Failed, Stopped, or waiting on something other than the approval). */
-export type JourneyStep = { key: JourneyKey; label: string; state: "done" | "current" | "stuck" | "todo" };
+/** `skipped`: a stage the task went past without it happening (its checks didn't run or couldn't be read). `needsYou`:
+ * the current or stuck step waits on a person, so it is the one step drawn amber. */
+export type JourneyStep = { key: JourneyKey; label: string; state: "done" | "current" | "stuck" | "skipped" | "todo"; needsYou?: true };
 
 /**
  * Where the first task stands on Plan → You approve → Build → Checks → Ready, from the one stage every surface reads
@@ -152,4 +154,42 @@ export function firstTaskJourney(read: { stage: "queued" | "planning" | "needs-y
     : { index: built ? 3 : approved ? 2 : 0, stuck: true };
   return JOURNEY_STEPS.map(([key, label], index) => ({ key, label,
     state: index < at.index ? "done" : index === at.index ? (at.stuck ? "stuck" : "current") : "todo" }));
+}
+
+/** What a task's checks recorded, for its road: `null` when nothing says (the step is then shown skipped, never done). */
+export type RoadChecks = "passed" | "running" | "failed" | "not-run" | "unread" | null;
+/**
+ * Any task's road (the read-only stepper on its page, after ReUI's Stepper): the first task's five steps, told only
+ * from recorded facts. You approve is done only when the plan was approved (a rewritten plan waiting on approval
+ * stands there again); a task that never needed one shows it skipped. Checks is done only when a check passed; a
+ * running, failed, missing or unread check says so, and with no checks fact it is skipped. A research report has
+ * no Checks step: a report stopped there stops at Ready. The step that waits on a person carries `needsYou`.
+ */
+export function taskRoad(read: Parameters<typeof firstTaskJourney>[0], approved: boolean, built: boolean, facts: { report?: boolean; checks?: RoadChecks }): JourneyStep[] {
+  const replan = read.stage === "needs-you" && read.need === "replan";
+  const plainApproved = approved && !replan;
+  let steps: JourneyStep[] = firstTaskJourney(replan ? { stage: "needs-you", need: "approval" } : read, plainApproved, built);
+  steps = steps.map(step => {
+    if (step.key === "approve" && step.state === "done" && !plainApproved) return { ...step, state: "skipped" };
+    if (step.key !== "checks" || (step.state !== "done" && step.state !== "current")) return step;
+    // At Checks now: only a recorded failure or a running check changes how it reads.
+    if (step.state === "current") return facts.checks === "failed" ? { ...step, state: "stuck", label: "Checks failed" } : facts.checks === "running" ? { ...step, label: "Checks running" } : step;
+    switch (facts.checks ?? null) {
+      case "passed": return step;
+      case "running": return { ...step, state: "current", label: "Checks running" };
+      case "failed": return { ...step, state: "stuck", label: "Checks failed" };
+      case "not-run": return { ...step, state: "skipped", label: "Checks not run" };
+      case "unread": return { ...step, state: "skipped", label: "Checks unread" };
+      default: return { ...step, state: "skipped" };
+    }
+  });
+  if (facts.report === true) {
+    const checks = steps.find(step => step.key === "checks");
+    if (checks !== undefined && (checks.state === "current" || checks.state === "stuck")) {
+      steps = steps.map(step => step.key === "ready" ? { ...step, state: checks.state } : step);
+    }
+    steps = steps.filter(step => step.key !== "checks");
+  }
+  const waiting = read.stage === "needs-you";
+  return steps.map(step => waiting && (step.state === "current" || step.state === "stuck") ? { ...step, needsYou: true } : step);
 }

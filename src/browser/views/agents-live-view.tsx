@@ -5,7 +5,7 @@
  * looked at (pointer over it or focus in it) — changes wait, and the header says so. */
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { cn } from "../components/ui/index.js";
+import { Badge, cn } from "../components/ui/index.js";
 import { useLiveRoom } from "../live.js";
 import { useNow } from "../live-task.js";
 import { elapsedWords } from "./agents-view.js";
@@ -150,21 +150,16 @@ export function createScheduler(onRead: (key: string, answer: Answer) => void, f
   };
 }
 
-/** A status chip (youiyoux's spec): 20px high, the 6px radius, a soft fill, 11.5px ink text, a status-coloured dot. */
-const DOT: Record<string, string> = { working: "text-info", done: "text-success", failed: "text-danger", stopped: "text-neutral-ink", parked: "text-neutral-ink" };
-const FILL: Record<string, string> = { working: "bg-info-soft", done: "bg-success-soft", failed: "bg-danger-soft", stopped: "bg-neutral-soft", parked: "bg-neutral-soft" };
-/** "Needs you" (DESIGN.md, waits on you): the amber warning token as a thin full outline and a chip with a dot; never a
- * fill, never an edge stripe. */
-const NEEDS_FILL = "bg-warning-soft", NEEDS_DOT = "text-warning", NEEDS_TILE = "border-warning";
-/** Its words: amber leaning 15% toward ink (`text-needs`, as on the ReUI chip), 5.2:1 on the wash in light, over 9:1 in
- * dark; the dot and the outline stay pure amber. */
+/** A status chip: the shared Badge chip (components/ui/badge.tsx, youiyoux's spec): 20px, the 6px radius, a soft fill,
+ * ink words and the tone in the dot. "Needs you" (DESIGN.md, waits on you) is the amber wash and dot with its words
+ * leaned toward ink (`text-needs`); the tile that waits takes the thin full amber outline, never a fill or a stripe. */
+type ChipTone = "info" | "success" | "danger" | "neutral" | "needs";
+const TONE: Record<string, ChipTone> = { working: "info", done: "success", failed: "danger", stopped: "neutral", parked: "neutral" };
+const NEEDS_TILE = "border-warning";
 export const NEEDS_TEXT = "text-needs";
 
-function Chip({ fill, dot, children }: { fill: string; dot: string; children: string }) {
-  const ink = fill === NEEDS_FILL ? NEEDS_TEXT : "text-foreground";
-  return <span className={cn("inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm px-1.5 text-[11.5px] font-medium leading-none", ink, fill)} data-live-chip>
-    <span aria-hidden="true" className={cn("size-1.5 rounded-full bg-current", dot)} />{children}
-  </span>;
+function Chip({ tone, children }: { tone: ChipTone; children: string }) {
+  return <Badge size="chip" dot tone={tone} data-live-chip>{children}</Badge>;
 }
 
 /** The log as a sunken well: mono 12px, as tall as its lines up to a cap, scrollable through what is kept; it follows the
@@ -206,7 +201,7 @@ function ChildTile({ child, all, now, last }: { child: Child; all: Child[]; now:
     <article className="flex flex-col gap-2 rounded-card border border-border bg-card p-3">
       <header className="flex items-start gap-2">
         <h3 className="line-clamp-2 min-w-0 flex-1 text-[13px] font-semibold leading-[1.35]" title={child.desc}>{child.desc}</h3>
-        <Chip fill={FILL[key]!} dot={DOT[key]!}>{words}</Chip>
+        <Chip tone={TONE[key] ?? "info"}>{words}</Chip>
       </header>
       <p className="flex gap-2 text-[12px] text-muted-foreground"><span className="min-w-0 flex-1 truncate">{child.endedAt === null ? stepNow(child) ?? "" : ""}</span>
         <span className="shrink-0 tabular-nums">{elapsedWords(new Date(child.startedAt).toISOString(), child.endedAt ?? now)}</span></p>
@@ -256,7 +251,7 @@ function LiveTile({ tile, stream, streamed, now, repairs, streams, streamedIds, 
             {/* Opens this agent full screen inside Live (watching only: no seen mark, no watch). */}
             <button type="button" data-live-open={tile.runId} onClick={() => openRun(tile.runId)} className="text-left hover:underline hover:underline-offset-4 phone:min-h-11">{tile.title}</button>
           </h2>
-          <Chip fill={key === "needs" ? NEEDS_FILL : FILL[key] ?? FILL.working!} dot={key === "needs" ? NEEDS_DOT : DOT[key] ?? DOT.working!}>{STATE_WORDS[tile.state]}</Chip>
+          <Chip tone={key === "needs" ? "needs" : TONE[key] ?? "info"}>{STATE_WORDS[tile.state]}</Chip>
         </div>
         <p className="truncate font-mono text-[11px] text-muted-foreground" title={meta}>{meta}</p>
       </header>
@@ -297,7 +292,7 @@ function FullScreen({ runId, tile, stream, streamed, now, lost, onClose, showLiv
             <DialogPrimitive.Title className="text-[18px] font-semibold leading-[1.3]" data-live-full-title>{tile?.title ?? "This agent isn't on the grid anymore"}</DialogPrimitive.Title>
             {tile !== null && <p className="truncate font-mono text-[11px] text-muted-foreground">{[tile.project?.split("/").pop(), tile.role, tile.agent, tile.model].filter(Boolean).join(" · ")}</p>}
           </div>
-          {tile !== null && <Chip fill={tile.state === "needs-you" ? NEEDS_FILL : FILL[tile.state] ?? FILL.working!} dot={tile.state === "needs-you" ? NEEDS_DOT : DOT[tile.state] ?? DOT.working!}>{STATE_WORDS[tile.state]}</Chip>}
+          {tile !== null && <Chip tone={tile.state === "needs-you" ? "needs" : TONE[tile.state] ?? "info"}>{STATE_WORDS[tile.state]}</Chip>}
           <DialogPrimitive.Close ref={close} className="shrink-0 rounded-sm border border-border px-2.5 py-1 text-[12.5px] phone:min-h-11">Close</DialogPrimitive.Close>
         </header>
         {tile !== null && <>
@@ -331,7 +326,7 @@ function LeadTile({ lead, now, openLead }: { lead: Lead; now: number; openLead: 
           <h2 className="line-clamp-2 min-w-0 flex-1 text-[15px] font-semibold leading-[1.3]" title={lead.title}>
             <button type="button" data-live-open-lead={lead.thread} onClick={() => openLead(lead.thread)} className="text-left hover:underline hover:underline-offset-4 phone:min-h-11">{lead.title}</button>
           </h2>
-          <Chip fill={FILL[lead.state]!} dot={DOT[lead.state]!}>{STATE_WORDS[lead.state]}</Chip>
+          <Chip tone={TONE[lead.state] ?? "info"}>{STATE_WORDS[lead.state]}</Chip>
         </div>
         <p className="truncate font-mono text-[11px] text-muted-foreground">{leadMeta(lead)}</p>
       </header>
@@ -363,7 +358,7 @@ function LeadFull({ thread, lead, now, lost, onClose }: { thread: number; lead: 
             <DialogPrimitive.Title className="text-[18px] font-semibold leading-[1.3]" data-live-full-title>{lead?.title ?? "This reply isn't on the grid anymore"}</DialogPrimitive.Title>
             {lead !== null && <p className="truncate font-mono text-[11px] text-muted-foreground">{leadMeta(lead)}</p>}
           </div>
-          {lead !== null && <Chip fill={FILL[lead.state]!} dot={DOT[lead.state]!}>{STATE_WORDS[lead.state]}</Chip>}
+          {lead !== null && <Chip tone={TONE[lead.state] ?? "info"}>{STATE_WORDS[lead.state]}</Chip>}
           <DialogPrimitive.Close ref={close} className="shrink-0 rounded-sm border border-border px-2.5 py-1 text-[12.5px] phone:min-h-11">Close</DialogPrimitive.Close>
         </header>
         {lead !== null && <>

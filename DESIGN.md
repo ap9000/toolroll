@@ -441,7 +441,7 @@ Signal is flat by construction. Depth comes from three layers of material rather
 
 The corners nest: the further in a surface sits, the smaller its radius. Sheets, dialogs, the composer, user chat bubbles and segmented tab tracks are 12px. Cards, dropdown menus and the slash menu are 10px. Buttons, inputs, nav pills, alerts, notices and active tab triggers are 8px. Menu items and small source chips are 6px. Badges are 5px. Counts are full pills (9999px) so a number can never be mistaken for a state badge. Status dots are circles: 6px for the live dot, 8px in lists and menus, 10px on a status card.
 
-Borders are always 1px. Hairline is used for separation and cards, control line for field boundaries, and a status hue at reduced strength only on a failed card (vermilion at 50%) or the Cancel fold (vermilion at 30%). A coloured left stripe is never used as an accent. Callouts are a soft fill with a full hairline or no border at all.
+Borders are always 1px. Hairline is used for separation and cards, control line for field boundaries, and a status hue only on a failed card (vermilion at 50%), the Cancel fold (vermilion at 30%), or a card that waits on a person (amber at full strength, the whole edge). A coloured left stripe is never used as an accent. Callouts are a soft fill with a full hairline or no border at all.
 
 The brand mark is three 3.5px bars skewed −10°, with the middle bar taller (20px against 13px), filled in the ink accent. It sits beside a 13.5px / 600 wordmark with −0.02em tracking.
 
@@ -461,13 +461,16 @@ Quiet, compact, and ink by default. The colour is saved for the one verb that se
 ### Badges (status chips)
 - **Style:** 5px corners, 1px by 6px padding, 11.5px / 500 on an 18px line, in sentence case. The text is the hue and the fill is its soft wash. There is no border.
 - **Tones:** neutral (the default, for any fact), attention (accent, a person is needed), danger, warning, info and success. A status's tone comes from one mapping (`toneOf`), so a task reads the same in the list, in the Crew sheet and on its own page.
+- **Status chip:** 20px tall, 6px corners, 11.5px / 500 words with 6px between a 6px dot and the word, on the tone's soft wash with ink words and the tone in the dot (`Badge size="chip" dot`, and `.chip` with `.chip-dot` on server pages; after ReUI's light badge; the Agents → Live chip), so every chip reads at 4.5:1 whatever its hue. The dot is decoration; the word carries the state.
+- **Needs you chip:** the amber wash with an amber dot. Its words lean 15% toward ink (`text-needs`), because amber text alone reads 4.21:1 on its wash in light; mixed it reads above 5:1, and above 9:1 in dark. It sits on the thing that waits (the pinned "Needs you" bar, a waiting tile or card), once per thing, never on every row of a list.
 - **Peek chips:** on the Projects page, only "N waiting on you" takes colour (attention). Running, queued and built today are neutral facts.
 
 ### Cards / Containers
 - **Corner Style:** 10px.
 - **Background:** paper, on a paper sheet, so a card is defined by its hairline border and not by its fill.
 - **Shadow Strategy:** none. See Elevation.
-- **Border:** a 1px hairline. A failed status card takes vermilion at 50% and nothing else changes colour. A waiting card keeps a neutral border, and its badge and single accent verb carry the wait.
+- **Border:** a 1px hairline. A failed status card takes vermilion at 50%. A card that waits on a person (a status card whose headline is Needs you, a waiting tile or board card) takes a thin full amber outline (1px `--so-warning`, the whole edge), never an amber fill and never an edge stripe; its single ink verb still answers it.
+- **Frame (well and panels):** a group of panels sits in a raised well (raised fill, hairline, 10px corners, 4px padding) with its heading on the well's fill above them; each panel is paper with a hairline and corners 5px tighter, so the arcs stay concentric (`Frame`, `FrameHeader`, `FramePanel`, after ReUI's Frame; `.frame` on server pages). No shadow on a panel, and a Frame never nests in a card or another Frame.
 - **Internal Padding:** 20px (14px on phones), with a 16px gap between blocks (12px on phones). Grouped folds (task details, Manage) are one card with zero padding, divided by hairlines, each fold with a 15px / 600 summary and a rotating chevron.
 
 ### Inputs / Fields
@@ -529,7 +532,7 @@ Pinned below the thread, outside its scroll, so it never moves with the messages
 - **Do** keep motion to 120ms colour transitions and an 80ms / 140ms page fade-through, and remove all of it under `prefers-reduced-motion`.
 
 ### Don't:
-- **Don't** colour a card's border or a heading accent to announce a wait. The badge and the single accent verb already say it. (The flow canvas's decision cards still carry a accent outline. That is a known divergence, not the rule.)
+- **Don't** announce a wait with anything but the amber outline and the Needs you chip: no amber fill, no edge stripe, no coloured heading.
 - **Don't** put more than one accent verb on a screen or card, and don't make a recommended option accent. A recommendation is not urgency.
 - **Don't** use accent, or any hue near it, for failure. Failure is vermilion.
 - **Don't** colour a problem line red inside a card that has not failed. Render it neutral (raised fill, ink text).

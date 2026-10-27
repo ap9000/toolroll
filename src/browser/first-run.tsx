@@ -6,7 +6,8 @@
 import { useEffect, useState } from "react";
 import type { BrowserFirstRun, BrowserPhoneCard } from "../browser-workspace.js";
 import type { JourneyStep } from "../first-run.js";
-import { Card } from "./components/ui/card.js";
+import { Frame, FrameHeader, FramePanel } from "./components/ui/frame.js";
+import { StatusGlyph, type GlyphKind } from "./components/ui/status-glyph.js";
 import { Button } from "./components/ui/button.js";
 import { PostForm } from "./ui/index.js";
 
@@ -89,38 +90,50 @@ export function PhoneCard({ phone, csrf, dismissable = true }: { phone: BrowserP
   const [hidden, setHidden] = useState(false);
   if (hidden) return null;
   const [first, ...others] = phone.chatApps;
-  return <Card className="so-phone-card" aria-labelledby="phone-card-title" data-phone-card>
-    <h2 id="phone-card-title">Use it from your phone</h2>
+  // One Frame like the Settings groups around it: the heading on the well, each way to reach it a paper panel.
+  return <section aria-labelledby="phone-card-title" data-phone-card className="so-phone-card"><Frame>
+    <FrameHeader><h2 id="phone-card-title" className="text-sm font-semibold">Use it from your phone</h2></FrameHeader>
     <div className="so-phone-options">
-      <div>
+      <FramePanel>
         <p className="so-first-run-choice-title">A chat app</p>
         <p className="so-first-run-choice-hint">Get results and approve plans in {first?.label ?? "Telegram"}: add the bot, then pair your phone.</p>
         {first && <Button className="max-[901px]:h-11 max-[901px]:min-h-11" asChild variant="outline" size="sm"><a href={first.href}>Pair {first.label}</a></Button>}
         {others.length > 0 && <p className="so-phone-others">Or {others.map((one, index) => <span key={one.href}>{index > 0 && (index === others.length - 1 ? " or " : ", ")}<a href={one.href}>{one.label}</a></span>)}</p>}
-      </div>
-      <div data-phone-tailnet>
+      </FramePanel>
+      <FramePanel data-phone-tailnet>
         <p className="so-first-run-choice-title">This console over Tailscale</p>
         {phone.tailnet === null
           ? <p className="so-first-run-choice-hint">Install <a href="https://tailscale.com/download">Tailscale</a> on this computer and your phone, then reload this page for the address.</p>
           : phone.tailnet.restart === null
             ? <><p className="so-first-run-choice-hint">On your phone, open this and sign in:</p><Command command={phone.tailnet.address} /></>
             : <><p className="so-first-run-choice-hint">Start Toolroll with this, then on your phone open <code>{phone.tailnet.address}</code> and sign in:</p><Command command={phone.tailnet.restart} /></>}
-      </div>
+      </FramePanel>
     </div>
-    {dismissable && <PostForm action={phone.dismissHref} onSubmit={event => {
+    {dismissable && <PostForm action={phone.dismissHref} className="px-1.5 pb-0.5" onSubmit={event => {
       event.preventDefault();
       setHidden(true);
       void fetch(phone.dismissHref, { method: "POST", body: new URLSearchParams({ csrf, quiet: "1" }) }).catch(() => {});
     }}><Button className="max-[901px]:h-11 max-[901px]:min-h-11" variant="ghost" size="sm" type="submit">Not now</Button></PostForm>}
-  </Card>;
+  </Frame></section>;
 }
 
-/** The first task's way to Ready: Plan → You approve → Build → Checks → Ready, filled in as it moves. */
+/** A task's road to Ready (after ReUI's Stepper, read-only): Plan → You approve → Build → Checks → Ready, filled in as it
+ * moves. Each step's mark is the shared status glyph: done is green, the step at work blue, the step that waits on a
+ * person amber (the only amber), a failure vermilion, a skipped or future step a dashed ring. The words carry it. */
+const ROAD_GLYPH = (step: JourneyStep): { kind: GlyphKind; className?: string } =>
+  step.state === "done" ? { kind: "done" }
+  : step.needsYou === true ? { kind: "decide", className: "text-warning" }
+  : step.state === "current" ? { kind: "building" }
+  : step.state === "stuck" ? { kind: "failed" }
+  : { kind: "idle" };
+const ROAD_WORD: Record<JourneyStep["state"], string> = { done: "done", current: "now", stuck: "stopped here", skipped: "skipped", todo: "next" };
 export function Journey({ steps }: { steps: JourneyStep[] }) {
   const current = steps.find(one => one.state === "current" || one.state === "stuck");
-  return <ol className="first-task-journey" aria-label={`Where this task is: ${current?.label ?? "Ready"}`} data-first-task-journey>
-    {steps.map(one => <li key={one.key} data-step={one.key} data-state={one.state} aria-current={one.state === "current" || one.state === "stuck" ? "step" : undefined}>
-      <span className="first-task-journey-mark" aria-hidden="true" /><span>{one.label}</span>
-    </li>)}
+  const where = current !== undefined ? `${current.label}${current.needsYou ? ", waits on you" : current.state === "stuck" ? ", stopped here" : ""}` : (steps.every(one => one.state === "done" || one.state === "skipped") ? "Ready" : [...steps].reverse().find(one => one.state !== "todo")?.label ?? steps[0]?.label ?? "");
+  return <ol role="list" className="first-task-journey" aria-label={`Where this task is: ${where}`} data-first-task-journey style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }}>
+    {steps.map(one => { const glyph = ROAD_GLYPH(one); return <li key={one.key} data-step={one.key} data-state={one.state} {...(one.needsYou ? { "data-needs-you": "" } : {})} aria-current={one.state === "current" || one.state === "stuck" ? "step" : undefined}>
+      <span className="first-task-journey-mark" aria-hidden="true"><StatusGlyph kind={glyph.kind} {...(glyph.className === undefined ? {} : { className: glyph.className })} /></span>
+      <span>{one.label}<span className="sr-only">{`, ${one.needsYou ? "waits on you" : ROAD_WORD[one.state]}`}</span></span>
+    </li>; })}
   </ol>;
 }

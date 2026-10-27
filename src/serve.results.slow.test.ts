@@ -1682,7 +1682,7 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
       const work = await read("/work");
       expect(work.match(new RegExp(`class="work-row" data-task="${root}"`, "g"))).toHaveLength(1);
       expect(work).not.toContain(`class="work-row" data-task="${child}"`);
-      expect(await read("/tasks")).not.toContain(`href="/t/${child}"`);
+      expect(await read("/work")).not.toContain(`href="/t/${child}"`);
       const form = new RegExp(`<form method="post" action="/t/${child}/approve"[\\s\\S]*?</form>`).exec(chat)![0];
       const digest = /name="digest" value="([^"]+)"/.exec(form)![1]!;
       const nonce = /name="nonce" value="([^"]+)"/.exec(form)![1]!;

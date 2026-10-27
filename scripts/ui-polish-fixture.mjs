@@ -558,7 +558,7 @@ export function startFixture(options = {}) {
     }
     return { ok: true, answer: { text: 'One task is waiting for your approval (**Rework the portfolio ledger export**) and one finished with verified evidence (**Fix the payout rounding drift**). Nothing is building right now.', calls: [], tokensIn: 100, tokensOut: 40, reportedCostMicrousd: null } };
   };
-  const server = createDecisionServer({ store, evidenceRoot, ...(options.slack ? {configDir:root,slackFetcher:options.slack.fetcher} : {}), ...(options.discord ? {configDir:root,discordFetcher:options.discord.fetcher} : {}), ...(repo2 === null ? { repo } : { repos: [repo, repo2, repo3] }), chatEnv: {}, subscriptionChatRunner: options.runner ?? runner });
+  const server = createDecisionServer({ store, evidenceRoot, ...(options.slack ? {configDir:root,slackFetcher:options.slack.fetcher} : {}), ...(options.discord ? {configDir:root,discordFetcher:options.discord.fetcher} : {}), ...(repo2 === null ? { repo } : { repos: [repo, repo2, repo3] }), ...(options.settingsHome === true ? { telegramTokenFile: join(root, 'telegram.token'), connectionHome: join(root, 'provider-home') } : {}), chatEnv: {}, subscriptionChatRunner: options.runner ?? runner });
   const addReviewNotes = runId => {
     const source = store.getRun(runId), now = new Date();
     const taskId = store.externalIdFor(source.taskRef);

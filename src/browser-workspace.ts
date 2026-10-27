@@ -166,6 +166,8 @@ export type BrowserTasksView = {
   newTask: BrowserLink;
   /** v105: subscription windows and monthly budgets, one tile each (an instance operator's; null when there are none). */
   limits: BrowserLimits | null;
+  /** The stored-state filter (Any state, Queued, Running, Done, Failed, Cancelled), each a real link starting on page one. */
+  states?: (BrowserLink & { active: boolean })[];
 };
 /** One limit: a plan's usage window ("Claude · 5-hour, 48%") or a monthly budget ("shop · Budget, $4.20 of $10"). */
 export type BrowserTaskGroup = WorkIndexGroup;

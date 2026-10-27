@@ -818,7 +818,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     if (admittedFamily?.problem != null) return runtime.sendScreen(response, status, screen(admittedFamily.root.title,
       html`<h1>${admittedFamily.root.title}</h1><p>${admittedFamily.current.state}</p><p class="problem" data-history-problem>${admittedFamily.problem}</p>`, { chrome: runtime.chromeFor(admittedFamily.root.repo, "tasks") }));
     const data = taskViewData(taskId, who, problem);
-    if (data === null) return refuse(response, who, 404, "no such task", "/tasks");
+    if (data === null) return refuse(response, who, 404, "no such task", "/work");
     const family = runtime.familyOf(taskId);
     const presentedData = { ...data, rootId: family?.root.id ?? taskId, rootTitle: family?.root.title ?? data.task.title,
       ...(family === null || data.assignment != null ? {} : { history: familyHistory(family) }),

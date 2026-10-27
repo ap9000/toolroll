@@ -71,7 +71,7 @@ import { starterOf,startersFor,switchOnStarter } from "../flow-starters.js";
 import { disconnectGoogle,googleConnected,googleConsent,readGoogleMail,saveGoogleClient } from "../google-mail.js";
 import { integrationsHtml } from "../integrations-ui.js";
 import { clearProviderKey, keyStatus, plausibleKey, PROVIDER_KEY_ENV, readAuthMode, readProviderKey, saveProviderKey, setAuthMode, SUBSCRIPTION_CAPABLE, verdictWords, verifyProviderKey } from "../keys.js";
-import { decisionsHtml,knowledgeHtml,MEMORY_INTRO,memorySearchHtml,proposalsHtml } from "../knowledge-ui.js";
+import { decisionsHtml,framedSection,knowledgeHtml,MEMORY_INTRO,memorySearchHtml,proposalsHtml } from "../knowledge-ui.js";
 import { aboutYouOf,checkAboutYou,saveAboutYou } from "../lead-about.js";
 import { cancelCommitment,conditionWords,openCommitments } from '../lead-commitments.js';
 import { checkLeadIdentity,leadIdentityOf } from "../lead-identity.js";
@@ -504,7 +504,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const projects = consoleProjects();
     const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
     if (chosen && (!projects.includes(chosen) || !visible(chosen))) return refuse(response, who, 403, "That project is outside your access.", "/settings/knowledge");
-    const selector = projects.length > 1 ? html`<form class="knowledge" method="get" action="/settings/knowledge"><label>Project<select name="repo">${projects.map(p=>html`<option value="${p}"${p===chosen?' selected':''}>${p.split('/').at(-1)??p}</option>`)}</select></label><button>Show project</button></form>` : '';
+    const selector = projects.length > 1 ? framedSection('Project', html`<form class="field-row" method="get" action="/settings/knowledge"><label><span class="visually-hidden">Project</span><select name="repo">${projects.map(p=>html`<option value="${p}"${p===chosen?' selected':''}>${p.split('/').at(-1)??p}</option>`)}</select></label><button>Show project</button></form>`) : '';
     let content: Html = html`<p>Add a project to keep its knowledge here.</p>`;
     if (chosen) {
       try {
@@ -524,7 +524,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
         try { proposals = (proposalsHtml(chosen, listProposals(store, chosen), memoryStatus(store, chosen, who.name), csrf, who.role === 'approver')); } catch { proposals = html``; }
         content = html`<p class="meta">${MEMORY_INTRO}</p>${memorySearchHtml(chosen, memoryQuery, hits)}${proposals}${(decisionsHtml(chosen, listDecisions(store, chosen, who.name, { limit: 50 }), csrf, who.role === 'approver'))}\
 ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : '')}${knowledgeHtml(view,csrf,who.role==='approver')}\
-<details class="knowledge"><summary>Learned lessons</summary>${(learningHtml(learningView(store,evidenceRoot,chosen,who.name),csrf,who.role==='approver'))}</details>`;
+<details class="knowledge frame"><summary class="frame-head">Learned lessons</summary><div class="frame-panel">${(learningHtml(learningView(store,evidenceRoot,chosen,who.name),csrf,who.role==='approver'))}</div></details>`;
       } catch { content = html`<p class="problem" role="alert">Project knowledge is unavailable. Reload to retry.</p>`; }
     }
     return sendScreen(response,200,screen('Knowledge',html`<p><a href="/settings">Settings</a></p><h1>Knowledge</h1>${url.searchParams.get('saved')==='1'?html`<p role="status">Saved for future tasks.</p>`:''}${selector}${content}`,{chrome:chromeFor(chosen||project,'settings')}));
