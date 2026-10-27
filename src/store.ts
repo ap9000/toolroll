@@ -481,6 +481,9 @@ CREATE TABLE IF NOT EXISTS run_live_detail (
   commands    INTEGER NOT NULL CHECK (commands IN (0,1)),
   captured_at TEXT NOT NULL
 );
+-- The Agents view's Live grid (docs/plans/agents-view.md §2.5): every role's running runs and its recently ended ones.
+CREATE INDEX IF NOT EXISTS run_live_open ON run (id) WHERE outcome IS NULL;
+CREATE INDEX IF NOT EXISTS run_live_recent ON run (finished_at) WHERE outcome IS NOT NULL;
 `;
 
 /** A project's "Show commands in the live view" (live-detail.ts): absent means off. */
@@ -24607,3 +24610,31 @@ export function runLiveCommands(store: Store, runId: number): boolean {
     return false;
   }
 }
+
+/** One run as the Agents view's Live grid reads it (docs/plans/agents-view.md §2.5). */
+export type AgentsLiveRun = Run & { taskId: string; title: string; repo: string | null };
+
+/**
+ * The Live grid's runs: every role's running run (no outcome yet) and every run that ended at or after `endedSince`,
+ * newest first, at most `limit`. Two indexed reads (run_live_open, run_live_recent), never a scan of all runs.
+ * Visibility is the caller's: it filters each by the console's ceiling and the viewer's access.
+ */
+export function agentsLiveRuns(store: Store, endedSince: Date, limit = 200): AgentsLiveRun[] {
+  const rows = store.handle.prepare(
+    `SELECT run.*, task_ref.external_id AS live_task_id, task_ref.repo AS live_task_repo, task.title AS live_task_title
+       FROM (SELECT id FROM run INDEXED BY run_live_open WHERE outcome IS NULL
+             UNION SELECT id FROM run INDEXED BY run_live_recent WHERE outcome IS NOT NULL AND finished_at >= ?) AS picked
+       JOIN run ON run.id = picked.id
+       JOIN task_ref ON task_ref.id = run.task_ref
+       LEFT JOIN task ON task_ref.backend = ? AND task.id = task_ref.external_id
+      ORDER BY run.id DESC
+      LIMIT ?`,
+  ).all(endedSince.toISOString(), BUILT_IN, Math.max(1, Math.min(limit, 500))) as Record<string, unknown>[];
+  return rows.map(row => ({
+    ...readRun(row),
+    taskId: String(row["live_task_id"]),
+    title: row["live_task_title"] === null || row["live_task_title"] === undefined ? String(row["live_task_id"]) : String(row["live_task_title"]),
+    repo: row["live_task_repo"] === null || row["live_task_repo"] === undefined ? null : String(row["live_task_repo"]),
+  }));
+}
+

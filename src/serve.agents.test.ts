@@ -410,3 +410,41 @@ describe("Settings → Project → Live view", () => {
     expect(liveCommandsShown(store, repoA)).toBe(false);
   });
 });
+
+describe("the Live grid (docs/plans/agents-view.md §3)", () => {
+  const tiles = async (cookie: string) => {
+    const response = await fetch(url("/agents/live"), { headers: { cookie } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    return ((await response.json()) as { tiles: { runId: number; role: string; state: string; why: string | null; project: string | null }[] }).tiles;
+  };
+
+  test("lists running and just-ended agents in the viewer's own projects, newest first, with Needs you", async () => {
+    const a = running("t-a", repoA), b = running("t-b", repoB), done = running("t-done", repoB), old = running("t-old", repoB);
+    store.finishRun(done, { outcome: "built", committed: true, now: new Date() });
+    store.finishRun(old, { outcome: "built", committed: true, now: new Date(Date.now() - 11 * 60_000) });
+    ask(b, "keep-button", "Keep the old button?");
+    store.handle.prepare("UPDATE run SET role = 'scout' WHERE id = ?").run(a); // every role is on the grid, not only builds
+    const alex = await tiles(await login("alex", alexToken));
+    expect(alex.find(tile => tile.runId === a)).toMatchObject({ role: "scout", state: "working" });
+    expect(alex.map(tile => tile.runId)).toEqual([done, b, a]);
+    expect(alex.find(tile => tile.runId === b)).toMatchObject({ state: "needs-you", why: "question" });
+    expect(alex.find(tile => tile.runId === done)).toMatchObject({ state: "done" });
+    const robin = await tiles(await login("robin", robinToken));
+    expect(robin.map(tile => tile.runId)).toEqual([done, b]); // never another project's
+  });
+
+  test("watching changes nothing: ?view=live never marks a finished agent seen or offers a composer", async () => {
+    const run = running("t-seen", repoA);
+    store.finishRun(run, { outcome: "built", committed: true, now: new Date() });
+    const cookie = await login("alex", alexToken);
+    const live = await board(`/agents?view=live&run=${run}`, cookie);
+    expect(live.selected).toBeNull();
+    await tiles(cookie);
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(0);
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_view").get()?.["n"]).toBe(0);
+    // The List view still opens it, and that is a view.
+    expect((await board(`/agents?run=${run}`, cookie)).selected).not.toBeNull();
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(1);
+  });
+});

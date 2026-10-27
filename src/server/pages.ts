@@ -26,6 +26,7 @@ import { LEDGER_CSV_HEADER,ledgerCsvRows } from "../ledger-csv.js";
 import { ledgerBody } from "../ledger-view.js";
 import { agentLanesOf, agentRowOf, agentsBoardOf, agentFactsFor, laneWindowOf, sealedDiffOf } from "../agents-board.js";
 import { markAgentSeen } from "../agent-board.js";
+import { agentsLiveOf } from "../agents-live.js";
 import type { BrowserAgentDetail,BrowserAgentsView } from "../browser-workspace.js";
 import { prometheusMetrics } from "../metrics.js";
 import { readMonitoring } from "../monitoring-settings.js";
@@ -478,8 +479,11 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const now = clock();
     const access = workAccess();
     const asked = url.searchParams.get("run");
+    // The Live grid only watches (docs/plans/agents-view.md §3): it branches off before an opened agent is built, so
+    // viewing it never marks a run seen, takes a watch or offers a composer — a reload of ?view=live&run=… included.
+    const watching = url.searchParams.get("view") === "live";
     let selected: BrowserAgentDetail | null = null;
-    if (asked !== null && /^[1-9][0-9]{0,9}$/.test(asked)) {
+    if (!watching && asked !== null && /^[1-9][0-9]{0,9}$/.test(asked)) {
       const run = store.getRun(Number(asked));
       const facts = run === null || !runVisible(run) ? null : agentFactsFor(store, run.id, access, who.name);
       if (facts !== null) {
@@ -530,6 +534,18 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       ], "\n")), "\n"),
     ], "\n");
     return sendScreen(response, 200, screen("Agents", fallback, { chrome: chromeFor(project, "runs"), workspace: { view } }));
+  }
+
+  /** The Live grid's tiles (JSON, read-only): every role's running agents and those that just ended, that this viewer
+   * may see — the console's ceiling and the account's own access, proved per run, on every request. */
+  async function agentsLive(ctx: HandlerContext): Promise<void> {
+    const { who, response } = ctx;
+    const tiles = agentsLiveOf(store, clock(), {
+      canSee: run => run.repo !== null && runVisible(run) && store.accountCanAccess(who.name, run.repo),
+      localRunner: options.localRunner,
+    });
+    response.setHeader("cache-control", "no-store");
+    return respond(response, 200, "application/json", JSON.stringify({ tiles }));
   }
 
   async function fleetPage(ctx: HandlerContext): Promise<void> {
@@ -1037,6 +1053,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "system": systemScreen,
     "peek": peekPage,
     "agents": agentsPage,
+    "agents.live": agentsLive,
     "fleet": fleetPage,
     "ledger.export": ledgerExport,
     "menu": menuPage,
