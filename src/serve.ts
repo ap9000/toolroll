@@ -1296,7 +1296,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   function paletteIndexTag(project: string | null): Html {
     const admitted = project === null ? admissionList() : null;
     const entries: { label: string; href: string }[] = [
-      { label: "work", href: "/work" },
+      { label: "tasks", href: "/work" },
       { label: "needs you", href: "/work?view=needs-you" },
       { label: "inbox", href: "/" },
       { label: "board", href: "/board?scope=all" },
