@@ -357,8 +357,8 @@ describe("where freshness may be honoured", () => {
     // checkApproverPassword), which proves through proveAccountNow. The counts make a new call site a reviewed change.
     expect(hits["checkApproverPassword()"]).toEqual({ "src/server/guards.ts": 2 });
     // Passwordless: credential acts moved to authenticateCredential / credentialApprover / proveCredential (pinned below).
-    expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/nightly-check.ts": 1, "src/operate.ts": 58, "src/pull-request-flow.ts": 1,
-      "src/release-cli.ts": 1, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 2, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 22,
+    expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1, "src/operate.ts": 58, "src/pull-request-flow.ts": 1,
+      "src/release-cli.ts": 2, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 9, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 23,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
@@ -487,7 +487,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/pull-request-flow.ts#<module>": 2,
     "src/pull-request-flow.ts#mergeAsPerson@22": 1,
     "src/release-cli.ts#<module>": 2,
-    "src/release-cli.ts#runAuthorityCommand@7": 1,
+    "src/release-cli.ts#runAuthorityCommand@7": 2,
     "src/scope.ts#approve@46>store.transact(_)@1": 1,
     "src/scope.ts#authenticateApprover@42": 1,
     "src/serve.ts#createDecisionServer@1": 3,
@@ -499,7 +499,18 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/chat.ts#createChatHandlers@1>chatSend@22>opened:spendingOnlyOnSuccess(_,_)@9>withFreshness(chat-send,_)@1": 1,
     "src/server/chat.ts#createChatHandlers@1>pushSubscribe@11": 1,
     "src/server/flows.ts#createFlowsHandlers@1": 2,
-    "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 2,
+    // The widening step-ups (chat-management.md §0a.3): a subagent's suggested looser rule, a gallery flow from anyone,
+    // a trigger from anyone, the kit's GitHub issues, a tool grant and a looser rule; ordinary step-ups, never fresh.
+    "src/server/flows.ts#createFlowsHandlers@1>answerSubagentQuestionSend@22": 1,
+    "src/server/flows.ts#createFlowsHandlers@1>createFromGallery@25": 1,
+    "src/server/flows.ts#createFlowsHandlers@1>flowAct@30><anonymous>@1": 3,
+    // …and a kit's tools, given only with that proof (0.9.73 review, finding 1).
+    "src/server/flows.ts#createFlowsHandlers@1>kitAct@21><anonymous>@1": 2,
+    // A trigger from anyone from the command line: only the person's own proof, never a machine credential (finding 2).
+    "src/flows-cli.ts#<module>": 2,
+    "src/flows-cli.ts#runFlowsCommand@3>widening@15": 1,
+    "src/server/flows.ts#createFlowsHandlers@1>subagentAct@24><anonymous>@1": 1,
+    "src/server/flows.ts#createFlowsHandlers@1>subagentAct@24><anonymous>@1>changed@3": 1,
     "src/server/guards.ts#<module>": 1,
     "src/server/guards.ts#createSharedGuards@1": 2,
     "src/server/guards.ts#createSharedGuards@1>authenticateApprover@2": 1,
@@ -519,6 +530,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>discordAct@73><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>modeAct@84><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>monitoringSave@57": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>permissionDefaultSave@75": 1,
     "src/server/settings.ts#createSettingsHandlers@1>policySave@43": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectDelete@42": 1,
     "src/server/settings.ts#createSettingsHandlers@1>projectLiveView@40": 1,
@@ -605,7 +617,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/browser/views/flow-view.tsx#stepUpReady@45": 1,
     "src/budget-alerts.ts#budgetAlertPass@1": 2,
     "src/chat-decide.ts#decideOffer@11": 5,
-    "src/chat-decide.ts#staleWhy@28": 6,
+    "src/chat-decide.ts#staleWhy@34": 6,
     "src/chat-flow.ts#answerChatFlowPrompt@18>store.transact(_)@1": 2,
     "src/checkout-cleanup.ts#cleanCheckouts@14>wanted@2": 3,
     "src/checkout-cleanup.ts#slimKeptCheckouts@15>wanted@3": 2,
@@ -617,7 +629,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/flow-send.ts#keep@12": 5,
     "src/flow-send.ts#sendStep@14": 3,
     "src/flow-steps.ts#claimStep@2>store.transact(_)@1": 5,
-    "src/flow-triggers.ts#checkTrigger@49": 3,
+    "src/flow-triggers.ts#checkTrigger@51": 3,
     "src/flow-unattended.ts#nodeModuleGraphOf@25": 3,
     "src/flow-unattended.ts#scriptProvenanceOf@26": 2,
     "src/landed-cleanup.ts#reconcileLanded@33": 4,
@@ -674,7 +686,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#initializeStore@41": 3,
     "src/telegram-flow.ts#applyFlowReply@16": 3,
     "src/telegram-lead.ts#applyProposalTap@8": 2,
-    "src/telegram.ts#applyCallback@53": 3,
+    "src/telegram.ts#applyCallback@54": 3,
     "src/token-notices.ts#tokenNoticePass@1": 2,
     "src/worktree.ts#WorktreePool.discardChanges@34": 4,
     "src/worktree.ts#WorktreePool.freshen@22": 4,

@@ -123,7 +123,8 @@ describe("an email trigger", () => {
   test("without a mailbox set up the trigger says so and backs off; sending still works without one", async () => {
     mailServer(false);
     const flow = replies();
-    const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "email" }, "alex", T0, dir);
+    // Mail from any sender: the person proved themselves where it was added (chat-management.md §0a.3).
+    const made = addFlowTriggerTo(store, store.getFlow(flow)!, { kind: "email" }, "alex", T0, dir, { widening: "proved" });
     if (!made.ok) throw new Error(made.message);
     const pass = await runFlowTriggers(store, repo, at(1), { gh: async () => ({ code: 1, stdout: "", stderr: "", timedOut: false, notFound: false }), fetch, dir, mail: mailbox().reader });
     expect(pass.problems[0]).toContain("Reading mail isn't set up yet. Add the IMAP address in Settings → Email.");

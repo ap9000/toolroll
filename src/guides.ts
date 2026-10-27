@@ -461,7 +461,13 @@ with a time limit.
 
 ## What it does, in order
 
-1. **gate**: files task \`release-<version>-<sha7>\` pinned to the
+1. **gate**: before filing, looks at the pull request's checks on the
+   branch's exact commit: a required check that failed stops here, before
+   anything is filed or sent for approval. Checks not started or still
+   running are named and waited for (GitHub not answering is waited out
+   too); if they don't finish within the gate's limit (60 min, \`--limit
+   gate=<min>\`), it stops here as well. A task already filed for the commit is kept and
+   not looked at again. Then it files task \`release-<version>-<sha7>\` pinned to the
    branch's exact commit with \`--checks full\`, regardless of the project's default.
 2. **approval**: waits for the owner to approve that exact scope
    (\`toolroll task approve <id> --digest <d>\`, or the console). A
@@ -515,6 +521,9 @@ instead of making them twice.
   checks and obtain a passing result; Quick and Off cannot authorize a release.
 - \`check-failed\`: fix the branch and release the new commit with \`--new\`.
 - \`ci-failed\`: fix the failed GitHub check, then rerun. Nothing was merged.
+  A stop at the gate comes before the task is filed, so nothing was filed
+  either: a fix pushed as a new commit is released with \`--new\`; after
+  rerunning the failed job on GitHub, run the same command again.
 - \`publish-failed\` / \`homebrew-failed\`: fix the failed workflow before
   resuming. A failed tag check cannot finish publication or update Homebrew.
 - \`base-moved\`: main gained a commit the branch doesn't have, so the

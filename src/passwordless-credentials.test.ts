@@ -28,6 +28,11 @@ const CREDENTIAL_ACTS: ReadonlyArray<{ act: string; file: string; line: RegExp }
   { act: "pairing a phone (Telegram)", file: "server/settings.ts", line: /const pairingIdentity = authenticateAccount\(store, who\.name, body\.get\("password"\) \?\? ""\);/ },
   { act: "turning on approving from chat", file: "server/settings.ts", line: /const proved = authenticateAccount\(store, who\.name, body\.get\("token"\) \?\? ""\);/ },
   { act: "signing a mode with chat approval", file: "server/settings.ts", line: /if \(!\(body\.get\("chat-approve"\) === "1" \? authenticateCredential\(who, token\) : authenticateApprover\(who, token\)\)\.ok\)/ },
+  // Project settings that widen what builds and checks reach (chat-management.md §0a.4).
+  { act: "a project's network", file: "server/settings.ts", line: /if \(!authenticateCredential\(who, body\.get\("password"\) \?\? ""\)\.ok\) return back\("problem", "Enter your Toolroll password to change what builds may reach\."\);/ },
+  { act: "where a project's builds may write", file: "server/settings.ts", line: /if \(!authenticateCredential\(who, body\.get\("password"\) \?\? ""\)\.ok\) return back\("problem", "Enter your Toolroll password to change where builds may write\."\);/ },
+  { act: "a project's check access", file: "server/settings.ts", line: /const proved = authenticateCredential\(who, body\.get\("password"\) \?\? ""\);\n\s*if \(!proved\.ok\) return back\("problem", "Enter your Toolroll password to change how far checks reach\."\);/ },
+  { act: "a project's sandbox", file: "server/settings.ts", line: /if \(!authenticateCredential\(who, body\.get\("password"\) \?\? ""\)\.ok\) return back\("problem", "Enter your Toolroll password to change the project's sandbox\."\);/ },
   { act: "turning Passwordless on", file: "server/settings.ts", line: /if \(!authenticateCredential\(who, body\.get\("password"\) \?\? ""\)\.ok\) return back\("problem", "Enter your Toolroll password to turn Passwordless on\."\);/ },
   { act: "CLI: runner register", file: "operate.ts", line: /fail\(write, json, "runner register", "usage"[^\n]*\n\s*\}\n\s*const authenticated = credentialApprover\(store, acting\.name, acting\.token\);/ },
   { act: "CLI: runner bind", file: "operate.ts", line: /fail\(write, json, "runner bind", "usage"[^\n]*\n\s*\}\n\s*const authenticated = credentialApprover\(store, acting\.name, acting\.token\);/ },

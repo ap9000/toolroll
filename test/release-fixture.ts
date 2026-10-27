@@ -40,7 +40,7 @@ export type ReleaseFixture = {
 export const FIXTURE_REMOTE = "https://example.invalid/r.git";
 
 /** A repository with an approved release of its head. `files` adds to the base tree. */
-export function releaseFixture(options: { files?: Record<string, string>; protectedPaths?: string[]; build?: string } = {}): ReleaseFixture {
+export function releaseFixture(options: { files?: Record<string, string>; protectedPaths?: string[]; build?: string; beforeApproval?: (store: Store, repo: string) => void } = {}): ReleaseFixture {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-release-once-")));
   const repo = join(dir, "project");
   mkdirSync(repo);
@@ -82,6 +82,7 @@ export function releaseFixture(options: { files?: Record<string, string>; protec
   if (!added.ok) throw new Error("approver");
   for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", RELEASE_NOW);
   store.setVerifyCommand({ repo, command: "node scripts/release-check.mjs --full", timeoutMs: 60_000, approvedBy: "alex" }, RELEASE_NOW);
+  options.beforeApproval?.(store, repo);
   const taskId = carriedTaskId(VERSION, approved);
   store.createTask({ id: taskId, title: `Release ${VERSION}` }, RELEASE_NOW);
   store.placeTask(store.refFor("built-in", taskId).id, repo, {}, RELEASE_NOW);

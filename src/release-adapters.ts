@@ -29,6 +29,9 @@ import { proveCarry, type BuildRunner } from "./release-carry.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { deploymentGate } from "./deploy-gate.js";
 import { extractCommit } from "./commit-extract.js";
+import { checkoutIncludes } from "./teardown-git.js";
+import { RELEASE_REMOTE, releaseConfigProblem, releaseGitArgs, releaseGitEnv, releaseRemote, releaseTools, type ReleaseRepo, type ReleaseTools } from "./release-git.js";
+export { RELEASE_PATH, RELEASE_REMOTE, releaseConfigProblem, releaseGitArgs, releaseGitEnv, releaseRemote, releaseTools, type ReleaseRepo, type ReleaseTools } from "./release-git.js";
 
 export type Exec = (command: string, args: readonly string[], options?: { cwd?: string; timeoutMs?: number; env?: NodeJS.ProcessEnv; input?: string }) =>
   Promise<{ code: number; stdout: string; stderr: string }>;
@@ -159,8 +162,38 @@ export function stageGate(stage: string, owner: () => string | null): { id: stri
   return id !== null && phase !== null && BEFORE_SWAP.includes(phase) && owner() === id ? { id, phase } : null;
 }
 
+/** The recorded repository for a gate checkout, from the plane's database; throws in plain words when there is none. */
+export function recordedReleaseRepo(database: string, checkout: string): ReleaseRepo {
+  const real = (path: string): string | null => { try { return realpathSync(path); } catch { return null; } };
+  const at = real(checkout);
+  if (at === null) throw new Error(`${checkout} isn't there.`);
+  if (!existsSync(database)) throw new Error("The plane's database isn't here, so the release's repository can't be read from its records.");
+  const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
+  let project: string | null = null, remote: string | null = null;
+  try {
+    const store = new Store(db);
+    project = store.listProjects().map(one => one.path).find(path => real(path) === at) ?? null;
+    remote = project === null ? null : store.projectRemote(project);
+  } finally { db.close(); }
+  if (project === null) throw new Error(`${checkout} isn't one of the projects Toolroll records, so it can't be released from here.`);
+  if (remote === null) throw new Error(`${project} has no recorded remote. Record it with \`toolroll repos add ${project} --remote <url>\` first.`);
+  const parsed = releaseRemote(remote);
+  if (parsed === null) throw new Error(`${project}'s recorded remote (${remote}) isn't a GitHub repository over https or ssh.`);
+  const named = join(at, ".git");
+  let gitDir: string;
+  try {
+    if (!lstatSync(named).isDirectory()) throw new Error("not a folder");
+    gitDir = realpathSync(named);
+  } catch { throw new Error(`${project}'s Git directory isn't a plain folder, so the release won't read it.`); }
+  return { checkout: at, gitDir, remote, ...parsed };
+}
+
 export type AdapterOptions = {
   checkout: string;
+  /** The recorded repository and the programs, when a caller (a test) supplies them; otherwise read from the plane's
+   * records and found on this machine when the first Git command runs. */
+  releaseRepo?: ReleaseRepo;
+  tools?: ReleaseTools;
   /** The live database (default: this installation's). */
   database?: string;
   processes?: typeof processes;
@@ -186,9 +219,11 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   const { checkout } = options;
   const tap = options.tap ?? "ap9000/homebrew-toolroll";
   const formula = options.formula ?? "Formula/toolroll.rb";
-  const git = (...args: string[]) => run("git", ["-C", checkout, ...args]);
   const pause = options.sleep ?? ((ms: number) => new Promise<void>(done => setTimeout(done, ms)));
-  const gh = (...args: string[]) => run("gh", args);
+  const tools = options.tools ?? releaseTools();
+  const gitEnv = releaseGitEnv();
+  // Never a PATH lookup or the checkout's Git config: gh by its absolute path, from a neutral folder, naming the repo.
+  const gh = (...args: string[]) => run(tools.gh, args, { cwd: "/", env: gitEnv });
   const ghJson = async (what: string, ...args: string[]) => JSON.parse(await must(gh(...args), what)) as unknown;
   const toolroll = async (...args: string[]): Promise<Json> => {
     const result = await run("toolroll", [...args, "--json"], { env: cleanEnv(), timeoutMs: 120_000 });
@@ -196,6 +231,26 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   };
   const refused = (answer: Json) => `${String(answer["message"] ?? answer["reason"] ?? "refused")}`;
   const database = options.database ?? databasePath(process.env, homedir());
+  let recorded: ReleaseRepo | null = options.releaseRepo ?? null;
+  /** The recorded repository, read once (chat-management.md §0a.2). */
+  const releaseRepo = (): ReleaseRepo => recorded ??= recordedReleaseRepo(database, checkout);
+  /**
+   * The coordinator's one way to run Git (§0a.2): on the recorded Git directory, hardened, with an allowlisted
+   * environment and the absolute Git. Before every command the checkout's own config is read with includes off and
+   * as plain files; one that includes a file, names a command or redirects a remote stops the release, naming it.
+   */
+  const git = async (...args: string[]) => {
+    const repo = releaseRepo();
+    const stop = (why: string) => new Error(`Toolroll won't run Git in ${repo.checkout} for a release: ${why}. Remove it from the project's Git config, then rerun.`);
+    if (options.releaseRepo === undefined && checkoutIncludes(repo.checkout)) throw stop("its Git config includes another file, or couldn't be read as a plain file");
+    const listing = await run(tools.git, [`--git-dir=${repo.gitDir}`, "--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], { cwd: "/", env: gitEnv });
+    if (listing.code !== 0) throw stop("its Git config couldn't be read");
+    const setting = releaseConfigProblem(listing.stdout);
+    if (setting !== null) throw stop(`its Git config sets ${setting}, which a release doesn't run with (it could run a command, or change where Git connects or what it sends)`);
+    return run(tools.git, [...releaseGitArgs(repo, tools), ...args], { cwd: repo.checkout, env: gitEnv });
+  };
+  /** The remote every fetch, look and push names: the recorded URL, defined only on the command line. */
+  const remoteUrl = () => RELEASE_REMOTE;
   const liveOwner = () => {
     if (!existsSync(database)) return null;
     const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
@@ -270,15 +325,12 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
     sleep: options.sleep ?? sleep,
     say: options.say ?? (line => process.stdout.write(`${line}\n`)),
     repo: {
-      async github() {
-        const slug = githubSlug(await must(git("remote", "get-url", "origin"), "git remote get-url origin"));
-        if (slug === null) throw new Error(`${checkout}'s origin is not a GitHub repository`);
-        return slug;
-      },
+      // The recorded owner/name, never the checkout's origin.
+      async github() { return releaseRepo().slug; },
       async sync(branch) {
-        await must(git("fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main"), "git fetch origin main");
+        await must(git("fetch", "--quiet", "--no-tags", remoteUrl(), "+refs/heads/main:refs/remotes/origin/main"), "git fetch main");
         // A merged branch may be gone from GitHub; its commit is already here.
-        await git("fetch", "--quiet", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`);
+        await git("fetch", "--quiet", "--no-tags", remoteUrl(), `+refs/heads/${branch}:refs/remotes/origin/${branch}`);
         const current = (await git("symbolic-ref", "--quiet", "--short", "HEAD")).stdout.trim();
         if (current === "main") { await must(git("merge", "--ff-only", "--quiet", "origin/main"), "git merge --ff-only origin/main"); return; }
         const local = (await git("rev-parse", "--verify", "--quiet", "refs/heads/main")).stdout.trim();
@@ -287,21 +339,21 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         } else throw new Error(`${checkout}'s local main has commits origin/main doesn't; the gate diffs from it, so fix it first`);
       },
       async remoteHead(branch) {
-        const out = await must(git("ls-remote", "origin", `refs/heads/${branch}`), "git ls-remote");
+        const out = await must(git("ls-remote", remoteUrl(), `refs/heads/${branch}`), "git ls-remote");
         return out.trim().split(/\s+/)[0] || null;
       },
       async deleteBranch(branch, head) {
         const ref = `refs/heads/${branch}`;
-        const current = (await must(git("ls-remote", "origin", ref), "git ls-remote")).trim().split(/\s+/)[0] || null;
+        const current = (await must(git("ls-remote", remoteUrl(), ref), "git ls-remote")).trim().split(/\s+/)[0] || null;
         if (current === null) return;
         if (current !== head) throw new Error(`${branch} moved after merging; its new head was not deleted.`);
-        const pushed = await git("push", `--force-with-lease=${ref}:${head}`, "origin", `:${ref}`);
+        const pushed = await git("push", "--no-verify", `--force-with-lease=${ref}:${head}`, remoteUrl(), `:${ref}`);
         if (pushed.code === 0) return;
         // GitHub may delete a merged branch itself between the look and the push; gone is what was wanted. Its refs can
         // lag the deletion by a few seconds, so look a few times before calling it a failure.
         for (let look = 0; look < BRANCH_GONE_LOOKS; look++) {
           if (look > 0) await pause(BRANCH_GONE_PAUSE_MS);
-          const after = (await must(git("ls-remote", "origin", ref), "git ls-remote")).trim().split(/\s+/)[0] || null;
+          const after = (await must(git("ls-remote", remoteUrl(), ref), "git ls-remote")).trim().split(/\s+/)[0] || null;
           if (after === null) return;
         }
         throw new Error(`deleting merged branch ${branch} failed: ${pushed.stderr.trim() || `exit ${pushed.code}`}`);

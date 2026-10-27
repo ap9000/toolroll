@@ -5,7 +5,11 @@
  *
  *   gate → approval → check → complete → quiet → deploy → link → ci → merge → tree → tag → publish → homebrew → done
  *
- * gate files a prepared-candidate task pinned to the branch's exact commit, with the full release check. approval
+ * gate, before filing a task for that commit, looks at the pull request's required checks on it: one that failed stops
+ * the release before anything is filed or sent for approval; it waits, naming them, for checks not started or still
+ * running, and stops if they don't finish within its limit (a task already filed is not looked at again; ci checks
+ * once more before merging). It then files a prepared-candidate task pinned to the branch's exact commit, with the full
+ * release check. approval
  * waits for an active approver's yes to that exact scope (never a mode's, an AI's or the lead's). check requires a Full
  * result of that commit: a failed check stops the release and stays visible, nothing reruns it. complete marks that
  * exact result Complete through the task's own authorization. quiet waits until nothing builds. deploy runs the
@@ -48,9 +52,9 @@ export const RELEASE_TAG_CHECKS = ["node 22 · macos-latest", "node 24 · macos-
 
 export const RELEASE_STEPS = ["gate", "approval", "check", "complete", "quiet", "deploy", "link", "ci", "merge", "tree", "tag", "publish", "homebrew", "done"] as const;
 export type ReleaseStep = typeof RELEASE_STEPS[number];
-type WaitingStep = "approval" | "check" | "quiet" | "deploy" | "ci" | "publish" | "homebrew";
+type WaitingStep = "gate" | "approval" | "check" | "quiet" | "deploy" | "ci" | "publish" | "homebrew";
 /** How long each waiting step may take, in minutes, before the release stops there (rerunning continues from it). */
-export const RELEASE_LIMITS: Readonly<Record<WaitingStep, number>> = { approval: 24 * 60, check: 120, quiet: 60, deploy: 30, ci: 60, publish: 45, homebrew: 45 };
+export const RELEASE_LIMITS: Readonly<Record<WaitingStep, number>> = { gate: 60, approval: 24 * 60, check: 120, quiet: 60, deploy: 30, ci: 60, publish: 45, homebrew: 45 };
 const POLL_MS = 15_000;
 
 /** One check attempt; `app` is the GitHub App that made it (github-actions for a workflow), when known. */
@@ -340,14 +344,24 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
     delete j.intents.deploy;
     save();
   };
-  /** Ask `probe` until it answers, within this step's limit. */
+  /** Ask `probe` until it answers, within this step's limit. A short network failure on the way to GitHub (git or gh
+   * timing out) is no answer yet, never the release's end: the next poll asks again, until the step's own limit. */
   const waitFor = async <T>(at: WaitingStep, what: string, probe: () => Promise<T | null>): Promise<T> => {
     const deadline = adapters.now().getTime() + limits[at] * 60_000;
-    let said = false;
+    let said = false, unreachable: string | null = null;
     for (;;) {
-      const answer = await probe();
+      let answer: T | null;
+      try {
+        answer = await probe();
+        unreachable = null;
+      } catch (error) {
+        if (!transientNetworkError(error)) throw error;
+        if (unreachable === null) say(`  GitHub didn't answer in time (${networkWords(error)}); asking again`);
+        unreachable = networkWords(error);
+        answer = null;
+      }
       if (answer !== null) return answer;
-      if (adapters.now().getTime() >= deadline) throw new Stop("timeout", `Still waiting for ${what} after ${limits[at]} minutes.`);
+      if (adapters.now().getTime() >= deadline) throw new Stop("timeout", `Still waiting for ${what} after ${limits[at]} minutes${unreachable === null ? "" : ` (GitHub last didn't answer: ${unreachable})`}.`);
       if (!said) { say(`  waiting for ${what} (up to ${limits[at]} min)`); said = true; }
       await adapters.sleep(pollMs);
     }
@@ -560,9 +574,11 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           // A fresh task this journal never filed has appeared under its id: it isn't ours, and isn't a fresh approval.
           if (existing.exists && j.freshTask === true && j.intents.gate === undefined) throw new Stop("approval", `Task ${j.task.id} appeared before this release filed it; rerun with --new.`);
           if (existing.exists) {
+            // Filed already (a resume after a lost answer): the task stands, and the ci step judges its checks.
             if (existing.candidate !== j.candidate.sha) throw new Stop("conflict", `Task ${j.task.id} exists for a different commit (${existing.candidate?.slice(0, 7) ?? "none"}).`);
             j.task.scopeDigest = existing.scopeDigest;
           } else {
+            await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe));
             intend("gate");
             await adapters.repo.sync(j.branch);
             const filed = await adapters.toolroll.fileGate({
@@ -905,4 +921,52 @@ async function deployed(adapters: ReleaseAdapters, candidate: string): Promise<s
   if (installed.services.length === 0 || installed.clis.length < 2 || runtimes.size !== 1) return null;
   const [runtime] = runtimes;
   return runtime !== undefined && runtime !== "" && await adapters.toolroll.runtimeCommit(runtime) === candidate ? runtime : null;
+}
+
+/**
+ * The gate's look at the pull request's required checks on the exact commit, before anything is filed or anyone is
+ * asked to approve (#237): a required check that failed or was cancelled stops here; checks not started or still
+ * running are named, and the gate waits for them; ones that never finish within the gate's limit stop here too. GitHub
+ * not answering is waited out the same way, never taken for a pass. The ci step still checks again before merging.
+ */
+async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal, wait: <T>(what: string, probe: () => Promise<T | null>) => Promise<T>): Promise<void> {
+  const sha = j.candidate.sha.slice(0, 7);
+  const required: readonly string[] = REQUIRED_PR_CHECKS;
+  let named = "", unread = false;
+  try {
+    await wait(`the pull request checks on ${sha}`, async () => {
+      let runs: CheckRun[];
+      try { runs = await adapters.github.checks(j.github, j.candidate.sha); }
+      catch (error) {
+        if (!unread) adapters.say(`  Couldn't read the pull request checks on ${sha} (${(error as Error)?.message ?? error}); trying again.`);
+        unread = true;
+        return null;
+      }
+      const verdict = checksVerdict(runs.filter(run => required.includes(run.name)), required);
+      if (verdict.state === "failed") {
+        throw new Stop("ci-failed", `Pull request checks already failed on ${sha}: ${verdict.failed.join(", ")}. Nothing was filed or sent for approval. Fix the branch, then release the new commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\` (or rerun the failed job on GitHub and run this command again).`);
+      }
+      if (verdict.state === "passed") return true;
+      const now = verdict.waiting.join(", ");
+      if (now !== named) { adapters.say(`  Pull request checks on ${sha} not finished yet: ${now}.`); named = now; }
+      return null;
+    });
+  } catch (error) {
+    if (!(error instanceof Stop) || error.reason !== "timeout") throw error;
+    throw new Stop("ci-missing", `Pull request checks on ${sha} didn't all finish in time${named === "" ? (unread ? " (GitHub didn't answer)" : "") : `: ${named}`}. Nothing was filed or sent for approval. Start or rerun them on GitHub, then run this command again.`);
+  }
+}
+
+/** The network failures a release's waits ride out: git or gh timing out (or cut off) on the way to GitHub. */
+const TRANSIENT_NETWORK = /Recv failure: (?:Operation timed out|Connection reset by peer)|TLS handshake timeout|Operation timed out|Connection timed out|i\/o timeout|Connection reset by peer|Failed to connect to [^\s]*github\.com port \d+/i;
+
+/** A probe's failure that is only the network to GitHub being slow, never a decision (a Stop) or another error. */
+export function transientNetworkError(error: unknown): boolean {
+  if (error instanceof Stop || error instanceof Restart) return false;
+  return TRANSIENT_NETWORK.test(String((error as Error)?.message ?? error));
+}
+
+/** The part of a network failure worth saying: its matching phrase. */
+function networkWords(error: unknown): string {
+  return TRANSIENT_NETWORK.exec(String((error as Error)?.message ?? error))?.[0] ?? "a network failure";
 }

@@ -8331,7 +8331,9 @@ export class Store {
    * approved profile — one UPDATE, no re-resolution, so what is sealed is
    * exactly what the signed digest was bound to. Returns false when the
    * scope vanished mid-ceremony. */
-  sealScopeApproval(taskId: string, by: string, now: Date, mutation: Mutation = {}, basis?: { kind: "mode" | "chat" | "grant" | "schedule"; modeDigest: string }, approverKind?: ApproverKind): boolean {
+  sealScopeApproval(taskId: string, by: string, now: Date, mutation: Mutation = {}, basis?: { kind: "mode" | "chat" | "grant" | "schedule"; modeDigest: string;
+    /** A chat seal of a deploy gate: the release card it came from (chat-management.md §0a.5). */
+    card?: "release"; cardDigest?: string }, approverKind?: ApproverKind): boolean {
     return (
       this.once(mutation, "sealScopeApproval", () => {
         // ONLY A PERSON'S SEAL HAS NO BASIS (approval policy, phase 1): with none given this is the person's
@@ -8401,6 +8403,11 @@ export class Store {
         // that yes opens the release's authority record in this same transaction — or the seal doesn't stand.
         const terms = storedReleaseTerms(working["release_terms_json"]);
         if (!terms.ok) return false;
+        // A DEPLOY GATE FROM CHAT (chat-management.md §0a.5): a signed candidate or release terms seal from chat only
+        // with the release card's evidence (its act and card digest), never through the plain plan card or a generic
+        // one. Read from the raw row, so a terms column that doesn't parse is a deploy gate too.
+        const deployGate = (typeof working["candidate"] === "string" && working["candidate"] !== "") || working["release_terms_json"] != null;
+        if (deployGate && basis?.kind === "chat" && !(basis.card === "release" && typeof basis.cardDigest === "string" && /^[0-9a-f]{64}$/.test(basis.cardDigest))) return false;
         if (terms.terms !== null && basis !== undefined && basis.kind !== "chat") return false;
         if (terms.terms !== null && releaseSealProblem(this, terms.terms) !== null) return false;
         const changed = this.db

@@ -110,6 +110,16 @@ export function releaseAuthorityOfTask(store: Store, taskId: string): { authorit
 }
 
 /** Whether a task belongs to any release authority (anchor or carried), from the records alone. */
+/** "Carry release approvals when checks aren't sandboxed": a project setting, newest choice wins (a ledger row each);
+ * off by default. Turning it on is a person's own proven act (release-cli.ts); turning it off is anyone's. */
+export const UNSANDBOXED_CARRY_ACTION = "release unsandboxed carrying changed";
+export function carriesUnsandboxed(store: Store, repo: string): boolean {
+  const row = store.handle.prepare("SELECT outcome FROM action_ledger WHERE repo = ? AND action = ? ORDER BY id DESC LIMIT 1").get(repo, UNSANDBOXED_CARRY_ACTION);
+  return row !== undefined && row["outcome"] === "on";
+}
+/** How far a check reaches, narrowest first. */
+export const CHECK_ACCESS_WIDTH: Readonly<Record<string, number>> = Object.freeze({ sandboxed: 0, "sign-ins": 1, unsandboxed: 2 });
+
 export function belongsToRelease(store: Store, taskId: string): boolean {
   return store.handle.prepare("SELECT 1 AS hit FROM release_authority WHERE anchor_task = ? UNION ALL SELECT 1 FROM release_carry WHERE task_id = ? LIMIT 1").get(taskId, taskId) !== undefined;
 }

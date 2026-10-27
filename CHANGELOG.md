@@ -1,5 +1,81 @@
 # Changelog
 
+## 0.9.73 — 2026-10-25
+
+- **Carry release approvals when checks aren't sandboxed.** A project whose
+  checks run outside the sandbox (like Toolroll's own release project) can
+  let later test-only commits carry a release approval:
+  `toolroll release unsandboxed-carry on --repo <path> --as <you> --token
+  <password>`. It is off by default; only a person turns it on, and it counts
+  only for releases approved while it is on. The approval sheet says plainly
+  that those later commits will run outside the sandbox without being shown
+  to you first. Every other carry rule stays: tests and docs only, the
+  400-line, 20-file and 800-line-churn limits, an identical production build,
+  and main's open nightly failures. Turning it off, or checks that reach
+  further than at the approval, stops carrying.
+- **`toolroll release` stops at the gate when the pull request's checks
+  fail.** Before it files the release task or asks for your approval, it
+  reads the required checks on the exact commit. One that failed or was
+  cancelled stops the release with the failing job names, so you aren't
+  asked to approve a commit that can't merge. Checks not started or still
+  running are named and waited for; if they don't finish within the gate's
+  limit (60 minutes, `--limit gate=<min>`), it stops there too. The ci step
+  still checks every one again before merging.
+- **Chat apps, browsers and password managers are off limits to every
+  launch.** Builds, checks, flows, tool servers and coding sessions can't
+  read or write where Slack, Telegram, Discord, Teams, WhatsApp, 1Password,
+  Bitwarden, or the Chrome, Chromium, Brave, Edge, Arc, Firefox, Zen,
+  Vivaldi, Opera, Orion and Safari profiles keep their data, on macOS and
+  Linux, under both sandbox versions and in Codex's sandbox. This covers the
+  folders by name and by real path, links inside them, and a moved profile
+  or config folder named in the environment. No project setting reopens
+  them, and those apps' variables (SLACK_, TELEGRAM_, DISCORD_, TEAMS_, OP_,
+  BW_, BITWARDENCLI_) are removed from every launch; a tool server keeps the
+  secrets it names.
+- **`toolroll release` runs Git safely on the release checkout.** The release
+  used to run plain Git there, so a setting planted in the checkout's Git
+  config (an include, a hook folder, an ssh command, a proxy, a URL rewrite
+  and the like) could run a command or send the gh token elsewhere. Now it
+  uses the repository and GitHub URL from Toolroll's own records, runs Git,
+  gh and ssh by absolute path with a fixed environment, pins HTTPS settings
+  on the command line, and allows only the plain settings Git writes itself.
+  Any other setting stops the release and names it. The checkout must be a
+  project Toolroll records, with a recorded remote.
+- **Widening actions take your password.** Setting the permission default to
+  Full access, giving a subagent a tool, loosening a tool rule, accepting a
+  subagent's suggested looser rule, and adding a trigger that brings in work
+  from anyone (GitHub from anyone, mail from any sender, from the Triggers
+  panel, a gallery template or a starter kit) now ask for your password (a
+  signed-in session does under Passwordless). Narrowing needs none. A chat
+  card, import or template can no longer do any of these; it points to the
+  page that can.
+- **Approving a release from chat shows the whole release first.** A tap
+  approves a deploy only through the release card: every signed term and
+  release term, one line each (it says so when later test-only commits
+  will run outside the sandbox), and the commits since the last release
+  Toolroll recorded as merged. Continue sends the terms (as a file where the
+  chat app allows), and Approve is bound to exactly what was shown;
+  anything changed in between refuses with the new card. It works only in
+  your own private chat (Telegram or a Slack direct message); a group,
+  someone else's chat, Discord and Teams are refused. Each such approval is
+  announced to you, naming the chat app.
+- **Network, writes, check access and sandbox settings stay on the typed
+  password under Passwordless,** and a test now fails if one moves to the
+  ordinary signed-in step-up.
+- **Launches don't wait on macOS's "access data from other apps" prompt.**
+  Toolroll looks inside other apps' containers only after a 3-second look in
+  a separate process shows macOS lets it, so a service run by launchd no
+  longer hangs every fenced launch. While macOS is still asking, the
+  containers stay denied by name and real path, and the links found by the
+  last full look stay denied; a look that fails for any other reason refuses
+  the launch.
+- **The release check ends itself before its time limit,** stopping the
+  parts still running and keeping every log and its report, and a failed
+  part's log reaches the run's output as soon as it fails.
+- **`toolroll release` rides out short GitHub network timeouts** while a
+  step waits, asking again until that step's own limit.
+- No database change: the schema stays at v135.
+
 ## 0.9.72 — 2026-10-25
 
 - **One approval per release.** A person approves a release once. Later

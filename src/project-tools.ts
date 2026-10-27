@@ -22,6 +22,7 @@
 import { toolRefusal } from "./policy.js";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { isProtectedEnvName } from "./protected-storage.js";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { realpathSync } from "node:fs";
@@ -550,7 +551,8 @@ function exchangeStdio(spec: ToolSpec, values: Record<string, string>, timeoutMs
     let child: ReturnType<typeof spawn>;
     try {
       const launch = confined(spec.command!, spec.args, { ...(fence ?? {}), temp: env["TMPDIR"] });
-      child = spawn(launch.file, launch.args, { env: { ...env, ...launch.env }, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
+      // A fenced server gets no chat or vault variable (protected-storage.ts) but the tool's own secrets, set by name.
+      child = spawn(launch.file, launch.args, { env: fence === null ? { ...env, ...launch.env } : { ...Object.fromEntries(Object.entries(env).filter(([name]) => !isProtectedEnvName(name) || Object.hasOwn(values, name))), ...launch.env }, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
     } catch (error) {
       if (error instanceof ContainmentRefusal) { resolve({ ok: false, problem: error.message }); return; }
       resolve({ ok: false, problem: `It could not start: ${error instanceof Error ? error.message : "unknown error"}.` });

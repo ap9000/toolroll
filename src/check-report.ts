@@ -148,7 +148,8 @@ export function prepareCheckAttempt(store: Store, root: string, input: {
     planDigest: plan === null ? null : payloadDigest(plan), snapshotDigest: snapshot === null ? null : payloadDigest(snapshot),
     inventoryDigest: payloadDigest(inventory), contextDigest: payloadDigest(context), nonceHash: sha256(nonce),
   }, now);
-  const stdin = JSON.stringify({ nonce, mode, plan, watch: [...(input.watch ?? [])] });
+  // The command's own limit rides along, so the check ends itself (logs and report printed) before the plane stops it.
+  const stdin = JSON.stringify({ nonce, mode, plan, watch: [...(input.watch ?? [])], limitMs: input.command.timeoutMs });
   return { runId: input.runId, nonce, stdin, mode, inventory, context, plan, snapshot, watch: [...(input.watch ?? [])] };
 }
 

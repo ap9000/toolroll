@@ -11,7 +11,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, sy
 import { deflateSync, inflateSync } from "node:zlib";
 import { join, resolve } from "node:path";
 import { describe, expect, test } from "vitest";
-import { extractCommit, normalizedTreePath } from "../../src/commit-extract.js";
+import { extractCommit, normalizedTreePath, verifiedRange } from "../../src/commit-extract.js";
 import { git, marker, useScratch } from "./harness.js";
 
 const ROOT = resolve(import.meta.dirname, "../..");
@@ -139,5 +139,74 @@ describe("attack: the repository changes what the release extracts", () => {
       writeFileSync(join(extraction, "package.json"), JSON.stringify({ name }));
       expect(runScript().stderr, name).toContain("isn't a plain package name");
     }
+  });
+});
+
+/**
+ * Attack (Codex review of 0.9.73, finding 4): shorten what a release card says changed by rewriting history in the
+ * checkout's .git after filing — a shallow boundary at the candidate, grafts, a replacement ref, or the candidate's
+ * commit object rewritten under its id to name the last release as its parent. Guard: verifiedRange hashes every
+ * commit it lists and refuses each of these, so the card refuses rather than showing a shorter list.
+ */
+describe("attack: rewritten history hides a release's commits", () => {
+  const scratch = useScratch("release-range");
+  const history = () => {
+    const repo = join(scratch(), "project");
+    mkdirSync(repo, { recursive: true });
+    git(repo, "init", "-q");
+    const commit = (name: string) => { writeFileSync(join(repo, name), `${name}\n`); git(repo, "add", "-A"); git(repo, "commit", "-q", "-m", name); return git(repo, "rev-parse", "HEAD"); };
+    const baseline = commit("released"), hidden = commit("hidden"), candidate = commit("candidate");
+    return { repo, gitDir: join(repo, ".git"), baseline, hidden, candidate };
+  };
+
+  test("untouched: both commits are listed", () => {
+    const h = history();
+    const range = verifiedRange(h.gitDir, h.baseline, h.candidate);
+    expect(range.ok && range.value.map(one => one.id)).toEqual([h.candidate, h.hidden]);
+  });
+
+  test.each(["shallow", "grafts", "replace"] as const)("%s: the range refuses", how => {
+    const h = history();
+    if (how === "shallow") writeFileSync(join(h.gitDir, "shallow"), `${h.candidate}\n`);
+    if (how === "grafts") { mkdirSync(join(h.gitDir, "info"), { recursive: true }); writeFileSync(join(h.gitDir, "info", "grafts"), `${h.candidate} ${h.baseline}\n`); }
+    if (how === "replace") git(h.repo, "replace", "--graft", h.candidate, h.baseline);
+    expect(verifiedRange(h.gitDir, h.baseline, h.candidate)).toMatchObject({ ok: false });
+  });
+
+  test("a commit-graph rewritten to skip the hidden commit: the range still lists it, from the objects", () => {
+    const h = history();
+    // One more commit on top, so the rewritten parent link is one Git reads from the graph (a tip it reads from its object).
+    writeFileSync(join(h.repo, "top"), "top\n"); git(h.repo, "add", "-A"); git(h.repo, "commit", "-q", "-m", "top");
+    const top = git(h.repo, "rev-parse", "HEAD");
+    git(h.repo, "commit-graph", "write", "--reachable");
+    const file = join(h.gitDir, "objects", "info", "commit-graph");
+    const graph = readFileSync(file);
+    // The chunk table: 12-byte entries (id, offset) after the 8-byte header; OIDL lists the ids in order, CDAT their parents.
+    const chunk = (id: string) => { for (let at = 8; ; at += 12) { if (graph.toString("latin1", at, at + 4) === id) return Number(graph.readBigUInt64BE(at + 4)); } };
+    const ids = [h.baseline, h.hidden, h.candidate, top].sort();
+    chmodSync(file, 0o644);
+    graph.writeUInt32BE(ids.indexOf(h.baseline), chunk("CDAT") + ids.indexOf(h.candidate) * 36 + 20);
+    writeFileSync(file, graph);
+    // Git reading the graph believes it: the hidden commit drops out of its own listing.
+    expect(git(h.repo, "rev-list", `${h.baseline}..${top}`).split("\n")).toEqual([top, h.candidate]);
+    const range = verifiedRange(h.gitDir, h.baseline, top);
+    expect(range.ok && range.value.map(one => one.id)).toEqual([top, h.candidate, h.hidden]);
+  });
+
+  test("an empty range is proved too: `to` must be the last release or its verified ancestor", () => {
+    const h = history();
+    expect(verifiedRange(h.gitDir, h.candidate, h.candidate)).toMatchObject({ ok: true, value: [] });
+    expect(verifiedRange(h.gitDir, h.candidate, h.baseline)).toMatchObject({ ok: true, value: [] });
+    // Two commits back, past a reach of one: not proved, refused (Git's empty listing alone is never taken).
+    expect(verifiedRange(h.gitDir, h.candidate, h.baseline, { reach: 1 })).toMatchObject({ ok: false });
+  });
+
+  test("the candidate's commit object rewritten under its id to skip the hidden commit: the range refuses", () => {
+    const h = history();
+    const loose = join(h.gitDir, "objects", h.candidate.slice(0, 2), h.candidate.slice(2));
+    const original = inflateSync(readFileSync(loose)).toString("latin1");
+    chmodSync(loose, 0o644);
+    writeFileSync(loose, deflateSync(Buffer.from(original.replace(h.hidden, h.baseline), "latin1")));
+    expect(verifiedRange(h.gitDir, h.baseline, h.candidate)).toMatchObject({ ok: false });
   });
 });

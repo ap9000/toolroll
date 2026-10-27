@@ -168,7 +168,7 @@ export function considerSuggestion(store: Store, mate: SubagentRow, approved: Su
 }
 
 /** Its manager answers a suggestion: accept changes the one rule (if it is still what it was), anything else leaves it; their words are remembered. */
-export function answerSuggestion(store: Store, mate: SubagentRow, suggestion: number, answer: { choice: string | null; text: string | null; by: string }, now: Date): Done {
+export function answerSuggestion(store: Store, mate: SubagentRow, suggestion: number, answer: { choice: string | null; text: string | null; by: string; widening?: "proved" }, now: Date): Done {
   const offered = store.subagentSuggestion(suggestion);
   if (offered === null || offered.state !== "open") return { ok: false, said: "That suggestion was already answered." };
   if (answer.choice === ACCEPT) {
@@ -179,7 +179,7 @@ export function answerSuggestion(store: Store, mate: SubagentRow, suggestion: nu
       store.decideSubagentSuggestion(offered.id, "stale", null, now);
       return { ok: false, said: "Its rules changed since it suggested this, so nothing was changed." };
     }
-    const changed = setToolRules(store, mate, offered.tool, { [offered.action]: { use: offered.rule.use, limit: offered.rule.limit ?? null, undo: current.undo ?? "" } }, answer.by, now);
+    const changed = setToolRules(store, mate, offered.tool, { [offered.action]: { use: offered.rule.use, limit: offered.rule.limit ?? null, undo: current.undo ?? "" } }, answer.by, now, answer.widening === undefined ? {} : { widening: answer.widening });
     if (!changed.ok) return changed;
     store.decideSubagentSuggestion(offered.id, "accepted", answer.by, now);
     return { ok: true, said: `Changed. ${nameOf(mate)} makes ${offered.action} calls on its own ${offered.rule.limit === undefined ? "from now on" : `up to ${offered.rule.limit.field} ${offered.rule.limit.over}`}.` };

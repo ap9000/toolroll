@@ -20,7 +20,7 @@ import { scanForSecrets } from "./evidence.js";
 import { flowDefinitionOf } from "./flow-engine.js";
 import { saveScript, validateScript } from "./flow-scripts.js";
 import { isToolrollRepo, planeReviewSteps } from "./flow-starters.js";
-import { addFlowTriggerTo, describeTrigger, githubRepoOf, scheduleFromWords, validateTriggerConfig } from "./flow-triggers.js";
+import { addFlowTriggerTo, describeTrigger, githubRepoOf, rawAdmitsAnyone, scheduleFromWords, validateTriggerConfig } from "./flow-triggers.js";
 import { choiceTargets, clockTime, flowFromSteps, flowTerms, FLOW_TEMPLATES, ISSUE_LABEL, type FlowDefinition, type FlowStage, type FlowStepInput } from "./flows.js";
 import { connectionsOf, localConnectOf, oneClickOf } from "./mcp-connect.js";
 import type { TriggerInput } from "./contracts/flow.js";
@@ -676,7 +676,12 @@ export function galleryDigest(id: string, repo: string, answers: GalleryAnswers)
 export type GalleryUsed = { ok: true; flow: number; said: string } | { ok: false; said: string };
 
 /** Use a template in a project: its scripts, its flow and its triggers, together or not at all. */
-export function useGalleryTemplate(store: Store, template: GalleryTemplate, repo: string, given: GalleryAnswers, input: { name?: string | null; by: string; now: Date; dir: string | null }): GalleryUsed {
+/** Whether a template's triggers bring in items from anyone: making it takes the person's password. */
+export function galleryAdmitsAnyone(template: GalleryTemplate): boolean {
+  return template.triggers.some(one => rawAdmitsAnyone(one));
+}
+
+export function useGalleryTemplate(store: Store, template: GalleryTemplate, repo: string, given: GalleryAnswers, input: { name?: string | null; by: string; now: Date; dir: string | null; widening?: "proved" }): GalleryUsed {
   try {
     const built = buildFromGallery(store, template, repo, given);
     const name = (input.name ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 80) || template.name;
@@ -690,7 +695,7 @@ export function useGalleryTemplate(store: Store, template: GalleryTemplate, repo
       const made = store.getFlow(id)!;
       for (const trigger of built.triggers) {
         // No one is shown the gallery's addresses: a webhook is made with none until its panel makes one (v126).
-        const added = addFlowTriggerTo(store, made, { ...trigger, zone: trigger["zone"] ?? flowDefinitionOf(made)!.start }, input.by, input.now, input.dir, { shown: false });
+        const added = addFlowTriggerTo(store, made, { ...trigger, zone: trigger["zone"] ?? flowDefinitionOf(made)!.start }, input.by, input.now, input.dir, { shown: false, ...(input.widening === undefined ? {} : { widening: input.widening }) });
         if (!added.ok) throw new Error(added.message);
         if (added.reveal !== null) hook = true;
       }

@@ -230,8 +230,8 @@ export function settingsPage(
       : joinHtml([
           html`<h2>Unattended permissions</h2>`,
           permissionDefault.canManage && csrf !== ""
-            ? postForm("/settings/permission-default", html`${permissionModeChoices("permission-mode", permissionDefault.mode)}<button type="submit">Save default</button>`,
-              { attrs: { class: "card permission-policy", "data-autosave": true } })
+            ? postForm("/settings/permission-default", html`${permissionModeChoices("permission-mode", permissionDefault.mode)}${permissionDefault.mode === "bypassPermissions" ? "" : reauth(html`<label>Your password <span class="meta">(needed for Full access)</span><input type="password" name="password" autocomplete="current-password"></label>`)}<button type="submit">Save default</button>`,
+              { attrs: { class: "card permission-policy" } })
             : html`<div class="card"><p><strong>${permissionDefault.mode === "bypassPermissions" ? "Full access" : "Auto"}</strong></p><p class="meta">An approver can change this default</p></div>`,
           permissionDefault.updatedAt === null
             ? ""

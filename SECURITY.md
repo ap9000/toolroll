@@ -25,6 +25,19 @@ user. What it promises:
   (`up-login.txt`) and approve as you, since Toolroll can't tell it from you at
   your own command line. Don't keep a remembered login on a machine where you
   run such an agent, or sign out of the CLI there.
+- **Your chat apps, browsers and password managers are out of every build's
+  reach** (docs/plans/chat-management.md §1.1). Every launch Toolroll fences
+  (builds, checks, flows, tool servers, coding sessions), under either fence
+  policy and on every sandbox, is denied the data folders of Slack, Telegram,
+  Discord, Teams, WhatsApp, 1Password, Bitwarden and the Chrome, Chromium,
+  Brave, Edge, Arc, Firefox, Zen, Vivaldi, Opera, Orion and Safari profiles
+  (src/protected-storage.ts), whatever the project's read settings, and gets
+  none of the SLACK_, TELEGRAM_, DISCORD_, TEAMS_, OP_ and BW_ variables.
+  **Limits:** only the listed storage is covered: a browser started with its
+  own `--user-data-dir`, a portable app or an unlisted password manager isn't.
+  Build agents keep the Keychain, so the profile deny, not Chrome's cookie
+  encryption, is the protection. Live terminals are your own shell and are not
+  fenced.
 - **One approval per release, for test fixes only** (docs/plans/release-once.md).
   A person's yes to a release's terms carries to later commits on the same pull
   request only when every change since is unit tests, the journey scripts,

@@ -174,15 +174,22 @@ export type TreeChange = {
   deleted: number;
   binary: boolean;
 };
-type VerifiedReader = { format: "sha1" | "sha256"; hexLength: number; read(ids: readonly string[]): Map<string, { type: string; bytes: Buffer }> | string };
+type VerifiedReader = { format: "sha1" | "sha256"; hexLength: number; read(ids: readonly string[]): Map<string, { type: string; bytes: Buffer }> | string;
+  /** Git itself, hardened as above, for listings whose every id is then read through `read`. */
+  git(args: readonly string[]): ReturnType<typeof spawnSync> };
 export type Verified<T> = { ok: true; value: T } | { ok: false; message: string };
 
+/** Which Git runs and with what environment: the release path's fixed absolute Git and its own environment, or by
+ * default the checkout Git environment's. The hardening settings are added over either. */
+export type GitRunner = { git?: string; env?: NodeJS.ProcessEnv };
+
 /** A reader over the project's object store that hashes every object it hands back, or why it can't be one. */
-function verifiedReader(gitDir: string): Verified<VerifiedReader> {
+function verifiedReader(gitDir: string, runner: GitRunner = {}): Verified<VerifiedReader> {
   const refuse = (message: string): Verified<VerifiedReader> => ({ ok: false, message });
-  const env = { ...checkoutGitEnv(), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_ATTR_NOSYSTEM: "1" };
+  const env = { ...(runner.env ?? checkoutGitEnv()), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_ATTR_NOSYSTEM: "1" };
+  // The commit-graph file is a cache a build can write: parents come from the objects themselves, never from it.
   const git = (args: readonly string[], input?: Buffer) =>
-    spawnSync("git", ["--git-dir", gitDir, "--no-replace-objects", ...HARDENED_GIT_ARGS, ...args], { env, input, maxBuffer: MAX_BYTES, timeout: 300_000 });
+    spawnSync(runner.git ?? "git", ["--git-dir", gitDir, "--no-replace-objects", ...HARDENED_GIT_ARGS, "-c", "core.commitGraph=false", ...args], { cwd: "/", env, input, maxBuffer: MAX_BYTES, timeout: 300_000 });
   // History a build could have rewritten around the objects: a shallow boundary, grafts, or replacement refs. Each is
   // refused outright, so no reader here ever has to decide whether to believe one.
   if (existsSync(join(gitDir, "shallow"))) return refuse("The project's history is shallow, so the commits between the approval and this one can't all be read.");
@@ -220,7 +227,7 @@ function verifiedReader(gitDir: string): Verified<VerifiedReader> {
     }
     return found;
   };
-  return { ok: true, value: { format, hexLength, read } };
+  return { ok: true, value: { format, hexLength, read, git } };
 }
 
 /** Parse a commit from its verified bytes: tree, parents, message. Null when malformed. */
@@ -402,4 +409,65 @@ export function verifiedBlobs(gitDir: string, tree: string, paths: readonly stri
   const blobs = reader.value.read(wanted.map(one => one.id));
   if (typeof blobs === "string") return { ok: false, message: `A file couldn't be verified: ${blobs}.` };
   return { ok: true, value: new Map(wanted.map(one => [one.path, { id: one.id, bytes: blobs.get(one.id)!.bytes }])) };
+}
+
+/**
+ * The commits reachable from `to` and not from `from`, as Git lists them (newest first), each read from its own verified
+ * bytes: what a release card says changed (release-card.ts). Git only names them. Each is hashed here and its parents
+ * checked against Git's listing; every commit the range stops at (a parent outside it) must be reached from `from`
+ * through verified parents within `reach` commits, so history a build rewrote around the objects can't shorten the
+ * list. A shallow boundary, grafts or replacement refs refuse (verifiedReader), as does a range longer than `max`.
+ */
+export function verifiedRange(gitDir: string, from: string, to: string, options: GitRunner & { max?: number; reach?: number } = {}): Verified<VerifiedCommit[]> {
+  const { max = 1_000, reach = 5_000 } = options;
+  const reader = verifiedReader(gitDir, options);
+  if (!reader.ok) return reader;
+  const { git, read, hexLength } = reader.value;
+  const id = new RegExp(`^[0-9a-f]{${hexLength}}$`);
+  if (!id.test(from) || !id.test(to)) return { ok: false, message: "A commit id isn't a full id." };
+  /** Git's listing: each line's commit (`-` marks a boundary) and the parents it names. */
+  const listing = (args: readonly string[]): { id: string; boundary: boolean; parents: string[] }[] | null => {
+    const listed = git(["rev-list", "--parents", ...args]);
+    if (listed.status !== 0) return null;
+    const rows = String(listed.stdout).split("\n").filter(line => line !== "").map(line => {
+      const [first = "", ...parents] = line.split(" ");
+      return { id: first.replace(/^-/, ""), boundary: first.startsWith("-"), parents };
+    });
+    return rows.every(row => id.test(row.id) && row.parents.every(one => id.test(one))) ? rows : null;
+  };
+  const range = listing(["--boundary", `${from}..${to}`, "--"]);
+  if (range === null) return { ok: false, message: "The commits between the releases couldn't be listed." };
+  const inside = range.filter(row => !row.boundary), stops = new Set(range.filter(row => row.boundary).map(row => row.id));
+  if (inside.length > max) return { ok: false, message: `More than ${max} commits lie between the releases.` };
+  const objects = read(inside.map(row => row.id));
+  if (typeof objects === "string") return { ok: false, message: `A commit couldn't be verified: ${objects}.` };
+  const listed = new Set(inside.map(row => row.id));
+  const commits: VerifiedCommit[] = [];
+  for (const row of inside) {
+    const object = objects.get(row.id)!;
+    const commit = object.type === "commit" ? parseCommit(row.id, object.bytes, hexLength) : null;
+    if (commit === null) return { ok: false, message: `${row.id.slice(0, 7)} isn't a commit.` };
+    // Git's parents must be the commit's own, and each one inside the range or where it stops.
+    if (commit.parents.join(" ") !== row.parents.join(" ")) return { ok: false, message: `Git's history of ${row.id.slice(0, 7)} isn't its own.` };
+    if (commit.parents.some(parent => !listed.has(parent) && !stops.has(parent))) return { ok: false, message: `The history of ${row.id.slice(0, 7)} is incomplete.` };
+    commits.push(commit);
+  }
+  if (inside.length > 0 && !listed.has(to)) return { ok: false, message: `${to.slice(0, 7)} isn't in its own range.` };
+  // Where the range stops: each must be `from` or one of its verified ancestors. An empty range says `to` is already in
+  // the last release: that too is proved, never taken from Git's listing.
+  const wanted = [...stops, ...(inside.length === 0 ? [to] : [])].filter(one => one !== from);
+  if (wanted.length === 0) return { ok: true, value: commits };
+  const before = listing([`--max-count=${reach}`, from, "--"]);
+  if (before === null) return { ok: false, message: "The last release's history couldn't be listed." };
+  const ancestry = read(before.map(row => row.id));
+  if (typeof ancestry === "string") return { ok: false, message: `The last release's history couldn't be verified: ${ancestry}.` };
+  const reached = new Set<string>([from]);
+  const queue = [from];
+  while (queue.length > 0) {
+    const object = ancestry.get(queue.shift()!);
+    const commit = object === undefined || object.type !== "commit" ? null : parseCommit("", object.bytes, hexLength);
+    for (const parent of commit?.parents ?? []) if (!reached.has(parent)) { reached.add(parent); queue.push(parent); }
+  }
+  const unreached = wanted.find(one => !reached.has(one));
+  return unreached === undefined ? { ok: true, value: commits } : { ok: false, message: `${unreached.slice(0, 7)} isn't verified as part of the last release's history.` };
 }

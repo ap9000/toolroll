@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
-  checksVerdict, gateTaskId, journalFile, ownerApproval, readJournal, writeJournal, REQUIRED_PR_CHECKS, RELEASE_TAG_CHECKS, runRelease,
+  checksVerdict, gateTaskId, journalFile, ownerApproval, readJournal, writeJournal, REQUIRED_PR_CHECKS, RELEASE_TAG_CHECKS, runRelease, transientNetworkError,
   type CheckRun, type GateState, type HomebrewState, type ReleaseAdapters, type ReleaseJournal,
 } from "./release.js";
 
@@ -33,6 +33,9 @@ function world(options: { crashAfter?: Mutation } = {}) {
     gateId: null as string | null,
     /** What a person or the worker does while the release waits: applied on each sleep. */
     onSleep: [] as ((state: typeof s) => void)[],
+    /** Whether the gate's look (before anything is filed) sees `checks` as set. Off: it sees them all passing, so a test
+     * about a later step can start with failing or pending checks. */
+    gateSeesChecks: false,
     checks: new Map<string, CheckRun[]>([[SHA, passing(REQUIRED_PR_CHECKS)], [`brew:${OTHER}`, passing(["brew test"]).map(run => ({ ...run, app: "github-actions" }))]]),
     installed: { services: [OLD], clis: [{ name: "toolroll", runtime: OLD as string | null }, { name: "standing-orders", runtime: OLD as string | null }] },
     /** Where each CLI name's link points, and whether moving them fails its check. */
@@ -111,7 +114,8 @@ function world(options: { crashAfter?: Mutation } = {}) {
     github: {
       authenticated: async () => true,
       pullRequest: async () => ({ ...s.pr }),
-      checks: async (repo, sha) => structuredClone(s.checks.get(`${repo === "ap9000/homebrew-toolroll" ? "brew:" : ""}${sha}`) ?? []),
+      checks: async (repo, sha) => !s.gateSeesChecks && repo !== "ap9000/homebrew-toolroll" && !(s.gate.exists && s.gate.candidate === sha) && sha !== MERGE ? passing(REQUIRED_PR_CHECKS)
+        : structuredClone(s.checks.get(`${repo === "ap9000/homebrew-toolroll" ? "brew:" : ""}${sha}`) ?? []),
       merge: async (_repo, _pr, head) => {
         if (head !== s.pr.head) throw new Error("Head branch was modified");
         s.pr = { ...s.pr, state: "merged", mergeCommit: MERGE };
@@ -313,6 +317,35 @@ describe("toolroll release", () => {
     expect(later.s.calls).not.toContain("merge");
   });
 
+  // 2026-10-26: three releases stopped on one slow answer from GitHub while they waited (git ls-remote, gh).
+  test("a short GitHub network timeout while waiting is asked again, not the release's end; one that lasts runs into the step's limit", async () => {
+    const SAID = ["fatal: unable to access 'https://github.com/ap9000/toolroll.git/': Recv failure: Operation timed out",
+      'Post "https://api.github.com/graphql": net/http: TLS handshake timeout'];
+    const flaky = (times: number, said: string) => { let left = times; return () => { if (left > 0) { left--; throw new Error(`failed (exit 128): ${said}`); } }; };
+    const { s, adapters } = world();
+    const { remoteHead } = adapters.repo, { checks, tag } = adapters.github;
+    // While the pull request checks finish (git ls-remote) and while the release publishes (gh): two misses each.
+    const whileCi = flaky(2, SAID[0]!), whilePublishing = flaky(2, SAID[1]!);
+    adapters.repo.remoteHead = async branch => { if (s.installed.services[0] === NEW && s.tags.size === 0) whileCi(); return remoteHead(branch); };
+    adapters.github.tag = async (repo, name) => { if (s.tags.size > 0) whilePublishing(); return tag(repo, name); };
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
+    expect(s.said.filter(line => line.includes("GitHub didn't answer in time"))).toEqual(expect.arrayContaining([
+      expect.stringContaining("Recv failure: Operation timed out"), expect.stringContaining("TLS handshake timeout")]));
+
+    // GitHub unreachable for the whole step: the step's own limit, saying why.
+    const down = world();
+    down.adapters.github.checks = async (repo, sha) => { if (down.s.installed.services[0] === NEW) throw new Error(`gh: ${SAID[0]}`); return checks(repo, sha); };
+    expect(await runRelease(options(stateDir(), { limits: { ci: 1 } }), down.adapters)).toMatchObject({ ok: false, step: "ci", reason: "timeout", message: expect.stringContaining("Recv failure: Operation timed out") });
+
+    // Anything else still stops the release at once.
+    const broken = world();
+    broken.adapters.github.checks = async (repo, sha) => { if (broken.s.installed.services[0] === NEW) throw new Error("gh: HTTP 404: Not Found"); return checks(repo, sha); };
+    expect(await runRelease(options(stateDir()), broken.adapters)).toMatchObject({ ok: false, step: "ci", reason: "error" });
+    for (const [text, transient] of [["Recv failure: Operation timed out", true], ["net/http: TLS handshake timeout", true], ["dial tcp 140.82.112.3:443: i/o timeout", true],
+      ["Failed to connect to github.com port 443 after 75003 ms: Couldn't connect to server", true], ["HTTP 404: Not Found", false], ["authentication required", false]] as const)
+      expect(transientNetworkError(new Error(text)), text).toBe(transient);
+  });
+
   test("--new sets an unfinished release aside before merging began, and is refused after", async () => {
     const dir = stateDir();
     const { s, adapters } = world();
@@ -363,7 +396,8 @@ describe("toolroll release", () => {
       expect(pending.s.calls).not.toContain("merge");
 
       const failed = world();
-      failed.s.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "failure" }]);
+      // Failing only after the gate's early look, so it's the ci step that stops.
+      failed.s.onSleep.push(state => { if (state.gate.result !== null) state.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "failure" }]); });
       expect(await runRelease(options(stateDir()), failed.adapters)).toMatchObject({ ok: false, step: "ci", reason: "ci-failed", message: expect.stringContaining("Nothing was merged") });
       expect(failed.s.calls).toEqual(["fileGate", "complete", "deploy", "switchLinks"]);
     });
@@ -398,6 +432,75 @@ describe("toolroll release", () => {
       for (const mutation of MUTATIONS) expect(s.calls.filter(one => one === mutation), mutation).toHaveLength(1);
     });
 
+    // The gate's early look, before anyone is asked to approve: only an already failed required check stops there.
+    const NOT_FINISHED = "not finished yet", UNREADABLE = "Couldn't read the pull request checks";
+    const failing = (conclusion: string) => [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "completed" as const, conclusion }];
+    const early: [string, (w: ReturnType<typeof world>) => void, { stop: string | null; line: string | null }][] = [
+      ["a failed required check stops before filing or approval", w => { w.s.checks.set(SHA, failing("failure")); }, { stop: "ci-failed", line: null }],
+      ["a cancelled required check stops before filing or approval", w => { w.s.checks.set(SHA, failing("cancelled")); }, { stop: "ci-failed", line: null }],
+      ["checks not started are named, waited for, and go on once they pass", w => {
+        w.s.checks.set(SHA, passing(REQUIRED_PR_CHECKS.slice(0, 2)));
+        w.s.onSleep.push(state => { if (state.checks.get(SHA)!.length < REQUIRED_PR_CHECKS.length) state.checks.set(SHA, passing(REQUIRED_PR_CHECKS)); });
+      }, { stop: null, line: `${REQUIRED_PR_CHECKS[2]} (not started)` }],
+      ["a check that fails while the gate waits stops it", w => {
+        w.s.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "in_progress", conclusion: null }]);
+        w.s.onSleep.push(state => { if (state.gate.result === null && state.calls.length === 0) state.checks.set(SHA, failing("failure")); });
+      }, { stop: "ci-failed", line: `${REQUIRED_PR_CHECKS[0]} (in_progress)` }],
+      ["checks that never start stop at the gate's limit, named", w => { w.s.checks.set(SHA, passing(REQUIRED_PR_CHECKS.slice(1))); }, { stop: "ci-missing", line: `${REQUIRED_PR_CHECKS[0]} (not started)` }],
+      ["unreadable checks are waited out, never taken for a pass", w => {
+        const checks = w.adapters.github.checks;
+        let first = true;
+        w.adapters.github.checks = async (repo, sha) => { if (first) { first = false; throw new Error("HTTP 502"); } return checks(repo, sha); };
+      }, { stop: null, line: UNREADABLE }],
+      ["passed checks continue", () => {}, { stop: null, line: null }],
+    ];
+    test.each(early)("at the gate, %s", async (_what, setup, { stop, line }) => {
+      const dir = stateDir();
+      const w = world();
+      w.s.gateSeesChecks = true;
+      setup(w);
+      const outcome = await runRelease(options(dir, { limits: { gate: 1 } }), w.adapters);
+      const said = w.s.said.join("\n");
+      if (line !== null) expect(said).toContain(line);
+      if (stop !== null) {
+        // A red or unfinished pull request never reaches the approval step: nothing filed, nobody asked.
+        expect(outcome).toMatchObject({ ok: false, step: "gate", reason: stop, message: expect.stringContaining(REQUIRED_PR_CHECKS[0]) });
+        expect(w.s.calls).toEqual([]);
+        expect(said).not.toContain("needs your approval");
+        // Once the job passes on a rerun, the same command goes on from the gate.
+        w.s.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
+        expect(await runRelease(options(dir), w.adapters)).toMatchObject({ ok: true });
+        expect(w.s.calls.filter(one => one === "fileGate")).toHaveLength(1);
+        return;
+      }
+      expect(outcome).toMatchObject({ ok: true });
+      if (line === null) for (const one of [NOT_FINISHED, UNREADABLE]) expect(said).not.toContain(one);
+    });
+
+    test("a gate whose filed task lost its answer resumes with that task even after a check failed", async () => {
+      const dir = stateDir();
+      const { s, adapters } = world({ crashAfter: "fileGate" });
+      expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "gate" });
+      s.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "failure" }]);
+      const outcome = await runRelease(options(dir), adapters);
+      expect(outcome).toMatchObject({ ok: false, step: "ci", reason: "ci-failed" });
+      expect(outcome.ok === false && outcome.message).not.toContain("Nothing was filed");
+      expect(s.calls.filter(one => one === "fileGate")).toHaveLength(1);
+    });
+
+    test("a release resumed past the gate doesn't look again before ci", async () => {
+      const dir = stateDir();
+      const { s, adapters } = world();
+      const person = s.onSleep[0]!;
+      s.onSleep = [];
+      expect(await runRelease(options(dir, { limits: { approval: 1 } }), adapters)).toMatchObject({ ok: false, step: "approval" });
+      // Failed now: only the ci step may see it.
+      s.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "failure" }]);
+      s.onSleep = [person];
+      expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "ci", reason: "ci-failed" });
+      expect(s.calls).toEqual(["fileGate", "complete", "deploy", "switchLinks"]);
+    });
+
     // Which statuses block is the table above; here one waiting and one failed status prove the re-read before merge.
     test.each([blocked[0]!, blocked[2]!])("re-fetches all checks before merge and blocks an extra check now at $status/$conclusion", async ({ status, conclusion }) => {
       const { s, adapters } = world();
@@ -406,10 +509,11 @@ describe("toolroll release", () => {
       adapters.github.checks = async (repo, sha) => {
         if (sha !== SHA) return checks(repo, sha);
         reads += 1;
-        return [...passing(REQUIRED_PR_CHECKS), ...(reads === 1 ? passing([repeat]) : [{ name: repeat, status, conclusion }])];
+        return [...passing(REQUIRED_PR_CHECKS), ...(reads <= 2 ? passing([repeat]) : [{ name: repeat, status, conclusion }])];
       };
       expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "merge", reason: "ci-failed" });
-      expect(reads).toBe(2);
+      // The gate's early look, the ci step, and the re-read at merge.
+      expect(reads).toBe(3);
       expect(s.calls).toEqual(["fileGate", "complete", "deploy", "switchLinks"]);
       expect(s.pr.state).toBe("open");
     });
