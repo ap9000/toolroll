@@ -677,6 +677,8 @@ export type BrowserAgentsView = {
   selected: BrowserAgentDetail | null;
   /** Shown when nothing is on the board. */
   empty: string | null;
+  /** The Live grid (?view=live): every running agent's live output, watching only. */
+  live?: boolean;
 };
 
 export type BrowserView = BrowserTasksView | BrowserSettingsView | BrowserTaskView | BrowserProjectsView | BrowserResultView | BrowserFlowView | BrowserAgentsView;

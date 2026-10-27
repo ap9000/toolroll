@@ -31,8 +31,8 @@ type StreamState = { s: number; parent: string | null; via?: number; open: strin
 type ReadState = { run: number; gen: string; off: number; skipping: boolean; awaiting: boolean; streams: StreamState[] };
 
 export type ChildView =
-  | { k: "child"; s: number; parent: string | null; via?: number; desc?: string }
-  | { k: "end"; s: number; ok: boolean | null }
+  | { k: "child"; s: number; at?: string; parent: string | null; via?: number; desc?: string }
+  | { k: "end"; s: number; at?: string; ok: boolean | null }
   | { k: "over" }
   /** The file stopped at its size cap: nothing more will be written. */
   | { k: "cap" }
@@ -147,6 +147,12 @@ function bootstrap(fd: number, size: number, run: number, gen: string): { state:
 }
 
 /** One line under the state: what it shows, or null when it is quarantined (`counted` says whether it counts). */
+/** A record's own time, when it is a plain ISO time (display only). */
+const stampOf = (record: Record<string, unknown>): { at?: string } => {
+  const at = record["at"];
+  return typeof at === "string" && at.length <= 40 && Number.isFinite(Date.parse(at)) ? { at } : {};
+};
+
 /** The bytes of text a record carries (its words or its output): what uncertainty about a key block runs down by. */
 function scannedText(record: Record<string, unknown>): number {
   const lines = record["k"] === "say" ? record["t"] : record["k"] === "done" ? record["out"] : undefined;
@@ -192,7 +198,7 @@ function apply(state: ReadState, text: string, commands: boolean): ChildView[] |
     if (desc !== undefined && (typeof desc !== "string" || desc.length > 200)) return null;
     state.streams.push({ s, parent: parent as string | null, ...(via === undefined ? {} : { via: via as number }), open: [], inKey: false, tail: "", ended: false, unknown: 0 });
     const shown = typeof desc === "string" ? redactLiveLines([desc])[0] : undefined;
-    return [{ k: "child", s, parent: parent as string | null, ...(via === undefined ? {} : { via: via as number }), ...(shown === undefined ? {} : { desc: shown }) }];
+    return [{ k: "child", s, ...stampOf(record), parent: parent as string | null, ...(via === undefined ? {} : { via: via as number }), ...(shown === undefined ? {} : { desc: shown }) }];
   }
   const stream = state.streams.find(one => one.s === s);
   if (stream === undefined || stream.ended) return null;
@@ -201,7 +207,7 @@ function apply(state: ReadState, text: string, commands: boolean): ChildView[] |
     if (!(ok === true || ok === false || ok === null)) return null;
     stream.ended = true;
     stream.open = [];
-    return [{ k: "end", s, ok }];
+    return [{ k: "end", s, ...stampOf(record), ok }];
   }
   // The run's own record shape, under this stream's key state, with its id as the run's own recorder writes it.
   const id = record["id"];

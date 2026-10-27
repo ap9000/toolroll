@@ -41,14 +41,14 @@ describe("reading what the writer wrote", () => {
     const first = read(1);
     expect(first).toMatchObject({ restarted: false, earlier: false, quarantined: 0, more: false });
     expect(first.records).toEqual([
-      { k: "child", s: 1, parent: "s1", desc: "Fix the login bug" },
+      { k: "child", s: 1, at, parent: "s1", desc: "Fix the login bug" },
       { k: "say", at, t: ["looking"], s: 1 },
       { k: "step", at, id: "c1s1", kind: "command", s: 1 },
     ]);
     log.observe(answer("b1", "ok", "t1"));
     log.close();
     const next = read(1, first.cursor);
-    expect(next.records).toEqual([{ k: "done", at, id: "c1s1", ok: true, s: 1 }, { k: "end", s: 1, ok: null }]);
+    expect(next.records).toEqual([{ k: "done", at, id: "c1s1", ok: true, s: 1 }, { k: "end", s: 1, at, ok: null }]);
   });
 
   test("missing and unavailable say so", () => {
@@ -242,7 +242,7 @@ describe("review round 1 (Codex av4)", () => {
     file(29, [line({ k: "child", s: 1, parent: null }), ...filler, line({ k: "ckpt", dropped: 0, streams: [{ s: 1, parent: null, open: [], inKey: false }] }), line({ k: "child", s: 2, parent: null })]);
     const first = read(29);
     expect(first).toMatchObject({ records: [], earlier: true, more: true });
-    expect(read(29, first.cursor).records).toEqual([{ k: "child", s: 2, parent: null }]);
+    expect(read(29, first.cursor).records).toEqual([{ k: "child", s: 2, at, parent: null }]);
   });
 });
 

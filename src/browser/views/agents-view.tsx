@@ -16,6 +16,7 @@ import { useLiveRoom } from "../live.js";
 import { useNow, WORKSPACE_NUDGE } from "../live-task.js";
 import { Alert, PostForm } from "../ui/index.js";
 import { freshDraft, loadDraft, saveDraft, SteerControls, type SteerDraft } from "./steer-composer.js";
+import { LiveGrid } from "./agents-live-view.js";
 
 const CHIP: Record<AgentGroupKey, string> = {
   "needs-you": "bg-attention-soft text-attention",
@@ -340,13 +341,29 @@ export function AgentLanes({ lanes }: { lanes: BrowserAgentLanes }) {
   </section>;
 }
 
+/** List | Live: the board, or every running agent's output at once. */
+function ViewSwitch({ live }: { live: boolean }) {
+  return <nav aria-label="Agents view" className="flex w-fit rounded-md bg-raised p-0.5 text-[12.5px]">
+    {([["List", "/agents", !live], ["Live", "/agents?view=live", live]] as const).map(([words, href, on]) =>
+      <a key={words} href={href} aria-current={on ? "page" : undefined} className={cn("inline-flex items-center rounded px-3 py-1 text-muted-foreground hover:text-foreground phone:min-h-11", on && "bg-card text-foreground shadow-pill")}>{words}</a>)}
+  </nav>;
+}
+
 export function AgentsView({ view }: { view: BrowserAgentsView }) {
+  if (view.live === true) return <div className="flex w-full flex-col gap-4" data-agents-board>
+    <div className="flex flex-wrap items-center gap-3"><h1 className="text-[22px] font-semibold leading-tight tracking-[-0.02em]">Agents</h1><ViewSwitch live /></div>
+    <LiveGrid />
+  </div>;
+  return <AgentsBoard view={view} />;
+}
+
+function AgentsBoard({ view }: { view: BrowserAgentsView }) {
   const selected = view.selected;
   // The opened agent's own room: a change reads the page again in place; while open, this person is watching it.
   useLiveRoom(selected?.room ?? null, event => { if (event === "change" || event === "reload") window.dispatchEvent(new Event(WORKSPACE_NUDGE)); });
   return <div className={cn("w-full", selected === null ? "max-w-[860px]" : "desk:grid desk:grid-cols-[minmax(300px,400px)_minmax(0,1fr)] desk:items-start desk:gap-6")} data-agents-board>
     <div className={cn("flex min-w-0 flex-col gap-4", selected !== null && "phone:hidden")}>
-      <h1 className="text-[22px] font-semibold leading-tight tracking-[-0.02em]">Agents</h1>
+      <div className="flex flex-wrap items-center gap-3"><h1 className="text-[22px] font-semibold leading-tight tracking-[-0.02em]">Agents</h1>{selected === null && <ViewSwitch live={false} />}</div>
       {selected === null && view.lanes && <AgentLanes lanes={view.lanes} />}
       <Board view={view} selected={selected?.runId ?? null} />
     </div>

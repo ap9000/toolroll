@@ -527,6 +527,11 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         };
       }
     }
+    // The Live grid is drawn in the browser from its own read-only reads (agents-live-view.tsx): no board facts here.
+    if (watching) {
+      const view: BrowserAgentsView = { kind: "agents", groups: [], selected: null, lanes: null, empty: null, live: true };
+      return sendScreen(response, 200, screen("Agents", html`<h1>Agents</h1><p class="meta">Live needs JavaScript.</p>`, { chrome: chromeFor(project, "runs"), workspace: { view } }));
+    }
     const groups = agentsBoardOf(store, now, access, who.name, evidenceRoot);
     const lanes = selected === null ? agentLanesOf(store, now, access, who.name, laneWindowOf(url.searchParams.get("window"))) : null;
     const view: BrowserAgentsView = { kind: "agents", groups, selected, lanes,
