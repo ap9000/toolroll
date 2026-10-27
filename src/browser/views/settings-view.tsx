@@ -486,7 +486,7 @@ export function SettingsView({ view, csrf }: { view: BrowserSettingsView; csrf: 
         <Frame>
           <FrameHeader><h2 id={`settings-${slug(group.title)}`} className="text-sm font-semibold">{group.title}</h2></FrameHeader>
           <div className="grid grid-cols-2 gap-1 desk:grid-cols-4">
-            {group.tiles.map(tile => <FramePanel key={tile.href} asChild><a href={tile.href} className="flex min-h-12 items-center gap-2.5 px-3 py-2 text-sm font-semibold phone:min-h-11 phone:gap-2 phone:px-2.5 transition-colors hover:bg-accent [&>svg]:size-[18px] [&>svg]:shrink-0 [&>svg]:text-primary">
+            {group.tiles.map(tile => <FramePanel key={tile.href} asChild className="flex min-h-12 items-center gap-2.5 px-3 py-2 text-sm font-semibold phone:min-h-11 phone:gap-2 phone:px-2.5 transition-colors hover:bg-accent [&>svg]:size-[18px] [&>svg]:shrink-0 [&>svg]:text-primary"><a href={tile.href}>
               {tile.brand === undefined ? TILE_ICONS[tile.href] : <BrandIcon id={tile.brand} />}
               <span className="grid min-w-0 gap-0.5">{tile.label}
                 {tile.status && <span className="flex items-center gap-1.5 text-body text-muted-foreground"><StatusDot tone={tile.status.tone} />{tile.status.words}</span>}</span></a></FramePanel>)}

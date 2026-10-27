@@ -33,6 +33,6 @@
 [data-view] { font-family: var(--font-sans); color: var(--so-ink); }
 
 /* "Needs you" text on the amber wash: the warning token alone reads 4.21:1 on
- * its wash in light, so the chip's words lean 15% toward ink (5.2:1 light,
+ * its wash in light, so the chip's words lean 15% toward ink (5.3:1 light,
  * over 9:1 dark). The dot and the outline stay pure --so-warning. */
 @utility text-needs { color: color-mix(in oklab, var(--so-warning) 85%, var(--so-ink)); }

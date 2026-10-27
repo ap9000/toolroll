@@ -479,7 +479,8 @@ const primaryActionNow = (): HTMLElement | null =>
  * around it) and puts the cursor where it starts (its password, when it asks for one); it never acts by itself.
  * The button is found again after every render, so a live update that swaps it (Retry appearing, a new approval)
  * is followed. */
-function PinnedAction({ waiting }: { waiting: boolean }) {
+function PinnedAction({ headline }: { headline: "Needs you" | "Failed" | null }) {
+  const waiting = headline !== null;
   const [action, setAction] = useState<{ element: HTMLElement; label: string } | null>(null);
   const [hidden, setHidden] = useState(true);
   const tracked = useRef<{ element: HTMLElement | null; label: string; observer: IntersectionObserver | null }>({ element: null, label: "", observer: null });
@@ -507,7 +508,7 @@ function PinnedAction({ waiting }: { waiting: boolean }) {
   };
   return <div data-pinned-action role="region" aria-label="What this task needs from you"
     className="sticky bottom-0 z-20 -mx-1 mt-2 flex items-center gap-3 rounded-lg border border-border bg-card px-4 py-3 shadow-lg phone:-mx-4 phone:rounded-none phone:border-x-0 phone:border-b-0 phone:pb-[max(12px,var(--safe-bottom))]">
-    <span className="flex min-w-0 flex-1 items-center"><Badge tone="needs" size="chip" dot>Needs you</Badge></span>
+    <span className="flex min-w-0 flex-1 items-center">{headline === "Failed" ? <Badge tone="danger" size="chip" dot>Failed</Badge> : <Badge tone="needs" size="chip" dot>Needs you</Badge>}</span>
     <Button type="button" variant="attention" onClick={reach} className="shrink-0">{action.label}<ArrowRight /></Button>
   </div>;
 }
@@ -616,6 +617,6 @@ export function TaskView({ view, chat = null, details = true, csrf = "", result 
 
     {details && <div className="border-t border-border pt-2"><TaskDetails view={view} /></div>}
 
-    <PinnedAction waiting={view.status?.status.headline === "Needs you" || view.status?.status.headline === "Failed"} />
+    <PinnedAction headline={view.status?.status.headline === "Needs you" || view.status?.status.headline === "Failed" ? view.status.status.headline : null} />
   </div>;
 }

@@ -46,7 +46,7 @@ No new npm dependency in any slice. Anything that would need one stops and asks 
 - **Amber contrast fix:** the existing warning text on its soft wash measures **4.21:1** (`#ab6400` on `#fff4d5`),
   which fails AA for 11.5px text.
   - The amber chip's text is therefore `color-mix(in oklab, var(--so-warning) 85%, var(--so-ink))`. That gives
-    5.21:1 in light. In dark, `#ffca16` mixed toward light ink on the 12% wash is above 9:1.
+    5.27:1 in light. In dark, `#ffca16` mixed toward light ink on the 12% wash is above 9:1.
   - The dot and the 1px outline stay pure `--so-warning`. The outline is non-text, needs 3:1, and gets 4.61:1 on
     paper.
   - It is defined once, as a Tailwind `@utility text-needs` in `tailwind.css` and as the server twin's `.chip-needs`.

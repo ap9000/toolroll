@@ -441,7 +441,7 @@ Signal is flat by construction. Depth comes from three layers of material rather
 
 The corners nest: the further in a surface sits, the smaller its radius. Sheets, dialogs, the composer, user chat bubbles and segmented tab tracks are 12px. Cards, dropdown menus and the slash menu are 10px. Buttons, inputs, nav pills, alerts, notices and active tab triggers are 8px. Menu items and small source chips are 6px. Badges are 5px. Counts are full pills (9999px) so a number can never be mistaken for a state badge. Status dots are circles: 6px for the live dot, 8px in lists and menus, 10px on a status card.
 
-Borders are always 1px. Hairline is used for separation and cards, control line for field boundaries, and a status hue at reduced strength only on a failed card (vermilion at 50%) or the Cancel fold (vermilion at 30%). A coloured left stripe is never used as an accent. Callouts are a soft fill with a full hairline or no border at all.
+Borders are always 1px. Hairline is used for separation and cards, control line for field boundaries, and a status hue only on a failed card (vermilion at 50%), the Cancel fold (vermilion at 30%), or a card that waits on a person (amber at full strength, the whole edge). A coloured left stripe is never used as an accent. Callouts are a soft fill with a full hairline or no border at all.
 
 The brand mark is three 3.5px bars skewed −10°, with the middle bar taller (20px against 13px), filled in the ink accent. It sits beside a 13.5px / 600 wordmark with −0.02em tracking.
 
