@@ -175,7 +175,7 @@ rewritten, as above.
 **Tests:** `src/server/live-board.test.ts`, the board and queue cases in the `serve.*` tests that exist, and the
 board proof script if it covers this view.
 
-### 4. Server settings pages and Knowledge, about 380 lines; splits into 4a (Knowledge) and 4b (Models, Skills, Tools) if over budget
+### 4. Server settings pages and Knowledge (4a Knowledge shipped; 4b Models, Skills and Tools deferred until a page has two sections worth framing), about 380 lines; splits into 4a (Knowledge) and 4b (Models, Skills, Tools) if over budget
 
 **Knowledge** (`src/knowledge-ui.ts` and `src/server/settings.ts`): every section becomes a Frame. The sections
 are Project, Search project memory, Proposed from sessions, Instructions, References, Decisions, Change history,
