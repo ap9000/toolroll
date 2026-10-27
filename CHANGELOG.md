@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.9.74 — 2026-10-27
+
+- **Agents → Live: every agent and subagent at a glance.** A read-only grid
+  of everything running, on desktop and phone: what each agent is doing
+  right now, how long it has run and its latest lines. Subagents get their
+  own tiles nested under their parent; they appear when they start and show
+  Done for 30 seconds before leaving. A quiet agent reads **Needs you** with
+  a thin amber outline. Click a tile's title to open it full screen (Escape
+  brings you back). Your own lead chats show as lead tiles. Nothing on the
+  page acts, and the grid holds still while you look at it. Terminals you
+  drive yourself stay off the grid; one line links to Live terminals. Only a
+  signed-in browser can read it: tokens are refused.
+- **Visiting a page starts nothing.** Opening Chat, a task, a result or a
+  project shows the page with a ready composer; your first message starts
+  the conversation. A retry or double submit lands in the conversation it
+  started. Link previews and prefetches can't start one.
+- **A cleaner console.** One status chip everywhere, framed panels on the
+  Board, Settings, Knowledge and Projects, and a road on every task (Plan →
+  You approve → Build → Checks → Ready) built only from what happened.
+  Attempts show as a timeline and warnings as plain notices. Amber now means
+  only "waits on you". Built from ReUI's free, MIT-licensed components
+  (credited in THIRD_PARTY_NOTICES.md).
+- **The old task list is retired.** `/tasks` now opens Work, which gained a
+  state filter (`/work?state=`), templates (`/tasks/new?template=`) and keeps
+  your draft when a filing is refused.
+- **Rerunning a failed release check keeps your approval.**
+  `toolroll task regate` queues the same approved commit again instead of
+  re-filing it, and `toolroll release` waits for the rerun and uses it. A
+  changed commit, scope or approval still refuses.
+- Database: schema v136 (each run's "Show commands" answer is kept for the
+  live view).
+
 ## 0.9.73 — 2026-10-25
 
 - **Carry release approvals when checks aren't sandboxed.** A project whose
