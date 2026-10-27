@@ -6,7 +6,7 @@ import type { ComponentProps, ReactNode } from "react";
 import { cn } from "./utils.js";
 
 export function Timeline({ className, ...props }: ComponentProps<"ol">) {
-  return <ol data-slot="timeline" className={cn("flex flex-col", className)} {...props} />;
+  return <ol role="list" data-slot="timeline" className={cn("flex flex-col", className)} {...props} />;
 }
 
 /** One entry: the indicator column, the rail down to the next entry (none after the last), then the content. */
