@@ -308,3 +308,46 @@ test("r2 #7 keep(): a file that left the streamed set stops being retried", asyn
   expect(calls.length).toBe(before);
   scheduler.dispose();
 });
+
+// ---- slice 7: full screen --------------------------------------------------------------------------------------------
+
+test("a tile opens full screen (?run=), keeps 2,000 lines, opens every subagent, links to its task; Escape returns to the tile", async () => {
+  tiles = [tile(4, { taskId: "t-4" })];
+  sub[4] = [{ k: "child", s: 1, at: iso(50), desc: "helper one" }, { k: "child", s: 2, at: iso(40), desc: "helper two" }];
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    const json = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
+    if (url === "/agents/live") return json({ tiles });
+    if (url.includes("file=main")) return json({ records: Array.from({ length: 900 }, (_, i) => ({ k: "say", t: [`line ${i}`] })), more: false });
+    return json({ records: sub[4], more: false });
+  }));
+  history.replaceState(null, "", "/agents?view=live");
+  await act(async () => { root = createRoot(host); root.render(createElement(AgentsView, { view })); });
+  await flush();
+  const opener = host.querySelector('[data-live-open="4"]') as HTMLButtonElement;
+  await act(async () => { opener.click(); });
+  await flush();
+  expect(location.search).toBe("?view=live&run=4");
+  const dialog = host.querySelector('[role="dialog"]')!;
+  expect(document.activeElement?.textContent).toBe("Close");
+  expect(dialog.querySelector('a[href="/t/t-4"]')?.textContent).toBe("Open task");
+  expect(dialog.querySelectorAll("[data-live-child]").length).toBe(2);
+  expect(dialog.querySelectorAll("form, textarea").length).toBe(0);
+  // The open agent keeps more than a tile does (2,000): a fresh read of it keeps all 900 lines.
+  await act(async () => { Events.latest!.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ room: "agents-live", at: "r" }) })); });
+  await flush();
+  expect(host.querySelector('[role="dialog"] [data-live-lines]')?.textContent).toContain("line 0\n");
+  await act(async () => { dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+  expect(host.querySelector('[role="dialog"]')).toBeNull();
+  expect(location.search).toBe("?view=live");
+  expect(document.activeElement).toBe(host.querySelector('[data-live-open="4"]'));
+});
+
+test("reloading ?view=live&run= opens that agent straight away", async () => {
+  tiles = [tile(5, { taskId: "t-5", title: "Reloaded one" })];
+  history.replaceState(null, "", "/agents?view=live&run=5");
+  await act(async () => { root = createRoot(host); root.render(createElement(AgentsView, { view })); });
+  await flush();
+  expect(host.querySelector('[role="dialog"] #live-full-title')?.textContent).toBe("Reloaded one");
+  history.replaceState(null, "", "/agents?view=live");
+});

@@ -9,7 +9,7 @@ import { useLiveRoom } from "../live.js";
 import { useNow } from "../live-task.js";
 import { elapsedWords } from "./agents-view.js";
 
-type Tile = { runId: number; role: string; title: string; project: string | null; agent: string; model: string | null; startedAt: string; endedAt: string | null;
+type Tile = { runId: number; role: string; taskId: string; title: string; project: string | null; agent: string; model: string | null; startedAt: string; endedAt: string | null;
   state: "working" | "needs-you" | "done" | "failed" | "stopped" | "parked"; why: "quiet" | "question" | null; quietSince: string | null; local: boolean; parentRun: number | null };
 type Wire = { k: string; at?: string; s?: number; t?: string[]; id?: string; kind?: string; target?: string; once?: boolean; ok?: boolean | null; out?: string[]; parent?: string | null; via?: number; desc?: string };
 type FileState = "loading" | "ready" | "off" | "unavailable" | "error";
@@ -21,6 +21,8 @@ export type Stream = { main: Feed; children: Map<number, Child>; mainState: File
   subRestarted: boolean; over: boolean };
 export type Answer = { records?: Wire[]; error?: string; earlier?: boolean; restarted?: boolean };
 
+/** A tile keeps its last 200 lines; the agent open full screen keeps 2,000. */
+export const FULL_LINES = 2_000;
 export const KEEP_LINES = 200, STREAMED = 24, MAX_READS = 4, READ_DEADLINE_MS = 10_000, CHILD_DONE_MS = 30_000, MAX_BACKOFF_MS = 30_000;
 const STATE_WORDS: Record<Tile["state"], string> = { working: "Working", "needs-you": "Needs you", done: "Done", failed: "Failed", stopped: "Stopped", parked: "Parked" };
 const STEP_WORDS: Record<string, string> = { edit: "Editing", command: "Running", read: "Reading", search: "Searching for", lookup: "Looking up", plan: "Planning", delegate: "Handing off", tool: "Using a tool", session: "Starting", message: "" };
@@ -29,7 +31,7 @@ const NO_TARGET: Record<string, string> = { command: "Running a command", edit: 
 const stepLine = (one: Wire): string => one.target ? `${STEP_WORDS[one.kind ?? "tool"] ?? "Working"} ${one.target}` : NO_TARGET[one.kind ?? ""] ?? STEP_WORDS[one.kind ?? "tool"] ?? "Working";
 const emptyFeed = (): Feed => ({ lines: [], open: [] });
 /** One stream's record, folded into its feed: words, steps (a one-off step opens nothing), closes by id, output. */
-function fold(feed: Feed, one: Wire): Feed {
+function fold(feed: Feed, one: Wire, keep: number): Feed {
   const lines = [...feed.lines];
   let open = feed.open;
   if (one.k === "say") lines.push(...(one.t ?? []));
@@ -38,7 +40,7 @@ function fold(feed: Feed, one: Wire): Feed {
   else if (one.k === "start") lines.push("The agent session started.");
   else if (one.k === "cut") lines.push("A line was too long to show.");
   else if (one.k === "cap") lines.push("Output stopped at its size limit.");
-  return { lines: lines.slice(-KEEP_LINES), open };
+  return { lines: lines.slice(-keep), open };
 }
 const stepNow = (feed: Feed): string | null => feed.open.at(-1)?.[1] ?? null;
 
@@ -46,7 +48,7 @@ export const EMPTY: Stream = { main: emptyFeed(), children: new Map(), mainState
 const stampOf = (at: string | undefined) => at !== undefined && Number.isFinite(Date.parse(at)) ? Date.parse(at) : Date.now();
 
 /** A window's records into a run's stream: the run's own (main) or its subagents' (sub). A restart starts that file over. */
-export function applyWindow(stream: Stream, file: "main" | "sub", answer: Answer): Stream {
+export function applyWindow(stream: Stream, file: "main" | "sub", answer: Answer, keep = KEEP_LINES): Stream {
   if (answer.error !== undefined) {
     // "missing": nothing written yet (no subagents, or not started) — not a problem; "retry": the reader is trying again.
     if (answer.error === "missing") return file === "main" ? { ...stream, mainState: "ready" } : { ...stream, subState: "ready" };
@@ -58,7 +60,7 @@ export function applyWindow(stream: Stream, file: "main" | "sub", answer: Answer
   const children = file === "sub" && restarted ? new Map<number, Child>() : new Map(stream.children);
   let over = stream.over && !(file === "sub" && restarted);
   for (const one of answer.records ?? []) {
-    if (file === "main") { if (one.s === undefined) main = fold(main, one); continue; }
+    if (file === "main") { if (one.s === undefined) main = fold(main, one, keep); continue; }
     if (one.k === "over") { over = true; continue; }
     if (one.s === undefined) continue;
     if (one.k === "child") {
@@ -69,7 +71,7 @@ export function applyWindow(stream: Stream, file: "main" | "sub", answer: Answer
     if (child === undefined) continue;
     // An end with no time (read from a checkpoint) is long past: it never shows as just finished.
     if (one.k === "end") children.set(one.s, { ...child, open: [], endedAt: one.at === undefined ? 0 : Math.max(stampOf(one.at), child.startedAt), ok: one.ok ?? null });
-    else children.set(one.s, { ...child, ...fold(child, one) });
+    else children.set(one.s, { ...child, ...fold(child, one, keep) });
   }
   return { ...stream, main, children, over, earlier: stream.earlier || answer.earlier === true, restarted: stream.restarted || restarted,
     subRestarted: file === "sub" ? stream.subRestarted || restarted : stream.subRestarted,
@@ -161,7 +163,7 @@ function Chip({ fill, dot, children }: { fill: string; dot: string; children: st
 
 /** The log as a sunken well: mono 12px, as tall as its lines up to a cap, scrollable through what is kept; it follows the
  * newest line until the person scrolls up, then waits, with "Jump to latest". The top fades only when lines are hidden. */
-function Lines({ lines, short }: { lines: string[]; short: boolean }) {
+function Lines({ lines, short, tall = false }: { lines: string[]; short: boolean; tall?: boolean }) {
   const box = useRef<HTMLDivElement>(null);
   const [following, setFollowing] = useState(true);
   const [hiddenAbove, setHiddenAbove] = useState(false);
@@ -178,7 +180,7 @@ function Lines({ lines, short }: { lines: string[]; short: boolean }) {
       setFollowing(node.scrollHeight - node.scrollTop - node.clientHeight < 4);
       setHiddenAbove(node.scrollTop > 1);
     }} className={cn("overflow-y-auto overscroll-contain rounded-md border border-border bg-code-bg px-2.5 py-2",
-      short ? "max-h-[calc(4*1.5*12px+1rem)]" : "max-h-[calc(12*1.5*12px+1rem)] phone:max-h-[calc(4*1.5*12px+1rem)]")}>
+      tall ? "max-h-[60vh]" : short ? "max-h-[calc(4*1.5*12px+1rem)]" : "max-h-[calc(12*1.5*12px+1rem)] phone:max-h-[calc(4*1.5*12px+1rem)]")}>
       <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-[1.5] text-foreground" data-live-lines>{lines.join("\n")}</pre>
     </div>
     {hiddenAbove && <span aria-hidden="true" className="pointer-events-none absolute inset-x-px top-px h-6 rounded-t-md bg-[linear-gradient(to_bottom,var(--so-code-bg)_30%,transparent)]" />}
@@ -226,8 +228,8 @@ function Output({ tile, stream, streamed, showLive }: { tile: Tile; stream: Stre
   </>;
 }
 
-function LiveTile({ tile, stream, streamed, now, repairs, streams, streamedIds, showLive }: { tile: Tile; stream: Stream; streamed: boolean; now: number;
-  repairs: Tile[]; streams: Map<number, Stream>; streamedIds: Set<number>; showLive: (run: number) => void }) {
+function LiveTile({ tile, stream, streamed, now, repairs, streams, streamedIds, showLive, openRun }: { tile: Tile; stream: Stream; streamed: boolean; now: number;
+  repairs: Tile[]; streams: Map<number, Stream>; streamedIds: Set<number>; showLive: (run: number) => void; openRun: (run: number) => void }) {
   const needsYou = tile.state === "needs-you";
   // What it is doing right now; nothing rather than the chip's word again.
   const line = tile.why === "quiet" && tile.quietSince !== null ? `Quiet for ${elapsedWords(tile.quietSince, now)}` : tile.why === "question" ? "Asked a question" : tile.endedAt === null ? stepNow(stream.main) ?? "" : "";
@@ -239,7 +241,10 @@ function LiveTile({ tile, stream, streamed, now, repairs, streams, streamedIds, 
     <article className={cn("flex min-w-0 flex-col gap-2.5 rounded-card border bg-card p-3.5", needsYou ? NEEDS_TILE : "border-border")}>
       <header className="flex flex-col gap-1">
         <div className="flex items-start gap-2">
-          <h2 className="line-clamp-2 min-w-0 flex-1 text-[15px] font-semibold leading-[1.3]" title={tile.title}>{tile.title}</h2>
+          <h2 className="line-clamp-2 min-w-0 flex-1 text-[15px] font-semibold leading-[1.3]" title={tile.title}>
+            {/* Opens this agent full screen inside Live (watching only: no seen mark, no watch). */}
+            <button type="button" data-live-open={tile.runId} onClick={() => openRun(tile.runId)} className="text-left hover:underline hover:underline-offset-4 phone:min-h-11">{tile.title}</button>
+          </h2>
           <Chip fill={key === "needs" ? NEEDS_FILL : FILL[key] ?? FILL.working!} dot={key === "needs" ? NEEDS_DOT : DOT[key] ?? DOT.working!}>{STATE_WORDS[tile.state]}</Chip>
         </div>
         <p className="truncate font-mono text-[11px] text-muted-foreground" title={meta}>{meta}</p>
@@ -249,10 +254,44 @@ function LiveTile({ tile, stream, streamed, now, repairs, streams, streamedIds, 
       <Output tile={tile} stream={stream} streamed={streamed} showLive={() => showLive(tile.runId)} />
     </article>
     {repairs.length > 0 && <ul aria-label={`Repairs of ${tile.title}`} className="ml-4 flex flex-col gap-2">
-      {repairs.map(repair => <LiveTile key={repair.runId} tile={repair} stream={streams.get(repair.runId) ?? EMPTY} streamed={streamedIds.has(repair.runId)} now={now} repairs={[]} streams={streams} streamedIds={streamedIds} showLive={showLive} />)}</ul>}
+      {repairs.map(repair => <LiveTile key={repair.runId} tile={repair} stream={streams.get(repair.runId) ?? EMPTY} streamed={streamedIds.has(repair.runId)} now={now} repairs={[]} streams={streams} streamedIds={streamedIds} showLive={showLive} openRun={openRun} />)}</ul>}
     {top.length > 0 && <ul aria-label={`Subagents of ${tile.title}`} className="ml-4 flex flex-col">
       {top.map((child, index) => <ChildTile key={child.s} child={child} all={children} now={now} last={index === top.length - 1} />)}</ul>}
   </li>;
+}
+
+/** One agent full screen (a sheet on a phone): the same facts, every kept line, every subagent open, and "Open task".
+ * Escape or Close returns to the tile it came from. Watching only: nothing here acts. */
+function FullScreen({ tile, stream, now, onClose }: { tile: Tile | null; stream: Stream; now: number; onClose: () => void }) {
+  const close = useRef<HTMLButtonElement>(null);
+  useEffect(() => { close.current?.focus(); }, []);
+  const children = [...stream.children.values()].sort((a, b) => a.s - b.s);
+  const top = children.filter(child => child.via === undefined || !children.some(one => one.s === child.via));
+  return <div className="fixed inset-0 z-50 flex bg-scrim desk:p-6 phone:items-end" data-live-full onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } }}>
+    <div role="dialog" aria-modal="true" aria-labelledby="live-full-title" className="mx-auto flex h-fit max-h-full w-full max-w-[1100px] flex-col gap-3 overflow-y-auto border border-border bg-card p-5 desk:rounded-card phone:max-h-[calc(100%-2rem)] phone:rounded-t-card phone:p-4">
+      <header className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <h2 id="live-full-title" className="text-[18px] font-semibold leading-[1.3]">{tile?.title ?? "This agent isn't on the grid anymore"}</h2>
+          {tile !== null && <p className="truncate font-mono text-[11px] text-muted-foreground">{[tile.project?.split("/").pop(), tile.role, tile.agent, tile.model].filter(Boolean).join(" · ")}</p>}
+        </div>
+        {tile !== null && <Chip fill={tile.state === "needs-you" ? NEEDS_FILL : FILL[tile.state] ?? FILL.working!} dot={tile.state === "needs-you" ? NEEDS_DOT : DOT[tile.state] ?? DOT.working!}>{STATE_WORDS[tile.state]}</Chip>}
+        <button ref={close} type="button" onClick={onClose} className="shrink-0 rounded-sm border border-border px-2.5 py-1 text-[12.5px] phone:min-h-11">Close</button>
+      </header>
+      {tile !== null && <>
+        <p className="flex items-center gap-3 text-[13px]">
+          <span className="min-w-0 flex-1 truncate">{tile.why === "quiet" && tile.quietSince !== null ? `Quiet for ${elapsedWords(tile.quietSince, now)}` : tile.why === "question" ? "Asked a question" : tile.endedAt === null ? stepNow(stream.main) ?? "" : ""}</span>
+          <span className="shrink-0 text-[12px] tabular-nums text-muted-foreground">{elapsedWords(tile.startedAt, tile.endedAt === null ? now : Date.parse(tile.endedAt))}</span>
+          <a href={`/t/${encodeURIComponent(tile.taskId)}`} className="shrink-0 text-[12.5px] underline decoration-border underline-offset-4 hover:decoration-current phone:inline-flex phone:min-h-11 phone:items-center">Open task</a>
+        </p>
+        {stream.earlier && <p className="text-[11.5px] text-muted-foreground">Earlier output isn't shown.</p>}
+        <Lines lines={stream.main.lines} short={false} tall />
+        {top.length > 0 && <section aria-label="Subagents" className="flex flex-col gap-2">
+          <h3 className="text-[13px] font-semibold">Subagents <span className="font-normal tabular-nums text-muted-foreground">{children.length}</span></h3>
+          <ul className="flex flex-col">{top.map((child, index) => <ChildTile key={child.s} child={child} all={children} now={now} last={index === top.length - 1} />)}</ul>
+        </section>}
+      </>}
+    </div>
+  </div>;
 }
 
 /** The headline (youiyoux's): one sentence that carries the counts. */
@@ -275,13 +314,18 @@ export function LiveGrid() {
   const [holding, setHolding] = useState(false);
   const now = useNow(1_000);
   const scheduler = useRef<Scheduler | null>(null);
+  // The agent open full screen (?view=live&run=…, so back and reload work).
+  const runOf = () => { const run = Number(new URLSearchParams(location.search).get("run")); return Number.isSafeInteger(run) && run > 0 ? run : null; };
+  const [openRunId, setOpenRunId] = useState<number | null>(runOf);
+  const openRef = useRef<number | null>(openRunId);
+  openRef.current = openRunId;
   const streamedIdsRef = useRef<Set<number>>(new Set());
   const grid = useRef<HTMLUListElement>(null);
   const generation = useRef(0);
   useEffect(() => {
     const created = createScheduler((key, answer) => {
       const [run, file] = key.split(":") as [string, "main" | "sub"];
-      setStreams(previous => new Map(previous).set(Number(run), applyWindow(previous.get(Number(run)) ?? EMPTY, file, answer)));
+      setStreams(previous => new Map(previous).set(Number(run), applyWindow(previous.get(Number(run)) ?? EMPTY, file, answer, Number(run) === openRef.current ? FULL_LINES : KEEP_LINES)));
     });
     scheduler.current = created;
     return () => { created.dispose(); scheduler.current = null; };
@@ -298,6 +342,24 @@ export function LiveGrid() {
     scheduler.current?.want(keys);
   }, [streamedKey]);
   streamedIdsRef.current = streamedIds;
+  useEffect(() => {
+    const moved = () => setOpenRunId(runOf());
+    window.addEventListener("popstate", moved);
+    return () => window.removeEventListener("popstate", moved);
+  }, []);
+  const openRun = (run: number) => {
+    history.pushState({ liveRun: run }, "", `/agents?view=live&run=${run}`);
+    setOpenRunId(run);
+    if (!streamedIdsRef.current.has(run)) showLive(run);
+  };
+  const closeRun = () => {
+    const run = openRef.current;
+    if ((history.state as { liveRun?: number } | null)?.liveRun === run) history.back();
+    else history.replaceState(null, "", "/agents?view=live");
+    setOpenRunId(null);
+    // Back to the tile it came from.
+    requestAnimationFrame(() => (document.querySelector(`[data-live-open="${run}"]`) as HTMLElement | null)?.focus());
+  };
   const showLive = (run: number) => setPinned(previous => [run, ...previous.filter(one => one !== run)].slice(0, STREAMED));
   const refresh = useCallback(() => {
     const mine = ++generation.current;
@@ -371,8 +433,9 @@ export function LiveGrid() {
           onPointerEnter={() => hold(true, null)} onPointerLeave={() => hold(false, null)}
           onFocus={() => hold(null, true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) hold(null, false); }}>
         {parents.map(tile => <LiveTile key={tile.runId} tile={tile} stream={streams.get(tile.runId) ?? EMPTY} streamed={streamedIds.has(tile.runId)} now={now}
-          repairs={repairsOf(tile.runId)} streams={streams} streamedIds={streamedIds} showLive={showLive} />)}
+          repairs={repairsOf(tile.runId)} streams={streams} streamedIds={streamedIds} showLive={showLive} openRun={openRun} />)}
       </ul>}
+    {openRunId !== null && <FullScreen tile={[...tiles, ...shown].find(tile => tile.runId === openRunId) ?? null} stream={streams.get(openRunId) ?? EMPTY} now={now} onClose={closeRun} />}
     {terminals > 0 && <p className="border-t border-border pt-3 text-[12px] text-muted-foreground">
       <a href="/term" className="inline-block underline decoration-border underline-offset-4 hover:text-foreground hover:decoration-current phone:min-h-11 phone:py-3"><span className="tabular-nums">{terminals}</span> {terminals === 1 ? "terminal" : "terminals"} you're driving</a></p>}
   </section>;
