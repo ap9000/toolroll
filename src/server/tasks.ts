@@ -92,7 +92,7 @@ import type { ServerRuntime } from './runtime.js';
 import { requestContext } from "./request-context.js";
 import { boardTickScript,oneLineOf,QUEUE_VIEW,refuse,regionScript,screen,transcriptScript,whenTime } from "./chrome.js";
 import { chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
-import { boardBody,boardWorkers,donePage,inboxFingerprints,inboxPage,newTaskPage,nextPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,tasksPage,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
+import { type TaskComposerPrefill,boardBody,boardWorkers,donePage,inboxFingerprints,inboxPage,newTaskPage,nextPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,tasksPage,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
 import { runEfficiencyOf } from "../run-efficiency.js";
 import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQueue,RESULT_REFUSALS,REVIEW_QUEUE_CAP,reviewCockpitDetailParts,reviewCockpitPage,reviewPriorityOf,runFactsFragment,runOutcomeBadge,runPage,RUNS_PAGE,runsPage,withRefusal,type CompletedWorkRow,type RankedReviewRow,type ReviewCockpitView } from "./render-results.js";
 import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,decisionPage,nonceHashOf,PermissionsWouldChange,requirementsFromEditor,resumeDigestOf,taskOf } from "./render-tasks.js";
@@ -667,15 +667,24 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     return redirect(response, QUEUE_VIEW);
   }
 
-  async function showNewTask(ctx: HandlerContext): Promise<void> {
+  /** The add page, once more: blank, from a shipped template (`?template=`, as the old task list did), or with a refused
+   * filing's own words and status (the draft keeps the project revision it was written against). */
+  function newTaskScreen(ctx: HandlerContext, status: number, problem: string | null, draft: TaskComposerPrefill | null): Promise<void> | void {
     const { who, response, project } = ctx;
-    const revision = who.via === "cookie" ? who.session.projectRevision : 0;
     const chainable = store
       .listTasksScoped(project, undefined, 100, null)
       .filter(one => one.state !== "done" && one.state !== "cancelled" && visible(one.repo))
       .map(one => ({ id: one.id, title: one.title }));
     const chrome = chromeFor(project, "tasks");
-    return sendScreen(response, 200, newTaskPage(chrome, project, revision, null, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? []));
+    const revision = draft?.values !== undefined ? undefined : who.via === "cookie" ? who.session.projectRevision : 0;
+    return sendScreen(response, status, newTaskPage(chrome, project, revision, problem, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? [], draft));
+  }
+  async function showNewTask(ctx: HandlerContext): Promise<void> {
+    const picked = (() => { const name = ctx.url.searchParams.get("template"); return name === null ? null : templateByName(name); })();
+    const prefill = picked !== null && picked.kind === "task"
+      ? { title: picked.title, goal: picked.goal, not: picked.outOfScope ?? "", touches: picked.touches.join(", "), acceptance: acceptanceToLines(picked.acceptance).join("\n") }
+      : null;
+    return newTaskScreen(ctx, 200, null, prefill);
   }
 
   async function showTask(ctx: HandlerContext): Promise<void> {
@@ -1076,11 +1085,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     // direct POST with no project open must not mint an unplaced task
     // under a ceiling. Unscoped mode keeps its historic unplaced filings.
     if (!unscopedMode && effective === "") {
-      return sendScreen(
-        response,
-        400,
-        tasksPage(chromeFor(project, "tasks"), familyTasksInView(project).slice(0, 200), null, "name a repository — no project is open, so the task must say where it belongs", project, null, store.permissionDefault().mode, store.qualityDefault().mode, store.replacements()),
-      );
+      return newTaskScreen(ctx, 400, "name a repository — no project is open, so the task must say where it belongs", null);
     }
     let repo = effective;
     let admitted: string[] | null = unscopedMode ? null : admissionList() ?? [];
@@ -1088,11 +1093,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (rootMode && effective !== "") {
       const canonical = (await authorizedProject(liveCeiling(), effective)) ? canonicalProject(effective) : null;
       if (canonical === null || canonical === undefined) {
-        return sendScreen(
-          response,
-          403,
-          tasksPage(chromeFor(project, "tasks"), familyTasksInView(project).slice(0, 200), null, `${effective} is outside what this server was configured to show`, project, null, store.permissionDefault().mode, store.qualityDefault().mode, store.replacements()),
-        );
+        return newTaskScreen(ctx, 403, `${effective} is outside what this server was configured to show`, null);
       }
       repo = canonical;
       admitted = [canonical];
@@ -1151,11 +1152,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       return filed;
     });
     if (!made.ok) {
-      return sendScreen(
-        response,
-        made.reason === "backlog-full" ? 429 : 400,
-        tasksPage(chromeFor(project, "tasks"), familyTasksInView(project).slice(0, 200), null, made.message, project, { title, goal, not: notThis, touches: body.get("touches") ?? "", acceptance: body.get("acceptance") ?? "", values: body.sent }, store.permissionDefault().mode, store.qualityDefault().mode, store.replacements()),
-      );
+      return newTaskScreen(ctx, made.reason === "backlog-full" ? 429 : 400, made.message, { title, goal, not: notThis, touches: body.get("touches") ?? "", acceptance: body.get("acceptance") ?? "", values: body.sent });
     }
     const actionContext = requestContext.getStore();
     if (actionContext !== undefined) actionContext.createdTask = made.id;

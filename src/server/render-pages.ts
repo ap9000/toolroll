@@ -1777,12 +1777,15 @@ export function queueScript(): string {
 export function newTaskPage(
   chrome: Chrome,
   project: string | null,
-  projectRevision: number,
+  /** undefined: keep the revision the refused form posted (its draft), so a project switch since still refuses. */
+  projectRevision: number | undefined,
   problem: string | null,
   candidates: { id: string; title: string }[] = [],
   permissionDefault: UnattendedPermissionMode = "auto",
   qualityDefault: QualityMode = "default",
   projects: { path: string; name: string }[] = [],
+  /** A shipped template's fields, or a refused filing's own words, back in the form. */
+  prefill: TaskComposerPrefill | null = null,
 ): Screen {
   return screen("New task", joinHtml([
     html`<section class="task-intake">`,
@@ -1791,7 +1794,8 @@ export function newTaskPage(
     problem === null ? null : html`<div class="problem">${problem}</div>`,
     taskComposerHtml({
       project,
-      projectRevision,
+      ...(projectRevision === undefined ? {} : { projectRevision }),
+      prefill,
       candidates,
       permissionDefault,
       qualityDefault,

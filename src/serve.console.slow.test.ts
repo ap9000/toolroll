@@ -380,6 +380,8 @@ describe("the operations console", () => {
         if (!/[\r\u0000]/.test(value)) expect((form.querySelector(`[name="${field}"]`) as unknown as { value: string }).value).toBe(value);
         expect(form.querySelector('[name="acceptance"]')?.textContent).toBe("c1: Works | check");
         if (path !== "/tasks/add") expect(form.querySelector('[name="budget-usd"]')?.getAttribute("value")).toBe("12");
+        // A refused filing comes back on the add page itself (the old task list is retired), its draft intact.
+        else expect(html).toContain("What should get done?");
         await window.happyDOM.close();
         expect(store.getScope("t-edit")).toEqual(original);
         expect(store.getTask("new-task")).toBeNull();
