@@ -3,12 +3,12 @@
  * last opened on the second, Open on the right. Opening stays the server's
  * POST (the session's project changes there), so every road is a form. */
 import { PostForm } from "../ui/index.js";
-import { BookOpen, FolderOpen, GitBranch, GitPullRequest, ListChecks, Plus } from "lucide-react";
+import { BookOpen, Copy, FolderOpen, GitBranch, GitPullRequest, ListChecks, Plus } from "lucide-react";
 import { threadWhen } from "./task-view.js";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { BrowserProjectRow, BrowserProjectsView } from "../../browser-workspace.js";
 import { GuardedHtml } from "../guarded-html.js";
-import { Badge, Button, badgeVariants, cn } from "../components/ui/index.js";
+import { Badge, Button, Frame, FrameHeader, FramePanel, cn } from "../components/ui/index.js";
 
 function OpenForm({ csrf, path, destination, children, className }: { csrf: string; path: string; destination: string; children: ReactNode; className?: string }) {
   return <PostForm action="/projects/open" className={cn("inline-flex", className)}>
@@ -27,6 +27,23 @@ function openedWords(iso: string): string {
   return `Opened ${words}`;
 }
 
+/** A long path kept readable on one line: its start and its end, the middle elided. The full path stays in the title
+ * and one tap copies it. */
+export function middlePath(path: string, max = 44): string {
+  if (path.length <= max) return path;
+  const tail = Math.ceil((max - 1) * 0.6);
+  return `${path.slice(0, max - 1 - tail)}…${path.slice(-tail)}`;
+}
+
+function CopyPath({ path, name }: { path: string; name: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => { void navigator.clipboard?.writeText(path).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); }, () => {}); };
+  return <button type="button" onClick={copy} aria-label={`Copy ${name}'s path`} title={copied ? "Copied" : "Copy path"}
+    className="pointer-events-auto inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground phone:size-11 phone:-my-3 [&_svg]:size-3.5">
+    <Copy aria-hidden="true" /><span className="sr-only" aria-live="polite">{copied ? "Copied" : ""}</span>
+  </button>;
+}
+
 function Row({ row, csrf, returnTo, choosing }: { row: BrowserProjectRow; csrf: string; returnTo: string; choosing: boolean }) {
   // A phone: the name and its actions on the first line, the chips across the full width, then the path.
   return <li className={cn("flex items-center gap-x-4 px-2 py-3 phone:grid phone:grid-cols-[minmax(0,1fr)_auto] phone:gap-x-2 phone:py-1.5", row.open && "bg-accent/40")} data-project={row.path}>
@@ -43,16 +60,18 @@ function Row({ row, csrf, returnTo, choosing }: { row: BrowserProjectRow; csrf: 
             </OpenForm>}
         <span className="contents phone:col-span-full phone:row-start-2 phone:flex phone:flex-wrap phone:items-center phone:gap-x-2 phone:pointer-events-none phone:gap-y-[26px] phone:pt-3.5 phone:empty:hidden">
           {row.peek?.map(chip => row.open
-            ? <a key={chip.label} href={chip.href} className="inline-flex phone:pointer-events-auto phone:-my-3 phone:py-3"><span className={badgeVariants({ tone: chip.tone })}>{chip.label}</span></a>
+            ? <a key={chip.label} href={chip.href} className="inline-flex phone:pointer-events-auto phone:-my-3 phone:py-3"><Badge size="chip" dot tone={chip.tone}>{chip.label}</Badge></a>
             : <OpenForm key={chip.label} csrf={csrf} path={row.path} destination={chip.href}>
-                <button type="submit" className="inline-flex phone:pointer-events-auto phone:-my-3 phone:py-3"><span className={badgeVariants({ tone: chip.tone })}>{chip.label}</span></button>
+                <button type="submit" className="inline-flex phone:pointer-events-auto phone:-my-3 phone:py-3"><Badge size="chip" dot tone={chip.tone}>{chip.label}</Badge></button>
               </OpenForm>)}
         </span>
       </div>
-      <p className="mt-0.5 truncate text-body text-muted-foreground phone:pointer-events-none phone:col-span-full phone:row-start-3 phone:mt-1.5 phone:leading-[1.35]" title={row.path}>
-        <span className="font-mono text-xs">{row.shortPath}</span>
-        {row.openedAt !== null && <> · {openedWords(row.openedAt)}</>}
-        {row.peek === null && <> · Not scanned</>}
+      <p className="mt-0.5 flex min-w-0 items-center gap-1 text-body text-muted-foreground phone:pointer-events-none phone:col-span-full phone:row-start-3 phone:mt-1.5 phone:leading-[1.35]">
+        <span className="min-w-0 truncate font-mono text-xs" title={row.path}>{middlePath(row.shortPath)}</span><CopyPath path={row.path} name={row.name} />
+        {(row.openedAt !== null || row.peek === null) && <span className="shrink-0 whitespace-nowrap">
+          {row.openedAt !== null && <>· {openedWords(row.openedAt)}</>}
+          {row.peek === null && <>{row.openedAt !== null ? " " : ""}· Not scanned</>}
+        </span>}
       </p>
     </div>
     <div className="flex shrink-0 items-center gap-1.5 phone:col-start-2 phone:row-start-1">
@@ -69,11 +88,12 @@ function Row({ row, csrf, returnTo, choosing }: { row: BrowserProjectRow; csrf: 
 }
 
 function Group({ label, rows, ...rest }: { label: string; rows: BrowserProjectRow[]; csrf: string; returnTo: string; choosing: boolean }) {
-  return rows.length === 0 ? null : <section aria-label={label} className="flex flex-col gap-2">
-    <h2 className="text-sm font-semibold text-muted-foreground">{label}</h2>
-    <div className="border-y border-border">
-      <ul className="divide-y divide-border">{rows.map(row => <Row key={row.path} row={row} {...rest} />)}</ul>
-    </div>
+  // One Frame per group (after ReUI's Frame): its name on the well, the projects as rows of one paper panel.
+  return rows.length === 0 ? null : <section aria-label={label}>
+    <Frame>
+      <FrameHeader><h2 className="text-sm font-semibold">{label}</h2></FrameHeader>
+      <FramePanel className="px-2 py-0"><ul className="divide-y divide-border">{rows.map(row => <Row key={row.path} row={row} {...rest} />)}</ul></FramePanel>
+    </Frame>
   </section>;
 }
 
