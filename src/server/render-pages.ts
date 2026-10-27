@@ -888,10 +888,16 @@ export function workPage(
       : browserWorkActionHref(row);
     const action = actionHref === null || row.primaryAction === null ? null : html`<a class="work-action" data-primary-action href="${actionHref}">${row.primaryAction.label} →</a>`;
     const project = data.multiProject || row.repo === null ? html`<span class="project-label">${row.repo === null ? 'Unplaced' : projectName(row.repo)}</span>` : null;
-    return html`<article class="work-row" data-task="${row.rootId}" data-work-status="${row.status.token}" data-work-views="${row.status.views.join(' ')}"><div class="work-row-main"><a class="work-title" href="${taskHref(row.rootId)}">${row.title}</a><p class="work-meta">${project}<span>${relativeAge(row.updatedAt, data.now)}</span></p></div><div class="work-row-status">${statusLineHtml(row.status)}${action}${row.familyProblem === null ? null : html`<p class="problem">${row.familyProblem}</p>`}${row.status.views.includes('needs-you') && !['write-scope', 'approve-scope'].includes(row.primaryAction?.code ?? '') && row.status.detail !== row.status.label && row.status.detail !== row.familyProblem ? html`<p class="work-detail">${row.status.detail}</p>` : null}${workDiagnosticsHtml(row.status.diagnostics)}</div></article>`;
+    return html`<article class="work-row" data-task="${row.rootId}" data-work-status="${row.status.token}" data-work-views="${row.status.views.join(' ')}"><div class="work-row-main"><a class="work-title" href="${taskHref(row.rootId)}">${row.title}</a><p class="work-meta">${project}<span>${relativeAge(row.updatedAt, data.now)}</span><span class="mono">${row.rootId}</span></p></div><div class="work-row-status">${statusLineHtml(row.status)}${action}${row.familyProblem === null ? null : html`<p class="problem">${row.familyProblem}</p>`}${row.status.views.includes('needs-you') && !['write-scope', 'approve-scope'].includes(row.primaryAction?.code ?? '') && row.status.detail !== row.status.label && row.status.detail !== row.familyProblem ? html`<p class="work-detail">${row.status.detail}</p>` : null}${workDiagnosticsHtml(row.status.diagnostics)}</div></article>`;
   };
   const current = WORK_VIEWS.find(one => one.key === data.view)!;
-  const list = data.work.items.length === 0
+  const filtered = (data.state ?? null) !== null;
+  // The state filter, as real links (the old task list's), so a page without the React view can still change it.
+  const stateLinks = html`<nav class="work-states" aria-label="Task state"><span class="meta">State:</span> ${joinHtml([html`<a href="${href(data.view, undefined, null)}"${filtered ? null : html` aria-current="page"`}>Any</a>`,
+    ...TASK_STATES.map(one => html`<a href="${href(data.view, undefined, one)}"${data.state === one ? html` aria-current="page"` : null}>${one}</a>`)], html` · `)}</nav>`;
+  const list = data.work.items.length === 0 && filtered && !data.previous
+    ? html`<div class="work-empty" data-work-empty="${data.view}"><p>No tasks are ${data.state} in this view.</p><a href="${href(data.view, undefined, null)}">Show every state →</a></div>`
+    : data.work.items.length === 0
     ? html`<div class="work-empty" data-work-empty="${data.view}"><p>${data.previous ? 'There are no more tasks on this page.' : current.empty}</p>${data.view === 'all' && !data.previous ? html`<p><a class="button-link" href="${chrome.chat === true ? '/chat' : '/tasks/new'}">${chrome.chat === true ? 'Start in chat' : 'Add a task'}</a></p>` : html`<a href="${href('all')}">See all tasks →</a>`}</div>`
     : html`<div class="work-list">${data.work.items.map(rowHtml)}</div>`;
   const pages = !data.previous && data.work.nextCursor === null ? null : html`<nav class="row work-pagination" aria-label="Task pages">${data.previous ? html`<a class="button-link" href="${href(data.view)}">First page</a>` : null}${data.work.nextCursor === null ? null : html`<a class="button-link" rel="next" href="${href(data.view, data.work.nextCursor)}">Next page</a>`}</nav>`;
@@ -923,7 +929,7 @@ export function workPage(
         notes: (row.status.diagnostics ?? []).map(one => `${one.label} · ${one.detail}`),
       };
     }),
-    empty: data.work.items.length > 0 ? null : {
+    empty: data.work.items.length > 0 ? null : filtered && !data.previous ? { text: `No tasks are ${data.state} in this view.`, action: { label: "Show every state", href: href(data.view, undefined, null) } } : {
       text: data.previous ? 'There are no more tasks on this page.' : current.empty,
       action: data.view === 'all' && !data.previous ? { label: chrome.chat === true ? 'Start in chat' : 'Add a task', href: chrome.chat === true ? '/chat' : '/tasks/new' } : { label: 'See all tasks', href: href('all') },
     },
@@ -934,7 +940,7 @@ export function workPage(
     states: [{ label: 'Any state', href: href(data.view, undefined, null), active: (data.state ?? null) === null },
       ...TASK_STATES.map(one => ({ label: one.charAt(0).toUpperCase() + one.slice(1), href: href(data.view, undefined, one), active: data.state === one }))],
   };
-  return screen('work', html`<div class="work-head"><h1>Tasks</h1>${tools}</div>${limitsHtml(data.limits ?? null)}${tabs}${list}${pages}`, { chrome, workspace: { view } });
+  return screen('work', html`<div class="work-head"><h1>Tasks</h1>${tools}</div>${limitsHtml(data.limits ?? null)}${tabs}${stateLinks}${list}${pages}`, { chrome, workspace: { view } });
 }
 
 export function browsePage(chrome: Chrome, data: {

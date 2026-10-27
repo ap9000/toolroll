@@ -31,7 +31,9 @@ function openedWords(iso: string): string {
  * Cuts by code point (never half a character); a tiny limit keeps the whole path. */
 export function middlePath(path: string, max = 44): { head: string; tail: string } {
   const points = Array.from(path);
-  if (points.length <= max || max < 8) return { head: path, tail: "" };
+  if (max < 8) return { head: path, tail: "" };
+  // A path that fits still splits, so when the line is narrower only its start gives way and its end stays.
+  if (points.length <= max) { const keep = Math.min(points.length, Math.ceil(max * 0.6)); return { head: points.slice(0, points.length - keep).join(""), tail: points.slice(points.length - keep).join("") }; }
   const tailLength = Math.ceil((max - 1) * 0.6);
   return { head: `${points.slice(0, max - 1 - tailLength).join("")}…`, tail: points.slice(points.length - tailLength).join("") };
 }
@@ -40,17 +42,22 @@ function CopyPath({ path, name }: { path: string; name: string }) {
   const [said, setSaid] = useState<"" | "Copied" | "Couldn't copy">("");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const live = useRef(true);
+  const sequence = useRef(0);
   useEffect(() => () => { live.current = false; if (timer.current !== null) clearTimeout(timer.current); }, []);
   const show = (words: "Copied" | "Couldn't copy") => {
     if (!live.current) return;
     if (timer.current !== null) clearTimeout(timer.current);
-    setSaid(""); // a repeat still announces
-    queueMicrotask(() => { if (live.current) setSaid(words); });
-    timer.current = setTimeout(() => { if (live.current) setSaid(""); }, 2000);
+    setSaid(""); // cleared in its own task first, so a repeat is a new announcement
+    timer.current = setTimeout(() => {
+      if (!live.current) return;
+      setSaid(words);
+      timer.current = setTimeout(() => { if (live.current) setSaid(""); }, 2000);
+    }, 60);
   };
   const copy = () => {
+    const mine = ++sequence.current; // only the latest copy may speak
     if (navigator.clipboard === undefined) { show("Couldn't copy"); return; }
-    navigator.clipboard.writeText(path).then(() => show("Copied"), () => show("Couldn't copy"));
+    navigator.clipboard.writeText(path).then(() => { if (mine === sequence.current) show("Copied"); }, () => { if (mine === sequence.current) show("Couldn't copy"); });
   };
   return <>
     <button type="button" onClick={copy} aria-label={`Copy ${name}'s path`} title="Copy path"
@@ -83,7 +90,7 @@ function Row({ row, csrf, returnTo, choosing }: { row: BrowserProjectRow; csrf: 
               </OpenForm>)}
         </span>
       </div>
-      <p className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1 text-body text-muted-foreground phone:pointer-events-none phone:col-span-full phone:row-start-3 phone:mt-1 phone:leading-[1.35]">
+      <p className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1 text-body text-muted-foreground phone:pointer-events-none phone:col-span-full phone:row-start-3 phone:mt-3 phone:leading-[1.35]">
         <span className="flex min-w-0 font-mono text-xs" title={row.path}><span className="truncate">{middlePath(row.shortPath).head}</span><span className="shrink-0">{middlePath(row.shortPath).tail}</span></span><CopyPath path={row.path} name={row.name} />
         {(row.openedAt !== null || row.peek === null) && <span className="shrink-0 whitespace-nowrap">
           {row.openedAt !== null && <>· {openedWords(row.openedAt)}</>}

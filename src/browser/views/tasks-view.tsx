@@ -112,7 +112,7 @@ function TaskRow({ row, grouped = false }: { row: BrowserTasksView["rows"][numbe
         {row.project && <span aria-hidden="true">·</span>}
         <span className="tabular-nums">{row.age}</span>
         <span aria-hidden="true">·</span>
-        <span className="font-mono text-mono" data-task-id>{row.id}</span>
+        <span className="min-w-0 font-mono text-mono [overflow-wrap:anywhere]" data-task-id>{row.id}</span>
       </p>
       {/* A failed row's problem line is vermilion; every other detail stays muted. */}
       {row.detail && <p className={cn("mt-1 text-[12.5px] phone:col-span-full phone:leading-[1.35]", row.status.label === "Failed" ? "text-destructive" : "text-muted-foreground")}

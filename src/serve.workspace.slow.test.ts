@@ -643,6 +643,13 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect(cancelledOnly.tabs.every(tab => tab.href.includes("state=cancelled"))).toBe(true);
     expect(cancelledOnly.states?.[0]).toMatchObject({ label: "Any state", href: "/work" });
     expect((await fetch(url("/work?state=nope"), { headers: { cookie } })).status).toBe(400);
+    // A filter that leaves nothing says so and offers every state again, keeping the view; the page without the
+    // React view lists the states as links too, and every row shows its id.
+    const none = workspaceOf(await page(cookie, "/work?view=running&state=cancelled")).view as typeof needing;
+    expect(none.empty).toEqual({ text: "No tasks are cancelled in this view.", action: { label: "Show every state", href: "/work?view=running" } });
+    const filteredHtml = await page(cookie, "/work?state=cancelled");
+    expect(filteredHtml).toContain('<nav class="work-states" aria-label="Task state">');
+    expect(filteredHtml).toContain('<span class="mono">t-cancelled</span>');
     // Every shortcut view has its own honest empty state.
     store.cancelTask("t-live", now); // a live claim refuses; the row stays — so check the empty copy on a fresh project instead
     await openProject(cookie, beta);

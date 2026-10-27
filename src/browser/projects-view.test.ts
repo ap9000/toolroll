@@ -2,7 +2,11 @@ import { expect, test } from "vitest";
 import { middlePath } from "./views/projects-view.js";
 
 test("a long project path keeps its start and end, never half a character", () => {
-  expect(middlePath("~/short")).toEqual({ head: "~/short", tail: "" });
+  // A path that fits still splits, so a narrow line clips only its start.
+  expect(middlePath("~/short")).toEqual({ head: "", tail: "~/short" });
+  const fits = middlePath("~/Documents/clients/ops-console", 44);
+  expect(fits.head + fits.tail).toBe("~/Documents/clients/ops-console");
+  expect(fits.tail.endsWith("ops-console")).toBe(true);
   const cut = middlePath("~/Documents/😀😀😀😀😀😀😀😀😀😀/clients/ops-console-with-a-long-name", 24);
   expect(Array.from(cut.head + cut.tail)).toHaveLength(24);
   expect(cut.head.endsWith("…")).toBe(true);
