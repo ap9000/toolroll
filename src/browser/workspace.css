@@ -663,17 +663,14 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-first-request-lead a { color: var(--so-ink); font-weight: 500; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--so-input-line); }
 
 /* After the first Ready result: the phone (onboarding). */
-.so-phone-card { width: 100%; max-width: 640px; margin: 0 0 var(--so-space-md); }
-.so-page-content > .so-phone-card { margin-top: var(--so-space-md); }
-.so-composer-area > .so-phone-card { max-width: none; }
-.so-phone-card h2 { margin: 0; color: var(--so-ink); font-size: 15px; line-height: 1.4; font-weight: 600; letter-spacing: -.01em; }
-.so-phone-options { display: grid; grid-template-columns: 1fr 1fr; gap: var(--so-space-sm); }
-.so-phone-options > div { display: flex; flex-direction: column; align-items: flex-start; gap: var(--so-space-xs); min-width: 0; padding: var(--so-space-md); border-radius: var(--so-radius-card); background: var(--so-raised); }
-.so-phone-options .so-first-run-command code, .so-phone-options code { background: var(--so-paper); }
+/* A Frame (components/ui/frame.tsx) like the Settings groups: full width, the two ways as paper panels. */
+.so-phone-card { width: 100%; }
+.so-phone-options { display: grid; grid-template-columns: 1fr 1fr; gap: var(--so-space-xs); }
+.so-phone-options > [data-slot="frame-panel"] { display: flex; flex-direction: column; align-items: flex-start; gap: var(--so-space-xs); min-width: 0; }
+.so-phone-options .so-first-run-command code, .so-phone-options code { background: var(--so-raised); }
 .so-phone-options code { padding: 1px 5px; border-radius: var(--so-radius-badge); font: 500 12px/1.4 var(--so-mono); overflow-wrap: anywhere; }
 .so-phone-others { margin: var(--so-space-xs) 0 0; font-size: 12.5px; color: var(--so-muted); }
 .so-phone-others a, .so-phone-options .so-first-run-choice-hint a { color: var(--so-ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--so-input-line); }
-.so-phone-card > form { align-self: flex-start; margin: -4px 0 -4px -10px; }
 
 /* The first task's way to Ready (onboarding): five steps that fill in as it moves. */
 .first-task-journey { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin: 0 0 var(--so-space-lg); padding: 0; list-style: none; }
@@ -694,8 +691,6 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 @media (max-width: 760px) {
   .first-task-journey li { font-size: 11.5px; }
   .so-phone-options, .so-first-run-choices { grid-template-columns: 1fr; }
-  .so-phone-card { padding: var(--so-space-md); gap: var(--so-space-sm); }
-  .so-phone-options > div { padding: 10px; }
   .so-first-request { margin-bottom: var(--so-space-sm); gap: var(--so-space-sm); }
   .so-first-request-intro { font-size: 13.5px; }
 }
