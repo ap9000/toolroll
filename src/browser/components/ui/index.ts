@@ -10,3 +10,4 @@ export * from "./form-controls.js";
 export * from "./collapsible.js";
 export * from "./sonner.js";
 export * from "./dropdown-menu.js";
+export * from "./frame.js";

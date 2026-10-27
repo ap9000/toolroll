@@ -11,7 +11,7 @@ import { digestTimes } from "../../digest-times.js";
 import { BrandIcon } from "../brand-mark.js";
 import { PhoneCard } from "../first-run.js";
 import {
-  Badge, Button, Card, CardDescription, CardHeader, CardTitle, Collapsible, CollapsibleContent, CollapsibleTrigger,
+  Badge, Button, Card, CardDescription, CardHeader, CardTitle, Collapsible, Frame, FrameHeader, FramePanel, CollapsibleContent, CollapsibleTrigger,
   Input, Label, RadioCard, RadioGroup, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, Separator, Switch, cn, toast,
 } from "../components/ui/index.js";
 
@@ -482,13 +482,16 @@ export function SettingsView({ view, csrf }: { view: BrowserSettingsView; csrf: 
     {view.legacyWebhookWarning && <p data-legacy-webhooks className="text-sm text-foreground">Legacy webhooks are deprecated. Connect <a className="inline-flex min-h-11 items-center underline underline-offset-4 focus-visible:outline focus-visible:outline-2" href="/settings/slack">Slack</a> or <a className="inline-flex min-h-11 items-center underline underline-offset-4 focus-visible:outline focus-visible:outline-2" href="/settings/discord">Discord</a> in Chat settings.</p>}
     <nav aria-label="Settings sections" className="grid gap-4 phone:gap-3">
       {view.groups.map(group => <section key={group.title} aria-labelledby={`settings-${slug(group.title)}`} className="grid gap-2 phone:gap-1.5">
-        <h2 id={`settings-${slug(group.title)}`} className="text-sm font-semibold text-muted-foreground">{group.title}</h2>
-        <div className="grid grid-cols-2 gap-2 desk:grid-cols-4 phone:gap-1.5">
-          {group.tiles.map(tile => <a key={tile.href} href={tile.href} className="flex min-h-12 items-center gap-2.5 rounded-lg border border-border bg-card px-3 py-2 text-sm font-semibold phone:min-h-11 phone:gap-2 phone:px-2.5 transition-colors hover:bg-accent [&>svg]:size-[18px] [&>svg]:shrink-0 [&>svg]:text-primary">
-            {tile.brand === undefined ? TILE_ICONS[tile.href] : <BrandIcon id={tile.brand} />}
-            <span className="grid min-w-0 gap-0.5">{tile.label}
-              {tile.status && <span className="flex items-center gap-1.5 text-body text-muted-foreground"><StatusDot tone={tile.status.tone} />{tile.status.words}</span>}</span></a>)}
-        </div>
+        {/* One well per group (ReUI Frame): its title on the raised fill, then the areas as paper panels. */}
+        <Frame>
+          <FrameHeader><h2 id={`settings-${slug(group.title)}`} className="text-sm font-semibold">{group.title}</h2></FrameHeader>
+          <div className="grid grid-cols-2 gap-1 desk:grid-cols-4">
+            {group.tiles.map(tile => <FramePanel key={tile.href} asChild><a href={tile.href} className="flex min-h-12 items-center gap-2.5 px-3 py-2 text-sm font-semibold phone:min-h-11 phone:gap-2 phone:px-2.5 transition-colors hover:bg-accent [&>svg]:size-[18px] [&>svg]:shrink-0 [&>svg]:text-primary">
+              {tile.brand === undefined ? TILE_ICONS[tile.href] : <BrandIcon id={tile.brand} />}
+              <span className="grid min-w-0 gap-0.5">{tile.label}
+                {tile.status && <span className="flex items-center gap-1.5 text-body text-muted-foreground"><StatusDot tone={tile.status.tone} />{tile.status.words}</span>}</span></a></FramePanel>)}
+          </div>
+        </Frame>
         {group.title === "Chat apps" && view.phone && <PhoneCard phone={view.phone} csrf={csrf} dismissable={false} />}
       </section>)}
     </nav>

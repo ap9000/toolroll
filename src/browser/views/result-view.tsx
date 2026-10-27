@@ -119,7 +119,7 @@ function StatusCard({ selected, acts, answers, bare = false }: { selected: Selec
       </ul>}
     </Card>;
   }
-  return <Card data-result-status={selected.status.token} data-headline={status?.headline ?? selected.status.label} aria-label="Result status">
+  return <Card data-result-status={selected.status.token} data-headline={status?.headline ?? selected.status.label} aria-label="Result status" className={cn(status?.headline === "Needs you" && "border-warning")}>
     <div className="min-w-0">
       {/* The blocking fact is the headline: the report doesn't match the changes. */}
       {mismatch?.headline != null ? <MismatchHeadline headline={mismatch.headline} />

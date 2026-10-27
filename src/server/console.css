@@ -186,6 +186,12 @@
   .chip-live { background: var(--so-info-soft); color: var(--so-info); }
   .chip-done { background: var(--so-success-soft); color: var(--so-success); }
   .chip-failed { background: var(--so-danger-soft); color: var(--so-danger); }
+  /* The frame (components/ui/frame.tsx, after ReUI's Frame): a raised well with a hairline, its heading on the
+     well's fill, and paper panels whose corners sit concentric inside it. No shadow on a panel. */
+  .frame { display: flex; flex-direction: column; gap: .25rem; padding: .25rem; border: 1px solid var(--so-line); border-radius: var(--so-radius-card); background: var(--so-raised); }
+  .frame-head { display: flex; align-items: center; justify-content: space-between; gap: .5rem; min-height: 2rem; padding: .25rem .625rem; }
+  .frame-panel { position: relative; border: 1px solid var(--so-line); border-radius: calc(var(--so-radius-card) - .25rem - 1px); background: var(--so-paper); padding: .75rem .875rem; }
+  .frame-panel.waits { border-color: var(--so-warning); }
 
   .card {
     border: 1px solid var(--glass-border); border-radius: var(--radius); background: var(--glass);

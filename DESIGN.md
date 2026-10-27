@@ -469,7 +469,8 @@ Quiet, compact, and ink by default. The colour is saved for the one verb that se
 - **Corner Style:** 10px.
 - **Background:** paper, on a paper sheet, so a card is defined by its hairline border and not by its fill.
 - **Shadow Strategy:** none. See Elevation.
-- **Border:** a 1px hairline. A failed status card takes vermilion at 50% and nothing else changes colour. A waiting card keeps a neutral border, and its badge and single accent verb carry the wait.
+- **Border:** a 1px hairline. A failed status card takes vermilion at 50%. A card that waits on a person (a status card whose headline is Needs you, a waiting tile or board card) takes a thin full amber outline (1px `--so-warning`, the whole edge), never an amber fill and never an edge stripe; its single ink verb still answers it.
+- **Frame (well and panels):** a group of panels sits in a raised well (raised fill, hairline, 10px corners, 4px padding) with its heading on the well's fill above them; each panel is paper with a hairline and corners 5px tighter, so the arcs stay concentric (`Frame`, `FrameHeader`, `FramePanel`, after ReUI's Frame; `.frame` on server pages). No shadow on a panel, and a Frame never nests in a card or another Frame.
 - **Internal Padding:** 20px (14px on phones), with a 16px gap between blocks (12px on phones). Grouped folds (task details, Manage) are one card with zero padding, divided by hairlines, each fold with a 15px / 600 summary and a rotating chevron.
 
 ### Inputs / Fields
@@ -531,7 +532,7 @@ Pinned below the thread, outside its scroll, so it never moves with the messages
 - **Do** keep motion to 120ms colour transitions and an 80ms / 140ms page fade-through, and remove all of it under `prefers-reduced-motion`.
 
 ### Don't:
-- **Don't** colour a card's border or a heading accent to announce a wait. The badge and the single accent verb already say it. (The flow canvas's decision cards still carry a accent outline. That is a known divergence, not the rule.)
+- **Don't** announce a wait with anything but the amber outline and the Needs you chip: no amber fill, no edge stripe, no coloured heading.
 - **Don't** put more than one accent verb on a screen or card, and don't make a recommended option accent. A recommendation is not urgency.
 - **Don't** use accent, or any hue near it, for failure. Failure is vermilion.
 - **Don't** colour a problem line red inside a card that has not failed. Render it neutral (raised fill, ink text).

@@ -334,6 +334,9 @@ tokens:
 - `badge.tsx` — the light badge and its status-dot example (`c-badge-22`): one
   20px chip size and a decorative dot on the existing tones, plus a "Needs you"
   tone. The style variants, solid fills and focus/invert tones are omitted.
+- `frame.tsx` — the well of panels: one geometry (a raised well, hairline,
+  concentric panel corners) with the style variants, spacing scale, stacking
+  modes and panel shadows omitted; `FramePanel` can render as its child.
 
 No ReUI Pro blocks, icons or templates are included.
 
