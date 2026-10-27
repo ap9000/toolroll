@@ -219,7 +219,8 @@ describe("protected storage: chat apps, browser profiles and password managers, 
     expect(Date.now() - started).toBeLessThan(CONTAINER_LOOK_MS);
   });
 
-  test("native: a link inside a container that leads outward stays denied while macOS keeps Toolroll waiting", async ctx => {
+  // App containers are a macOS idea: elsewhere there is nothing to walk, and the platform-pure tests above cover the logic.
+  test.runIf(mac)("native: a link inside a container that leads outward stays denied while macOS keeps Toolroll waiting", async ctx => {
     vi.stubEnv("XDG_CONFIG_HOME", "");
     try {
       const { home, slack, teams, worktree, fence } = containerHome();
