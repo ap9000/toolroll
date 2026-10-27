@@ -9,7 +9,8 @@ export type LeadProgress =
   | { kind: "step"; turn: number; step: number }
   | { kind: "tool"; turn: number; step: number; id: string; label: string }
   | { kind: "tool-result"; turn: number; step: number; id: string; outcome: LeadToolOutcome }
-  | { kind: "text"; turn: number; step: number; text: string };
+  /** `final`: the provider's finished answer for this step, sent once and secret-checked whole. */
+  | { kind: "text"; turn: number; step: number; text: string; final?: true };
 
 export type LeadToolOutcome = { state: "succeeded" } | { state: "failed"; reason: string };
 export type LeadLiveTool = { id: string; label: string } & ({ state: "running" } | LeadToolOutcome);

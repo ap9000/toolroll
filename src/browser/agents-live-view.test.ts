@@ -512,3 +512,17 @@ test("Codex av8 #7: an address naming both a run and a lead opens one dialog, th
   expect(document.querySelector("[data-live-full-title]")?.textContent).toBe("Task 1");
   history.replaceState(null, "", "/agents?view=live");
 });
+
+test("Codex av8 r2 #3: a dropped line that is reconnecting by itself is said too, and cleared once the room answers", async () => {
+  // The page's one stream stays quiet for 30 s after an earlier test's ended one: start past that.
+  vi.setSystemTime(NOW + 31_000);
+  leads = [leadOf(9)];
+  history.replaceState(null, "", "/agents?view=live&lead=9");
+  await render7();
+  await act(async () => { Events.latest!.readyState = 0; Events.latest!.dispatchEvent(new MessageEvent("error")); });
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Reconnecting… these lines may not be the latest.");
+  await act(async () => { Events.latest!.readyState = 1; Events.latest!.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ room: "agents-live", at: "x" }) })); });
+  await flush();
+  expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain("Reconnecting");
+  history.replaceState(null, "", "/agents?view=live");
+});

@@ -533,6 +533,27 @@ describe("the Live grid's reads (docs/plans/agents-view.md §3)", () => {
     expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(0);
   }, 20_000);
 
+  test("Codex av8 r2 #4: a viewer refused mid-stream leaves, and its page's stream ends (nothing else holds it open)", async () => {
+    const cookie = await signIn("alex", alexToken);
+    const controller = new AbortController();
+    const response = await fetch(`${localBase}/live?room=agents-live`, { headers: { cookie, accept: "text/event-stream" }, signal: controller.signal });
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    let text = "", ended = false;
+    const deadline = Date.now() + 8_000;
+    let narrowed = false;
+    while (!ended && Date.now() < deadline) {
+      const next = await Promise.race([reader.read(), new Promise<null>(resolve => setTimeout(() => resolve(null), 500))]);
+      if (next !== null && next.done) { ended = true; break; }
+      if (next !== null) text += new TextDecoder().decode(next.value);
+      // Once joined, the account narrows: its scope is no longer the room's.
+      if (!narrowed && /event: change/.test(text)) { store.handle.prepare("UPDATE approver SET projects_json = ? WHERE name = 'alex'").run(JSON.stringify([repoB])); narrowed = true; }
+    }
+    controller.abort();
+    expect(text).toMatch(/event: gone/);
+    expect(ended).toBe(true);
+  }, 15_000);
+
   test("only a browser session reads: a lead's, a runner's and a remote token are each refused", async () => {
     const run = running("t-tokens", repoA);
     (await record(run)).close();

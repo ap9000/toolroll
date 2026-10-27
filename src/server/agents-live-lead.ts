@@ -43,30 +43,35 @@ function toolLine(tool: LeadLiveTool): string {
 }
 
 /** One step's words, redacted, with only what is settled: the last word of the step's text waits for the space after
- * it, whether the turn is running or has ended. A snapshot that would have completed a credential is never stored
- * (lead.ts drops it), so the one kept can end part-way through one, and ending the turn or starting the next step
- * confirms nothing. The whole line is checked for secrets first; the unfinished word is found in the line as shown
- * (invisible characters removed), so no hidden character can stand in for the space. */
-function stepLines(text: string, keys: KeyState): string[] {
+ * it unless the provider's finished answer for that step was confirmed (lead.ts sends it once, secret-checked whole).
+ * A snapshot that would have completed a credential is never stored (lead.ts drops it), so the one kept can end
+ * part-way through one: ending the turn or starting the next step confirms nothing. The last line is redacted on its
+ * own (after the rest, with the same key state), the whole line checked for secrets first, and its unfinished word
+ * found in the line as shown (invisible characters removed), so no hidden character can stand in for the space. */
+function stepLines(text: string, keys: KeyState, confirmed: boolean): string[] {
   const raw = text.split(/\r?\n/);
+  const lastRaw = raw.pop() ?? "";
   const out = redactLiveLines(raw, keys);
-  const last = out.length - 1;
-  const shown = out[last] ?? "";
-  if (shown !== HIDDEN_LINE && shown !== HIDDEN_KEY_BLOCK) out[last] = (/\s$/.test(cleanLiveText(raw[last] ?? "")) ? shown : shown.replace(/\S+$/, "")).trimEnd();
+  // Empty when the last line is inside a key block (never shown).
+  for (const shown of redactLiveLines([lastRaw], keys)) {
+    const whole = shown === HIDDEN_LINE || shown === HIDDEN_KEY_BLOCK || confirmed || /\s$/.test(cleanLiveText(lastRaw));
+    out.push((whole ? shown : shown.replace(/\S+$/, "")).trimEnd());
+  }
   while (out.length > 0 && out[out.length - 1]!.trim() === "") out.pop();
   return out;
 }
 
 /** One turn's lines, redacted as one stream: every step's tools and words in order through ONE key state (a key block
- * opened in one step stays hidden into the next), each line cleaned and cut, then the newest kept within the caps. */
-export function leadLines(steps: readonly LeadLiveStep[]): { lines: string[]; earlier: boolean } {
+ * opened in one step stays hidden into the next), each line cleaned and cut, then the newest kept within the caps.
+ * `confirmed[i]`: step i's text is its finished answer, secret-checked whole. */
+export function leadLines(steps: readonly LeadLiveStep[], confirmed: readonly boolean[] = []): { lines: string[]; earlier: boolean } {
   const keys: KeyState = { inKey: false };
   const all: string[] = [];
-  for (const step of steps) {
+  steps.forEach((step, index) => {
     // Tools are not the conversation's text: they never open or close a key block, and inside one they are not shown.
     for (const tool of step.toolCalls) if (!keys.inKey) all.push(toolLine(tool));
-    if (step.text !== "") all.push(...stepLines(step.text, keys));
-  }
+    if (step.text !== "") all.push(...stepLines(step.text, keys, confirmed[index] === true));
+  });
   const kept: string[] = [];
   let bytes = 0;
   for (let index = all.length - 1; index >= 0 && kept.length < LEAD_LINES; index -= 1) {
@@ -122,7 +127,7 @@ export function leadTilesFor(deps: LeadDeps, who: Who): LeadTile[] {
   for (const [id, turn] of deps.liveTurns) {
     const admitted = admitLead(deps, who, id);
     if (admitted === null) continue;
-    const { lines, earlier } = leadLines(turn.steps);
+    const { lines, earlier } = leadLines(turn.steps, turn.confirmed);
     tiles.push({
       thread: id, turn: turn.turn ?? null, ...admitted,
       state: !turn.done ? "working" : turn.ok ? "done" : "failed",

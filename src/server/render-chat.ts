@@ -1294,7 +1294,9 @@ export function leadPage(chrome: Chrome, data: LeadThreadRows & {
   export type LiveTurn = { steps: LeadLiveStep[]; done: boolean; ok: boolean; listeners: Set<() => void>; expiry?: NodeJS.Timeout;
     /** For the Live grid's lead tile (agents-live-lead.ts): the turn's id once it says it, when it started and ended, and
      * when each step began (epoch ms). Never sent to the chat room. */
-    turn?: number; startedAt?: number; endedAt?: number; stepAt?: number[] };
+    turn?: number; startedAt?: number; endedAt?: number; stepAt?: number[];
+    /** Per step: its text is the provider's finished answer, secret-checked whole (lead.ts `final`). */
+    confirmed?: boolean[] };
 
   export type ChatEnablement =
     | { ok: true; billing: "metered"; config: ChatConfig & { provider: DirectChatProviderId }; key: string; keySource: "environment" | "stored"; price: import("../converse.js").ModelPrice; credentialKey: string }

@@ -798,6 +798,17 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     expect(leads[0]!.stepAt.length).toBeGreaterThan(0);
     // Another approver never sees it.
     expect(await leadsOf(robinCookie)).toEqual([]);
+    // Codex av8 r2 #4: the thread closes after the tile was projected and before delivery: nothing of it is delivered.
+    const thread = leads[0]!.thread, real = store.liveLeadThreadFor.bind(store);
+    let closing = true;
+    store.liveLeadThreadFor = (...args: Parameters<Store["liveLeadThreadFor"]>) => {
+      const read = real(...args);
+      if (closing && read?.id === thread) { closing = false; store.handle.prepare("UPDATE lead_thread SET closed_at = ? WHERE id = ?").run(T0.toISOString(), thread); }
+      return read;
+    };
+    try { expect(await leadsOf(cookie)).toEqual([]); } finally { store.liveLeadThreadFor = real; }
+    store.handle.prepare("UPDATE lead_thread SET closed_at = NULL WHERE id = ?").run(thread);
+    expect(await leadsOf(cookie)).toHaveLength(1);
     finish(answer([{ type: 'text', text: 'Here.' }]));
     await settle();
     leads = await leadsOf(cookie);
@@ -805,6 +816,17 @@ describe("the lead's thread (mate arc, slice 2): one ceremony, then a conversati
     // The account loses the project: the ended turn's tile goes with it.
     store.handle.prepare("UPDATE approver SET projects_json = '[]' WHERE name = 'alex'").run();
     expect(await leadsOf(cookie)).toEqual([]);
+  });
+
+  test('agents view slice 8 r2: a membership reply\'s finished answer shows whole on its lead tile', async () => {
+    store.setChatConfig({ provider: 'claude-subscription', model: 'default', dailyTurns: 50, weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 }, 'alex', T0);
+    const cookie = await login(), csrf = csrfFrom(await page(cookie));
+    if (store.activeLeadSession('alex') === null) expect((await post(cookie, '/chat/mate/mint', { csrf, token: approverToken })).status).toBe(303);
+    subscriptionAnswers.push({ text: 'All 24 tests passed.', calls: [], tokensIn: 10, tokensOut: 5, reportedCostMicrousd: null });
+    expect((await sendJson(cookie, { csrf, task: 'a', message: 'How did the tests go?', request: 'e'.repeat(32), 'request-session': String(store.activeLeadSession('alex')!.id) })).status).toBe(202);
+    await settle();
+    const leads = ((await (await fetch(url('/agents/live'), { headers: { cookie } })).json()) as { leads: { state: string; lines: string[] }[] }).leads;
+    expect(leads).toMatchObject([{ state: 'done', lines: ['All 24 tests passed.'] }]);
   });
 
   test('a revoked browser stream gets no reply started later by another session', async () => {

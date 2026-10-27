@@ -500,7 +500,7 @@ export function LiveGrid() {
   }, []);
   useEffect(() => { refresh(); }, [refresh]);
   useLiveRoom("agents-live", event => {
-    if (event === "lost") { setLost(true); return; }
+    if (event === "lost" || event === "retrying") { setLost(true); return; }
     if (event === "change" || event === "reload") { setLost(false); refresh(); }
   });
   useEffect(() => {

@@ -1116,7 +1116,10 @@ export function createChatHandlers(runtime: ServerRuntime) {
             break;
           }
         }
-      } else if (event.kind === "text") current().text = event.text;
+      } else if (event.kind === "text") {
+        current().text = event.text;
+        (live.confirmed ??= [])[live.steps.length - 1] = event.final === true;
+      }
       for (const listener of live.listeners) listener();
     };
     progressOf.set(progress, live);

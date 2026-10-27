@@ -42,6 +42,22 @@ describe("the lead redactor", () => {
     expect(leadLines([step(`Here is ${almost}`), step("Next step.\n")]).lines.join("\n")).not.toContain("ghp_");
   });
 
+  test("Codex av8 r2 #1: a key block earlier in the step never moves the check off the step's actual last line", () => {
+    const almost = `ghp_${"a1B2c3D4e5".repeat(3)}a1B2c`;
+    const { lines } = leadLines([step(`-----BEGIN CERTIFICATE-----\nbody \n-----END CERTIFICATE-----\nHere is ${almost}`)]);
+    expect(lines.join("\n")).not.toContain("ghp_");
+    expect(lines).toEqual([HIDDEN_KEY_BLOCK, "Here is"]);
+  });
+
+  test("Codex av8 r2 #2: a confirmed finished answer shows its last word; ending alone confirms nothing", () => {
+    expect(leadLines([step("All 24 tests passed.")], [true]).lines).toEqual(["All 24 tests passed."]);
+    expect(leadLines([step("All 24 tests passed.")], [false]).lines).toEqual(["All 24 tests"]);
+    // Confirmation is per step: a later step's does not release an earlier step's tail.
+    expect(leadLines([step("first ghp_partial"), step("Done.")], [false, true]).lines).toEqual(["first", "Done."]);
+    // A confirmed answer is still redacted.
+    expect(leadLines([step(`token=${"x".repeat(20)}`)], [true]).lines).toEqual([HIDDEN_LINE]);
+  });
+
   test("Codex av8 #3: an invisible character never stands in for the space", () => {
     const almost = `ghp_${"a1B2c3D4e5".repeat(3)}a1B2c`;
     for (const invisible of ["\uFEFF", "\u200B", "\u2060", "\u202E"]) {
