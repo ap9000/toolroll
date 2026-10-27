@@ -644,21 +644,6 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     return redirect(response, QUEUE_VIEW);
   }
 
-  /** The add page, once more: blank, from a shipped template (`?template=`, as the old task list did), or with a refused
-   * filing's own words and status (the draft keeps the project revision it was written against). */
-  function newTaskScreen(ctx: HandlerContext, status: number, problem: string | null, draft: TaskComposerPrefill | null): Promise<void> | void {
-    const { who, response, project } = ctx;
-    const chainable = store
-      .listTasksScoped(project, undefined, 100, null)
-      .filter(one => one.state !== "done" && one.state !== "cancelled" && visible(one.repo))
-      .map(one => ({ id: one.id, title: one.title }));
-    // A refused draft keeps the task it was to start after, even if the refreshed list no longer carries it.
-    const after = draft?.values?.get("after") ?? "";
-    if (after !== "" && !chainable.some(one => one.id === after)) chainable.unshift({ id: after, title: "(as submitted)" });
-    const chrome = chromeFor(project, "tasks");
-    const revision = draft?.values !== undefined ? undefined : who.via === "cookie" ? who.session.projectRevision : 0;
-    return sendScreen(response, status, newTaskPage(chrome, project, revision, problem, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? [], draft));
-  }
   async function showNewTask(ctx: HandlerContext): Promise<void> {
     const picked = (() => { const name = ctx.url.searchParams.get("template"); return name === null ? null : templateByName(name); })();
     const prefill = picked !== null && picked.kind === "task"
@@ -3076,5 +3061,20 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     "session.editor-links": sessionEditorLinks,
     "incident.resolve": resolveIncident,
   });
+  /** The add page, once more: blank, from a shipped template (`?template=`, as the old task list did), or with a refused
+   * filing's own words and status (the draft keeps the project revision it was written against). */
+  function newTaskScreen(ctx: HandlerContext, status: number, problem: string | null, draft: TaskComposerPrefill | null): Promise<void> | void {
+    const { who, response, project } = ctx;
+    const chainable = store
+      .listTasksScoped(project, undefined, 100, null)
+      .filter(one => one.state !== "done" && one.state !== "cancelled" && visible(one.repo))
+      .map(one => ({ id: one.id, title: one.title }));
+    // A refused draft keeps the task it was to start after, even if the refreshed list no longer carries it.
+    const after = draft?.values?.get("after") ?? "";
+    if (after !== "" && !chainable.some(one => one.id === after)) chainable.unshift({ id: after, title: "(as submitted)" });
+    const chrome = chromeFor(project, "tasks");
+    const revision = draft?.values !== undefined ? undefined : who.via === "cookie" ? who.session.projectRevision : 0;
+    return sendScreen(response, status, newTaskPage(chrome, project, revision, problem, chainable, store.permissionDefault().mode, store.qualityDefault().mode, chrome.projects ?? [], draft));
+  }
   return { registrations, runListPane, peekFragment, taskMutation, queueRegionFor, ciFailingFor, completedRowFor, attemptRowFor, resultRowOf, reviewCockpitViewOf, decisionEvidence, runEvidence, sendArtifact, peekGuards, liveRunIds };
 }
