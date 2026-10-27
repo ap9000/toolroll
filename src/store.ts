@@ -24613,7 +24613,7 @@ export function runLiveCommands(store: Store, runId: number): boolean {
 }
 
 /** One run as the Agents view's Live grid reads it (docs/plans/agents-view.md §2.5). */
-export type AgentsLiveRun = Run & { taskId: string; title: string; repo: string | null };
+export type AgentsLiveRun = Run & { taskId: string; title: string; repo: string | null; builtIn: boolean };
 
 /**
  * The Live grid's runs: every role's running run (no outcome yet) and every run that ended at or after `endedSince`,
@@ -24623,7 +24623,7 @@ export type AgentsLiveRun = Run & { taskId: string; title: string; repo: string 
  */
 export function agentsLiveRuns(store: Store, endedSince: Date): AgentsLiveRun[] {
   const rows = store.handle.prepare(
-    `SELECT run.*, task_ref.external_id AS live_task_id, task_ref.repo AS live_task_repo, task.title AS live_task_title
+    `SELECT run.*, task_ref.external_id AS live_task_id, task_ref.repo AS live_task_repo, task.title AS live_task_title, task_ref.backend AS live_task_backend
        FROM (SELECT id FROM run INDEXED BY run_live_open WHERE outcome IS NULL AND id > 0
              UNION SELECT id FROM run INDEXED BY run_live_recent WHERE outcome IS NOT NULL AND id > 0 AND finished_at >= ?) AS picked
        JOIN run ON run.id = picked.id
@@ -24634,6 +24634,7 @@ export function agentsLiveRuns(store: Store, endedSince: Date): AgentsLiveRun[] 
   return rows.map(row => ({
     ...readRun(row),
     taskId: String(row["live_task_id"]),
+    builtIn: row["live_task_backend"] === BUILT_IN,
     title: row["live_task_title"] === null || row["live_task_title"] === undefined ? String(row["live_task_id"]) : String(row["live_task_title"]),
     repo: row["live_task_repo"] === null || row["live_task_repo"] === undefined ? null : String(row["live_task_repo"]),
   }));

@@ -3,6 +3,7 @@
  * run's live windows (one scheduler: four reads at most, one per file, a deadline each, backoff on failure, all of it
  * stopped when the page goes), and hears its own room. Tiles keep their order; nothing leaves while the grid is being
  * looked at (pointer over it or focus in it) — changes wait, and the header says so. */
+import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { cn } from "../components/ui/index.js";
 import { useLiveRoom } from "../live.js";
@@ -10,7 +11,8 @@ import { useNow } from "../live-task.js";
 import { elapsedWords } from "./agents-view.js";
 
 type Tile = { runId: number; role: string; taskId: string; title: string; project: string | null; agent: string; model: string | null; startedAt: string; endedAt: string | null;
-  state: "working" | "needs-you" | "done" | "failed" | "stopped" | "parked"; why: "quiet" | "question" | null; quietSince: string | null; local: boolean; parentRun: number | null };
+  state: "working" | "needs-you" | "done" | "failed" | "stopped" | "parked"; why: "quiet" | "question" | null; quietSince: string | null; local: boolean; parentRun: number | null;
+  taskHref: string | null };
 type Wire = { k: string; at?: string; s?: number; t?: string[]; id?: string; kind?: string; target?: string; once?: boolean; ok?: boolean | null; out?: string[]; parent?: string | null; via?: number; desc?: string };
 type FileState = "loading" | "ready" | "off" | "unavailable" | "error";
 /** One stream's lines and its open steps (by id, in order), so the current step is the newest still open. */
@@ -211,7 +213,7 @@ function ChildTile({ child, all, now, last }: { child: Child; all: Child[]; now:
   </li>;
 }
 
-function Output({ tile, stream, streamed, showLive }: { tile: Tile; stream: Stream; streamed: boolean; showLive: () => void }) {
+function Output({ tile, stream, streamed, showLive, tall = false, lost = false }: { tile: Tile; stream: Stream; streamed: boolean; showLive: () => void; tall?: boolean; lost?: boolean }) {
   const quiet = "text-[12px] text-muted-foreground";
   if (!tile.local || stream.mainState === "off") return <p className={quiet}>Output is on another computer.</p>;
   if (!streamed) return <p className={cn(quiet, "flex items-center gap-2")}>Not shown live.
@@ -219,8 +221,9 @@ function Output({ tile, stream, streamed, showLive }: { tile: Tile; stream: Stre
   if (stream.mainState === "unavailable") return <p className={quiet}>Output unavailable.</p>;
   return <>
     {stream.earlier && <p className="text-[11.5px] text-muted-foreground">Earlier output isn't shown.</p>}
+    {lost && <p className="text-[11.5px] text-muted-foreground">Reconnecting… these lines may not be the latest.</p>}
     {stream.mainState === "error" && <p className="text-[11.5px] text-muted-foreground">Couldn't read the latest output. Retrying.</p>}
-    {stream.mainState === "loading" ? <p className={quiet}>Loading output…</p> : <Lines lines={stream.main.lines} short={false} />}
+    {stream.mainState === "loading" ? <p className={quiet}>Loading output…</p> : <Lines lines={stream.main.lines} short={false} tall={tall} />}
     {stream.subState === "unavailable" && <p className="text-[11.5px] text-muted-foreground">Subagents' output unavailable.</p>}
     {stream.subState === "error" && <p className="text-[11.5px] text-muted-foreground">Couldn't read the subagents' output. Retrying.</p>}
     {stream.subRestarted && <p className="text-[11.5px] text-muted-foreground">Subagents' output restarted.</p>}
@@ -260,38 +263,50 @@ function LiveTile({ tile, stream, streamed, now, repairs, streams, streamedIds, 
   </li>;
 }
 
-/** One agent full screen (a sheet on a phone): the same facts, every kept line, every subagent open, and "Open task".
- * Escape or Close returns to the tile it came from. Watching only: nothing here acts. */
-function FullScreen({ tile, stream, now, onClose }: { tile: Tile | null; stream: Stream; now: number; onClose: () => void }) {
+/** One agent full screen (a sheet on a phone): the same facts and output states as its tile, every kept line, every
+ * subagent open, and its task's page when this console keeps the task. A modal dialog (Radix: focus held inside, the page
+ * behind it hidden from assistive tech, Escape closes); focus starts on Close and returns to the tile it came from, or to
+ * the grid when that tile has gone. Watching only: nothing here acts. */
+function FullScreen({ runId, tile, stream, streamed, now, lost, onClose, showLive }: { runId: number; tile: Tile | null; stream: Stream; streamed: boolean; now: number; lost: boolean;
+  onClose: () => void; showLive: () => void }) {
   const close = useRef<HTMLButtonElement>(null);
-  useEffect(() => { close.current?.focus(); }, []);
   const children = [...stream.children.values()].sort((a, b) => a.s - b.s);
   const top = children.filter(child => child.via === undefined || !children.some(one => one.s === child.via));
-  return <div className="fixed inset-0 z-50 flex bg-scrim desk:p-6 phone:items-end" data-live-full onKeyDown={event => { if (event.key === "Escape") { event.stopPropagation(); onClose(); } }}>
-    <div role="dialog" aria-modal="true" aria-labelledby="live-full-title" className="mx-auto flex h-fit max-h-full w-full max-w-[1100px] flex-col gap-3 overflow-y-auto border border-border bg-card p-5 desk:rounded-card phone:max-h-[calc(100%-2rem)] phone:rounded-t-card phone:p-4">
-      <header className="flex items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <h2 id="live-full-title" className="text-[18px] font-semibold leading-[1.3]">{tile?.title ?? "This agent isn't on the grid anymore"}</h2>
-          {tile !== null && <p className="truncate font-mono text-[11px] text-muted-foreground">{[tile.project?.split("/").pop(), tile.role, tile.agent, tile.model].filter(Boolean).join(" · ")}</p>}
-        </div>
-        {tile !== null && <Chip fill={tile.state === "needs-you" ? NEEDS_FILL : FILL[tile.state] ?? FILL.working!} dot={tile.state === "needs-you" ? NEEDS_DOT : DOT[tile.state] ?? DOT.working!}>{STATE_WORDS[tile.state]}</Chip>}
-        <button ref={close} type="button" onClick={onClose} className="shrink-0 rounded-sm border border-border px-2.5 py-1 text-[12.5px] phone:min-h-11">Close</button>
-      </header>
-      {tile !== null && <>
-        <p className="flex items-center gap-3 text-[13px]">
-          <span className="min-w-0 flex-1 truncate">{tile.why === "quiet" && tile.quietSince !== null ? `Quiet for ${elapsedWords(tile.quietSince, now)}` : tile.why === "question" ? "Asked a question" : tile.endedAt === null ? stepNow(stream.main) ?? "" : ""}</span>
-          <span className="shrink-0 text-[12px] tabular-nums text-muted-foreground">{elapsedWords(tile.startedAt, tile.endedAt === null ? now : Date.parse(tile.endedAt))}</span>
-          <a href={`/t/${encodeURIComponent(tile.taskId)}`} className="shrink-0 text-[12.5px] underline decoration-border underline-offset-4 hover:decoration-current phone:inline-flex phone:min-h-11 phone:items-center">Open task</a>
-        </p>
-        {stream.earlier && <p className="text-[11.5px] text-muted-foreground">Earlier output isn't shown.</p>}
-        <Lines lines={stream.main.lines} short={false} tall />
-        {top.length > 0 && <section aria-label="Subagents" className="flex flex-col gap-2">
-          <h3 className="text-[13px] font-semibold">Subagents <span className="font-normal tabular-nums text-muted-foreground">{children.length}</span></h3>
-          <ul className="flex flex-col">{top.map((child, index) => <ChildTile key={child.s} child={child} all={children} now={now} last={index === top.length - 1} />)}</ul>
-        </section>}
-      </>}
-    </div>
-  </div>;
+  return <DialogPrimitive.Root open onOpenChange={open => { if (!open) onClose(); }}>
+    {/* Inside the view, so its styles (and its scoped reset) apply. */}
+    <DialogPrimitive.Portal container={typeof document === "undefined" ? undefined : document.querySelector<HTMLElement>("[data-view]") ?? undefined}>
+      <DialogPrimitive.Overlay className="ui-dialog-overlay" />
+      <DialogPrimitive.Content data-live-full aria-describedby={undefined}
+        onOpenAutoFocus={event => { event.preventDefault(); close.current?.focus(); }}
+        onCloseAutoFocus={event => {
+          event.preventDefault();
+          const opener = document.querySelector(`[data-live-open="${runId}"]`) as HTMLElement | null;
+          (opener ?? document.querySelector("[data-live-grid]") as HTMLElement | null)?.focus();
+        }}
+        className="ui-dialog-content flex !w-[min(1100px,calc(100vw-48px))] flex-col gap-3 !p-5 phone:!bottom-0 phone:!left-0 phone:!top-auto phone:!max-h-[calc(100dvh-2rem)] phone:!w-full phone:!rounded-b-none phone:!p-4 phone:!pb-[max(1rem,env(safe-area-inset-bottom))] phone:![transform:none]">
+        <header className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <DialogPrimitive.Title className="text-[18px] font-semibold leading-[1.3]" id="live-full-title">{tile?.title ?? "This agent isn't on the grid anymore"}</DialogPrimitive.Title>
+            {tile !== null && <p className="truncate font-mono text-[11px] text-muted-foreground">{[tile.project?.split("/").pop(), tile.role, tile.agent, tile.model].filter(Boolean).join(" · ")}</p>}
+          </div>
+          {tile !== null && <Chip fill={tile.state === "needs-you" ? NEEDS_FILL : FILL[tile.state] ?? FILL.working!} dot={tile.state === "needs-you" ? NEEDS_DOT : DOT[tile.state] ?? DOT.working!}>{STATE_WORDS[tile.state]}</Chip>}
+          <DialogPrimitive.Close ref={close} className="shrink-0 rounded-sm border border-border px-2.5 py-1 text-[12.5px] phone:min-h-11">Close</DialogPrimitive.Close>
+        </header>
+        {tile !== null && <>
+          <p className="flex items-center gap-3 text-[13px]">
+            <span className="min-w-0 flex-1 truncate">{tile.why === "quiet" && tile.quietSince !== null ? `Quiet for ${elapsedWords(tile.quietSince, now)}` : tile.why === "question" ? "Asked a question" : tile.endedAt === null ? stepNow(stream.main) ?? "" : ""}</span>
+            <span className="shrink-0 text-[12px] tabular-nums text-muted-foreground">{elapsedWords(tile.startedAt, tile.endedAt === null ? now : Date.parse(tile.endedAt))}</span>
+            {tile.taskHref !== null && <a href={tile.taskHref} className="shrink-0 text-[12.5px] underline decoration-border underline-offset-4 hover:decoration-current phone:inline-flex phone:min-h-11 phone:items-center">Open task</a>}
+          </p>
+          <Output tile={tile} stream={stream} streamed={streamed} showLive={showLive} tall lost={lost} />
+          {top.length > 0 && <section aria-label="Subagents" className="flex flex-col gap-2">
+            <h3 className="text-[13px] font-semibold">Subagents <span className="font-normal tabular-nums text-muted-foreground">{children.length}</span></h3>
+            <ul className="flex flex-col">{top.map((child, index) => <ChildTile key={child.s} child={child} all={children} now={now} last={index === top.length - 1} />)}</ul>
+          </section>}
+        </>}
+      </DialogPrimitive.Content>
+    </DialogPrimitive.Portal>
+  </DialogPrimitive.Root>;
 }
 
 /** The headline (youiyoux's): one sentence that carries the counts. */
@@ -334,7 +349,9 @@ export function LiveGrid() {
   // up to STREAMED. A tile held on screen while looked at keeps its place in it.
   const [pinned, setPinned] = useState<number[]>([]);
   const candidates = [...tiles, ...shown.filter(old => !tiles.some(tile => tile.runId === old.runId))].filter(tile => tile.local);
-  const streamedIds = new Set([...pinned.filter(run => candidates.some(tile => tile.runId === run)), ...candidates.map(tile => tile.runId)].slice(0, STREAMED));
+  // The agent open full screen comes first, whenever it is one this page may read.
+  const streamedIds = new Set([...(openRunId !== null && candidates.some(tile => tile.runId === openRunId) ? [openRunId] : []),
+    ...pinned.filter(run => candidates.some(tile => tile.runId === run)), ...candidates.map(tile => tile.runId)].slice(0, STREAMED));
   const streamedKey = [...streamedIds].sort((a, b) => a - b).join(",");
   useEffect(() => {
     const keys = streamedKey === "" ? [] : streamedKey.split(",").flatMap(run => [`${run}:main`, `${run}:sub`]);
@@ -348,18 +365,32 @@ export function LiveGrid() {
     return () => window.removeEventListener("popstate", moved);
   }, []);
   const openRun = (run: number) => {
+    if (openRef.current === run) return; // already open: one history entry per opening
+    openRef.current = run;
     history.pushState({ liveRun: run }, "", `/agents?view=live&run=${run}`);
     setOpenRunId(run);
-    if (!streamedIdsRef.current.has(run)) showLive(run);
   };
   const closeRun = () => {
     const run = openRef.current;
+    if (run === null) return;
+    openRef.current = null;
     if ((history.state as { liveRun?: number } | null)?.liveRun === run) history.back();
     else history.replaceState(null, "", "/agents?view=live");
     setOpenRunId(null);
-    // Back to the tile it came from.
-    requestAnimationFrame(() => (document.querySelector(`[data-live-open="${run}"]`) as HTMLElement | null)?.focus());
   };
+  // Closing (or switching) gives the run back its tile's retention: what the open view kept beyond 200 lines goes.
+  const previousOpen = useRef<number | null>(openRunId);
+  useEffect(() => {
+    const before = previousOpen.current;
+    previousOpen.current = openRunId;
+    if (before === null || before === openRunId) return;
+    setStreams(previous => {
+      const stream = previous.get(before);
+      if (stream === undefined) return previous;
+      const children = new Map([...stream.children].map(([s, child]) => [s, { ...child, lines: child.lines.slice(-KEEP_LINES) }]));
+      return new Map(previous).set(before, { ...stream, main: { ...stream.main, lines: stream.main.lines.slice(-KEEP_LINES) }, children });
+    });
+  }, [openRunId]);
   const showLive = (run: number) => setPinned(previous => [run, ...previous.filter(one => one !== run)].slice(0, STREAMED));
   const refresh = useCallback(() => {
     const mine = ++generation.current;
@@ -421,7 +452,7 @@ export function LiveGrid() {
   const working = shown.filter(tile => tile.endedAt === null).length;
   const needsYou = shown.filter(tile => tile.state === "needs-you").length;
   const waiting = tiles.length !== shown.length || tiles.some(tile => !ids.has(tile.runId));
-  return <section className="flex w-full flex-col gap-4" data-live-grid aria-label="Live">
+  return <section className="flex w-full flex-col gap-4 outline-none" data-live-grid aria-label="Live" tabIndex={-1}>
     <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 phone:sticky phone:top-0 phone:z-10 phone:bg-card phone:py-2">
       <Headline working={working} needsYou={needsYou} shownLive={streamedIds.size} local={tiles.filter(tile => tile.local).length} />
       {waiting && holding && <p className="text-[12px] text-muted-foreground">Changes wait while you look.</p>}
@@ -435,7 +466,8 @@ export function LiveGrid() {
         {parents.map(tile => <LiveTile key={tile.runId} tile={tile} stream={streams.get(tile.runId) ?? EMPTY} streamed={streamedIds.has(tile.runId)} now={now}
           repairs={repairsOf(tile.runId)} streams={streams} streamedIds={streamedIds} showLive={showLive} openRun={openRun} />)}
       </ul>}
-    {openRunId !== null && <FullScreen tile={[...tiles, ...shown].find(tile => tile.runId === openRunId) ?? null} stream={streams.get(openRunId) ?? EMPTY} now={now} onClose={closeRun} />}
+    {openRunId !== null && <FullScreen key={openRunId} runId={openRunId} tile={[...tiles, ...shown].find(tile => tile.runId === openRunId) ?? null} stream={streams.get(openRunId) ?? EMPTY}
+      streamed={streamedIds.has(openRunId)} now={now} lost={lost} onClose={closeRun} showLive={() => showLive(openRunId)} />}
     {terminals > 0 && <p className="border-t border-border pt-3 text-[12px] text-muted-foreground">
       <a href="/term" className="inline-block underline decoration-border underline-offset-4 hover:text-foreground hover:decoration-current phone:min-h-11 phone:py-3"><span className="tabular-nums">{terminals}</span> {terminals === 1 ? "terminal" : "terminals"} you're driving</a></p>}
   </section>;

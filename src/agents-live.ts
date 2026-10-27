@@ -30,6 +30,8 @@ export type AgentLiveTile = {
   local: boolean;
   /** A repair's build: the tile it nests under. */
   parentRun: number | null;
+  /** The task's own page, for a task this console keeps (an outside tracker's task has none here). */
+  taskHref: string | null;
 };
 
 const stateOf = (outcome: AgentsLiveRun["outcome"]): AgentLiveState =>
@@ -56,6 +58,7 @@ export function agentsLiveOf(store: Store, now: Date, viewer: { canSee: (run: Ag
       startedAt: run.startedAt, endedAt: run.finishedAt, state, why, quietSince,
       local: viewer.localRunner !== undefined && run.runner === viewer.localRunner,
       parentRun: run.role === "repair" ? run.parentRun : null,
+      taskHref: run.builtIn ? `/t/${encodeURIComponent(run.taskId)}` : null,
     });
   }
   return tiles;

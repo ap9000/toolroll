@@ -19,7 +19,7 @@ class Events extends EventTarget {
 const NOW = Date.parse("2026-10-27T12:00:00.000Z");
 const iso = (secondsAgo: number) => new Date(NOW - secondsAgo * 1000).toISOString();
 const tile = (runId: number, extra: Record<string, unknown> = {}) => ({ runId, role: "builder", title: `Task ${runId}`, project: "/p/shop-web", agent: "claude", model: "sonnet",
-  startedAt: iso(600 - runId), endedAt: null, state: "working", why: null, quietSince: null, local: true, parentRun: null, ...extra });
+  startedAt: iso(600 - runId), endedAt: null, state: "working", why: null, quietSince: null, local: true, parentRun: null, taskId: `t-${runId}`, taskHref: `/t/t-${runId}`, ...extra });
 let tiles: unknown[] = [];
 const sub: Record<number, unknown[]> = {};
 const requests: { url: string; method: string }[] = [];
@@ -327,7 +327,7 @@ test("a tile opens full screen (?run=), keeps 2,000 lines, opens every subagent,
   await act(async () => { opener.click(); });
   await flush();
   expect(location.search).toBe("?view=live&run=4");
-  const dialog = host.querySelector('[role="dialog"]')!;
+  const dialog = document.querySelector('[role="dialog"]')!;
   expect(document.activeElement?.textContent).toBe("Close");
   expect(dialog.querySelector('a[href="/t/t-4"]')?.textContent).toBe("Open task");
   expect(dialog.querySelectorAll("[data-live-child]").length).toBe(2);
@@ -335,10 +335,10 @@ test("a tile opens full screen (?run=), keeps 2,000 lines, opens every subagent,
   // The open agent keeps more than a tile does (2,000): a fresh read of it keeps all 900 lines.
   await act(async () => { Events.latest!.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ room: "agents-live", at: "r" }) })); });
   await flush();
-  expect(host.querySelector('[role="dialog"] [data-live-lines]')?.textContent).toContain("line 0\n");
-  await act(async () => { dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+  expect(document.querySelector('[role="dialog"] [data-live-lines]')?.textContent).toContain("line 0\n");
+  await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
   await act(async () => { await vi.advanceTimersByTimeAsync(50); });
-  expect(host.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
   expect(location.search).toBe("?view=live");
   expect(document.activeElement).toBe(host.querySelector('[data-live-open="4"]'));
 });
@@ -348,6 +348,84 @@ test("reloading ?view=live&run= opens that agent straight away", async () => {
   history.replaceState(null, "", "/agents?view=live&run=5");
   await act(async () => { root = createRoot(host); root.render(createElement(AgentsView, { view })); });
   await flush();
-  expect(host.querySelector('[role="dialog"] #live-full-title')?.textContent).toBe("Reloaded one");
+  expect(document.querySelector('[role="dialog"] #live-full-title')?.textContent).toBe("Reloaded one");
+  history.replaceState(null, "", "/agents?view=live");
+});
+
+// ---- Codex av7, round 1 ----------------------------------------------------------------------------------------------
+const openFull = async (run: number) => {
+  await act(async () => { (host.querySelector(`[data-live-open="${run}"]`) as HTMLButtonElement).click(); });
+  await flush();
+};
+const render7 = async () => { await act(async () => { root = createRoot(host); root.render(createElement(AgentsView, { view })); }); await flush(); };
+
+test("av7 #1 the dialog is modal: the grid behind it is hidden from assistive tech and focus stays inside", async () => {
+  tiles = [tile(1), tile(2)];
+  history.replaceState(null, "", "/agents?view=live");
+  await render7();
+  await openFull(1);
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(dialog.getAttribute("aria-modal") ?? "true").toBe("true");
+  expect(host.getAttribute("aria-hidden")).toBe("true"); // the page behind it, hidden while it is open
+  expect(dialog.contains(document.activeElement)).toBe(true);
+});
+
+test("av7 #2 a reloaded open run is read even past the 24 shown live", async () => {
+  tiles = Array.from({ length: 25 }, (_, i) => tile(25 - i));
+  history.replaceState(null, "", "/agents?view=live&run=1");
+  await render7();
+  expect(requests.some(one => one.url.startsWith("/agents/live/1?"))).toBe(true);
+  history.replaceState(null, "", "/agents?view=live");
+});
+
+test("av7 #3 full screen shows the same output states as the tile", async () => {
+  tiles = [tile(3)];
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    if (url === "/agents/live") return { ok: true, status: 200, json: async () => ({ tiles }) };
+    if (url.includes("file=main")) return { ok: false, status: 404, headers: new Headers(), json: async () => ({ error: "run" }) };
+    return { ok: true, status: 200, json: async () => ({ records: [], more: false }) };
+  }));
+  history.replaceState(null, "", "/agents?view=live");
+  await render7();
+  await openFull(3);
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Output unavailable.");
+});
+
+test("av7 #4 #5 Back closes it and focus returns to the tile; a double open leaves one history entry", async () => {
+  tiles = [tile(4)];
+  history.replaceState(null, "", "/agents?view=live");
+  await render7();
+  const length = history.length;
+  const opener = host.querySelector('[data-live-open="4"]') as HTMLButtonElement;
+  await act(async () => { opener.click(); opener.click(); });
+  await flush();
+  expect(history.length).toBe(length + 1);
+  history.replaceState(null, "", "/agents?view=live");
+  await act(async () => { window.dispatchEvent(new PopStateEvent("popstate")); });
+  await flush();
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+  expect(document.activeElement).toBe(host.querySelector('[data-live-open="4"]'));
+});
+
+test("av7 #6 closing gives the run back its tile's 200 lines", async () => {
+  tiles = [tile(6)];
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    if (url === "/agents/live") return { ok: true, status: 200, json: async () => ({ tiles }) };
+    if (url.includes("file=main")) return { ok: true, status: 200, json: async () => ({ records: Array.from({ length: 900 }, (_, i) => ({ k: "say", t: [`line ${i}`] })), more: false }) };
+    return { ok: true, status: 200, json: async () => ({ records: [], more: false }) };
+  }));
+  history.replaceState(null, "", "/agents?view=live&run=6");
+  await render7();
+  expect(document.querySelector('[role="dialog"] [data-live-lines]')?.textContent?.split("\n").length).toBe(900);
+  await act(async () => { (document.querySelector('[role="dialog"] button') as HTMLButtonElement).click(); });
+  await flush();
+  expect(host.querySelector('[data-live-tile="6"] [data-live-lines]')?.textContent?.split("\n").length).toBe(200);
+});
+
+test("av7 #7 a task this console doesn't keep has no Open task link", async () => {
+  tiles = [tile(7, { taskHref: null })];
+  history.replaceState(null, "", "/agents?view=live&run=7");
+  await render7();
+  expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain("Open task");
   history.replaceState(null, "", "/agents?view=live");
 });

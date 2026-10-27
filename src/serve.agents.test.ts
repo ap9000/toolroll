@@ -416,7 +416,7 @@ describe("the Live grid (docs/plans/agents-view.md §3)", () => {
     const response = await fetch(url("/agents/live"), { headers: { cookie } });
     expect(response.status).toBe(200);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    return ((await response.json()) as { tiles: { runId: number; role: string; state: string; why: string | null; project: string | null }[] }).tiles;
+    return ((await response.json()) as { tiles: { runId: number; role: string; state: string; why: string | null; project: string | null; taskHref: string | null }[] }).tiles;
   };
 
   test("lists running and just-ended agents in the viewer's own projects, newest first, with Needs you", async () => {
@@ -430,6 +430,10 @@ describe("the Live grid (docs/plans/agents-view.md §3)", () => {
     expect(alex.map(tile => tile.runId)).toEqual([done, b, a]);
     expect(alex.find(tile => tile.runId === b)).toMatchObject({ state: "needs-you", why: "question" });
     expect(alex.find(tile => tile.runId === done)).toMatchObject({ state: "done" });
+    // A task this console keeps links to its own page; one from an outside tracker has none.
+    expect(alex.find(tile => tile.runId === b)).toMatchObject({ taskHref: "/t/t-b" });
+    store.handle.prepare("UPDATE task_ref SET backend = 'linear' WHERE id = (SELECT task_ref FROM run WHERE id = ?)").run(a);
+    expect((await tiles(await login("alex", alexToken))).find(tile => tile.runId === a)).toMatchObject({ taskHref: null });
     const robin = await tiles(await login("robin", robinToken));
     expect(robin.map(tile => tile.runId)).toEqual([done, b]); // never another project's
   });
