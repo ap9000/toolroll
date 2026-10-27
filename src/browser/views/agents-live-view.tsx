@@ -313,6 +313,70 @@ function FullScreen({ runId, tile, stream, streamed, now, lost, onClose, showLiv
   </DialogPrimitive.Root>;
 }
 
+/** A lead chat turn of the viewer's own (agents-live-lead.ts): its words already redacted on the server, kept there. */
+type Lead = { thread: number; turn: number | null; scope: "lead" | "project" | "task"; title: string; project: string | null; state: "working" | "done" | "failed";
+  startedAt: string; endedAt: string | null; stepAt: string[]; doing: string | null; lines: string[]; earlier: boolean; chatHref: string; taskHref: string | null };
+const leadMeta = (lead: Lead) => ["lead", lead.project?.split("/").pop(), lead.stepAt.length > 1 ? `step ${lead.stepAt.length}` : null].filter(Boolean).join(" · ");
+
+/** A lead's tile: what it is doing, how long, its lines. Watching only; the title opens it full screen. */
+function LeadTile({ lead, now, openLead }: { lead: Lead; now: number; openLead: (thread: number) => void }) {
+  return <li className="flex min-w-0 flex-col gap-2" data-live-lead={lead.thread} data-live-state={lead.state}>
+    <article className="flex min-w-0 flex-col gap-2.5 rounded-card border border-border bg-card p-3.5">
+      <header className="flex flex-col gap-1">
+        <div className="flex items-start gap-2">
+          <h2 className="line-clamp-2 min-w-0 flex-1 text-[15px] font-semibold leading-[1.3]" title={lead.title}>
+            <button type="button" data-live-open-lead={lead.thread} onClick={() => openLead(lead.thread)} className="text-left hover:underline hover:underline-offset-4 phone:min-h-11">{lead.title}</button>
+          </h2>
+          <Chip fill={FILL[lead.state]!} dot={DOT[lead.state]!}>{STATE_WORDS[lead.state]}</Chip>
+        </div>
+        <p className="truncate font-mono text-[11px] text-muted-foreground">{leadMeta(lead)}</p>
+      </header>
+      <p className="flex gap-2 text-[13px]"><span className="min-w-0 flex-1 truncate">{lead.doing ?? ""}</span>
+        <span className="shrink-0 text-[12px] tabular-nums text-muted-foreground">{elapsedWords(lead.startedAt, lead.endedAt === null ? now : Date.parse(lead.endedAt))}</span></p>
+      {lead.earlier && <p className="text-[11.5px] text-muted-foreground">Earlier lines aren't shown.</p>}
+      <Lines lines={lead.lines} short={false} />
+    </article>
+  </li>;
+}
+
+/** A lead turn full screen: the same dialog as an agent's, with its chat (and its task, for a task's chat) a link away. */
+function LeadFull({ thread, lead, now, onClose }: { thread: number; lead: Lead | null; now: number; onClose: () => void }) {
+  const close = useRef<HTMLButtonElement>(null);
+  const link = "shrink-0 text-[12.5px] underline decoration-border underline-offset-4 hover:decoration-current phone:inline-flex phone:min-h-11 phone:items-center";
+  return <DialogPrimitive.Root open onOpenChange={open => { if (!open) onClose(); }}>
+    <DialogPrimitive.Portal container={typeof document === "undefined" ? undefined : document.querySelector<HTMLElement>("[data-view]") ?? undefined}>
+      <DialogPrimitive.Overlay className="ui-dialog-overlay" />
+      <DialogPrimitive.Content data-live-full aria-describedby={undefined}
+        onOpenAutoFocus={event => { event.preventDefault(); close.current?.focus(); }}
+        onCloseAutoFocus={event => {
+          event.preventDefault();
+          const opener = document.querySelector(`[data-live-open-lead="${thread}"]`) as HTMLElement | null;
+          (opener ?? document.querySelector("[data-live-grid]") as HTMLElement | null)?.focus();
+        }}
+        className="ui-dialog-content flex !w-[min(1100px,calc(100vw-48px))] flex-col gap-3 !p-5 phone:!bottom-0 phone:!left-0 phone:!top-auto phone:!max-h-[calc(100dvh-2rem)] phone:!w-full phone:!rounded-b-none phone:!p-4 phone:!pb-[max(1rem,env(safe-area-inset-bottom))] phone:![transform:none]">
+        <header className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <DialogPrimitive.Title className="text-[18px] font-semibold leading-[1.3]" data-live-full-title>{lead?.title ?? "This reply isn't on the grid anymore"}</DialogPrimitive.Title>
+            {lead !== null && <p className="truncate font-mono text-[11px] text-muted-foreground">{leadMeta(lead)}</p>}
+          </div>
+          {lead !== null && <Chip fill={FILL[lead.state]!} dot={DOT[lead.state]!}>{STATE_WORDS[lead.state]}</Chip>}
+          <DialogPrimitive.Close ref={close} className="shrink-0 rounded-sm border border-border px-2.5 py-1 text-[12.5px] phone:min-h-11">Close</DialogPrimitive.Close>
+        </header>
+        {lead !== null && <>
+          <p className="flex items-center gap-3 text-[13px]">
+            <span className="min-w-0 flex-1 truncate">{lead.doing ?? ""}</span>
+            <span className="shrink-0 text-[12px] tabular-nums text-muted-foreground">{elapsedWords(lead.startedAt, lead.endedAt === null ? now : Date.parse(lead.endedAt))}</span>
+            <a href={lead.chatHref} className={link}>Open chat</a>
+            {lead.taskHref !== null && <a href={lead.taskHref} className={link}>Open task</a>}
+          </p>
+          {lead.earlier && <p className="text-[11.5px] text-muted-foreground">Earlier lines aren't shown.</p>}
+          <Lines lines={lead.lines} short={false} tall />
+        </>}
+      </DialogPrimitive.Content>
+    </DialogPrimitive.Portal>
+  </DialogPrimitive.Root>;
+}
+
 /** The headline (youiyoux's): one sentence that carries the counts. */
 function Headline({ working, needsYou, shownLive, local }: { working: number; needsYou: number; shownLive: number; local: number }) {
   const n = (value: number) => <span className="font-semibold tabular-nums text-foreground">{value}</span>;
@@ -324,6 +388,7 @@ function Headline({ working, needsYou, shownLive, local }: { working: number; ne
 
 export function LiveGrid() {
   const [tiles, setTiles] = useState<Tile[]>([]);
+  const [leads, setLeads] = useState<Lead[]>([]);
   const [shown, setShown] = useState<Tile[]>([]);
   const [streams, setStreams] = useState<Map<number, Stream>>(new Map());
   const [loaded, setLoaded] = useState<"loading" | "ready" | "error">("loading");
@@ -395,13 +460,38 @@ export function LiveGrid() {
       return new Map(previous).set(before, { ...stream, main: { ...stream.main, lines: stream.main.lines.slice(-KEEP_LINES) }, children });
     });
   }, [openRunId]);
+  // A lead turn open full screen (?view=live&lead=…), the same way.
+  const leadOf = () => { const thread = Number(new URLSearchParams(location.search).get("lead")); return Number.isSafeInteger(thread) && thread > 0 ? thread : null; };
+  const [openLeadId, setOpenLeadId] = useState<number | null>(leadOf);
+  const leadRef = useRef<number | null>(openLeadId);
+  leadRef.current = openLeadId;
+  useEffect(() => {
+    const moved = () => setOpenLeadId(leadOf());
+    window.addEventListener("popstate", moved);
+    return () => window.removeEventListener("popstate", moved);
+  }, []);
+  const openLead = (thread: number) => {
+    if (leadRef.current === thread) return;
+    leadRef.current = thread;
+    history.pushState({ liveLead: thread }, "", `/agents?view=live&lead=${thread}`);
+    setOpenLeadId(thread);
+  };
+  const closeLead = () => {
+    const thread = leadRef.current;
+    if (thread === null) return;
+    leadRef.current = null;
+    if ((history.state as { liveLead?: number } | null)?.liveLead === thread) history.back();
+    else history.replaceState(null, "", "/agents?view=live");
+    setOpenLeadId(null);
+  };
   const showLive = (run: number) => setPinned(previous => [run, ...previous.filter(one => one !== run)].slice(0, STREAMED));
   const refresh = useCallback(() => {
     const mine = ++generation.current;
-    fetch("/agents/live", { credentials: "same-origin" }).then(response => response.ok ? response.json() : null).then((answer: { tiles: Tile[] } | null) => {
+    fetch("/agents/live", { credentials: "same-origin" }).then(response => response.ok ? response.json() : null).then((answer: { tiles: Tile[]; leads?: Lead[] } | null) => {
       if (mine !== generation.current) return; // a newer read already answered
       if (answer === null) { setLoaded(previous => previous === "ready" ? "ready" : "error"); return; }
       setTiles(answer.tiles);
+      setLeads(answer.leads ?? []);
       setLoaded("ready");
       // A nudge: every file being shown is read again from its cursor (the selection itself is kept by the effect).
       scheduler.current?.want([...streamedIdsRef.current].flatMap(run => [`${run}:main`, `${run}:sub`]));
@@ -453,7 +543,7 @@ export function LiveGrid() {
   const ids = new Set(shown.map(tile => tile.runId));
   const repairsOf = (runId: number) => shown.filter(tile => tile.role === "repair" && tile.parentRun === runId);
   const parents = shown.filter(tile => !(tile.role === "repair" && tile.parentRun !== null && ids.has(tile.parentRun)));
-  const working = shown.filter(tile => tile.endedAt === null).length;
+  const working = shown.filter(tile => tile.endedAt === null).length + leads.filter(lead => lead.endedAt === null).length;
   const needsYou = shown.filter(tile => tile.state === "needs-you").length;
   const waiting = tiles.length !== shown.length || tiles.some(tile => !ids.has(tile.runId));
   return <section className="flex w-full flex-col gap-4 outline-none" data-live-grid aria-label="Live" tabIndex={-1}>
@@ -463,15 +553,17 @@ export function LiveGrid() {
       {lost && <p className="text-[12px] text-muted-foreground" role="status">Reconnecting…</p>}
     </div>
     {loaded === "error" ? <p className="text-[13px] text-muted-foreground" role="status">Couldn't load the agents. Retrying.</p>
-      : loaded === "ready" && parents.length === 0 ? <p className="text-[13px] text-muted-foreground">No agents running.</p>
+      : loaded === "ready" && parents.length === 0 && leads.length === 0 ? <p className="text-[13px] text-muted-foreground">No agents running.</p>
       : <ul ref={grid} className="grid items-start gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr))]"
           onPointerEnter={() => hold(true, null)} onPointerLeave={() => hold(false, null)}
           onFocus={() => hold(null, true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) hold(null, false); }}>
+        {leads.map(lead => <LeadTile key={`lead-${lead.thread}`} lead={lead} now={now} openLead={openLead} />)}
         {parents.map(tile => <LiveTile key={tile.runId} tile={tile} stream={streams.get(tile.runId) ?? EMPTY} streamed={streamedIds.has(tile.runId)} now={now}
           repairs={repairsOf(tile.runId)} streams={streams} streamedIds={streamedIds} showLive={showLive} openRun={openRun} />)}
       </ul>}
     {openRunId !== null && <FullScreen key={openRunId} runId={openRunId} tile={[...tiles, ...shown].find(tile => tile.runId === openRunId) ?? null} stream={streams.get(openRunId) ?? EMPTY}
       streamed={streamedIds.has(openRunId)} now={now} lost={lost} onClose={closeRun} showLive={() => showLive(openRunId)} />}
+    {openLeadId !== null && <LeadFull key={`lead-${openLeadId}`} thread={openLeadId} lead={leads.find(lead => lead.thread === openLeadId) ?? null} now={now} onClose={closeLead} />}
     {terminals > 0 && <p className="border-t border-border pt-3 text-[12px] text-muted-foreground">
       <a href="/term" className="inline-block underline decoration-border underline-offset-4 hover:text-foreground hover:decoration-current phone:min-h-11 phone:py-3"><span className="tabular-nums">{terminals}</span> {terminals === 1 ? "terminal" : "terminals"} you're driving</a></p>}
   </section>;

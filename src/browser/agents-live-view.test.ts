@@ -21,6 +21,7 @@ const iso = (secondsAgo: number) => new Date(NOW - secondsAgo * 1000).toISOStrin
 const tile = (runId: number, extra: Record<string, unknown> = {}) => ({ runId, role: "builder", title: `Task ${runId}`, project: "/p/shop-web", agent: "claude", model: "sonnet",
   startedAt: iso(600 - runId), endedAt: null, state: "working", why: null, quietSince: null, local: true, parentRun: null, taskId: `t-${runId}`, taskHref: `/t/t-${runId}`, ...extra });
 let tiles: unknown[] = [];
+let leads: unknown[] = [];
 const sub: Record<number, unknown[]> = {};
 const requests: { url: string; method: string }[] = [];
 let root: Root | null = null, host: HTMLElement;
@@ -32,7 +33,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     requests.push({ url, method: init?.method ?? "GET" });
     const json = (body: unknown) => ({ ok: true, status: 200, json: async () => body });
-    if (url === "/agents/live") return json({ tiles });
+    if (url === "/agents/live") return json({ tiles, leads });
     if (url === "/term/state") return json({ sessions: [{ endedAt: null }, { endedAt: null }, { endedAt: iso(5) }] });
     const run = Number(/\/agents\/live\/(\d+)/.exec(url)?.[1]);
     if (url.includes("file=main")) return json({ records: [{ k: "say", at: iso(30), t: [`main words of ${run}`] }], cursor: "c", more: false });
@@ -47,6 +48,7 @@ afterEach(async () => {
   root = null;
   host.remove();
   requests.length = 0;
+  leads = [];
   for (const key of Object.keys(sub)) delete sub[Number(key)];
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -462,4 +464,29 @@ test("av7 r2: subagent and connection notices show even when the run's own outpu
   expect(text).toContain("Output unavailable.");
   expect(text).toContain("Couldn't read the subagents' output. Retrying.");
   history.replaceState(null, "", "/agents?view=live");
+});
+
+test("slice 8: the owner's lead turn is a tile, full screen with its chat and task a link away, and nothing that acts", async () => {
+  history.replaceState(null, "", "/agents?view=live");
+  tiles = [tile(1)];
+  leads = [{ thread: 9, turn: 4, scope: "task", title: "Fix the login", project: "/p/shop-web", state: "working", startedAt: iso(40), endedAt: null,
+    stepAt: [iso(40), iso(20)], doing: "Reading the task", lines: ["· Reading the task…", "Looking at the login form."], earlier: false, chatHref: "/chat?task=t-1", taskHref: "/t/t-1" }];
+  await act(async () => { root = createRoot(host); root.render(createElement(AgentsView, { view })); });
+  await flush();
+  const lead = host.querySelector('[data-live-lead="9"]')!;
+  expect(lead.textContent).toContain("Fix the login");
+  expect(lead.textContent).toContain("lead · shop-web · step 2");
+  expect(lead.textContent).toContain("Reading the task");
+  expect(lead.querySelector("[data-live-lines]")?.textContent).toBe("· Reading the task…\nLooking at the login form.");
+  expect(host.querySelector("[data-live-headline]")?.textContent).toContain("2 agents working");
+  await act(async () => { (lead.querySelector("[data-live-open-lead]") as HTMLButtonElement).click(); });
+  expect(location.search).toBe("?view=live&lead=9");
+  const full = document.querySelector("[data-live-full]")!;
+  expect(full.querySelector("[data-live-full-title]")?.textContent).toBe("Fix the login");
+  expect(full.querySelector('a[href="/chat?task=t-1"]')?.textContent).toBe("Open chat");
+  expect(full.querySelector('a[href="/t/t-1"]')?.textContent).toBe("Open task");
+  expect(full.querySelectorAll("form, textarea, button[type=submit]").length).toBe(0);
+  await act(async () => { (full.querySelector("button") as HTMLButtonElement).click(); });
+  expect(document.querySelector("[data-live-full]")).toBeNull();
+  expect(requests.every(one => one.method === "GET")).toBe(true);
 });
