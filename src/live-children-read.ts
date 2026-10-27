@@ -27,9 +27,7 @@ const RECORD_CAP = 8 * 1024;
 /** `inKey`: a key block this reader saw open (it stays until a valid END, nothing else ends it). `unknown`: bytes of
  * this stream's text still read as if inside a block because its state can't be known (a mid-file start, a line that
  * couldn't be read): it runs down only by text actually scanned, and an END marker ends it too. */
-type StreamState = { s: number; parent: string | null; via?: number; open: string[]; inKey: boolean; tail: string; ended: boolean; unknown: number;
-  /** Shown once for a stream first learned from a checkpoint: its description and start, as the file says. */
-  desc?: string; at?: string };
+type StreamState = { s: number; parent: string | null; via?: number; open: string[]; inKey: boolean; tail: string; ended: boolean; unknown: number };
 type ReadState = { run: number; gen: string; off: number; skipping: boolean; awaiting: boolean; streams: StreamState[] };
 
 export type ChildView =
@@ -81,13 +79,10 @@ function streamsOf(value: unknown): StreamState[] | null {
     if (typeof one["inKey"] !== "boolean" || typeof tail !== "string" || !validKeyTail(tail)) return null;
     // Absent means the default; an explicit null (or anything else) is not a value these fields take.
     const ended = one["ended"] === undefined ? false : one["ended"], unknown = one["unknown"] === undefined ? 0 : one["unknown"];
-    const desc = one["desc"], at = one["at"];
-    if (desc !== undefined && (typeof desc !== "string" || desc.length > 200)) return null;
-    if (at !== undefined && (typeof at !== "string" || at.length > 40 || !Number.isFinite(Date.parse(at)))) return null;
+
     if (typeof ended !== "boolean" || !Number.isSafeInteger(unknown) || (unknown as number) < 0 || (unknown as number) > UNKNOWN_KEY_BYTES) return null;
     open += ids.length;
-    out.push({ s, parent: parent as string | null, ...(via === undefined ? {} : { via: via as number }), open: ids as string[], inKey: one["inKey"] as boolean, tail, ended, unknown: unknown as number,
-      ...(typeof desc === "string" ? { desc } : {}), ...(typeof at === "string" ? { at } : {}) });
+    out.push({ s, parent: parent as string | null, ...(via === undefined ? {} : { via: via as number }), open: ids as string[], inKey: one["inKey"] as boolean, tail, ended, unknown: unknown as number });
   }
   return open <= CHILD_OPEN_STEPS_CAP ? out : null;
 }
@@ -152,6 +147,34 @@ function bootstrap(fd: number, size: number, run: number, gen: string): { state:
     : { state: { ...empty, off: from + found, awaiting: true }, earlier: true };
 }
 
+const ISO = (value: unknown): string | undefined => typeof value === "string" && value.length <= 40 && Number.isFinite(Date.parse(value)) ? value : undefined;
+const DISPLAY_KINDS = new Set(["session", "message", "edit", "command", "read", "search", "lookup", "plan", "delegate", "tool"]);
+/** A learned stream's display, from its checkpoint entry: each field checked, text re-redacted under the stream's own key
+ * state (unknown for a stream first seen here, so a target reads hidden); anything malformed is simply left out. */
+function displayOf(one: StreamState, entry: Record<string, unknown> | null, commands: boolean): ChildView[] {
+  const desc = typeof entry?.["desc"] === "string" && (entry["desc"] as string).length <= 200 ? redactLiveLines([entry["desc"] as string])[0] : undefined;
+  const at = ISO(entry?.["at"]);
+  const views: ChildView[] = [{ k: "child", s: one.s, ...(at === undefined ? {} : { at }), parent: one.parent, ...(one.via === undefined ? {} : { via: one.via }), ...(desc === undefined ? {} : { desc }) }];
+  const steps = Array.isArray(entry?.["steps"]) ? (entry!["steps"] as unknown[]).slice(0, CHILD_OPEN_STEPS_CAP) : [];
+  for (const raw of steps) {
+    const step = object(raw);
+    const id = step?.["id"], kind = step?.["kind"], target = step?.["target"];
+    if (typeof id !== "string" || !one.open.includes(id) || typeof kind !== "string" || !DISPLAY_KINDS.has(kind) || (target !== undefined && (typeof target !== "string" || target.length > 300))) continue;
+    const local = childStep(one.s).exec(id)?.[1];
+    if (local === undefined) continue;
+    const keys: KeyState = { inKey: one.inKey || one.unknown > 0, tail: one.tail };
+    const parsed = parseLiveRecord(JSON.stringify({ k: "step", at: at ?? "", id: local, kind, ...(target === undefined ? {} : { target }) }), keys);
+    // Under the run's own "Show commands" answer, like every other record.
+    const [shown] = parsed === null ? [] : withholdCommands([parsed], commands);
+    if (shown !== undefined && shown.k === "step") views.push({ ...shown, id, s: one.s } as ChildView);
+  }
+  if (one.ended) {
+    const endedAt = ISO(entry?.["endedAt"]), ok = entry?.["ok"];
+    views.push({ k: "end", s: one.s, ...(endedAt === undefined ? {} : { at: endedAt }), ok: ok === true || ok === false ? ok : null });
+  }
+  return views;
+}
+
 /** One line under the state: what it shows, or null when it is quarantined (`counted` says whether it counts). */
 /** A record's own time, when it is a plain ISO time (display only). */
 const stampOf = (record: Record<string, unknown>): { at?: string } => {
@@ -190,12 +213,10 @@ function apply(state: ReadState, text: string, commands: boolean): ChildView[] |
         : { ...next, inKey: known.inKey, tail: known.tail, unknown: next.inKey ? Math.max(known.unknown, UNKNOWN_KEY_BYTES) : known.unknown };
     });
     state.awaiting = false;
-    // A stream first learned here (a read that began mid-file) is shown as the subagent it is, then whether it ended.
-    return learned.flatMap(one => {
-      const shown = one.desc === undefined ? undefined : redactLiveLines([one.desc])[0];
-      const child: ChildView = { k: "child", s: one.s, ...(one.at === undefined ? {} : { at: one.at }), parent: one.parent, ...(one.via === undefined ? {} : { via: one.via }), ...(shown === undefined ? {} : { desc: shown }) };
-      return one.ended ? [child, { k: "end" as const, s: one.s, ok: null }] : [child];
-    });
+    // A stream first learned here (a read that began mid-file) is shown as the subagent it is, its open steps, and how
+    // it ended — display only, read from the checkpoint and checked here, never kept in the sealed cursor.
+    const raw = Array.isArray(record["streams"]) ? record["streams"] as unknown[] : [];
+    return learned.flatMap(next => displayOf(state.streams.find(one => one.s === next.s)!, raw.map(object).find(entry => entry?.["s"] === next.s) ?? null, commands));
   }
   if (state.awaiting) return [];
   if (record["k"] === "over") return [{ k: "over" }];

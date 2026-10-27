@@ -224,3 +224,87 @@ test("#13 #14 the well keeps every retained line (scrollable); chips print ink t
   expect(host.querySelector("[data-live-lines]")?.textContent).toContain("line 39");
   expect(host.querySelector("[data-live-chip]")?.className).toContain("text-foreground");
 });
+
+// ---- Codex av6, round 2 ----------------------------------------------------------------------------------------------
+
+test("r2 #1 a server that asks for longer than our cap is given it (seconds or a date)", async () => {
+  for (const header of [() => "60", () => new Date(Date.now() + 61_000).toUTCString()].map(make => make)) {
+    const asked: number[] = [];
+    const busy = vi.fn(async () => { asked.push(Date.now()); return reply(429, {}, { "retry-after": header() }); }) as unknown as typeof fetch;
+    const scheduler = createScheduler(() => {}, busy);
+    scheduler.want(["7:main"]);
+    await act(async () => { await vi.advanceTimersByTimeAsync(45_000); });
+    expect(asked.length).toBe(1);
+    await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
+    expect(asked.length).toBe(2);
+    scheduler.dispose();
+  }
+});
+
+test("r2 #5 #6 D a failure is reported as retrying; the subagents' file has its own notices", async () => {
+  const heard: string[] = [];
+  const scheduler = createScheduler((_key, answer) => heard.push(answer.error ?? "ok"), vi.fn(async () => reply(500)) as unknown as typeof fetch);
+  scheduler.want(["7:sub"]);
+  await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+  expect(heard).toEqual(["retry"]);
+  scheduler.dispose();
+  let stream = applyWindow(EMPTY, "main", { records: [{ k: "say", t: ["hi"] }] });
+  expect(applyWindow(stream, "sub", { error: "unavailable" }).subState).toBe("unavailable");
+  expect(applyWindow(stream, "sub", { error: "missing" }).subState).toBe("ready"); // no subagents yet is not a problem
+  stream = applyWindow(stream, "sub", { records: [{ k: "child", s: 1, desc: "a" }, { k: "over" }] });
+  expect(stream.over).toBe(true);
+  stream = applyWindow(stream, "sub", { restarted: true, records: [] });
+  expect([stream.subRestarted, stream.children.size, stream.over]).toEqual([true, 0, false]);
+});
+
+test("r2 C an ended subagent whose time or outcome isn't known reads Ended, neutral, and is not shown as just finished", () => {
+  const stream = applyWindow(EMPTY, "sub", { records: [{ k: "child", s: 1, at: iso(3600), desc: "old" }, { k: "end", s: 1, ok: null }] });
+  expect(stream.children.get(1)).toMatchObject({ endedAt: 0, ok: null });
+});
+
+test("r2 #7 Show live swaps a run in; a run that leaves the streamed set is no longer read", async () => {
+  tiles = Array.from({ length: 25 }, (_, i) => tile(25 - i));
+  await act(async () => { root = createRoot(host); root.render(createElement(AgentsView, { view })); });
+  await flush();
+  const button = [...host.querySelectorAll('[data-live-tile="1"] button')].find(one => one.textContent === "Show live") as HTMLButtonElement;
+  await act(async () => { button.click(); });
+  await flush();
+  expect(requests.some(one => one.url.startsWith("/agents/live/1?"))).toBe(true);
+  expect(host.querySelector('[data-live-tile="2"]')?.textContent).toContain("Not shown live"); // the oldest gave way
+  requests.length = 0;
+  await act(async () => { Events.latest!.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ room: "agents-live", at: "z" }) })); });
+  await flush();
+  expect(requests.some(one => one.url.startsWith("/agents/live/2?"))).toBe(false);
+});
+
+test("r2 E a held tile keeps its output; focus lost with its element lets the grid go", async () => {
+  tiles = [tile(1), tile(2)];
+  await act(async () => { root = createRoot(host); root.render(createElement(AgentsView, { view })); });
+  await flush();
+  const grid = host.querySelector("[data-live-grid] ul")!;
+  const log = host.querySelector('[data-live-tile="2"] [role=log]') as HTMLElement;
+  await act(async () => { log.focus(); });
+  tiles = [tile(1)];
+  await act(async () => { Events.latest!.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ room: "agents-live", at: "q" }) })); });
+  await flush();
+  expect(host.querySelector('[data-live-tile="2"] [data-live-lines]')).not.toBeNull(); // held, and still showing its lines
+  expect(host.textContent).not.toContain("Not shown live");
+  // The focused element goes away without a blur: the grid lets go on its next look.
+  await act(async () => { (document.activeElement as HTMLElement | null)?.remove(); document.body.focus(); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+  void grid;
+  expect(host.querySelector('[data-live-tile="2"]')).toBeNull();
+});
+
+test("r2 #7 keep(): a file that left the streamed set stops being retried", async () => {
+  const calls: string[] = [];
+  const failing = vi.fn(async (url: string) => { calls.push(url); throw new Error("down"); }) as unknown as typeof fetch;
+  const scheduler = createScheduler(() => {}, failing);
+  scheduler.want(["2:main"]);
+  await act(async () => { await vi.advanceTimersByTimeAsync(3_500); });
+  const before = calls.length;
+  scheduler.keep(new Set());
+  await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+  expect(calls.length).toBe(before);
+  scheduler.dispose();
+});

@@ -26,8 +26,9 @@ export const CHILD_DEPTH_CAP = 2;
 export const CHILD_CHECKPOINT_BYTES = 32 * 1024;
 
 export type ChildCheckpoint = { s: number; parent: string | null; via?: number; open: string[]; inKey: boolean; tail?: string; ended?: true;
-  /** What the reader shows for a stream it first learns of here (a read that starts mid-file): its description and start. */
-  desc?: string; at?: string };
+  /** What the reader shows for a stream it first learns of here (a read that starts mid-file): its description, start,
+   * open steps (as written, already redacted) and, once ended, when and how. Display only; never sealed in a cursor. */
+  desc?: string; at?: string; steps?: { id: string; kind: string; target?: string }[]; endedAt?: string; ok?: boolean | null };
 export type ChildRecord =
   | (LiveRecord & { s: number })
   | { k: "child"; s: number; at: string; parent: string | null; via?: number; desc?: string }
@@ -36,6 +37,8 @@ export type ChildRecord =
   | { k: "ckpt"; at: string; streams: ChildCheckpoint[]; dropped: number };
 
 type Stream = { s: number; depth: number; parent: string | null; via?: number; desc: string | null; startedAt: string; recorder: LiveRecorder; keys: KeyState; open: Set<string>; ended: boolean;
+  /** Each open step's kind and target as written (for a checkpoint), and how the stream ended. */
+  labels: Map<string, { kind: string; target?: string }>; endedAt?: string; ok?: boolean | null;
   /** The steps this stream's recorder wrote for the event in hand: provider call id → our id and its target as written. */
   noted: Map<string, { id: string; target: string | null }> };
 /** A delegation: who made it, and where its subagent's events go once it speaks. */
@@ -46,6 +49,8 @@ const object = (value: unknown): Record<string, unknown> | null =>
 /** A provider call id: a plain, bounded string, or nothing — never a number or an array coerced into one. */
 const callId = (value: unknown): string | null => (typeof value === "string" && value !== "" && value.length <= 200 ? value : null);
 const DELEGATES = new Set(["Task", "Agent"]);
+/** A checkpoint's display text: its first 60 characters (the line is already redacted). */
+const brief = (text: string): string => (text.length <= 60 ? text : `${text.slice(0, 59)}…`);
 /** At most about this many bytes of one event's records reach the file; past it words and one-off steps give way to one
  * `cut`, so a checkpoint (written between events) is never far behind any position. */
 export const CHILD_EVENT_WORDS_CAP = 64 * 1024;
@@ -78,7 +83,10 @@ export function createChildRecorder(options: Omit<LiveRecorderOptions, "keyState
   const checkpoint = (at: string): ChildRecord => ({ k: "ckpt", at, dropped, streams: streams.map(one => ({
     s: one.s, parent: one.parent, ...(one.via === undefined ? {} : { via: one.via }), open: [...one.open], inKey: one.keys.inKey,
     ...(one.keys.tail === undefined || one.keys.tail === "" ? {} : { tail: one.keys.tail }), ...(one.ended ? { ended: true as const } : {}),
-    ...(one.desc === null ? {} : { desc: one.desc }), at: one.startedAt,
+    // Display text cut short here so a checkpoint always fits its record (16 streams, 32 open steps).
+    ...(one.desc === null ? {} : { desc: brief(one.desc) }), at: one.startedAt,
+    ...(one.labels.size === 0 ? {} : { steps: [...one.labels].map(([id, label]) => ({ id, kind: label.kind, ...(label.target === undefined ? {} : { target: brief(label.target) }) })) }),
+    ...(one.endedAt === undefined ? {} : { endedAt: one.endedAt, ok: one.ok ?? null }),
   })) });
   /** A stream's own records: ids rewritten, open steps bounded across every stream, words bounded per event. */
   const own = (stream: Stream, records: LiveRecord[], at: string): ChildRecord[] => {
@@ -103,10 +111,12 @@ export function createChildRecorder(options: Omit<LiveRecorderOptions, "keyState
         const id = `c${stream.s}${record.id}`;
         if (!tracked) { out.push({ ...record, id, once: true, s: stream.s }); continue; }
         stream.open.add(id);
+        stream.labels.set(id, { kind: record.kind, ...(record.target === undefined ? {} : { target: record.target }) });
         out.push({ ...record, id, s: stream.s });
       } else if (record.k === "done") {
         const id = `c${stream.s}${record.id}`;
         if (!stream.open.delete(id)) { dropped += 1; continue; } // never one this stream has open
+        stream.labels.delete(id);
         out.push({ ...record, id, s: stream.s });
       } else out.push({ ...record, s: stream.s });
     }
@@ -117,6 +127,9 @@ export function createChildRecorder(options: Omit<LiveRecorderOptions, "keyState
     const records = own(stream, stream.recorder.end(), at);
     stream.ended = true;
     stream.open.clear();
+    stream.labels.clear();
+    stream.endedAt = at;
+    stream.ok = ok;
     return [...records, { k: "end", s: stream.s, at, ok }];
   };
   /** The main query ended: every subagent still speaking ends, and one that never spoke never will. */
@@ -129,7 +142,7 @@ export function createChildRecorder(options: Omit<LiveRecorderOptions, "keyState
     const noted = new Map<string, { id: string; target: string | null }>();
     const stream: Stream = { s: streams.length + 1, depth: into.depth, parent: into.parent, ...(into.via === undefined ? {} : { via: into.via }), desc: into.desc, startedAt: at,
       recorder: createLiveRecorder({ ...options, keyState: keys, onStep: (call, id, target) => { if (call !== null) noted.set(call, { id, target }); } }),
-      keys, open: new Set(), ended: false, noted };
+      keys, open: new Set(), ended: false, noted, labels: new Map() };
     streams.push(stream);
     into.stream = stream;
     return stream;

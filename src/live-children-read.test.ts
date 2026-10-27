@@ -291,3 +291,39 @@ test("Codex av6 #3: a read that starts mid-file shows the subagents its checkpoi
   expect(read(40, first.cursor).records).toEqual([{ k: "child", s: 1, at: "2026-10-27T11:50:00.000Z", parent: "s1", desc: "Reproduce it" }]);
 });
 
+describe("Codex av6 r2 (the reader's side)", () => {
+  test("A B: a cursor never carries display text, whatever the checkpoint says, and stays within its cap with 16 subagents", () => {
+    const streams = Array.from({ length: 16 }, (_, i) => ({ s: i + 1, parent: "s1", open: [], inKey: false, desc: `${"d".repeat(100)} sk-proj-SYNTHETICSECRET${i}`, at: "2026-10-27T11:00:00.000Z" }));
+    const filler = Array.from({ length: 400 }, (_, i) => line({ k: "say", s: 1, t: [`${"filler ".repeat(100)}${i}`] }));
+    mkdirSync(liveDir(root), { recursive: true });
+    writeFileSync(liveSubLogPath(root, 41), [...Array.from({ length: 16 }, (_, i) => line({ k: "child", s: i + 1, parent: "s1" })), ...filler, line({ k: "ckpt", dropped: 0, streams })].join(""), { mode: 0o600 });
+    const first = read(41);
+    const second = read(41, first.cursor);
+    expect(second.cursor.length).toBeLessThanOrEqual(CURSOR_CAP);
+    expect(Buffer.from(second.cursor.split(".")[0]!, "base64url").toString()).not.toMatch(/SYNTHETICSECRET|ddddd/);
+    expect(read(41, second.cursor).restarted).toBe(false);
+  });
+
+  test("#3 C: a learned subagent shows its open step (target hidden: its key state is unknown) and how it ended, or nothing for a time it doesn't know", () => {
+    const filler = Array.from({ length: 500 }, (_, i) => line({ k: "say", s: 3, t: [`${"filler ".repeat(100)}${i}`] }));
+    mkdirSync(liveDir(root), { recursive: true });
+    writeFileSync(liveSubLogPath(root, 42), [line({ k: "child", s: 1, parent: "s1" }), line({ k: "child", s: 2, parent: "s1" }), line({ k: "child", s: 3, parent: "s1" }), ...filler,
+      line({ k: "ckpt", dropped: 0, streams: [
+        { s: 1, parent: "s1", open: ["c1s4"], inKey: false, desc: "running", steps: [{ id: "c1s4", kind: "read", target: "src/a.ts" }] },
+        { s: 2, parent: "s1", open: [], inKey: false, ended: true, desc: "failed one", endedAt: "2026-10-27T10:00:00.000Z", ok: false },
+        { s: 3, parent: "s1", open: [], inKey: false, ended: true, desc: "no time" }] })].join(""), { mode: 0o600 });
+    const first = read(42);
+    const records = read(42, first.cursor).records;
+    expect(records.find(record => record.k === "step")).toMatchObject({ s: 1, id: "c1s4", kind: "read", target: "[hidden]" });
+    expect(records.filter(record => record.k === "end")).toEqual([{ k: "end", s: 2, at: "2026-10-27T10:00:00.000Z", ok: false }, { k: "end", s: 3, ok: null }]);
+  });
+});
+
+test("a learned subagent's open command step follows the run's own answer too", () => {
+  const filler = Array.from({ length: 500 }, (_, i) => line({ k: "say", s: 1, t: [`${"filler ".repeat(100)}${i}`] }));
+  mkdirSync(liveDir(root), { recursive: true });
+  writeFileSync(liveSubLogPath(root, 43), [line({ k: "child", s: 1, parent: "s1" }), ...filler,
+    line({ k: "ckpt", dropped: 0, streams: [{ s: 1, parent: "s1", open: ["c1s4"], inKey: false, steps: [{ id: "c1s4", kind: "command", target: "cat .env" }] }] })].join(""), { mode: 0o600 });
+  const first = read(43);
+  expect(JSON.stringify(read(43, first.cursor).records)).not.toContain(".env");
+});

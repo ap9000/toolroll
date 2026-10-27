@@ -16,7 +16,9 @@ type FileState = "loading" | "ready" | "off" | "unavailable" | "error";
 /** One stream's lines and its open steps (by id, in order), so the current step is the newest still open. */
 type Feed = { lines: string[]; open: [string, string][] };
 type Child = Feed & { s: number; via?: number; desc: string; startedAt: number; endedAt: number | null; ok: boolean | null; expired: boolean };
-export type Stream = { main: Feed; children: Map<number, Child>; mainState: FileState; subState: FileState; earlier: boolean; restarted: boolean };
+export type Stream = { main: Feed; children: Map<number, Child>; mainState: FileState; subState: FileState; earlier: boolean; restarted: boolean;
+  /** The subagents' file started over (its earlier subagents are gone from view), or more started than it keeps. */
+  subRestarted: boolean; over: boolean };
 export type Answer = { records?: Wire[]; error?: string; earlier?: boolean; restarted?: boolean };
 
 export const KEEP_LINES = 200, STREAMED = 24, MAX_READS = 4, READ_DEADLINE_MS = 10_000, CHILD_DONE_MS = 30_000, MAX_BACKOFF_MS = 30_000;
@@ -40,35 +42,41 @@ function fold(feed: Feed, one: Wire): Feed {
 }
 const stepNow = (feed: Feed): string | null => feed.open.at(-1)?.[1] ?? null;
 
-export const EMPTY: Stream = { main: emptyFeed(), children: new Map(), mainState: "loading", subState: "loading", earlier: false, restarted: false };
+export const EMPTY: Stream = { main: emptyFeed(), children: new Map(), mainState: "loading", subState: "loading", earlier: false, restarted: false, subRestarted: false, over: false };
 const stampOf = (at: string | undefined) => at !== undefined && Number.isFinite(Date.parse(at)) ? Date.parse(at) : Date.now();
 
 /** A window's records into a run's stream: the run's own (main) or its subagents' (sub). A restart starts that file over. */
 export function applyWindow(stream: Stream, file: "main" | "sub", answer: Answer): Stream {
   if (answer.error !== undefined) {
-    const state: FileState = answer.error === "off" ? "off" : answer.error === "gone" ? "unavailable" : "error";
+    // "missing": nothing written yet (no subagents, or not started) — not a problem; "retry": the reader is trying again.
+    if (answer.error === "missing") return file === "main" ? { ...stream, mainState: "ready" } : { ...stream, subState: "ready" };
+    const state: FileState = answer.error === "off" ? "off" : answer.error === "gone" || answer.error === "unavailable" ? "unavailable" : "error";
     return file === "main" ? { ...stream, mainState: state } : { ...stream, subState: state };
   }
   const restarted = answer.restarted === true;
   let main = file === "main" && restarted ? { lines: ["Output restarted."], open: [] } : stream.main;
   const children = file === "sub" && restarted ? new Map<number, Child>() : new Map(stream.children);
+  let over = stream.over && !(file === "sub" && restarted);
   for (const one of answer.records ?? []) {
     if (file === "main") { if (one.s === undefined) main = fold(main, one); continue; }
-    if (one.k === "over" || one.s === undefined) continue;
+    if (one.k === "over") { over = true; continue; }
+    if (one.s === undefined) continue;
     if (one.k === "child") {
       children.set(one.s, { ...emptyFeed(), s: one.s, ...(one.via === undefined ? {} : { via: one.via }), desc: one.desc ?? "Subagent", startedAt: stampOf(one.at), endedAt: null, ok: null, expired: false });
       continue;
     }
     const child = children.get(one.s);
     if (child === undefined) continue;
-    if (one.k === "end") children.set(one.s, { ...child, open: [], endedAt: Math.max(stampOf(one.at), child.startedAt), ok: one.ok ?? null });
+    // An end with no time (read from a checkpoint) is long past: it never shows as just finished.
+    if (one.k === "end") children.set(one.s, { ...child, open: [], endedAt: one.at === undefined ? 0 : Math.max(stampOf(one.at), child.startedAt), ok: one.ok ?? null });
     else children.set(one.s, { ...child, ...fold(child, one) });
   }
-  return { ...stream, main, children, earlier: stream.earlier || answer.earlier === true, restarted: stream.restarted || restarted,
+  return { ...stream, main, children, over, earlier: stream.earlier || answer.earlier === true, restarted: stream.restarted || restarted,
+    subRestarted: file === "sub" ? stream.subRestarted || restarted : stream.subRestarted,
     ...(file === "main" ? { mainState: "ready" as const } : { subState: "ready" as const }) };
 }
 
-export type Scheduler = { want(keys: string[]): void; dispose(): void };
+export type Scheduler = { want(keys: string[]): void; keep(keys: Set<string>): void; dispose(): void };
 /** One reader for the whole page: at most MAX_READS at once and one per file; a nudge marks a file pending, and a
  * read that ends with more written (or a nudge meanwhile) goes again; each read has a deadline; a failure backs off
  * (doubling up to 30 s, or as long as the server asks); the page going aborts every read and drops the rest. */
@@ -83,10 +91,19 @@ export function createScheduler(onRead: (key: string, answer: Answer) => void, f
     timer = setTimeout(() => { timer = null; pump(); }, Math.max(50, next - Date.now()));
   };
   const fail = (key: string, waitMs?: number) => {
-    const step = Math.min(MAX_BACKOFF_MS, Math.max(waitMs ?? 0, (delay.get(key) ?? 500) * 2));
+    // Our own backoff doubles up to 30 s; a server that asks for longer is given what it asks.
+    const step = Math.min(MAX_BACKOFF_MS, (delay.get(key) ?? 500) * 2);
     delay.set(key, step);
-    retryAt.set(key, Date.now() + step);
+    retryAt.set(key, Date.now() + Math.max(step, waitMs ?? 0));
     pending.add(key);
+    onRead(key, { error: "retry" });
+  };
+  const askedWait = (value: string | null): number | undefined => {
+    if (value === null) return undefined;
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
+    const at = Date.parse(value);
+    return Number.isFinite(at) ? Math.max(0, at - Date.now()) : undefined;
   };
   const pump = (): void => {
     if (disposed) return;
@@ -103,7 +120,7 @@ export function createScheduler(onRead: (key: string, answer: Answer) => void, f
         .then(async response => {
           if (disposed) return;
           if (response.status === 404) { onRead(key, { error: "gone" }); return; }
-          if (!response.ok) { const after = Number(response.headers.get("retry-after")); fail(key, Number.isFinite(after) && after > 0 ? after * 1000 : undefined); return; }
+          if (!response.ok) { fail(key, askedWait(response.headers.get("retry-after"))); return; }
           const answer = await response.json() as Answer & { cursor?: string; more?: boolean };
           if (disposed) return;
           if (answer.cursor !== undefined) cursors.set(key, answer.cursor);
@@ -118,6 +135,13 @@ export function createScheduler(onRead: (key: string, answer: Answer) => void, f
   };
   return {
     want(keys) { if (disposed) return; for (const key of keys) pending.add(key); pump(); },
+    /** Only these files are read from now on: any other is aborted, dropped and forgotten (its cursor and backoff). */
+    keep(keys) {
+      for (const key of [...pending, ...running.keys(), ...cursors.keys(), ...retryAt.keys()]) {
+        if (keys.has(key)) continue;
+        running.get(key)?.abort(); running.delete(key); pending.delete(key); cursors.delete(key); retryAt.delete(key); delay.delete(key);
+      }
+    },
     dispose() { disposed = true; if (timer !== null) clearTimeout(timer); for (const controller of running.values()) controller.abort(); running.clear(); pending.clear(); },
   };
 }
@@ -164,8 +188,8 @@ function Lines({ lines, short }: { lines: string[]; short: boolean }) {
 
 /** A subagent's tile: its description, what it is doing, how long, its lines; its own subagents nested under it. */
 function ChildTile({ child, all, now, last }: { child: Child; all: Child[]; now: number; last: boolean }) {
-  const words = child.endedAt === null ? "Working" : child.ok === false ? "Ended with an error" : "Done";
-  const key = child.endedAt === null ? "working" : child.ok === false ? "failed" : "done";
+  const words = child.endedAt === null ? "Working" : child.ok === false ? "Ended with an error" : child.ok === true ? "Done" : "Ended";
+  const key = child.endedAt === null ? "working" : child.ok === false ? "failed" : child.ok === true ? "done" : "stopped";
   const nested = all.filter(one => one.via === child.s);
   // A hairline elbow from the parent's spine to this tile; the spine runs on only to the next subagent.
   return <li className={cn("relative pl-5", !last && "pb-2",
@@ -185,20 +209,25 @@ function ChildTile({ child, all, now, last }: { child: Child; all: Child[]; now:
   </li>;
 }
 
-function Output({ tile, stream, streamed }: { tile: Tile; stream: Stream; streamed: boolean }) {
+function Output({ tile, stream, streamed, showLive }: { tile: Tile; stream: Stream; streamed: boolean; showLive: () => void }) {
   const quiet = "text-[12px] text-muted-foreground";
   if (!tile.local || stream.mainState === "off") return <p className={quiet}>Output is on another computer.</p>;
-  if (!streamed) return <p className={quiet}>Not shown live (more than {STREAMED} agents).</p>;
+  if (!streamed) return <p className={cn(quiet, "flex items-center gap-2")}>Not shown live.
+    <button type="button" onClick={showLive} className="rounded-sm border border-border bg-card px-2 py-0.5 text-[11.5px] text-foreground phone:min-h-11">Show live</button></p>;
   if (stream.mainState === "unavailable") return <p className={quiet}>Output unavailable.</p>;
   return <>
     {stream.earlier && <p className="text-[11.5px] text-muted-foreground">Earlier output isn't shown.</p>}
     {stream.mainState === "error" && <p className="text-[11.5px] text-muted-foreground">Couldn't read the latest output. Retrying.</p>}
     {stream.mainState === "loading" ? <p className={quiet}>Loading output…</p> : <Lines lines={stream.main.lines} short={false} />}
+    {stream.subState === "unavailable" && <p className="text-[11.5px] text-muted-foreground">Subagents' output unavailable.</p>}
+    {stream.subState === "error" && <p className="text-[11.5px] text-muted-foreground">Couldn't read the subagents' output. Retrying.</p>}
+    {stream.subRestarted && <p className="text-[11.5px] text-muted-foreground">Subagents' output restarted.</p>}
+    {stream.over && <p className="text-[11.5px] text-muted-foreground">More subagents started than are shown.</p>}
   </>;
 }
 
-function LiveTile({ tile, stream, streamed, now, repairs, streams, streamedIds }: { tile: Tile; stream: Stream; streamed: boolean; now: number;
-  repairs: Tile[]; streams: Map<number, Stream>; streamedIds: Set<number> }) {
+function LiveTile({ tile, stream, streamed, now, repairs, streams, streamedIds, showLive }: { tile: Tile; stream: Stream; streamed: boolean; now: number;
+  repairs: Tile[]; streams: Map<number, Stream>; streamedIds: Set<number>; showLive: (run: number) => void }) {
   const needsYou = tile.state === "needs-you";
   // What it is doing right now; nothing rather than the chip's word again.
   const line = tile.why === "quiet" && tile.quietSince !== null ? `Quiet for ${elapsedWords(tile.quietSince, now)}` : tile.why === "question" ? "Asked a question" : tile.endedAt === null ? stepNow(stream.main) ?? "" : "";
@@ -217,10 +246,10 @@ function LiveTile({ tile, stream, streamed, now, repairs, streams, streamedIds }
       </header>
       <p className="flex gap-2 text-[13px]"><span className="min-w-0 flex-1 truncate">{line}</span>
         <span className="shrink-0 text-[12px] tabular-nums text-muted-foreground">{elapsedWords(tile.startedAt, tile.endedAt === null ? now : Date.parse(tile.endedAt))}</span></p>
-      <Output tile={tile} stream={stream} streamed={streamed} />
+      <Output tile={tile} stream={stream} streamed={streamed} showLive={() => showLive(tile.runId)} />
     </article>
     {repairs.length > 0 && <ul aria-label={`Repairs of ${tile.title}`} className="ml-4 flex flex-col gap-2">
-      {repairs.map(repair => <LiveTile key={repair.runId} tile={repair} stream={streams.get(repair.runId) ?? EMPTY} streamed={streamedIds.has(repair.runId)} now={now} repairs={[]} streams={streams} streamedIds={streamedIds} />)}</ul>}
+      {repairs.map(repair => <LiveTile key={repair.runId} tile={repair} stream={streams.get(repair.runId) ?? EMPTY} streamed={streamedIds.has(repair.runId)} now={now} repairs={[]} streams={streams} streamedIds={streamedIds} showLive={showLive} />)}</ul>}
     {top.length > 0 && <ul aria-label={`Subagents of ${tile.title}`} className="ml-4 flex flex-col">
       {top.map((child, index) => <ChildTile key={child.s} child={child} all={children} now={now} last={index === top.length - 1} />)}</ul>}
   </li>;
@@ -246,6 +275,8 @@ export function LiveGrid() {
   const [holding, setHolding] = useState(false);
   const now = useNow(1_000);
   const scheduler = useRef<Scheduler | null>(null);
+  const streamedIdsRef = useRef<Set<number>>(new Set());
+  const grid = useRef<HTMLUListElement>(null);
   const generation = useRef(0);
   useEffect(() => {
     const created = createScheduler((key, answer) => {
@@ -255,8 +286,19 @@ export function LiveGrid() {
     scheduler.current = created;
     return () => { created.dispose(); scheduler.current = null; };
   }, []);
-  // The streamed set, one for reading and showing: the newest local runs, up to STREAMED.
-  const streamedIds = new Set(tiles.filter(tile => tile.local).slice(0, STREAMED).map(tile => tile.runId));
+  // The streamed set, one for reading and showing: runs the person asked to show live first, then the newest local runs,
+  // up to STREAMED. A tile held on screen while looked at keeps its place in it.
+  const [pinned, setPinned] = useState<number[]>([]);
+  const candidates = [...tiles, ...shown.filter(old => !tiles.some(tile => tile.runId === old.runId))].filter(tile => tile.local);
+  const streamedIds = new Set([...pinned.filter(run => candidates.some(tile => tile.runId === run)), ...candidates.map(tile => tile.runId)].slice(0, STREAMED));
+  const streamedKey = [...streamedIds].sort((a, b) => a - b).join(",");
+  useEffect(() => {
+    const keys = streamedKey === "" ? [] : streamedKey.split(",").flatMap(run => [`${run}:main`, `${run}:sub`]);
+    scheduler.current?.keep(new Set(keys));
+    scheduler.current?.want(keys);
+  }, [streamedKey]);
+  streamedIdsRef.current = streamedIds;
+  const showLive = (run: number) => setPinned(previous => [run, ...previous.filter(one => one !== run)].slice(0, STREAMED));
   const refresh = useCallback(() => {
     const mine = ++generation.current;
     fetch("/agents/live", { credentials: "same-origin" }).then(response => response.ok ? response.json() : null).then((answer: { tiles: Tile[] } | null) => {
@@ -264,7 +306,8 @@ export function LiveGrid() {
       if (answer === null) { setLoaded(previous => previous === "ready" ? "ready" : "error"); return; }
       setTiles(answer.tiles);
       setLoaded("ready");
-      scheduler.current?.want(answer.tiles.filter(tile => tile.local).slice(0, STREAMED).flatMap(tile => [`${tile.runId}:main`, `${tile.runId}:sub`]));
+      // A nudge: every file being shown is read again from its cursor (the selection itself is kept by the effect).
+      scheduler.current?.want([...streamedIdsRef.current].flatMap(run => [`${run}:main`, `${run}:sub`]));
     }).catch(() => { if (mine === generation.current) setLoaded(previous => previous === "ready" ? "ready" : "error"); });
   }, []);
   useEffect(() => { refresh(); }, [refresh]);
@@ -282,6 +325,10 @@ export function LiveGrid() {
     return [...kept, ...tiles.filter(tile => !previous.some(old => old.runId === tile.runId)).sort((a, b) => Date.parse(a.startedAt) - Date.parse(b.startedAt))];
   }), [tiles]);
   useEffect(() => { settle(pointerIn.current || focusIn.current); }, [settle]);
+  // Focus can leave without a blur (its element went away): look again each second, and let go when it is gone.
+  useEffect(() => {
+    if (focusIn.current && grid.current !== null && !grid.current.contains(document.activeElement)) hold(null, false);
+  });
   // A finished subagent leaves 30 s after it ended — not while the grid is being looked at, and never back again.
   useEffect(() => {
     if (holding) return;
@@ -320,11 +367,11 @@ export function LiveGrid() {
     </div>
     {loaded === "error" ? <p className="text-[13px] text-muted-foreground" role="status">Couldn't load the agents. Retrying.</p>
       : loaded === "ready" && parents.length === 0 ? <p className="text-[13px] text-muted-foreground">No agents running.</p>
-      : <ul className="grid items-start gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr))]"
+      : <ul ref={grid} className="grid items-start gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr))]"
           onPointerEnter={() => hold(true, null)} onPointerLeave={() => hold(false, null)}
           onFocus={() => hold(null, true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) hold(null, false); }}>
         {parents.map(tile => <LiveTile key={tile.runId} tile={tile} stream={streams.get(tile.runId) ?? EMPTY} streamed={streamedIds.has(tile.runId)} now={now}
-          repairs={repairsOf(tile.runId)} streams={streams} streamedIds={streamedIds} />)}
+          repairs={repairsOf(tile.runId)} streams={streams} streamedIds={streamedIds} showLive={showLive} />)}
       </ul>}
     {terminals > 0 && <p className="border-t border-border pt-3 text-[12px] text-muted-foreground">
       <a href="/term" className="inline-block underline decoration-border underline-offset-4 hover:text-foreground hover:decoration-current phone:min-h-11 phone:py-3"><span className="tabular-nums">{terminals}</span> {terminals === 1 ? "terminal" : "terminals"} you're driving</a></p>}
