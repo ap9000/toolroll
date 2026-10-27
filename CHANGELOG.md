@@ -62,6 +62,18 @@
 - **Network, writes, check access and sandbox settings stay on the typed
   password under Passwordless,** and a test now fails if one moves to the
   ordinary signed-in step-up.
+- **Launches don't wait on macOS's "access data from other apps" prompt.**
+  Toolroll looks inside other apps' containers only after a 3-second look in
+  a separate process shows macOS lets it, so a service run by launchd no
+  longer hangs every fenced launch. While macOS is still asking, the
+  containers stay denied by name and real path, and the links found by the
+  last full look stay denied; a look that fails for any other reason refuses
+  the launch.
+- **The release check ends itself before its time limit,** stopping the
+  parts still running and keeping every log and its report, and a failed
+  part's log reaches the run's output as soon as it fails.
+- **`toolroll release` rides out short GitHub network timeouts** while a
+  step waits, asking again until that step's own limit.
 - No database change: the schema stays at v135.
 
 ## 0.9.72 — 2026-10-25
