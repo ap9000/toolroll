@@ -160,6 +160,7 @@ function StatusCard({ view, card, csrf }: { view: BrowserTaskView; card: Assignm
   const pausedLine = pause?.state == null || stuck !== null ? null : pause.state === "pausing" ? "Pausing…"
     : pausedWords({ until: pause.until ?? null, limitMs: pause.limitMs ?? null }, iso => shortWhen(iso, new Date(), viewerZone(), true));
   return <Card data-task-status data-work-status={card.token} data-headline={card.status.headline} aria-label="Task status" className={cn(failed && "border-destructive/50", card.status.headline === "Needs you" && "border-warning")}>
+    {view.journey != null && <Journey steps={view.journey} />}
     <div className="flex flex-wrap items-center gap-x-4 gap-y-3 phone:gap-y-2.5">
       <div className="min-w-0 flex-1 basis-64">
         <StatusHeadline status={card.status} />
@@ -584,7 +585,7 @@ export function TaskView({ view, chat = null, details = true, csrf = "", result 
       </p>}
     </header>
 
-    {view.journey != null && <Journey steps={view.journey} />}
+    {view.journey != null && view.status === null && <Journey steps={view.journey} />}
 
     {view.status !== null
       ? <StatusCard view={view} card={view.status} csrf={csrf} />

@@ -682,6 +682,14 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .first-task-journey-mark { position: relative; z-index: 1; display: flex; width: 14px; height: 14px; }
 .first-task-journey li[data-state="current"], .first-task-journey li[data-state="stuck"] { color: var(--so-ink); font-weight: 600; }
 .first-task-journey li[data-state="todo"] .first-task-journey-mark { opacity: .6; }
+/* Inside the status card the road is its first row, over a hairline: one block says where the task is. */
+[data-view] [data-task-status] ol.first-task-journey { margin: 0; padding: 0 0 14px; border-bottom: 1px solid var(--so-line); }
+/* The chat's guide draws its marks with CSS (an empty mark, no glyph): a ring, filled green when done, the hue of its state. */
+.first-task-journey-mark:empty { box-sizing: border-box; border: 1.5px solid var(--so-input-line); border-radius: 50%; background: var(--so-paper); }
+.first-task-journey li[data-state="done"] .first-task-journey-mark:empty { border-color: var(--so-success); background: var(--so-success); }
+.first-task-journey li[data-state="current"] .first-task-journey-mark:empty { border-color: var(--so-info); box-shadow: inset 0 0 0 2.5px var(--so-paper); background: var(--so-info); }
+.first-task-journey li[data-step="approve"][data-state="current"] .first-task-journey-mark:empty { border-color: var(--so-warning); background: var(--so-warning); }
+.first-task-journey li[data-state="stuck"] .first-task-journey-mark:empty { border-color: var(--so-ink); background: var(--so-ink); }
 @media (max-width: 760px) {
   .first-task-journey li { font-size: 11.5px; }
   .so-phone-options, .so-first-run-choices { grid-template-columns: 1fr; }
