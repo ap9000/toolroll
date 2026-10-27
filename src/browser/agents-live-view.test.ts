@@ -65,6 +65,9 @@ test("tiles, nested subagents, Needs you, the terminals line, and no control tha
   expect([...host.querySelectorAll("[data-live-tile]")].map(one => one.getAttribute("data-live-tile"))).toEqual(["1", "2"]);
   const quiet = host.querySelector('[data-live-tile="1"]')!;
   expect(quiet.querySelector("[data-live-chip]")?.textContent).toBe("Needs you");
+  // Its words lean toward ink (text-needs, 4.5:1 or better on the wash; the proof script measures it), its dot stays amber.
+  expect(quiet.querySelector("[data-live-chip]")?.className).toContain("text-needs");
+  expect(quiet.querySelector("[data-live-chip] > span")?.className).toContain("text-warning");
   expect(quiet.textContent).toContain("Quiet for 5 min");
   const parent = host.querySelector('[data-live-tile="2"]')!;
   expect([...parent.querySelectorAll("[data-live-child]")].map(one => one.textContent?.includes("Done") ? "done" : "working")).toEqual(["working", "done"]);

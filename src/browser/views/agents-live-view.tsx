@@ -156,9 +156,13 @@ const FILL: Record<string, string> = { working: "bg-info-soft", done: "bg-succes
 /** "Needs you" (DESIGN.md, waits on you): the amber warning token as a thin full outline and a chip with a dot; never a
  * fill, never an edge stripe. */
 const NEEDS_FILL = "bg-warning-soft", NEEDS_DOT = "text-warning", NEEDS_TILE = "border-warning";
+/** Its words: amber leaning 15% toward ink (`text-needs`, as on the ReUI chip), 5.2:1 on the wash in light, over 9:1 in
+ * dark; the dot and the outline stay pure amber. */
+export const NEEDS_TEXT = "text-needs";
 
 function Chip({ fill, dot, children }: { fill: string; dot: string; children: string }) {
-  return <span className={cn("inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm px-1.5 text-[11.5px] font-medium leading-none text-foreground", fill)} data-live-chip>
+  const ink = fill === NEEDS_FILL ? NEEDS_TEXT : "text-foreground";
+  return <span className={cn("inline-flex h-5 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-sm px-1.5 text-[11.5px] font-medium leading-none", ink, fill)} data-live-chip>
     <span aria-hidden="true" className={cn("size-1.5 rounded-full bg-current", dot)} />{children}
   </span>;
 }

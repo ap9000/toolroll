@@ -219,6 +219,25 @@ for (const [name, viewport] of [['desktop', { width: 1440, height: 900 }], ['tab
     && [...document.querySelectorAll('[data-live-lines]')].some(node => (node.textContent ?? '').includes('Splitting')));
   check(`${name}: three tiles, two subagents, live lines`, ready);
   check(`${name}: the terminals line`, await until(page, () => (document.body.textContent ?? '').includes("1 terminal you're driving"), 5_000));
+  // The Needs you chip's words on its amber wash meet WCAG AA for small text (4.5:1), in light and in dark.
+  for (const scheme of name === 'desktop' ? ['light', 'dark'] : []) {
+    await page.emulateMedia({ colorScheme: scheme });
+    const ratio = await page.evaluate(() => {
+      const chip = document.querySelector('[data-live-state="needs-you"] [data-live-chip]');
+      const tile = chip?.closest('article');
+      if (!chip || !tile) return 0;
+      const canvas = document.createElement('canvas'); canvas.width = canvas.height = 1;
+      const g = canvas.getContext('2d', { willReadFrequently: true });
+      const paint = (...colors) => { g.clearRect(0, 0, 1, 1); for (const color of colors) { g.fillStyle = color; g.fillRect(0, 0, 1, 1); } return [...g.getImageData(0, 0, 1, 1).data].slice(0, 3); };
+      const bg = paint(getComputedStyle(tile).backgroundColor, getComputedStyle(chip).backgroundColor);
+      const fg = paint(getComputedStyle(tile).backgroundColor, getComputedStyle(chip).backgroundColor, getComputedStyle(chip).color);
+      const lum = rgb => { const [r, gr, b] = rgb.map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * gr + 0.0722 * b; };
+      const [hi, lo] = [lum(fg), lum(bg)].sort((a, b) => b - a);
+      return (hi + 0.05) / (lo + 0.05);
+    });
+    check(`${name} ${scheme}: Needs you chip text contrast at least 4.5:1`, ratio >= 4.5, `${ratio.toFixed(2)}:1`);
+  }
+  await page.emulateMedia({ colorScheme: 'light' });
   check(`${name}: the quiet one reads Needs you`, await page.$$eval('[data-live-state="needs-you"] [data-live-chip]', nodes => nodes.map(node => node.textContent)).then(words => words.includes('Needs you')));
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   check(`${name}: no sideways scroll`, overflow <= 0, `overflow ${overflow}px`);
