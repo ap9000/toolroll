@@ -25,7 +25,9 @@ export const CHILD_DEPTH_CAP = 2;
 /** A checkpoint at least this often, in bytes of child records. */
 export const CHILD_CHECKPOINT_BYTES = 32 * 1024;
 
-export type ChildCheckpoint = { s: number; parent: string | null; via?: number; open: string[]; inKey: boolean; tail?: string; ended?: true };
+export type ChildCheckpoint = { s: number; parent: string | null; via?: number; open: string[]; inKey: boolean; tail?: string; ended?: true;
+  /** What the reader shows for a stream it first learns of here (a read that starts mid-file): its description and start. */
+  desc?: string; at?: string };
 export type ChildRecord =
   | (LiveRecord & { s: number })
   | { k: "child"; s: number; at: string; parent: string | null; via?: number; desc?: string }
@@ -33,7 +35,7 @@ export type ChildRecord =
   | { k: "over"; at: string }
   | { k: "ckpt"; at: string; streams: ChildCheckpoint[]; dropped: number };
 
-type Stream = { s: number; depth: number; parent: string | null; via?: number; recorder: LiveRecorder; keys: KeyState; open: Set<string>; ended: boolean;
+type Stream = { s: number; depth: number; parent: string | null; via?: number; desc: string | null; startedAt: string; recorder: LiveRecorder; keys: KeyState; open: Set<string>; ended: boolean;
   /** The steps this stream's recorder wrote for the event in hand: provider call id → our id and its target as written. */
   noted: Map<string, { id: string; target: string | null }> };
 /** A delegation: who made it, and where its subagent's events go once it speaks. */
@@ -76,6 +78,7 @@ export function createChildRecorder(options: Omit<LiveRecorderOptions, "keyState
   const checkpoint = (at: string): ChildRecord => ({ k: "ckpt", at, dropped, streams: streams.map(one => ({
     s: one.s, parent: one.parent, ...(one.via === undefined ? {} : { via: one.via }), open: [...one.open], inKey: one.keys.inKey,
     ...(one.keys.tail === undefined || one.keys.tail === "" ? {} : { tail: one.keys.tail }), ...(one.ended ? { ended: true as const } : {}),
+    ...(one.desc === null ? {} : { desc: one.desc }), at: one.startedAt,
   })) });
   /** A stream's own records: ids rewritten, open steps bounded across every stream, words bounded per event. */
   const own = (stream: Stream, records: LiveRecord[], at: string): ChildRecord[] => {
@@ -124,10 +127,9 @@ export function createChildRecorder(options: Omit<LiveRecorderOptions, "keyState
   const open = (into: Delegation, at: string): Stream => {
     const keys: KeyState = { inKey: false };
     const noted = new Map<string, { id: string; target: string | null }>();
-    const stream: Stream = { s: streams.length + 1, depth: into.depth, parent: into.parent, ...(into.via === undefined ? {} : { via: into.via }),
+    const stream: Stream = { s: streams.length + 1, depth: into.depth, parent: into.parent, ...(into.via === undefined ? {} : { via: into.via }), desc: into.desc, startedAt: at,
       recorder: createLiveRecorder({ ...options, keyState: keys, onStep: (call, id, target) => { if (call !== null) noted.set(call, { id, target }); } }),
       keys, open: new Set(), ended: false, noted };
-    void at;
     streams.push(stream);
     into.stream = stream;
     return stream;

@@ -117,7 +117,8 @@ describe("starting mid-file", () => {
     const seen: ChildView[] = [...got.records];
     for (let n = 0; n < 10 && got.more; n += 1) { got = read(7, got.cursor); seen.push(...got.records); }
     expect(got.earlier).toBe(true);
-    expect(seen).toEqual([{ k: "done", at, id: "c1s1", ok: true, s: 1 }]); // the line inside the key block shows nothing
+    // The subagent learned from the checkpoint shows first; the line inside the key block shows nothing.
+    expect(seen).toEqual([{ k: "child", s: 1, parent: "s1" }, { k: "done", at, id: "c1s1", ok: true, s: 1 }]);
   });
 
   test("with no checkpoint in reach nothing is shown until one comes (fails closed)", () => {
@@ -133,7 +134,7 @@ describe("starting mid-file", () => {
     // A checkpoint brings the stream back, but its key state is the file's word: unknown until an END marker.
     appendFileSync(liveSubLogPath(root, 8), line({ k: "ckpt", dropped: 0, streams: [{ s: 1, parent: null, open: [], inKey: false }] })
       + line({ k: "say", s: 1, t: ["not yet"] }) + line({ k: "say", s: 1, t: ["-----END PRIVATE KEY-----"] }) + line({ k: "say", s: 1, t: ["now"] }));
-    expect(read(8, got.cursor).records).toEqual([{ k: "say", at, t: ["now"], s: 1 }]);
+    expect(read(8, got.cursor).records).toEqual([{ k: "child", s: 1, parent: null }, { k: "say", at, t: ["now"], s: 1 }]);
   });
 });
 
@@ -242,7 +243,7 @@ describe("review round 1 (Codex av4)", () => {
     file(29, [line({ k: "child", s: 1, parent: null }), ...filler, line({ k: "ckpt", dropped: 0, streams: [{ s: 1, parent: null, open: [], inKey: false }] }), line({ k: "child", s: 2, parent: null })]);
     const first = read(29);
     expect(first).toMatchObject({ records: [], earlier: true, more: true });
-    expect(read(29, first.cursor).records).toEqual([{ k: "child", s: 2, at, parent: null }]);
+    expect(read(29, first.cursor).records).toEqual([{ k: "child", s: 1, parent: null }, { k: "child", s: 2, at, parent: null }]);
   });
 });
 
@@ -280,3 +281,13 @@ describe("review round 2 (Codex av4)", () => {
     expect(read(33)).toMatchObject({ records: [], earlier: true });
   });
 });
+
+test("Codex av6 #3: a read that starts mid-file shows the subagents its checkpoint names, with their description and start", () => {
+  const filler = Array.from({ length: 500 }, (_, i) => line({ k: "say", s: 1, t: [`${"filler ".repeat(100)}${i}`] }));
+  mkdirSync(liveDir(root), { recursive: true });
+  writeFileSync(liveSubLogPath(root, 40), [line({ k: "child", s: 1, parent: "s1", desc: "Reproduce it" }), ...filler,
+    line({ k: "ckpt", dropped: 0, streams: [{ s: 1, parent: "s1", open: [], inKey: false, desc: "Reproduce it", at: "2026-10-27T11:50:00.000Z" }] })].join(""), { mode: 0o600 });
+  const first = read(40);
+  expect(read(40, first.cursor).records).toEqual([{ k: "child", s: 1, at: "2026-10-27T11:50:00.000Z", parent: "s1", desc: "Reproduce it" }]);
+});
+

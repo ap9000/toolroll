@@ -27,7 +27,9 @@ const RECORD_CAP = 8 * 1024;
 /** `inKey`: a key block this reader saw open (it stays until a valid END, nothing else ends it). `unknown`: bytes of
  * this stream's text still read as if inside a block because its state can't be known (a mid-file start, a line that
  * couldn't be read): it runs down only by text actually scanned, and an END marker ends it too. */
-type StreamState = { s: number; parent: string | null; via?: number; open: string[]; inKey: boolean; tail: string; ended: boolean; unknown: number };
+type StreamState = { s: number; parent: string | null; via?: number; open: string[]; inKey: boolean; tail: string; ended: boolean; unknown: number;
+  /** Shown once for a stream first learned from a checkpoint: its description and start, as the file says. */
+  desc?: string; at?: string };
 type ReadState = { run: number; gen: string; off: number; skipping: boolean; awaiting: boolean; streams: StreamState[] };
 
 export type ChildView =
@@ -79,9 +81,13 @@ function streamsOf(value: unknown): StreamState[] | null {
     if (typeof one["inKey"] !== "boolean" || typeof tail !== "string" || !validKeyTail(tail)) return null;
     // Absent means the default; an explicit null (or anything else) is not a value these fields take.
     const ended = one["ended"] === undefined ? false : one["ended"], unknown = one["unknown"] === undefined ? 0 : one["unknown"];
+    const desc = one["desc"], at = one["at"];
+    if (desc !== undefined && (typeof desc !== "string" || desc.length > 200)) return null;
+    if (at !== undefined && (typeof at !== "string" || at.length > 40 || !Number.isFinite(Date.parse(at)))) return null;
     if (typeof ended !== "boolean" || !Number.isSafeInteger(unknown) || (unknown as number) < 0 || (unknown as number) > UNKNOWN_KEY_BYTES) return null;
     open += ids.length;
-    out.push({ s, parent: parent as string | null, ...(via === undefined ? {} : { via: via as number }), open: ids as string[], inKey: one["inKey"] as boolean, tail, ended, unknown: unknown as number });
+    out.push({ s, parent: parent as string | null, ...(via === undefined ? {} : { via: via as number }), open: ids as string[], inKey: one["inKey"] as boolean, tail, ended, unknown: unknown as number,
+      ...(typeof desc === "string" ? { desc } : {}), ...(typeof at === "string" ? { at } : {}) });
   }
   return open <= CHILD_OPEN_STEPS_CAP ? out : null;
 }
@@ -176,6 +182,7 @@ function apply(state: ReadState, text: string, commands: boolean): ChildView[] |
     if (streams === null || !state.streams.every(known => streams.some(next => next.s === known.s))) return null;
     // The file's own word on key state never weakens what this reader knows: a stream it has followed keeps its own
     // key state (the checkpoint can only add caution); one it first learns of here starts unknown.
+    const learned = streams.filter(next => !state.streams.some(one => one.s === next.s));
     state.streams = streams.map(next => {
       const known = state.streams.find(one => one.s === next.s);
       return known === undefined
@@ -183,7 +190,12 @@ function apply(state: ReadState, text: string, commands: boolean): ChildView[] |
         : { ...next, inKey: known.inKey, tail: known.tail, unknown: next.inKey ? Math.max(known.unknown, UNKNOWN_KEY_BYTES) : known.unknown };
     });
     state.awaiting = false;
-    return [];
+    // A stream first learned here (a read that began mid-file) is shown as the subagent it is, then whether it ended.
+    return learned.flatMap(one => {
+      const shown = one.desc === undefined ? undefined : redactLiveLines([one.desc])[0];
+      const child: ChildView = { k: "child", s: one.s, ...(one.at === undefined ? {} : { at: one.at }), parent: one.parent, ...(one.via === undefined ? {} : { via: one.via }), ...(shown === undefined ? {} : { desc: shown }) };
+      return one.ended ? [child, { k: "end" as const, s: one.s, ok: null }] : [child];
+    });
   }
   if (state.awaiting) return [];
   if (record["k"] === "over") return [{ k: "over" }];
