@@ -373,7 +373,7 @@ export function liveWindowRecords(read: { text: string; format: LiveFormat }, co
  * step's text or a step's output may say anything. With the answer off, every `open` reads the base tier, command steps
  * lose their text and steps lose their output. (The older plain-text format predates command detail and is unchanged.)
  */
-function withholdCommands(records: LiveRecord[], commands: boolean): LiveRecord[] {
+export function withholdCommands(records: LiveRecord[], commands: boolean): LiveRecord[] {
   if (commands) return records;
   return records.map(record => {
     if (record.k === "open") return record.detail === "base" ? record : { ...record, detail: "base" as const };
