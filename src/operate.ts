@@ -4467,7 +4467,8 @@ async function requeueTask(
  * `toolroll task regate <id>` — the approved check again on the last
  * attempt's exact commit (v70). A new attempt whose prepared candidate is
  * that commit: no agent, a fresh receipt and proof, the ordinary review.
- * The operator's yes seals the rerun scope; who asked is recorded.
+ * The operator's yes seals the rerun scope; who asked is recorded. A task
+ * that already names a prepared candidate keeps its approved scope as it is.
  */
 async function regateTaskCommand(
   positional: readonly string[],
@@ -4483,7 +4484,7 @@ async function regateTaskCommand(
   const result = regateTask(store, id, clock(), { kind: "operator", name: acting.name, token: acting.token });
   if (!result.ok) return fail(write, json, "task regate", result.reason, result.message, EXIT.refused);
   return succeed(write, json, "task regate", { id, run: result.run, head: result.head }, () => [
-    `${id} is queued again: the approved check runs on commit ${result.head.slice(0, 7)} exactly as attempt #${result.run} left it, with no agent. A fresh review follows.`,
+    `${id} is queued again: the approved check runs on commit ${result.head.slice(0, 7)}, the same files attempt #${result.run} checked, with no agent. A fresh review follows.`,
   ]);
 }
 

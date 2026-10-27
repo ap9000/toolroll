@@ -117,6 +117,9 @@ export function gateStateOf(answer: Json, accounts: readonly unknown[] = []): Ga
   const failed = newest !== undefined && newest["finishedAt"] != null && newest["outcome"] !== "built" && newest["outcome"] !== "no-change" && Number(newest["id"]) !== resultRun
     ? `run ${String(newest["id"])} ended ${String(newest["outcome"] ?? "without an outcome")}` : null;
   const worktree = runs.find(run => run["id"] === resultRun)?.["worktree"];
+  // Queued again or still building past the result shown (a regate): that result is the one before the rerun.
+  const state = object(answer["task"])["state"];
+  const pending = resultRun !== null && (state === "queued" || state === "running" || (newest !== undefined && newest["finishedAt"] == null && Number(newest["id"]) > resultRun));
   return {
     exists: true,
     candidate: textOr(scope["candidate"]),
@@ -133,6 +136,7 @@ export function gateStateOf(answer: Json, accounts: readonly unknown[] = []): Ga
         : checks["status"] === "passed" && checks["level"] !== "full" ? "not-full" : String(checks["status"] ?? "not-run"),
     },
     failed,
+    pending,
     completion: textOr(completion["digest"]) === null ? null : { actor: String(completion["actor"]), at: String(completion["at"]), digest: String(completion["digest"]) },
   };
 }

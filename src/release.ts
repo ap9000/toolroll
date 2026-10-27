@@ -74,6 +74,9 @@ export type GateState = {
   result: { run: number; head: string | null; check: string; level: string | null; receipt: string; worktree: string | null } | null;
   /** A finished build that left no result to complete (it failed before the check), in words. */
   failed: string | null;
+  /** A newer attempt is queued or running (`task regate` after a failed check): the result shown is the one before it.
+   * Absent from a plane too old to say. */
+  pending?: boolean;
   completion: { actor: string; at: string; digest: string } | null;
 };
 export type Installed = { services: string[]; clis: { name: string; runtime: string | null }[] };
@@ -618,6 +621,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             await watch("dispatch");
             const gate = await adapters.toolroll.gate(j.task.id);
             await approved(gate);
+            // A rerun of the same approved commit is on its way: the failure before it is not this release's answer.
+            if (gate.pending === true && gate.result?.check !== "passed") return null;
             if (gate.failed !== null) throw new Stop("check-failed", `The release build of ${j.task.id} failed: ${gate.failed}. Fix it and release the new commit with --new.`);
             if (gate.result === null || gate.result.check === "running" || gate.result.check === "pending") return null;
             // The build records a prepared candidate as a commit of its own (its message names the task): it must hold
