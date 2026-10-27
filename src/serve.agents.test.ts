@@ -493,6 +493,41 @@ describe("the Live grid's reads (docs/plans/agents-view.md §3)", () => {
     expect((await get(`/agents/live/${run}?file=sub&cursor=forged.cursor`, cookie)).body).toMatchObject({ restarted: true });
   });
 
+  test("the room is each viewer's own: a file growing on a run they can see moves theirs only, and says no sizes", async () => {
+    const mine = running("t-room-a", repoA);
+    const log = await record(mine);
+    const open = async (cookie: string) => {
+      const controller = new AbortController();
+      const response = await fetch(`${localBase}/live?room=agents-live`, { headers: { cookie, accept: "text/event-stream" }, signal: controller.signal });
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      let text = "";
+      const until = async (pattern: RegExp, ms: number) => {
+        const deadline = Date.now() + ms;
+        while (!pattern.test(text) && Date.now() < deadline) {
+          const next = await Promise.race([reader.read(), new Promise<null>(resolve => setTimeout(() => resolve(null), deadline - Date.now()))]);
+          if (next === null || next.done) break;
+          text += new TextDecoder().decode(next.value);
+        }
+        return pattern.test(text);
+      };
+      return { until, text: () => text, reset: () => { text = ""; }, close: () => controller.abort() };
+    };
+    const alex = await open(await signIn("alex", alexToken));
+    const robin = await open(await signIn("robin", robinToken));
+    expect(await alex.until(/event: change/, 3_000)).toBe(true);
+    expect(await robin.until(/event: change/, 3_000)).toBe(true);
+    alex.reset(); robin.reset();
+    log.observe({ type: "assistant", parent_tool_use_id: "t1", message: { content: [{ type: "text", text: "more output" }] } });
+    expect(await alex.until(/event: change/, 6_000)).toBe(true);
+    expect(await robin.until(/event: change/, 2_500)).toBe(false); // robin can't see repoA: nothing moved for robin
+    expect(alex.text()).not.toMatch(/"size"|jsonl|\d+:\d+:\d+\//);
+    log.close(); alex.close(); robin.close();
+    // Watching takes no lease and marks nothing.
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_view").get()?.["n"]).toBe(0);
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(0);
+  }, 20_000);
+
   test("another project's run, an unknown file, another runner's run: refused or off, never read", async () => {
     const run = running("t-other", repoA);
     (await record(run)).close();
