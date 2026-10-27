@@ -221,7 +221,7 @@ get("tasks", "done", "/done", { limited: "collection" });
 get("settings", "mode", "/mode");
 get("people", "people.page", "/people", { limited: "unscoped", ...free });
 get("pages", "system", "/system");
-get("tasks", "tasks", "/tasks", { limited: "collection" });
+get("tasks", "tasks", "/tasks", { limited: "collection", ...free }); // a redirect to /work now: never sent to the project opener first
 get("tasks", "queue", "/queue");
 get("pages", "peek", "/peek", free);
 get("pages", "agents", "/agents", { limited: "unscoped", ...free });

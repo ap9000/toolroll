@@ -479,7 +479,7 @@ export function boardBody(
     // A lane is a section that can fold (board pass): open when it holds
     // cards, folded when empty, so a phone reads the counts first and a
     // desktop column never spends its height on "nothing here".
-    return html`<details class="lane lane-${key}"${shown.length === 0 ? null : html` open`}><summary><h2>${laneChip(key === "attention" && cards.length === 0 ? "queued" : key, title)} <span class="lane-count">${cards.length}${data.saturated ? "+" : ""}</span></h2></summary><p class="hint">${hint}</p>${shown.length === 0 ? html`<p class="meta lane-empty">nothing here</p>` : shown.map((card, index) => renderOne(card, index))}${more > 0 ? html`<a class="lane-more" href="/tasks">+${more} more in the task list</a>` : null}</details>`;
+    return html`<details class="lane lane-${key}"${shown.length === 0 ? null : html` open`}><summary><h2>${laneChip(key === "attention" && cards.length === 0 ? "queued" : key, title)} <span class="lane-count">${cards.length}${data.saturated ? "+" : ""}</span></h2></summary><p class="hint">${hint}</p>${shown.length === 0 ? html`<p class="meta lane-empty">nothing here</p>` : shown.map((card, index) => renderOne(card, index))}${more > 0 ? html`<a class="lane-more" href="/work">+${more} more in Tasks</a>` : null}</details>`;
   };
 
   // The card's facts: mono key–value pairs under the title (board pass) —
@@ -757,7 +757,7 @@ export function homePage(chrome: Chrome, data: {
       ? joinHtml([
           html`<div class="card">`,
           html`<p><strong>Nothing is queued yet — here is the whole loop:</strong></p>`,
-          html`<p>1. <a href="/tasks">Add a task</a> — plain words for work you want done${data.repo === null ? null : html` in <span class="mono">${data.repo}</span>`}.</p>`,
+          html`<p>1. <a href="/tasks/new">Add a task</a> — plain words for work you want done${data.repo === null ? null : html` in <span class="mono">${data.repo}</span>`}.</p>`,
           html`<p>2. Open it and write its scope — the goal, and what it must not become. Approve exactly that.</p>`,
           html`<p>3. Keep Toolroll running on the builder machine. Approved tasks build unattended, each on its own branch.</p>`,
           html`<p class="meta">When an agent is unsure it stops and asks — those questions land here, under “waiting on you”.</p>`,
@@ -895,9 +895,9 @@ export function workPage(
     ? html`<div class="work-empty" data-work-empty="${data.view}"><p>${data.previous ? 'There are no more tasks on this page.' : current.empty}</p>${data.view === 'all' && !data.previous ? html`<p><a class="button-link" href="${chrome.chat === true ? '/chat' : '/tasks/new'}">${chrome.chat === true ? 'Start in chat' : 'Add a task'}</a></p>` : html`<a href="${href('all')}">See all tasks →</a>`}</div>`
     : html`<div class="work-list">${data.work.items.map(rowHtml)}</div>`;
   const pages = !data.previous && data.work.nextCursor === null ? null : html`<nav class="row work-pagination" aria-label="Task pages">${data.previous ? html`<a class="button-link" href="${href(data.view)}">First page</a>` : null}${data.work.nextCursor === null ? null : html`<a class="button-link" rel="next" href="${href(data.view, data.work.nextCursor)}">Next page</a>`}</nav>`;
-  const tools = html`<details class="work-tools"><summary>Work tools${CHEVRON_ICON}</summary><nav class="work-tools-menu">${[['/inbox', 'Inbox'], ['/board', 'Board'], ['/board?view=order', 'Order'], ['/tasks', 'Task list'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']]), ['/ledger', 'Action ledger']]
+  const tools = html`<details class="work-tools"><summary>Work tools${CHEVRON_ICON}</summary><nav class="work-tools-menu">${[['/inbox', 'Inbox'], ['/board', 'Board'], ['/board?view=order', 'Order'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']]), ['/ledger', 'Action ledger']]
       .map(([path, label]) => html`<a href="${path}">${label}</a>`)}</nav></details>`;
-  const toolLinks = [['/inbox', 'Inbox'], ['/board', 'Board'], ['/board?view=order', 'Order'], ['/tasks', 'Task list'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']])];
+  const toolLinks = [['/inbox', 'Inbox'], ['/board', 'Board'], ['/board?view=order', 'Order'], ['/recipes', 'Recipes'], ...(chrome.projectScoped ? [] : [['/workbench', 'Portfolio']])];
   const view: BrowserTasksView = {
     kind: 'tasks',
     tabs: WORK_VIEWS.map(one => ({ label: one.label, href: href(one.key), count: data.work.totals[one.key], active: one.key === data.view })),
@@ -936,44 +936,6 @@ export function workPage(
   };
   return screen('work', html`<div class="work-head"><h1>Tasks</h1>${tools}</div>${limitsHtml(data.limits ?? null)}${tabs}${list}${pages}`, { chrome, workspace: { view } });
 }
-
-export function tasksPage(
-  chrome: Chrome,
-  tasks: Task[],
-  state: TaskState | null,
-  problem: string | null,
-  repo: string | null = null,
-  prefill: TaskComposerPrefill | null = null,
-  permissionDefault: UnattendedPermissionMode = "auto",
-  qualityDefault: QualityMode = "default",
-  replaced: ReadonlyMap<string, string> = new Map(),
-): Screen {
-  const filters = joinHtml(TASK_STATES.map(
-    one => (one === state ? html`<strong>${one}</strong>` : html`<a href="/tasks?state=${one}">${one}</a>`),
-  ), " · ");
-  const rows =
-    tasks.length === 0
-      ? html`<p class="meta">${
-          state === null
-            ? "The queue is empty — add the first task below. It builds once you approve its scope."
-            : `Nothing is ${state}.`
-        }</p>`
-      : joinHtml(tasks.map(
-          task =>
-            html`<a class="row" href="${taskHref(task.id)}"><span class="mono">${task.id}</span> ${task.title} <span class="right badge badge-${task.state}">${task.state === "cancelled" && replaced.has(task.id) ? `replaced by ${replaced.get(task.id)}` : task.state}</span></a>`,
-        ), "\n");
-  return screen("tasks", joinHtml([
-    html`<h1>Tasks</h1>`,
-    html`<p class="meta">Work you want done${repo === null ? null : html` in <strong>${projectName(repo)}</strong>`} — a task builds unattended only after its scope is approved; open one to write or approve its scope</p>`,
-    repo === null ? null : html`<p class="meta path-words"><span class="mono">${repo}</span></p>`,
-    problem === null ? null : html`<div class="problem">${problem}</div>`,
-    html`<p class="meta">Filter: <a href="/tasks">all</a> · ${filters}</p>`,
-    rows,
-    html`<h2>Add a task</h2>`,
-    taskComposerHtml({ project: repo, prefill, permissionDefault, qualityDefault }),
-  ], "\n"), { chrome });
-}
-
 
 export function browsePage(chrome: Chrome, data: {
   at: string;

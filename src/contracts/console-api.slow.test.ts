@@ -174,7 +174,7 @@ describe("over HTTP", () => {
 
   test("every console POST row refuses a missing, duplicated or stale CSRF field before it changes anything", async () => {
     const cookie = await signIn();
-    const csrf = csrfOf(await (await get(cookie, "/tasks")).text());
+    const csrf = csrfOf(await (await get(cookie, "/tasks/new")).text());
     // The action ledger records each refused request by design (moving the workspace revision cursor); the request budget counts it.
     const tables = store.handle.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()
       .map(row => String(row["name"])).filter(name => !["action_ledger", "request_budget_usage", "ledger_chain", "ledger_head"].includes(name));
@@ -203,7 +203,7 @@ describe("over HTTP", () => {
 
   test("a form with unknown fields, blanks and repeats reads its first value, as before", async () => {
     const cookie = await signIn();
-    const csrf = csrfOf(await (await get(cookie, "/tasks")).text());
+    const csrf = csrfOf(await (await get(cookie, "/tasks/new")).text());
     const answer = await post(cookie, "/settings/appearance", new URLSearchParams([["csrf", csrf], ["theme", "dark"], ["theme", "light"], ["return", "/tasks"], ["return", "/elsewhere"], ["later", ""]]));
     expect(answer.status).toBe(303);
     expect(answer.headers.get("location")).toBe("/tasks");

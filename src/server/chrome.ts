@@ -469,7 +469,7 @@ export function chromeScript(): string {
     `if(ev.key==="?"){toggleHelp();ev.preventDefault();return;}` +
     `if(ev.key==="j"||ev.key==="k"){rove(ev.key==="j"?1:-1,ev);return;}` +
     `if(pending==="g"){pending=null;` +
-    `var map={b:"/board",i:"/",w:"/workbench",d:"/done",q:"/board?view=order",f:"/fleet",t:"/tasks",a:"/activity",p:"/projects"};` +
+    `var map={b:"/board",i:"/",w:"/workbench",d:"/done",q:"/board?view=order",f:"/fleet",t:"/work",a:"/activity",p:"/projects"};` +
     `if(map[ev.key]){go(map[ev.key]);ev.preventDefault();}return;}` +
     `if(ev.key==="g"){pending="g";setTimeout(function(){pending=null;},800);}});` +
     `})();`
@@ -882,7 +882,7 @@ export function workToolRows(scoped = false, _offersChat = false, offersCode = f
     ...(offersCode ? [{ key: "code" as const, href: "/term", label: "Live", hint: "your own terminals: Claude Code, Codex or a shell" }] : []),
     { key: "inbox", href: "/inbox", label: "Inbox", hint: "questions, approvals, and repairs to act on" },
     { key: "board", href: "/board", label: "Board", hint: "lanes by state, with the order view" },
-    { key: "tasks", href: "/tasks", label: "Task list", hint: "everything, filterable by state" },
+    { key: "tasks", href: "/work", label: "Task list", hint: "everything, filterable by state" },
     { key: "recipes", href: "/recipes", label: "Recipes", hint: "choose, customize, and reuse a workflow" },
     { key: "workbench", href: "/workbench", label: "Portfolio", hint: "every project and live build in one place" },
     { key: "ledger", href: "/ledger", label: "Action ledger", hint: "who acted, what happened, and the result" },

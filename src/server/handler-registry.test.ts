@@ -75,7 +75,7 @@ describe('the server', () => {
     const answer = await send('/login', 'POST', {}, new URLSearchParams({ name: 'alex', token: password }).toString());
     expect(answer.status).toBe(303);
     const cookie = (answer.headers['set-cookie'] as string[]).map(one => one.split(';')[0]!).find(one => one.startsWith('standing-orders_session='))!;
-    const page = await send('/tasks', 'GET', { cookie });
+    const page = await send('/tasks/new', 'GET', { cookie });
     return { cookie, csrf: /name="csrf" value="([0-9a-f]{64})"/.exec(page.body)![1]! };
   }
 

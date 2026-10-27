@@ -58,7 +58,7 @@ test('a project-limited approver is refused at every console deny route without 
   const login = await send('/login', 'POST', undefined, undefined, { form: new URLSearchParams({ name: 'limited', token: limited.token }) });
   expect(login.status).toBe(303);
   const cookie = login.headers['set-cookie']!.map(one => one.split(';')[0]!).find(one => one.startsWith('standing-orders_session='))!;
-  const tasks = await send('/tasks', 'GET', undefined, undefined, { cookie });
+  const tasks = await send('/tasks/new', 'GET', undefined, undefined, { cookie });
   expect(tasks.status).toBe(200);
   const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(tasks.body)![1]!;
 

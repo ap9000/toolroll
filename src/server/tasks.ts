@@ -92,7 +92,7 @@ import type { ServerRuntime } from './runtime.js';
 import { requestContext } from "./request-context.js";
 import { boardTickScript,oneLineOf,QUEUE_VIEW,refuse,regionScript,screen,transcriptScript,whenTime } from "./chrome.js";
 import { chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
-import { type TaskComposerPrefill,boardBody,boardWorkers,donePage,inboxFingerprints,inboxPage,newTaskPage,nextPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,tasksPage,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
+import { type TaskComposerPrefill,boardBody,boardWorkers,donePage,inboxFingerprints,inboxPage,newTaskPage,nextPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
 import { runEfficiencyOf } from "../run-efficiency.js";
 import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQueue,RESULT_REFUSALS,REVIEW_QUEUE_CAP,reviewCockpitDetailParts,reviewCockpitPage,reviewPriorityOf,runFactsFragment,runOutcomeBadge,runPage,RUNS_PAGE,runsPage,withRefusal,type CompletedWorkRow,type RankedReviewRow,type ReviewCockpitView } from "./render-results.js";
 import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,decisionPage,nonceHashOf,PermissionsWouldChange,requirementsFromEditor,resumeDigestOf,taskOf } from "./render-tasks.js";
@@ -617,39 +617,16 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     );
   }
 
+  /** The old task list, retired into /work (docs/plans/reui-polish.md slice 7): its address keeps answering, as a
+   * redirect, so links and bookmarks still land. `state` carries over (an unknown one is still refused); `template`
+   * goes to the add page, which now pre-fills it. Anything else is dropped. */
   async function showTasks(ctx: HandlerContext): Promise<void> {
-    const { url, who, response, project } = ctx;
+    const { url, who, response } = ctx;
     const wanted = url.searchParams.get("state");
-    if (wanted !== null && !TASK_STATES.includes(wanted as TaskState)) {
-      return refuse(response, who, 400, "no such state", "/tasks");
-    }
-    // ?template=<name> pre-fills the add form from the shipped library —
-    // a pre-filled form and nothing more; the submission path is the
-    // same guarded handler either way.
-    const fromTemplate = url.searchParams.get("template");
-    const picked = fromTemplate === null ? null : templateByName(fromTemplate);
-    const prefill =
-      picked !== null && picked.kind === "task"
-        ? {
-            title: picked.title, goal: picked.goal, not: picked.outOfScope ?? "", touches: picked.touches.join(", "),
-            acceptance: acceptanceToLines(picked.acceptance).join("\n"),
-          }
-        : null;
-    return sendScreen(
-      response,
-      200,
-      tasksPage(
-        chromeFor(project, "tasks"),
-        familyTasksInView(project, wanted === null ? undefined : (wanted as TaskState)).slice(0, 200),
-        wanted as TaskState | null,
-        null,
-        project,
-        prefill,
-        store.permissionDefault().mode,
-        store.qualityDefault().mode,
-        store.replacements(),
-      ),
-    );
+    if (wanted !== null && !TASK_STATES.includes(wanted as TaskState)) return refuse(response, who, 400, "no such state", "/work");
+    const template = url.searchParams.get("template");
+    if (template !== null) return redirect(response, `/tasks/new?template=${encodeURIComponent(template)}`);
+    return redirect(response, wanted === null ? "/work" : `/work?state=${encodeURIComponent(wanted)}`);
   }
 
   async function showQueue(ctx: HandlerContext): Promise<void> {

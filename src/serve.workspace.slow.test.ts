@@ -203,22 +203,22 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
 
   test("project selection preserves the requested destination and rejects unsafe return paths", async () => {
     const cookie = await login();
-    const pending = await fetch(url("/tasks?state=done"), { headers: { cookie }, redirect: "manual" });
+    const pending = await fetch(url("/board?view=order"), { headers: { cookie }, redirect: "manual" });
     expect(pending.status).toBe(303);
-    expect(pending.headers.get("location")).toBe("/projects?return=%2Ftasks%3Fstate%3Ddone");
+    expect(pending.headers.get("location")).toBe("/projects?return=%2Fboard%3Fview%3Dorder");
     const picker = await page(cookie, pending.headers.get("location")!);
     const window = new Window();
     try {
       window.document.body.innerHTML = picker;
       const button = [...window.document.querySelectorAll('button.project-name')].find(one => one.textContent === "beta")!;
       const form = button.closest("form")!;
-      expect(form.querySelector('input[name="return"]')?.getAttribute("value")).toBe("/tasks?state=done");
+      expect(form.querySelector('input[name="return"]')?.getAttribute("value")).toBe("/board?view=order");
       const csrf = csrfOf(picker);
-      const invalid = await fetch(url("/projects/open"), { method: "POST", headers: { cookie }, body: new URLSearchParams({ csrf, path: "/no/such/project", return: "/tasks?state=done" }) });
+      const invalid = await fetch(url("/projects/open"), { method: "POST", headers: { cookie }, body: new URLSearchParams({ csrf, path: "/no/such/project", return: "/board?view=order" }) });
       expect(invalid.status).toBe(400);
-      expect(await invalid.text()).toContain('name="return" value="/tasks?state=done"');
-      const selected = await fetch(url(form.getAttribute("action")!), { method: "POST", headers: { cookie }, body: new URLSearchParams({ csrf, path: beta, return: "/tasks?state=done" }), redirect: "manual" });
-      expect(selected.headers.get("location")).toBe("/tasks?state=done");
+      expect(await invalid.text()).toContain('name="return" value="/board?view=order"');
+      const selected = await fetch(url(form.getAttribute("action")!), { method: "POST", headers: { cookie }, body: new URLSearchParams({ csrf, path: beta, return: "/board?view=order" }), redirect: "manual" });
+      expect(selected.headers.get("location")).toBe("/board?view=order");
       for (const bad of ["https://evil.example/", "//evil.example/", "/\\evil.example/", "/%2f%2fevil.example/"]) {
         const unsafe = await page(cookie, `/projects?return=${encodeURIComponent(bad)}`);
         window.document.body.innerHTML = unsafe;
@@ -243,6 +243,13 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     const queue = await fetch(url("/queue"), { headers: { cookie }, redirect: "manual" });
     expect(queue.status).toBe(303);
     expect(queue.headers.get("location")).toBe("/board?view=order");
+    // The old task list answers as a redirect to Tasks (/work), keeping its state filter, and its template link opens
+    // the add page; an unknown state is still refused.
+    for (const [from, to] of [["/tasks", "/work"], ["/tasks?state=queued", "/work?state=queued"], ["/tasks?template=lint-sweep", "/tasks/new?template=lint-sweep"]] as const) {
+      const moved = await fetch(url(from), { headers: { cookie }, redirect: "manual" });
+      expect([moved.status, moved.headers.get("location")], from).toEqual([303, to]);
+    }
+    expect((await fetch(url("/tasks?state=bogus"), { headers: { cookie }, redirect: "manual" })).status).toBe(400);
 
     // A project-scoped login sees the SAME reduced tools it saw before —
     // no portfolio, fleet/requirements/mode/system or chat; project Learning is available.
@@ -266,12 +273,12 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect((await get("/settings")).status).toBe(200);
     // Opening the menu must not silently select a project. Project-bound
     // pages still require a selection, including after returning from Settings.
-    const tasks = await get("/tasks");
+    const tasks = await get("/board");
     expect(tasks.status).toBe(303);
-    expect(tasks.headers.get("location")).toBe("/projects?return=%2Ftasks");
+    expect(tasks.headers.get("location")).toBe("/projects?return=%2Fboard");
     await selectProject(cookie, alpha);
     expect((await get("/menu")).status).toBe(200);
-    expect((await get("/tasks")).status).toBe(200);
+    expect((await get("/board")).status).toBe(200);
     await selectProject(cookie, "");
     expect((await get("/menu")).status).toBe(200);
 
@@ -758,9 +765,9 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     expect(rowsOf(work).map(row => row.id).sort()).toEqual(["t-alpha", "t-beta"]);
     expect(work).not.toContain("t-outside");
     // Project-bound pages still defer to the opener exactly as before.
-    const tasks = await fetch(url("/tasks"), { headers: { cookie }, redirect: "manual" });
+    const tasks = await fetch(url("/board"), { headers: { cookie }, redirect: "manual" });
     expect(tasks.status).toBe(303);
-    expect(tasks.headers.get("location")).toBe("/projects?return=%2Ftasks");
+    expect(tasks.headers.get("location")).toBe("/projects?return=%2Fboard");
     // A project-scoped account gets 404 for the other project's run — the
     // same answer as before, whatever project its session holds.
     const minted = store.mintInvite("approver", "alex", now, undefined, [alpha]);

@@ -80,7 +80,7 @@ describe("project access and the action ledger", () => {
     const home = await get("/");
     expect(home.status).toBe(303);
     expect(home.headers.get("location")).toBe("/work");
-    for (const path of ["/work", "/inbox", "/projects", "/people", "/tasks", "/tasks/new", "/board", "/board?scope=all", "/board?view=order", "/runs", "/review", "/done", "/ledger", "/settings", "/settings/learning", "/t/alpha-task"]) {
+    for (const path of ["/work", "/inbox", "/projects", "/people", "/tasks/new", "/board", "/board?scope=all", "/board?view=order", "/runs", "/review", "/done", "/ledger", "/settings", "/settings/learning", "/t/alpha-task"]) {
       const response = await get(path);
       expect(response.status, path).toBe(200);
       const text = await response.text();
@@ -98,8 +98,11 @@ describe("project access and the action ledger", () => {
     expect(settings).toContain('href="/settings/learning"');
     expect(settings).not.toContain('action="/settings/quality-default"');
     expect(settings).not.toContain('action="/settings/telegram"');
-    const header = await fetch(base + "/tasks", { headers: { authorization: `Bearer member:${password}`, "x-standing-orders-project": beta } });
+    const header = await fetch(base + "/work", { headers: { authorization: `Bearer member:${password}`, "x-standing-orders-project": beta } });
     expect(header.status).toBe(403);
+    // The retired task list's address is a redirect for a bearer caller too, never a screen; /work then applies the same refusal.
+    const moved = await fetch(base + "/tasks", { headers: { authorization: `Bearer member:${password}` }, redirect: "manual" });
+    expect([moved.status, moved.headers.get("location")]).toEqual([303, "/work"]);
     for (const path of ["/settings/quality-default", "/settings/telegram", "/system", "/fleet", "/projects/browse", "/projects/github", "/chat", "/workbench", "/control", "/unknown-new-route"]) expect((await get(path)).status, path).toBe(403);
   });
 
@@ -122,15 +125,15 @@ describe("project access and the action ledger", () => {
 
   test("access changes invalidate cookies and restrict existing bearer credentials", async () => {
     const cookie = await login("member");
-    expect((await fetch(base + "/tasks", { headers: { cookie } })).status).toBe(200);
+    expect((await fetch(base + "/work", { headers: { cookie } })).status).toBe(200);
     expect(store.setAccountProjects("member", [beta], "owner", now).ok).toBe(true);
-    const stale = await fetch(base + "/tasks", { headers: { cookie }, redirect: "manual" });
+    const stale = await fetch(base + "/work", { headers: { cookie }, redirect: "manual" });
     expect(stale.status).toBe(303);
-    expect(stale.headers.get("location")).toBe("/login");
+    expect(stale.headers.get("location")).toBe("/login?return=%2Fwork");
     expect((await get("/t/alpha-task")).status).toBe(404);
     expect((await get("/t/beta-task")).status).toBe(200);
     expect(store.setAccountProjects("member", [], "owner", now).ok).toBe(true);
-    expect((await get("/tasks")).status).toBe(403);
+    expect((await get("/work")).status).toBe(403);
     const ledger = await (await get("/ledger?format=json")).json();
     expect(ledger.entries).toEqual([]);
   });
@@ -168,7 +171,7 @@ describe("project access and the action ledger", () => {
       expect(text).not.toContain("beta-task");
       expect(text).not.toContain("alpha-task");
     }
-    expect((await get("/tasks")).status).toBe(403);
+    expect((await get("/work")).status).toBe(403);
     expect((await post("/tasks/add", { id: "no-grant", title: "No grant", repo: alpha })).status).toBe(403);
   });
 
