@@ -214,20 +214,24 @@ function ChildTile({ child, all, now, last }: { child: Child; all: Child[]; now:
 }
 
 function Output({ tile, stream, streamed, showLive, tall = false, lost = false }: { tile: Tile; stream: Stream; streamed: boolean; showLive: () => void; tall?: boolean; lost?: boolean }) {
-  const quiet = "text-[12px] text-muted-foreground";
-  if (!tile.local || stream.mainState === "off") return <p className={quiet}>Output is on another computer.</p>;
-  if (!streamed) return <p className={cn(quiet, "flex items-center gap-2")}>Not shown live.
-    <button type="button" onClick={showLive} className="rounded-sm border border-border bg-card px-2 py-0.5 text-[11.5px] text-foreground phone:min-h-11">Show live</button></p>;
-  if (stream.mainState === "unavailable") return <p className={quiet}>Output unavailable.</p>;
+  const quiet = "text-[12px] text-muted-foreground", note = "text-[11.5px] text-muted-foreground";
+  const main = !tile.local || stream.mainState === "off" ? <p className={quiet}>Output is on another computer.</p>
+    : !streamed ? <p className={cn(quiet, "flex items-center gap-2")}>Not shown live.
+      <button type="button" onClick={showLive} className="rounded-sm border border-border bg-card px-2 py-0.5 text-[11.5px] text-foreground phone:min-h-11">Show live</button></p>
+    : stream.mainState === "unavailable" ? <p className={quiet}>Output unavailable.</p>
+    : <>
+      {stream.earlier && <p className={note}>Earlier output isn't shown.</p>}
+      {stream.mainState === "error" && <p className={note}>Couldn't read the latest output. Retrying.</p>}
+      {stream.mainState === "loading" ? <p className={quiet}>Loading output…</p> : <Lines lines={stream.main.lines} short={false} tall={tall} />}
+    </>;
+  // The connection and the subagents' file speak for themselves, whatever the run's own output says.
   return <>
-    {stream.earlier && <p className="text-[11.5px] text-muted-foreground">Earlier output isn't shown.</p>}
-    {lost && <p className="text-[11.5px] text-muted-foreground">Reconnecting… these lines may not be the latest.</p>}
-    {stream.mainState === "error" && <p className="text-[11.5px] text-muted-foreground">Couldn't read the latest output. Retrying.</p>}
-    {stream.mainState === "loading" ? <p className={quiet}>Loading output…</p> : <Lines lines={stream.main.lines} short={false} tall={tall} />}
-    {stream.subState === "unavailable" && <p className="text-[11.5px] text-muted-foreground">Subagents' output unavailable.</p>}
-    {stream.subState === "error" && <p className="text-[11.5px] text-muted-foreground">Couldn't read the subagents' output. Retrying.</p>}
-    {stream.subRestarted && <p className="text-[11.5px] text-muted-foreground">Subagents' output restarted.</p>}
-    {stream.over && <p className="text-[11.5px] text-muted-foreground">More subagents started than are shown.</p>}
+    {lost && <p className={note}>Reconnecting… these lines may not be the latest.</p>}
+    {main}
+    {stream.subState === "unavailable" && <p className={note}>Subagents' output unavailable.</p>}
+    {stream.subState === "error" && <p className={note}>Couldn't read the subagents' output. Retrying.</p>}
+    {stream.subRestarted && <p className={note}>Subagents' output restarted.</p>}
+    {stream.over && <p className={note}>More subagents started than are shown.</p>}
   </>;
 }
 
@@ -286,7 +290,7 @@ function FullScreen({ runId, tile, stream, streamed, now, lost, onClose, showLiv
         className="ui-dialog-content flex !w-[min(1100px,calc(100vw-48px))] flex-col gap-3 !p-5 phone:!bottom-0 phone:!left-0 phone:!top-auto phone:!max-h-[calc(100dvh-2rem)] phone:!w-full phone:!rounded-b-none phone:!p-4 phone:!pb-[max(1rem,env(safe-area-inset-bottom))] phone:![transform:none]">
         <header className="flex items-start gap-3">
           <div className="min-w-0 flex-1">
-            <DialogPrimitive.Title className="text-[18px] font-semibold leading-[1.3]" id="live-full-title">{tile?.title ?? "This agent isn't on the grid anymore"}</DialogPrimitive.Title>
+            <DialogPrimitive.Title className="text-[18px] font-semibold leading-[1.3]" data-live-full-title>{tile?.title ?? "This agent isn't on the grid anymore"}</DialogPrimitive.Title>
             {tile !== null && <p className="truncate font-mono text-[11px] text-muted-foreground">{[tile.project?.split("/").pop(), tile.role, tile.agent, tile.model].filter(Boolean).join(" · ")}</p>}
           </div>
           {tile !== null && <Chip fill={tile.state === "needs-you" ? NEEDS_FILL : FILL[tile.state] ?? FILL.working!} dot={tile.state === "needs-you" ? NEEDS_DOT : DOT[tile.state] ?? DOT.working!}>{STATE_WORDS[tile.state]}</Chip>}
@@ -350,8 +354,8 @@ export function LiveGrid() {
   const [pinned, setPinned] = useState<number[]>([]);
   const candidates = [...tiles, ...shown.filter(old => !tiles.some(tile => tile.runId === old.runId))].filter(tile => tile.local);
   // The agent open full screen comes first, whenever it is one this page may read.
-  const streamedIds = new Set([...(openRunId !== null && candidates.some(tile => tile.runId === openRunId) ? [openRunId] : []),
-    ...pinned.filter(run => candidates.some(tile => tile.runId === run)), ...candidates.map(tile => tile.runId)].slice(0, STREAMED));
+  const streamedIds = new Set([...new Set([...(openRunId !== null && candidates.some(tile => tile.runId === openRunId) ? [openRunId] : []),
+    ...pinned.filter(run => candidates.some(tile => tile.runId === run)), ...candidates.map(tile => tile.runId)])].slice(0, STREAMED));
   const streamedKey = [...streamedIds].sort((a, b) => a - b).join(",");
   useEffect(() => {
     const keys = streamedKey === "" ? [] : streamedKey.split(",").flatMap(run => [`${run}:main`, `${run}:sub`]);

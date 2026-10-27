@@ -348,7 +348,7 @@ test("reloading ?view=live&run= opens that agent straight away", async () => {
   history.replaceState(null, "", "/agents?view=live&run=5");
   await act(async () => { root = createRoot(host); root.render(createElement(AgentsView, { view })); });
   await flush();
-  expect(document.querySelector('[role="dialog"] #live-full-title')?.textContent).toBe("Reloaded one");
+  expect(document.querySelector('[role="dialog"] [data-live-full-title]')?.textContent).toBe("Reloaded one");
   history.replaceState(null, "", "/agents?view=live");
 });
 
@@ -427,5 +427,39 @@ test("av7 #7 a task this console doesn't keep has no Open task link", async () =
   history.replaceState(null, "", "/agents?view=live&run=7");
   await render7();
   expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain("Open task");
+  history.replaceState(null, "", "/agents?view=live");
+});
+
+// ---- Codex av7, round 2 ----------------------------------------------------------------------------------------------
+
+test("av7 r2: the dialog is named by its title; opening a run already shown live evicts nobody", async () => {
+  tiles = Array.from({ length: 25 }, (_, i) => tile(25 - i));
+  history.replaceState(null, "", "/agents?view=live&run=25");
+  await render7();
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(document.getElementById(dialog.getAttribute("aria-labelledby") ?? "")?.textContent).toBe("Task 25");
+  await act(async () => { (document.querySelector('[role="dialog"] button') as HTMLButtonElement).click(); });
+  await flush();
+  expect(host.querySelector("[data-live-headline]")?.textContent).toContain("24 of 25 shown live");
+  history.replaceState(null, "", "/agents?view=live&run=25");
+  await act(async () => { window.dispatchEvent(new PopStateEvent("popstate")); });
+  await flush();
+  expect(host.querySelector("[data-live-headline]")?.textContent).toContain("24 of 25 shown live");
+  history.replaceState(null, "", "/agents?view=live");
+});
+
+test("av7 r2: subagent and connection notices show even when the run's own output is unavailable", async () => {
+  tiles = [tile(9)];
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    if (url === "/agents/live") return { ok: true, status: 200, json: async () => ({ tiles }) };
+    if (url.includes("file=main")) return { ok: false, status: 404, headers: new Headers(), json: async () => ({}) };
+    return { ok: false, status: 500, headers: new Headers(), json: async () => ({}) };
+  }));
+  history.replaceState(null, "", "/agents?view=live&run=9");
+  await render7();
+  await act(async () => { Events.latest!.dispatchEvent(new MessageEvent("error")); });
+  const text = document.querySelector('[role="dialog"]')?.textContent ?? "";
+  expect(text).toContain("Output unavailable.");
+  expect(text).toContain("Couldn't read the subagents' output. Retrying.");
   history.replaceState(null, "", "/agents?view=live");
 });
