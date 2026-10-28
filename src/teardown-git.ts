@@ -566,9 +566,11 @@ const WORKTREE_STATE_DIRS = ["sequencer", "rebase-merge", "rebase-apply"];
  * walk, by lstat, never following a link: every name of the common folder git may write (COMMON_NAMES: refs, logs,
  * reftable, packed-refs, worktrees with each worktree's own folder, rr-cache, modules, …) all the way down, HEAD and
  * the index; the worktree's own state (WORKTREE_STATE: its HEAD, index, refs, logs, a merge's, rebase's or bisect's
- * state, a split index's shared files); and `objects` with its fan-out folders, for links only (not each object file:
- * a big repository has very many, and hard-linked objects are legitimate). Any link is refused, so is a folder that
- * can't be listed, and so is any file walked with a second hard link (git appends to a log in place). For each one found, where it leads (for an incident's record).
+ * state, a split index's shared files); and the object store (the common `objects`, and a submodule git directory's
+ * own under modules/): its fan-out folders' entries for links, `info` and `pack` all the way down, but not each loose
+ * object (a big repository has very many, and hard-linked objects are legitimate). Any link is refused, so is a folder
+ * that can't be listed, and so is any file walked deep with a second hard link (git appends to a log in place). The
+ * exemption is by place only: an `objects` anywhere else (under refs/, logs/, worktrees/) is walked like the rest. For each one found, where it leads (for an incident's record).
  *
  * Checked when the view is made and again after git ran; between the two, a process that outlived the agent's turn
  * can still swap one of these for a link and have git write through it mid-command. That window is an accepted
@@ -578,8 +580,11 @@ function pinned(dirs: BoundDirs): { ok: boolean; swapped: GitIncident["swapped"]
   const swapped: GitIncident["swapped"] = [];
   const seen = new Set<string>();
   let budget = 400_000;
-  /** One path: a link, a folder that can't be listed, or (`linked` files) a file with a second hard link, is swapped. */
-  const check = (path: string, recurse: boolean, linked: boolean): void => {
+  const modules = join(dirs.common, "modules");
+  /** `deep`: every entry all the way down, each file held to one hard link. `shallow`: the folder's own entries
+   * checked for links only. `store`: an object store (objects/: its fan-out folders shallow, `info` and `pack` deep
+   * without the hard-link test). A link, or a folder that can't be listed, is swapped. */
+  const check = (path: string, mode: "deep" | "shallow" | "store" | "deep-unlinked"): void => {
     if (seen.has(path)) return;
     if (budget-- <= 0) return;
     seen.add(path);
@@ -591,28 +596,30 @@ function pinned(dirs: BoundDirs): { ok: boolean; swapped: GitIncident["swapped"]
       swapped.push({ path, leadsTo: real });
       return;
     }
-    if (held.isFile() && linked && held.nlink > 1) { swapped.push({ path, leadsTo: null }); return; }
-    if (!held.isDirectory() || !recurse) return;
+    if (held.isFile() && mode === "deep" && held.nlink > 1) { swapped.push({ path, leadsTo: null }); return; }
+    if (!held.isDirectory()) return;
     let entries: string[];
     // A folder that can't be listed hides what's in it: it counts as swapped (fail closed).
     try { entries = readdirSync(path); } catch { swapped.push({ path, leadsTo: null }); return; }
-    // A nested repository's objects (a submodule's, under modules/): checked for a link, not walked.
-    for (const name of entries) check(join(path, name), name !== "objects", linked && name !== "objects");
+    for (const name of entries) {
+      const child = join(path, name);
+      if (mode === "shallow") { try { if (lstatSync(child).isSymbolicLink()) check(child, "shallow"); } catch { /* gone */ } continue; }
+      if (mode === "store") { check(child, name === "info" || name === "pack" ? "deep-unlinked" : "shallow"); continue; }
+      // The object store exemption by place, never by name: a submodule's own git directory's objects under modules/.
+      const store = name === "objects" && path.startsWith(`${modules}/`) && existsSync(join(path, "HEAD"));
+      check(child, store ? "store" : mode);
+    }
   };
   // The common folder's every name git may write, all the way down (refs, logs, reftable, packed-refs, worktrees with
   // each worktree's own folder, rr-cache, modules, the rest of COMMON_NAMES), and the worktree's own state.
-  for (const name of COMMON_NAMES) if (name !== "objects") check(join(dirs.common, name), true, true);
-  for (const name of ["HEAD", "index"]) check(join(dirs.common, name), false, true);
-  for (const name of [...WORKTREE_STATE, ...WORKTREE_STATE_DIRS, "index", "refs", "logs"]) check(join(dirs.gitdir, name), true, true);
-  try { for (const name of readdirSync(dirs.gitdir)) if (name.startsWith("sharedindex.")) check(join(dirs.gitdir, name), false, true); } catch { swapped.push({ path: dirs.gitdir, leadsTo: null }); }
-  // Objects: the folder and its fan-out folders (and pack/, info/), never a link; each object file isn't walked (a big
-  // repository has very many) nor held to one hard link (`clone --local` hard-links them, legitimately): git writes a
-  // new object to a fresh temporary file and links it into place, never through an existing one.
-  check(join(dirs.common, "objects"), false, false);
-  if (existsSync(join(dirs.common, "objects"))) {
-    try { for (const name of readdirSync(join(dirs.common, "objects"))) check(join(dirs.common, "objects", name), false, false); }
-    catch { swapped.push({ path: join(dirs.common, "objects"), leadsTo: null }); }
-  }
+  for (const name of COMMON_NAMES) if (name !== "objects") check(join(dirs.common, name), "deep");
+  for (const name of ["HEAD", "index"]) check(join(dirs.common, name), "deep");
+  for (const name of [...WORKTREE_STATE, ...WORKTREE_STATE_DIRS, "index", "refs", "logs", "reftable"]) check(join(dirs.gitdir, name), "deep");
+  try { for (const name of readdirSync(dirs.gitdir)) if (name.startsWith("sharedindex.")) check(join(dirs.gitdir, name), "deep"); } catch { swapped.push({ path: dirs.gitdir, leadsTo: null }); }
+  // The object store: the folder and its fan-out folders for links (not each loose object: a big repository has very
+  // many, and `clone --local` hard-links them legitimately; git writes a new object to a fresh temporary file linked
+  // into place, never through an existing one), `info` and `pack` all the way down.
+  check(join(dirs.common, "objects"), "store");
   if (budget <= 0) swapped.push({ path: dirs.common, leadsTo: null });
   // A path that is no longer its own real path (a folder on the way swapped) counts too.
   for (const path of [dirs.common, dirs.gitdir]) { try { if (realpathSync(path) !== path) swapped.push({ path, leadsTo: realpathSync(path) }); } catch { swapped.push({ path, leadsTo: null }); } }

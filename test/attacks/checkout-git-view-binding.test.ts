@@ -359,6 +359,12 @@ describe("the walk fails closed (security scan of the round-2 walk)", () => {
     ["the worktree's ORIG_HEAD hard-linked elsewhere", () => { writeFileSync(join(b, "orig"), "x\n"); rmSync(join(a, ".git", "worktrees", "a-task", "ORIG_HEAD"), { force: true }); ln(join(b, "orig"), join(a, ".git", "worktrees", "a-task", "ORIG_HEAD")); }],
     ["rr-cache linked elsewhere", () => symlinkSync(join(b, ".git"), join(a, ".git", "rr-cache"))],
     ["a module's folder linked elsewhere", () => { execFileSync("mkdir", ["-p", join(a, ".git", "modules")]); symlinkSync(join(b, ".git"), join(a, ".git", "modules", "lib")); }],
+    // The objects exemption is by place: a folder named objects anywhere else is walked like the rest.
+    ["a link inside refs/heads/objects/", () => { execFileSync("mkdir", ["-p", join(a, ".git", "refs", "heads", "objects")]); symlinkSync(join(b, ".git", "refs", "heads", "task"), join(a, ".git", "refs", "heads", "objects", "x")); }],
+    ["a hard link inside logs/objects/", () => { execFileSync("mkdir", ["-p", join(a, ".git", "logs", "objects")]); ln(join(b, ".git", "logs", "HEAD"), join(a, ".git", "logs", "objects", "x")); }],
+    // The object store itself: its fan-out folders' entries and pack/ are scanned for links.
+    ["a link inside a loose-object folder", () => { const objects = join(a, ".git", "objects"); const one = readdirSync(objects).find(name => /^[0-9a-f]{2}$/.test(name))!; symlinkSync(join(root, "elsewhere"), join(objects, one, "f".repeat(38))); }],
+    ["a link inside objects/pack", () => { execFileSync("mkdir", ["-p", join(a, ".git", "objects", "pack")]); symlinkSync(join(root, "elsewhere"), join(a, ".git", "objects", "pack", "pack-x.pack")); }],
   ])("%s: refused before git runs", async (_name, plant) => {
     plant();
     try {
