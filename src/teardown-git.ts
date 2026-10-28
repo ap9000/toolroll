@@ -442,6 +442,7 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
   const admin = realpathSync(mkdtempSync(join(root, `${kind}-gitdir-`)));
   const dispose = () => { rmSync(view, { recursive: true, force: true }); rmSync(admin, { recursive: true, force: true }); };
   const initial = new Map<string, string | null>();
+  const priorWorktrees = new Set<string>();
   try {
     let config = regularFile(join(dirs.common, "config"));
     if (config === null) throw new Error("the checkout's git config couldn't be read as a plain file");
@@ -478,6 +479,7 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
     if (kind === "write") {
       const folder = join(dirs.common, "worktrees");
       if (!existsSync(folder)) { try { mkdirSync(folder); } catch { /* git reports it if it needs the folder */ } }
+      try { for (const id of readdirSync(folder)) priorWorktrees.add(id); } catch { /* none yet */ }
     }
     for (const name of new Set([...readdirSync(dirs.common), ...COMMON_NAMES])) {
       if (name === "config" || name === "info" || name === "hooks" || name === "commondir") continue;
@@ -561,6 +563,8 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
         return "the checkout's repository changed while git ran";
       }
       if (left.length > 0) return `git left state Toolroll can't keep in the checkout (${left.slice(0, 5).join(", ")})`;
+      const relinked = relinkAdded(view, dirs.common, priorWorktrees);
+      if (relinked !== null) return relinked;
     }
     return null;
   };
@@ -711,6 +715,40 @@ function carryBack(admin: string, gitdir: string, initial: ReadonlyMap<string, s
     try { writeSync(fd, text); } finally { closeSync(fd); }
     try { holdAnchor(anchor); renameSync(temporary, join(gitdir, name)); } catch (error) { rmSync(temporary, { force: true }); throw error; }
   }
+}
+
+/**
+ * A worktree `worktree add` made through a view, pointed at its repository instead of the view. Before git 2.48 the new
+ * checkout's `.git` file names the common directory as given (the view, removed right after the run: every later
+ * command in that checkout would find no repository); later versions name its real path, and this finds nothing to do.
+ * Only a worktree folder this run made (not there when the view was made) whose checkout's `.git` is a plain file
+ * reading exactly `gitdir: <view>/worktrees/<id>` (a name private to this run, in a folder every fence denies) is
+ * rewritten: a new file created exclusively (never through a link) and renamed into place, then bound to the repository
+ * (boundDirs) as any checkout is. Null when every such checkout is bound, or why one isn't.
+ */
+function relinkAdded(view: string, common: string, prior: ReadonlySet<string>): string | null {
+  let ids: string[];
+  try { ids = readdirSync(join(common, "worktrees")).filter(id => !prior.has(id)); } catch { return null; }
+  for (const id of ids) {
+    const named = regularFile(join(common, "worktrees", id, "gitdir"))?.trim();
+    if (named === undefined || !named.startsWith("/") || basename(named) !== ".git") continue;
+    const stale = `gitdir: ${join(view, "worktrees", id)}`;
+    let folder: string;
+    try { folder = realpathSync(dirname(named)); } catch { continue; }
+    const dotgit = join(folder, ".git");
+    const read = (): string | null => { try { return lstatSync(dotgit).isFile() ? regularFile(dotgit) : null; } catch { return null; } };
+    if (read()?.trim() !== stale) continue;
+    const temporary = join(folder, `.toolroll-${randomBytes(16).toString("hex")}`);
+    try {
+      const fd = openSync(temporary, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o644);
+      try { writeSync(fd, `gitdir: ${join(common, "worktrees", id)}\n`); } finally { closeSync(fd); }
+      // Checked again at the moment of use: still the plain file git wrote.
+      if (read()?.trim() !== stale) { rmSync(temporary, { force: true }); return "the new checkout's .git changed before it could be pointed at its repository"; }
+      renameSync(temporary, dotgit);
+    } catch { rmSync(temporary, { force: true }); return "the new checkout's .git couldn't be pointed at its repository"; }
+    try { boundDirs(folder, { repo: dirname(common) }); } catch (error) { return error instanceof Error ? error.message : "the new checkout isn't bound to its repository"; }
+  }
+  return null;
 }
 
 /** The checkout git would find from `cwd`: the nearest folder, `cwd` or above, with a `.git`; null when there is
