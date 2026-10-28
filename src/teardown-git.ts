@@ -14,7 +14,7 @@ import { spawnSync } from "node:child_process";
 import { closeSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
-import { ensureGitViewsRoot, lockCheckout } from "./git-views.js";
+import { ensureGitViewsRoot, withCheckoutLock } from "./git-views.js";
 import { gitIncident, type GitIncident } from "./git-incident.js";
 import { basename, dirname, join, resolve } from "node:path";
 import { run, type ExecResult } from "./exec.js";
@@ -200,27 +200,24 @@ function nestedRepository(path: string): boolean {
  * repository (boundDirs; `binding.repo` when the caller has the project's), is refused; so is a command whose
  * repository changed under it while git ran.
  */
-async function inView(cwd: string, binding: GitBinding, work: (view: GitView, restore: (result: ExecResult, args: readonly string[]) => ExecResult, held: ReadonlySet<string>) => Promise<ExecResult>, after = true, held: ReadonlySet<string> = new Set()): Promise<ExecResult> {
+async function inView(cwd: string, binding: GitBinding, work: (view: GitView, restore: (result: ExecResult, args: readonly string[]) => ExecResult) => Promise<ExecResult>, after = true): Promise<ExecResult> {
   const root = checkoutRootOf(cwd);
   if (root === null) return NOT_A_REPOSITORY;
-  // One plane git command at a time on a checkout (git-views.ts lockCheckout); a nested view of the same checkout
-  // within this command already holds it.
+  // One plane git command at a time on a checkout (git-views.ts withCheckoutLock: re-entrant along one call chain).
   let key: string;
   try { key = realpathSync(root); } catch { return refused("the checkout couldn't be found"); }
-  let release: (() => void) | null = null;
-  if (!held.has(key)) {
-    try { release = await lockCheckout(realpathSync(homedir()), key); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout is busy"); }
-  }
   try {
-    let view: GitView;
-    try { view = gitView(root, "write", binding); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
-    try {
-      const result = await work(view, (result, args) => ({ ...result, stdout: view.restore(result.stdout, args), stderr: view.restore(result.stderr, args) }), new Set([...held, key]));
-      if (!after) return result;
-      const why = view.settle();
-      return why === null ? result : refused(why);
-    } finally { view.dispose(); }
-  } finally { release?.(); }
+    return await withCheckoutLock(realpathSync(homedir()), key, async () => {
+      let view: GitView;
+      try { view = gitView(root, "write", binding); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
+      try {
+        const result = await work(view, (result, args) => ({ ...result, stdout: view.restore(result.stdout, args), stderr: view.restore(result.stderr, args) }));
+        if (!after) return result;
+        const why = view.settle();
+        return why === null ? result : refused(why);
+      } finally { view.dispose(); }
+    });
+  } catch (error) { return refused(error instanceof Error ? error.message : "the checkout is busy"); }
 }
 
 /** The one way teardown runs git, including the target checkout immediately before removal. Every command runs
@@ -240,7 +237,7 @@ export function teardownGit(runner: Runner = run, binding: GitBinding = {}): Git
     const key = commandSetting(config.stdout, { lfsChecked: true });
     return key === null ? null : refused(`the project's git config sets ${key}, which can run a command`);
   };
-  return (cwd, args) => inView(cwd, binding, async (view, restore, held) => {
+  return (cwd, args) => inView(cwd, binding, async (view, restore) => {
     const problem = await configProblem(cwd, view.env);
     if (problem !== null) return problem;
     const removal = args[0] === "worktree" && args[1] === "remove";
@@ -272,7 +269,7 @@ export function teardownGit(runner: Runner = run, binding: GitBinding = {}): Git
       // the target's view, inspected above, so it judges the target by the target's own settings.
       return ran(removal && !forced ? { ...view.env, GIT_COMMON_DIR: targetView.env["GIT_COMMON_DIR"]! } : view.env);
       // A removed target has no git directory left to prove: the folder it was removed from is proven instead.
-    }, !removal, held);
+    }, !removal);
   });
 }
 
@@ -755,13 +752,9 @@ export function checkoutGit(inner: Runner = run, mode: "build" | "read" = "build
     if (cwd === undefined || checkoutIncludes(cwd)) return refused("the checkout's git config includes another file, or couldn't be read as a plain file");
     // git-lfs also reads .lfsconfig from the checkout: one that names an extension (a command it would run) is refused.
     if (lfsExtensionIn(cwd)) return refused("the checkout's .lfsconfig sets a git-lfs key that can run a command");
-    // A write, one at a time on a checkout (git-views.ts lockCheckout).
-    let release: (() => void) | null = null;
-    if (mode === "build") {
-      try { release = await lockCheckout(realpathSync(homedir()), realpathSync(cwd)); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout is busy"); }
-    }
+    const once = async (): Promise<ExecResult> => {
     let view: GitView;
-    try { view = gitView(cwd, mode === "read" ? "read" : "write", binding); } catch (error) { release?.(); return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
+    try { view = gitView(cwd, mode === "read" ? "read" : "write", binding); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
     try {
       const viewed = { ...options, env: { ...(options?.env ?? {}), ...view.env } };
       // The checkout's own config may name no command.
@@ -782,7 +775,12 @@ export function checkoutGit(inner: Runner = run, mode: "build" | "read" = "build
       const why = view.settle();
       if (why !== null) return refused(why);
       return { ...ran, stdout: view.restore(ran.stdout, args), stderr: view.restore(ran.stderr, args) };
-    } finally { view.dispose(); release?.(); }
+    } finally { view.dispose(); }
+    };
+    if (mode !== "build") return once();
+    // A write, one at a time on a checkout (git-views.ts withCheckoutLock: re-entrant along one call chain).
+    try { return await withCheckoutLock(realpathSync(homedir()), realpathSync(cwd), once); }
+    catch (error) { return refused(error instanceof Error ? error.message : "the checkout is busy"); }
   };
 }
 

@@ -4,6 +4,7 @@
  * this folder by name, made first so no build can be the one to create it). A view in the system temp folder could be
  * rewritten by a build that writes anywhere and outlived its turn (Codex review of e48e9d8d).
  */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { closeSync, constants as fsConstants, lstatSync, mkdirSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
@@ -62,4 +63,19 @@ export async function lockCheckout(home: string, checkout: string, timeoutMs = 1
 
 function alive(pid: number): boolean {
   try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
+}
+
+/** The checkouts the current async call chain already holds (lockCheckout through withCheckoutLock). */
+const heldHere = new AsyncLocalStorage<ReadonlySet<string>>();
+
+/**
+ * Run `work` holding the checkout's lock (lockCheckout). Re-entrant along one call chain: a hardened git nested in
+ * another on the same checkout (teardown's git run through the builder's hardened runner, a view within a view) runs
+ * under the lock its caller already holds instead of waiting on itself.
+ */
+export async function withCheckoutLock<T>(home: string, checkout: string, work: () => Promise<T>): Promise<T> {
+  const held = heldHere.getStore() ?? new Set<string>();
+  if (held.has(checkout)) return work();
+  const release = await lockCheckout(home, checkout);
+  try { return await heldHere.run(new Set([...held, checkout]), work); } finally { release(); }
 }

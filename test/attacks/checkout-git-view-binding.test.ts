@@ -468,6 +468,13 @@ describe("one plane git command at a time on a checkout (Codex review of a0fa135
   test("teardown holds the lock too, and a nested view of the same checkout doesn't wait on itself", async () => {
     const status = await teardownGit()(aLinked, ["status", "--porcelain"]);
     expect(status.code, status.stderr).toBe(0);
+    // Teardown run through the builder's hardened runner (as a stopped build saves its work): one call chain, one lock.
+    const nested = await Promise.race([
+      teardownGit(checkoutGit(run, "build", { repo: a }))(aLinked, ["status", "--porcelain", "--untracked-files=all"]),
+      new Promise<null>(done => setTimeout(() => done(null), 15_000)),
+    ]);
+    expect(nested, "waited on its own lock").not.toBeNull();
+    expect(nested!.code, nested!.stderr).toBe(0);
   });
 });
 
