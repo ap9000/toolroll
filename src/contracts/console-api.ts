@@ -265,6 +265,11 @@ export const BODILESS_POSTS = [
   "POST /t/<task>/stop-carrying",
   "POST /t/<task>/plan",
   "POST /t/<task>/retry-review",
+  // Check now and its kin (docs/plans/get-side-effects.md): the form token only, no fields read.
+  "POST /settings/updates/check",
+  "POST /settings/storage/check",
+  "POST /projects/github",
+  "POST /code/<session>/ship/preview",
 ] as const;
 
 /** The field names a console form's handler may read. */
