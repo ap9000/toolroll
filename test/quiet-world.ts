@@ -9,7 +9,7 @@
 import { request as httpRequest, type IncomingHttpHeaders, type Server } from "node:http";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "../src/store.js";
@@ -112,6 +112,22 @@ export async function openQuietWorld(note: (what: string) => void, extra: Partia
         const rows = store.raw().prepare(`SELECT * FROM "${table}"`).all().map(row => bookkeepingRow(table, row)).filter(row => row !== null);
         return [table, createHash("sha256").update(JSON.stringify(rows)).digest("hex")];
       }));
+    },
+    /** Every file and folder under the world (the project, the config folder, evidence) but the database itself:
+     * path, kind, size and modification time. A page visit leaves it as it was. */
+    files(): Record<string, string> {
+      const seen: Record<string, string> = {};
+      const walk = (dir: string) => {
+        for (const name of readdirSync(dir)) {
+          const path = join(dir, name), rel = path.slice(root.length);
+          if (/\/config\/state\.db(-wal|-shm|-journal)?$/.test(rel)) continue;
+          const st = lstatSync(path);
+          seen[rel] = `${st.isDirectory() ? "dir" : st.isSymbolicLink() ? "link" : "file"}:${st.isDirectory() ? "" : st.size}:${st.isDirectory() ? "" : st.mtimeMs}`;
+          if (st.isDirectory()) walk(path);
+        }
+      };
+      walk(root);
+      return seen;
     },
     changed: (before: Record<string, string>, after: Record<string, string>) => Object.keys({ ...before, ...after }).filter(key => before[key] !== after[key]),
     async close() {

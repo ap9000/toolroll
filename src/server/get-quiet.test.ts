@@ -58,24 +58,44 @@ test("every GET and HEAD row only reads: no writes beyond bookkeeping, no proces
   vi.spyOn(world.store, "sweepStaleLeadTurns").mockImplementation(now => inReadOnlyRequest() ? sweep(now) : 0);
   const rows = ROUTES.filter(row => row.method !== "POST");
   expect(rows.length).toBeGreaterThan(100);
+  // Each row's own sample, then the addresses that reach deeper into the pages that used to act: a project named,
+  // a search typed, the old "check now" query strings, a task's chat.
+  const project = encodeURIComponent(world.repo);
+  const deeper = [`/settings/pull-requests?repo=${project}`, `/settings/knowledge?repo=${project}&q=readme`, `/settings/tools?repo=${project}`,
+    `/settings/project?repo=${project}`, "/control?provider=openrouter&refresh-models=1", "/control?check-connection=1", "/settings?check-connection=claude",
+    "/settings/updates?check=now", "/chat?task=one", "/chat/mate/status?task=one", "/chat/task-status?task=one", "/workbench?t=one", "/t/one"];
+  const targets = [...rows.flatMap(row => (row.method === "GET,HEAD" ? ["GET", "HEAD"] : ["GET"]).map(method => ({ method, path: row.sample, id: row.id }))),
+    ...deeper.map(path => ({ method: "GET", path, id: "deeper" }))];
   const found: string[] = [];
-  for (const row of rows) {
-    for (const method of row.method === "GET,HEAD" ? ["GET", "HEAD"] : ["GET"]) {
-      for (const who of [{ cookie }, {}]) {
-        const before = world.snapshot();
-        effects.list.length = 0; effects.on = true;
-        const answer = await world.send(row.sample, method, who);
-        // Anything a page set off in the background has a moment to land.
-        await new Promise(done => setTimeout(done, 20));
-        effects.on = false;
-        const writes = world.changed(before, world.snapshot());
-        const label = `${method} ${row.sample} (${row.id}${"cookie" in who ? "" : ", signed out"}) ${answer.status}`;
-        if (writes.length > 0) found.push(`${label}: writes ${writes.join(", ")}`);
-        if (effects.list.length > 0) found.push(`${label}: ${[...new Set(effects.list)].join("; ")}`);
-      }
+  const answered = new Map<string, number>();
+  for (const { method, path, id } of targets) {
+    for (const who of [{ cookie }, {}]) {
+      const before = world.snapshot(), files = world.files();
+      effects.list.length = 0; effects.on = true;
+      const answer = await world.send(path, method, who);
+      // Anything a page set off in the background has a moment to land.
+      await new Promise(done => setTimeout(done, 20));
+      effects.on = false;
+      if ("cookie" in who && method === "GET") answered.set(path, answer.status);
+      const writes = world.changed(before, world.snapshot());
+      const touched = world.changed(files, world.files());
+      const label = `${method} ${path} (${id}${"cookie" in who ? "" : ", signed out"}) ${answer.status}`;
+      if (writes.length > 0) found.push(`${label}: writes ${writes.join(", ")}`);
+      if (touched.length > 0) found.push(`${label}: files ${touched.join(", ")}`);
+      // Kept on GET (the plan, "Kept on GET"): Settings → Knowledge's search reads the project with the hardened git
+      // only: its config inspected, then git with no network, no attributes, hooks or fsmonitor.
+      const kept = (one: string) => path.startsWith("/settings/knowledge?") && (/^spawn spawnSync git (config --file \S+ --no-includes|--no-optional-locks config --list)/.test(one)
+        || /^spawn spawnSync git .*--no-lazy-fetch --attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904 -c protocol\.allow=never /.test(one));
+      const acted = effects.list.filter(one => !kept(one));
+      if (acted.length > 0) found.push(`${label}: ${[...new Set(acted)].join("; ")}`);
     }
   }
   expect(found).toEqual([]);
+  // The pages that used to act really rendered (no redirect or refusal hid their handler).
+  const rendered = ["/lead/status", "/inbox", "/chat", "/settings", "/settings/lead", "/settings/models", "/settings/integrations", "/settings/updates",
+    "/settings/storage", "/settings/skills", "/settings/learning", "/control", "/control/connection", "/projects/github", "/push/key", "/mode", "/t/one",
+    ...deeper];
+  expect(Object.fromEntries(rendered.map(path => [path, answered.get(path)]))).toEqual(Object.fromEntries(rendered.map(path => [path, 200])));
   expect(world.store.getChatConfig()).toBeNull();
   expect(world.openModes()).toBe(1);
   expect(world.pauseOpen()).toBe(true);

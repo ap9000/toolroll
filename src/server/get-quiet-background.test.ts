@@ -62,3 +62,14 @@ test("Check now posts: models, the newest release, storage, the GitHub list and 
   expect(world.pauseOpen()).toBe(false);
   expect((await world.send("/control?provider=claude", "GET", { cookie })).body).toContain("Connected");
 });
+
+test("the follow pass settles a turn past its deadline even while an update drains (the update waits on it)", async () => {
+  world = await openQuietWorld(what => seen.push(what));
+  const { installUpdateGate, removeUpdateGate } = await import("../desktop-update-gate.js");
+  const { runLeadFollowPass } = await import("../lead-follow.js");
+  installUpdateGate(world.store.raw(), "00000000-0000-4000-8000-000000000001");
+  try {
+    await runLeadFollowPass({ store: world.store, repos: () => [world!.repo], evidenceRoot: world.root, provider: () => null });
+    expect(world.store.getLeadTurn(world.turnId)).toMatchObject({ state: "failed", failureReason: "crashed" });
+  } finally { removeUpdateGate(world.store.raw(), "00000000-0000-4000-8000-000000000001"); }
+});
