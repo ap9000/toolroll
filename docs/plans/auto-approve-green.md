@@ -73,10 +73,13 @@ person exactly as today, and `ownerApproval` still refuses every basis that isn'
   structurally (src/test-infra.ts), at the base and at the candidate: every non-test source file the tests, the vitest
   configs or their `setupFiles`/`globalSetup` import (transitively), that the product's entry points (the CLI, the
   processes it starts by file name, the browser bundles) never reach. Imports are read with the TypeScript compiler
-  (`preProcessFile`; comments never count) and the syntax tree for computed `import()`/`require()`, resolved like the
-  build (relative paths, tsconfig `paths`, package.json `imports`); an import reached from the tests that resolves to no
-  file and no known package refuses any change it might name (a computed one: any changed source file that is neither a
-  test nor product code);
+  (`preProcessFile`; comments never count) and the syntax tree for every loader call — `import()`, `require`,
+  `createRequire(…)(…)` and names bound to it, `vi.*`/`vitest.*` mock and import helpers — plus any relative string
+  that names a repo source file; resolved like the build and vitest (relative paths, tsconfig `paths`, package.json
+  `imports`, the vitest configs' `resolve.alias`/`test.alias`). Anything it can't model — a computed specifier, an alias
+  it can't read statically, a bare package the manifest doesn't declare (the package's own name included) — is
+  unresolved and might name anything: then any changed source file that is neither a test nor product code needs a
+  person;
 - no earlier generation of this release (repo, version, pull request) was revoked: a revoked release, or one stopped by
   a CI failure after its deploy, asks a person;
 - everything a seal already checks (sealScopeApproval): no coordinator or machine-written text, no widened check

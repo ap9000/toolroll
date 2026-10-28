@@ -739,3 +739,54 @@ describe("codex r2 #6: GitHub's 1000-suite ceiling fails an automatic approval c
     expect(await readCheckRuns(run, "/usr/bin/gh", "ap9000/toolroll", sha)).toEqual([{ id: 1, name: "x", status: "completed", conclusion: "success", app: "github-actions", suite: 7, head: sha, workflow: 3 }]);
   });
 });
+
+describe("scan round 3: every way a test can load a module is an edge, or unresolved and refused", () => {
+  const scan = (extra: Record<string, string>) => testInfrastructure(new Map(Object.entries({
+    "package.json": JSON.stringify({ name: "fixture-app", devDependencies: { vitest: "1" } }),
+    "src/bin.ts": "export {};\n", "src/target.ts": "export {};\n", ...extra,
+  })));
+  test.each([
+    ["createRequire bound to a name", "import { createRequire } from \"node:module\";\nconst load = createRequire(import.meta.url);\nload(\"./target.js\");\n"],
+    ["createRequire(...)(...) directly", "import { createRequire } from \"node:module\";\ncreateRequire(import.meta.url)(\"./target.js\");\n"],
+    ["vi.importActual", "await vi.importActual(\"./target.js\");\n"],
+    ["vitest.mock", "vitest.mock(\"./target.js\");\n"],
+    ["vi.doMock", "vi.doMock(\"./target.js\", () => ({}));\n"],
+    ["a path handed to any other call", "loadModule(\"./target.ts\");\n"],
+  ])("%s is an edge", (_name, text) => {
+    expect([...scan({ "src/x.test.ts": text }).infra]).toContain("src/target.ts");
+  });
+
+  test.each([
+    ["a computed createRequire load", "import { createRequire } from \"node:module\";\nconst load = createRequire(import.meta.url);\nload(process.env.X!);\n"],
+    ["a computed vi.importActual", "await vi.importActual(process.env.X!);\n"],
+    ["an undeclared bare package", "import \"left-pad\";\n"],
+    ["the package's own name", "import \"fixture-app/internal\";\n"],
+  ])("%s is unresolved and might name anything", (_name, text) => {
+    const found = scan({ "src/x.test.ts": text });
+    expect(found.unresolved.some(one => one.prefix === null)).toBe(true);
+  });
+
+  test("vitest aliases resolve; one that can't be read statically is unresolved", () => {
+    const readable = scan({
+      "vitest.config.ts": "export default { resolve: { alias: { \"@kit\": \"./src/kit\" } }, test: { alias: [{ find: \"#t\", replacement: \"./src\" }] } };\n",
+      "src/kit/helper.ts": "export {};\n",
+      "src/x.test.ts": "import \"@kit/helper.js\";\nimport \"#t/target.js\";\n",
+    });
+    expect([...readable.infra].sort()).toEqual(["src/kit/helper.ts", "src/target.ts", "vitest.config.ts"]);
+    expect(readable.unresolved).toEqual([]);
+    const unreadable = scan({ "vitest.config.ts": "import { resolve } from \"node:path\";\nexport default { resolve: { alias: { \"@kit\": resolve(__dirname, \"src/kit\") } } };\n", "src/x.test.ts": "test('x', () => {});\n" });
+    expect(unreadable.unresolved).toContainEqual({ from: "vitest.config.ts", specifier: null, prefix: null });
+  });
+
+  test("an unresolved import refuses a changed non-product file, and lets product code ship", () => {
+    const files = { ...PROJECT, "src/loader.test.ts": "import \"left-pad\";\ntest('l', () => {});\n" };
+    const f = open({ files, candidate: { "src/orphan.ts": "export const y = 2;\n" } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("might name it") });
+    fixture?.close(); fixture = null;
+    const g = open({ files, candidate: { "src/app.ts": "export const main = () => 44;\n" } });
+    authorize(g);
+    const sealed = seal(g, check(g));
+    expect(sealed.ok ? "" : sealed.why).toBe("");
+  });
+});

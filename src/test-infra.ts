@@ -55,7 +55,7 @@ function fileAt(target: string, files: ReadonlySet<string>): string | null {
 type Resolver = (from: string, spec: string) => { file: string } | { external: true } | { unresolved: string | null };
 
 /** The project's resolution rules, read from its own tsconfig.json and package.json (as text in the same tree). */
-function resolverFor(files: ReadonlyMap<string, string>, names: ReadonlySet<string>, allPaths: ReadonlySet<string>): Resolver {
+function resolverFor(files: ReadonlyMap<string, string>, names: ReadonlySet<string>, allPaths: ReadonlySet<string>, aliases: readonly { find: string; replacement: string }[]): Resolver {
   const tsc = typescript();
   let paths: Record<string, string[]> = {}, baseUrl = "";
   const config = files.get("tsconfig.json");
@@ -64,9 +64,11 @@ function resolverFor(files: ReadonlyMap<string, string>, names: ReadonlySet<stri
     paths = parsed?.compilerOptions?.paths ?? {};
     baseUrl = join("", parsed?.compilerOptions?.baseUrl ?? ".") ?? "";
   }
-  let pkg: { imports?: Record<string, unknown>; dependencies?: object; devDependencies?: object; peerDependencies?: object; optionalDependencies?: object } = {};
+  let pkg: { name?: unknown; imports?: Record<string, unknown>; dependencies?: object; devDependencies?: object; peerDependencies?: object; optionalDependencies?: object } = {};
   try { pkg = JSON.parse(files.get("package.json") ?? "{}") as typeof pkg; } catch { pkg = {}; }
   const packages = new Set([pkg.dependencies, pkg.devDependencies, pkg.peerDependencies, pkg.optionalDependencies].flatMap(one => Object.keys(one ?? {})));
+  // The package's own name resolves to itself: never "some installed package".
+  const own = typeof pkg.name === "string" ? pkg.name : null;
   const builtins = new Set(builtinModules);
   const pattern = (key: string, spec: string): string | null => {
     if (!key.includes("*")) return key === spec ? "" : null;
@@ -74,6 +76,13 @@ function resolverFor(files: ReadonlyMap<string, string>, names: ReadonlySet<stri
     return spec.startsWith(head) && spec.endsWith(tail) && spec.length >= head.length + tail.length ? spec.slice(head.length, spec.length - tail.length) : null;
   };
   return (from, spec) => {
+    // vitest's own aliases come first, as vitest applies them.
+    for (const alias of aliases) {
+      if (spec !== alias.find && !spec.startsWith(`${alias.find}/`)) continue;
+      const target = join(alias.replacement, spec.slice(alias.find.length).replace(/^\//, ""));
+      const file = target === null ? null : fileAt(target, names);
+      return file !== null ? { file } : { unresolved: target };
+    }
     if (spec.startsWith("./") || spec.startsWith("../")) {
       const target = join(dirOf(from), spec);
       const file = target === null ? null : fileAt(target, names);
@@ -102,32 +111,94 @@ function resolverFor(files: ReadonlyMap<string, string>, names: ReadonlySet<stri
     }
     const bare = spec.startsWith("node:") ? spec.slice(5) : spec;
     const name = bare.startsWith("@") ? bare.split("/").slice(0, 2).join("/") : bare.split("/")[0]!;
+    if (name === own) return { unresolved: null };
     if (spec.startsWith("node:") || builtins.has(name) || packages.has(name)) return { external: true };
-    // A package the manifest doesn't name (a dependency's own): it can only name what's installed, never a repo file.
-    return { unresolved: `node_modules/${name}` };
+    // A package the manifest doesn't declare: what it names can't be known here.
+    return { unresolved: null };
   };
 }
 
-/** Every specifier a file names: string ones (preProcessFile: static, dynamic, require; comments don't count), and
- * dynamic imports or requires with a computed specifier (`null`, or the template's literal head). */
-function specifiersOf(path: string, text: string): { literal: string[]; computed: (string | null)[] } {
+/** The module-loading helpers vitest offers: each takes a specifier first. */
+const VI_LOADERS = new Set(["mock", "doMock", "unmock", "doUnmock", "importActual", "importMock"]);
+
+/**
+ * Every specifier a file names: string ones (preProcessFile: static, dynamic, `require`; comments don't count); every
+ * call that loads a module from its first argument — `require`, `import()`, `createRequire(…)(…)` and any name bound to
+ * `createRequire(…)`, `vi.*`/`vitest.*` mock and import helpers — whose argument isn't a plain string is computed (`null`,
+ * or the template's literal head); and `soft`: every other relative string literal, an edge when it names a repo file.
+ */
+function specifiersOf(path: string, text: string): { literal: string[]; computed: (string | null)[]; soft: string[] } {
   const tsc = typescript();
   const literal = tsc.preProcessFile(text, true, true).importedFiles.map(one => one.fileName);
-  const computed: (string | null)[] = [];
+  const computed: (string | null)[] = [], soft: string[] = [];
   const source = tsc.createSourceFile(path, text, tsc.ScriptTarget.Latest, false, /x$/.test(path) ? tsc.ScriptKind.TSX : tsc.ScriptKind.TS);
+  // Names bound to createRequire(…) anywhere in the file (a loader by another name).
+  const requires = new Set<string>(["require"]);
+  const isCreateRequire = (node: ts.Node): boolean => tsc.isCallExpression(node) && ((tsc.isIdentifier(node.expression) && node.expression.text === "createRequire")
+    || (tsc.isPropertyAccessExpression(node.expression) && node.expression.name.text === "createRequire"));
+  const bind = (node: ts.Node): void => {
+    if (tsc.isVariableDeclaration(node) && tsc.isIdentifier(node.name) && node.initializer !== undefined && isCreateRequire(node.initializer)) requires.add(node.name.text);
+    if (tsc.isBinaryExpression(node) && node.operatorToken.kind === tsc.SyntaxKind.EqualsToken && tsc.isIdentifier(node.left) && isCreateRequire(node.right)) requires.add(node.left.text);
+    tsc.forEachChild(node, bind);
+  };
+  bind(source);
+  const loader = (callee: ts.Expression): boolean =>
+    callee.kind === tsc.SyntaxKind.ImportKeyword
+    || (tsc.isIdentifier(callee) && requires.has(callee.text))
+    || isCreateRequire(callee)
+    || (tsc.isPropertyAccessExpression(callee) && tsc.isIdentifier(callee.expression) && (callee.expression.text === "vi" || callee.expression.text === "vitest") && VI_LOADERS.has(callee.name.text))
+    || (tsc.isPropertyAccessExpression(callee) && callee.name.text === "require");
   const visit = (node: ts.Node): void => {
     if (tsc.isCallExpression(node)) {
-      const callee = node.expression;
-      const dynamic = callee.kind === tsc.SyntaxKind.ImportKeyword || (tsc.isIdentifier(callee) && callee.text === "require");
       const first = node.arguments[0];
-      if (dynamic && first !== undefined && !tsc.isStringLiteral(first) && !tsc.isNoSubstitutionTemplateLiteral(first)) {
-        computed.push(tsc.isTemplateExpression(first) && (first.head.text.startsWith("./") || first.head.text.startsWith("../")) ? first.head.text : null);
+      if (loader(node.expression) && first !== undefined) {
+        if (tsc.isStringLiteral(first) || tsc.isNoSubstitutionTemplateLiteral(first)) literal.push(first.text);
+        else computed.push(tsc.isTemplateExpression(first) && (first.head.text.startsWith("./") || first.head.text.startsWith("../")) ? first.head.text : null);
       }
     }
+    if ((tsc.isStringLiteral(node) || tsc.isNoSubstitutionTemplateLiteral(node)) && (node.text.startsWith("./") || node.text.startsWith("../"))) soft.push(node.text);
     tsc.forEachChild(node, visit);
   };
   visit(source);
-  return { literal, computed };
+  return { literal, computed, soft };
+}
+
+/**
+ * The vitest configs' `resolve.alias` and `test.alias` (string keys to string paths, as an object or a list of
+ * `{ find, replacement }`), and whether any alias couldn't be read statically.
+ */
+function vitestAliases(files: ReadonlyMap<string, string>): { aliases: { find: string; replacement: string }[]; unreadable: string[] } {
+  const tsc = typescript(), aliases: { find: string; replacement: string }[] = [], unreadable: string[] = [];
+  for (const [path, text] of files) {
+    if (!VITEST_CONFIG.test(path)) continue;
+    const source = tsc.createSourceFile(path, text, tsc.ScriptTarget.Latest, false, tsc.ScriptKind.TS);
+    const text_ = (node: ts.Node | undefined): string | null => node !== undefined && (tsc.isStringLiteral(node) || tsc.isNoSubstitutionTemplateLiteral(node)) ? node.text : null;
+    const visit = (node: ts.Node): void => {
+      if (tsc.isPropertyAssignment(node) && (tsc.isIdentifier(node.name) || tsc.isStringLiteral(node.name)) && node.name.text === "alias") {
+        const value = node.initializer;
+        const add = (find: string | null, replacement: string | null) => {
+          if (find === null || replacement === null || !(replacement.startsWith("./") || replacement.startsWith("../"))) { unreadable.push(path); return; }
+          const target = join(dirOf(path), replacement);
+          if (target === null) unreadable.push(path); else aliases.push({ find, replacement: target });
+        };
+        if (tsc.isObjectLiteralExpression(value)) {
+          for (const property of value.properties) {
+            if (!tsc.isPropertyAssignment(property)) { unreadable.push(path); continue; }
+            add(tsc.isIdentifier(property.name) || tsc.isStringLiteral(property.name) ? property.name.text : null, text_(property.initializer));
+          }
+        } else if (tsc.isArrayLiteralExpression(value)) {
+          for (const element of value.elements) {
+            if (!tsc.isObjectLiteralExpression(element)) { unreadable.push(path); continue; }
+            const field = (name: string) => element.properties.find((one): one is ts.PropertyAssignment => tsc.isPropertyAssignment(one) && (tsc.isIdentifier(one.name) || tsc.isStringLiteral(one.name)) && one.name.text === name)?.initializer;
+            add(text_(field("find")), text_(field("replacement")));
+          }
+        } else unreadable.push(path);
+      }
+      tsc.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  return { aliases, unreadable };
 }
 
 /** The vitest configs' setupFiles and globalSetup entries (string literals), as repository paths. */
@@ -160,10 +231,11 @@ function setupRoots(files: ReadonlyMap<string, string>, names: ReadonlySet<strin
  */
 export function testInfrastructure(files: ReadonlyMap<string, string>, allPaths: ReadonlySet<string> = new Set(files.keys())): TestInfrastructure {
   const names = new Set([...files.keys()].filter(path => SOURCE.test(path)));
-  const resolve = resolverFor(files, names, allPaths);
+  const vitest = vitestAliases(files);
+  const resolve = resolverFor(files, names, allPaths, vitest.aliases);
   const edges = new Map<string, string[]>(), loose = new Map<string, Unresolved[]>();
   for (const path of names) {
-    const { literal, computed } = specifiersOf(path, files.get(path)!);
+    const { literal, computed, soft } = specifiersOf(path, files.get(path)!);
     const targets = new Set<string>(), open: Unresolved[] = [];
     for (const spec of literal) {
       const found = resolve(path, spec);
@@ -171,6 +243,8 @@ export function testInfrastructure(files: ReadonlyMap<string, string>, allPaths:
       else if ("unresolved" in found) open.push({ from: path, specifier: spec, prefix: found.unresolved });
     }
     for (const head of computed) open.push({ from: path, specifier: head, prefix: head === null ? null : join(dirOf(path), head) });
+    // Any other relative string that names a repository source file is an edge (a path handed to a loader by any name).
+    for (const spec of soft) { const found = resolve(path, spec); if ("file" in found) targets.add(found.file); }
     edges.set(path, [...targets]);
     loose.set(path, open);
   }
@@ -184,7 +258,7 @@ export function testInfrastructure(files: ReadonlyMap<string, string>, allPaths:
   const product = reach(PRODUCT_ENTRIES.filter(path => names.has(path)));
   const tested = reach(testRoots);
   const infra = new Set([...tested].filter(path => !TEST.test(path) && !product.has(path)));
-  const unresolved = [...setup.unresolved, ...[...tested].flatMap(path => loose.get(path) ?? [])];
+  const unresolved = [...setup.unresolved, ...vitest.unreadable.map(from => ({ from, specifier: null, prefix: null })), ...[...tested].flatMap(path => loose.get(path) ?? [])];
   return { infra, unresolved, product };
 }
 
