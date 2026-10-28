@@ -11,9 +11,11 @@
  * nothing is removed.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { ensureGitViewsRoot } from "./git-views.js";
+import { gitIncident, type GitIncident } from "./git-incident.js";
 import { basename, dirname, join, resolve } from "node:path";
 import { run, type ExecResult } from "./exec.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
@@ -178,7 +180,9 @@ async function inView(cwd: string, binding: GitBinding, work: (view: GitView, re
   try { view = gitView(root, "write", binding); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
   try {
     const result = await work(view, (result, args) => ({ ...result, stdout: view.restore(result.stdout, args), stderr: view.restore(result.stderr, args) }));
-    return after && refusal(result) === null && !view.intact() ? refused("the checkout's git directory changed while git ran") : result;
+    if (!after) return result;
+    const why = view.settle();
+    return why === null ? result : refused(why);
   } finally { view.dispose(); }
 }
 
@@ -378,14 +382,20 @@ function boundDirs(checkout: string, binding: GitBinding = {}): BoundDirs {
  * through), and `worktrees` is made in the repository first (git can't create a folder under a dangling link). The one thing a command can't change through it is the config: the view's is a
  * copy, so a config write (a branch's section dropped by `branch -D`) stays in the view and is lost.
  */
-type GitView = { env: Record<string, string>; restore: (output: string, args: readonly string[]) => string; dispose: () => void; dirs: BoundDirs; intact: () => boolean };
+type GitView = { env: Record<string, string>; restore: (output: string, args: readonly string[]) => string; dispose: () => void; dirs: BoundDirs;
+  /** After git ran: its worktree-own writes carried back, and null, or why the run can't stand (an incident). */
+  settle: () => string | null };
+/** What git keeps only per worktree and the plane never links: HEAD (git won't take it as a link) and the pointers. */
+const ADMIN_OWN = new Set(["HEAD", "commondir", "gitdir", "config", "config.worktree", "hooks", "info"]);
 /** What git keeps in a common directory (its path.c common_list, and reftable), linked whether or not it exists yet. */
 const COMMON_NAMES = ["branches", "gc.pid", "logs", "lost-found", "modules", "objects", "packed-refs", "reftable", "refs", "remotes", "rr-cache", "shallow", "svn", "worktrees"];
 function gitView(checkout: string, kind: "read" | "write", binding: GitBinding = {}): GitView {
   const dirs = boundDirs(checkout, binding);
   const root = ensureGitViewsRoot(realpathSync(homedir()));
   const view = realpathSync(mkdtempSync(join(root, `${kind}-`)));
-  const dispose = () => rmSync(view, { recursive: true, force: true });
+  const admin = realpathSync(mkdtempSync(join(root, `${kind}-gitdir-`)));
+  const dispose = () => { rmSync(view, { recursive: true, force: true }); rmSync(admin, { recursive: true, force: true }); };
+  const initial = new Map<string, string | null>();
   try {
     let config = regularFile(join(dirs.common, "config"));
     if (config === null) throw new Error("the checkout's git config couldn't be read as a plain file");
@@ -427,20 +437,101 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
       if (name === "config" || name === "info" || name === "hooks" || name === "commondir") continue;
       symlinkSync(join(dirs.common, name), join(view, name));
     }
+    // GIT_DIR is the plane's too (git's ref store reads `commondir` from GIT_DIR as it goes, empirically on 2.50.1):
+    // its `commondir` names the view and its `gitdir` this checkout, both the plane's; HEAD is a copy (git won't take
+    // it as a link) carried back after the run; the worktree's other files are linked (the index and logs even before
+    // they exist), so git's lockfiles write them in place.
+    // (A folder under a dangling link can't be made by git: the worktree's `logs` is made first, as git would.)
+    if (kind === "write" && !existsSync(join(dirs.gitdir, "logs"))) { try { mkdirSync(join(dirs.gitdir, "logs")); } catch { /* git reports it */ } }
+    for (const name of new Set([...readdirSync(dirs.gitdir), "index", "logs"])) {
+      if (ADMIN_OWN.has(name)) continue;
+      symlinkSync(join(dirs.gitdir, name), join(admin, name));
+      initial.set(name, null);
+    }
+    const head = regularFile(join(dirs.gitdir, "HEAD"));
+    if (head === null) throw new Error("the checkout's HEAD couldn't be read as a plain file");
+    writeFileSync(join(admin, "HEAD"), head, { mode: 0o600 });
+    initial.set("HEAD", head);
+    writeFileSync(join(admin, "commondir"), `${view}\n`, { mode: 0o600 });
+    writeFileSync(join(admin, "gitdir"), `${join(dirs.checkout, ".git")}\n`, { mode: 0o600 });
+    // A main checkout's own info (its sparse-checkout) is the view's frozen one; a linked one's is its own.
+    symlinkSync(dirs.linked ? join(dirs.gitdir, "info") : join(view, "info"), join(admin, "info"));
+    if (!pinned(dirs).ok) throw new Error("the checkout's repository has a folder that is a link");
   } catch (error) { dispose(); throw error; }
   // Where git names a view (rev-parse --git-dir, --git-common-dir), the caller is told the repository's own folder;
   // where `worktree list` names the common view as the main worktree, that worktree (git's rule: the common dir less
   // `/.git`).
   const mainWorktree = dirname(dirs.common);
   const restore = (output: string, args: readonly string[]) => {
-    if (!output.includes(view)) return output;
+    if (!output.includes(view) && !output.includes(admin)) return output;
     const asWorktree = args.includes("worktree");
-    return output.split(`${view}/`).join(`${dirs.common}/`).split(view).join(asWorktree ? mainWorktree : dirs.common);
+    return output.split(admin).join(dirs.gitdir).split(`${view}/`).join(`${dirs.common}/`).split(view).join(asWorktree ? mainWorktree : dirs.common);
   };
-  // Still the same repository once git has run (git's ref store reads `commondir` from GIT_DIR as it goes, and GIT_DIR
-  // is the worktree's own folder, which can't be a view: git takes only a real HEAD file).
-  const intact = () => { try { const now = boundDirs(checkout, binding); return now.gitdir === dirs.gitdir && now.common === dirs.common; } catch { return false; } };
-  return { env: { GIT_DIR: dirs.gitdir, GIT_COMMON_DIR: view, GIT_WORK_TREE: dirs.checkout }, restore, dispose, dirs, intact };
+  const settle = (): string | null => {
+    const now = pinned(dirs);
+    let bound = false;
+    try { const again = boundDirs(checkout, binding); bound = again.gitdir === dirs.gitdir && again.common === dirs.common; } catch { bound = false; }
+    if (!now.ok || !bound) {
+      // Too late to prevent: recorded and told (git-incident.ts), never rolled back where the swap leads.
+      if (kind === "write") {
+        gitIncident({ checkout: dirs.checkout, repository: dirs.common, swapped: now.swapped.length > 0 ? now.swapped.map(({ path, leadsTo }) => ({ path, leadsTo })) : [{ path: join(dirs.checkout, ".git"), leadsTo: null }],
+          record: join(dirname(ensureGitViewsRoot(realpathSync(homedir()))), "git-incidents.jsonl") });
+      }
+      return "the checkout's repository changed while git ran";
+    }
+    if (kind === "write") {
+      // The worktree's own files git rewrote in the plane's GIT_DIR (HEAD, ORIG_HEAD, a merge's state) go back to it,
+      // and those it removed are removed there.
+      try { carryBack(admin, dirs.gitdir, initial); } catch { return "the checkout's git state couldn't be carried back after git ran"; }
+    }
+    return null;
+  };
+  return { env: { GIT_DIR: admin, GIT_COMMON_DIR: view, GIT_WORK_TREE: dirs.checkout }, restore, dispose, dirs, settle };
+}
+
+/**
+ * Whether the folders a view links to are still the repository's own real folders (none swapped for a link), and for
+ * each swapped one, where it leads (for the incident's record).
+ */
+function pinned(dirs: BoundDirs): { ok: boolean; swapped: GitIncident["swapped"] } {
+  const swapped: GitIncident["swapped"] = [];
+  const paths = [dirs.common, dirs.gitdir, ...["refs", "objects", "logs", "worktrees", "reftable", "packed-refs"].map(name => join(dirs.common, name)),
+    ...["index", "logs"].map(name => join(dirs.gitdir, name))];
+  for (const path of new Set(paths)) {
+    let held: import("node:fs").Stats;
+    try { held = lstatSync(path); } catch { continue; }
+    let real: string | null = null;
+    try { real = realpathSync(path); } catch { real = null; }
+    if (held.isSymbolicLink() || real !== path) swapped.push({ path, leadsTo: real });
+  }
+  return { ok: swapped.length === 0, swapped };
+}
+
+/** The worktree's own files a command may rewrite and the plane carries back (HEAD; a merge's state, so a conflicted
+ * merge can be aborted); git's other per-worktree files written in the plane's GIT_DIR stay there and go with it. */
+const CARRIED_BACK = ["HEAD", "ORIG_HEAD", "MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "AUTO_MERGE"];
+
+/** Carry the CARRIED_BACK files git rewrote or removed in the plane's GIT_DIR back to the worktree's own folder: a new
+ * file of a random name, created exclusively (never through a link), then renamed into place. */
+function carryBack(admin: string, gitdir: string, initial: ReadonlyMap<string, string | null>): void {
+  for (const name of CARRIED_BACK) {
+    const here = join(admin, name);
+    let held: import("node:fs").Stats | null = null;
+    try { held = lstatSync(here); } catch { held = null; }
+    const was = initial.get(name);
+    if (held === null) {
+      // Removed by git: removed in the worktree's own folder too (a merge's state once it concluded).
+      if (initial.has(name)) rmSync(join(gitdir, name), { force: true });
+      continue;
+    }
+    if (held.isSymbolicLink() || !held.isFile()) continue;
+    const text = readFileSync(here);
+    if (was !== undefined && was !== null && text.toString("utf8") === was) continue;
+    const temporary = join(gitdir, `.toolroll-${randomBytes(16).toString("hex")}`);
+    const fd = openSync(temporary, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+    try { writeSync(fd, text); } finally { closeSync(fd); }
+    try { renameSync(temporary, join(gitdir, name)); } catch (error) { rmSync(temporary, { force: true }); throw error; }
+  }
 }
 
 /** The checkout git would find from `cwd`: the nearest folder, `cwd` or above, with a `.git`; null when there is
@@ -499,7 +590,8 @@ export function checkoutGit(inner: Runner = run, mode: "build" | "read" = "build
       if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
       const flags = mode === "read" ? readFlags() : WRITE_VIEW_FLAGS;
       const ran = await inner("git", [...TEARDOWN_FLAGS, ...flags, "-c", "diff.ignoreSubmodules=all", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", ...carried, ...safeArgs], { ...options, env });
-      if (!view.intact()) return refused("the checkout's git directory changed while git ran");
+      const why = view.settle();
+      if (why !== null) return refused(why);
       return { ...ran, stdout: view.restore(ran.stdout, args), stderr: view.restore(ran.stderr, args) };
     } finally { view.dispose(); }
   };
@@ -554,7 +646,8 @@ export function checkoutGitSync(cwd: string, args: readonly string[], options: {
     const carried = withoutFilters(carriedSettings(own.stdout));
     const ran = spawnSync("git", [...TEARDOWN_FLAGS, ...readFlags(), "-c", "diff.ignoreSubmodules=all", ...carried, ...safeArgs], bounded);
     if (ran.status !== 0) throw new Error(`git ${args[0] ?? ""} failed`);
-    if (!view.intact()) throw new Error("the checkout's git directory changed while git ran");
+    const why = view.settle();
+    if (why !== null) throw new Error(why);
     return view.restore(ran.stdout, args);
   } finally { view.dispose(); }
 }

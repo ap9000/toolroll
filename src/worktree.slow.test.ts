@@ -61,6 +61,7 @@ describe("the pool, against a stubbed git", () => {
     mkdirSync(admin, { recursive: true });
     writeFileSync(join(admin, "gitdir"), `${realpathSync(path)}/.git\n`);
     writeFileSync(join(admin, "commondir"), "../..\n");
+    writeFileSync(join(admin, "HEAD"), "ref: refs/heads/stub\n");
     writeFileSync(join(path, ".git"), `gitdir: ${admin}\n`);
   };
 
@@ -90,6 +91,7 @@ describe("the pool, against a stubbed git", () => {
     common = join(thing, ".git");
     mkdirSync(common, { recursive: true });
     writeFileSync(join(common, "config"), "");
+    writeFileSync(join(common, "HEAD"), "ref: refs/heads/main\n");
     // A worktree can only be leased to a runner the control plane knows.
     for (const name of ["builder-1", "builder-2"]) {
       register(store, { name, host: "test", now: T0 });
