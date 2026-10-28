@@ -1369,10 +1369,28 @@ await journey("maya", SCRIPTED, "The lead queue: a message sent while the lead a
   await say("Then list the open questions.");
   await waitFor(page.locator('[data-queue-state="queued"]').first(), "the second message shown Queued", { timeoutMs: 15_000 });
   if (await page.locator('[data-queue-state="queued"] .so-queued-remove').count() !== 1) throw new Error("the queued message has no Remove");
-  await until("both replies, in order", async () => (await messages.count()) >= before + 4, { timeoutMs: 60_000 });
+  await until("both replies, in order", async () => (await messages.count()) >= before + 4 && rows("SELECT 1 FROM lead_queue WHERE status = 'answered'").length === 1, { timeoutMs: w.scripted ? 60_000 : 2 * REAL_TURN_MS });
   const order = (await messages.allInnerTexts()).slice(before).map(one => one.replace(/\s+/g, " "));
+  // The order the product guarantees, whatever a real lead says: the queued message waited for the first turn to end
+  // and got the next turn of its own; each turn's reply is recorded under its turn, and the thread shows them in order.
+  const asked = rows("SELECT id, turn FROM lead_message WHERE role = 'operator' AND text = 'Summarise the refunds, slowly.' ORDER BY id DESC LIMIT 1")[0];
+  const queued = rows("SELECT m.id AS id, m.turn AS turn, q.turn_id AS admitted, q.status AS status FROM lead_queue q JOIN lead_message m ON m.id = q.message WHERE m.text = 'Then list the open questions.'");
+  if (asked?.turn == null || queued.length !== 1 || queued[0].status !== "answered" || queued[0].turn !== queued[0].admitted || !(queued[0].turn > asked.turn))
+    throw new Error(`the queued message didn't get a turn of its own after the first: asked ${JSON.stringify(asked)}, queued ${JSON.stringify(queued)}`);
+  const [first, second] = [asked.turn, queued[0].turn];
+  const turns = rows(`SELECT id, state, created_at, finished_at FROM mate_turn WHERE id IN (${first}, ${second}) ORDER BY id`);
+  if (turns.length !== 2 || turns.some(turn => turn.state !== "answered") || !(turns[0].finished_at <= turns[1].created_at))
+    throw new Error(`the second turn didn't wait for the first to end: ${JSON.stringify(turns)}`);
+  const replyOf = turn => rows(`SELECT id FROM lead_message WHERE role = 'assistant' AND turn = ${turn} AND text <> '' ORDER BY id`).map(row => row.id);
+  const [replyOne, replyTwo] = [replyOf(first), replyOf(second)];
+  if (replyOne.length === 0 || replyTwo.length === 0 || !(replyOne.at(-1) < replyTwo[0])) throw new Error(`the replies, by turn: ${JSON.stringify({ [first]: replyOne, [second]: replyTwo })}`);
+  const shown = await messages.evaluateAll(nodes => nodes.map(node => Number(node.getAttribute("data-message-id"))));
+  const where = id => shown.indexOf(id);
+  if ([asked.id, queued[0].id, replyOne[0], replyTwo[0]].some(id => where(id) < 0) || !(where(asked.id) < where(replyOne[0]) && where(replyOne.at(-1)) < where(replyTwo[0]) && where(queued[0].id) < where(replyTwo[0])))
+    throw new Error(`out of order on the page: ${JSON.stringify({ shown, asked: asked.id, queued: queued[0].id, replyOne, replyTwo, order })}`);
+  // A scripted lead's words are known, so a scripted run checks them word for word too.
   const at = words => order.findIndex(one => one.includes(words));
-  if (!(at("Summarise the refunds") < at("Refunds summarised") && at("Refunds summarised") < at("Open questions listed") && at("Then list the open questions") < at("Open questions listed")))
+  if (w.scripted && !(at("Summarise the refunds") < at("Refunds summarised") && at("Refunds summarised") < at("Open questions listed") && at("Then list the open questions") < at("Open questions listed")))
     throw new Error(`out of order: ${JSON.stringify(order)}`);
   const statuses = rows("SELECT status FROM lead_queue").map(one => one.status);
   if (statuses.length !== 1 || statuses[0] !== "answered") throw new Error(`lead queue rows: ${JSON.stringify(statuses)}`);
@@ -2315,13 +2333,24 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
     const texts = await on.locator('[data-workspace-chat] .ui-message--user[data-message-id] [data-steer-comment]').allInnerTexts();
     return (await on.locator("[data-workspace-chat] [data-message-id]").count()) > before && texts.some(text => steered.every(part => text.includes(part)));
   }, { timeoutMs: 30_000, everyMs: 500, seen: async () => (await on.locator('[data-workspace-chat] .ui-message--user[data-message-id]').allInnerTexts()).slice(-2).join(" | ").slice(0, 400) });
-  const sent = freshRows(install.db, "SELECT text FROM lead_message WHERE role = 'operator' ORDER BY id DESC LIMIT 5").map(one => String(one.text));
-  if (!sent.some(text => text.startsWith(`On ${JSON.stringify(path)}:${line}`) && text.includes(`(run #${built})`))) throw new Error(`the lead wasn't sent the file, line and run: ${sent.join(" | ").slice(0, 400)}`);
-  // The thread itself, while the lead works (its steps) and once it has answered (a code block and a card to confirm).
+  const sentRows = freshRows(install.db, "SELECT id, text FROM lead_message WHERE role = 'operator' ORDER BY id DESC LIMIT 5");
+  const comment = sentRows.find(one => String(one.text).startsWith(`On ${JSON.stringify(path)}:${line}`) && String(one.text).includes(`(run #${built})`));
+  if (comment === undefined) throw new Error(`the lead wasn't sent the file, line and run: ${sentRows.map(one => String(one.text)).join(" | ").slice(0, 400)}`);
+  // The thread itself, while the lead works (its steps) and once it has answered (its reply and a card to confirm).
   await on.goto(`${install.base}/chat?task=${encodeURIComponent(install.task.id)}`);
   await waitFor(on.locator("[data-live-reply] .so-live-steps li").first(), "the lead's steps while it answers", { timeoutMs: 30_000 });
   await bothSizes(on, "chat-thread-live");
-  await waitFor(on.locator('[data-workspace-chat] [data-message-id] pre.chat-code').first(), "the lead's reply with its code block", { timeoutMs: 60_000 });
+  // The reply is the comment's own turn, answered, recorded under that turn and shown in the thread after the comment.
+  const answered = await until("the lead's answer to the comment", async () => {
+    const turn = freshRows(install.db, `SELECT m.turn AS turn FROM lead_message m JOIN mate_turn t ON t.id = m.turn WHERE m.id = ${comment.id} AND t.state = 'answered'`)[0]?.turn;
+    return turn == null ? null : freshRows(install.db, `SELECT id FROM lead_message WHERE role = 'assistant' AND turn = ${turn} AND text <> '' ORDER BY id`).map(one => one.id);
+  }, { timeoutMs: REAL_TURN_MS, everyMs: 1000 });
+  if (answered.length === 0) throw new Error("the lead's turn for the comment ended with no reply");
+  await waitFor(on.locator(`[data-workspace-chat] [data-message-id="${answered.at(-1)}"]`), "the lead's reply in the thread", { timeoutMs: 30_000 });
+  const shown = await on.locator("[data-workspace-chat] [data-message-id]").evaluateAll(nodes => nodes.map(node => Number(node.getAttribute("data-message-id"))));
+  if (!(shown.indexOf(comment.id) >= 0 && shown.indexOf(comment.id) < shown.indexOf(answered[0]))) throw new Error(`the reply isn't shown after the comment: ${JSON.stringify({ shown, comment: comment.id, answered })}`);
+  // A scripted lead's reply carries a code block, so a scripted run sees it rendered as one (a real lead may not write one).
+  if (w.scripted) await waitFor(on.locator(answered.map(id => `[data-workspace-chat] [data-message-id="${id}"] pre.chat-code`).join(", ")).first(), "the lead's reply with its code block", { timeoutMs: 30_000 });
   await waitFor(on.locator('[data-workspace-chat] [data-view="chat-card"][data-card-state="pending"] .so-needs-you').first(), "the card waiting on you", { timeoutMs: 30_000 });
   await bothSizes(on, "chat-thread");
   // On a phone the task opens as a sheet; put it away to show the thread itself.
