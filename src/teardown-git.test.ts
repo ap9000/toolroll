@@ -32,7 +32,7 @@ describe("command-running settings refuse teardown", () => {
 });
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "./exec.js";
@@ -45,14 +45,21 @@ test.each(["GPG.SSH.defaultKeyCommand", "FiLtEr.X.ClEaN", "IncludeIf.gitdir:X.PA
 });
 
 test("removal scans the target config immediately and refuses its command", async () => {
-  const calls: { cwd: string | undefined; args: readonly string[] }[] = [];
-  const git = teardownGit(async (_file, args, options) => {
-    calls.push({ cwd: options?.cwd, args });
-    return { code: 0, stdout: options?.cwd === "/target" ? listing(["worktree", "gpg.ssh.defaultKeyCommand", "planted"]) : "", stderr: "", timedOut: false, notFound: false };
-  });
-  expect(refusal(await git("/repo", ["worktree", "remove", "--force", "/target"]))).toContain("gpg.ssh.defaultkeycommand");
-  expect(calls.map(call => call.cwd)).toEqual(["/repo", "/target"]);
-  expect(calls.every(call => call.args.includes("--no-includes"))).toBe(true);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "teardown-scan-")));
+  const repo = join(root, "repo"), target = join(root, "target");
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-qm", "initial"], { cwd: repo });
+    execFileSync("git", ["worktree", "add", "-q", "--detach", target], { cwd: repo });
+    const calls: { cwd: string | undefined; args: readonly string[] }[] = [];
+    const git = teardownGit(async (_file, args, options) => {
+      calls.push({ cwd: options?.cwd, args });
+      return { code: 0, stdout: options?.cwd === target ? listing(["worktree", "gpg.ssh.defaultKeyCommand", "planted"]) : "", stderr: "", timedOut: false, notFound: false };
+    });
+    expect(refusal(await git(repo, ["worktree", "remove", "--force", target]))).toContain("gpg.ssh.defaultkeycommand");
+    expect(calls.map(call => call.cwd)).toEqual([repo, target]);
+    expect(calls.every(call => call.args.includes("--no-includes"))).toBe(true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("status and removal refuse an initialized staged gitlink without executing its clean filter", async () => {

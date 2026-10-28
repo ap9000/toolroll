@@ -1,5 +1,6 @@
 /** Optional, project-local advice. Core review and approval never depend on it. */
 import { inReadOnlyRequest } from "./read-only-request.js";
+import { checkoutGitSync } from './teardown-git.js';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
@@ -57,7 +58,8 @@ const git = (repo: string, args: string[], seen?: Map<string, string>): string =
   const known = seen?.get(key);
   if (known !== undefined) return known;
   // Bounded, and no hook or fsmonitor program: it also runs from the console's background pass.
-  const out = execFileSync('git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-C', repo, ...args], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
+  // No lazy fetch either: a partial clone's fetch runs whatever transport command the shared config names.
+  const out = execFileSync('git', ['--no-optional-locks', '--no-lazy-fetch', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-C', repo, ...args], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
   seen?.set(key, out);
   return out;
 };
@@ -456,7 +458,8 @@ export function learningContext(store: Store, root: string, runId: number, phase
             supported(store, root, l, seen);
             if (l.payload.environment !== environmentFingerprint(store, repo) || learningFingerprint(repo, head, l.payload.paths, seen) !== l.payload.fingerprint) continue;
             const cwd = run.worktree ?? repo;
-            const dirty = git(cwd, ['status', '--porcelain', '--untracked-files=all'], seen).split('\n').some(line => { const p = line.slice(3); return configPath(p) || l.payload.paths.includes(p); });
+            // A build's checkout: status runs filters, so the hardened read (teardown-git.ts checkoutGitSync).
+            const dirty = checkoutGitSync(cwd, ['status', '--porcelain', '--untracked-files=all'], { timeoutMs: 10_000, maxBuffer: 2 * 1024 * 1024 }).trimEnd().split('\n').some(line => { const p = line.slice(3); return configPath(p) || l.payload.paths.includes(p); });
             if (!dirty) eligible.push(l);
           } catch { /* stale, conflicting source or tampered advice is ineligible */ }
         }

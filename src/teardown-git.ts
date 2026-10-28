@@ -13,7 +13,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { run, type ExecResult } from "./exec.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
 import { WORKTREE_TIMEOUT_MS, type Runner } from "./worktree.js";
@@ -112,42 +112,65 @@ function nestedRepository(path: string): boolean {
   return false;
 }
 
-/** The one way teardown runs git, including the target checkout immediately before removal. */
+/**
+ * Runs `work` with a write view of `cwd`'s repository (gitView): the env to give git, and how to restore its output.
+ * From a folder inside a checkout, the view is of the checkout git would find (checkoutRootOf); with none, git's own
+ * "not a git repository", nothing run. One whose `.git` or config can't be read as git reads it is refused.
+ */
+async function inView(cwd: string, work: (env: Record<string, string>, restore: (result: ExecResult, args: readonly string[]) => ExecResult) => Promise<ExecResult>): Promise<ExecResult> {
+  const root = checkoutRootOf(cwd);
+  if (root === null) return NOT_A_REPOSITORY;
+  let view: GitView;
+  try { view = gitView(root, "write"); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
+  try {
+    return await work(view.env, (result, args) => ({ ...result, stdout: view.restore(result.stdout, args), stderr: view.restore(result.stderr, args) }));
+  } finally { view.dispose(); }
+}
+
+/** The one way teardown runs git, including the target checkout immediately before removal. Every command runs
+ * against a write view of its repository (gitView), whose config is the one inspected and whose info is a copy, so a
+ * setting or attributes file an agent adds after the inspection is never read (a build's process can outlive its turn:
+ * on macOS containment is observational, src/containment.ts, and a sibling build shares the repository). */
 export function teardownGit(runner: Runner = run): Git {
-  const options = (cwd: string) => ({ cwd, envAllowlist: ENV_ALLOWLIST, env: ENV, timeoutMs: WORKTREE_TIMEOUT_MS, maxBuffer: 512 * 1024 * 1024 });
-  const configProblem = async (cwd: string): Promise<ExecResult | null> => {
-    const config = await runner("git", ["--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], options(cwd));
+  const options = (cwd: string, env: Record<string, string>) => ({ cwd, envAllowlist: ENV_ALLOWLIST, env: { ...ENV, ...env }, timeoutMs: WORKTREE_TIMEOUT_MS, maxBuffer: 512 * 1024 * 1024 });
+  const configProblem = async (cwd: string, env: Record<string, string>): Promise<ExecResult | null> => {
+    const config = await runner("git", ["--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], options(cwd, env));
     if (config.code !== 0) return refused("its config couldn't be read");
     const key = commandSetting(config.stdout);
     return key === null ? null : refused(`the project's git config sets ${key}, which can run a command`);
   };
-  return async (cwd, args) => {
-    const problem = await configProblem(cwd);
+  return (cwd, args) => inView(cwd, async (env, restore) => {
+    const problem = await configProblem(cwd, env);
     if (problem !== null) return problem;
     const removal = args[0] === "worktree" && args[1] === "remove";
     const inspection = args.includes("status") || args.includes("diff");
     const target = removal ? resolve(cwd, args.at(-1)!) : cwd;
-    if (removal) {
-      const targetProblem = await configProblem(target);
-      if (targetProblem !== null) return targetProblem;
-    }
     if (removal || inspection || args.includes("checkout") || args.includes("clean")) {
-      try {
-        if (existsSync(target) && nestedRepository(target)) return refused("the checkout contains a nested repository");
-      } catch { return refused("the checkout couldn't be inspected for nested repositories"); }
-      // ls-files reads index entries only; it cannot run submodule filters. Even an uninitialized
-      // gitlink is kept, so worktree remove's internal status can never traverse it.
-      const index = await runner("git", [...TEARDOWN_FLAGS, "ls-files", "--stage", "-z"], options(target));
-      if (index.code !== 0) return refused("the checkout's index couldn't be read");
-      if (index.stdout.split("\0").some(entry => entry.startsWith("160000 "))) return refused("the checkout contains a gitlink");
+      const checked = await inView(target, async targetEnv => {
+        if (removal) {
+          const targetProblem = await configProblem(target, targetEnv);
+          if (targetProblem !== null) return targetProblem;
+        }
+        try {
+          if (existsSync(target) && nestedRepository(target)) return refused("the checkout contains a nested repository");
+        } catch { return refused("the checkout couldn't be inspected for nested repositories"); }
+        // ls-files reads index entries only; it cannot run submodule filters. Even an uninitialized
+        // gitlink is kept, so worktree remove's internal status can never traverse it.
+        const index = await runner("git", [...TEARDOWN_FLAGS, ...WRITE_VIEW_FLAGS, "ls-files", "--stage", "-z"], options(target, targetEnv));
+        if (index.code !== 0) return refused("the checkout's index couldn't be read");
+        if (index.stdout.split("\0").some(entry => entry.startsWith("160000 "))) return refused("the checkout contains a gitlink");
+        return index;
+      });
+      if (refusal(checked) !== null) return checked;
+      if (checked.code !== 0) return refused("the checkout's index couldn't be read");
     }
     const safeArgs = [...args];
     if (inspection && !safeArgs.includes("--ignore-submodules=all")) {
       const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
       safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
     }
-    return runner("git", [...TEARDOWN_FLAGS, ...safeArgs], options(cwd));
-  };
+    return restore(await runner("git", [...TEARDOWN_FLAGS, ...WRITE_VIEW_FLAGS, ...safeArgs], options(cwd, env)), args);
+  });
 }
 
 /**
@@ -204,28 +227,50 @@ function gitDirsOf(checkout: string): { gitdir: string; common: string } | null 
 /** Whether one config file includes another (or can't be read as a plain file): by a plain reading, and as git itself
  * parses it, includes not followed (only this one regular file, from a neutral folder, with no other config read). */
 function configIncludes(path: string): boolean {
+  return includeIn(path) !== null;
+}
+
+/** The include key one config file sets (lowercased, as git names it), "include" when only a plain reading finds one,
+ * or "an unreadable file" when it can't be read as a plain file or parsed; null when it includes nothing. */
+function includeIn(path: string): string | null {
   const text = regularFile(path);
-  if (text === null || /^\s*\[\s*include(if)?\b/im.test(text)) return true;
+  if (text === null) return "an unreadable file";
   const parsed = spawnSync("git", ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
     { cwd: "/", encoding: "utf8", timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
-  return parsed.status !== 0 || parsed.stdout.split("\0").some(name => /^(include\.path|includeif\..*\.path)$/i.test(name));
+  if (parsed.status !== 0) return "an unreadable file";
+  const named = parsed.stdout.split("\0").find(name => /^(include\.path|includeif\..*\.path)$/i.test(name));
+  if (named !== undefined) return named.toLowerCase();
+  return /^\s*\[\s*include(if)?\b/im.test(text) ? "include" : null;
 }
 
 /**
- * A private view of a checkout's repository for one read of a checkout an agent writes (security review of 0.9.75):
- * git reads the repository's config and `info/attributes` from its common directory whatever --attr-source says, so an
- * agent that adds a filter to both after the config was inspected would have git run it. The view is a fresh folder
- * of the plane's own, given to git as GIT_COMMON_DIR: a copy of the config as it was read once (with a linked
- * worktree's config.worktree folded in), an `info` holding only a copy of `info/exclude`, and links to everything else
- * (objects, refs). Git then reads no config and no attributes file the agent can still change; GIT_DIR stays the
- * checkout's own (HEAD, index). Its config is inspected, never the checkout's again. Throws when it can't be made.
+ * A private view of a checkout's repository for one git command on a checkout an agent writes (security review of
+ * 0.9.75, and its follow-up for the plane's writes): git reads the repository's config and `info/attributes` from its
+ * common directory as it starts, whatever --attr-source says, so an agent that adds a filter to both after the config
+ * was inspected would have git run it. The view is a fresh folder of the plane's own, given to git as GIT_COMMON_DIR:
+ * a copy of the config as it was read once (with a linked worktree's config.worktree folded in), an `info` holding
+ * only copies (a read: `exclude`; a write: `exclude` and `attributes`, frozen, so staging and checkout keep the
+ * operator's line-ending and git-lfs rules), and links to everything else. Git then reads no config and no attributes
+ * file the agent can still change; GIT_DIR stays the checkout's own (HEAD, index). Its config is inspected, never the
+ * checkout's again. Throws when it can't be made.
+ *
+ * A write through the view lands in the repository itself (git 2.50.1, established by test/attacks/
+ * checkout-git-write-toctou.test.ts and the builder's suites): objects, loose refs and reflogs are written inside the
+ * linked folders; packed-refs and shallow are rewritten through git's lockfiles, which follow a link to the real file
+ * (and take their lock beside it); HEAD, index and a worktree's own files are under GIT_DIR. Names git may create are
+ * linked even before they exist (a dangling link git writes through), and `worktrees` is made in the repository first
+ * (git can't create a folder under a dangling link). The one thing a command can't change through it is the config:
+ * the view's is a copy, so a config write (a branch's section dropped by `branch -D`) stays in the view.
  */
-type ReadView = { env: Record<string, string>; restore: (output: string) => string; dispose: () => void };
-function readView(checkout: string): ReadView {
+type GitView = { env: Record<string, string>; restore: (output: string, args: readonly string[]) => string; dispose: () => void };
+/** What git keeps in a common directory (its path.c common_list, and reftable), linked whether or not it exists yet. */
+const COMMON_NAMES = ["branches", "gc.pid", "logs", "lost-found", "modules", "objects", "packed-refs", "reftable", "refs", "remotes", "rr-cache", "shallow", "svn", "worktrees"];
+function gitView(checkout: string, kind: "read" | "write"): GitView {
   const dirs = gitDirsOf(checkout);
   if (dirs === null) throw new Error("the checkout's .git couldn't be read as git reads it");
-  const view = realpathSync(mkdtempSync(join(tmpdir(), "toolroll-git-read-")));
+  const view = realpathSync(mkdtempSync(join(tmpdir(), `toolroll-git-${kind}-`)));
   const dispose = () => rmSync(view, { recursive: true, force: true });
+  let main = dirs.common;
   try {
     let config = regularFile(join(dirs.common, "config"));
     if (config === null) throw new Error("the checkout's git config couldn't be read as a plain file");
@@ -246,22 +291,50 @@ function readView(checkout: string): ReadView {
       const unset = spawnSync("git", ["config", "--file", configPath, "--unset-all", "extensions.worktreeConfig"], plain);
       if (unset.status !== 0 && unset.status !== 5) throw new Error("the checkout's git config couldn't be read");
     }
-    if (configIncludes(configPath)) throw new Error("the checkout's git config includes another file");
+    const include = includeIn(configPath);
+    if (include !== null) throw new Error(`the checkout's git config includes another file (${include})`);
     mkdirSync(join(view, "info"));
-    const exclude = join(dirs.common, "info", "exclude");
-    if (existsSync(exclude)) {
-      const text = regularFile(exclude);
-      if (text !== null) writeFileSync(join(view, "info", "exclude"), text, { mode: 0o600 });
+    for (const name of kind === "write" ? ["exclude", "attributes"] : ["exclude"]) {
+      const path = join(dirs.common, "info", name);
+      if (!existsSync(path)) continue;
+      const text = regularFile(path);
+      // A write that dropped the operator's exclude or attributes could stage what they keep out: refused instead.
+      if (text === null && kind === "write") throw new Error(`the checkout's info/${name} couldn't be read as a plain file`);
+      if (text !== null) writeFileSync(join(view, "info", name), text, { mode: 0o600 });
     }
-    for (const name of readdirSync(dirs.common)) {
+    if (kind === "write" && !existsSync(join(dirs.common, "worktrees"))) {
+      try { mkdirSync(join(dirs.common, "worktrees")); } catch { /* git reports it if it needs the folder */ }
+    }
+    for (const name of new Set([...readdirSync(dirs.common), ...COMMON_NAMES])) {
       if (name === "config" || name === "info" || name === "hooks") continue;
       symlinkSync(join(dirs.common, name), join(view, name));
     }
+    try { main = realpathSync(dirs.common); } catch { /* git names it as found */ }
   } catch (error) { dispose(); throw error; }
-  // Where git names the view (rev-parse --git-common-dir), the caller is told the repository's own common directory.
-  const restore = (output: string) => output.split("\n").map(line => line === view || line.startsWith(`${view}/`) ? dirs.common + line.slice(view.length) : line).join("\n");
+  // Where git names the view (rev-parse --git-common-dir), the caller is told the repository's own common directory;
+  // where `worktree list` names it as the main worktree, that worktree (git's own rule: the common dir less `/.git`).
+  const mainWorktree = main.endsWith("/.git") ? main.slice(0, -"/.git".length) : main;
+  const restore = (output: string, args: readonly string[]) => {
+    if (!output.includes(view)) return output;
+    const asWorktree = args.includes("worktree");
+    return output.split(`${view}/`).join(`${dirs.common}/`).split(view).join(asWorktree ? mainWorktree : dirs.common);
+  };
   return { env: { GIT_DIR: dirs.gitdir, GIT_COMMON_DIR: view, GIT_WORK_TREE: resolve(checkout) }, restore, dispose };
 }
+
+/** The checkout git would find from `cwd`: the nearest folder, `cwd` or above, with a `.git`; null when there is
+ * none (git's own "not a git repository"). A `.git` that can't even be looked at counts as found (the view refuses it). */
+function checkoutRootOf(cwd: string): string | null {
+  for (let dir = resolve(cwd); ; dir = dirname(dir)) {
+    try { lstatSync(join(dir, ".git")); return dir; } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT" && (error as NodeJS.ErrnoException).code !== "ENOTDIR") return dir; }
+    if (dirname(dir) === dir) return null;
+  }
+}
+const NOT_A_REPOSITORY: ExecResult = { code: 128, stdout: "", stderr: "fatal: not a git repository (or any of the parent directories): .git\n", timedOut: false, notFound: false };
+
+/** Settings fixed on every write through a view: `worktree add` records absolute paths (relative ones would need a
+ * config write, which a view keeps). */
+export const WRITE_VIEW_FLAGS: readonly string[] = ["-c", "worktree.useRelativePaths=false"];
 
 /** Whether the checkout's .lfsconfig (read as git parses it, that file only) sets any git-lfs key that could name a
  * program (anything but INERT_LFS). A file that
@@ -274,9 +347,11 @@ export function lfsExtensionIn(checkout: string): boolean {
   return parsed.status !== 0 || parsed.stdout.split("\0").filter(Boolean).some(name => lfsCommand(name.toLowerCase()) || /^include(if)?\./i.test(name));
 }
 
-/** `mode` "read" is for reading a checkout an agent may still be writing (the code page): every command also takes
- * readFlags() and runs against the checkout's readView, so neither its config nor its info/attributes can change
- * between the inspection and the run. */
+/** Every command runs against a view of the checkout's repository (gitView) whose config and info are copies the
+ * plane made, inspected there, so neither can change between the inspection and the run. `mode` "read" is for reading
+ * a checkout an agent may still be writing (the code page): every command also takes readFlags(), and the view holds
+ * no info/attributes. "build" is the plane's staging and committing of a build's work, which writes the repository
+ * through the view (gitView). */
 export function checkoutGit(inner: Runner = run, mode: "build" | "read" = "build"): Runner {
   return async (file, args, options) => {
     if (file !== "git") return inner(file, args, options);
@@ -284,29 +359,27 @@ export function checkoutGit(inner: Runner = run, mode: "build" | "read" = "build
     if (cwd === undefined || checkoutIncludes(cwd)) return refused("the checkout's git config includes another file, or couldn't be read as a plain file");
     // git-lfs also reads .lfsconfig from the checkout: one that names an extension (a command it would run) is refused.
     if (lfsExtensionIn(cwd)) return refused("the checkout's .lfsconfig sets a git-lfs key that can run a command");
-    let view: ReadView | null = null;
-    if (mode === "read") {
-      try { view = readView(cwd); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
-    }
+    let view: GitView;
+    try { view = gitView(cwd, mode === "read" ? "read" : "write"); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
     try {
-      const viewed = { ...options, env: { ...(options?.env ?? {}), ...(view?.env ?? {}) } };
+      const viewed = { ...options, env: { ...(options?.env ?? {}), ...view.env } };
       // The checkout's own config may name no command.
-      const own = await inner("git", ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], view === null ? options : viewed);
+      const own = await inner("git", ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], viewed);
       if (own.code !== 0) return refused("its config couldn't be read");
       const key = commandSetting(own.stdout);
       if (key !== null) return refused(`the checkout's git config sets ${key}, which can run a command`);
       // The operator's own config contributes values only (carriedSettings); git then reads no global or system config.
       // A read carries no filter: it reads attributes from the empty tree anyway.
-      const carried = view === null ? carriedSettings(own.stdout) : withoutFilters(carriedSettings(own.stdout));
+      const carried = mode === "read" ? withoutFilters(carriedSettings(own.stdout)) : carriedSettings(own.stdout);
       const env = { ...viewed.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
       // Never into a submodule or nested repository, whose own config this never read: status and diff skip them.
       const safeArgs = [...args];
       const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
       if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
-      const flags = view === null ? [] : readFlags();
+      const flags = mode === "read" ? readFlags() : WRITE_VIEW_FLAGS;
       const ran = await inner("git", [...TEARDOWN_FLAGS, ...flags, "-c", "diff.ignoreSubmodules=all", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", ...carried, ...safeArgs], { ...options, env });
-      return view !== null && args.includes("rev-parse") ? { ...ran, stdout: view.restore(ran.stdout) } : ran;
-    } finally { view?.dispose(); }
+      return { ...ran, stdout: view.restore(ran.stdout, args), stderr: view.restore(ran.stderr, args) };
+    } finally { view.dispose(); }
   };
 }
 
@@ -326,7 +399,7 @@ export const PAGE_READ_FLAGS: readonly string[] = [
 /** The read flags, for every read of an agent-written checkout, whatever the HTTP method (security review of
  * 01bf3114): the worktree's attributes come from the empty tree. Git still reads the repository's info/attributes and
  * its config as it starts, so the flags alone don't stop a filter planted in both after the inspection: every read
- * also runs against the checkout's readView (checkoutGitSync, checkoutGit "read"), whose config and info are the plane's. The cost is cosmetic: a checkout's line-ending or encoding rules are not applied, so
+ * also runs against a view of the checkout's repository (gitView; checkoutGitSync, checkoutGit "read"), whose config and info are the plane's. The cost is cosmetic: a checkout's line-ending or encoding rules are not applied, so
  * a file they would normalize can read as changed (fail closed: shipping then asks for a clean commit). */
 export function readFlags(): readonly string[] {
   return PAGE_READ_FLAGS;
@@ -335,14 +408,14 @@ export function readFlags(): readonly string[] {
 /**
  * checkoutGit, synchronously, for reads a page shows from a checkout an agent writes (docs/plans/get-side-effects.md):
  * the same refusals (an include, an .lfsconfig extension, a config key that can run a command), no system or global
- * config, the operator's own values carried, PAGE_READ_FLAGS and the checkout's readView (which hold even if its config
+ * config, the operator's own values carried, PAGE_READ_FLAGS and a view of the checkout's repository (gitView: they hold even if its config
  * or info/attributes change after they were read), submodules skipped, bounded. A refusal throws.
  */
 export function checkoutGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number } = {}): string {
   if (checkoutIncludes(cwd)) throw new Error("the checkout's git config includes another file, or couldn't be read as a plain file");
   if (lfsExtensionIn(cwd)) throw new Error("the checkout's .lfsconfig sets a git-lfs key that can run a command");
   // Its config and info/attributes as read once, in a folder of the plane's own: neither can change before git runs.
-  const view = readView(cwd);
+  const view = gitView(cwd, "read");
   try {
     const env: NodeJS.ProcessEnv = { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", LANG: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", ...view.env };
     const bounded = { cwd, env, encoding: "utf8" as const, timeout: options.timeoutMs ?? 60_000, maxBuffer: options.maxBuffer ?? 1_048_576, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
@@ -359,6 +432,23 @@ export function checkoutGitSync(cwd: string, args: readonly string[], options: {
     const carried = withoutFilters(carriedSettings(own.stdout));
     const ran = spawnSync("git", [...TEARDOWN_FLAGS, ...readFlags(), "-c", "diff.ignoreSubmodules=all", ...carried, ...safeArgs], bounded);
     if (ran.status !== 0) throw new Error(`git ${args[0] ?? ""} failed`);
-    return args.includes("rev-parse") ? view.restore(ran.stdout) : ran.stdout;
+    return view.restore(ran.stdout, args);
   } finally { view.dispose(); }
+}
+
+/**
+ * checkoutGit ("build": the repository written through its view) for callers that name the repository with a leading
+ * `git -C <dir>` instead of a cwd: worktree add and remove in a project's repository, a merge in a checkout of it.
+ * The project's repository is shared with every build, which can write its config, info and hooks; nothing here runs
+ * what they name. Anything but git goes to `inner` as given.
+ */
+export function hardenedGit(inner: Runner = run, mode: "build" | "read" = "build"): Runner {
+  const hardened = checkoutGit(inner, mode);
+  return (file, args, options) => {
+    if (file !== "git") return inner(file, args, options);
+    let cwd = options?.cwd;
+    let rest = [...args];
+    while (rest[0] === "-C" && rest.length > 1) { cwd = resolve(cwd ?? process.cwd(), rest[1]!); rest = rest.slice(2); }
+    return hardened("git", rest, { ...options, ...(cwd === undefined ? {} : { cwd }) });
+  };
 }

@@ -25,7 +25,7 @@ export type GitRead = (cwd: string, args: readonly string[]) => string | null;
 
 export const readGit: GitRead = (cwd, args) => {
   try {
-    return execFileSync("git", ["--no-optional-locks", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000, maxBuffer: 65_536 }).trim();
+    return execFileSync("git", ["--no-optional-locks", "--no-lazy-fetch", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000, maxBuffer: 65_536 }).trim();
   } catch {
     return null;
   }

@@ -25,7 +25,7 @@ import { WorktreePool, branchCreatedMessage } from "./worktree.js";
 import { COMPLETION_ACTION, LANDED_ACTOR } from "./result-completion.js";
 import { admitProject } from "./project-admission.js";
 import { ENV_ALLOWLIST, RemoteMains } from "./remote-main.js";
-import { TEARDOWN_FLAGS } from "./teardown-git.js";
+import { TEARDOWN_FLAGS, WRITE_VIEW_FLAGS } from "./teardown-git.js";
 import { AUTO_ITEMS, LANDED_CLEANED_ACTION, finishLanded as finishWith, gitOf, landedBacklog, landedProof, landedResults as resultsWith, recordBranchIntent, recordLandedIntent, remoteLandedProof, type Git } from "./landed-cleanup.js";
 
 const DAY = 86_400_000;
@@ -904,10 +904,10 @@ describe("teardown runs no command a build planted in the shared repository", ()
     const listing = ["--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"];
     for (const call of calls) {
       if (call.args[1] === "config") expect(call.args).toEqual(listing);
-      else expect(call.args.slice(0, TEARDOWN_FLAGS.length)).toEqual(TEARDOWN_FLAGS);
+      else expect(call.args.slice(0, TEARDOWN_FLAGS.length + WRITE_VIEW_FLAGS.length)).toEqual([...TEARDOWN_FLAGS, ...WRITE_VIEW_FLAGS]);
       expect(call.options).toMatchObject({ envAllowlist: ENV_ALLOWLIST, env: { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" } });
     }
-    const ran = calls.filter(call => call.args[1] !== "config").map(call => call.args.slice(TEARDOWN_FLAGS.length));
+    const ran = calls.filter(call => call.args[1] !== "config").map(call => call.args.slice(TEARDOWN_FLAGS.length + WRITE_VIEW_FLAGS.length));
     // Every operation has a config scan; removal also scans its target. Index preflights share that scan.
     expect(calls.filter(call => call.args[1] === "config")).toHaveLength(
       ran.filter(args => !args.includes("ls-files")).length + ran.filter(args => args[0] === "worktree" && args[1] === "remove").length);

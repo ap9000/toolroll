@@ -295,6 +295,7 @@ import { scout as scoutTask } from "./scout.js";
 import { profileDigestOf } from "./scope.js";
 import { PROVIDER_KEY_ENV, clearProviderKey, keyStatus, readAuthMode, readAuthModeStrict, readProviderKey, saveProviderKey, setAuthMode, verifyProviderKey, verdictWords } from "./keys.js";
 import { run, terminateLiveProviders, run as execRun } from "./exec.js";
+import { hardenedGit } from "./teardown-git.js";
 import { containmentNotice, containmentStatus, currentContainment, describeContainment, resolveContainment, type EffectiveContainment } from "./containment.js";
 import { readPulls } from "./pulls.js";
 import { startMaintenance } from "./maintenance.js";
@@ -2503,7 +2504,7 @@ function flowIoOf(context: Context, pool: string, git: CommandRunner, base: stri
     replies: { fetch: context.flowTriggerIo?.fetch ?? fetch, dir: context.flowTriggerIo?.dir ?? dir,
       ...(context.flowTriggerIo?.mail === undefined ? {} : { mail: context.flowTriggerIo.mail }) },
     // Check and update steps run outside a model: an approved command in a fresh copy of the card's work, or a comment on the issue it came from.
-    steps: { gh: context.flowStepIo?.gh ?? run, git: context.flowStepIo?.git ?? git, shell: context.flowStepIo?.shell ?? run, fetch: context.flowStepIo?.fetch ?? fetch,
+    steps: { gh: context.flowStepIo?.gh ?? run, git: context.flowStepIo?.git ?? (git === run ? hardenedGit(run) : git), shell: context.flowStepIo?.shell ?? run, fetch: context.flowStepIo?.fetch ?? fetch,
       dir: context.flowStepIo?.dir ?? dir, scratch: context.flowStepIo?.scratch ?? join(pool, "flow-checks"), base,
       ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }) },
     ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }),

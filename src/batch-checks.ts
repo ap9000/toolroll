@@ -26,6 +26,7 @@ import { join } from "node:path";
 import type { Store, VerifyCommand } from "./store.js";
 import type { ExecResult } from "./exec.js";
 import { run as execRun } from "./exec.js";
+import { hardenedGit } from "./teardown-git.js";
 import { approvedCommandShell, SETUP_ENV_ALLOWLIST, SETUP_ENV_DENYLIST } from "./builder.js";
 import { runWithIsolatedDatabase } from "./child-database.js";
 import { boundStreamHeadTail, redactSecretLines, scanForSecrets, storeEvidence } from "./evidence.js";
@@ -106,7 +107,8 @@ function finishOne(store: Store, one: Pick<FollowUpCheck, "request" | "runId">, 
 async function checkCohort(store: Store, root: string, repo: string, cohort: Member[], deps: CheckRunDeps & { shouldStop?: () => boolean }): Promise<number> {
   const now = deps.now ?? (() => new Date());
   const runner = deps.runner ?? execRun;
-  const git = deps.git ?? execRun;
+  // The project's repository and checkouts of builds' commits, both agent-writable: the hardened git (teardown-git.ts).
+  const git = deps.git ?? hardenedGit(execRun);
   const command = store.liveVerifyCommand(repo);
   if (command === null) return 0;
   const setup = store.liveWorktreeSetup(repo);

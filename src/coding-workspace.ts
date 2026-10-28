@@ -352,7 +352,9 @@ export class CodingWorkspace {
   }
 
   private async git(repo: string, args: string[]): Promise<string> {
-    const result = await run('git', ['--no-optional-locks', '-c', 'core.hooksPath=/dev/null', ...args], { cwd: repo, timeoutMs: 60_000, maxBuffer: 1_048_576 });
+    // The project's repository and the session's checkout are agent-written: the hardened git, against a frozen view of
+    // the repository's config and info (teardown-git.ts checkoutGit).
+    const result = await checkoutGit(run)('git', ['--no-optional-locks', ...args], { cwd: repo, timeoutMs: 60_000, maxBuffer: 1_048_576 });
     if (result.code !== 0) throw Error('Git could not complete this workspace operation. Check the repository and try again.');
     return result.stdout;
   }

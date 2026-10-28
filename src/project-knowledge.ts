@@ -38,7 +38,7 @@ CREATE TRIGGER IF NOT EXISTS knowledge_snapshot_no_delete BEFORE DELETE ON knowl
 `;
 export type { Knowledge, KnowledgeDraft, KnowledgeReference, KnowledgeSelection };
 const EMPTY: Knowledge = { instructions: '', references: [] };
-const git = (repo: string, args: string[]) => execFileSync('git', ['--no-optional-locks','-C',repo,...args], { encoding:'utf8', maxBuffer:200_000, stdio:['ignore','pipe','pipe'] }).trimEnd();
+const git = (repo: string, args: string[]) => execFileSync('git', ['--no-optional-locks','--no-lazy-fetch','-c','core.fsmonitor=false','-c','core.hooksPath=/dev/null','-C',repo,...args], { encoding:'utf8', maxBuffer:200_000, stdio:['ignore','pipe','pipe'] }).trimEnd();
 function clean(value: string, bytes: number): string {
   if (Buffer.byteLength(value) > bytes || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffd]/u.test(value)) throw Error('This text is too long or is not readable text.');
   if (scanForSecrets(value).length) throw Error('Remove credentials or secrets before saving.');
