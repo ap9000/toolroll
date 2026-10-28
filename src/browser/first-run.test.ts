@@ -1,8 +1,8 @@
 // @vitest-environment happy-dom
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { FirstRequest, FirstRun, Journey, PhoneCard, rechecked, withSuggestion } from "./first-run.js";
+import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
+import { FirstRequest, FirstRun, Journey, LEAVING_HOLD_MS, leaveFor, PhoneCard, rechecked, withSuggestion } from "./first-run.js";
 import { firstTaskJourney, taskRoad } from "../first-run.js";
 import type { BrowserFirstRun } from "../browser-workspace.js";
 
@@ -58,6 +58,8 @@ test("with no agent signed in, the page asks again on its own and shows the lead
     const fetcher = vi.fn(async () => ({ ok: true, json: async () => answers.shift() }));
     const reload = vi.fn();
     vi.stubGlobal("fetch", fetcher);
+    const real = Object.getOwnPropertyDescriptor(window, "location");
+    onTestFinished(() => { if (real) Object.defineProperty(window, "location", real); });
     Object.defineProperty(window, "location", { configurable: true, value: { ...window.location, reload } });
     await mount({ ...signedOut(), recheck: "/lead/status" });
     await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
@@ -68,6 +70,98 @@ test("with no agent signed in, the page asks again on its own and shows the lead
     expect(fetcher.mock.calls[1]![0]).toBe("/lead/status");
     expect(reload).toHaveBeenCalledTimes(1);
   } finally { vi.useRealTimers(); }
+});
+
+/** A sign-in check whose answers the test hands out one at a time, and a reload it can see; the real location comes back after. */
+async function recheckPage() {
+  const answers: ((value: unknown) => void)[] = [];
+  const fetcher = vi.fn(() => new Promise(done => { answers.push(done); }));
+  const reload = vi.fn();
+  vi.stubGlobal("fetch", fetcher);
+  const real = Object.getOwnPropertyDescriptor(window, "location");
+  const { href, origin, pathname, search, hash } = window.location;
+  const here = { href, origin, pathname, search, hash, reload };
+  Object.defineProperty(window, "location", { configurable: true, value: here });
+  await mount({ ...signedOut(), recheck: "/lead/status" });
+  const answer = async (body: unknown) => { await act(async () => { answers.shift()!({ ok: true, json: async () => body }); await vi.advanceTimersByTimeAsync(0); }); };
+  const wait = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
+  return { fetcher, reload, here, answer, wait, restore: () => { if (real) Object.defineProperty(window, "location", real); } };
+}
+
+test("once the person starts leaving, an answer that lands late never reloads the page out from under them", async () => {
+  vi.useFakeTimers();
+  const page = await recheckPage();
+  try {
+    await page.wait(3000);
+    expect(page.fetcher).toHaveBeenCalledTimes(1);
+    // The answer waits on the same sign-in check the page being opened waits on (Settings → Lead): it lands mid-leave.
+    window.dispatchEvent(new Event("beforeunload"));
+    await page.answer({ lead: "on", agent: true });
+    await page.wait(LEAVING_HOLD_MS - 1000);
+    expect(page.reload).not.toHaveBeenCalled();
+    // The navigation never happened (Stay, a 204): once the hold lapses the page is theirs again and shows the new state.
+    await page.wait(1100);
+    expect(page.fetcher).toHaveBeenCalledTimes(2);
+    await page.answer({ lead: "on", agent: true });
+    expect(page.reload).toHaveBeenCalledTimes(1);
+  } finally { page.restore(); vi.useRealTimers(); }
+});
+
+/** Click and submit as the browser would: the page's own listeners see each one first, then nothing here navigates. */
+function inertNavigation() {
+  const stop = (event: Event) => event.preventDefault();
+  window.addEventListener("click", stop); window.addEventListener("submit", stop);
+  const click = (element: Element) => element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 }));
+  const link = (attributes: Record<string, string> = {}) => { const a = document.createElement("a"); a.href = "/settings/lead"; for (const [name, value] of Object.entries(attributes)) a.setAttribute(name, value); document.body.append(a); return a; };
+  return { click, link, done: () => { window.removeEventListener("click", stop); window.removeEventListener("submit", stop); } };
+}
+
+test("a new-tab link, or a click a page script handled itself, is not leaving: the answer shows at once", async () => {
+  vi.useFakeTimers();
+  const page = await recheckPage();
+  const nav = inertNavigation();
+  try {
+    await page.wait(3000);
+    nav.click(nav.link({ target: "_blank" }));
+    // A link within this page (Skip to content) moves the view, not the page.
+    nav.click(nav.link({ href: "#main" }));
+    const handled = nav.link(); handled.addEventListener("click", event => event.preventDefault());
+    nav.click(handled);
+    await page.answer({ lead: "on", agent: true });
+    expect(page.reload).toHaveBeenCalledTimes(1);
+  } finally { nav.done(); page.restore(); vi.useRealTimers(); }
+});
+
+test("a same-tab link or a form is leaving even where beforeunload never fires (iOS Safari); back from the cache, the page is theirs again", async () => {
+  vi.useFakeTimers();
+  const page = await recheckPage();
+  const nav = inertNavigation();
+  try {
+    await page.wait(3000);
+    nav.click(nav.link());
+    await page.answer({ lead: "on", agent: true });
+    expect(page.reload).not.toHaveBeenCalled();
+    // A form posted from this page, once the link's hold lapsed: leaving again.
+    await page.wait(LEAVING_HOLD_MS + 100);
+    expect(page.fetcher).toHaveBeenCalledTimes(2);
+    const form = document.createElement("form"); document.body.append(form);
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await page.answer({ lead: "on", agent: true });
+    expect(page.reload).not.toHaveBeenCalled();
+    // A script's own navigation (the Project selector) says so first.
+    await page.wait(LEAVING_HOLD_MS + 100);
+    const assign = vi.fn();
+    Object.defineProperty(window, "location", { configurable: true, value: { ...page.here, assign } });
+    leaveFor("/work?project=shop");
+    expect(assign).toHaveBeenCalledWith("/work?project=shop");
+    await page.answer({ lead: "on", agent: true });
+    expect(page.reload).not.toHaveBeenCalled();
+    // Restored from the back/forward cache: it asks again and shows the new state.
+    window.dispatchEvent(Object.assign(new Event("pageshow"), { persisted: true }));
+    await page.wait(3000);
+    await page.answer({ lead: "on", agent: true });
+    expect(page.reload).toHaveBeenCalledTimes(1);
+  } finally { nav.done(); page.restore(); vi.useRealTimers(); }
 });
 
 test("a sign-in check counts only a lead that is on or an agent that is signed in", () => {

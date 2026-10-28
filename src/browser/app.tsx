@@ -20,7 +20,7 @@ import type { TeamSnapshot } from "../team-contract.js";
 import { GuardedHtml, notifyWorkspaceRendered, regionIsEditing } from "./guarded-html.js";
 import { ActionCards, CHAT_COMMANDS } from "./chat-cards.js";
 import { LineSteer } from "./line-steer.js";
-import { FirstRequest, FirstRun, withSuggestion } from "./first-run.js";
+import { FirstRequest, FirstRun, leaveFor, withSuggestion } from "./first-run.js";
 import { TaskDetails, ViewHost, type ThreadChat } from "./views/index.js";
 import { threadWhen, whenTitle } from "./views/task-view.js";
 import { Home } from "./views/home-view.js";
@@ -595,7 +595,7 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
     <a href="/tasks/new" className="so-new-task"><Icon name="plus" />New task</a>
     {workspace.projects.length > 0 && <div className="so-project-switch">
       <Label htmlFor={projectId}>Project</Label>
-      <select id={projectId} value={currentProject?.href ?? "/work"} onChange={event => { window.location.assign(event.target.value); }}>
+      <select id={projectId} value={currentProject?.href ?? "/work"} onChange={event => { leaveFor(event.target.value); }}>
         <option value="/work">All projects</option>
         {workspace.projects.map(project => <option key={project.path} value={project.href}>{project.name}</option>)}
       </select>
