@@ -65,6 +65,31 @@ E. Timing tests: read-executor.test.ts and tick.watch.slow.test.ts rewritten to 
 F. Process: delta review of post-review security changes (diff + affected invariant/callers), recorded in the arc's
    notes; not a third round.
 
+### Phase 1 build notes (D, E)
+- D, head commit: every ci.yml job checks out `github.event.pull_request.head.sha || github.sha` (job env
+  `TESTED_SHA`) and a "Tested commit" step proves `git rev-parse HEAD` equals it before anything builds, writing it to
+  the step summary; src/ci-workflow.test.ts holds every job to that.
+- D, merge compatibility, **integration TODO (release side, not built here)**: the release gate must refuse a candidate
+  whose head does not contain origin/main's head (`git merge-base --is-ancestor <main head> <candidate>`, read at the
+  gate and again before the merge), so the tree CI tested is the tree that merges. Without it, testing the head instead
+  of the merge commit is weaker, not stronger, for a branch behind main. Belongs in src/release.ts / release-auto.ts.
+- D, git floor: **git 2.44** (README). The binding feature is the `git --no-lazy-fetch` global option (2.44; git 2.43.7
+  answers "unknown option: --no-lazy-fetch", checked in Docker), used by every hardened read. Others in use are older:
+  `--attr-source` 2.40, `worktree list -z` 2.36, `GIT_CONFIG_COUNT` and `--path-format` 2.31; `worktree.useRelativePaths`
+  (2.48) is a setting older git ignores. No runtime git-version check exists, so none was added; stock Ubuntu 24.04
+  (2.43) and Debian 12 (2.39) are below the floor.
+- D, git lanes: ci.yml job `git` (container node:22-trixie, matrix 2.44 built from the pinned kernel.org tarball by
+  scripts/ci-git.sh, 2.47 = Debian's), running `npm run test:git` as the unprivileged `node` user, then
+  scripts/ci-no-skips.mjs fails the job if any test was skipped. **Integration TODO:** add "git 2.44 · debian trixie"
+  and "git 2.47 · debian trixie" to REQUIRED_PR_CHECKS (src/release.ts) and drop PENDING_REQUIRED from
+  src/ci-workflow.test.ts.
+- D, identity: test/git-identity.ts. Every test file's home starts with `user.useConfigOnly = true` and no identity
+  (test/setup-state.ts), so a test that commits without setting one fails on the Mac as it would on Linux CI;
+  `withGitIdentity()` gives a home the test identity.
+- E: read-executor.test.ts holds one worker read open and proves 24 more lists are answered meanwhile (no event-loop
+  delay cap); tick.watch.slow.test.ts stops the watch when t-live is built instead of after a 450 ms window. The
+  60 s `--for` and the 90 s test timeout are the hang guards.
+
 ## Phase 2 (after phase 1 ships)
 Results ledger across commits; a 20–30 case versioned eval set from real failures and representative successes, run
 3× with fixed / regressed / newly flaky / still failing vs a pinned baseline; tool trajectories, tokens, cost per

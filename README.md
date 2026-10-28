@@ -34,7 +34,7 @@ npx toolroll up
 ```
 
 That starts the app and a builder for your projects, then opens the console
-at http://127.0.0.1:4180. Runs on macOS or Linux with Node.js 22.13+ and git.
+at http://127.0.0.1:4180. Runs on macOS or Linux with Node.js 22.13+ and git 2.44+.
 Try the sandbox first with `npx toolroll demo`: ask its scripted lead for a
 change in Chat, approve the plan, and watch it land Ready. It never calls a
 model, spends or reaches outside.
@@ -275,9 +275,12 @@ npx toolroll up --project-root ~/Projects    # or: bunx toolroll up
 
 That is the install and the setup. It needs Node 22.13 or newer on the
 machine (Bun's runtime has no `node:sqlite`; `bunx` hands the shebang to
-Node, so it works too). `npm install -g toolroll` gives you the
-bare `toolroll` command for later (`standing-orders`, the older name, still
-works).
+Node, so it works too), and git 2.44 or newer: Toolroll reads agent-written
+checkouts with `git --no-lazy-fetch`, which older git refuses. Ubuntu 24.04
+and Debian 12 ship older git (2.43 and 2.39): install a newer one (on
+Ubuntu, from the git-core PPA). CI runs the git tests on 2.44 and on 2.47.
+`npm install -g toolroll` gives you the bare `toolroll` command for later
+(`standing-orders`, the older name, still works).
 
 `up` prints your login once (and saves it beside the database as
 `up-login.txt`), opens the app in your browser, and connects this machine as

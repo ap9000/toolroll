@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **CI tests the commit a release trusts.** Every pull-request job now checks
+  out the pull request's own head commit, not the merge commit GitHub makes,
+  and proves it before building.
+- **Git 2.44 or newer is required, and tested.** Toolroll's hardened git reads
+  need `git --no-lazy-fetch`, which arrived in git 2.44. Two new CI jobs run
+  the git attack and worktree tests on git 2.44 and 2.47, as an unprivileged
+  user, and fail if any test is skipped.
+- **Tests can't lean on a guessed git identity.** Each test's home tells git
+  never to guess a name and email from the host, so a test that commits
+  without setting one fails on a Mac just as it would on Linux CI.
+- **Two timing-sensitive tests now wait for events.** The read-worker test and
+  the watch recovery test no longer fail when a busy machine runs slowly.
+
 ## 0.9.76 — 2026-10-28
 
 - **Releases can approve themselves when they're green.** A new per-project
