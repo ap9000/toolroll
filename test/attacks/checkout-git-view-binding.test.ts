@@ -470,3 +470,29 @@ describe("one plane git command at a time on a checkout (Codex review of a0fa135
     expect(status.code, status.stderr).toBe(0);
   });
 });
+
+describe("carry-back is anchored (security scan of the carry-back)", () => {
+  test("the worktree's folder replaced by a look-alike after git ran: nothing is written into it, an incident is recorded", async () => {
+    const heard: GitIncident[] = [];
+    const stop = onGitIncident(incident => heard.push(incident));
+    const admin = join(a, ".git", "worktrees", "a-task");
+    try {
+      const before = readFileSync(join(admin, "HEAD"), "utf8");
+      const inner: Runner = async (file, args, options) => {
+        const result = await run(file, args, options);
+        if (args.includes("checkout")) {
+          // A real folder, not a link: same files, another inode.
+          renameSync(admin, join(root, "moved-admin"));
+          execFileSync("cp", ["-R", join(root, "moved-admin"), admin]);
+        }
+        return result;
+      };
+      const result = await checkoutGit(inner, "build", { repo: a })("git", ["checkout", "-q", "--detach", "main"], { cwd: aLinked, timeoutMs: 60_000 });
+      expect(refusal(result), result.stderr).toContain("changed while git ran");
+      expect(readFileSync(join(admin, "HEAD"), "utf8")).toBe(before);
+      expect(readFileSync(join(root, "moved-admin", "HEAD"), "utf8")).toBe(before);
+      expect(heard).toHaveLength(1);
+      expect(heard[0]!.swapped[0]!.path).toBe(realpathSync(admin));
+    } finally { stop(); }
+  });
+});

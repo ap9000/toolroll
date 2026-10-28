@@ -530,6 +530,9 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
     symlinkSync(dirs.linked ? join(dirs.gitdir, "info") : join(view, "info"), join(admin, "info"));
     if (!pinned(dirs).ok) throw new Error("the checkout's repository has a folder that is a link");
   } catch (error) { dispose(); throw error; }
+  // The folders down to the worktree's own, as they are now: carry-back writes only while each is still the same one.
+  let anchor: Anchor;
+  try { anchor = anchorOf(dirs.gitdir); } catch { dispose(); throw new Error("the checkout's repository has a folder that is a link"); }
   // Where git names a view (rev-parse --git-dir, --git-common-dir), the caller is told the repository's own folder;
   // where `worktree list` names the common view as the main worktree, that worktree (git's rule: the common dir less
   // `/.git`).
@@ -555,7 +558,11 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
       // The worktree's own state git rewrote in the plane's GIT_DIR goes back to it, and what it removed is removed
       // there; anything else git left there the plane can't keep, and says so.
       const left = readdirSync(admin).filter(name => !initial.has(name) && !WORKTREE_STATE.includes(name) && !["commondir", "gitdir", "info"].includes(name));
-      try { carryBack(admin, dirs.gitdir, initial); } catch { return "the checkout's git state couldn't be carried back after git ran"; }
+      try { carryBack(admin, dirs.gitdir, initial, anchor); } catch (error) {
+        if (!(error instanceof AnchorMoved)) return "the checkout's git state couldn't be carried back after git ran";
+        gitIncident({ checkout: dirs.checkout, repository: dirs.common, swapped: [{ path: error.message, leadsTo: null }], record: join(dirname(ensureGitViewsRoot(realpathSync(homedir()))), "git-incidents.jsonl") });
+        return "the checkout's repository changed while git ran";
+      }
       if (left.length > 0) return `git left state Toolroll can't keep in the checkout (${left.slice(0, 5).join(", ")})`;
     }
     return null;
@@ -662,8 +669,32 @@ function objectStores(common: string): Set<string> {
   return stores;
 }
 
-/** The worktree's own files a command may rewrite and the plane carries back: all of WORKTREE_STATE. */
-function carryBack(admin: string, gitdir: string, initial: ReadonlyMap<string, string | null>): void {
+/** Every folder from the root down to `path`, with its device and inode as they are now (none may be a link). */
+type Anchor = { path: string; dev: number; ino: number }[];
+function anchorOf(path: string): Anchor {
+  const anchor: Anchor = [];
+  for (let at = path; ; at = dirname(at)) {
+    const held = lstatSync(at);
+    if (held.isSymbolicLink() || !held.isDirectory()) throw new AnchorMoved(at);
+    anchor.unshift({ path: at, dev: held.dev, ino: held.ino });
+    if (dirname(at) === at) return anchor;
+  }
+}
+class AnchorMoved extends Error {}
+/** Throws AnchorMoved unless every folder of `anchor` is still the one it was (Node has no openat, so each component
+ * is looked at again right before each rename or unlink). */
+function holdAnchor(anchor: Anchor): void {
+  for (const one of anchor) {
+    let held: import("node:fs").Stats;
+    try { held = lstatSync(one.path); } catch { throw new AnchorMoved(one.path); }
+    if (held.isSymbolicLink() || !held.isDirectory() || held.dev !== one.dev || held.ino !== one.ino) throw new AnchorMoved(one.path);
+  }
+}
+
+/** Carry the WORKTREE_STATE files git rewrote or removed in the plane's GIT_DIR back to the worktree's own folder: a
+ * new file of a random name, created exclusively (never through a link), then renamed into place; before each rename
+ * or unlink, every folder down to the worktree's own is proven the same one it was when the view was made. */
+function carryBack(admin: string, gitdir: string, initial: ReadonlyMap<string, string | null>, anchor: Anchor): void {
   for (const name of WORKTREE_STATE) {
     const here = join(admin, name);
     let held: import("node:fs").Stats | null = null;
@@ -671,16 +702,17 @@ function carryBack(admin: string, gitdir: string, initial: ReadonlyMap<string, s
     const was = initial.get(name);
     if (held === null) {
       // Removed by git: removed in the worktree's own folder too (a merge's state once it concluded).
-      if (initial.get(name) != null) rmSync(join(gitdir, name), { force: true });
+      if (initial.get(name) != null) { holdAnchor(anchor); rmSync(join(gitdir, name), { force: true }); }
       continue;
     }
     if (held.isSymbolicLink() || !held.isFile()) continue;
     const text = readFileSync(here);
     if (was !== undefined && was !== null && text.toString("utf8") === was) continue;
+    holdAnchor(anchor);
     const temporary = join(gitdir, `.toolroll-${randomBytes(16).toString("hex")}`);
     const fd = openSync(temporary, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
     try { writeSync(fd, text); } finally { closeSync(fd); }
-    try { renameSync(temporary, join(gitdir, name)); } catch (error) { rmSync(temporary, { force: true }); throw error; }
+    try { holdAnchor(anchor); renameSync(temporary, join(gitdir, name)); } catch (error) { rmSync(temporary, { force: true }); throw error; }
   }
 }
 
