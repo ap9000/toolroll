@@ -1257,8 +1257,25 @@ await journey("maya", SCRIPTED, "Subagents: Maya (a support rep) answers a quest
   const question = await until("Maya to answer the question card", async () => { const one = await cardOf("Where is my order"); return one?.stage === "answered" ? one : null; }, { timeoutMs: 420_000, everyMs: 3000 });
   const reply = question.outputs.find(one => one.stage === "read")?.text ?? "";
   if (reply.length < 20) throw new Error(`her reply: ${reply}`);
-  const small = await until("Maya to approve the $30 refund on her own", async () => { const one = await cardOf("Charged twice"); return one?.stage === "refunded" ? one : null; }, { timeoutMs: 420_000, everyMs: 3000 });
-  if (!small.history.some(one => /Approved by Maya \(AI\)/.test(one.text))) throw new Error(`its history: ${small.history.map(one => one.text).join(" | ")}`);
+  // A scripted Maya approves the $30 refund on her own. A real one may instead bring it to you: "hand_off" is hers to use
+  // whenever she isn't sure (a duplicate charge she can't check), so a real run takes either decision, but only hers:
+  // her approval on its history, or the decision waiting on you with her note on it, which you then approve.
+  let small = await until(w.scripted ? "Maya to approve the $30 refund on her own" : "Maya to decide the $30 refund (approve it, or bring it to you)", async () => {
+    const one = await cardOf("Charged twice");
+    return one?.stage === "refunded" || (!w.scripted && one?.canDecide && one?.handoff != null) ? one : null;
+  }, { timeoutMs: 420_000, everyMs: 3000 });
+  let smallHandedOff = null;
+  if (small.stage !== "refunded") {
+    smallHandedOff = small.handoff.note;
+    await page.reload(); await page.waitForSelector("[data-zone]");
+    await page.locator(`[data-card="${small.id}"]`).click();
+    await page.waitForSelector(`[data-flow-card-panel="${small.id}"]`);
+    if (!/^Maya · Support:/.test(await page.locator("[data-subagent-handoff]").innerText())) throw new Error("Maya's note isn't on the $30 decision");
+    await page.click('[data-flow-card-panel] button:has-text("Approve")');
+    small = await until("the $30 refund to be approved by you", async () => { const one = await cardOf("Charged twice"); return one?.stage === "refunded" ? one : null; }, { timeoutMs: 30_000, everyMs: 1000 });
+  } else if (!small.history.some(one => /Approved by Maya \(AI\)/.test(one.text))) throw new Error(`its history: ${small.history.map(one => one.text).join(" | ")}`);
+  const approvedByYou = () => rows(`SELECT COUNT(*) AS n FROM flow_event WHERE actor = 'alex' AND outcome = 'approved'`)[0]?.n ?? 0;
+  const yoursBefore = approvedByYou();
   // The $400 one is over her limit: she brings it to the flow's owner (a decision, or a question first).
   const brought = await until("Maya to bring the $400 refund to you", async () => { const one = await cardOf("Broken TV"); return one?.canDecide || one?.question?.mine ? one : null; }, { timeoutMs: 420_000, everyMs: 3000 });
   await page.reload(); await page.waitForSelector("[data-zone]");
@@ -1280,7 +1297,7 @@ await journey("maya", SCRIPTED, "Subagents: Maya (a support rep) answers a quest
   }
   const told = rows(`SELECT subject FROM notification WHERE recipient = 'alex' AND subject LIKE 'Maya · Support%'`);
   if (told.length === 0) throw new Error("you weren't told by Maya, under her name");
-  if (rows(`SELECT 1 FROM flow_event WHERE actor = 'alex' AND outcome = 'approved'`).length === 0 && rows(`SELECT 1 FROM subagent_question WHERE answered_by = 'alex'`).length === 0) throw new Error("no person decided the $400 refund");
+  if (approvedByYou() <= yoursBefore && rows(`SELECT 1 FROM subagent_question WHERE answered_by = 'alex'`).length === 0) throw new Error("no person decided the $400 refund");
   // Paused, the zones she handles wait; resumed, she picks the card up.
   await page.goto(`${base}/settings/lead/subagents/${subagentId}`);
   await Promise.all([page.waitForNavigation(), page.click('button:has-text("Pause Maya")')]);
@@ -1301,7 +1318,7 @@ await journey("maya", SCRIPTED, "Subagents: Maya (a support rep) answers a quest
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   await putPhoneDown();
   if (wide) throw new Error("the subagent page scrolls sideways on a phone");
-  return { reply: reply.slice(0, 120), summary: (await page.locator(".subagent-summary").innerText()).slice(0, 200) };
+  return { reply: reply.slice(0, 120), summary: (await page.locator(".subagent-summary").innerText()).slice(0, 200), ...(smallHandedOff === null ? {} : { smallHandedOff: smallHandedOff.slice(0, 200) }) };
 });
 
 await journey("maya", SCRIPTED, "The lead and its subagents in one place: Settings → Lead lists Maya with one Add subagent action on desktop and phone, an old teammate link lands on her page, and “ask Maya …” in chat is a card that, confirmed, puts one card on her desk and brings her answer back (D5)", ["Turn the lead chat on (first-run setup, with your password)", "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)"], async () => {
@@ -1343,13 +1360,40 @@ await journey("maya", SCRIPTED, "The lead and its subagents in one place: Settin
   );
   const asked = await askLead("Ask Maya to look up order #1204 and tell me when it ships.");
   const pending = await pendingCard(asked.reply, "the card asking Maya", { label: "Ask Maya" });
-  if (!/Look up order #1204 and tell me when it ships\./.test(await pending.innerText())) throw new Error("the card doesn't show exactly what goes to Maya");
+  const shownAsk = (await pending.innerText()).replace(/\s+/g, " ");
+  // A scripted lead's words are known; a real lead puts the ask in its own words, which must still carry the order.
+  if (w.scripted ? !/Look up order #1204 and tell me when it ships\./.test(shownAsk) : !/1204/.test(shownAsk)) throw new Error(`the card asking Maya: ${shownAsk.slice(0, 300)}`);
+  // The card's terms, one paragraph each: the first is exactly what goes to her.
+  const shownTerms = (await pending.locator(".so-card-body p").allInnerTexts()).map(one => one.replace(/\s+/g, " ").trim());
+  // Her desk is made when the first card lands on it, so what was there before is counted across every flow.
+  const deskBefore = rows("SELECT COALESCE(MAX(id), 0) AS id FROM flow_card")[0].id;
   await confirmCard(asked.reply, "Ask Maya");
   await shot("lead-asks-maya");
+  // Confirmed, exactly one card lands on her desk, from you, and it is word for word what the card showed.
   const desk = rows(`SELECT desk_flow FROM subagent WHERE id = ${maya}`)[0]?.desk_flow;
-  const cards = desk ? rows(`SELECT title, created_by FROM flow_card WHERE flow = ${desk} AND title LIKE 'Look up order #1204%'`) : [];
-  if (cards.length !== 1 || cards[0].created_by !== "alex") throw new Error(`Maya's desk has ${JSON.stringify(cards)}`);
-  const answer = await until("Maya's answer to reach you", async () => rows("SELECT subject, body FROM notification WHERE kind = 'teammate-reply' AND recipient = 'alex' AND body LIKE '%#1204%'")[0] ?? null, { timeoutMs: 120_000, everyMs: 1500 });
+  const cards = desk ? rows(`SELECT id, title, description, created_by FROM flow_card WHERE flow = ${desk} AND id > ${deskBefore}`) : [];
+  if (cards.length !== 1 || cards[0].created_by !== "alex" || !/1204/.test(`${cards[0].title} ${cards[0].description ?? ""}`)) throw new Error(`Maya's desk has ${JSON.stringify(cards)}`);
+  const sentAsk = String(cards[0].description ?? cards[0].title).replace(/\s+/g, " ").trim();
+  if (sentAsk === "" || shownTerms[0] !== sentAsk) throw new Error(`the card showed ${JSON.stringify(shownTerms[0] ?? "").slice(0, 300)}, but Maya got ${JSON.stringify(sentAsk).slice(0, 300)}`);
+  // Her answer to that card comes back to you. A real Maya with no order tool may ask you first: you tell her to say
+  // what she can; or say she can't, which comes back to you the same way.
+  const card = cards[0].id;
+  let answeredHer = null;
+  const answer = await until("Maya's answer to reach you", async () => {
+    const reply = rows(`SELECT subject, body FROM notification WHERE kind = 'teammate-reply' AND recipient = 'alex' AND dedupe_key LIKE 'teammate-reply:${card}:%'`)[0];
+    if (reply !== undefined) return reply;
+    const question = w.scripted ? undefined : rows(`SELECT id, question FROM subagent_question WHERE card = ${card} AND asked_of = 'alex' AND state = 'open'`)[0];
+    if (question !== undefined) {
+      await page.goto(`${base}/settings/lead/subagents/${maya}`);
+      const said = await post(`/settings/lead/subagents/questions/${question.id}/answer`, { text: "Tell me what you can from here, or that you can't look it up." });
+      if (said.status >= 400) throw new Error(`answering her question: ${said.status} ${said.body.slice(0, 200)}`);
+      answeredHer = question.question;
+    }
+    return null;
+  }, { timeoutMs: w.scripted ? 120_000 : 420_000, everyMs: 1500 });
+  if (w.scripted && !/#1204/.test(answer.body)) throw new Error(`her answer: ${answer.body}`);
+  if (String(answer.body).trim() === "") throw new Error("her answer is empty");
+  if (answeredHer !== null) answer.askedFirst = answeredHer.slice(0, 200);
   return { section: section.slice(0, 160), answer };
 });
 

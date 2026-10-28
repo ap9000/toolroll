@@ -247,6 +247,8 @@ function carryOut(store: Store, flow: FlowRow, definition: FlowDefinition, stage
   }
   if (answer.action === "cant") {
     event("handled", `Couldn't handle “${card.title}”: ${answer.note}`);
+    // A zone that answers whoever asked tells them it couldn't, in its own words when it gave some: they always hear back.
+    if (stage.reply === true) replyToAsker(store, flow, card, mate, answer.note || (answer.reason === "" ? `${context.name} couldn't handle this.` : `${context.name} couldn't handle this: ${answer.reason}`), now);
     if (stage.onFail !== null) store.moveFlowCard(card.id, { to: stage.onFail, outcome: "fail", actor, note: answer.note === "" ? null : note(answer.note), expectEntry: card.entry }, now);
     else store.updateFlowCard(card.id, { waiting: `${context.name} couldn't handle it: ${answer.note}`.slice(0, 300) }, now);
     return { state: "failed", said: answer.note || "It couldn't handle this card.", log, decisionJson };
