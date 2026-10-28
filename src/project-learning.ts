@@ -56,7 +56,8 @@ const git = (repo: string, args: string[], seen?: Map<string, string>): string =
   const key = JSON.stringify([repo, args]);
   const known = seen?.get(key);
   if (known !== undefined) return known;
-  const out = execFileSync('git', ['--no-optional-locks', '-C', repo, ...args], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
+  // Bounded, and no hook or fsmonitor program: it also runs from the console's background pass.
+  const out = execFileSync('git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-C', repo, ...args], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
   seen?.set(key, out);
   return out;
 };
@@ -85,8 +86,13 @@ function commonDirOnDisk(repo: string): string {
   const named = /^gitdir: (.+)$/m.exec(readFileSync(dotGit, 'utf8'))?.[1]?.trim();
   if (!named) throw new Error('Project identity is unavailable.');
   const gitDir = resolve(repo, named);
+  if (!lstatSync(gitDir).isDirectory()) throw new Error('Project identity is unavailable.');
   const commondir = join(gitDir, 'commondir');
-  return existsSync(commondir) ? resolve(gitDir, readFileSync(commondir, 'utf8').trim()) : gitDir;
+  if (!existsSync(commondir)) return gitDir;
+  // Only a small plain file is read (never a FIFO, a link or a device that could hold the console up).
+  const pointer = lstatSync(commondir);
+  if (!pointer.isFile() || pointer.size > 4096) throw new Error('Project identity is unavailable.');
+  return resolve(gitDir, readFileSync(commondir, 'utf8').trim());
 }
 export function learningIdentity(repo: string, seen?: Map<string, string>): string {
   const { common, st } = identityFacts(repo, seen);

@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { checkoutGitSync } from "../../src/teardown-git.js";
+import { checkoutGitSync, PAGE_READ_FLAGS, TEARDOWN_FLAGS } from "../../src/teardown-git.js";
 
 let root: string, repo: string, marker: string;
 const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
@@ -30,6 +30,7 @@ describe("attack: a checkout's git config runs a program when a page reads it", 
     "a clean filter": () => { git("config", "filter.x.clean", `sh -c 'touch ${marker}; cat'`); writeFileSync(join(repo, ".gitattributes"), "*.txt filter=x\n"); },
     "an include of a file naming one": () => { writeFileSync(join(root, "extra"), `[core]\n\tfsmonitor = touch ${marker}\n`); git("config", "include.path", join(root, "extra")); },
     "core.pager": () => git("config", "core.pager", `touch ${marker}`),
+    "an external diff": () => git("config", "diff.external", `touch ${marker}`),
   };
   for (const [name, plant] of Object.entries(plants)) {
     test(`${name}: refused before git reads, and nothing runs`, () => {
@@ -39,6 +40,16 @@ describe("attack: a checkout's git config runs a program when a page reads it", 
       expect(existsSync(marker)).toBe(false);
     });
   }
+  // A config changed after it was inspected (an agent racing the read): the flags every page read carries still hold,
+  // whatever the config says by the time git reads it.
+  test("planted after the inspection: the page-read flags alone keep fsmonitor, filters and the pager from running", () => {
+    for (const plant of Object.values(plants)) plant();
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+    for (const args of [["status", "--porcelain=v1"], ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "HEAD"], ["diff", "--no-ext-diff", "--no-textconv", "HEAD"]]) {
+      execFileSync("git", [...TEARDOWN_FLAGS, ...PAGE_READ_FLAGS, ...args], { cwd: repo, env, stdio: "pipe" });
+    }
+    expect(existsSync(marker)).toBe(false);
+  });
   test("a plain checkout reads", () => {
     expect(checkoutGitSync(repo, ["status", "--porcelain=v1"])).toContain("a.txt");
     expect(checkoutGitSync(repo, ["rev-parse", "--verify", "HEAD^{commit}"]).trim()).toMatch(/^[0-9a-f]{40}$/);

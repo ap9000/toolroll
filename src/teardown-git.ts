@@ -231,9 +231,21 @@ export function checkoutGit(inner: Runner = run): Runner {
 }
 
 /**
+ * Flags for reading a checkout an agent writes while a page waits (docs/plans/get-side-effects.md). Command-line
+ * settings win over anything the checkout's config says, even one changed after it was inspected: no fsmonitor, hooks,
+ * pager or credential helper; no network (lazy fetch off, every protocol refused); and attributes read from the empty
+ * tree, so no filter or textconv a .gitattributes names can run. A diff also takes --no-ext-diff --no-textconv.
+ */
+export const PAGE_READ_FLAGS: readonly string[] = [
+  "--no-lazy-fetch", "--attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+  "-c", "protocol.allow=never", "-c", "core.pager=cat", "-c", "core.alternateRefsCommand=",
+];
+
+/**
  * checkoutGit, synchronously, for reads a page shows from a checkout an agent writes (docs/plans/get-side-effects.md):
  * the same refusals (an include, an .lfsconfig extension, a config key that can run a command), no system or global
- * config, the operator's own values carried, hooks and fsmonitor off, submodules skipped, bounded. A refusal throws.
+ * config, the operator's own values carried, PAGE_READ_FLAGS (which hold even if the config changes after it was read),
+ * submodules skipped, bounded. A refusal throws.
  */
 export function checkoutGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number } = {}): string {
   const env: NodeJS.ProcessEnv = { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", LANG: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
@@ -247,7 +259,11 @@ export function checkoutGitSync(cwd: string, args: readonly string[], options: {
   const safeArgs = [...args];
   const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
   if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
-  const ran = spawnSync("git", [...TEARDOWN_FLAGS, "-c", "diff.ignoreSubmodules=all", ...carriedSettings(own.stdout), ...safeArgs], bounded);
+  // An external diff program is named by config, which may change after it was read: never used here.
+  if (command >= 0 && safeArgs[command] === "diff") safeArgs.splice(command + 1, 0, "--no-ext-diff", "--no-textconv");
+  // The operator's own values, but no filter: PAGE_READ_FLAGS reads attributes from the empty tree anyway.
+  const carried = carriedSettings(own.stdout).filter((one, at, all) => !(one.startsWith("filter.") || (one === "-c" && all[at + 1]?.startsWith("filter."))));
+  const ran = spawnSync("git", [...TEARDOWN_FLAGS, ...PAGE_READ_FLAGS, "-c", "diff.ignoreSubmodules=all", ...carried, ...safeArgs], bounded);
   if (ran.status !== 0) throw new Error(`git ${args[0] ?? ""} failed`);
   return ran.stdout;
 }
