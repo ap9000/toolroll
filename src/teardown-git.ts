@@ -11,7 +11,8 @@
  * nothing is removed.
  */
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { run, type ExecResult } from "./exec.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
@@ -164,36 +165,102 @@ export function teardownGit(runner: Runner = run): Git {
  * that can't be read so counts as including.
  */
 export function checkoutIncludes(checkout: string): boolean {
-  const regular = (path: string): string | null => {
-    try {
-      const held = lstatSync(path);
-      if (!held.isFile() || held.size > 1024 * 1024) return null;
-      return readFileSync(path, "utf8");
-    } catch { return null; }
-  };
+  const dirs = gitDirsOf(checkout);
+  if (dirs === null) return true;
+  for (const path of [join(dirs.common, "config"), join(dirs.gitdir, "config.worktree")]) {
+    if (!existsSync(path) && path.endsWith("config.worktree")) continue;
+    if (configIncludes(path)) return true;
+  }
+  return false;
+}
+
+/** One config file, read only as the regular file it is (bounded), or null. */
+function regularFile(path: string): string | null {
+  try {
+    const held = lstatSync(path);
+    if (!held.isFile() || held.size > 1024 * 1024) return null;
+    return readFileSync(path, "utf8");
+  } catch { return null; }
+}
+
+/** A checkout's git directory and common directory, as git finds them from its `.git` (a folder, or a one-line
+ * `gitdir: ` file); null when the pointer isn't one git would read the same way. */
+function gitDirsOf(checkout: string): { gitdir: string; common: string } | null {
   let gitdir = join(checkout, ".git");
   try {
     if (!lstatSync(gitdir).isDirectory()) {
       // As git reads a .git file: "gitdir: " then the path, one line; anything else (more lines, stray space) refused.
-      const text = (regular(gitdir) ?? "").replace(/\r?\n$/, "");
-      if (!text.startsWith("gitdir: ") || /[\r\n]/.test(text)) return true;
+      const text = (regularFile(gitdir) ?? "").replace(/\r?\n$/, "");
+      if (!text.startsWith("gitdir: ") || /[\r\n]/.test(text)) return null;
       const pointer = text.slice("gitdir: ".length);
-      if (pointer === "" || pointer !== pointer.trim()) return true;
+      if (pointer === "" || pointer !== pointer.trim()) return null;
       gitdir = resolve(checkout, pointer);
     }
-  } catch { return true; }
-  const common = (() => { const named = regular(join(gitdir, "commondir"))?.trim(); return named === undefined || named === "" ? gitdir : resolve(gitdir, named); })();
-  for (const path of [join(common, "config"), join(gitdir, "config.worktree")]) {
-    if (!existsSync(path) && path.endsWith("config.worktree")) continue;
-    const text = regular(path);
-    if (text === null || /^\s*\[\s*include(if)?\b/im.test(text)) return true;
-    // And as git itself parses it, includes not followed (only this one regular file, from a neutral folder, with no
-    // other config read): an include git sees by any spelling is refused.
-    const parsed = spawnSync("git", ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
-      { cwd: "/", encoding: "utf8", timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
-    if (parsed.status !== 0 || parsed.stdout.split("\0").some(name => /^(include\.path|includeif\..*\.path)$/i.test(name))) return true;
-  }
-  return false;
+  } catch { return null; }
+  const named = regularFile(join(gitdir, "commondir"))?.trim();
+  return { gitdir, common: named === undefined || named === "" ? gitdir : resolve(gitdir, named) };
+}
+
+/** Whether one config file includes another (or can't be read as a plain file): by a plain reading, and as git itself
+ * parses it, includes not followed (only this one regular file, from a neutral folder, with no other config read). */
+function configIncludes(path: string): boolean {
+  const text = regularFile(path);
+  if (text === null || /^\s*\[\s*include(if)?\b/im.test(text)) return true;
+  const parsed = spawnSync("git", ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
+    { cwd: "/", encoding: "utf8", timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
+  return parsed.status !== 0 || parsed.stdout.split("\0").some(name => /^(include\.path|includeif\..*\.path)$/i.test(name));
+}
+
+/**
+ * A private view of a checkout's repository for one read of a checkout an agent writes (security review of 0.9.75):
+ * git reads the repository's config and `info/attributes` from its common directory whatever --attr-source says, so an
+ * agent that adds a filter to both after the config was inspected would have git run it. The view is a fresh folder
+ * of the plane's own, given to git as GIT_COMMON_DIR: a copy of the config as it was read once (with a linked
+ * worktree's config.worktree folded in), an `info` holding only a copy of `info/exclude`, and links to everything else
+ * (objects, refs). Git then reads no config and no attributes file the agent can still change; GIT_DIR stays the
+ * checkout's own (HEAD, index). Its config is inspected, never the checkout's again. Throws when it can't be made.
+ */
+type ReadView = { env: Record<string, string>; restore: (output: string) => string; dispose: () => void };
+function readView(checkout: string): ReadView {
+  const dirs = gitDirsOf(checkout);
+  if (dirs === null) throw new Error("the checkout's .git couldn't be read as git reads it");
+  const view = realpathSync(mkdtempSync(join(tmpdir(), "toolroll-git-read-")));
+  const dispose = () => rmSync(view, { recursive: true, force: true });
+  try {
+    let config = regularFile(join(dirs.common, "config"));
+    if (config === null) throw new Error("the checkout's git config couldn't be read as a plain file");
+    const configPath = join(view, "config");
+    writeFileSync(configPath, config, { mode: 0o600 });
+    const plain = { cwd: "/", encoding: "utf8" as const, timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } };
+    if (/worktreeconfig/i.test(config)) {
+      const flag = spawnSync("git", ["config", "--file", configPath, "--no-includes", "--type=bool", "--get", "extensions.worktreeConfig"], plain);
+      if (flag.status !== 0 && flag.status !== 1) throw new Error("the checkout's git config couldn't be read");
+      if (flag.stdout.trim() === "true") {
+        // Git would also read the worktree's config.worktree, which the agent can still change: folded in as it is now.
+        const worktree = join(dirs.gitdir, "config.worktree");
+        const own = existsSync(worktree) ? regularFile(worktree) : "";
+        if (own === null) throw new Error("the checkout's config.worktree couldn't be read as a plain file");
+        config = `${config}\n${own}`;
+        writeFileSync(configPath, config, { mode: 0o600 });
+      }
+      const unset = spawnSync("git", ["config", "--file", configPath, "--unset-all", "extensions.worktreeConfig"], plain);
+      if (unset.status !== 0 && unset.status !== 5) throw new Error("the checkout's git config couldn't be read");
+    }
+    if (configIncludes(configPath)) throw new Error("the checkout's git config includes another file");
+    mkdirSync(join(view, "info"));
+    const exclude = join(dirs.common, "info", "exclude");
+    if (existsSync(exclude)) {
+      const text = regularFile(exclude);
+      if (text !== null) writeFileSync(join(view, "info", "exclude"), text, { mode: 0o600 });
+    }
+    for (const name of readdirSync(dirs.common)) {
+      if (name === "config" || name === "info" || name === "hooks") continue;
+      symlinkSync(join(dirs.common, name), join(view, name));
+    }
+  } catch (error) { dispose(); throw error; }
+  // Where git names the view (rev-parse --git-common-dir), the caller is told the repository's own common directory.
+  const restore = (output: string) => output.split("\n").map(line => line === view || line.startsWith(`${view}/`) ? dirs.common + line.slice(view.length) : line).join("\n");
+  return { env: { GIT_DIR: dirs.gitdir, GIT_COMMON_DIR: view, GIT_WORK_TREE: resolve(checkout) }, restore, dispose };
 }
 
 /** Whether the checkout's .lfsconfig (read as git parses it, that file only) sets any git-lfs key that could name a
@@ -207,28 +274,44 @@ export function lfsExtensionIn(checkout: string): boolean {
   return parsed.status !== 0 || parsed.stdout.split("\0").filter(Boolean).some(name => lfsCommand(name.toLowerCase()) || /^include(if)?\./i.test(name));
 }
 
-export function checkoutGit(inner: Runner = run): Runner {
+/** `mode` "read" is for reading a checkout an agent may still be writing (the code page): every command also takes
+ * readFlags() and runs against the checkout's readView, so neither its config nor its info/attributes can change
+ * between the inspection and the run. */
+export function checkoutGit(inner: Runner = run, mode: "build" | "read" = "build"): Runner {
   return async (file, args, options) => {
     if (file !== "git") return inner(file, args, options);
     const cwd = options?.cwd;
     if (cwd === undefined || checkoutIncludes(cwd)) return refused("the checkout's git config includes another file, or couldn't be read as a plain file");
     // git-lfs also reads .lfsconfig from the checkout: one that names an extension (a command it would run) is refused.
     if (lfsExtensionIn(cwd)) return refused("the checkout's .lfsconfig sets a git-lfs key that can run a command");
-    // The checkout's own config may name no command.
-    const own = await inner("git", ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], options);
-    if (own.code !== 0) return refused("its config couldn't be read");
-    const key = commandSetting(own.stdout);
-    if (key !== null) return refused(`the checkout's git config sets ${key}, which can run a command`);
-    // The operator's own config contributes values only (carriedSettings); git then reads no global or system config.
-    const carried = carriedSettings(own.stdout);
-    const env = { ...(options?.env ?? {}), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
-    // Never into a submodule or nested repository, whose own config this never read: status and diff skip them.
-    const safeArgs = [...args];
-    const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
-    if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
-    return inner("git", [...TEARDOWN_FLAGS, "-c", "diff.ignoreSubmodules=all", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", ...carried, ...safeArgs], { ...options, env });
+    let view: ReadView | null = null;
+    if (mode === "read") {
+      try { view = readView(cwd); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
+    }
+    try {
+      const viewed = { ...options, env: { ...(options?.env ?? {}), ...(view?.env ?? {}) } };
+      // The checkout's own config may name no command.
+      const own = await inner("git", ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], view === null ? options : viewed);
+      if (own.code !== 0) return refused("its config couldn't be read");
+      const key = commandSetting(own.stdout);
+      if (key !== null) return refused(`the checkout's git config sets ${key}, which can run a command`);
+      // The operator's own config contributes values only (carriedSettings); git then reads no global or system config.
+      // A read carries no filter: it reads attributes from the empty tree anyway.
+      const carried = view === null ? carriedSettings(own.stdout) : withoutFilters(carriedSettings(own.stdout));
+      const env = { ...viewed.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
+      // Never into a submodule or nested repository, whose own config this never read: status and diff skip them.
+      const safeArgs = [...args];
+      const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
+      if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
+      const flags = view === null ? [] : readFlags();
+      const ran = await inner("git", [...TEARDOWN_FLAGS, ...flags, "-c", "diff.ignoreSubmodules=all", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", ...carried, ...safeArgs], { ...options, env });
+      return view !== null && args.includes("rev-parse") ? { ...ran, stdout: view.restore(ran.stdout) } : ran;
+    } finally { view?.dispose(); }
   };
 }
+
+const withoutFilters = (carried: readonly string[]): string[] =>
+  carried.filter((one, at, all) => !(one.startsWith("filter.") || (one === "-c" && all[at + 1]?.startsWith("filter."))));
 
 /**
  * Flags for reading a checkout an agent writes while a page waits (docs/plans/get-side-effects.md). Command-line
@@ -241,8 +324,9 @@ export const PAGE_READ_FLAGS: readonly string[] = [
   "-c", "protocol.allow=never", "-c", "core.pager=cat", "-c", "core.alternateRefsCommand=", "-c", "core.attributesFile=/dev/null",
 ];
 /** The read flags, for every read of an agent-written checkout, whatever the HTTP method (security review of
- * 01bf3114): attributes always come from the empty tree, so no filter or textconv driver can run, even one the config
- * gains after it was inspected. The cost is cosmetic: a checkout's line-ending or encoding rules are not applied, so
+ * 01bf3114): the worktree's attributes come from the empty tree. Git still reads the repository's info/attributes and
+ * its config as it starts, so the flags alone don't stop a filter planted in both after the inspection: every read
+ * also runs against the checkout's readView (checkoutGitSync, checkoutGit "read"), whose config and info are the plane's. The cost is cosmetic: a checkout's line-ending or encoding rules are not applied, so
  * a file they would normalize can read as changed (fail closed: shipping then asks for a clean commit). */
 export function readFlags(): readonly string[] {
   return PAGE_READ_FLAGS;
@@ -251,26 +335,30 @@ export function readFlags(): readonly string[] {
 /**
  * checkoutGit, synchronously, for reads a page shows from a checkout an agent writes (docs/plans/get-side-effects.md):
  * the same refusals (an include, an .lfsconfig extension, a config key that can run a command), no system or global
- * config, the operator's own values carried, PAGE_READ_FLAGS (which hold even if the config changes after it was read),
- * submodules skipped, bounded. A refusal throws.
+ * config, the operator's own values carried, PAGE_READ_FLAGS and the checkout's readView (which hold even if its config
+ * or info/attributes change after they were read), submodules skipped, bounded. A refusal throws.
  */
 export function checkoutGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number } = {}): string {
-  const env: NodeJS.ProcessEnv = { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", LANG: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
-  const bounded = { cwd, env, encoding: "utf8" as const, timeout: options.timeoutMs ?? 60_000, maxBuffer: options.maxBuffer ?? 1_048_576, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
   if (checkoutIncludes(cwd)) throw new Error("the checkout's git config includes another file, or couldn't be read as a plain file");
   if (lfsExtensionIn(cwd)) throw new Error("the checkout's .lfsconfig sets a git-lfs key that can run a command");
-  const own = spawnSync("git", ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], bounded);
-  if (own.status !== 0) throw new Error("its config couldn't be read");
-  const key = commandSetting(own.stdout);
-  if (key !== null) throw new Error(`the checkout's git config sets ${key}, which can run a command`);
-  const safeArgs = [...args];
-  const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
-  if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
-  // An external diff program is named by config, which may change after it was read: never used here.
-  if (command >= 0 && safeArgs[command] === "diff") safeArgs.splice(command + 1, 0, "--no-ext-diff", "--no-textconv");
-  // The operator's own values, but no filter: PAGE_READ_FLAGS reads attributes from the empty tree anyway.
-  const carried = carriedSettings(own.stdout).filter((one, at, all) => !(one.startsWith("filter.") || (one === "-c" && all[at + 1]?.startsWith("filter."))));
-  const ran = spawnSync("git", [...TEARDOWN_FLAGS, ...readFlags(), "-c", "diff.ignoreSubmodules=all", ...carried, ...safeArgs], bounded);
-  if (ran.status !== 0) throw new Error(`git ${args[0] ?? ""} failed`);
-  return ran.stdout;
+  // Its config and info/attributes as read once, in a folder of the plane's own: neither can change before git runs.
+  const view = readView(cwd);
+  try {
+    const env: NodeJS.ProcessEnv = { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", LANG: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", ...view.env };
+    const bounded = { cwd, env, encoding: "utf8" as const, timeout: options.timeoutMs ?? 60_000, maxBuffer: options.maxBuffer ?? 1_048_576, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+    const own = spawnSync("git", ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], bounded);
+    if (own.status !== 0) throw new Error("its config couldn't be read");
+    const key = commandSetting(own.stdout);
+    if (key !== null) throw new Error(`the checkout's git config sets ${key}, which can run a command`);
+    const safeArgs = [...args];
+    const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
+    if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
+    // An external diff program is named by config, which may change after it was read: never used here.
+    if (command >= 0 && safeArgs[command] === "diff") safeArgs.splice(command + 1, 0, "--no-ext-diff", "--no-textconv");
+    // The operator's own values, but no filter: PAGE_READ_FLAGS reads attributes from the empty tree anyway.
+    const carried = withoutFilters(carriedSettings(own.stdout));
+    const ran = spawnSync("git", [...TEARDOWN_FLAGS, ...readFlags(), "-c", "diff.ignoreSubmodules=all", ...carried, ...safeArgs], bounded);
+    if (ran.status !== 0) throw new Error(`git ${args[0] ?? ""} failed`);
+    return args.includes("rev-parse") ? view.restore(ran.stdout) : ran.stdout;
+  } finally { view.dispose(); }
 }
