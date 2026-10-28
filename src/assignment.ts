@@ -21,7 +21,7 @@ import { requiredCheckCommandFor, runCheckLevel, type CheckLevel } from "./check
 import { followUpChecksOf, withFollowUps } from "./result-follow-ups.js";
 import { buildReviewOf, findingWords, type BuildReviewView } from "./review-switch.js";
 import { NEEDS, WAITS, processNeedOf, resultHoldUpSentence, type NeedKey, type WaitKey } from "./needs-you.js";
-import { assignmentStageOf, checkBackingOf, completionBlockersOf, requirementWordOf, type ChecksBatch, type CompletionBlocker } from "./task-status.js";
+import { assignmentStageOf, checkBackingOf, completionBlockersOf, receiptChecksOf, requirementWordOf, type ChecksBatch, type CompletionBlocker } from "./task-status.js";
 import { releaseCoverageOf, type ReleaseCoverage, type ReleaseMemo } from "./release-coverage.js";
 import { leadClaimOf, type LeadClaim } from "./lead-voice.js";
 
@@ -133,7 +133,7 @@ function ownerOf(store: Store, rootId: string, repo: string | null): AssignmentS
 // Report the recorded check outcome, never turn a model verdict into a check.
 // Follow-up checks on the same commit (Run checks) upgrade a pass and show a failure.
 export function assignmentChecksForRun(store: Store, root: string | undefined, runId: number, now: Date): AssignmentChecks {
-  const own = buildChecks(store, root, runId);
+  const own = recordedFailureStands(store, runId, buildChecks(store, root, runId));
   const run = store.getRun(runId);
   const followUps = followUpChecksOf(store, runId, now, root);
   if (followUps.length === 0) return own;
@@ -150,6 +150,16 @@ export function assignmentChecksForRun(store: Store, root: string | undefined, r
   return { ...own, running: read.running, ...(batch === null ? {} : { batch }),
     ...(changed ? { status: read.status, level: read.level, exitCode: read.exitCode, logArtifactId: latest?.logArtifactId ?? own.logArtifactId,
       detail: read.status === "passed" ? `${words} passed.` : `${words} failed (exit ${read.exitCode}).` } : {}) };
+}
+
+/** A failure the builder recorded (run_check) stands when its saved receipt can't be read now or says nothing ran:
+ * fail closed, every surface reads the same known failure and its exit code (task-status.ts approvedCheckOf). */
+function recordedFailureStands(store: Store, runId: number, own: AssignmentChecks): AssignmentChecks {
+  if (own.status !== "unavailable" && own.status !== "not-run") return own;
+  const recorded = olderStoreSafe(() => store.runCheckFor(runId), null);
+  if (recorded?.status !== "failed") return own;
+  return { ...own, status: "failed", exitCode: recorded.exitCode,
+    detail: `${own.level === "quick" ? "Quick checks" : "Checks"} failed${recorded.exitCode === null ? "" : ` (exit ${recorded.exitCode})`}. ${own.detail}` };
 }
 
 function buildChecks(store: Store, root: string | undefined, runId: number): AssignmentChecks {
@@ -419,10 +429,12 @@ function readinessOf(store: Store, receipt: AssignmentReceipt, repo: string | nu
   const high = review === null || review.sentBackAs !== null || review.state !== "reviewed" ? 0 : review.high.length;
   const checkRequired = olderStoreSafe(() => requiredCheckCommandFor(store, repo, receipt.taskId, receipt.checks.level), null) !== null;
   const matrix = receipt.proof?.matrix ?? [];
-  const backing = checkBackingOf(receipt.checks);
-  const verdict = shownVerdictOf(receipt.proof?.verdict ?? null, { checkFailed: !report && receipt.checks.status === "failed", highFindings: high,
+  // The approved check as every surface reads it: a recorded pass the saved receipt can't show doesn't count.
+  const checks = receiptChecksOf(receipt);
+  const backing = checkBackingOf(checks);
+  const verdict = shownVerdictOf(receipt.proof?.verdict ?? null, { checkFailed: !report && checks?.status === "failed", highFindings: high,
     reviewPending: review?.state === "pending", criteriaPassed: matrix.every(row => requirementWordOf(row, null, backing) === "Met") });
-  const blockers = completionBlockersOf({ report, checks: receipt.checks, checkRequired, matrix, verdict: receipt.proof?.verdict ?? null,
+  const blockers = completionBlockersOf({ report, checks, checkRequired, matrix, verdict: receipt.proof?.verdict ?? null,
     accepted: receipt.proofAcceptance !== null, high });
   return { verdict, checksOff: !report && receipt.checks.level === "off", blockers };
 }

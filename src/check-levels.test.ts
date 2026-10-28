@@ -549,12 +549,16 @@ describe("checks Off are checked at release", () => {
       const shown = JSON.parse(lines.join("\n"));
       const listed = workIndexPage(store, NOW, { principal: "operator", repos: [REPO] }, { limit: 100, root }).items.find(one => one.activeTaskId === id)!;
       expect(shown.status).toEqual({ headline: expected, sentence: listed.status.detail });
-      expect(shown.assignment.result.checks.status).toBe("unavailable");
+      // A recorded failure stands when its files are gone (assignment.ts); a recorded pass can't be read.
+      expect(shown.assignment.result.checks.status).toBe(id === "lost-failed" ? "failed" : "unavailable");
       expect(shown.work.status.label).toBe(expected);
-      if (id === "lost-manual") expect(shown.status.sentence).toContain("Check this requirement yourself");
+      // Its recorded pass can't be read now, so the list reads the saved check as the page does (task-status.ts
+      // approvedCheckOf): the ask is the unreadable check first, never a pass.
+      if (id === "lost-manual") expect(shown.status.sentence).toContain("The check result couldn't be read.");
       const completion: string[] = [];
       expect(await runOperate("task", ["complete", id, "--as", "sam", "--token", password], line => completion.push(line), { databaseFile, now: NOW })).toBe(EXIT.refused);
-      expect(completion.join("\n")).toContain("Run checks on it");
+      // Completion stays refused; a known failure is named as one, never as a missing check.
+      expect(completion.join("\n")).toContain(id === "lost-failed" ? "Checks failed (exit 1)" : "Run checks on it");
     }
   });
 

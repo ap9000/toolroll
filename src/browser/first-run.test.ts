@@ -190,8 +190,11 @@ test("a task's road says only what happened: no Checks for a report, skipped che
   expect(road({ stage: "finished" }, true, true, { report: true })).toEqual(["plan:done:Plan", "approve:done:You approve", "build:done:Build", "ready:done:Ready"]);
   // Past Checks without a passing check: the step is skipped and says why, never done.
   expect(road({ stage: "finished" }, true, true, { checks: "not-run" })[3]).toBe("checks:skipped:Checks not run");
-  expect(road({ stage: "complete" }, true, true, { checks: "unread" })[3]).toBe("checks:skipped:Checks unread");
-  expect(road({ stage: "finished" }, true, true, { checks: "failed" })[3]).toBe("checks:stuck:Checks failed");
+  expect(road({ stage: "finished" }, true, true, { checks: "off" })[3]).toBe("checks:skipped:Checks at release");
+  // A check that can't be read is never done, and Ready isn't either (fail closed), even on a completed task.
+  expect(road({ stage: "finished" }, true, true, { checks: "unreadable" }).slice(3)).toEqual(["checks:stuck!:Checks unreadable", "ready:todo:Ready"]);
+  expect(road({ stage: "complete" }, true, true, { checks: "unreadable" }).slice(3)).toEqual(["checks:stuck:Checks unreadable", "ready:todo:Ready"]);
+  expect(road({ stage: "finished" }, true, true, { checks: "failed" }).slice(3)).toEqual(["checks:stuck:Checks failed", "ready:todo:Ready"]);
   expect(road({ stage: "finished" }, true, true, { checks: "running" })[3]).toBe("checks:current:Checks running");
   expect(road({ stage: "finished" }, true, true, { checks: "passed" })[3]).toBe("checks:done:Checks");
   // With no checks fact the step is never shown done.

@@ -13,6 +13,7 @@
 import { DEFAULT_LEAD_NAME } from "./lead-identity.js";
 import { html, type Html } from "./html.js";
 import type { AssignmentSnapshot } from "./assignment.js";
+import { FAILED_CHECK } from "./result-acts.js";
 import { CODE_NEED, NEEDS, needSentence, waitSentence, type NeedAction, type NeedContext, type NeedKey, type WaitKey } from "./needs-you.js";
 export type { NeedKey, WaitKey } from "./needs-you.js";
 
@@ -42,7 +43,9 @@ export type StatusAction = { label: string; href: string | null };
 export type StatusDetail = { key: DetailKey; label: string; text: string; mark: DetailMark; href: string | null; action: StatusAction | null; why: string | null };
 /** `need`: what a Needs you asks for and the one action that resolves it; null under every other headline. */
 export type TaskStatus = { headline: Headline; tone: HeadlineTone; sentence: string; details: StatusDetail[]; primaryAction: StatusAction | null; why: string[];
-  need?: { key: NeedKey; action: NeedAction } | null };
+  need?: { key: NeedKey; action: NeedAction } | null;
+  /** The approved check as the Checks row shows it (`approvedCheckStateOf`): the road reads this, never the row's words. */
+  check?: ApprovedCheckState | null };
 
 /** `reviewing`: the one automatic review (build-review.ts) is reading a finished build; it reads Building, not a headline of its own. */
 export type TaskStage = "queued" | "planning" | "needs-you" | "waiting" | "building" | "checking" | "reviewing" | "finished" | "complete" | "failed" | "stopped";
@@ -70,6 +73,53 @@ export function releaseStateOf(checks: Pick<ChecksFact, "status" | "level" | "re
 export function checkBackingOf(checks: Pick<ChecksFact, "status" | "level" | "release" | "running" | "batch"> | null | undefined): ReleaseState | undefined {
   return checks?.status === "passed" ? "covered" : checksUnderway(checks) ? "running" : releaseStateOf(checks);
 }
+/**
+ * Did the approved check pass for this result? The ONE answer the status headline and sentence, the Project checks
+ * row, the road's Checks step and the result page all read, so none of them can say "passed" while another says the
+ * check couldn't be read. Two records speak to it: the machine verdict sealed when the build finished, and the saved
+ * check receipt read now (with any follow-up check on the same commit). Fail closed: the check passed only when the
+ * receipt read now says so. A verdict that recorded a pass whose receipt is missing, says nothing ran, or can't be
+ * read is unreadable; a verdict that recorded a failure stays failed unless a later check on the same commit passed.
+ * `checks` undefined or null: nothing was read. Returns the check as every surface shows it (null: nothing to show).
+ */
+export function approvedCheckOf(verdict: string | null | undefined, reasons: readonly string[], checks: ChecksFact | null | undefined): ChecksFact | null {
+  let failedExit: number | null = null;
+  for (const reason of reasons) { const found = FAILED_CHECK.exec(reason); if (found !== null) { failedExit = Number(found[1]); break; } }
+  const recordedFail = verdict === "refuted" && failedExit !== null;
+  const recordedPass = verdict === "verified";
+  const read = checks ?? null;
+  if (read === null) {
+    if (recordedFail) return { status: "failed", exitCode: failedExit, head: null };
+    return recordedPass ? { status: "unavailable", exitCode: null, head: null } : null;
+  }
+  if (read.status === "passed" || read.status === "failed" || read.status === "running") return read;
+  // Checks Off covered by a passing release check read as passed (the row says on which commit); nothing to correct.
+  if (read.level === "off" && read.release != null && !recordedFail) return read;
+  if (recordedFail) return { ...read, status: "failed", exitCode: failedExit };
+  // The verdict says the check passed, the receipt read now can't show it: the two disagree, so it doesn't count.
+  if (recordedPass) return { ...read, status: "unavailable", exitCode: null };
+  return read;
+}
+
+/** How the approved check reads, in one word every surface shares (from `approvedCheckOf`'s answer): `running` while a
+ * check is underway on the commit, else what it recorded. `unreadable`: it couldn't be read or the records disagree. */
+export type ApprovedCheckState = "passed" | "failed" | "running" | "not-run" | "off" | "unreadable";
+export function approvedCheckStateOf(checks: Pick<ChecksFact, "status" | "level" | "release" | "running" | "batch"> | null | undefined): ApprovedCheckState | null {
+  if (checks == null) return null;
+  // A failure stands while a new check runs: only its result can change the answer. A check that couldn't be read (a
+  // result waiting for its batch check has none yet) reads running while one is underway, and never passed.
+  if (checks.status === "failed") return "failed";
+  if (checksUnderway(checks) || checks.status === "running") return "running";
+  if (checks.status === "unavailable") return "unreadable";
+  if (checks.status === "passed") return "passed";
+  if (checks.level === "off") return checks.release != null ? "passed" : "off";
+  return "not-run";
+}
+
+/** A saved check that can't be read, in the words every surface uses. */
+export const CHECK_UNREADABLE = "The check result couldn't be read.";
+export const CHECK_UNREADABLE_ASK = `${CHECK_UNREADABLE} Run checks on it, or open the result to see why.`;
+
 /** What stands between a finished result and Complete (`completionBlockersOf`): each with the exact next step. */
 export type CompletionBlocker = { key: "check-failed" | "check-missing" | "criteria" | "high"; message: string };
 /** `waiting`: the result waits to be checked with others. Otherwise how its check ran: `together` on the
@@ -147,8 +197,9 @@ function resultAsk(facts: Pick<TaskStatusFacts, "report" | "checks" | "requireme
   const blocker = facts.blockers?.find(one => one.key !== "check-failed" && !(one.key === "check-missing" && checksUnderway(facts.checks)));
   if (blocker !== undefined) return blocker.message;
   const req = facts.requirements;
-  if (req == null || facts.accepted === true || req.unverified === true) return null;
-  if ((req.yours > 0 || (req.unshown ?? 0) > 0) && req.ask != null) return req.ask;
+  if (req != null && facts.accepted !== true && req.unverified !== true && (req.yours > 0 || (req.unshown ?? 0) > 0) && req.ask != null) return req.ask;
+  // A check that can't be read is never a pass: a person runs it again or looks at why, unless they already accepted.
+  if (facts.accepted !== true && approvedCheckStateOf(facts.checks) === "unreadable") return CHECK_UNREADABLE_ASK;
   return null;
 }
 
@@ -194,6 +245,7 @@ function sentenceOf(headline: Headline, facts: TaskStatusFacts): string {
         return `${facts.checks.level === "quick" ? "Quick checks" : "Checks"} passed${sha === null ? "" : ` on ${sha}`}. Review the change, then mark it complete.`;
       }
       if (facts.checks?.batch?.state === "waiting") return "Its full check runs with other results within 10 minutes. Review the change, then mark it complete.";
+      if (facts.checks?.status === "unavailable") return `${CHECK_UNREADABLE} Review the change, then mark it complete.`;
       // Never claim a check that isn't known to have passed.
       if (facts.checks == null) return "Review the change, then mark it complete.";
       return "Built without a passing project check. Review the change, then mark it complete.";
@@ -227,7 +279,11 @@ function detailsOf(headline: Headline, facts: TaskStatusFacts): StatusDetail[] {
     const batch = checks.batch ?? null;
     const together = batch === null ? null : checkedTogetherWords(batch);
     const batchWhy = batch === null ? null : BATCH_WHY[batch.state] ?? null;
-    if (batch?.state === "waiting") row("checks", CHECKS_LABEL, "Waiting to check with other results", "running", { href: checksHref });
+    // A failure or an unreadable check keeps its words while a new check runs, so the row never reads better than the answer.
+    const again = checksUnderway(checks) && checks.status === "failed" ? " · running again" : "";
+    if (again !== "") row("checks", CHECKS_LABEL, `${quick ? "Quick checks failed" : "Failed"}${checks.exitCode === null ? "" : ` (exit ${checks.exitCode})`}${again}`, problem(headline),
+      headline === "Failed" ? { href: checksHref } : { action: { label: "See what failed", href: checksHref } });
+    else if (batch?.state === "waiting") row("checks", CHECKS_LABEL, "Waiting to check with other results", "running", { href: checksHref });
     else if (checks.running != null) row("checks", CHECKS_LABEL, `${checks.running === "quick" ? "Quick" : "Full"} checks running`, "running", { href: checksHref });
     else if (checks.status === "passed" && together !== null) row("checks", CHECKS_LABEL, together, "ok", { href: checksHref });
     else if (checks.status === "passed" && batchWhy !== null) row("checks", CHECKS_LABEL, `Passed on its own${sha === null ? "" : ` on ${sha}`}`, "ok", { href: checksHref, why: batchWhy });
@@ -307,7 +363,7 @@ export function statusOf(facts: TaskStatusFacts): TaskStatus {
   const primaryAction = need === null || ownWords ? facts.action ?? null : { label: need.action.label, href: facts.action?.href ?? null };
   const sentence = lead === "on-it" ? leadSentence(headline, facts) : lead === "lapsed" ? `${leadLapsed(facts.leadName)} ${sentenceOf(headline, facts)}` : sentenceOf(headline, facts);
   return { headline, tone: HEADLINE_TONE[headline], sentence, details: detailsOf(headline, facts),
-    primaryAction, why: [...new Set(facts.why ?? [])].filter(one => one.trim() !== ""), need };
+    primaryAction, why: [...new Set(facts.why ?? [])].filter(one => one.trim() !== ""), need, check: facts.report ? null : approvedCheckStateOf(facts.checks) };
 }
 
 /** The name most surfaces already import. */
@@ -322,7 +378,7 @@ const CODE_STAGE: Readonly<Record<string, [TaskStage, TaskStatusFacts["need"]?]>
   "waiting-dependency": ["queued"], "scouting-ready": ["queued"], "planning-ready": ["queued"], "provider-quota": ["queued"],
   // A request the planner cannot be given (too long to hand back, say) waits on a person to shorten it.
   "planner-source": ["needs-you", "fix-request"],
-  running: ["building"], reviewing: ["reviewing"], "review-pending": ["building"],
+  running: ["building"], reviewing: ["reviewing"], "review-pending": ["building"], "checks-running": ["checking"],
   "signed-out": ["needs-you", "sign-in"],
   "needs-approval": ["needs-you", "approval"],
   "waiting-decision": ["needs-you", "answer"], "decision-queue": ["needs-you", "answer"],
@@ -483,6 +539,7 @@ export function completionBlockersOf(f: {
     blockers.push({ key: "check-failed", message: `Checks failed${f.checks.exitCode === null ? "" : ` (exit ${f.checks.exitCode})`}. Fix them and run checks again, or ask for changes.` });
   } else if (!f.report && f.checkRequired && f.checks?.status !== "passed" && release === undefined) {
     blockers.push({ key: "check-missing", message: checksUnderway(f.checks) ? "Its project check hasn't finished yet. Mark it complete once it passes."
+      : f.checks?.status === "unavailable" ? `${CHECK_UNREADABLE} Run checks on it, then mark it complete.`
       : "No passing project check is recorded for this result. Run checks on it, then mark it complete." });
   }
   if (!f.accepted && f.checks?.status !== "failed") {
@@ -513,6 +570,17 @@ export function evidenceOf(receipt: AssignmentSnapshot["receipt"], problems: rea
   return { shortened, missing, damaged };
 }
 
+/** A saved check reading as the shared fact (head, level, a follow-up running, a batch, release coverage). */
+export function checksFactOf(checks: NonNullable<AssignmentSnapshot["receipt"]>["checks"], head: string | null): ChecksFact {
+  return { status: checks.status, exitCode: checks.exitCode, head,
+    ...(checks.level == null ? {} : { level: checks.level }), ...(checks.running == null ? {} : { running: checks.running }),
+    ...(checks.batch == null ? {} : { batch: checks.batch }), ...(checks.release == null ? {} : { release: checks.release }) };
+}
+/** A receipt's approved check, as every surface reads it (`approvedCheckOf` over its verdict and its saved check). */
+export function receiptChecksOf(receipt: NonNullable<AssignmentSnapshot["receipt"]>): ChecksFact | null {
+  return approvedCheckOf(receipt.proof?.verdict ?? null, receipt.proof?.reasons ?? [], checksFactOf(receipt.checks, receipt.head));
+}
+
 /** The status facts of one assignment, as every surface reads them. */
 export function assignmentStatusFacts(assignment: AssignmentSnapshot, options: {
   work?: { token: string; views?: readonly string[]; detail?: string } | null; planning?: boolean;
@@ -526,10 +594,7 @@ export function assignmentStatusFacts(assignment: AssignmentSnapshot, options: {
   // A saved result's rows show whenever it is the reason a person is needed, too.
   const withResult = finished || stage === "failed" || ((stage === "needs-you" || stage === "waiting") && receipt !== null);
   const report = receipt?.completionKind === "research-report";
-  const checks: ChecksFact | null = receipt === null || !withResult ? null
-    : { status: receipt.checks.status, exitCode: receipt.checks.exitCode, head: receipt.head,
-      ...(receipt.checks.level == null ? {} : { level: receipt.checks.level }), ...(receipt.checks.running == null ? {} : { running: receipt.checks.running }),
-      ...(receipt.checks.batch == null ? {} : { batch: receipt.checks.batch }), ...(receipt.checks.release == null ? {} : { release: receipt.checks.release }) };
+  const checks: ChecksFact | null = receipt === null || !withResult ? null : receiptChecksOf(receipt);
   const publication = assignment.publication;
   const pullRequest = options.pullRequest !== undefined ? options.pullRequest
     : publication === null ? (withResult && !report ? { state: "none" as const, number: null, url: null, ci: null, error: null } : null)

@@ -13,7 +13,7 @@ import { scopeTermsProblem, stopFactOf, type Store, type TaskState } from './sto
 import { assignmentChecksForRun, type AssignmentSnapshot } from './assignment.js';
 import type { WorkAction, WorkSummaryAccess } from './work-summary.js';
 import type { WorkStatus, WorkView } from './workspace-ui.js';
-import { checkBackingOf, completionBlockersOf, leadOnIt, plainReasonOf, replacedWords, requirementsOf, stageOfCode, taskStatusOf, unverifiedWhenRefuted, workToneOf, type ChecksFact, type TaskStatusFacts } from './task-status.js';
+import { approvedCheckOf, checkBackingOf, completionBlockersOf, leadOnIt, plainReasonOf, replacedWords, requirementsOf, stageOfCode, taskStatusOf, unverifiedWhenRefuted, workToneOf, type ChecksFact, type TaskStatusFacts } from './task-status.js';
 import { releaseCoverageOf, type ReleaseMemo } from './release-coverage.js';
 import { buildReviewOf } from './review-switch.js';
 import { shownVerdictOf } from './proof.js';
@@ -551,13 +551,20 @@ function resultReadinessFacts(store: Store, now: Date, root: string | undefined,
   const run = n(row, 'result_id'), repo = s(row, 'repo');
   if (!run) return { checks: recorded };
   const report = s(row, 'result_role') === 'scout';
-  // No recorded check result (a build from before results were recorded, or none ran): read its saved receipt, as the page does.
-  const saved = root !== undefined && (recorded === null || recorded.status === 'not-run') ? assignmentChecksForRun(store, root, run, now) : null;
+  // Read its saved receipt, as the page does: a recorded result (or a verdict alone) is not a check that can still be
+  // read, and the row must never say passed while the task page says the check couldn't be read.
+  const read = root !== undefined && !report ? assignmentChecksForRun(store, root, run, now) : null;
+  // A recorded failure is never lost because its saved files can't be read now (fail closed: negatives stand).
+  const saved = read !== null && recorded?.status === 'failed' && (read.status === 'unavailable' || read.status === 'not-run')
+    ? { ...read, status: 'failed' as const, exitCode: recorded.exitCode } : read;
   const listed: ChecksFact | null = saved === null ? recorded : { status: saved.status, exitCode: saved.exitCode, head: s(row, 'result_head'),
     ...(saved.level == null ? {} : { level: saved.level }), ...(saved.running == null ? {} : { running: saved.running }), ...(saved.batch == null ? {} : { batch: saved.batch }) };
-  const checks: ChecksFact | null = listed?.level === 'off' && listed.status !== 'passed' && listed.status !== 'failed'
+  const covered: ChecksFact | null = listed?.level === 'off' && listed.status !== 'passed' && listed.status !== 'failed'
     ? { ...listed, release: releaseCoverageOf(store, root, repo, s(row, 'result_head'), { memo }) } : listed;
   const proof = store.proofVerdictFor(run), accepted = store.proofAcceptance(run) !== null;
+  // The approved check as the task page reads it (task-status.ts): a recorded pass with no readable check doesn't count.
+  // Nothing read (no evidence root, no recorded check): the row says nothing about the check, never a pass.
+  const checks = report || (root === undefined && covered === null) ? covered : approvedCheckOf(proof?.verdict ?? null, proof?.reasons ?? [], covered);
   const review = buildReviewOf(store, run);
   const high = review === null || review.sentBackAs !== null || review.state !== 'reviewed' ? 0 : review.high.length;
   const checkRequired = requiredCheckCommandFor(store, repo, String(row['id']), checks?.level) !== null;
@@ -659,7 +666,8 @@ function itemOf(row: Row, principal: WorkSummaryAccess['principal'], probe?: (ta
     : coded.stage === 'needs-you' && (coded.need === undefined || coded.need === 'other') && INDEX_NEED[code] !== undefined ? { stage: 'needs-you', need: INDEX_NEED[code] } : coded;
   const checkStatus = s(row, 'check_status'), verdict = s(row, 'proof_verdict');
   const finished = reading.stage === 'finished' || reading.stage === 'complete';
-  const own = checkStatus === 'failed' || n(row, 'proof_failed_check') === 1 ? 'failed' as const : checkStatus === 'passed' || verdict === 'verified' ? 'passed' as const : null;
+  // Only a recorded check is a pass; a verdict alone isn't one (task-status.ts approvedCheckOf reads it with the receipt).
+  const own = checkStatus === 'failed' || n(row, 'proof_failed_check') === 1 ? 'failed' as const : checkStatus === 'passed' ? 'passed' as const : null;
   const listedChecks = !finished ? null : listChecksOf(own, s(row, 'check_level'), row['check_follows']);
   const ready = reading.stage === 'finished' && readiness !== undefined ? readiness(row, listedChecks) : null;
   // Toolroll marked it complete because its work landed: the reason, said once.

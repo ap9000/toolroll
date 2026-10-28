@@ -156,33 +156,60 @@ export function firstTaskJourney(read: { stage: "queued" | "planning" | "needs-y
     state: index < at.index ? "done" : index === at.index ? (at.stuck ? "stuck" : "current") : "todo" }));
 }
 
-/** What a task's checks recorded, for its road: `null` when nothing says (the step is then shown skipped, never done). */
-export type RoadChecks = "passed" | "running" | "failed" | "not-run" | "unread" | null;
+/** The approved check as the task's status reads it (task-status.ts `approvedCheckStateOf`), for its road: `null` when
+ * nothing says (the step is then shown skipped, never done). The road reads this one answer, never a row's words. */
+export type RoadChecks = "passed" | "running" | "failed" | "not-run" | "off" | "unreadable" | null;
 /**
  * Any task's road (the read-only stepper on its page, after ReUI's Stepper): the first task's five steps, told only
  * from recorded facts. You approve is done only when the plan was approved (a rewritten plan waiting on approval
- * stands there again); a task that never needed one shows it skipped. Checks is done only when a check passed; a
- * running, failed, missing or unread check says so, and with no checks fact it is skipped. A research report has
- * no Checks step: a report stopped there stops at Ready. The step that waits on a person carries `needsYou`.
+ * stands there again); a task that never needed one shows it skipped. Checks is done only when the approved check
+ * passed; a running, missing or Off check says so, and with no checks fact it is skipped. A failed check, or one that
+ * can't be read, stops the road at Checks: Ready isn't done (fail closed), even on a task a person marked complete.
+ * A research report has no Checks step: a report stopped there stops at
+ * Ready. The step that waits on a person carries `needsYou`.
  */
 export function taskRoad(read: Parameters<typeof firstTaskJourney>[0], approved: boolean, built: boolean, facts: { report?: boolean; checks?: RoadChecks }): JourneyStep[] {
   const replan = read.stage === "needs-you" && read.need === "replan";
   const plainApproved = approved && !replan;
   let steps: JourneyStep[] = firstTaskJourney(replan ? { stage: "needs-you", need: "approval" } : read, plainApproved, built);
+  const complete = read.stage === "complete";
+  // A finished build that waits on something other than its check (a hold, a decision) stops after Checks, at Ready,
+  // when its check passed, didn't run or is Off: the road never calls a passing check stuck.
+  let waitsAtReady = false;
   steps = steps.map(step => {
     if (step.key === "approve" && step.state === "done" && !plainApproved) return { ...step, state: "skipped" };
+    if (step.key === "checks" && step.state === "stuck" && built) {
+      switch (facts.checks ?? null) {
+        case "passed": waitsAtReady = true; return { ...step, state: "done" };
+        case "not-run": waitsAtReady = true; return { ...step, state: "skipped", label: "Checks not run" };
+        case "off": waitsAtReady = true; return { ...step, state: "skipped", label: "Checks at release" };
+        case "running": return { ...step, state: "current", label: "Checks running" };
+        case "failed": return { ...step, label: "Checks failed" };
+        case "unreadable": return { ...step, label: "Checks unreadable" };
+        default: return step;
+      }
+    }
     if (step.key !== "checks" || (step.state !== "done" && step.state !== "current")) return step;
-    // At Checks now: only a recorded failure or a running check changes how it reads.
-    if (step.state === "current") return facts.checks === "failed" ? { ...step, state: "stuck", label: "Checks failed" } : facts.checks === "running" ? { ...step, label: "Checks running" } : step;
+    // At Checks now: only a recorded failure, an unreadable check or a running check changes how it reads.
+    if (step.state === "current") return facts.checks === "failed" ? { ...step, state: "stuck", label: "Checks failed" }
+      : facts.checks === "unreadable" ? { ...step, state: "stuck", label: "Checks unreadable" }
+      : facts.checks === "running" ? { ...step, label: "Checks running" } : step;
     switch (facts.checks ?? null) {
       case "passed": return step;
       case "running": return { ...step, state: "current", label: "Checks running" };
       case "failed": return { ...step, state: "stuck", label: "Checks failed" };
       case "not-run": return { ...step, state: "skipped", label: "Checks not run" };
-      case "unread": return { ...step, state: "skipped", label: "Checks unread" };
+      case "off": return { ...step, state: "skipped", label: "Checks at release" };
+      case "unreadable": return { ...step, state: "stuck", label: "Checks unreadable", ...(complete ? {} : { needsYou: true as const }) };
       default: return { ...step, state: "skipped" };
     }
   });
+  if (waitsAtReady) steps = steps.map(step => step.key === "ready" ? { ...step, state: "stuck" } : step);
+  // A road stopped at Checks (failed, or unreadable) has not reached Ready.
+  const at = steps.find(step => step.key === "checks");
+  if (facts.report !== true && at !== undefined && at.state === "stuck") {
+    steps = steps.map(step => step.key === "ready" && step.state === "done" ? { ...step, state: "todo" } : step);
+  }
   if (facts.report === true) {
     const checks = steps.find(step => step.key === "checks");
     if (checks !== undefined && (checks.state === "current" || checks.state === "stuck")) {

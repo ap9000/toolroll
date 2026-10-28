@@ -81,6 +81,18 @@ export function followUpChecksOf(store: Store, runId: number, now: Date = new Da
       } catch { /* an unreadable receipt upgrades nothing */ }
     }
   }
+  // A pass stands only while its saved log still verifies and the command it ran is still the approved one, the same
+  // bar the build's own check receipt meets (verification-evidence.ts): otherwise it can't be read as a pass now.
+  const repo = root === undefined ? null : repoOfRun(store, runId);
+  const logVerifies = (artifactId: number | null): boolean => {
+    if (root === undefined || artifactId === null) return false;
+    const artifact = store.getArtifact(artifactId);
+    return artifact !== null && artifact.run === runId && artifact.kind === "structured-output" && artifact.capture === FOLLOW_UP_LOG && artifact.captureStatus !== "failed" && readVerifiedArtifact(root, artifact).ok;
+  };
+  const stillApproved = (level: RunLevel, digest: string): boolean => {
+    if (repo === null) return false;
+    try { return checkCommandFor(store, repo, level).command?.digest === digest; } catch { return false; }
+  };
   return rows.filter(row => row.action === CHECKS_REQUESTED && (row.outcome === "quick" || row.outcome === "full")).map(request => {
     const [head = "", why = "person", digest = "", recordedBase = ""] = (request.detail ?? "").split(" · ");
     const started = rows.find(row => row.action === CHECKS_STARTED && row.outcome === String(request.id)) ?? null;
@@ -94,7 +106,7 @@ export function followUpChecksOf(store: Store, runId: number, now: Date = new Da
       // With the evidence at hand, only a sealed receipt can say passed: for this result's own commit, and,
       // for a batch, a batch that names this result.
       if (status === "passed" && root !== undefined && (sealed === null || !sealed.ran || sealed.exitCode !== 0 || (sealed.head !== null && sealed.head !== head)
-        || (base.why === "batch" && sealed.batch === null))) {
+        || (base.why === "batch" && sealed.batch === null) || !logVerifies(sealed.log) || !stillApproved(base.level, digest))) {
         return { ...base, state: "not-run" as const, note: "The saved check result could not be verified." };
       }
       const exit = /exit (\d+)/.exec(finished.detail ?? "");

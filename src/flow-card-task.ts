@@ -30,7 +30,8 @@ export function flowCardTaskLine(store: Store, taskId: string, repo: string, now
   // The canvas reads no evidence files. Keep the machine's recorded check visible
   // when the full receipt has no artifact root from which to read its check.
   const check = assignment.receipt === null ? null : store.runCheckFor(assignment.receipt.runId);
-  if (facts.checks?.status === "unavailable" && check !== null) facts.checks = { ...facts.checks, status: check.status, exitCode: check.exitCode };
+  // With neither, nothing about the check was read here: the line says nothing about it, never a pass and never an ask.
+  if (facts.checks?.status === "unavailable") facts.checks = check === null ? null : { ...facts.checks, status: check.status, exitCode: check.exitCode };
   const status = taskStatusOf(facts);
   if (status.headline === "Needs you") {
     const fallback = status.need?.action.label ?? "Open the task";
