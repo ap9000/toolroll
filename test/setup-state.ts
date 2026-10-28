@@ -1,8 +1,9 @@
 import { afterAll, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { freshStoreOpener } from "./fresh-store.js";
+import { NO_GUESSED_IDENTITY } from "./git-identity.js";
 import { memoryAnchor, registerSecretFolder } from "../src/tool-secret-store.js";
 
 // Runs before each test file's imports. A reporting command, subprocess, or
@@ -34,6 +35,9 @@ process.env.TOOLROLL_TEST_OUTER_HOME ??= process.env.HOME ?? "";
 mkdirSync(join(state, "home"));
 process.env.HOME = join(state, "home");
 process.env.USERPROFILE = join(state, "home");
+// Git in this home never guesses an identity from the host name (macOS does, Linux CI can't): a test that commits
+// sets one (test/git-identity.ts withGitIdentity), so a missing one fails here as it would in CI.
+writeFileSync(join(state, "home", ".gitconfig"), NO_GUESSED_IDENTITY);
 delete process.env.CODEX_HOME;
 delete process.env.CLAUDE_CONFIG_DIR;
 // No test reads or writes the developer's own keychain: tool secrets stay in files unless a test picks a keychain of its own.
