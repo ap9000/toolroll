@@ -30,21 +30,67 @@ export const TEARDOWN_FLAGS: readonly string[] = [
 export const REFUSED_CODE = 128;
 const REFUSED_PREFIX = "Toolroll won't run git here: ";
 
-/** Config keys that run a command, bring in unread config, or redirect inspection away from the checked path.
- * `*` is one subsection, any name. */
-const COMMAND_KEYS: readonly RegExp[] = [
-  "core.sshcommand", "core.gitproxy", "core.askpass", "core.pager", "core.editor", "core.alternaterefscommand",
-  "core.worktree", "gpg.ssh.defaultkeycommand", "trailer.*.command", "trailer.*.cmd", "submodule.*.update", "sequence.editor", "diff.external", "credential.helper", "credential.*.helper", "filter.*.clean", "filter.*.smudge", "filter.*.process",
-  "diff.*.command", "diff.*.textconv", "merge.*.driver", "gpg.program", "gpg.*.program", "uploadpack.packobjectshook",
-  "remote.*.uploadpack", "remote.*.receivepack", "remote.*.vcs", "pager.*", "include.path", "includeif.*.path",
-].map(key => new RegExp(`^${key.replace(/\./g, "\\.").replace(/\*/g, ".+")}$`));
+/**
+ * Config settings that run a command, bring in unread config, or redirect inspection away from the checked path, by
+ * their structure (security review of e48e9d8d: a name pattern let `filter..clean`, `[filter ""]` and names with odd
+ * characters through). A key is `section[.subsection].variable`: the section is before the first dot, the variable
+ * after the last, and the subsection — any bytes at all, empty included — between them. Each family below is refused
+ * whatever its subsection is, or whether it has one; section and variable compare case-insensitively, as git reads them.
+ * `*` as a variable is every variable of the section.
+ */
+const COMMAND_FAMILIES: Readonly<Record<string, readonly string[]>> = {
+  core: ["sshcommand", "gitproxy", "askpass", "pager", "editor", "alternaterefscommand", "worktree"],
+  filter: ["clean", "smudge", "process"],
+  diff: ["external", "command", "textconv"],
+  merge: ["driver"],
+  difftool: ["cmd", "path"],
+  mergetool: ["cmd", "path"],
+  trailer: ["command", "cmd"],
+  submodule: ["update"],
+  sequence: ["editor"],
+  credential: ["helper"],
+  gpg: ["program", "defaultkeycommand"],
+  uploadpack: ["packobjectshook"],
+  remote: ["uploadpack", "receivepack", "vcs"],
+  interactive: ["difffilter"],
+  browser: ["cmd", "path"],
+  man: ["cmd", "path"],
+  pager: ["*"],
+  include: ["path"],
+  includeif: ["path"],
+};
+
+/** A config key's parts as git names them: section and variable lowercased, the subsection as it is (or null). */
+function keyParts(key: string): { section: string; subsection: string | null; variable: string } {
+  const first = key.indexOf(".");
+  const last = key.lastIndexOf(".");
+  if (first < 0) return { section: key.toLowerCase(), subsection: null, variable: "" };
+  return { section: key.slice(0, first).toLowerCase(), subsection: first === last ? null : key.slice(first + 1, last), variable: key.slice(last + 1).toLowerCase() };
+}
+
 /** git-lfs settings that name no program (where it fetches, what, whether it checks locks, how it signs in); any other
  * `lfs.*` key in a checkout's own config could (extensions, custom and standalone transfer agents), so it's refused. */
-const INERT_LFS = /^lfs\.(url|pushurl|fetchinclude|fetchexclude|locksverify|repositoryformatversion|.+\.access|.+\.locksverify|setlockablereadonly|skipdownloaderrors|concurrenttransfers)$/;
-const lfsCommand = (key: string): boolean => key.startsWith("lfs.") && !INERT_LFS.test(key);
+const INERT_LFS_PLAIN = new Set(["url", "pushurl", "fetchinclude", "fetchexclude", "locksverify", "repositoryformatversion", "setlockablereadonly", "skipdownloaderrors", "concurrenttransfers"]);
+const INERT_LFS_SUBSECTION = new Set(["access", "locksverify"]);
+const lfsCommand = (key: string): boolean => {
+  const { section, subsection, variable } = keyParts(key);
+  if (section !== "lfs") return false;
+  return subsection === null ? !INERT_LFS_PLAIN.has(variable) : !INERT_LFS_SUBSECTION.has(variable);
+};
 
 /** core.fsmonitor as a boolean is git's own daemon; anything else is a command to run. */
 const BOOLEAN = /^(|true|false|yes|no|on|off|-?\d+)$/i;
+
+/** Whether one setting can run a command (or bring in config nobody read), whatever scope it came from. git-lfs's own
+ * filters, exactly as `git lfs install` writes them (LFS_FILTER), are the one filter allowed. */
+function runsCommand(key: string, value: string): boolean {
+  const { section, subsection, variable } = keyParts(key);
+  if (section === "core" && variable === "fsmonitor") return !BOOLEAN.test(value.trim());
+  if (section === "filter" && subsection === "lfs" && LFS_FILTER[`filter.lfs.${variable}`] === value) return false;
+  const family = COMMAND_FAMILIES[section];
+  if (family !== undefined && (family.includes("*") || family.includes(variable))) return true;
+  return lfsCommand(key);
+}
 
 /** The command-running setting a `git config --list --show-scope -z` listing sets, or null. Only local and worktree
  * scope count: teardown commands never read system or global config. */
@@ -55,9 +101,9 @@ export function commandSetting(listing: string): string | null {
     const entry = fields[at + 1]!;
     if (scope !== "local" && scope !== "worktree") continue;
     const newline = entry.indexOf("\n");
-    const key = (newline < 0 ? entry : entry.slice(0, newline)).toLowerCase();
+    const key = newline < 0 ? entry : entry.slice(0, newline);
     const value = newline < 0 ? "" : entry.slice(newline + 1);
-    if (key === "core.fsmonitor" ? !BOOLEAN.test(value.trim()) : COMMAND_KEYS.some(pattern => pattern.test(key)) || lfsCommand(key)) return key;
+    if (runsCommand(key, value)) return key.toLowerCase();
   }
   return null;
 }
@@ -344,7 +390,7 @@ export function lfsExtensionIn(checkout: string): boolean {
   try { if (!lstatSync(path).isFile()) return true; } catch { return false; }
   const parsed = spawnSync("git", ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
     { cwd: "/", encoding: "utf8", timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
-  return parsed.status !== 0 || parsed.stdout.split("\0").filter(Boolean).some(name => lfsCommand(name.toLowerCase()) || /^include(if)?\./i.test(name));
+  return parsed.status !== 0 || parsed.stdout.split("\0").filter(Boolean).some(name => lfsCommand(name) || ["include", "includeif"].includes(keyParts(name).section));
 }
 
 /** Every command runs against a view of the checkout's repository (gitView) whose config and info are copies the
