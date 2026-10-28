@@ -240,8 +240,10 @@ describe("the agent fence", () => {
     // Protected storage (protected-storage.ts) joins every fence; this test is about the state folder.
     const withoutStorage = withoutStorageOf(home);
     const fence = withoutStorage(agentFence({ databaseFile: join(state, "orders.db"), worktree, home }));
+    // The plane's git views (git-views.ts) are made in ~/.toolroll and fenced by name in every fence.
+    const views = [join(home, ".toolroll"), join(home, ".toolroll", "git-views")];
     expect(fence).toEqual([
-      join(home, ".standing-orders"),
+      join(home, ".standing-orders"), ...views,
       join(state, "backups"), join(state, "evidence"), join(state, "orders.db"), join(state, "orders.db-wal"),
       // The journal and shared memory by name, there or not.
       join(state, "orders.db-journal"), join(state, "orders.db-shm"),
@@ -258,9 +260,9 @@ describe("the agent fence", () => {
     const shared = join(dir, "repo");
     mkdirSync(join(shared, ".git"), { recursive: true });
     for (const file of ["orders.db", "up-login.txt", "package.json", "deploy.token"]) writeFileSync(join(shared, file), "x");
-    expect(withoutStorage(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home }))).toEqual([join(home, ".standing-orders"), join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, "orders.db-journal"), join(shared, "orders.db-shm"), join(shared, "orders.db-wal"), join(shared, ".toolroll-run"), join(shared, "up-login.txt")].sort());
-    // No database file: only ~/.standing-orders.
-    expect(withoutStorage(agentFence({ databaseFile: null, worktree: null, home }))).toEqual([join(home, ".standing-orders")]);
+    expect(withoutStorage(agentFence({ databaseFile: join(shared, "orders.db"), worktree: null, home }))).toEqual([join(home, ".standing-orders"), ...views, join(shared, "deploy.token"), join(shared, "orders.db"), join(shared, "orders.db-journal"), join(shared, "orders.db-shm"), join(shared, "orders.db-wal"), join(shared, ".toolroll-run"), join(shared, "up-login.txt")].sort());
+    // No database file: only ~/.standing-orders and the git views.
+    expect(withoutStorage(agentFence({ databaseFile: null, worktree: null, home }))).toEqual([join(home, ".standing-orders"), ...views].sort());
   });
 
   describe("a build's task boundary", () => {

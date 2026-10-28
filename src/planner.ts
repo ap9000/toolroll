@@ -679,7 +679,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
   } = request;
   // The plane's git on the plan's checkout (agent-written, and its repository shared with every build) runs hardened, against
   // a frozen view of the repository's config and info (teardown-git.ts checkoutGit); an injected runner is used as given.
-  const git = givenGit === run ? checkoutGit(run) : givenGit;
+  const git = givenGit === run ? checkoutGit(run, "build", { repo: store.getWorktree(worktree)?.repo ?? null }) : givenGit;
   // An ACP agent works with full access inside the fence: it builds and repairs, and is never handed a plan (routing refuses it first).
   if (request.provider !== undefined && isAcpProvider(request.provider)) {
     return { ok: false, kind: "failure", reason: "provider-unsupported", message: `${ACP_AGENTS[request.provider].name} builds and repairs only — configure the planner to claude, codex or gemini` };

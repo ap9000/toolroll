@@ -50,11 +50,19 @@ describe("the pool, against a stubbed git", () => {
   let root: string;
   const calls: string[][] = [];
   // Teardown's git runs against a view of the checkout's repository (teardown-git.ts gitView), made from what is on
-  // disk: the stub's checkouts point at a stand-in repository (a git directory with an empty config), and the
-  // repository the orphan survey asks is one too.
+  // disk and bound to one repository (boundDirs): the stub's checkouts are linked worktrees of a stand-in repository
+  // (a main checkout whose .git holds an empty config), the one the orphan survey asks.
   let common: string;
   let thing: string;
-  const checkout = (path: string) => { mkdirSync(path, { recursive: true }); writeFileSync(join(path, ".git"), `gitdir: ${common}\n`); };
+  let made = 0;
+  const checkout = (path: string) => {
+    mkdirSync(path, { recursive: true });
+    const admin = join(common, "worktrees", `stub-${made++}`);
+    mkdirSync(admin, { recursive: true });
+    writeFileSync(join(admin, "gitdir"), `${realpathSync(path)}/.git\n`);
+    writeFileSync(join(admin, "commondir"), "../..\n");
+    writeFileSync(join(path, ".git"), `gitdir: ${admin}\n`);
+  };
 
   const pool = (replies: (args: readonly string[]) => Partial<typeof OK> = () => ({})) => {
     const runner: Runner = async (_file, args) => {
@@ -78,12 +86,10 @@ describe("the pool, against a stubbed git", () => {
     // candidate under a symlinked root would never match itself.
     root = realpathSync(mkdtempSync(join(tmpdir(), "standing-orders-stub-")));
     calls.length = 0;
-    common = join(root, "stand-in.git");
-    mkdirSync(common);
-    writeFileSync(join(common, "config"), "");
     thing = join(realpathSync(mkdtempSync(join(tmpdir(), "standing-orders-stub-repo-"))), "thing");
-    mkdirSync(join(thing, ".git"), { recursive: true });
-    writeFileSync(join(thing, ".git", "config"), "");
+    common = join(thing, ".git");
+    mkdirSync(common, { recursive: true });
+    writeFileSync(join(common, "config"), "");
     // A worktree can only be leased to a runner the control plane knows.
     for (const name of ["builder-1", "builder-2"]) {
       register(store, { name, host: "test", now: T0 });
@@ -964,7 +970,7 @@ describe("fresh base: an untouched checkout starts from current main", () => {
 
     // A recovered draft is kept in place under a fresh lease; the same check inside it never moves the tree.
     const freshen = (pool as unknown as { freshen: (...args: unknown[]) => Promise<unknown> }).freshen.bind(pool);
-    const standing = await freshen(path, "toolroll/t-fresh", ref, { main: "main", recordedBase: head }, later(3_000));
+    const standing = await freshen(repo, path, "toolroll/t-fresh", ref, { main: "main", recordedBase: head }, later(3_000));
 
     expect(standing).toMatchObject({ ok: true, standing: { head, main, behind: 1, moved: null, kept: "has changes" } });
     expect(git(["rev-parse", "HEAD"], path)).toBe(head);

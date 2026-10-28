@@ -20,6 +20,7 @@
 
 import { basename } from "node:path";
 import { run, type ExecResult, type RunOptions } from "./exec.js";
+import { checkoutGit } from "./teardown-git.js";
 import { parseWorktrees, parseBranches, type Branch, type Worktree } from "./git.js";
 import { findRepos, type ScanOptions } from "./scan.js";
 
@@ -89,8 +90,12 @@ type BranchRead = { result: ExecResult; degraded: boolean };
 
 export async function inspectRepo(path: string, options: InspectOptions = {}): Promise<RepoSnapshot> {
   const { runner = run, dirty = false } = options;
+  // Scanned and enrolled projects share their repository with every build, which can write its config, info and hooks
+  // (`--dirty`'s status would run a planted fsmonitor or filter): the hardened git, against a frozen view of the
+  // repository (teardown-git.ts checkoutGit). An injected runner (tests) is used as given.
+  const hardened = runner === run ? checkoutGit(run, "build") : runner;
   const git: Git = (args, timeoutMs = REF_TIMEOUT_MS) =>
-    runner(GIT, [...READ_ONLY, ...args], { cwd: path, timeoutMs });
+    hardened(GIT, [...READ_ONLY, ...args], { cwd: path, timeoutMs });
 
   const [worktrees, branchRead, head, remote, status] = await Promise.all([
     git(["worktree", "list", "--porcelain"]),

@@ -73,7 +73,10 @@ describe("git-lfs as `git lfs install --local` writes it keeps working", () => {
   ];
   test("exact values in the repository's own config are not refused, by the build's git or teardown", async () => {
     for (const [key, value] of LOCAL_LFS) git("config", key, value);
-    expect(commandSetting(git("config", "--list", "--show-scope", "-z"))).toBeNull();
+    const listed = git("config", "--list", "--show-scope", "-z");
+    expect(commandSetting(listed, { lfsChecked: true })).toBeNull();
+    // Only beside a checked .lfsconfig: a caller that doesn't refuse git-lfs extensions gets no exemption.
+    expect(commandSetting(listed)).toBe("filter.lfs.clean");
     const head = await checkoutGit(run)("git", ["rev-parse", "HEAD"], { cwd: repo, timeoutMs: 60_000 });
     expect(head.code, head.stderr).toBe(0);
     const status = await teardownGit()(repo, ["status", "--porcelain"]);
@@ -84,6 +87,31 @@ describe("git-lfs as `git lfs install --local` writes it keeps working", () => {
     ["filter.lfs.clean", "git-lfs clean -- %f; touch x"], ["filter.lfs.smudge", "git-lfs smudge %f"], ["filter.lfs.process", "git-lfs filter-process "],
     ["filter.LFS.clean", "git-lfs clean -- %f"], ["filter.lfs2.clean", "git-lfs clean -- %f"],
   ])("a near miss (%s = %s) is still refused", (key, value) => {
-    expect(commandSetting(`local\0${key}\n${value}\0`)).toBe(key.toLowerCase());
+    expect(commandSetting(`local\0${key}\n${value}\0`, { lfsChecked: true })).toBe(key.toLowerCase());
+  });
+});
+
+describe("the git-lfs exemption stands only beside a checked .lfsconfig", () => {
+  test("teardown refuses a .lfsconfig naming a git-lfs extension, in the folder and in a removal's target", async () => {
+    for (const [key, value] of [["filter.lfs.clean", "git-lfs clean -- %f"], ["filter.lfs.smudge", "git-lfs smudge -- %f"], ["filter.lfs.process", "git-lfs filter-process"]]) git("config", key, value);
+    const target = join(root, "target");
+    git("worktree", "add", "-q", "--detach", target);
+    writeFileSync(join(target, ".lfsconfig"), `[lfs "extension.evil"]\n\tclean = sh -c 'touch ${marker}'\n`);
+    const removed = await teardownGit()(repo, ["worktree", "remove", "--force", target]);
+    expect(refusal(removed), removed.stderr).toContain(".lfsconfig");
+    expect(existsSync(target)).toBe(true);
+    writeFileSync(join(repo, ".lfsconfig"), `[lfs "extension.evil"]\n\tclean = sh -c 'touch ${marker}'\n`);
+    expect(refusal(await teardownGit()(repo, ["status", "--porcelain"]))).toContain(".lfsconfig");
+    expect(existsSync(marker)).toBe(false);
+  });
+});
+
+describe("the classifier fails closed", () => {
+  test.each(["constructor.x", "__proto__.x", "tostring.y", "hasownproperty.clean", "filter.__proto__.x", "valueof", "__proto__"])("%s is read as a plain key, never a crash", key => {
+    expect(() => commandSetting(`local\0${key}\nv\0`, { lfsChecked: true })).not.toThrow();
+    expect(commandSetting(`local\0${key}\nv\0`, { lfsChecked: true })).toBeNull();
+  });
+  test("a listing it can't read names a setting (a refusal), never nothing", () => {
+    expect(commandSetting(undefined as unknown as string)).not.toBeNull();
   });
 });

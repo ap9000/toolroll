@@ -90,14 +90,25 @@ test("status and removal refuse an initialized staged gitlink without executing 
 });
 
 test("inspection always has non-recursing flags and the hardened environment", async () => {
-  const git = teardownGit(async (_file, args, options) => {
-    expect(options?.env).toMatchObject({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" });
-    if (!args.includes("config")) expect(args.slice(0, TEARDOWN_FLAGS.length)).toEqual(TEARDOWN_FLAGS);
-    if (args.includes("status") || args.includes("diff")) expect(args).toContain("--ignore-submodules=all");
-    return { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
-  });
-  await git("/nonexistent-fixture", ["status", "--porcelain"]);
-  await git("/nonexistent-fixture", ["diff", "--", "file"]);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "teardown-flags-")));
+  const repo = join(root, "repo");
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    const seen: (readonly string[])[] = [];
+    const git = teardownGit(async (_file, args, options) => {
+      seen.push(args);
+      expect(options?.env).toMatchObject({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" });
+      if (!args.includes("config")) expect(args.slice(0, TEARDOWN_FLAGS.length)).toEqual(TEARDOWN_FLAGS);
+      if (args.includes("status") || args.includes("diff")) expect(args).toContain("--ignore-submodules=all");
+      return { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
+    });
+    await git(repo, ["status", "--porcelain"]);
+    await git(repo, ["diff", "--", "file"]);
+    // The stub ran: the inspection, the index preflight and the command, each time.
+    expect(seen.filter(args => args.includes("status")).length).toBe(1);
+    expect(seen.filter(args => args.includes("diff")).length).toBe(1);
+    expect(seen.filter(args => args.includes("config")).length).toBe(2);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("removal from the shared repository refuses the target worktree's fsmonitor command", async () => {

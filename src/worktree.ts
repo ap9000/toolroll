@@ -322,7 +322,7 @@ export class WorktreePool {
   /** The pool's own git in a project's repository and its checkouts (making, moving and reading them): hardened against
    * a frozen view of the repository's config and info (teardown-git.ts checkoutGit), which agents can write. An injected
    * runner (tests' stubbed git) is used as given. */
-  private readonly hardened: Runner;
+  private readonly hardened: (repo: string) => Runner;
 
   /** Carried to the independent storage sweep process. */
   get root(): string { return this.options.root; }
@@ -332,7 +332,8 @@ export class WorktreePool {
     private readonly options: PoolOptions,
   ) {
     this.runner = options.runner ?? run;
-    this.hardened = this.runner === run ? checkoutGit(run) : this.runner;
+    // Bound to the project's repository from the pool's own request or record (teardown-git.ts GitBinding).
+    this.hardened = repo => this.runner === run ? checkoutGit(run, "build", { repo }) : this.runner;
   }
 
   /**
@@ -514,7 +515,7 @@ export class WorktreePool {
     // checkout between the inspection and the move.
     let base: BaseStanding | null | undefined;
     if (request.freshBase !== undefined && request.taskRef !== undefined) {
-      const fresh = await this.freshen(path, request.branch, request.taskRef, request.freshBase, request.now);
+      const fresh = await this.freshen(request.repo, path, request.branch, request.taskRef, request.freshBase, request.now);
       if (!fresh.ok) return { ok: false, reason: "git", message: fresh.message };
       base = fresh.standing;
     }
@@ -565,9 +566,9 @@ export class WorktreePool {
    * untracked. The move is `git reset --keep`, which refuses rather than overwrite anything; HEAD and the tree are read
    * again right before and after it, and any surprise fails the lease with the checkout left for a person.
    */
-  private async freshen(path: string, branch: string, taskRef: number, fresh: { main: string; recordedBase: string | null }, now: Date): Promise<{ ok: true; standing: BaseStanding | null } | { ok: false; message: string }> {
+  private async freshen(repo: string, path: string, branch: string, taskRef: number, fresh: { main: string; recordedBase: string | null }, now: Date): Promise<{ ok: true; standing: BaseStanding | null } | { ok: false; message: string }> {
     const read = async (args: readonly string[]) => {
-      const out = await this.hardened(GIT, [...READ_ONLY, ...args], { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS });
+      const out = await this.hardened(repo)(GIT, [...READ_ONLY, ...args], { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS });
       return out.code === 0 ? out.stdout.trim() : null;
     };
     const main = await read(["rev-parse", "--verify", "--quiet", `${fresh.main}^{commit}`]);
@@ -580,13 +581,13 @@ export class WorktreePool {
     if (behind === 0) return stay(null);
     if (await read(["symbolic-ref", "-q", "HEAD"]) !== `refs/heads/${branch}`) return stay("not on its branch");
     if (fresh.recordedBase !== null && fresh.recordedBase !== head) return stay("has commits");
-    const contained = await this.hardened(GIT, [...READ_ONLY, "merge-base", "--is-ancestor", head, main], { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS });
+    const contained = await this.hardened(repo)(GIT, [...READ_ONLY, "merge-base", "--is-ancestor", head, main], { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS });
     if (contained.code !== 0) return stay("has commits");
     if (await this.isDirty(path) !== false) return stay("has changes");
 
     // Recorded before git moves it: a move that then fails leaves the next attempt's own base as the branch's origin.
     this.store.recordBranchBaseMove(taskRef, branch, head, main, now);
-    const moved = await this.hardened(GIT, ["reset", "--keep", main], { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS });
+    const moved = await this.hardened(repo)(GIT, ["reset", "--keep", main], { cwd: path, timeoutMs: WORKTREE_TIMEOUT_MS });
     const after = await read(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
     const branchNow = await read(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`]);
     if (moved.code !== 0 || after !== main || branchNow !== main || await this.isDirty(path) !== false) {
@@ -1051,7 +1052,7 @@ export class WorktreePool {
     args: readonly string[],
     prefix: readonly string[] = [],
   ): Promise<ExecResult> {
-    return this.hardened(GIT, [...prefix, ...args], { cwd, timeoutMs: WORKTREE_TIMEOUT_MS });
+    return this.hardened(cwd)(GIT, [...prefix, ...args], { cwd, timeoutMs: WORKTREE_TIMEOUT_MS });
   }
 }
 

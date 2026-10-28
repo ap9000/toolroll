@@ -337,7 +337,7 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
   } = request;
   // The plane's git on the scout's checkout (agent-written, and its repository shared with every build) runs hardened, against
   // a frozen view of the repository's config and info (teardown-git.ts checkoutGit); an injected runner is used as given.
-  const git = givenGit === run ? checkoutGit(run) : givenGit;
+  const git = givenGit === run ? checkoutGit(run, "build", { repo: store.getWorktree(worktree)?.repo ?? null }) : givenGit;
 
   const claim = currentClaim(store, taskRef, now);
   if (claim === null || claim.runner !== runner || claim.leaseId !== request.leaseId) {

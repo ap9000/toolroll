@@ -32,6 +32,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { readMonitoring } from "./monitoring-settings.js";
 import { existingFolders } from "./names.js";
+import { ensureGitViewsRoot, gitViewsRoot } from "./git-views.js";
 import { DEPS_FOLDER, linkedKey, readyCopy, sharedCopies } from "./shared-deps.js";
 import type { LoopbackMode } from "./egress.js";
 import type { ExecutionProfile } from "./scope.js";
@@ -152,6 +153,10 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
       if (dedicated || SENSITIVE_NAME.test(entry)) fence.add(join(state, entry));
     }
   }
+  // The plane's private views of repositories for its own git (git-views.ts): made first, so no build is the one to
+  // create them, and denied by name whether or not that worked (a sandbox that can't cover the path refuses to launch).
+  try { ensureGitViewsRoot(home); } catch { /* fenced by name below either way */ }
+  fence.add(gitViewsRoot(home));
   for (const secrets of existingFolders(home, { dot: true })) fence.add(secrets);
   // v104: the folder the audit stream writes to holds the whole instance's history.
   if (options.databaseFile !== null && options.databaseFile !== "" && options.databaseFile !== ":memory:") {
