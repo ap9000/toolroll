@@ -10,6 +10,10 @@
   ask again. On a coding session, **Review for shipping** and the changes
   view are buttons, so a link preview or prefetch can't run them. Reading a
   checkout an agent wrote never runs that checkout's own git settings.
+- **Reading an agent's checkout can't be raced into running a filter.** Git
+  reads the checkout through a private copy of its settings taken once, so a
+  filter the agent adds to its git config and `.git/info/attributes` after
+  that copy never runs.
 - **The task card never contradicts itself.** One answer to "did the
   approved check pass" across the task page, the road, the Tasks list, the
   result page and chat. A check whose saved log can't be read is never
