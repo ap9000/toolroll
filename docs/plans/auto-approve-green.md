@@ -19,8 +19,10 @@ release check, or a CI failure after the deploy still stops, tells him, and need
 - Turning it on is a credential act (passwordless.md closed list): an approver of that project, in a browser with a
   password typed now (or a one-use provider re-check), or `toolroll release auto-approve on --repo <p> --as --token`
   with a typed password. Never a session, a remembered login, a lead token, an API token, a mode or chat.
-- Turning it off needs no password. In the same transaction it unseals every automatic seal in the project whose
-  release hasn't merged, and stops (revokes) their open releases, so nothing approves on the old setting.
+- Turning it off needs no password. In the same transaction it withdraws every automatic seal in the project whose
+  release hasn't merged and stops (revokes) their releases — including one whose merge was reserved but never issued —
+  so nothing approves on the old setting, even after it is turned on again. A merge already issued is in flight and
+  finishes through its own reconciliation.
 
 ## Two automatic seals, in order
 
@@ -31,7 +33,10 @@ the setting on there are two seals, both written only by the plane inside `toolr
    and nothing else: it is no approval of release terms, opens no release authority, and is never a person's. It
    stands at dispatch, claim and build only while the setting is on, on a release task (candidate and release terms
    signed in), on exactly the sealed digest, with its own evidence row, and while its approver (the person who turned
-   the setting on) can still approve in the project.
+   the setting on) can still approve in the project. It records the **comparison base**: GitHub's own merge base of the
+   candidate with the release's base branch (`compare/main...<sha>`, read by the plane), which must be a commit in the
+   project's own Git directory. Every later attempt is judged against this one base — never a task branch or a build's
+   recorded base, which a preseeded branch could choose.
 2. **`auto-green`** (after the check passed): "Approved automatically". Sealed in one transaction that proves
    everything again from the plane's own records and observations, records what proved it, and opens the release's
    authority exactly as a person's seal of release terms does. The coordinator then continues as after a person's yes:
@@ -47,15 +52,21 @@ person exactly as today, and `ownerApproval` still refuses every basis that isn'
   filed, the scope is sealed `auto-check` on it with its evidence row, and the candidate is unchanged;
 - the release check: the run is the task's builder run on that digest, its result receipt is the one the coordinator
   read, the native receipt says it ran the live approved command on that head with exit 0 and full coverage, the run's
-  level is Full, and at most **two** earlier builds of the task failed their check, each on this same digest (a flake
+  level is Full, and at most **two** earlier builds of the task were unsuccessful — any build that didn't finish built
+  with a passed check (a failed check, no check, a failed or interrupted build) — each on this same digest (a flake
   rerun through `task regate`; the candidate and digest are pinned, so only nondeterminism differs);
-- GitHub CI, observed by the plane's own `gh` (absolute path, allowlisted env) at this moment: the head is the
-  candidate, every required check is present, each reported check is judged by its **latest attempt**, which must be a
-  completed `success` by `github-actions` (skipped is not success, as today); earlier attempts must be finished GitHub
-  Actions runs, at most **two** failed per check (flakes on the same head); the observation is under five minutes old;
-- the change since the build's recorded base, read from verified objects in the project's own Git directory
-  (commit-extract.ts), touches no CI definition (`.github/`), agent or security policy, or test harness file (the
-  carry rules' "never" list): such a branch could make CI or the check pass without testing anything;
+- GitHub CI, read by the plane's own `gh` (system folders only, `--hostname github.com`, no caller PATH, host or config
+  override) with **every attempt** (`filter=all`, all pages): every run filed under exactly the candidate, every run
+  GitHub Actions, attempts grouped by job (app, check suite — one workflow run, whose re-runs stay in it — and name),
+  each job judged by its **latest attempt**, which must be a completed `success` (skipped is not success, as today),
+  every required check present, earlier attempts finished and at most **two** failed per job; under five minutes old;
+- the change from the comparison base, read from verified objects in the project's own Git directory
+  (commit-extract.ts), is confined to an **allowlist**: `src/**` (its tests included; never its test helpers or
+  fixtures — `src/fixtures/`, `test-*`, `*-test-support*`, `*fixture*` — nor build or type configuration), docs
+  (`docs/**.md`, README), CHANGELOG, and a **version-only** change of `package.json` and `package-lock.json`. Every
+  other path — `scripts/` (the check, the build, the journeys), `test/`, `.github/`, agent and security policy files,
+  `docs/testing.md`, `docs/plans/`, configuration, dependencies — and every path the carry rules never carry needs a
+  person, as do symlinks and submodules;
 - no earlier generation of this release (repo, version, pull request) was revoked: a revoked release, or one stopped by
   a CI failure after its deploy, asks a person;
 - everything a seal already checks (sealScopeApproval): no coordinator or machine-written text, no widened check
@@ -63,11 +74,21 @@ person exactly as today, and `ownerApproval` still refuses every basis that isn'
   refuse, as they refuse a mode), the organisation policy, an exact route, and the release terms' own seal checks.
 
 The evidence row (`release auto-approved`, outcome `auto-green`) records: candidate sha, digest, run, receipt, the
-check-run ids and names observed, when, the base, and the earlier failures it tolerated (`ciFailures`: check-run id,
+check-run ids, names and suites observed, when, the comparison base, and the earlier failures it tolerated (`ciFailures`: check-run id,
 name, conclusion; `checkFailures`: failed release-check run ids). The seal's `mode_digest` is `auto:<row id>`; both the SQL
-belt and the JS reader require the row to match the seal's task, kind, digest and candidate.
+belt and the JS reader require the row to match the seal's task, kind, digest and candidate, and that no
+`release auto-approval withdrawn` row names it: every automatic seal taken back is withdrawn for good.
 
-A failed release check stops the release and tells the owner, but keeps `auto-check`, so a regate of the same commit
+### CI at every boundary after the seal
+
+Every release (a person's too) judges pull-request CI with the same verdict (release.ts `prChecksVerdict`): every attempt,
+exact head, required checks only from GitHub Actions, jobs by app, suite and name, each by its latest attempt — so
+another app's same-name success can't hide an Actions failure. An automatically approved release also applies the flake
+cap, and re-reads complete current CI immediately before the deploy, before the CLI names move, before the merge and
+before the tag: anything not green (failed, a re-run pending, past the cap) stops it, revokes its approval (before the
+deploy: "Nothing was deployed or merged") and tells the owner; the commit then needs a person.
+
+A failed release check (not a failed build) stops the release and tells the owner, but keeps `auto-check`, so a regate of the same commit
 and digest may still approve itself within the cap. Any refusal (including past the cap) unseals `auto-check`, so the task reads "Needs your approval" with its passing check kept; the coordinator
 stops at approval, says why and tells the owner. A person's yes then continues the release from the same check.
 

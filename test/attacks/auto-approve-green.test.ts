@@ -36,8 +36,9 @@ function open(options: Parameters<typeof releaseFixture>[0] = {}) {
 const digestOf = (f: ReleaseFixture) => f.store.getScope(f.taskId)!.digest;
 const ref = (f: ReleaseFixture) => f.store.refFor("built-in", f.taskId).id;
 const green = (head: string, at = LATER): CiObservation => ({ head, observedAt: at.toISOString(),
-  runs: REQUIRED_PR_CHECKS.map((name, i) => ({ id: 1000 + i, name, status: "completed", conclusion: "success", app: "github-actions" })) });
-const authorize = (f: ReleaseFixture) => authorizeAutoCheck(f.store, { taskId: f.taskId, digest: digestOf(f), candidate: f.approved, now: LATER });
+  runs: REQUIRED_PR_CHECKS.map((name, i) => ({ id: 1000 + i, name, status: "completed", conclusion: "success", app: "github-actions", suite: 7, head })) });
+/** The plane's auto-check, with the base GitHub names for the candidate (the main commit the branch left). */
+const authorize = (f: ReleaseFixture, base = f.base) => authorizeAutoCheck(f.store, { taskId: f.taskId, digest: digestOf(f), candidate: f.approved, base, now: LATER });
 /** The release check of the candidate, sealed as the builder seals it, on the build's real base. */
 const check = (f: ReleaseFixture, head = f.approved, report = passingReport) => sealedCheck(f, f.taskId, head, () => report(), { base: f.base }).runId;
 const receiptOf = (f: ReleaseFixture) => assignmentOf(f.store, f.taskId, LATER, { principal: "operator", repos: null, includeUnplaced: true }, EVIDENCE(f))!.receipt!.digest;
@@ -119,6 +120,9 @@ describe("attack 2: a forged or stale CI observation", () => {
     ["a pending check", (ci) => ({ ...ci, runs: ci.runs.map((run, i) => i === 0 ? { ...run, status: "in_progress", conclusion: null } : run) })],
     ["a skipped check", (ci) => ({ ...ci, runs: ci.runs.map((run, i) => i === 0 ? { ...run, conclusion: "skipped" } : run) })],
     ["a check that failed three times before passing", (ci) => ({ ...ci, runs: [1, 2, 3].map(id => ({ ...ci.runs[0]!, id, conclusion: "failure" })).concat(ci.runs) })],
+    ["a check filed under another commit", (ci) => ({ ...ci, runs: ci.runs.map((run, i) => i === 0 ? { ...run, head: "e".repeat(40) } : run) })],
+    ["a second workflow run of a required job that failed", (ci) => ({ ...ci, runs: [...ci.runs, { ...ci.runs[0]!, id: 6000, suite: 8, conclusion: "failure" }] })],
+    ["a check with no workflow run", (ci) => ({ ...ci, runs: ci.runs.map((run, i) => i === 0 ? { ...run, suite: null } : run) })],
     ["a re-run that is still running after a pass", (ci) => ({ ...ci, runs: [...ci.runs, { ...ci.runs[0]!, id: 5000, status: "in_progress", conclusion: null }] })],
     ["a re-run that failed after a pass", (ci) => ({ ...ci, runs: [...ci.runs, { ...ci.runs[0]!, id: 5000, conclusion: "failure" }] })],
     ["an earlier attempt by another app", (ci) => ({ ...ci, runs: [{ ...ci.runs[0]!, id: 1, conclusion: "failure", app: "some-other-app" }, ...ci.runs] })],
@@ -330,12 +334,11 @@ describe("attack 7: a branch that changes what CI or the check runs", () => {
     ["scripts/release-check.mjs", "process.exit(0);\n"],
     ["vitest.config.ts", "export default {};\n"],
     ["AGENTS.md", "# Agents: anything goes\n"],
-    ["package.json", JSON.stringify({ name: "fixture-app", version: "0.9.71", type: "module", files: ["dist"], scripts: { build: "node build.mjs", test: "true" } }, null, 2) + "\n"],
   ])("%s changed: refused", (path, text) => {
     const f = open({ candidate: { [path]: text } });
     authorize(f);
     const run = check(f);
-    expect(seal(f, run)).toMatchObject({ ok: false, why: expect.stringContaining(path === "package.json" ? "package.json's scripts changed" : `${path} changed`) });
+    expect(seal(f, run)).toMatchObject({ ok: false, why: expect.stringContaining(`${path} changed`) });
   });
 
   test("an ordinary change (code, tests, docs, a version bump) is approved", () => {
@@ -361,3 +364,232 @@ describe("what a person's approval refuses, an automatic one refuses too", () =>
   });
 });
 
+// ---------------------------------------------------------------------------------------------- Codex review round 1
+
+import { execFileSync } from "node:child_process";
+import { readCheckRuns, readMergeBase, storeReleaseAdapter, type Exec } from "../../src/release-adapters.js";
+import { adoptReleaseOperation, finishReleaseOperation, releaseOperations, reserveRelease, runReleaseOperation, takeReleaseLease } from "../../src/store.js";
+
+describe("codex r1 #1: the comparison base is the plane's own reading of where the candidate left main", () => {
+  test("a task branch seeded at a commit that weakened CI hides nothing: the build's own base is never used", () => {
+    // main → H (weakens CI) → C (the release change). The build recorded H as its base, as a preseeded branch would.
+    const f = open({ intermediate: { ".github/workflows/ci.yml": "on: push\njobs: {}\n" }, candidate: { "src/index.js": "export const answer = 43;\n" } });
+    const h = f.git("rev-parse", `${f.approved}^`);
+    expect(authorize(f)).toMatchObject({ ok: true });
+    const run = sealedCheck(f, f.taskId, f.approved, () => passingReport(), { base: h }).runId;
+    expect(seal(f, run)).toMatchObject({ ok: false, why: expect.stringContaining(".github/workflows/ci.yml changed") });
+  });
+
+  test("the base is what GitHub's compare API names, read through the real request", async () => {
+    const calls: string[][] = [];
+    const run: Exec = async (_cmd, args) => { calls.push([...args]); return { code: 0, stdout: `${"a".repeat(40)}\n`, stderr: "" }; };
+    expect(await readMergeBase(run, "/usr/bin/gh", "ap9000/toolroll", "main", "b".repeat(40))).toBe("a".repeat(40));
+    expect(calls[0]).toEqual(["api", "--hostname", "github.com", `repos/ap9000/toolroll/compare/main...${"b".repeat(40)}`, "--jq", ".merge_base_commit.sha"]);
+    await expect(readMergeBase(async () => ({ code: 0, stdout: "null\n", stderr: "" }), "/usr/bin/gh", "ap9000/toolroll", "main", "b".repeat(40))).rejects.toThrow();
+    await expect(readMergeBase(run, "/usr/bin/gh", "ap9000/toolroll", "main..x", "b".repeat(40))).rejects.toThrow();
+  });
+
+  test("a base that isn't in the project's own Git directory refuses the auto-check", () => {
+    const f = open();
+    expect(authorize(f, "0".repeat(40))).toMatchObject({ ok: false, why: expect.stringContaining("isn't in the project's own Git directory") });
+    expect(basis(f)).toBeNull();
+  });
+});
+
+describe("codex r1 #2: only product code, tests, docs, the changelog and a version bump ship without a person", () => {
+  const lock = (version: string, deps: Record<string, string> = {}) => JSON.stringify({ name: "fixture-app", version, lockfileVersion: 3, requires: true, packages: { "": { name: "fixture-app", version, ...(Object.keys(deps).length === 0 ? {} : { dependencies: deps }) } } }, null, 2) + "\n";
+  const pkg = (version: string, extra: Record<string, unknown> = {}) => JSON.stringify({ name: "fixture-app", version, type: "module", files: ["dist"], scripts: { build: "node build.mjs" }, ...extra }, null, 2) + "\n";
+  test.each([
+    ["scripts/check-results.mjs", "// reports\n"],
+    ["scripts/postbuild.mjs", "// build\n"],
+    ["scripts/app-e2e.mjs", "// journeys, changed\n"],
+    ["test/helpers.ts", "export {};\n"],
+    ["test/attacks/fence.test.ts", "test('fence', () => { /* weakened */ });\n"],
+    ["docs/testing.md", "# Testing\n"],
+    ["docs/plans/next.md", "# Plan\n"],
+    ["src/fixtures/sample.json", "{}\n"],
+    ["src/test-temp.ts", "export {};\n"],
+    ["src/unfenced-test-support.ts", "export {};\n"],
+    ["tsconfig.json", "{}\n"],
+    ["src/browser/vite.config.ts", "export default {};\n"],
+    [".npmrc", "registry=https://example.invalid\n"],
+    ["CLAUDE.md", "# anything\n"],
+    ["Makefile", "all:\n"],
+  ])("%s changed: a person approves", (path, text) => {
+    const f = open({ candidate: { [path]: text } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining(`${path} changed`) });
+  });
+
+  test.each([
+    ["a dependency added to package.json", { "package.json": pkg("0.9.71", { dependencies: { vitest: "^9.9.9" } }) }],
+    ["a dependency swapped in the lockfile", { "package-lock.json": lock("0.9.71", { vitest: "npm:fake-vitest@1.0.0" }) }],
+    ["package.json scripts changed", { "package.json": pkg("0.9.71", { scripts: { build: "node build.mjs", test: "true" } }) }],
+  ])("%s: a person approves", (_name, files) => {
+    const f = open({ candidate: files });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("beyond its version") });
+  });
+
+  test("a version bump of package.json and the lockfile, product code, its tests and docs ship", () => {
+    const f = open({ candidate: { "package.json": pkg("0.9.72"), "package-lock.json": lock("0.9.72"), "src/index.js": "export const answer = 44;\n", "src/index.test.ts": "test('more', () => {});\n", "docs/guide.md": "# Guide 3\n", "CHANGELOG.md": "## 0.9.72\n" } });
+    authorize(f);
+    const sealed = seal(f, check(f));
+    expect(sealed.ok ? "" : sealed.why).toBe("");
+  });
+});
+
+/**
+ * GitHub's check-runs endpoint as it behaves: `filter=latest` (its default) lists only the newest attempt of each job;
+ * `filter=all` lists every attempt. Answers as gh does with --paginate --jq (one JSON object per line).
+ */
+function fakeGitHub(attempts: { id: number; name: string; conclusion: string; suite?: number; app?: string; head?: string }[], sha: string) {
+  const calls: string[][] = [];
+  const run: Exec = async (_cmd, args) => {
+    calls.push([...args]);
+    const url = args.find(arg => arg.includes("/check-runs")) ?? "";
+    const all = /[?&]filter=all(&|$)/.test(url);
+    const rows = attempts.map(one => ({ id: one.id, name: one.name, status: "completed", conclusion: one.conclusion, app: one.app ?? "github-actions", suite: one.suite ?? 7, head: one.head ?? sha }));
+    const shown = all ? rows : rows.filter(row => !rows.some(other => other.name === row.name && other.suite === row.suite && other.id > row.id));
+    return { code: 0, stdout: shown.map(row => JSON.stringify(row)).join("\n") + "\n", stderr: "" };
+  };
+  return { run, calls };
+}
+
+describe("codex r1 #3: the cap counts every attempt GitHub holds, read through the real request", () => {
+  test("the request asks for every attempt, every page, from github.com only, with no caller PATH or host override", async () => {
+    const { run, calls } = fakeGitHub([{ id: 1, name: "x", conclusion: "success" }], "a".repeat(40));
+    let env: NodeJS.ProcessEnv | undefined;
+    const spy: Exec = async (cmd, args, options) => { env = options?.env; return run(cmd, args, options); };
+    const saved = process.env["GH_HOST"]; process.env["GH_HOST"] = "evil.example";
+    try { expect(await readCheckRuns(spy, "/usr/bin/gh", "ap9000/toolroll", "a".repeat(40))).toHaveLength(1); }
+    finally { if (saved === undefined) delete process.env["GH_HOST"]; else process.env["GH_HOST"] = saved; }
+    expect(calls[0]).toEqual(["api", "--hostname", "github.com", "--paginate", `repos/ap9000/toolroll/commits/${"a".repeat(40)}/check-runs?filter=all&per_page=100`,
+      "--jq", ".check_runs[] | {id, name, status, conclusion, app: .app.slug, suite: .check_suite.id, head: .head_sha}"]);
+    expect(env).toMatchObject({ GH_HOST: "github.com", PATH: "/usr/bin:/bin" });
+    expect(env?.["GH_CONFIG_DIR"]).toBeUndefined();
+  });
+
+  test("a row GitHub answers that can't be read, or the same run twice, stops the read", async () => {
+    const bad: Exec = async () => ({ code: 0, stdout: `{"id":"x","name":"a","status":"completed"}\n`, stderr: "" });
+    await expect(readCheckRuns(bad, "/usr/bin/gh", "ap9000/toolroll", "a".repeat(40))).rejects.toThrow();
+    const twice: Exec = async () => ({ code: 0, stdout: `{"id":1,"name":"a","status":"completed"}\n{"id":1,"name":"a","status":"completed"}\n`, stderr: "" });
+    await expect(readCheckRuns(twice, "/usr/bin/gh", "ap9000/toolroll", "a".repeat(40))).rejects.toThrow();
+  });
+
+  test.each([[2, true], [3, false]] as const)("%i failed attempts of one job before its pass, end to end through the store adapter: approved=%s", async (failed, approved) => {
+    const f = open();
+    const attempts = [
+      ...Array.from({ length: failed }, (_, i) => ({ id: 10 + i, name: REQUIRED_PR_CHECKS[0], conclusion: "failure" })),
+      ...REQUIRED_PR_CHECKS.map((name, i) => ({ id: 100 + i, name, conclusion: "success" })),
+    ];
+    const gh = fakeGitHub(attempts, f.approved);
+    const rel = storeReleaseAdapter(() => f.store, () => {}, () => LATER, undefined, {
+      observe: async sha => ({ head: sha, observedAt: LATER.toISOString(), runs: (await readCheckRuns(gh.run, "/usr/bin/gh", "ap9000/toolroll", sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null })) }),
+      mergeBase: async () => f.base, evidenceRoot: EVIDENCE(f),
+    });
+    expect(await rel.auto!.authorizeCheck({ taskId: f.taskId, digest: digestOf(f), candidate: f.approved })).toEqual({ ok: true });
+    const run = check(f);
+    const answer = await rel.auto!.approve({ taskId: f.taskId, digest: digestOf(f), candidate: f.approved, run, receipt: receiptOf(f) });
+    expect(answer.ok).toBe(approved);
+    if (!approved) expect(answer).toMatchObject({ why: expect.stringContaining("failed 3 times") });
+  });
+});
+
+describe("codex r1 #6: lowering the setting stops an unissued merge for good", () => {
+  /** An auto-approved release taken to `merge-reserved`, its deploy settled; `issue` starts the merge too. */
+  const toMerge = (f: ReleaseFixture, issue: boolean) => {
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: true });
+    const a = releaseAuthorityOfTask(f.store, f.taskId)!.authority;
+    const lease = takeReleaseLease(f.store, a.id, "coordinator", LATER);
+    if (!lease.ok) throw new Error(lease.why);
+    const deploy = reserveRelease(f.store, { authority: a.id, kind: "deploy", taskId: f.taskId, candidate: f.approved, epoch: lease.epoch, operationId: "d1", now: LATER, secret: "s" });
+    expect(deploy.ok).toBe(true);
+    expect(runReleaseOperation(f.store, "d1", lease.epoch, LATER)).toBe(true);
+    expect(finishReleaseOperation(f.store, "d1", "succeeded", {}, LATER, lease.epoch)).toBe(true);
+    expect(reserveRelease(f.store, { authority: a.id, kind: "merge", taskId: f.taskId, candidate: f.approved, epoch: lease.epoch, operationId: "m1", now: LATER })).toMatchObject({ ok: true });
+    if (issue) expect(runReleaseOperation(f.store, "m1", lease.epoch, LATER)).toBe(true);
+    return { a, epoch: lease.epoch };
+  };
+
+  test("reserved, never issued: off then on again, nothing of it stands or starts", () => {
+    const f = open();
+    const { a, epoch } = toMerge(f, false);
+    setReleaseApproval(f.store, f.repo, false, "alex", LATER);
+    setReleaseApproval(f.store, f.repo, true, "alex", LATER);
+    expect(releaseAuthorityOfTask(f.store, f.taskId)!.authority.state).toBe("revoked");
+    expect(releaseApprovalOf(f.store, f.taskId, LATER)).toMatchObject({ ok: false });
+    expect(liveReleaseOf(f.store, f.taskId, "merge", LATER)).toMatchObject({ ok: false });
+    expect(runReleaseOperation(f.store, "m1", epoch, LATER)).toBe(false);
+    // The evidence is withdrawn for good: even a seal written back by hand stands on nothing.
+    const evidence = f.store.handle.prepare("SELECT id FROM action_ledger WHERE task_id = ? AND action = 'release auto-approved' AND outcome = 'auto-green'").get(f.taskId)!;
+    f.store.handle.prepare("UPDATE task_scope SET approved_at = ?, approved_by = 'alex', approved_digest = digest, approval_basis = 'auto-green', mode_digest = ? WHERE task_id = ?").run(LATER.toISOString(), `auto:${evidence["id"]}`, f.taskId);
+    expect(scopeApprovedForDispatch(f.store, ref(f), LATER)).toBe(false);
+    expect(installedScope.autoReleaseApprovalOf(f.store, f.taskId, "auto-green")).toMatchObject({ ok: false });
+    void a;
+  });
+
+  test("a merge already issued is in flight: it is left to finish through its reconciliation", () => {
+    const f = open();
+    toMerge(f, true);
+    setReleaseApproval(f.store, f.repo, false, "alex", LATER);
+    expect(releaseAuthorityOfTask(f.store, f.taskId)!.authority.state).toBe("merge-reserved");
+    expect(releaseOperations(f.store, releaseAuthorityOfTask(f.store, f.taskId)!.authority.id).find(op => op.id === "m1")?.state).toBe("running");
+  });
+});
+
+describe("codex r1 #7 and the scan: flake retries as the builder and regate really record them", () => {
+  /** A build commit of the candidate's tree on `parent`, as the builder commits a prepared candidate. */
+  const buildCommit = (f: ReleaseFixture, parent: string) => {
+    const tree = f.git("rev-parse", `${f.approved}^{tree}`);
+    return execFileSync("git", ["-C", f.repo, "-c", "user.name=T", "-c", "user.email=t@example.invalid", "commit-tree", tree, "-p", parent, "-m", `Release ${f.taskId}`], { encoding: "utf8" }).trim();
+  };
+  const red = () => reportOf(UNITS.map(file => file === "src/index.test.ts" ? { file, failed: ["answer"] } : { file }));
+
+  test("a regate starting at the first attempt's build commit, then passing, approves", () => {
+    const f = open({ candidate: { "src/index.js": "export const answer = 43;\n" } });
+    authorize(f);
+    const b1 = buildCommit(f, f.base);
+    sealedCheck(f, f.taskId, b1, () => red(), { base: f.base });
+    // The regate's attempt starts at B1 (the previous build commit) and commits B2 on it.
+    const b2 = buildCommit(f, b1);
+    const rerun = sealedCheck(f, f.taskId, b2, () => passingReport(), { base: b1 }).runId;
+    expect(seal(f, rerun)).toMatchObject({ ok: true });
+  });
+
+  test("every unsuccessful build counts toward the cap: two failed checks and an interrupted build need a person", () => {
+    const f = open();
+    authorize(f);
+    check(f, f.approved, red);
+    check(f, f.approved, red);
+    const interrupted = builtRun(f.store, f.taskId, f.approved, f.base);
+    f.store.handle.prepare("UPDATE run SET outcome = 'interrupted' WHERE id = ?").run(interrupted);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("failed 3 times") });
+  });
+
+  test("a build that never recorded a check counts too", () => {
+    const f = open();
+    authorize(f);
+    check(f, f.approved, red);
+    check(f, f.approved, red);
+    builtRun(f.store, f.taskId, f.approved, f.base);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("failed 3 times") });
+  });
+});
+
+describe("codex r1: a direct deploy can't pass for the coordinator's", () => {
+  test("only the reserved operation's own secret adopts it; a guessed id or secret is refused", () => {
+    const f = open();
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: true });
+    const a = releaseAuthorityOfTask(f.store, f.taskId)!.authority;
+    const lease = takeReleaseLease(f.store, a.id, "coordinator", LATER);
+    if (!lease.ok) throw new Error(lease.why);
+    expect(reserveRelease(f.store, { authority: a.id, kind: "deploy", taskId: f.taskId, candidate: f.approved, epoch: lease.epoch, operationId: "d1", now: LATER, secret: "the-secret" })).toMatchObject({ ok: true });
+    expect(runReleaseOperation(f.store, "d1", lease.epoch, LATER)).toBe(true);
+    expect(adoptReleaseOperation(f.store, { id: "d1", authority: a.id, candidate: f.approved, secret: "guess", now: LATER })).toMatchObject({ ok: false });
+    expect(adoptReleaseOperation(f.store, { id: "d2", authority: a.id, candidate: f.approved, secret: "the-secret", now: LATER })).toMatchObject({ ok: false });
+    expect(adoptReleaseOperation(f.store, { id: "d1", authority: a.id, candidate: f.approved, secret: "the-secret", now: LATER })).toEqual({ ok: true });
+  });
+});

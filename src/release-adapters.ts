@@ -235,23 +235,12 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
     try { return object(JSON.parse(result.stdout)); } catch { throw new Error(`toolroll ${args[0]} ${args[1] ?? ""} answered no JSON (exit ${result.code}): ${(result.stderr || result.stdout).trim().slice(0, 300)}`); }
   };
   const refused = (answer: Json) => `${String(answer["message"] ?? answer["reason"] ?? "refused")}`;
-  /**
-   * The plane's own look at GitHub CI for an automatic release approval (auto-approve-green.md): gh found only in the
-   * system's own folders (never the caller's PATH), talking to github.com with no host, config-folder or proxy override
-   * from the caller's environment, for the recorded repository and the exact commit. Every attempt is kept, oldest first.
-   */
+  /** gh for every CI and merge-base read (auto-approve-green.md): found only in the system's own folders, never the
+   * caller's PATH (a test hands its own). */
+  const ciGh = options.tools?.gh ?? releaseTools("").gh;
   const observeCi = async (sha: string): Promise<CiObservation> => {
-    const gh = releaseTools("").gh;
-    if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("not a commit id");
-    const env: NodeJS.ProcessEnv = Object.fromEntries(["HOME", "LANG", "LC_ALL", "TMPDIR", "USER", "LOGNAME", "GH_TOKEN", "GITHUB_TOKEN"].flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!]]));
     const observedAt = (options.now ?? (() => new Date()))().toISOString();
-    const out = await must(run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${releaseRepo().slug}/commits/${sha}/check-runs?per_page=100`, "--jq", ".check_runs[] | {id, name, status, conclusion, app: .app.slug, head: .head_sha}"],
-      { cwd: "/", env: { ...env, PATH: "/usr/bin:/bin", GH_HOST: "github.com", GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" } }), "gh api check-runs");
-    const rows = out.split("\n").filter(Boolean).map(line => object(JSON.parse(line)));
-    // A check run GitHub files under another commit is not this commit's.
-    if (rows.some(one => one["head"] !== sha)) throw new Error("GitHub answered with check runs of another commit");
-    return { head: sha, observedAt, runs: rows.sort((a, b) => Number(a["id"]) - Number(b["id"])).map(one => ({
-      id: Number.isSafeInteger(one["id"]) ? Number(one["id"]) : null, name: String(one["name"]), status: String(one["status"]), conclusion: textOr(one["conclusion"]), app: textOr(one["app"]) })) };
+    return { head: sha, observedAt, runs: (await readCheckRuns(run, ciGh, releaseRepo().slug, sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null })) };
   };
   const database = options.database ?? databasePath(process.env, homedir());
   let recorded: ReleaseRepo | null = options.releaseRepo ?? null;
@@ -341,7 +330,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   };
 
   const release = storeReleaseAdapter(() => openStore(database), store => store.close(), options.now ?? (() => new Date()), undefined,
-    { observe: sha => observeCi(sha), evidenceRoot: join(dirname(database), "evidence") });
+    { observe: sha => observeCi(sha), mergeBase: (base, sha) => readMergeBase(run, ciGh, releaseRepo().slug, base, sha), evidenceRoot: join(dirname(database), "evidence") });
 
   return {
     ...(existsSync(database) ? { release } : {}),
@@ -495,13 +484,8 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         }));
         return prs.find(one => one.state === "open") ?? prs.filter(one => one.state === "merged").sort((a, b) => b.number - a.number)[0] ?? null;
       },
-      async checks(repo, sha) {
-        const out = await must(gh("api", "--paginate", `repos/${repo}/commits/${sha}/check-runs?per_page=100`, "--jq", ".check_runs[] | {id, name, status, conclusion, app: .app.slug}"), "gh api check-runs");
-        const runs = out.split("\n").filter(Boolean).map(line => object(JSON.parse(line)));
-        // Oldest first, so a rerun's attempt is the last one listed for its name.
-        return runs.sort((a, b) => Number(a["id"]) - Number(b["id"])).map((one): CheckRun => ({ name: String(one["name"]), status: String(one["status"]), conclusion: textOr(one["conclusion"]), app: textOr(one["app"]),
-          id: Number.isSafeInteger(one["id"]) ? Number(one["id"]) : null }));
-      },
+      // Every attempt (filter=all), with its app, check suite and commit: the release judges each job by its latest attempt.
+      async checks(repo, sha) { return readCheckRuns(run, ciGh, repo, sha); },
       async merge(repo, pr, head, message) {
         // The squash commit's message lists every commit that landed after the approval (release-once.md).
         const merged = object(await ghJson("gh api pulls merge", "api", "-X", "PUT", `repos/${repo}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`,
@@ -654,7 +638,7 @@ function personAnswerOf(value: unknown): { person?: { ok: true; method: string }
 export function storeReleaseAdapter(open: () => Store, done: (store: Store) => void, now: () => Date, runner?: BuildRunner,
   /** Releases that approve themselves (auto-approve-green.md): the plane's own look at CI on a commit, and where the
    * check receipts are kept. Absent: no automatic approval, every release asks a person. */
-  auto?: { observe: (sha: string) => Promise<CiObservation>; evidenceRoot: string }): NonNullable<ReleaseAdapters["release"]> {
+  auto?: AutoObservers): NonNullable<ReleaseAdapters["release"]> {
   const withStore = <T>(body: (store: Store) => T): T => { const store = open(); try { return body(store); } finally { done(store); } };
   return {
     ...(auto === undefined ? {} : { auto: autoReleaseAdapter(withStore, now, auto) }),
@@ -698,13 +682,20 @@ export function storeReleaseAdapter(open: () => Store, done: (store: Store) => v
 
 /** The plane's automatic release approval through a store (release-auto.ts): what `toolroll release` asks. It hands the
  * plane ids only; the plane reads CI itself (`observe`) right before it seals. */
-function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now: () => Date, auto: { observe: (sha: string) => Promise<CiObservation>; evidenceRoot: string }): NonNullable<NonNullable<ReleaseAdapters["release"]>["auto"]> {
+function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now: () => Date, auto: AutoObservers): NonNullable<NonNullable<ReleaseAdapters["release"]>["auto"]> {
   return {
     async setting(taskId) {
       return withStore(store => { try { const ref = store.lookupRef(taskId); return ref?.repo != null && releaseAutoApproves(store, ref.repo); } catch { return false; } });
     },
     async authorizeCheck(input) {
-      return withStore(store => { const answer = authorizeAutoCheck(store, { ...input, now: now() }); return answer.ok ? { ok: true as const } : answer; });
+      // The comparison base for what the release changes: GitHub's own merge base of the candidate with the release's
+      // base branch (its signed terms), read by the plane — never a task branch or a build's recorded base.
+      const branch = withStore(store => store.getScope(input.taskId)?.releaseTerms?.base ?? null);
+      if (branch === null) return { ok: false as const, why: "only a release task is approved automatically" };
+      let base: string;
+      try { base = await auto.mergeBase(branch, input.candidate); }
+      catch (error) { return { ok: false as const, why: `GitHub couldn't say where ${input.candidate.slice(0, 7)} left ${branch} (${String((error as Error)?.message ?? error).slice(0, 160)})` }; }
+      return withStore(store => { const answer = authorizeAutoCheck(store, { ...input, base, now: now() }); return answer.ok ? { ok: true as const } : answer; });
     },
     async checking(taskId) {
       return withStore(store => { const answer = autoReleaseApprovalOf(store, taskId, "auto-check"); return answer.ok ? { ok: true as const } : { ok: false as const, why: answer.why }; });
@@ -727,4 +718,45 @@ function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now:
     async checkFailed(taskId, why) { withStore(store => noteAutoCheckFailed(store, { taskId, why, now: now() })); },
     async released(taskId, tag) { withStore(store => noteAutoRelease(store, { taskId, tag, now: now() })); },
   };
+}
+
+/** What the plane itself reads for an automatic release approval. */
+export type AutoObservers = {
+  observe: (sha: string) => Promise<CiObservation>;
+  /** GitHub's merge base of `sha` with the branch `base` of the recorded repository. */
+  mergeBase: (base: string, sha: string) => Promise<string>;
+  evidenceRoot: string;
+};
+
+/** The environment every CI read runs gh with: no caller PATH, host, config folder or proxy override. */
+function ciEnv(): NodeJS.ProcessEnv {
+  const kept = Object.fromEntries(["HOME", "LANG", "LC_ALL", "TMPDIR", "USER", "LOGNAME", "GH_TOKEN", "GITHUB_TOKEN"].flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!]]));
+  return { ...kept, PATH: "/usr/bin:/bin", GH_HOST: "github.com", GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" };
+}
+
+/**
+ * Every check run GitHub holds for one commit — every attempt, not only the latest (`filter=all`; GitHub's default
+ * lists only the latest of each), every page — with its id, app, check suite and the commit it is filed under, oldest
+ * first. A row that doesn't parse stops the read: a partial answer is never taken for the whole.
+ */
+export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: string): Promise<CheckRun[]> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^[0-9a-f]{40}$/.test(sha)) throw new Error("not a repository and commit GitHub can be asked about");
+  const out = await must(run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${repo}/commits/${sha}/check-runs?filter=all&per_page=100`,
+    "--jq", ".check_runs[] | {id, name, status, conclusion, app: .app.slug, suite: .check_suite.id, head: .head_sha}"], { cwd: "/", env: ciEnv() }), "gh api check-runs");
+  const runs = out.split("\n").filter(Boolean).map(line => {
+    const one = object(JSON.parse(line));
+    if (!Number.isSafeInteger(one["id"]) || typeof one["name"] !== "string" || typeof one["status"] !== "string") throw new Error("GitHub answered a check run this can't read");
+    return { id: Number(one["id"]), name: one["name"], status: one["status"], conclusion: textOr(one["conclusion"]), app: textOr(one["app"]),
+      suite: Number.isSafeInteger(one["suite"]) ? Number(one["suite"]) : null, head: textOr(one["head"]) } satisfies CheckRun;
+  });
+  if (new Set(runs.map(one => one.id)).size !== runs.length) throw new Error("GitHub answered the same check run twice");
+  return runs.sort((a, b) => a.id - b.id);
+}
+
+/** GitHub's merge base of `sha` with branch `base` (the compare API), read by the plane. */
+export async function readMergeBase(run: Exec, gh: string, repo: string, base: string, sha: string): Promise<string> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^[0-9a-f]{40}$/.test(sha) || !/^[A-Za-z0-9._/-]+$/.test(base) || base.includes("..")) throw new Error("not a repository, branch and commit GitHub can be asked about");
+  const out = (await must(run(gh, ["api", "--hostname", "github.com", `repos/${repo}/compare/${base}...${sha}`, "--jq", ".merge_base_commit.sha"], { cwd: "/", env: ciEnv() }), "gh api compare")).trim();
+  if (!/^[0-9a-f]{40}$/.test(out)) throw new Error("GitHub named no merge base");
+  return out;
 }

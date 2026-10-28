@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
-  checksVerdict, gateTaskId, journalFile, ownerApproval, readJournal, writeJournal, REQUIRED_PR_CHECKS, RELEASE_TAG_CHECKS, runRelease, transientNetworkError,
+  checksVerdict, gateTaskId, journalFile, ownerApproval, prChecksVerdict, readJournal, writeJournal, REQUIRED_PR_CHECKS, RELEASE_TAG_CHECKS, runRelease, transientNetworkError,
   type CheckRun, type GateState, type HomebrewState, type ReleaseAdapters, type ReleaseJournal,
 } from "./release.js";
 
@@ -114,8 +114,9 @@ function world(options: { crashAfter?: Mutation } = {}) {
     github: {
       authenticated: async () => true,
       pullRequest: async () => ({ ...s.pr }),
-      checks: async (repo, sha) => !s.gateSeesChecks && repo !== "ap9000/homebrew-toolroll" && !(s.gate.exists && s.gate.candidate === sha) && sha !== MERGE ? passing(REQUIRED_PR_CHECKS)
-        : structuredClone(s.checks.get(`${repo === "ap9000/homebrew-toolroll" ? "brew:" : ""}${sha}`) ?? []),
+      // As the real adapter answers: every attempt, with its id, app, check suite and commit (a test's own fields win).
+      checks: async (repo, sha) => (!s.gateSeesChecks && repo !== "ap9000/homebrew-toolroll" && !(s.gate.exists && s.gate.candidate === sha) && sha !== MERGE ? passing(REQUIRED_PR_CHECKS)
+        : structuredClone(s.checks.get(`${repo === "ap9000/homebrew-toolroll" ? "brew:" : ""}${sha}`) ?? [])).map((run, i) => ({ id: i + 1, app: "github-actions", suite: 1, head: sha, ...run })),
       merge: async (_repo, _pr, head) => {
         if (head !== s.pr.head) throw new Error("Head branch was modified");
         s.pr = { ...s.pr, state: "merged", mergeCommit: MERGE };
@@ -509,7 +510,7 @@ describe("toolroll release", () => {
       adapters.github.checks = async (repo, sha) => {
         if (sha !== SHA) return checks(repo, sha);
         reads += 1;
-        return [...passing(REQUIRED_PR_CHECKS), ...(reads <= 2 ? passing([repeat]) : [{ name: repeat, status, conclusion }])];
+        return [...passing(REQUIRED_PR_CHECKS), ...(reads <= 2 ? passing([repeat]) : [{ name: repeat, status, conclusion }])].map((run, i) => ({ id: i + 1, app: "github-actions", suite: 1, head: sha, ...run }));
       };
       expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "merge", reason: "ci-failed" });
       // The gate's early look, the ci step, and the re-read at merge.
@@ -1372,12 +1373,75 @@ describe("toolroll release: approve automatically when checks pass", () => {
     const dir = stateDir();
     const { s, adapters, rel, plane } = autoWorld();
     const ci = adapters.github.checks;
-    adapters.github.checks = async (repo, sha) => s.calls.includes("deploy") && sha === SHA ? passing(REQUIRED_PR_CHECKS).map((run, i) => i === 0 ? { ...run, conclusion: "failure" } : run) : ci(repo, sha);
-    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "ci", reason: "ci-failed" });
+    adapters.github.checks = async (repo, sha) => s.calls.includes("deploy") && sha === SHA ? passing(REQUIRED_PR_CHECKS).map((run, i) => ({ id: i + 1, app: "github-actions", suite: 1, head: sha, ...run, ...(i === 0 ? { conclusion: "failure" } : {}) })) : ci(repo, sha);
+    // Caught before the CLI names move (the re-read at the relink), not only at the ci step.
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "link", reason: "ci-failed" });
+    expect(s.calls).not.toContain("switchLinks");
     expect(rel.approvalsNeeded).toHaveLength(1);
     expect(plane.gaveUp).toEqual([expect.stringContaining("after the deploy")]);
     expect(s.calls).not.toContain("merge");
     await runRelease(options(dir, { fresh: true, limits: { approval: 1 } }), adapters);
     expect(plane.authorizations).toBe(1);
+  });
+
+  const red = (sha: string, extra: Partial<CheckRun> = {}) => passing(REQUIRED_PR_CHECKS).map((run, i) => ({ id: i + 1, app: "github-actions", suite: 1, head: sha, ...run, ...(i === 0 ? { conclusion: "failure", ...extra } : {}) }));
+
+  test("codex r1 #5: CI that turns red after the seal stops the release before it deploys, and revokes it", async () => {
+    const dir = stateDir();
+    const { s, adapters, rel, plane } = autoWorld();
+    const ci = adapters.github.checks;
+    adapters.github.checks = async (repo, sha) => s.calls.includes("autoGreen") && sha === SHA ? red(sha) : ci(repo, sha);
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "deploy", reason: "ci-failed", message: expect.stringContaining("Nothing was deployed") });
+    expect(s.calls).toEqual(["fileGate", "autoGreen", "complete"]);
+    expect(rel.approvalsNeeded).toEqual(["a pull request check failed before the deploy"]);
+    expect(plane.gaveUp).toHaveLength(1);
+  });
+
+  test("codex r1 #5: a re-run left pending after the seal also stops it before the deploy", async () => {
+    const { s, adapters } = autoWorld();
+    const ci = adapters.github.checks;
+    adapters.github.checks = async (repo, sha) => s.calls.includes("autoGreen") && sha === SHA
+      ? [...await ci(repo, sha), { id: 99, app: "github-actions", suite: 1, head: sha, name: REQUIRED_PR_CHECKS[0], status: "in_progress", conclusion: null }] : ci(repo, sha);
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "deploy", reason: "ci-failed" });
+    expect(s.calls).not.toContain("deploy");
+  });
+
+  test("codex r1 #4: another app's later same-name success can't hide a GitHub Actions failure, for a person's release too", async () => {
+    const { s, adapters } = autoWorld({ setting: false });
+    const ci = adapters.github.checks;
+    adapters.github.checks = async (repo, sha) => s.calls.includes("deploy") && sha === SHA
+      ? [...red(sha), { id: 50, app: "some-other-app", suite: 9, head: sha, name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "success" }] : ci(repo, sha);
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "ci", reason: "ci-failed" });
+    expect(s.calls).not.toContain("merge");
+  });
+
+  test("codex r1 #4: a check filed under another commit fails the verdict", async () => {
+    const { s, adapters } = autoWorld({ setting: false });
+    const ci = adapters.github.checks;
+    adapters.github.checks = async (repo, sha) => s.calls.includes("deploy") && sha === SHA ? (await ci(repo, sha)).map(run => ({ ...run, head: OTHER })) : ci(repo, sha);
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "ci", reason: "ci-failed", message: expect.stringContaining("reported for") });
+  });
+
+  test("security scan: a build that failed before its check ends the automatic road (never counted as a flake retry)", async () => {
+    const { s, adapters, plane } = autoWorld();
+    s.onSleep = [state => { if (state.gate.approval !== null) state.gate.failed = "run 2757 ended error"; }];
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "check", reason: "check-failed" });
+    expect(plane.checkFailed).toEqual([]);
+    expect(plane.gaveUp).toEqual([expect.stringContaining("release build")]);
+  });
+
+  test("prChecksVerdict: jobs by app, suite and name, judged by the latest attempt; the cap only for an automatic approval", () => {
+    const at = (id: number, conclusion: string | null, extra: Partial<CheckRun> = {}): CheckRun => ({ id, name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion, app: "github-actions", suite: 1, head: SHA, ...extra });
+    const rest = passing(REQUIRED_PR_CHECKS.slice(1)).map((run, i) => ({ ...run, id: 100 + i, app: "github-actions", suite: 1, head: SHA }));
+    const flaky = [at(1, "failure"), at(2, "failure"), at(3, "failure"), at(4, "success"), ...rest];
+    expect(prChecksVerdict(flaky, SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "passed" });
+    expect(prChecksVerdict(flaky, SHA, REQUIRED_PR_CHECKS, { cap: 2 })).toMatchObject({ state: "failed", failed: [expect.stringContaining("failed 3 times")] });
+    expect(prChecksVerdict(flaky.slice(1), SHA, REQUIRED_PR_CHECKS, { cap: 2 })).toMatchObject({ state: "passed", failures: [{ id: 2 }, { id: 3 }] });
+    // Two workflow runs of the same job: each must pass on its own latest attempt.
+    expect(prChecksVerdict([at(1, "success"), at(2, "failure", { suite: 2 }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
+    expect(prChecksVerdict([at(1, "success", { app: "other" }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
+    expect(prChecksVerdict([at(1, "success", { suite: null }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
+    expect(prChecksVerdict([at(1, "success", { id: null }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
+    expect(prChecksVerdict(rest, SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "pending" });
   });
 });

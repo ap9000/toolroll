@@ -171,6 +171,9 @@ export const RELEASE_APPROVAL_ACTION = "release approval changed";
 /** The plane's record of what proved an automatic seal (`auto-check` or `auto-green`): one ledger row per seal, its
  * id named by the seal's `mode_digest` as `auto:<id>`. Only release-auto.ts writes it. */
 export const AUTO_EVIDENCE_ACTION = "release auto-approved";
+/** An automatic seal taken back for good (the setting lowered, a refusal): its outcome names the seal's `auto:<id>`, and
+ * that evidence never stands again. */
+export const AUTO_WITHDRAWN_ACTION = "release auto-approval withdrawn";
 
 export type ReleaseApprovalSetting = { auto: boolean; setBy: string | null; at: string | null };
 
@@ -201,7 +204,8 @@ export const autoSealSql = (scope: string, repo: string): string =>
     AND EXISTS (SELECT 1 FROM action_ledger ae WHERE ae.task_id = ${scope}.task_id AND ae.action = '${AUTO_EVIDENCE_ACTION}'
         AND ae.outcome = ${scope}.approval_basis AND ${scope}.mode_digest = 'auto:' || ae.id AND json_valid(ae.detail)
         AND json_extract(ae.detail, '$.v') = 1 AND json_extract(ae.detail, '$.digest') = ${scope}.approved_digest
-        AND json_extract(ae.detail, '$.candidate') = ${scope}.candidate))`;
+        AND json_extract(ae.detail, '$.candidate') = ${scope}.candidate)
+    AND NOT EXISTS (SELECT 1 FROM action_ledger aw WHERE aw.task_id = ${scope}.task_id AND aw.action = '${AUTO_WITHDRAWN_ACTION}' AND aw.outcome = ${scope}.mode_digest))`;
 
 /** The evidence an automatic seal names, read strictly; null when the row is missing or doesn't match the seal. */
 export type AutoEvidence = {
@@ -215,6 +219,7 @@ export function autoEvidenceOf(store: Store, taskId: string, modeDigest: string 
   if (match === null) return null;
   const row = store.handle.prepare("SELECT id, at, actor, task_id, outcome, detail FROM action_ledger WHERE id = ? AND action = ?").get(Number(match[1]), AUTO_EVIDENCE_ACTION);
   if (row === undefined || row["task_id"] !== taskId || row["outcome"] !== kind) return null;
+  if (store.handle.prepare("SELECT 1 AS hit FROM action_ledger WHERE task_id = ? AND action = ? AND outcome = ?").get(taskId, AUTO_WITHDRAWN_ACTION, `auto:${match[1]}`) !== undefined) return null;
   let detail: Record<string, unknown>;
   try { detail = JSON.parse(String(row["detail"])) as Record<string, unknown>; } catch { return null; }
   if (detail === null || typeof detail !== "object" || detail["v"] !== 1 || typeof detail["digest"] !== "string" || typeof detail["candidate"] !== "string") return null;

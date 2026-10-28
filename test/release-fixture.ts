@@ -46,7 +46,9 @@ export function releaseFixture(options: { files?: Record<string, string>; protec
   /** Leave the release task filed and unapproved (an automatic approval's starting point). */
   approve?: boolean;
   /** A commit on top of the base, released as the candidate. */
-  candidate?: Record<string, string | null> } = {}): ReleaseFixture {
+  candidate?: Record<string, string | null>;
+  /** A commit between the base and the candidate (a branch's earlier commit). */
+  intermediate?: Record<string, string | null> } = {}): ReleaseFixture {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-release-once-")));
   const repo = join(dir, "project");
   mkdirSync(repo);
@@ -79,6 +81,7 @@ export function releaseFixture(options: { files?: Record<string, string>; protec
   });
   git("add", "-A"); git("commit", "-q", "-m", "release");
   const base = git("rev-parse", "HEAD");
+  if (options.intermediate !== undefined) commit(options.intermediate, "intermediate");
   const approved = options.candidate === undefined ? base : commit(options.candidate, "candidate");
   const databaseFile = join(dir, "state", "orders.db");
   mkdirSync(join(dir, "state"), { recursive: true });

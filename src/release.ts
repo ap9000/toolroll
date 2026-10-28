@@ -58,8 +58,16 @@ export const RELEASE_LIMITS: Readonly<Record<WaitingStep, number>> = { gate: 60,
 const POLL_MS = 15_000;
 
 /** One check attempt; `app` is the GitHub App that made it (github-actions for a workflow), when known; `id` its check
- * run id, when known. */
-export type CheckRun = { name: string; status: string; conclusion: string | null; app?: string | null; id?: number | null };
+ * run id, `suite` its check suite (one workflow run: its re-runs stay in it) and `head` the commit GitHub filed it
+ * under, when known. */
+export type CheckRun = { name: string; status: string; conclusion: string | null; app?: string | null; id?: number | null; suite?: number | null; head?: string | null };
+
+/** How many failed attempts of one CI check, and failed release-check runs, an automatic approval tolerates (flakes on a
+ * pinned commit and digest), before a person decides (auto-approve-green.md). */
+export const AUTO_FLAKE_CAP = 2;
+/** One failed attempt that a later attempt of the same job passed. */
+export type CheckFailure = { id: number; name: string; conclusion: string | null };
+
 export type PullRequest = { number: number; state: "open" | "closed" | "merged"; head: string; base: string; mergeCommit: string | null };
 /** The release task as Toolroll records it (`task show --json`). */
 export type GateState = {
@@ -276,7 +284,8 @@ export type ReleaseOptions = {
 
 /** A stop the release reports: the step it stopped at and why, in words. */
 class Stop extends Error {
-  constructor(readonly reason: string, message: string) { super(message); }
+  /** `build`: the release build itself failed before its check (not a failed check). */
+  constructor(readonly reason: string, message: string, readonly build = false) { super(message); }
 }
 /** The branch moved before the deploy reservation: carry the approval to the new head, or file it for a person. */
 class Restart extends Error {
@@ -519,15 +528,37 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
      * release needs a person's fresh approval, even for the same commit. It is persisted (the authority stops; the
      * journal says so) before the release stops; `--new` files the commit for a person again.
      */
-    const ciFailedAfterDeploy = async (what: string): Promise<never> => {
+    const ciFailedAfterDeploy = async (what: string, deploy: "before" | "after" = "after"): Promise<never> => {
       j.needsApproval = true; save();
-      // An automatic approval never outlives a CI failure after its deploy: the owner is told, and a person approves again.
-      if (j.auto?.state === "approved") await rel?.auto?.giveUp(j.task.id, `${what}, after the deploy`);
+      // An automatic approval never outlives a CI failure: the owner is told, and a person approves again.
+      if (j.auto?.state === "approved") await rel?.auto?.giveUp(j.task.id, deploy === "after" ? `${what}, after the deploy` : what);
       // Fail closed: the authority must have stopped; otherwise its approval could still carry the commit.
-      if (rel !== undefined && j.authority && (epoch === null || !await rel.needsApproval(j.authority.id, "a pull request check failed after the deploy", epoch))) {
+      if (rel !== undefined && j.authority && (epoch === null || !await rel.needsApproval(j.authority.id, deploy === "after" ? "a pull request check failed after the deploy" : "a pull request check failed before the deploy", epoch))) {
         throw new Stop("lease", `${what}. Nothing was merged, but this release's approval couldn't be stopped (another coordinator holds it, or a merge is reserved). Check it with \`toolroll release ${j.branch} --repo ${j.checkout}\` before going on.`);
       }
-      throw new Stop("ci-failed", `${what}. Nothing was merged. The deploy had already started, so this commit needs a person's approval again: run \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
+      throw new Stop("ci-failed", deploy === "after"
+        ? `${what}. Nothing was merged. The deploy had already started, so this commit needs a person's approval again: run \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`
+        : `${what}. Nothing was deployed or merged. This commit needs a person's approval: run \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
+    };
+    /** An automatic approval's CI allowance: at most AUTO_FLAKE_CAP failed attempts per job; a person's has none. */
+    const autoCap = (): { cap?: number } => (j.auto?.state === "approved" ? { cap: AUTO_FLAKE_CAP } : {});
+    /**
+     * An automatically approved release stands only while its CI does (auto-approve-green.md): the complete, current
+     * checks on the exact commit are read again right before each step that can't be taken back — the deploy, the CLI
+     * relink, the merge and the tag. Anything but green (failed, a job re-run and pending, past the flake cap) stops the
+     * release, revokes its approval and tells the owner; the commit then needs a person.
+     */
+    const autoCiHolds = async (before: string) => {
+      if (j.auto?.state !== "approved") return;
+      const verdict = prChecksVerdict(await adapters.github.checks(j.github, j.candidate.sha), j.candidate.sha, REQUIRED_PR_CHECKS, { cap: AUTO_FLAKE_CAP });
+      if (verdict.state === "passed") return;
+      if (before === "the tag") {
+        // Already merged: nothing to revoke. It isn't tagged or published, and a person decides.
+        await rel?.auto?.giveUp(j.task.id, `Pull request checks on ${j.candidate.sha.slice(0, 7)} stopped passing after the merge`);
+        throw new Stop("ci-failed", `Pull request checks on ${j.candidate.sha.slice(0, 7)} are no longer all passing: ${(verdict.state === "failed" ? verdict.failed : verdict.waiting).join(", ")}. It was merged, but nothing was tagged or published; a person decides how to go on.`);
+      }
+      await ciFailedAfterDeploy(`Pull request checks on ${j.candidate.sha.slice(0, 7)} are no longer all passing before ${before}: ${(verdict.state === "failed" ? verdict.failed : verdict.waiting).join(", ")}`,
+        before === "the deploy" ? "before" : "after");
     };
     /** identity(), on a plane that keeps release authority; a legacy plane keeps the old rules. */
     const watch = async (action: ReleaseAction) => { if (rel !== undefined) await identity(action, true); };
@@ -688,7 +719,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             await approved(gate);
             // A rerun of the same approved commit is on its way: the failure before it is not this release's answer.
             if (gate.pending === true && gate.result?.check !== "passed") return null;
-            if (gate.failed !== null) throw new Stop("check-failed", `The release build of ${j.task.id} failed: ${gate.failed}. Fix it and release the new commit with --new.`);
+            if (gate.failed !== null) throw new Stop("check-failed", `The release build of ${j.task.id} failed: ${gate.failed}. Fix it and release the new commit with --new.`, true);
             if (gate.result === null || gate.result.check === "running" || gate.result.check === "pending") return null;
             // The build records a prepared candidate as a commit of its own (its message names the task): it must hold
             // exactly the candidate's tree, or it isn't the release.
@@ -705,7 +736,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             catch (error) {
               // A failed check (or a changed candidate) ends the automatic road: the owner is told, and a person decides.
               // A failed check is told, and stays checkable again on the same commit (a flake); anything else ends the road.
-              if (error instanceof Stop && j.auto?.state === "checking" && error.reason === "check-failed") await rel?.auto?.checkFailed(j.task.id, error.message.replace(/\.$/, ""));
+              if (error instanceof Stop && j.auto?.state === "checking" && error.reason === "check-failed" && !error.build) await rel?.auto?.checkFailed(j.task.id, error.message.replace(/\.$/, ""));
               else if (error instanceof Stop && j.auto?.state === "checking" && error.reason !== "approval") await rel?.auto?.giveUp(j.task.id, error.message.replace(/\.$/, ""));
               throw error;
             }
@@ -759,6 +790,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           const check = j.check!;
           await recoverDeploy();
           await checked(await adapters.toolroll.gate(j.task.id), "deploy");
+          if (j.deploy === null && j.intents.deploy === undefined) await autoCiHolds("the deploy");
           // A deployment that finished but whose answer was lost: the services already run a runtime of this commit.
           let runtime = await served(adapters, builtHead());
           // Already running this candidate (a new generation after a CI failure, or a lost answer): the release still
@@ -811,6 +843,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
         }
         case "link": {
           const runtime = j.deploy!.runtime;
+          await autoCiHolds("the CLI names move");
           if (await served(adapters, builtHead()) !== runtime) throw new Stop("drift", `The console and worker no longer run ${runtime}; the CLI names were not moved.`);
           if (j.links === undefined || j.links === null) {
             j.links = await adapters.toolroll.cliLinks();
@@ -827,7 +860,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
         case "ci": {
           await waitFor("ci", `the pull request checks on ${j.candidate.sha.slice(0, 7)}`, async () => {
             await pinned();
-            const verdict = checksVerdict(await adapters.github.checks(j.github, j.candidate.sha), REQUIRED_PR_CHECKS);
+            const verdict = prChecksVerdict(await adapters.github.checks(j.github, j.candidate.sha), j.candidate.sha, REQUIRED_PR_CHECKS, autoCap());
             if (verdict.state === "failed") await ciFailedAfterDeploy(`Pull request checks failed on ${j.candidate.sha.slice(0, 7)}: ${verdict.failed.join(", ")}`);
             return verdict.state === "passed" ? true : null;
           });
@@ -850,7 +883,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             const main = await adapters.repo.mainHead();
             if (!await adapters.repo.contains(j.candidate.sha, main)) throw new Stop("base-moved", `main moved to ${main.slice(0, 7)}, which ${j.branch} doesn't contain, so the merge wouldn't be the gated tree. Nothing was merged: update the branch and release the new commit with --new.`);
             // The checks again, at the moment of merging: a rerun that failed since must not merge.
-            const verdict = checksVerdict(await adapters.github.checks(j.github, j.candidate.sha), REQUIRED_PR_CHECKS);
+            const verdict = prChecksVerdict(await adapters.github.checks(j.github, j.candidate.sha), j.candidate.sha, REQUIRED_PR_CHECKS, autoCap());
             if (verdict.state !== "passed") await ciFailedAfterDeploy(`Pull request checks are no longer all passing on ${j.candidate.sha.slice(0, 7)}`);
             let operation: string | undefined;
             if (rel !== undefined && j.authority && epoch !== null) {
@@ -889,7 +922,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           const merge = j.merge!;
           const at = await adapters.github.tag(j.github, j.tag);
           if (at !== null && at !== merge.sha) throw new Stop("conflict", `${j.tag} already points at ${at.slice(0, 7)}, not the merge ${merge.sha.slice(0, 7)}.`);
-          if (at === null) { intend("tag"); await adapters.github.createTag(j.github, j.tag, merge.sha); }
+          if (at === null) { await autoCiHolds("the tag"); intend("tag"); await adapters.github.createTag(j.github, j.tag, merge.sha); }
           j.tagged = { sha: merge.sha };
           advance("publish");
           break;
@@ -1038,7 +1071,7 @@ async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal, wait: <
         unread = true;
         return null;
       }
-      const verdict = checksVerdict(runs.filter(run => required.includes(run.name)), required);
+      const verdict = prChecksVerdict(runs.filter(run => required.includes(run.name)), j.candidate.sha, required);
       if (verdict.state === "failed") {
         throw new Stop("ci-failed", `Pull request checks already failed on ${sha}: ${verdict.failed.join(", ")}. Nothing was filed or sent for approval. Fix the branch, then release the new commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\` (or rerun the failed job on GitHub and run this command again).`);
       }
@@ -1065,4 +1098,42 @@ export function transientNetworkError(error: unknown): boolean {
 /** The part of a network failure worth saying: its matching phrase. */
 function networkWords(error: unknown): string {
   return TRANSIENT_NETWORK.exec(String((error as Error)?.message ?? error))?.[0] ?? "a network failure";
+}
+
+/**
+ * The pull request's checks on exactly `head`, every attempt (the adapter asks GitHub for all of them, filter=all):
+ * each reported attempt must be filed under `head` with a check-run id; a required check counts only from GitHub
+ * Actions (an app that names a check alike can't stand in for it); attempts are grouped by the job they belong to — the
+ * app, its check suite (a workflow run, whose re-runs stay in it) and the name — and every group is judged by its
+ * latest attempt; every required check needs a group. With `cap`, a group whose earlier attempts failed more than `cap`
+ * times fails too (an automatic approval's flake allowance); the failures it tolerated are returned.
+ */
+export function prChecksVerdict(runs: readonly CheckRun[], head: string, required: readonly string[], options: { cap?: number } = {}):
+  { state: "passed"; failures: CheckFailure[] } | { state: "pending"; waiting: string[] } | { state: "failed"; failed: string[] } {
+  const failed: string[] = [], waiting: string[] = [], failures: CheckFailure[] = [];
+  const groups = new Map<string, CheckRun[]>();
+  for (const run of runs) {
+    if (run.head !== head) { failed.push(`${run.name} (reported for ${run.head == null ? "no commit" : run.head.slice(0, 7)}, not ${head.slice(0, 7)})`); continue; }
+    if (typeof run.id !== "number" || !Number.isSafeInteger(run.id) || run.id <= 0) { failed.push(`${run.name} (no check run id)`); continue; }
+    if (required.includes(run.name) && run.app !== "github-actions") { failed.push(`${run.name} (reported by ${run.app ?? "an unknown app"}, not GitHub Actions)`); continue; }
+    if (run.app === "github-actions" && (typeof run.suite !== "number" || !Number.isSafeInteger(run.suite))) { failed.push(`${run.name} (no workflow run)`); continue; }
+    const key = JSON.stringify([run.app ?? null, run.suite ?? null, run.name]);
+    groups.set(key, [...(groups.get(key) ?? []), run]);
+  }
+  const named = new Set([...groups.values()].map(attempts => attempts[0]!.name));
+  for (const name of required) if (!named.has(name)) waiting.push(`${name} (not started)`);
+  for (const attempts of groups.values()) {
+    const ordered = [...attempts].sort((a, b) => a.id! - b.id!);
+    const latest = ordered.at(-1)!, name = latest.name;
+    if (latest.status !== "completed") { waiting.push(`${name} (${latest.status})`); continue; }
+    if (latest.conclusion !== "success") { failed.push(`${name} (${latest.conclusion ?? "no conclusion"})`); continue; }
+    const earlier = ordered.slice(0, -1);
+    // An automatic approval also waits out an earlier attempt still running (its outcome counts toward the cap).
+    if (options.cap !== undefined && earlier.some(one => one.status !== "completed")) { waiting.push(`${name} (an earlier attempt still running)`); continue; }
+    const flaked = earlier.filter(one => one.conclusion !== "success");
+    if (options.cap !== undefined && flaked.length > options.cap) { failed.push(`${name} (failed ${flaked.length} times before it passed)`); continue; }
+    failures.push(...flaked.map(one => ({ id: one.id!, name, conclusion: one.conclusion })));
+  }
+  if (failed.length > 0) return { state: "failed", failed };
+  return waiting.length > 0 ? { state: "pending", waiting } : { state: "passed", failures };
 }

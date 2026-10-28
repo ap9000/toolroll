@@ -15,12 +15,13 @@
 import { assignmentOf } from "./assignment.js";
 import { projectGitDir } from "./check-report.js";
 import { runCheckLevel } from "./check-levels.js";
-import { readVerifiedCommit, verifiedBlobs, verifiedFirstParentWalk, verifiedTreeDiff } from "./commit-extract.js";
+import { readVerifiedCommit, verifiedBlobs, verifiedTreeDiff } from "./commit-extract.js";
 import { chatControlHref } from "./chat-controls.js";
-import { REQUIRED_PR_CHECKS } from "./release.js";
-import { AUTO_EVIDENCE_ACTION, LIVE_RELEASE_STATES, RELEASE_APPROVAL_ACTION, releaseAuthorityOfTask, releaseAutoApproves, type ReleaseApprovalSetting, releaseApprovalSetting } from "./release-authority.js";
+import { AUTO_FLAKE_CAP, REQUIRED_PR_CHECKS, prChecksVerdict, type CheckFailure } from "./release.js";
+import { CARRY_RULES, rulePath } from "./release-carry.js";
+import { AUTO_EVIDENCE_ACTION, AUTO_WITHDRAWN_ACTION, LIVE_RELEASE_STATES, RELEASE_APPROVAL_ACTION, releaseAuthorityOfTask, releaseAutoApproves, type ReleaseApprovalSetting, releaseApprovalSetting } from "./release-authority.js";
 import { autoReleaseApprovalOf, personApprovalOf } from "./scope.js";
-import { revokeRelease, type Store } from "./store.js";
+import { releaseOperations, revokeRelease, type Store } from "./store.js";
 import { verificationEvidence } from "./verification-evidence.js";
 
 export { RELEASE_APPROVAL_ACTION, releaseApprovalSetting, releaseAutoApproves, type ReleaseApprovalSetting };
@@ -31,7 +32,7 @@ export const RELEASE_APPROVAL_WORDS = { ask: "Ask me", auto: "Approve automatica
 export const CI_OBSERVATION_MS = 5 * 60_000;
 
 /** One check run on the candidate as the plane's own `gh` reported it (oldest first). */
-export type ObservedCheckRun = { id: number | null; name: string; status: string; conclusion: string | null; app: string | null };
+export type ObservedCheckRun = { id: number | null; name: string; status: string; conclusion: string | null; app: string | null; suite?: number | null; head?: string | null };
 /** The plane's own look at GitHub CI for one commit (release-adapters.ts makes it, right before the seal). */
 export type CiObservation = { head: string; observedAt: string; runs: readonly ObservedCheckRun[] };
 
@@ -55,10 +56,18 @@ export function setReleaseApproval(store: Store, repo: string, auto: boolean, by
           WHERE r.repo = ? AND s.approved_at IS NOT NULL AND s.approval_basis IN ('auto-check', 'auto-green')`).all(repo).map(row => String(row["task_id"]));
       for (const taskId of sealed) {
         const found = releaseAuthorityOfTask(store, taskId);
-        // A merge already under way finishes through its own reconciliation; it can't be taken back here.
-        if (found !== null && (found.authority.state === "merge-reserved" || found.authority.state === "merged")) continue;
-        if (found !== null && LIVE_RELEASE_STATES.includes(found.authority.state)) revokeRelease(store, found.authority.id, `${by}: automatic release approval turned off`, now);
-        unseal(store, taskId);
+        const a = found?.authority ?? null;
+        if (a !== null && a.state === "merged") continue;
+        if (a !== null && a.state === "merge-reserved") {
+          // A merge already issued (running, or its outcome unknown) is genuinely in flight: it finishes through its own
+          // reconciliation. One only reserved, never issued, is stopped for good here, so it can't come back.
+          const issued = releaseOperations(store, a.id).some(op => op.kind === "merge" && (op.state === "running" || op.state === "unknown" || op.state === "succeeded"));
+          if (issued) continue;
+          store.handle.prepare("UPDATE release_authority SET state = 'revoked', ended_at = ?, ended_by = ?, rev = rev + 1 WHERE id = ? AND rev = ?")
+            .run(now.toISOString(), `${by}: automatic release approval turned off`, a.id, a.rev);
+          store.recordAction({ at: now.toISOString(), actor: by, repo: a.repo, taskId, runId: null, action: "release revoked", outcome: "revoked", source: "work", detail: `release ${a.id}: automatic release approval turned off before its merge was issued` });
+        } else if (a !== null && LIVE_RELEASE_STATES.includes(a.state)) revokeRelease(store, a.id, `${by}: automatic release approval turned off`, now);
+        unseal(store, taskId, now);
         withdrawn.push(taskId);
         store.enqueueNotification({ dedupeKey: `release-auto-withdrawn:${taskId}:${now.toISOString()}`, kind: "release-auto", subject: "Release needs your approval",
           body: "Automatic release approval was turned off, so this release waits for a person's approval.", link: chatControlHref("task", taskId), source: { taskRef: store.lookupRef(taskId)!.id } }, now);
@@ -69,8 +78,11 @@ export function setReleaseApproval(store: Store, repo: string, auto: boolean, by
   });
 }
 
-/** Take back an automatic seal: the task asks a person again (its result, if any, is kept). */
-function unseal(store: Store, taskId: string): void {
+/** Take back an automatic seal for good: the task asks a person again (its result, if any, is kept), and its evidence is
+ * marked withdrawn, so no later reading — the setting turned on again included — lets it stand. */
+function unseal(store: Store, taskId: string, now: Date): void {
+  const sealedWith = store.handle.prepare("SELECT mode_digest FROM task_scope WHERE task_id = ? AND approval_basis IN ('auto-check', 'auto-green')").get(taskId)?.["mode_digest"];
+  if (typeof sealedWith === "string") store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: store.lookupRef(taskId)?.repo ?? null, taskId, runId: null, action: AUTO_WITHDRAWN_ACTION, outcome: sealedWith, source: "work" });
   store.handle.prepare(`UPDATE task_scope SET approved_at = NULL, approved_by = NULL, approved_digest = NULL, approved_profile_json = NULL,
       approved_route_json = NULL, approval_basis = NULL, mode_digest = NULL WHERE task_id = ? AND approval_basis IN ('auto-check', 'auto-green')`).run(taskId);
 }
@@ -122,7 +134,10 @@ function inTransaction<T>(store: Store, body: () => T | Refusal): T | Refusal {
  * approves it. Idempotent: an `auto-check` already standing on this digest is the answer. A person's own approval
  * already there is left alone (the coordinator then takes the person's road).
  */
-export function authorizeAutoCheck(store: Store, input: { taskId: string; digest: string; candidate: string; now: Date }): { ok: true; already: boolean } | Refusal {
+export function authorizeAutoCheck(store: Store, input: { taskId: string; digest: string; candidate: string;
+  /** Where the candidate left its release's base branch, as the plane read it from GitHub (release-adapters.ts
+   * readMergeBase): the one comparison base every check of this commit is judged against. Never a task branch. */
+  base: string; now: Date }): { ok: true; already: boolean } | Refusal {
   return inTransaction(store, (): { ok: true; already: boolean } | Refusal => {
     const facts = releaseTaskFacts(store, input);
     if (!facts.ok) return facts;
@@ -134,61 +149,62 @@ export function authorizeAutoCheck(store: Store, input: { taskId: string; digest
       }
       return refuse(personApprovalOf(store, input.taskId).ok ? "a person already approved it" : "it already has an approval that isn't automatic");
     }
-    sealWith(store, "auto-check", input.taskId, facts.by, facts.repo, { digest: input.digest, candidate: input.candidate }, input.now,
+    if (!/^[0-9a-f]{40}$/.test(input.base)) return refuse("GitHub named no base for this commit");
+    const gitDir = projectGitDir(facts.repo);
+    if (gitDir === null || !readVerifiedCommit(gitDir, input.base).ok) return refuse(`the base ${input.base.slice(0, 7)} isn't in the project's own Git directory`);
+    sealWith(store, "auto-check", input.taskId, facts.by, facts.repo, { digest: input.digest, candidate: input.candidate, base: input.base }, input.now,
       "the scope can't be approved automatically (its approval rules, text or check access need a person)");
     return { ok: true as const, already: false };
   });
 }
 
-/** Paths an automatic approval never ships without a person: what defines CI or the check, or steers agents. */
-export function autoHarnessPath(path: string): string | null {
-  const p = path.toLowerCase();
-  if (/(^|\/)\.(github|claude|codex|gemini|cursor)(\/|$)/.test(p)) return "it configures CI or agents";
-  if (/(^|\/)(agents|claude|gemini|security)\.md$/.test(p)) return "it's an agent or security policy file";
-  if (/(^|\/)vitest\.config\.[cm]?[jt]s$/.test(p)) return "it's part of the test harness";
-  if (/^scripts\/(release-check[^/]*|suite-lifecycle|provider-gate|e2e-parallel|e2e-kit|upgrade-path)\.mjs$/.test(p)) return "it's part of the release check";
-  if (/^test\/(setup-state|fresh-store|temp-root|ensure-build|release-reporter)\.ts$/.test(p)) return "it's part of the test harness";
-  return null;
-}
-
-/** Flakes: how many failed attempts one CI check, and how many failed release-check runs, may have before a person decides.
- * The head and digest are pinned, so between attempts only nondeterminism differs. */
-export const MAX_FAILED_ATTEMPTS = 2;
-
-/** One CI attempt that failed before its latest attempt passed, as the evidence records it. */
-export type CiFailure = { id: number; name: string; conclusion: string | null };
+/** Test infrastructure that lives under src/ (helpers and fixtures, not tests): a person approves changes to it. */
+const SRC_TEST_INFRA = /^src\/(fixtures\/|(.*\/)?(test-[^/]*|[^/]*-test-support[^/]*|[^/]*fixtures?[^/]*)\.[cm]?[jt]sx?$)/;
+/** Build or type configuration anywhere: a person approves it. */
+const BUILD_CONFIG = /(^|\/)(tsconfig[^/]*\.json|[^/]*\.config\.[cm]?[jt]s|\.npmrc|\.nvmrc|\.node-version)$/;
 
 /**
- * GitHub CI on the exact head: fresh, every required check present, and each reported check judged by its LATEST attempt
- * (highest check-run id), which must be a completed GitHub Actions success. Earlier attempts must be GitHub Actions too,
- * completed, and at most MAX_FAILED_ATTEMPTS of them failed; they are returned for the evidence.
+ * What an automatic approval may ship without a person, as an allowlist over each changed path (auto-approve-green.md):
+ * product code under `src/` (its tests included; never its test helpers or fixtures, nor build configuration), docs
+ * (never the testing policy or plans, never agent or security policy), the changelog and README, and a version bump of
+ * package.json and package-lock.json. Everything else — CI, scripts (the check, the build, the harness), test/,
+ * dependencies, the lockfile beyond its version, config — and every path the release carry rules never carry, needs a
+ * person. Null when the path may ship.
+ */
+export function autoPathProblem(path: string): string | null {
+  const normal = rulePath(path);
+  for (const rule of CARRY_RULES.never) if (rule.matches(normal)) return rule.why;
+  if (BUILD_CONFIG.test(normal)) return "it configures the build or the checks";
+  if (normal === "package.json" || normal === "package-lock.json") return null;
+  if (normal.startsWith("src/")) return SRC_TEST_INFRA.test(normal) ? "it's a test helper or fixture" : null;
+  if (normal === "changelog.md" || normal === "readme.md") return null;
+  if (normal.startsWith("docs/") && normal.endsWith(".md")) return null;
+  return "it's outside what a release approves itself for (product code, tests, docs, the changelog and a version bump)";
+}
+
+/** Flakes: how many failed attempts one CI job, and how many unsuccessful release-check runs, may have before a person
+ * decides. The head and digest are pinned, so between attempts only nondeterminism differs. */
+export const MAX_FAILED_ATTEMPTS = AUTO_FLAKE_CAP;
+
+/** One CI attempt that failed before its job's latest attempt passed, as the evidence records it. */
+export type CiFailure = CheckFailure;
+
+/**
+ * GitHub CI on the exact head, as the plane read it (every attempt): fresh, every run GitHub Actions, and the same
+ * verdict every later release boundary uses (release.ts prChecksVerdict: exact head, each job by its latest attempt,
+ * every required check present), with the flake cap. The tolerated failures are returned for the evidence.
  */
 export function ciVerdict(observation: CiObservation, candidate: string, now: Date): { ok: true; failures: CiFailure[] } | { ok: false; problem: string } {
   const no = (problem: string) => ({ ok: false as const, problem });
   if (observation.head !== candidate) return no(`CI was read for ${observation.head.slice(0, 7)}, not ${candidate.slice(0, 7)}`);
   const at = Date.parse(observation.observedAt);
   if (!Number.isFinite(at) || at > now.getTime() + 60_000 || now.getTime() - at > CI_OBSERVATION_MS) return no("the CI reading isn't fresh");
-  const byName = new Map<string, ObservedCheckRun[]>();
-  for (const run of observation.runs) {
-    if (run.id === null || !Number.isSafeInteger(run.id) || run.id <= 0) return no(`${run.name} has no check run id`);
-    if (run.app !== "github-actions") return no(`${run.name} was reported by ${run.app ?? "an unknown app"}, not GitHub Actions`);
-    byName.set(run.name, [...(byName.get(run.name) ?? []), run]);
-  }
-  const missing = REQUIRED_PR_CHECKS.filter(name => !byName.has(name));
-  if (missing.length > 0) return no(`required checks didn't run: ${missing.join(", ")}`);
-  const failures: CiFailure[] = [];
-  for (const [name, attempts] of byName) {
-    const ordered = [...attempts].sort((a, b) => a.id! - b.id!);
-    const latest = ordered.at(-1)!;
-    if (latest.status !== "completed") return no(`${name} is ${latest.status}`);
-    if (latest.conclusion !== "success") return no(`${name} ${latest.conclusion === null ? "has no conclusion" : `ended ${latest.conclusion}`}`);
-    const earlier = ordered.slice(0, -1);
-    if (earlier.some(one => one.status !== "completed")) return no(`an earlier attempt of ${name} hasn't finished`);
-    const failed = earlier.filter(one => one.conclusion !== "success");
-    if (failed.length > MAX_FAILED_ATTEMPTS) return no(`${name} failed ${failed.length} times before it passed, so a person decides`);
-    failures.push(...failed.map(one => ({ id: one.id!, name, conclusion: one.conclusion })));
-  }
-  return { ok: true, failures };
+  const other = observation.runs.find(run => run.app !== "github-actions");
+  if (other !== undefined) return no(`${other.name} was reported by ${other.app ?? "an unknown app"}, not GitHub Actions`);
+  const verdict = prChecksVerdict(observation.runs, candidate, REQUIRED_PR_CHECKS, { cap: MAX_FAILED_ATTEMPTS });
+  if (verdict.state === "failed") return no(verdict.failed.join(", "));
+  if (verdict.state === "pending") return no(`not finished: ${verdict.waiting.join(", ")}`);
+  return { ok: true, failures: verdict.failures };
 }
 
 /** ciVerdict's problem, or null when CI passes. */
@@ -197,30 +213,44 @@ export function ciProblem(observation: CiObservation, candidate: string, now: Da
   return verdict.ok ? null : verdict.problem;
 }
 
-/** What the change since the build's recorded base touches that an automatic approval never ships, from verified objects. */
-function harnessProblem(repo: string, base: string | null, candidate: string): string | null {
+/** package.json or package-lock.json with only its version fields left out, canonical (sorted keys); undefined when it
+ * can't be read. */
+function withoutVersion(path: string, bytes: Buffer | undefined): string | null | undefined {
+  if (bytes === undefined) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(bytes.toString("utf8")); } catch { return undefined; }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const copy = structuredClone(parsed) as Record<string, unknown>;
+  delete copy["version"];
+  if (path === "package-lock.json") {
+    const root = (copy["packages"] as Record<string, Record<string, unknown>> | undefined)?.[""];
+    if (root !== undefined && typeof root === "object" && root !== null) delete root["version"];
+  }
+  const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
+    : value !== null && typeof value === "object" ? Object.fromEntries(Object.keys(value as object).sort().map(key => [key, canonical((value as Record<string, unknown>)[key])])) : value;
+  return JSON.stringify(canonical(copy));
+}
+
+/** What the candidate changes since `base` (the plane's own reading of where it left its base branch), from verified
+ * objects, that an automatic approval never ships. Null when every change may ship. */
+function changeProblem(repo: string, base: string | null, candidate: string): string | null {
   const gitDir = projectGitDir(repo);
   if (gitDir === null) return "the project's Git directory can't be read";
-  if (base === null || !/^[0-9a-f]{40}$/.test(base)) return "the build recorded no base to compare with";
-  const walk = verifiedFirstParentWalk(gitDir, candidate, base, 500);
-  if (!walk.ok) return `${candidate.slice(0, 7)} doesn't descend from the build's base ${base.slice(0, 7)}`;
+  if (base === null || !/^[0-9a-f]{40}$/.test(base)) return "no base was recorded to compare with";
   const before = readVerifiedCommit(gitDir, base), after = readVerifiedCommit(gitDir, candidate);
   if (!before.ok || !after.ok) return "the candidate's commits can't be read";
   const diff = verifiedTreeDiff(gitDir, before.value.tree, after.value.tree);
   if (!diff.ok) return `the candidate's change can't be read: ${diff.message}`;
   for (const change of diff.value) {
-    const why = autoHarnessPath(change.path);
+    const modes = [change.before?.mode, change.after?.mode].filter((one): one is string => one !== undefined);
+    if (modes.includes("120000") || modes.includes("160000")) return `${change.path} is a symlink or submodule`;
+    const why = autoPathProblem(change.path);
     if (why !== null) return `${change.path} changed (${why})`;
-    if (change.path === "package.json") {
-      const scripts = (tree: string) => {
-        const blobs = verifiedBlobs(gitDir, tree, ["package.json"]);
-        if (!blobs.ok) return undefined;
-        const bytes = blobs.value.get("package.json")?.bytes;
-        if (bytes === undefined) return null;
-        try { return JSON.stringify((JSON.parse(bytes.toString("utf8")) as { scripts?: unknown }).scripts ?? null); } catch { return undefined; }
-      };
-      const was = scripts(before.value.tree), now = scripts(after.value.tree);
-      if (was === undefined || now === undefined || was !== now) return "package.json's scripts changed";
+    const normal = rulePath(change.path);
+    if (normal === "package.json" || normal === "package-lock.json") {
+      const read = (tree: string) => { const blobs = verifiedBlobs(gitDir, tree, [change.path]); return blobs.ok ? withoutVersion(normal, blobs.value.get(change.path)?.bytes) : undefined; };
+      const was = read(before.value.tree), now = read(after.value.tree);
+      if (was === undefined || now === undefined || was !== now) return `${change.path} changed beyond its version (dependencies or scripts need a person)`;
     }
   }
   return null;
@@ -246,10 +276,12 @@ export function sealAutoGreen(store: Store, input: {
     const head = run.headRevision;
     if (head === null) return refuse(`run ${input.run} recorded no commit`);
     if (runCheckLevel(store, run.id) !== "full") return refuse("the release check wasn't Full");
-    // A flake: earlier release checks of this task may have failed, but only re-runs of the same signed scope (the
-    // regate road keeps the candidate and digest), and at most MAX_FAILED_ATTEMPTS of them.
-    const failedRuns = store.handle.prepare(`SELECT r.id, r.scope_digest FROM run_check c JOIN run r ON r.id = c.run
-        WHERE r.task_ref = ? AND r.role = 'builder' AND c.status IS NOT NULL AND c.status <> 'passed' AND r.id <> ? ORDER BY r.id`).all(facts.taskRef, run.id);
+    // A flake: earlier builds of this task may have failed — every one that didn't finish built with a passed check
+    // counts (a failed check, a check that never ran, a build that failed or was interrupted) — but only re-runs of the
+    // same signed scope (the regate road keeps the candidate and digest), and at most MAX_FAILED_ATTEMPTS of them.
+    const failedRuns = store.handle.prepare(`SELECT r.id, r.scope_digest FROM run r LEFT JOIN run_check c ON c.run = r.id
+        WHERE r.task_ref = ? AND r.role = 'builder' AND r.id <> ?
+          AND NOT (COALESCE(r.outcome, '') IN ('built', 'no-change') AND COALESCE(c.status, '') = 'passed') ORDER BY r.id`).all(facts.taskRef, run.id);
     if (failedRuns.some(one => one["scope_digest"] !== input.digest)) return refuse("an earlier check of this release ran on different scope text, so a person decides");
     if (failedRuns.length > MAX_FAILED_ATTEMPTS) return refuse(`the release check failed ${failedRuns.length} times before it passed, so a person decides`);
     const checkFailures = failedRuns.map(one => Number(one["id"]));
@@ -276,14 +308,17 @@ export function sealAutoGreen(store: Store, input: {
       const built = gitDir === null ? null : readVerifiedCommit(gitDir, head), wanted = gitDir === null ? null : readVerifiedCommit(gitDir, input.candidate);
       if (built === null || wanted === null || !built.ok || !wanted.ok || built.value.tree !== wanted.value.tree) return refuse(`the build's commit ${head.slice(0, 7)} doesn't hold exactly ${input.candidate.slice(0, 7)}'s files`);
     }
-    const harness = harnessProblem(facts.repo, run.baseRevision, input.candidate);
-    if (harness !== null) return refuse(harness);
+    // Compared with where the candidate left its base branch, as the plane read it when the check was authorized —
+    // the same base for every attempt, never a build's own recorded base (a task branch can be seeded ahead of time).
+    const base = checking.evidence.base;
+    const changed = changeProblem(facts.repo, base, input.candidate);
+    if (changed !== null) return refuse(changed);
     // GitHub CI, as the plane's own gh saw it moments ago, on exactly this commit.
     const ci = ciVerdict(input.ci, input.candidate, input.now);
     if (!ci.ok) return refuse(`CI: ${ci.problem}`);
-    const observed = input.ci.runs.map(one => ({ id: one.id!, name: one.name }));
+    const observed = input.ci.runs.map(one => ({ id: one.id!, name: one.name, suite: one.suite ?? null }));
     sealWith(store, "auto-green", input.taskId, facts.by, facts.repo, {
-      digest: input.digest, candidate: input.candidate, run: run.id, receipt: input.receipt, head, base: run.baseRevision, ci: observed, observedAt: input.ci.observedAt,
+      digest: input.digest, candidate: input.candidate, run: run.id, receipt: input.receipt, head, base, ci: observed, observedAt: input.ci.observedAt,
       // What failed first on this same commit and digest (flakes), for whoever reads the record later.
       ciFailures: ci.failures, checkFailures,
     }, input.now, "the release terms can't be approved now (an unsettled deploy, a merge already started, or rules that need a person)");
@@ -303,7 +338,7 @@ export function giveUpAutoApproval(store: Store, input: { taskId: string; why: s
   store.transact(() => {
     const ref = store.lookupRef(input.taskId);
     if (ref === null) return;
-    unseal(store, input.taskId);
+    unseal(store, input.taskId, input.now);
     const scope = store.getScope(input.taskId);
     const version = scope?.releaseTerms?.packageVersion ?? null;
     store.enqueueNotification({ dedupeKey: `release-auto-stopped:${input.taskId}:${input.why.slice(0, 120)}`, kind: "release-auto", pushClass: "attention",
