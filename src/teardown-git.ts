@@ -229,3 +229,25 @@ export function checkoutGit(inner: Runner = run): Runner {
     return inner("git", [...TEARDOWN_FLAGS, "-c", "diff.ignoreSubmodules=all", "-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false", ...carried, ...safeArgs], { ...options, env });
   };
 }
+
+/**
+ * checkoutGit, synchronously, for reads a page shows from a checkout an agent writes (docs/plans/get-side-effects.md):
+ * the same refusals (an include, an .lfsconfig extension, a config key that can run a command), no system or global
+ * config, the operator's own values carried, hooks and fsmonitor off, submodules skipped, bounded. A refusal throws.
+ */
+export function checkoutGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number } = {}): string {
+  const env: NodeJS.ProcessEnv = { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", LANG: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
+  const bounded = { cwd, env, encoding: "utf8" as const, timeout: options.timeoutMs ?? 60_000, maxBuffer: options.maxBuffer ?? 1_048_576, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+  if (checkoutIncludes(cwd)) throw new Error("the checkout's git config includes another file, or couldn't be read as a plain file");
+  if (lfsExtensionIn(cwd)) throw new Error("the checkout's .lfsconfig sets a git-lfs key that can run a command");
+  const own = spawnSync("git", ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], bounded);
+  if (own.status !== 0) throw new Error("its config couldn't be read");
+  const key = commandSetting(own.stdout);
+  if (key !== null) throw new Error(`the checkout's git config sets ${key}, which can run a command`);
+  const safeArgs = [...args];
+  const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
+  if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
+  const ran = spawnSync("git", [...TEARDOWN_FLAGS, "-c", "diff.ignoreSubmodules=all", ...carriedSettings(own.stdout), ...safeArgs], bounded);
+  if (ran.status !== 0) throw new Error(`git ${args[0] ?? ""} failed`);
+  return ran.stdout;
+}
