@@ -362,6 +362,13 @@ describe("the walk fails closed (security scan of the round-2 walk)", () => {
     // The objects exemption is by place: a folder named objects anywhere else is walked like the rest.
     ["a link inside refs/heads/objects/", () => { execFileSync("mkdir", ["-p", join(a, ".git", "refs", "heads", "objects")]); symlinkSync(join(b, ".git", "refs", "heads", "task"), join(a, ".git", "refs", "heads", "objects", "x")); }],
     ["a hard link inside logs/objects/", () => { execFileSync("mkdir", ["-p", join(a, ".git", "logs", "objects")]); ln(join(b, ".git", "logs", "HEAD"), join(a, ".git", "logs", "objects", "x")); }],
+    // A forged store: a folder named objects under modules/x/refs/, with a planted HEAD beside it, is no store.
+    ["a hard link in a forged modules/x/refs/objects", () => {
+      const forged = join(a, ".git", "modules", "x", "refs");
+      execFileSync("mkdir", ["-p", join(forged, "objects", "ab")]);
+      writeFileSync(join(forged, "HEAD"), "ref: refs/heads/main\n"); writeFileSync(join(a, ".git", "modules", "x", "HEAD"), "ref: refs/heads/main\n");
+      ln(join(b, ".git", "logs", "HEAD"), join(forged, "objects", "ab", "x"));
+    }],
     // The object store itself: its fan-out folders' entries and pack/ are scanned for links.
     ["a link inside a loose-object folder", () => { const objects = join(a, ".git", "objects"); const one = readdirSync(objects).find(name => /^[0-9a-f]{2}$/.test(name))!; symlinkSync(join(root, "elsewhere"), join(objects, one, "f".repeat(38))); }],
     ["a link inside objects/pack", () => { execFileSync("mkdir", ["-p", join(a, ".git", "objects", "pack")]); symlinkSync(join(root, "elsewhere"), join(a, ".git", "objects", "pack", "pack-x.pack")); }],
@@ -370,6 +377,16 @@ describe("the walk fails closed (security scan of the round-2 walk)", () => {
     try {
       for (const result of await attempt({ repo: a })) expect(refusal(result), result.stderr).toContain("link");
     } finally { try { execFileSync("chmod", ["-R", "755", join(a, ".git", "refs")]); } catch { /* not changed */ } }
+  });
+
+  test("a genuine submodule git directory's objects may be hard-linked", async () => {
+    const lib = join(a, ".git", "modules", "lib");
+    execFileSync("git", ["init", "-q", "--bare", lib], { env });
+    execFileSync("mkdir", ["-p", join(lib, "objects", "ab")]);
+    writeFileSync(join(root, "blob"), "x\n");
+    ln(join(root, "blob"), join(lib, "objects", "ab", "c".repeat(38)));
+    const result = await checkoutGit(run, "build", { repo: a })("git", ["status", "--porcelain"], { cwd: aLinked, timeoutMs: 60_000 });
+    expect(result.code, result.stderr).toBe(0);
   });
 
   test("objects hard-linked by `clone --local` are legitimate: the plane commits there, and the shared object files are never written", async () => {

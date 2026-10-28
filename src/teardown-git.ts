@@ -590,7 +590,7 @@ function pinned(dirs: BoundDirs): { ok: boolean; swapped: GitIncident["swapped"]
   const swapped: GitIncident["swapped"] = [];
   const seen = new Set<string>();
   let budget = 400_000;
-  const modules = join(dirs.common, "modules");
+  const stores = objectStores(dirs.common);
   /** `deep`: every entry all the way down, each file held to one hard link. `shallow`: the folder's own entries
    * checked for links only. `store`: an object store (objects/: its fan-out folders shallow, `info` and `pack` deep
    * without the hard-link test). A link, or a folder that can't be listed, is swapped. */
@@ -615,9 +615,8 @@ function pinned(dirs: BoundDirs): { ok: boolean; swapped: GitIncident["swapped"]
       const child = join(path, name);
       if (mode === "shallow") { try { if (lstatSync(child).isSymbolicLink()) check(child, "shallow"); } catch { /* gone */ } continue; }
       if (mode === "store") { check(child, name === "info" || name === "pack" ? "deep-unlinked" : "shallow"); continue; }
-      // The object store exemption by place, never by name: a submodule's own git directory's objects under modules/.
-      const store = name === "objects" && path.startsWith(`${modules}/`) && existsSync(join(path, "HEAD"));
-      check(child, store ? "store" : mode);
+      // The object store exemption by exact place, never by name (stores, enumerated before the walk).
+      check(child, stores.has(child) ? "store" : mode);
     }
   };
   // The common folder's every name git may write, all the way down (refs, logs, reftable, packed-refs, worktrees with
@@ -629,11 +628,38 @@ function pinned(dirs: BoundDirs): { ok: boolean; swapped: GitIncident["swapped"]
   // The object store: the folder and its fan-out folders for links (not each loose object: a big repository has very
   // many, and `clone --local` hard-links them legitimately; git writes a new object to a fresh temporary file linked
   // into place, never through an existing one), `info` and `pack` all the way down.
-  check(join(dirs.common, "objects"), "store");
+  for (const store of stores) check(store, "store");
   if (budget <= 0) swapped.push({ path: dirs.common, leadsTo: null });
   // A path that is no longer its own real path (a folder on the way swapped) counts too.
   for (const path of [dirs.common, dirs.gitdir]) { try { if (realpathSync(path) !== path) swapped.push({ path, leadsTo: realpathSync(path) }); } catch { swapped.push({ path, leadsTo: null }); } }
   return { ok: swapped.length === 0, swapped };
+}
+
+/**
+ * The object stores the walk exempts from its full check, enumerated before it, never decided by a name met on the
+ * way: the common `objects`, and `<gitdir>/objects` for each submodule git directory under modules/ — a folder with
+ * its own config, HEAD, refs/ and objects/, reached through no component named refs, logs, reftable, objects, info,
+ * worktrees or hooks (so `modules/x/refs/objects` with a planted HEAD is no store).
+ */
+function objectStores(common: string): Set<string> {
+  const stores = new Set([join(common, "objects")]);
+  const NOT_A_PATH = new Set(["refs", "logs", "reftable", "objects", "info", "worktrees", "hooks"]);
+  const visit = (dir: string, depth: number): void => {
+    if (depth > 8) return;
+    let entries: import("node:fs").Dirent[] = [];
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || NOT_A_PATH.has(entry.name)) continue;
+      const at = join(dir, entry.name);
+      const own = (name: string, folder: boolean) => { try { const held = lstatSync(join(at, name)); return folder ? held.isDirectory() : held.isFile(); } catch { return false; } };
+      if (own("config", false) && own("HEAD", false) && own("refs", true) && own("objects", true)) {
+        stores.add(join(at, "objects"));
+        visit(join(at, "modules"), depth + 1);
+      } else visit(at, depth + 1);
+    }
+  };
+  visit(join(common, "modules"), 0);
+  return stores;
 }
 
 /** The worktree's own files a command may rewrite and the plane carries back: all of WORKTREE_STATE. */
