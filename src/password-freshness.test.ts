@@ -878,6 +878,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>projectCheckAccess@100": 1,
     // Sandbox parity C9: Settings → Project → Home folder, a password typed now (reviewed new site).
     "src/server/settings.ts#createSettingsHandlers@1>projectSandbox@101": 1,
+    // Auto-approve green: Settings → Approval rules → Release approval, a password typed now (reviewed new site).
+    "src/server/settings.ts#createSettingsHandlers@1>releaseApprovalSave@102": 1,
   },
   credentialApprover: {
     "src/operate.ts#runnerCommand@22": 2,
@@ -901,6 +903,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Passwordless review round 1: reviewed new sites.
     "src/flows-cli.ts#<module>": 2,
     "src/flows-cli.ts#runFlowsCommand@3": 1,
+    // Auto-approve green: `release auto-approve on`, a password typed now (reviewed new site).
+    "src/release-cli.ts#<module>": 2,
+    "src/release-cli.ts#runAuthorityCommand@7": 1,
   },
   passwordlessSessionFor: {
     "src/chat-actions.ts#<module>": 2,

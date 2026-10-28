@@ -162,3 +162,67 @@ export function releaseSealProblem(store: Store, terms: ReleaseTerms): string | 
   return null;
 }
 
+
+// ------------------------------------------------------------------ automatic release approval (auto-approve-green.md)
+
+/** "Release approval: Ask me / Approve automatically when checks pass": a project setting, newest choice wins (a ledger
+ * row each); `ask` by default. Turning it on is a person's credential act (a password typed now); off is one click. */
+export const RELEASE_APPROVAL_ACTION = "release approval changed";
+/** The plane's record of what proved an automatic seal (`auto-check` or `auto-green`): one ledger row per seal, its
+ * id named by the seal's `mode_digest` as `auto:<id>`. Only release-auto.ts writes it. */
+export const AUTO_EVIDENCE_ACTION = "release auto-approved";
+
+export type ReleaseApprovalSetting = { auto: boolean; setBy: string | null; at: string | null };
+
+/** Read live at every use. Fail closed: a missing, unreadable or unknown row is `ask`. */
+export function releaseApprovalSetting(store: Store, repo: string): ReleaseApprovalSetting {
+  let row: Record<string, unknown> | undefined;
+  try { row = store.handle.prepare("SELECT actor, at, outcome FROM action_ledger WHERE repo = ? AND task_id IS NULL AND action = ? ORDER BY id DESC LIMIT 1").get(repo, RELEASE_APPROVAL_ACTION); }
+  catch { return { auto: false, setBy: null, at: null }; }
+  if (row === undefined || (row["outcome"] !== "auto" && row["outcome"] !== "ask")) return { auto: false, setBy: null, at: null };
+  return { auto: row["outcome"] === "auto", setBy: String(row["actor"]), at: String(row["at"]) };
+}
+
+export const releaseAutoApproves = (store: Store, repo: string): boolean => releaseApprovalSetting(store, repo).auto;
+
+/** SQL: the newest setting row for `repo` (an SQL expression) says `auto`. */
+export const releaseAutoSql = (repo: string): string =>
+  `COALESCE((SELECT ra_set.outcome = 'auto' FROM action_ledger ra_set WHERE ra_set.repo = ${repo} AND ra_set.task_id IS NULL
+      AND ra_set.action = '${RELEASE_APPROVAL_ACTION}' ORDER BY ra_set.id DESC LIMIT 1), 0)`;
+
+/**
+ * SQL over a `task_scope` alias: its automatic seal (`auto-check` or `auto-green`) stands on its own evidence row — this
+ * task, this kind, `mode_digest = 'auto:<row id>'`, the row's digest and candidate exactly the sealed ones — on a release
+ * task (a candidate and release terms signed in), while the project's setting is on. The approver's standing is read
+ * beside it (approval-authority.ts).
+ */
+export const autoSealSql = (scope: string, repo: string): string =>
+  `(${scope}.candidate IS NOT NULL AND ${scope}.release_terms_json IS NOT NULL AND ${releaseAutoSql(repo)}
+    AND EXISTS (SELECT 1 FROM action_ledger ae WHERE ae.task_id = ${scope}.task_id AND ae.action = '${AUTO_EVIDENCE_ACTION}'
+        AND ae.outcome = ${scope}.approval_basis AND ${scope}.mode_digest = 'auto:' || ae.id AND json_valid(ae.detail)
+        AND json_extract(ae.detail, '$.v') = 1 AND json_extract(ae.detail, '$.digest') = ${scope}.approved_digest
+        AND json_extract(ae.detail, '$.candidate') = ${scope}.candidate))`;
+
+/** The evidence an automatic seal names, read strictly; null when the row is missing or doesn't match the seal. */
+export type AutoEvidence = {
+  id: number; kind: "auto-check" | "auto-green"; taskId: string; digest: string; candidate: string; at: string; by: string;
+  /** auto-green only: the build whose check passed, its receipt, the CI check runs observed green and when, the base. */
+  run: number | null; receipt: string | null; ci: { id: number; name: string }[]; observedAt: string | null; base: string | null;
+};
+
+export function autoEvidenceOf(store: Store, taskId: string, modeDigest: string | null | undefined, kind: "auto-check" | "auto-green"): AutoEvidence | null {
+  const match = /^auto:([1-9][0-9]{0,15})$/.exec(modeDigest ?? "");
+  if (match === null) return null;
+  const row = store.handle.prepare("SELECT id, at, actor, task_id, outcome, detail FROM action_ledger WHERE id = ? AND action = ?").get(Number(match[1]), AUTO_EVIDENCE_ACTION);
+  if (row === undefined || row["task_id"] !== taskId || row["outcome"] !== kind) return null;
+  let detail: Record<string, unknown>;
+  try { detail = JSON.parse(String(row["detail"])) as Record<string, unknown>; } catch { return null; }
+  if (detail === null || typeof detail !== "object" || detail["v"] !== 1 || typeof detail["digest"] !== "string" || typeof detail["candidate"] !== "string") return null;
+  const ci = Array.isArray(detail["ci"]) ? detail["ci"].filter((one): one is { id: number; name: string } =>
+    one !== null && typeof one === "object" && Number.isSafeInteger((one as { id?: unknown }).id) && typeof (one as { name?: unknown }).name === "string") : [];
+  const textOr = (value: unknown) => typeof value === "string" ? value : null;
+  return {
+    id: Number(row["id"]), kind, taskId, digest: detail["digest"], candidate: detail["candidate"], at: String(row["at"]), by: String(detail["by"] ?? row["actor"]),
+    run: Number.isSafeInteger(detail["run"]) ? Number(detail["run"]) : null, receipt: textOr(detail["receipt"]), ci, observedAt: textOr(detail["observedAt"]), base: textOr(detail["base"]),
+  };
+}

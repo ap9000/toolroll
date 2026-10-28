@@ -1,6 +1,6 @@
 // Deployment uses a real passing project check and the lead/user's decision
 // about that exact result. It never schedules or depends on a model reviewer.
-export function deploymentCandidate(store, { runId, head, evidenceRoot, now }, { assignmentOf, verificationEvidence, installedScope }) {
+export function deploymentCandidate(store, { runId, head, evidenceRoot, now, releaseFlow = false }, { assignmentOf, verificationEvidence, installedScope }) {
   const requireFact = (value, message) => { if (!value) throw Error(message); };
   const run = store.getRun(runId);
   const ref = run ? store.refById(run.taskRef) : null;
@@ -31,7 +31,12 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now }, {
     : releaseFromRecords(store, ref.externalId);
   requireFact(release?.applies === false || release?.ok === true, `This release can't deploy: ${release?.why ?? 'its release record cannot be read'}.`);
   const approvedTask = release?.applies === true ? release.authority.anchorTask : ref.externalId;
-  const person = typeof installedScope?.personApprovalOf === 'function'
+  // A release's own automatic approval (docs/plans/auto-approve-green.md) stands only inside `toolroll release`: the
+  // deploy it reserved (--operation, whose secret this run proves before staging anything), read by the INSTALLED
+  // runtime. A direct deploy, or a runtime too old to read it, needs a person's approval.
+  const person = releaseFlow === true && release?.applies === true && typeof installedScope?.releaseApprovalOf === 'function'
+    ? installedScope.releaseApprovalOf(store, approvedTask, now)
+    : typeof installedScope?.personApprovalOf === 'function'
     ? installedScope.personApprovalOf(store, approvedTask)
     : personApprovalFromRecords(store, approvedTask);
   requireFact(person?.ok === true, `A person has to approve this candidate's scope: ${person?.why ?? 'its approval cannot be read'}.`);

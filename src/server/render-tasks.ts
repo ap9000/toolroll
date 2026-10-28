@@ -849,6 +849,12 @@ export function nonceHashOf(value: string): string {
 }
 
 /** The approve POST's refusal, in words a person can act on. */
+/** A release task's automatic approval, in words (docs/plans/auto-approve-green.md). */
+export function autoReleaseWords(auto: { kind: "checking" | "approved"; candidate: string }): string {
+  return auto.kind === "approved" ? `Approved automatically: CI and release check passed on ${auto.candidate.slice(0, 7)}`
+    : `Checking automatically: approves itself once CI and the release check pass on ${auto.candidate.slice(0, 7)}`;
+}
+
 /** " (password remembered from 10:42)" when the approval stood on a remembered password or sign-in; nothing otherwise. */
 export function approvalProofWords(proof: { method: string; at: string } | null | undefined): string {
   if (proof == null) return "";
@@ -1477,6 +1483,8 @@ export function taskBodyParts(data: {
   approvalFresh?: string | null;
   /** Cockpit B2: how the current approval's person was proved (approval proved ledger), when it was a remembered one. */
   approvalProof?: { method: string; at: string } | null;
+  /** A release task the plane approved (or is checking) itself (docs/plans/auto-approve-green.md): its candidate. */
+  autoRelease?: { kind: "checking" | "approved"; candidate: string } | null;
   /** One approval per release (release-once.md): the release this task belongs to, and whether this reader may stop it. */
   release?: ReleaseView | null;
   canStopRelease?: boolean;
@@ -1918,7 +1926,9 @@ export function taskBodyParts(data: {
           html`<p><strong>Quality</strong> ${qualityModeTitle(scope.qualityMode ?? "default")}</p>`,
           acceptanceCeremonyHtml(scope.acceptance),
           scope.releaseTerms == null ? "" : html`<p><strong>Release</strong></p><p class="recap">${releaseTermsSentence(scope.releaseTerms)}</p>${scope.releaseTerms.policy.carry ? html`<details><summary>What asks again</summary><ul>${joinHtml(releaseAsksAgainWords(scope.releaseTerms).map(line => html`<li>${line}</li>`), "")}</ul></details>` : ""}`,
-          approval.approved && data.release?.kind === "carried"
+          approval.approved && data.autoRelease != null
+            ? html`<p class="meta scope-seal">${autoReleaseWords(data.autoRelease)} · <span class="seal">signs ${shortDigest(scope.digest)}</span></p>`
+            : approval.approved && data.release?.kind === "carried"
             ? html`<p class="meta scope-seal">Carried from ${data.release.approver ?? "a person"}'s release approval · <a href="${taskHref(data.release.anchorTask)}">Release ${data.release.version}</a> · <span class="seal">signs ${shortDigest(scope.digest)}</span></p>`
             : approval.approved
             ? html`<p class="meta scope-seal">Approved by ${approval.by}${approvalProofWords(data.approvalProof)} · ${whenTime(approval.at)} · <span class="seal">signs ${shortDigest(scope.digest)}</span><span class="so-sr-only"> — approval binds to this exact wording</span></p>`
@@ -2242,6 +2252,8 @@ export function taskBodyParts(data: {
   const scopeRow =
     scope === null
       ? prop("scope", "none yet")
+      : approval.approved && data.autoRelease != null
+        ? prop("approved scope", html`<span class="seal">signs ${shortDigest(scope.digest)}</span> · ${autoReleaseWords(data.autoRelease)}`)
       : approval.approved && data.release?.kind === "carried"
         ? prop("approved scope", html`<span class="seal">signs ${shortDigest(scope.digest)}</span> · carried from ${data.release.approver ?? "a person"}'s release approval · <a href="${taskHref(data.release.anchorTask)}">Release ${data.release.version}</a>`)
       : approval.approved
@@ -2259,6 +2271,7 @@ export function taskBodyParts(data: {
     facts.push({ label: "Queue", parts: [`${data.position.position} of ${data.position.total}${data.position.column === null ? " in the shared queue" : ` in ${data.position.column}'s queue`} · `, { label: "Reorder", href: "/board?view=order" }] });
   }
   facts.push(scope === null ? { label: "Scope", parts: ["none yet"] }
+    : approval.approved && data.autoRelease != null ? { label: "Approved scope", parts: [autoReleaseWords(data.autoRelease)] }
     : approval.approved && data.release?.kind === "carried" ? { label: "Approved scope", parts: [`Carried from ${data.release.approver ?? "a person"}'s release approval · `, { label: `Release ${data.release.version}`, href: taskHref(data.release.anchorTask) }] }
     : approval.approved ? { label: "Approved scope", parts: [{ seal: `signs ${scope.digest.length <= 12 ? scope.digest : `${scope.digest.slice(0, 12)}…`}` }, ` · ${qualityModeTitle(scope.qualityMode ?? "default")} · approved by ${approval.by}${approvalProofWords(data.approvalProof)}`, ...(approval.at === null ? [] : [" · ", { at: approval.at }])] }
     : { label: "Scope", parts: [approval.reason === "changed" ? "rewritten since its approval — needs a new yes" : "not approved"] });

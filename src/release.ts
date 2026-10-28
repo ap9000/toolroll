@@ -57,8 +57,9 @@ type WaitingStep = "gate" | "approval" | "check" | "quiet" | "deploy" | "ci" | "
 export const RELEASE_LIMITS: Readonly<Record<WaitingStep, number>> = { gate: 60, approval: 24 * 60, check: 120, quiet: 60, deploy: 30, ci: 60, publish: 45, homebrew: 45 };
 const POLL_MS = 15_000;
 
-/** One check attempt; `app` is the GitHub App that made it (github-actions for a workflow), when known. */
-export type CheckRun = { name: string; status: string; conclusion: string | null; app?: string | null };
+/** One check attempt; `app` is the GitHub App that made it (github-actions for a workflow), when known; `id` its check
+ * run id, when known. */
+export type CheckRun = { name: string; status: string; conclusion: string | null; app?: string | null; id?: number | null };
 export type PullRequest = { number: number; state: "open" | "closed" | "merged"; head: string; base: string; mergeCommit: string | null };
 /** The release task as Toolroll records it (`task show --json`). */
 export type GateState = {
@@ -115,6 +116,26 @@ export type ReleaseAuthorityAdapter = {
    * the authority could not be stopped (a stale epoch, a merge already reserved): the coordinator fails closed. */
   needsApproval(authority: number, reason: string, epoch: number): Promise<boolean>;
   operations(authority: number): Promise<OperationView[]>;
+  /** Releases that approve themselves when green (docs/plans/auto-approve-green.md): the plane's own seals, each proven
+   * again inside the plane. Absent: a plane that can't, and every release asks a person as before. */
+  auto?: AutoReleaseAdapter;
+};
+
+/** The plane's automatic release approval, as the coordinator asks it. Every answer is the plane's own: the coordinator
+ * hands it ids, never evidence (the plane reads GitHub CI itself for `approve`). */
+export type AutoReleaseAdapter = {
+  /** The project's "Approve automatically when checks pass", read now (off when unreadable). */
+  setting(taskId: string): Promise<boolean>;
+  /** Seal `auto-check` so the release check runs before anyone approves. */
+  authorizeCheck(input: { taskId: string; digest: string; candidate: string }): Promise<{ ok: true } | { ok: false; why: string }>;
+  /** Whether the `auto-check` seal still stands (the setting on, its evidence, the digest). */
+  checking(taskId: string): Promise<{ ok: true } | { ok: false; why: string }>;
+  /** Observe CI on the candidate and, when everything passed, seal `auto-green` (opening the release's authority). */
+  approve(input: { taskId: string; digest: string; candidate: string; run: number; receipt: string }): Promise<{ ok: true; by: string; at: string; ci: { id: number; name: string }[] } | { ok: false; why: string }>;
+  /** The automatic road ended without a release: the task asks a person, and the owner is told why. */
+  giveUp(taskId: string, why: string): Promise<void>;
+  /** "Released 0.9.x automatically". */
+  released(taskId: string, tag: string): Promise<void>;
 };
 
 export type ReleaseAdapters = {
@@ -222,6 +243,9 @@ export type ReleaseJournal = {
   needsApproval?: boolean;
   /** This journal's task was picked fresh after a CI failure after the deploy: an id that never existed, never another. */
   freshTask?: boolean;
+  /** The automatic road (auto-approve-green.md): `checking` once the plane sealed `auto-check`, `approved` once it sealed
+   * `auto-green`, `refused` (and why) when it wouldn't — then a person approves, as before. */
+  auto?: { state: "checking" | "approved" | "refused"; why?: string; ci?: number[] } | null;
   /** When each step was about to change something outside this machine: what a resume must look for before acting. */
   intents: Partial<Record<ReleaseStep, string>>;
   stopped: { step: ReleaseStep; reason: string; message: string; at: string } | null;
@@ -494,6 +518,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
      */
     const ciFailedAfterDeploy = async (what: string): Promise<never> => {
       j.needsApproval = true; save();
+      // An automatic approval never outlives a CI failure after its deploy: the owner is told, and a person approves again.
+      if (j.auto?.state === "approved") await rel?.auto?.giveUp(j.task.id, `${what}, after the deploy`);
       // Fail closed: the authority must have stopped; otherwise its approval could still carry the commit.
       if (rel !== undefined && j.authority && (epoch === null || !await rel.needsApproval(j.authority.id, "a pull request check failed after the deploy", epoch))) {
         throw new Stop("lease", `${what}. Nothing was merged, but this release's approval couldn't be stopped (another coordinator holds it, or a merge is reserved). Check it with \`toolroll release ${j.branch} --repo ${j.checkout}\` before going on.`);
@@ -521,11 +547,20 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       } else say(`  ${j.branch} moved to ${head.slice(0, 7)}: filing it for approval`);
       j.candidate = { sha: head, tree };
       j.task = { id: gateTaskId(j.packageVersion, head), scopeDigest: null };
-      j.approval = null; j.check = null; j.completion = null; j.authority = null; epoch = null;
+      j.approval = null; j.check = null; j.completion = null; j.authority = null; j.auto = null; epoch = null;
       delete j.intents.gate; delete j.intents.check; delete j.intents.complete;
       j.step = "gate"; j.stopped = null; save();
     };
 
+    /**
+     * The automatic road ended without an approval: the plane takes its `auto-check` back (the task asks a person, its
+     * passing check kept) and tells the owner; the release waits at approval for a person, as without the setting.
+     */
+    const autoRefused = async (why: string): Promise<never> => {
+      j.auto = { state: "refused", why }; j.check = null; j.step = "approval"; save();
+      await rel?.auto?.giveUp(j.task.id, why);
+      throw new Stop("approval", `Not approved automatically: ${why}. A person approves task ${j.task.id} (\`toolroll task approve ${j.task.id} --digest ${j.task.scopeDigest}\`, or the console), then rerun \`${resume}\`.`);
+    };
     /**
      * The task is approved for `action`: a release task (a carried commit, or any task once the release has an
      * authority) only when the live-release predicate applies to it AND accepts it — fail closed, whatever its own seal
@@ -533,6 +568,12 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
      */
     const approved = async (gate: GateState, action: ReleaseAction = "dispatch") => {
       if (gate.candidate !== j.candidate.sha || gate.scopeDigest !== j.task.scopeDigest) throw new Stop("scope-changed", `Task ${j.task.id}'s candidate or scope changed after approval.`);
+      // Checking automatically: the plane's `auto-check` seal must still stand (the setting on, its evidence, this digest).
+      if (j.auto?.state === "checking" && !j.authority) {
+        const standing = rel?.auto === undefined ? { ok: false as const, why: "this plane can't approve releases automatically" } : await rel.auto.checking(j.task.id);
+        if (standing.ok) return;
+        return await autoRefused(standing.why);
+      }
       if (rel !== undefined && (j.authority || gate.approval?.basis === "carried")) {
         const live = await rel.live(j.task.id, action);
         if (live.applies && live.ok) return;
@@ -596,6 +637,27 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           break;
         }
         case "approval": {
+          // Approve automatically when checks pass (auto-approve-green.md): with the project's setting on, the plane seals
+          // `auto-check` so the release check runs first; the approval itself is sealed after it passed. A fresh task
+          // after a CI failure after the deploy, or an automatic refusal, always asks a person.
+          const auto = rel?.auto;
+          if (auto !== undefined && j.freshTask !== true && j.auto?.state !== "refused" && j.task.scopeDigest !== null && await auto.setting(j.task.id)) {
+            await watch("dispatch");
+            const gate = await adapters.toolroll.gate(j.task.id);
+            if (gate.scopeDigest !== j.task.scopeDigest) throw new Stop("scope-changed", `The scope of ${j.task.id} changed after it was filed; the release only runs on the scope it filed.`);
+            if (!ownerApproval(gate, j.task.scopeDigest).ok) {
+              const authorized = await auto.authorizeCheck({ taskId: j.task.id, digest: j.task.scopeDigest, candidate: j.candidate.sha });
+              if (authorized.ok) {
+                j.auto = { state: "checking" };
+                say(`  Approving automatically once CI and the release check pass on ${j.candidate.sha.slice(0, 7)} (this project's release approval setting)`);
+                advance("check");
+                break;
+              }
+              j.auto = { state: "refused", why: authorized.why }; save();
+              await auto.giveUp(j.task.id, authorized.why);
+              say(`  Not approved automatically: ${authorized.why}. A person approves it.`);
+            }
+          }
           say(`  The release scope needs your approval: \`toolroll task approve ${j.task.id} --digest ${j.task.scopeDigest}\`, or open the task in the console.`);
           const approved = await waitFor("approval", `a person to approve task ${j.task.id}`, async () => {
             await watch("dispatch");
@@ -616,7 +678,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           break;
         }
         case "check": {
-          const result = await waitFor("check", `the release check of ${j.candidate.sha.slice(0, 7)}`, async () => {
+          const checkProbe = async () => {
             // Before acting on an old candidate's failure: a moved head restarts the release first.
             await watch("dispatch");
             const gate = await adapters.toolroll.gate(j.task.id);
@@ -634,9 +696,32 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             fullCheck(gate);
             if (gate.result.worktree === null) throw new Stop("worktree", `Run ${gate.result.run} names no checkout to deploy from.`);
             return { run: gate.result.run, receipt: gate.result.receipt, worktree: gate.result.worktree, head };
+          };
+          const result = await waitFor("check", `the release check of ${j.candidate.sha.slice(0, 7)}`, async () => {
+            try { return await checkProbe(); }
+            catch (error) {
+              // A failed check (or a changed candidate) ends the automatic road: the owner is told, and a person decides.
+              if (error instanceof Stop && j.auto?.state === "checking" && error.reason !== "approval") await rel?.auto?.giveUp(j.task.id, error.message.replace(/\.$/, ""));
+              throw error;
+            }
           });
           j.check = result;
           say(`  run ${result.run} passed on ${j.candidate.sha.slice(0, 7)}`);
+          if (j.auto?.state === "checking" && !j.authority) {
+            // The release approval, sealed only now: the plane reads CI on the exact commit itself and proves the check.
+            const sealed = rel?.auto === undefined ? { ok: false as const, why: "this plane can't approve releases automatically" }
+              : await rel.auto.approve({ taskId: j.task.id, digest: j.task.scopeDigest!, candidate: j.candidate.sha, run: result.run, receipt: result.receipt });
+            if (!sealed.ok) await autoRefused(sealed.why);
+            else {
+              j.auto = { state: "approved", ci: sealed.ci.map(one => one.id) };
+              j.approval = { by: `${sealed.by} (automatic)`, at: sealed.at };
+              const view = await rel!.authority(j.task.id);
+              if (view === null) throw new Stop("release", `The automatic approval of ${j.task.id} opened no release record; a person approves it.`);
+              j.authority = { id: view.id, generation: view.generation }; j.landed = view.landed; save();
+              await hold();
+              say(`  Approved automatically: CI and the release check passed on ${j.candidate.sha.slice(0, 7)}`);
+            }
+          }
           advance("complete");
           break;
         }
@@ -857,6 +942,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       }
     }
     say(`Released ${j.tag}: deployed, merged as ${j.merge!.sha.slice(0, 7)}, tagged, published and on Homebrew.`);
+    if (j.auto?.state === "approved") { try { await rel?.auto?.released(j.task.id, j.tag); } catch { /* the release is done; the note is best effort */ } }
     for (const line of landedWords(j.landed ?? [])) say(line);
     return { ok: true, journal: j, file };
   } catch (error) {

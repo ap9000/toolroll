@@ -836,8 +836,11 @@ export type ScopeAuthor = "mate" | "coordinator" | "scout" | "lead";
 /** The authorities a seal can stand on (approval-policy plan §1.5). Anything else stands on nothing. */
 /** `carried`: a later commit of a release carried under a person's release approval (release-once.md); only the carry
  * transaction ever writes it. */
-export type ApprovalBasis = "password" | "mode" | "chat" | "grant" | "schedule" | "lead" | "carried";
-export const APPROVAL_BASES: readonly ApprovalBasis[] = ["password", "mode", "chat", "grant", "schedule", "lead", "carried"];
+/** `auto-check` / `auto-green`: a release task the plane approved itself under the project's "Approve automatically when
+ * checks pass" (docs/plans/auto-approve-green.md) — `auto-check` lets its check run, `auto-green` is the release
+ * approval once CI and that check passed. Only release-auto.ts writes them; neither is ever a person's. */
+export type ApprovalBasis = "password" | "mode" | "chat" | "grant" | "schedule" | "lead" | "carried" | "auto-check" | "auto-green";
+export const APPROVAL_BASES: readonly ApprovalBasis[] = ["password", "mode", "chat", "grant", "schedule", "lead", "carried", "auto-check", "auto-green"];
 
 export type Approval =
   | { approved: true; at: string; by: string }
@@ -1819,7 +1822,7 @@ function describeApproval(approval: Approval): string {
 export { personProof } from "./person-proof.js";
 import { personProof } from "./person-proof.js";
 import { releaseTermsDigest, type ReleaseTerms } from "./contracts/release-terms.js";
-import { CHECK_ACCESS_WIDTH, carriesUnsandboxed, newestReleaseGeneration, releaseAuthorityOfTask, releaseSealProblem, type ReleaseAuthority, type ReleaseCarry } from "./release-authority.js";
+import { CHECK_ACCESS_WIDTH, autoEvidenceOf, carriesUnsandboxed, newestReleaseGeneration, releaseAuthorityOfTask, releaseAutoApproves, releaseSealProblem, type AutoEvidence, type ReleaseAuthority, type ReleaseCarry } from "./release-authority.js";
 
 /** Whether the command running now is a machine's: the lead (its token) or a remote API run. Trusted context only. */
 export const machineActing = (): boolean => currentActor()?.lead === true || activeRemote() !== null;
@@ -1853,6 +1856,7 @@ export function personApprovalOf(store: Store, taskId: string): { ok: true; by: 
   if (scope.approvedDigest !== scope.digest) return { ok: false, why: "the approval is for different scope text" };
   const basis = scope.approvalBasis ?? null;
   if (basis === "lead") return { ok: false, why: "approved by the lead, not by a person" };
+  if (basis === "auto-check" || basis === "auto-green") return { ok: false, why: "approved automatically, not by a person" };
   if (basis !== "password" && basis !== "chat") return { ok: false, why: `approved by ${basis === null ? "an unknown road" : basis === "grant" ? "a flow" : basis}, not by a person` };
   const origin = sealOriginOf(store, taskId, scope.approvedBy, scope.approvedDigest, scope.approvedAt);
   if (origin.origin === "machine") return { ok: false, why: origin.lead ? "approved by the lead, not by a person" : "approved with a machine credential, not by a person" };
@@ -1928,7 +1932,8 @@ export function liveReleaseOf(store: Store, taskId: string, action: ReleaseActio
   if (!RELEASE_ACTION_STATES[action].includes(a.state)) return refuse(a.state === "open" ? "the release hasn't started deploying" : `the release is already ${a.state === "deploying" ? "deploying" : "merging"}`);
   if (a.tipTask !== taskId) return refuse("this is not the release's current commit");
   const anchor = store.getScope(a.anchorTask);
-  const person = personApprovalOf(store, a.anchorTask);
+  // A person's yes, or the plane's own automatic one while the project still approves releases automatically.
+  const person = releaseApprovalOf(store, a.anchorTask, now);
   if (!person.ok) return refuse(`the release approval no longer stands: ${person.why}`);
   if (anchor === null || anchor.approvedDigest !== a.anchorDigest || anchor.digest !== a.anchorDigest) return refuse("the release approval is for different words");
   const account = store.accountOf(person.by);
@@ -1981,4 +1986,36 @@ export function mainDebtProblem(store: Store, repo: string, taskId: string): str
  */
 export function deployGateScope(scope: Pick<Scope, "candidate" | "releaseTerms">): boolean {
   return (scope.candidate ?? null) !== null || (scope.releaseTerms ?? null) !== null;
+}
+
+/**
+ * The plane's own automatic approval of a release task (docs/plans/auto-approve-green.md), read the way the dispatch
+ * belts read it (release-authority.ts autoSealSql): sealed `kind` on the current digest, its evidence row naming exactly
+ * this task, kind, digest and candidate, a release task (candidate and terms signed in), the project's setting on now,
+ * and the person who turned it on still an approver there. Never a person's approval.
+ */
+export function autoReleaseApprovalOf(store: Store, taskId: string, kind: "auto-check" | "auto-green"):
+  { ok: true; by: string; at: string; evidence: AutoEvidence } | { ok: false; why: string } {
+  const scope = store.getScope(taskId);
+  const ref = store.lookupRef(taskId);
+  if (scope === null || scope.approvedAt === null || scope.approvedBy === null || scope.approvedDigest === null) return { ok: false, why: "not approved yet" };
+  if (scope.approvedDigest !== scope.digest) return { ok: false, why: "the approval is for different scope text" };
+  if (scope.approvalBasis !== kind) return { ok: false, why: kind === "auto-green" ? "not approved automatically" : "not checking automatically" };
+  if ((scope.candidate ?? null) === null || (scope.releaseTerms ?? null) === null || ref === null || ref.repo === null) return { ok: false, why: "only a release task is approved automatically" };
+  const evidence = autoEvidenceOf(store, taskId, scope.modeDigest, kind);
+  if (evidence === null || evidence.digest !== scope.approvedDigest || evidence.candidate !== scope.candidate || evidence.by !== scope.approvedBy) return { ok: false, why: "no record shows what approved it automatically" };
+  if (!releaseAutoApproves(store, ref.repo)) return { ok: false, why: "approving releases automatically was turned off" };
+  const account = store.accountOf(scope.approvedBy);
+  if (account === null || account.revokedAt !== null || account.role !== "approver" || !store.accountCanAccess(scope.approvedBy, ref.repo)) return { ok: false, why: `${scope.approvedBy}, who turned on automatic release approval, can no longer approve in this project` };
+  return { ok: true, by: scope.approvedBy, at: scope.approvedAt, evidence };
+}
+
+/** A release's approval: a person's (personApprovalOf, unchanged), or the plane's own `auto-green`. Only release
+ * readers ask this (liveReleaseOf, and the deploy gates inside `toolroll release`); everything else asks for a person. */
+export function releaseApprovalOf(store: Store, taskId: string, _now: Date = new Date()): { ok: true; by: string; at: string; method: string } | { ok: false; why: string } {
+  const person = personApprovalOf(store, taskId);
+  if (person.ok) return person;
+  if (store.getScope(taskId)?.approvalBasis !== "auto-green") return person;
+  const auto = autoReleaseApprovalOf(store, taskId, "auto-green");
+  return auto.ok ? { ok: true, by: auto.by, at: auto.at, method: "auto-green" } : auto;
 }

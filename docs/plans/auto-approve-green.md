@@ -80,6 +80,9 @@ Only the release's own readers, only inside the release flow:
 - never `personApprovalOf`, `ownerApproval`, the vote counters, `mergeAsPerson` or `mergePullRequest` (which also refuses
   any task sealed `auto-*`).
 
+Because `auto-green` anchors a release authority like a person's yes, later test-only commits carry under it by the
+unchanged carry rules (release-once.md), and only while the setting stays on.
+
 ## Trust boundaries
 
 - The lead runs `toolroll release`, so it can start the flow but not supply its evidence: both seals are written by

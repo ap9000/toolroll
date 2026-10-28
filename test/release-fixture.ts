@@ -33,6 +33,8 @@ export type ReleaseFixture = {
   git(...args: string[]): string;
   commit(files: Record<string, string | null>, message?: string): string;
   approved: string; taskId: string; authority(): ReleaseAuthority;
+  /** The commit before the candidate (with `candidate` files), else the candidate itself. */
+  base: string;
   close(): void;
 };
 
@@ -40,7 +42,11 @@ export type ReleaseFixture = {
 export const FIXTURE_REMOTE = "https://example.invalid/r.git";
 
 /** A repository with an approved release of its head. `files` adds to the base tree. */
-export function releaseFixture(options: { files?: Record<string, string>; protectedPaths?: string[]; build?: string; beforeApproval?: (store: Store, repo: string) => void } = {}): ReleaseFixture {
+export function releaseFixture(options: { files?: Record<string, string>; protectedPaths?: string[]; build?: string; beforeApproval?: (store: Store, repo: string) => void;
+  /** Leave the release task filed and unapproved (an automatic approval's starting point). */
+  approve?: boolean;
+  /** A commit on top of the base, released as the candidate. */
+  candidate?: Record<string, string | null> } = {}): ReleaseFixture {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-release-once-")));
   const repo = join(dir, "project");
   mkdirSync(repo);
@@ -72,7 +78,8 @@ export function releaseFixture(options: { files?: Record<string, string>; protec
     ...options.files,
   });
   git("add", "-A"); git("commit", "-q", "-m", "release");
-  const approved = git("rev-parse", "HEAD");
+  const base = git("rev-parse", "HEAD");
+  const approved = options.candidate === undefined ? base : commit(options.candidate, "candidate");
   const databaseFile = join(dir, "state", "orders.db");
   mkdirSync(join(dir, "state"), { recursive: true });
   const store = openStore(databaseFile);
@@ -89,12 +96,14 @@ export function releaseFixture(options: { files?: Record<string, string>; protec
   const terms = releaseTermsFor(store, { repo, version: VERSION, branch: "release-0.9.71", pr: 240, candidate: approved, now: RELEASE_NOW });
   if (!terms.ok) throw new Error(terms.why);
   const scope = propose(store, { taskId, goal: `Verify ${VERSION}`, candidate: approved, acceptance: [{ id: "c1", statement: "The release check passes", how: null, evidence: ["check"] }], releaseTerms: terms.terms, now: RELEASE_NOW });
-  const yes = approve(store, taskId, "alex", RELEASE_NOW, scope.digest, added.token);
-  if (!yes.ok) throw new Error(`approve: ${yes.reason}`);
+  if (options.approve !== false) {
+    const yes = approve(store, taskId, "alex", RELEASE_NOW, scope.digest, added.token);
+    if (!yes.ok) throw new Error(`approve: ${yes.reason}`);
+  }
   // Protected paths added after the approval: the current policy is the stricter one.
   if (options.protectedPaths !== undefined) store.setApprovalRules(repo, { notRequester: false, protectProject: false, protectedPaths: options.protectedPaths }, "alex", RELEASE_NOW);
   return {
-    dir, repo, store, password: added.token, databaseFile, git, commit, approved, taskId,
+    dir, repo, store, password: added.token, databaseFile, git, commit, approved, taskId, base,
     authority: () => { const found = releaseAuthorityOfTask(store, taskId); if (found === null) throw new Error("no authority"); return found.authority; },
     close: () => { store.close(); rmSync(dir, { recursive: true, force: true }); },
   };
@@ -103,12 +112,12 @@ export function releaseFixture(options: { files?: Record<string, string>; protec
 export { chmodSync, symlinkSync };
 
 /** A finished build of a release task (no check sealed): enough for the deploy gates to reach the release rules. */
-export function builtRun(store: Store, taskId: string, head: string): number {
+export function builtRun(store: Store, taskId: string, head: string, base = "1".repeat(40)): number {
   const ref = store.refFor("built-in", taskId).id;
   const authority = store.routeAuthorityFor(ref, "builder");
   if (!authority?.ok) throw new Error(`route: ${JSON.stringify(authority)}`);
   const run = store.startRun({ taskRef: ref, leaseId: `l-${taskId}-${Math.random()}`, runner: "r", branch: "b", worktree: "/pool/x", route: authority.stamp, now: RELEASE_NOW });
-  store.stampRun(run, { scopeDigest: store.getScope(taskId)!.digest, baseRevision: "1".repeat(40) });
+  store.stampRun(run, { scopeDigest: store.getScope(taskId)!.digest, baseRevision: base });
   store.recordOutcomeFacts(run, { headRevision: head, handoff: "done" });
   store.finishRun(run, { outcome: "built", committed: true, now: RELEASE_NOW });
   return run;
@@ -161,9 +170,9 @@ export function reportOf(units: UnitOutcome[], extra: Partial<CheckReport> & { e
  * planTargetedRecheck allows it), the report on the check's output with the nonce, its coverage, its log and its
  * version 3 receipt. `report` gets the attempt's plan so a targeted report can answer it.
  */
-export function sealedCheck(f: ReleaseFixture, taskId: string, head: string, report: (plan: import("../src/contracts/release-check.js").TargetedPlan | null) => Omit<CheckReport, "nonce" | "mode" | "planDigest"> | null, options: { forceFull?: boolean } = {}) {
+export function sealedCheck(f: ReleaseFixture, taskId: string, head: string, report: (plan: import("../src/contracts/release-check.js").TargetedPlan | null) => Omit<CheckReport, "nonce" | "mode" | "planDigest"> | null, options: { forceFull?: boolean; base?: string } = {}) {
   const store = f.store, root = EVIDENCE(f);
-  const runId = builtRun(store, taskId, head);
+  const runId = builtRun(store, taskId, head, options.base);
   recordRunCheckLevel(store, { id: runId, taskId, repo: f.repo }, "full", "project", RELEASE_NOW);
   const command = store.liveVerifyCommand(f.repo)!;
   const decision = planTargetedRecheck(store, root, { runId, taskId, repo: f.repo, head, command, access: "sandboxed", now: RELEASE_NOW });

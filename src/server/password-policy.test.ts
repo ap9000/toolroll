@@ -29,6 +29,8 @@ const COOKIE_ONLY_POSTS = [
   'term.start', 'term.close', 'term.remove',
   // Passwordless: an operator's switch, from a browser (on proves a typed password in the handler; off is one click).
   'settings.passwordless-send',
+  // Release approval: an approver's project switch, from a browser (automatic proves a typed password in the handler).
+  'settings.release-approval-send',
   // Quiet page visits (docs/plans/get-side-effects.md): asking this computer's agent CLIs again, listing GitHub
   // repositories, from the person's own page.
   'lead.check', 'projects.github-list',

@@ -32,6 +32,20 @@ export function rulesSummary(rules: ApprovalRules): string {
   return parts.length === 0 ? "No approval rules: anyone who can approve on this project can approve its work, including their own." : parts.join(" ");
 }
 
+/** Settings → Approval rules → Releases (docs/plans/auto-approve-green.md): who approves this project's releases. */
+export type ReleaseApprovalView = { repo: string; auto: boolean; setBy: string | null; at: string | null; canChange: boolean };
+
+export function releaseApprovalHtml(view: ReleaseApprovalView): Html {
+  const since = view.setBy === null ? "" : html` <span class="meta">Changed by ${view.setBy} on ${(view.at ?? "").slice(0, 10)}.</span>`;
+  const current = html`<p class="current">${view.auto ? "Releases approve themselves once the pull request's CI and the release check pass on the exact commit. Anything red still asks you." : "Every release waits for your approval."}${since}</p>`;
+  const heading = html`<h2>Release approval</h2>`;
+  if (!view.canChange) return html`<section class="approval-rules">${heading}${current}<p class="meta">An approver of this project sets this.</p></section>`;
+  const choice = (value: "ask" | "auto", title: string, hint: string) => html`<label class="choice"><input type="radio" name="action" value="${value}"${(view.auto ? "auto" : "ask") === value ? html` checked` : ""}><span><strong>${title}</strong><small>${hint}</small></span></label>`;
+  return html`<section class="approval-rules">${heading}${current}${postForm("/settings/release-approval", html`<fieldset aria-label="Release approval">${
+    choice("ask", "Ask me", "A release deploys only after you approve it.")}${
+    choice("auto", "Approve automatically when checks pass", "You're told when a release approves itself. A failed check, red CI or a CI failure after the deploy still stops and asks you.")}</fieldset><div class="step-up"><label>Your Toolroll password (to approve automatically)<input type="password" name="password" autocomplete="current-password"></label></div><button type="submit">Save</button>`, { hidden: { repo: view.repo } })}</section>`;
+}
+
 export function approvalRulesHtml(view: ApprovalRulesView, notice: { said?: string | null; problem?: string | null }): Html {
   const note = notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : notice.said ? html`<p role="status">${notice.said}</p>` : "";
   const changed = view.rules.updatedBy === null ? "" : html` <span class="meta">Changed by ${view.rules.updatedBy} on ${(view.rules.updatedAt ?? "").slice(0, 10)}.</span>`;

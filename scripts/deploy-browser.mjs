@@ -117,7 +117,9 @@ const stagedName = stagedRuntime.name, nextDist = stagedRuntime.dist;
 // ---- the plane's own records for this candidate -----------------------------
 function facts(db) {
   const store = new oldRt.store.Store(db);
-  const result = deploymentCandidate(store, { runId, head: candidateHead, evidenceRoot, now: new Date() }, {
+  // `--operation` names the coordinator's reserved deploy (adopted, with its secret, before anything is staged): only
+  // then may a release's own automatic approval stand.
+  const result = deploymentCandidate(store, { runId, head: candidateHead, evidenceRoot, now: new Date(), releaseFlow: flag("operation") !== undefined }, {
     assignmentOf: oldRt.assignment.assignmentOf, verificationEvidence: oldRt.evidence.verificationEvidence, installedScope: oldRt.scope,
   });
   requireTrue(resolve(result.worktree) === source || execFileSync("git", [...SAFE_GIT, "-C", result.worktree, "rev-parse", "HEAD"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim() === candidateHead, "Run this from the builder's worktree for this run.");

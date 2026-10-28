@@ -4,7 +4,9 @@
  *
  * An allowlist, never a deny-list: a person's yes (`password`, `chat`) stands unless a machine made that seal; a mode
  * or a flow grant stands while its signature does; a standing order's firing (`schedule`, or an old firing stored as
- * `password`) stands while its approver can still approve in the project. Everything else — the lead (`lead`, which
+ * `password`) stands while its approver can still approve in the project; an automatic release seal (`auto-check`,
+ * `auto-green`: docs/plans/auto-approve-green.md) stands on its own evidence row while the project's setting is on and
+ * the person who turned it on can still approve there. Everything else — the lead (`lead`, which
  * phase 1 never lets stand), a null basis, a word this code doesn't write — stands on nothing.
  *
  * The seal's origin is read from the acts recorded AT the seal's own instant, exactly as scope.ts sealOriginOf reads
@@ -12,6 +14,7 @@
  */
 import { grantStandsSql } from "./flow-unattended.js";
 import { accountReachesSql } from "./project-access.js";
+import { autoSealSql } from "./release-authority.js";
 
 /** The proofs a person gives (src/person-proof.ts), as an SQL list. */
 const PERSON_PROOFS = "('password-now', 'sso-now', 'fresh-password', 'fresh-sso', 'session', 'cli-login', 'chat', 'passkey')";
@@ -28,7 +31,8 @@ export const authorityStandsSql = (scope: string, repo: string, now: string): st
          WHERE om.repo = ${repo} AND om.revoked_at IS NULL AND om.absolute_expiry > ${now} AND om.digest = ${scope}.mode_digest
            AND signer.revoked_at IS NULL AND signer.role = 'approver' AND ${accountReachesSql("signer", repo)}))
     OR (${scope}.approval_basis = 'grant' AND ${grantStandsSql(`${scope}.mode_digest`, now, repo)})
-    OR (${scope}.approval_basis = 'schedule' AND ${approverStandsSql(scope, repo)}))
+    OR (${scope}.approval_basis = 'schedule' AND ${approverStandsSql(scope, repo)})
+    OR (${scope}.approval_basis IN ('auto-check', 'auto-green') AND ${autoSealSql(scope, repo)} AND ${approverStandsSql(scope, repo)}))
     AND ${releaseStandsSql(scope, now)}), 0)`;
 
 /** SQL: a `carried` seal stands only on its own carry row — this task, this approved digest, this candidate, and the

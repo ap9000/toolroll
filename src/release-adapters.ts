@@ -24,7 +24,8 @@ import {
   Store, releaseIssuerGone, takeReleaseLease, type Database,
 } from "./store.js";
 import { acquireDeploymentLock } from "./deploy-lock.js";
-import { liveReleaseOf } from "./scope.js";
+import { autoReleaseApprovalOf, liveReleaseOf } from "./scope.js";
+import { authorizeAutoCheck, giveUpAutoApproval, noteAutoRelease, releaseAutoApproves, sealAutoGreen, type CiObservation } from "./release-auto.js";
 import { proveCarry, type BuildRunner } from "./release-carry.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { deploymentGate } from "./deploy-gate.js";
@@ -234,6 +235,24 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
     try { return object(JSON.parse(result.stdout)); } catch { throw new Error(`toolroll ${args[0]} ${args[1] ?? ""} answered no JSON (exit ${result.code}): ${(result.stderr || result.stdout).trim().slice(0, 300)}`); }
   };
   const refused = (answer: Json) => `${String(answer["message"] ?? answer["reason"] ?? "refused")}`;
+  /**
+   * The plane's own look at GitHub CI for an automatic release approval (auto-approve-green.md): gh found only in the
+   * system's own folders (never the caller's PATH), talking to github.com with no host, config-folder or proxy override
+   * from the caller's environment, for the recorded repository and the exact commit. Every attempt is kept, oldest first.
+   */
+  const observeCi = async (sha: string): Promise<CiObservation> => {
+    const gh = releaseTools("").gh;
+    if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error("not a commit id");
+    const env: NodeJS.ProcessEnv = Object.fromEntries(["HOME", "LANG", "LC_ALL", "TMPDIR", "USER", "LOGNAME", "GH_TOKEN", "GITHUB_TOKEN"].flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!]]));
+    const observedAt = (options.now ?? (() => new Date()))().toISOString();
+    const out = await must(run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${releaseRepo().slug}/commits/${sha}/check-runs?per_page=100`, "--jq", ".check_runs[] | {id, name, status, conclusion, app: .app.slug, head: .head_sha}"],
+      { cwd: "/", env: { ...env, PATH: "/usr/bin:/bin", GH_HOST: "github.com", GH_PROMPT_DISABLED: "1", GH_NO_UPDATE_NOTIFIER: "1" } }), "gh api check-runs");
+    const rows = out.split("\n").filter(Boolean).map(line => object(JSON.parse(line)));
+    // A check run GitHub files under another commit is not this commit's.
+    if (rows.some(one => one["head"] !== sha)) throw new Error("GitHub answered with check runs of another commit");
+    return { head: sha, observedAt, runs: rows.sort((a, b) => Number(a["id"]) - Number(b["id"])).map(one => ({
+      id: Number.isSafeInteger(one["id"]) ? Number(one["id"]) : null, name: String(one["name"]), status: String(one["status"]), conclusion: textOr(one["conclusion"]), app: textOr(one["app"]) })) };
+  };
   const database = options.database ?? databasePath(process.env, homedir());
   let recorded: ReleaseRepo | null = options.releaseRepo ?? null;
   /** The recorded repository, read once (chat-management.md §0a.2). */
@@ -271,7 +290,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   const proveCandidate = (runId: number): ReturnType<typeof deploymentGate> => {
     if (!existsSync(database)) return { ok: false, message: "The plane's database isn't here, so the candidate can't be proven." };
     const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
-    try { return deploymentGate(new Store(db), { runId, evidenceRoot: join(dirname(database), "evidence"), now: (options.now ?? (() => new Date()))() }); }
+    try { return deploymentGate(new Store(db), { runId, evidenceRoot: join(dirname(database), "evidence"), now: (options.now ?? (() => new Date()))(), releaseFlow: true }); }
     catch (error) { return { ok: false, message: `The candidate can't be proven: ${(error as Error).message}` }; }
     finally { db.close(); }
   };
@@ -321,7 +340,8 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
     } finally { rmSync(extracted.dir, { recursive: true, force: true }); }
   };
 
-  const release = storeReleaseAdapter(() => openStore(database), store => store.close(), options.now ?? (() => new Date()));
+  const release = storeReleaseAdapter(() => openStore(database), store => store.close(), options.now ?? (() => new Date()), undefined,
+    { observe: sha => observeCi(sha), evidenceRoot: join(dirname(database), "evidence") });
 
   return {
     ...(existsSync(database) ? { release } : {}),
@@ -479,7 +499,8 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         const out = await must(gh("api", "--paginate", `repos/${repo}/commits/${sha}/check-runs?per_page=100`, "--jq", ".check_runs[] | {id, name, status, conclusion, app: .app.slug}"), "gh api check-runs");
         const runs = out.split("\n").filter(Boolean).map(line => object(JSON.parse(line)));
         // Oldest first, so a rerun's attempt is the last one listed for its name.
-        return runs.sort((a, b) => Number(a["id"]) - Number(b["id"])).map((one): CheckRun => ({ name: String(one["name"]), status: String(one["status"]), conclusion: textOr(one["conclusion"]), app: textOr(one["app"]) }));
+        return runs.sort((a, b) => Number(a["id"]) - Number(b["id"])).map((one): CheckRun => ({ name: String(one["name"]), status: String(one["status"]), conclusion: textOr(one["conclusion"]), app: textOr(one["app"]),
+          id: Number.isSafeInteger(one["id"]) ? Number(one["id"]) : null }));
       },
       async merge(repo, pr, head, message) {
         // The squash commit's message lists every commit that landed after the approval (release-once.md).
@@ -630,9 +651,13 @@ function personAnswerOf(value: unknown): { person?: { ok: true; method: string }
  * The release's authority record through a store (release-once.md): what `toolroll release` reads and writes for its
  * lease, its carries and its operations. `open` hands a store for each call and `done` lets it go.
  */
-export function storeReleaseAdapter(open: () => Store, done: (store: Store) => void, now: () => Date, runner?: BuildRunner): NonNullable<ReleaseAdapters["release"]> {
+export function storeReleaseAdapter(open: () => Store, done: (store: Store) => void, now: () => Date, runner?: BuildRunner,
+  /** Releases that approve themselves (auto-approve-green.md): the plane's own look at CI on a commit, and where the
+   * check receipts are kept. Absent: no automatic approval, every release asks a person. */
+  auto?: { observe: (sha: string) => Promise<CiObservation>; evidenceRoot: string }): NonNullable<ReleaseAdapters["release"]> {
   const withStore = <T>(body: (store: Store) => T): T => { const store = open(); try { return body(store); } finally { done(store); } };
   return {
+    ...(auto === undefined ? {} : { auto: autoReleaseAdapter(withStore, now, auto) }),
     async authority(taskId) {
       return withStore(store => {
         const found = releaseAuthorityOfTask(store, taskId);
@@ -668,5 +693,37 @@ export function storeReleaseAdapter(open: () => Store, done: (store: Store) => v
       return withStore(store => releaseOperations(store, authority).map(op => ({ id: op.id, kind: op.kind, state: op.state, candidate: op.candidate, externalRef: op.externalRef, reservedAt: op.reservedAt,
         direct: op.direct, issuerGone: releaseIssuerGone(op), stage: op.stage })));
     },
+  };
+}
+
+/** The plane's automatic release approval through a store (release-auto.ts): what `toolroll release` asks. It hands the
+ * plane ids only; the plane reads CI itself (`observe`) right before it seals. */
+function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now: () => Date, auto: { observe: (sha: string) => Promise<CiObservation>; evidenceRoot: string }): NonNullable<NonNullable<ReleaseAdapters["release"]>["auto"]> {
+  return {
+    async setting(taskId) {
+      return withStore(store => { try { const ref = store.lookupRef(taskId); return ref?.repo != null && releaseAutoApproves(store, ref.repo); } catch { return false; } });
+    },
+    async authorizeCheck(input) {
+      return withStore(store => { const answer = authorizeAutoCheck(store, { ...input, now: now() }); return answer.ok ? { ok: true as const } : answer; });
+    },
+    async checking(taskId) {
+      return withStore(store => { const answer = autoReleaseApprovalOf(store, taskId, "auto-check"); return answer.ok ? { ok: true as const } : { ok: false as const, why: answer.why }; });
+    },
+    async approve(input) {
+      let ci: CiObservation | null = null, problem = "";
+      // A short network failure is asked again a few times; GitHub not answering is never a pass.
+      for (let attempt = 0; attempt < 3 && ci === null; attempt++) {
+        try { ci = await auto.observe(input.candidate); } catch (error) { problem = String((error as Error)?.message ?? error).slice(0, 200); }
+      }
+      if (ci === null) {
+        const why = `GitHub CI on ${input.candidate.slice(0, 7)} couldn't be read (${problem})`;
+        withStore(store => giveUpAutoApproval(store, { taskId: input.taskId, why, now: now() }));
+        return { ok: false as const, why };
+      }
+      const observed = ci;
+      return withStore(store => sealAutoGreen(store, { ...input, ci: observed, evidenceRoot: auto.evidenceRoot, now: now() }));
+    },
+    async giveUp(taskId, why) { withStore(store => giveUpAutoApproval(store, { taskId, why, now: now() })); },
+    async released(taskId, tag) { withStore(store => noteAutoRelease(store, { taskId, tag, now: now() })); },
   };
 }
