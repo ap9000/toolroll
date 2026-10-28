@@ -12,6 +12,7 @@
  * git there on its say (a confused deputy); what git wrote is for a person, named in the record.
  */
 import { appendFileSync } from "node:fs";
+import { basename, dirname } from "node:path";
 
 export type GitIncident = {
   at: string;
@@ -37,4 +38,30 @@ export function gitIncident(input: { checkout: string; repository: string; swapp
   if (listeners.size === 0) process.stderr.write(`Toolroll git incident: ${JSON.stringify(incident)}\n`);
   for (const listener of listeners) { try { listener(incident); } catch { /* every listener hears it */ } }
   return incident;
+}
+
+/** What noticeGitIncidents needs of the store: its durable outbox. */
+export type IncidentOutbox = {
+  enqueueNotification(notification: { dedupeKey: string; kind: string; subject: string; body: string; pushClass?: "attention"; source?: { project: string } }, now: Date): boolean;
+};
+const noticed = new WeakSet<object>();
+
+/**
+ * Every git incident from now on raises an attention notification in `outbox` (the console and the background worker
+ * register their store as they start; once per store): "Git incident in <project>: a folder of its repository changed
+ * while Toolroll's git ran", for a person to look at, with the folders found changed. Returns the unsubscribe.
+ */
+export function noticeGitIncidents(outbox: IncidentOutbox, now: () => Date = () => new Date()): () => void {
+  if (noticed.has(outbox)) return () => {};
+  noticed.add(outbox);
+  const stop = onGitIncident(incident => {
+    const project = basename(incident.repository) === ".git" ? dirname(incident.repository) : incident.repository;
+    const where = incident.swapped.map(one => one.leadsTo === null ? one.path : `${one.path} → ${one.leadsTo}`).slice(0, 5).join("; ");
+    outbox.enqueueNotification({
+      dedupeKey: `git-incident:${incident.at}:${incident.checkout}`, kind: "git-incident", pushClass: "attention", source: { project },
+      subject: `Git incident in ${basename(project)}: a folder of its repository changed while Toolroll's git ran`,
+      body: `Toolroll stopped trusting that git command and changed nothing more. Checkout: ${incident.checkout}. Changed: ${where}. Nothing was rolled back: check the repository by hand.`,
+    }, now());
+  });
+  return () => { stop(); noticed.delete(outbox); };
 }
