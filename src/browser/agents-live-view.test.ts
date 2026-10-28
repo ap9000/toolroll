@@ -501,8 +501,11 @@ test("Codex av8 #6: a lost connection is said inside the lead dialog too", async
   leads = [leadOf(9)];
   history.replaceState(null, "", "/agents?view=live&lead=9");
   await render7();
-  await act(async () => { Events.latest!.dispatchEvent(new MessageEvent("ended")); });
+  await act(async () => { Events.latest!.readyState = 0; Events.latest!.dispatchEvent(new MessageEvent("error")); });
   expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Reconnecting… these lines may not be the latest.");
+  await act(async () => { Events.latest!.readyState = 1; Events.latest!.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ room: "agents-live", at: "x" }) })); });
+  await flush();
+  expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain("Reconnecting");
   history.replaceState(null, "", "/agents?view=live");
 });
 
@@ -522,6 +525,86 @@ test("Codex av8 r2 #3: a dropped line that is reconnecting by itself is said too
   leads = [leadOf(9)];
   history.replaceState(null, "", "/agents?view=live&lead=9");
   await render7();
+  await act(async () => { Events.latest!.readyState = 0; Events.latest!.dispatchEvent(new MessageEvent("error")); });
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Reconnecting… these lines may not be the latest.");
+  await act(async () => { Events.latest!.readyState = 1; Events.latest!.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ room: "agents-live", at: "x" }) })); });
+  await flush();
+  expect(document.querySelector('[role="dialog"]')?.textContent).not.toContain("Reconnecting");
+  history.replaceState(null, "", "/agents?view=live");
+});
+
+// ---- Work a lead filed (docs/plans/lead-dispatched-tiles.md) ----------------------------------------------------------
+test("filed runs nest under their lead's tile, then under a quiet header once it has gone; each is shown once; full screen lists them", async () => {
+  history.replaceState(null, "", "/agents?view=live");
+  const filed = (runId: number, extra: Record<string, unknown> = {}) => tile(runId, { filedBy: { thread: 9, chat: "lead" }, ...extra });
+  tiles = [tile(1), filed(2), filed(3, { project: "/p/payments-api" }), filed(4, { role: "repair", parentRun: 2 })];
+  sub[2] = [{ k: "child", s: 1, at: iso(100), parent: "s1", desc: "Reproduce the failure" }, { k: "child", s: 2, at: iso(80), parent: "s1", desc: "Review the parser" }, { k: "end", s: 2, at: iso(5), ok: true }];
+  leads = [leadOf(9)];
+  await render7();
+  const shown = () => [...host.querySelectorAll("[data-live-tile]")].map(one => one.getAttribute("data-live-tile"));
+  // Under the lead's tile, in the grid's order, the repair under its build; every run once.
+  const lead = host.querySelector('[data-live-lead="9"]')!;
+  expect([...lead.querySelectorAll('[data-live-filed="9"] > [data-live-tile]')].map(one => one.getAttribute("data-live-tile"))).toEqual(["2", "3"]);
+  expect(lead.querySelector('[data-live-tile="2"] [data-live-tile="4"]')).not.toBeNull();
+  // The group stands where its first run stands (run 1 started first), so the lead's tile leaving moves nothing.
+  expect(shown()).toEqual(["1", "2", "4", "3"]);
+  expect(new Set(shown()).size).toBe(shown().length);
+  // A filed build's own subagents still nest under it, and the Done one still holds 30 s, then leaves.
+  expect(lead.querySelectorAll('[data-live-tile="2"] [data-live-child]')).toHaveLength(2);
+  // Full screen: the runs it filed are listed with their state and their task.
+  await act(async () => { (lead.querySelector("[data-live-open-lead]") as HTMLButtonElement).click(); });
+  const full = document.querySelector("[data-live-full-filed]")!;
+  // Codex r1 #4: the repair under its build is listed too.
+  expect([...full.querySelectorAll("li")].map(one => one.textContent)).toEqual(["Task 2WorkingOpen task", "Task 3WorkingOpen task", "Task 4WorkingOpen task"]);
+  await act(async () => { (document.querySelector("[data-live-full] button") as HTMLButtonElement).click(); });
+  await flush();
+  await act(async () => { (document.activeElement as HTMLElement | null)?.blur(); }); // not looking: the grid lets go
+  await act(async () => { await vi.advanceTimersByTimeAsync(26_000); });
+  expect(host.querySelectorAll('[data-live-tile="2"] [data-live-child]')).toHaveLength(1);
+
+  // The lead's turn leaves: its runs stay nested, now under a quiet header where the first of them stood, never top-level,
+  // and are not rebuilt (Codex design r1 #3): the same elements, so their scroll and follow state stay.
+  const before = host.querySelector('[data-live-tile="2"]');
+  leads = [];
+  await act(async () => { Events.latest!.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ room: "agents-live", at: "x" }) })); });
+  await flush();
+  expect(host.querySelector("[data-live-lead]")).toBeNull();
+  const group = host.querySelector('[data-live-filed-group="9"]')!;
+  expect(group.firstElementChild?.textContent).toBe("Filed by lead chat · shop-web, payments-api");
+  expect(group.querySelector("[data-live-chip]")?.closest("[data-live-tile]")).not.toBeNull(); // no chip of its own
+  expect([...group.querySelectorAll('[data-live-filed="9"] > [data-live-tile]')].map(one => one.getAttribute("data-live-tile"))).toEqual(["2", "3"]);
+  expect(shown()).toEqual(["1", "2", "4", "3"]);
+  expect(host.querySelector('[data-live-tile="2"]')).toBe(before);
+  // The header goes with its last run.
+  tiles = [tile(1)];
+  await act(async () => { Events.latest!.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ room: "agents-live", at: "x" }) })); });
+  await flush();
+  expect(host.querySelector("[data-live-filed-group]")).toBeNull();
+  expect(shown()).toEqual(["1"]);
+});
+
+test("a filed repair whose build has left nests under its lead once; a lead with nothing filed stays a plain tile", async () => {
+  history.replaceState(null, "", "/agents?view=live");
+  tiles = [tile(1), tile(5, { role: "repair", parentRun: 99, filedBy: { thread: 9, chat: "task" } })];
+  leads = [leadOf(9), leadOf(8)];
+  await render7();
+  expect([...host.querySelectorAll('[data-live-lead="9"] [data-live-filed="9"] > [data-live-tile]')].map(one => one.getAttribute("data-live-tile"))).toEqual(["5"]);
+  expect(host.querySelectorAll('[data-live-tile="5"]')).toHaveLength(1);
+  expect(host.querySelector('[data-live-lead="8"] [data-live-filed]')).toBeNull();
+});
+
+test("Codex filed r1 #5: the open lead dialog keeps listing what it filed after its turn leaves the grid", async () => {
+  tiles = [tile(2, { filedBy: { thread: 9, chat: "lead" } })];
+  leads = [leadOf(9)];
+  history.replaceState(null, "", "/agents?view=live&lead=9");
+  await render7();
+  expect(document.querySelectorAll("[data-live-full-filed] li")).toHaveLength(1);
+  leads = [];
+  await act(async () => { Events.latest!.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ room: "agents-live", at: "x" }) })); });
+  await flush();
+  expect(document.querySelector("[data-live-full-title]")?.textContent).toBe("This reply isn't on the grid anymore");
+  expect(document.querySelectorAll("[data-live-full-filed] li")).toHaveLength(1);
+  // Codex filed r2 #1: a lost connection is said there too, and cleared once the room answers.
   await act(async () => { Events.latest!.readyState = 0; Events.latest!.dispatchEvent(new MessageEvent("error")); });
   expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Reconnecting… these lines may not be the latest.");
   await act(async () => { Events.latest!.readyState = 1; Events.latest!.dispatchEvent(new MessageEvent("change", { data: JSON.stringify({ room: "agents-live", at: "x" }) })); });
