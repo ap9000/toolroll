@@ -4,7 +4,8 @@
  * this folder by name, made first so no build can be the one to create it). A view in the system temp folder could be
  * rewritten by a build that writes anywhere and outlived its turn (Codex review of e48e9d8d).
  */
-import { lstatSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, constants as fsConstants, lstatSync, mkdirSync, openSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { join } from "node:path";
 
 /** The views folder under `home`. */
@@ -26,4 +27,39 @@ export function ensureGitViewsRoot(home: string): string {
     if (!held.isDirectory() || held.isSymbolicLink() || (uid !== undefined && held.uid !== uid)) throw new Error(`${dir} isn't a folder of this user's own`);
   }
   return root;
+}
+
+/**
+ * One plane git command at a time on a checkout (Codex review of a0fa135d): each command's private GIT_DIR has its own
+ * HEAD, so two at once would each take their own HEAD lock and the later carry-back would undo the earlier. The lock
+ * is a file the plane makes exclusively in the fenced views folder, named by the checkout's real path, holding this
+ * process's id; one whose process is gone is taken over. Waits up to `timeoutMs`; returns the release.
+ */
+export async function lockCheckout(home: string, checkout: string, timeoutMs = 10 * 60_000): Promise<() => void> {
+  const folder = join(ensureGitViewsRoot(home), "locks");
+  try { mkdirSync(folder, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  const held = lstatSync(folder);
+  if (!held.isDirectory() || held.isSymbolicLink()) throw new Error(`${folder} isn't a folder of this user's own`);
+  const path = join(folder, `${createHash("sha256").update(checkout).digest("hex")}.lock`);
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600);
+      try { writeSync(fd, `${process.pid}\n`); } finally { closeSync(fd); }
+      let released = false;
+      return () => { if (!released) { released = true; rmSync(path, { force: true }); } };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    // Held: by a live process, wait; by one that is gone, take it over.
+    let owner = NaN;
+    try { owner = Number(readFileSync(path, "utf8").trim()); } catch { owner = NaN; }
+    if (Number.isSafeInteger(owner) && owner > 0 && owner !== process.pid && !alive(owner)) { rmSync(path, { force: true }); continue; }
+    if (Date.now() > deadline) throw new Error("another of Toolroll's git commands on this checkout is still running");
+    await new Promise(done => setTimeout(done, 25));
+  }
+}
+
+function alive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (error) { return (error as NodeJS.ErrnoException).code === "EPERM"; }
 }

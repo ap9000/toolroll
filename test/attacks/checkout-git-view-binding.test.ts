@@ -422,3 +422,34 @@ describe("what git writes in the plane's GIT_DIR persists (Codex review of a0fa1
   });
 
 });
+
+describe("one plane git command at a time on a checkout (Codex review of a0fa135d)", () => {
+  test("two concurrent writes on the same checkout run one after the other; another checkout isn't held up", async () => {
+    const spans: { at: string; start: number; end: number }[] = [];
+    const slow: Runner = async (file, args, options) => {
+      if (args.includes("config")) return run(file, args, options);
+      const start = performance.now();
+      await new Promise(done => setTimeout(done, 300));
+      const result = await run(file, args, options);
+      spans.push({ at: String(options?.cwd), start, end: performance.now() });
+      return result;
+    };
+    const write = (cwd: string, args: string[]) => checkoutGit(slow, "build", { repo: a })("git", args, { cwd, timeoutMs: 60_000 });
+    const [one, two, other] = await Promise.all([
+      write(aLinked, ["checkout", "-q", "--detach", "main"]), write(aLinked, ["checkout", "-q", "task"]), write(a, ["status", "--porcelain"]),
+    ]);
+    for (const result of [one, two, other]) expect(result.code, result.stderr).toBe(0);
+    const same = spans.filter(span => span.at === aLinked).sort((x, y) => x.start - y.start);
+    expect(same).toHaveLength(2);
+    expect(same[1]!.start).toBeGreaterThanOrEqual(same[0]!.end);
+    const elsewhere = spans.find(span => span.at === a)!;
+    expect(elsewhere.start).toBeLessThan(same[0]!.end);
+    // The later command's HEAD is the one left.
+    expect(readFileSync(join(a, ".git", "worktrees", "a-task", "HEAD"), "utf8").trim()).toBe("ref: refs/heads/task");
+  });
+
+  test("teardown holds the lock too, and a nested view of the same checkout doesn't wait on itself", async () => {
+    const status = await teardownGit()(aLinked, ["status", "--porcelain"]);
+    expect(status.code, status.stderr).toBe(0);
+  });
+});
