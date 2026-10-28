@@ -8,11 +8,14 @@ import { html, postForm, type Html, reauth } from "./html.js";
 import type { ApprovalRules } from "./approval-policy.js";
 
 
-export const APPROVAL_RULES_CSS = `.approval-rules{max-width:720px;min-width:0}.approval-rules fieldset{border:0;padding:0;margin:18px 0 0;min-width:0}` +
+const RULES_CSS = `.approval-rules{max-width:720px;min-width:0}.approval-rules fieldset{border:0;padding:0;margin:18px 0 0;min-width:0}` +
   `.approval-rules legend{font-weight:600;font-size:.875rem;margin-bottom:8px}.approval-rules .choice{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;align-items:start;margin:0 0 10px;font-weight:400}` +
   `.approval-rules .choice input{margin:.2rem 0 0}.approval-rules .choice strong{display:block;font-size:.875rem;font-weight:500}.approval-rules .choice small{display:block;color:var(--muted-foreground);font-size:.8125rem;margin-top:2px}` +
   `.approval-rules textarea{min-height:88px;font-family:var(--font-mono);font-size:.8125rem}.approval-rules .paths{margin:4px 0 0 26px}` +
   `.approval-rules .current{margin:0 0 4px}.approval-rules .step-up{margin-top:16px}.approval-rules button[type=submit]{margin-top:14px}`;
+/** The rules' style, and the same for the Releases section under its own class (so a page holds one `.approval-rules`
+ * form, not two). */
+export const APPROVAL_RULES_CSS = RULES_CSS + RULES_CSS.replaceAll(".approval-rules", ".release-approval");
 
 export type ApprovalRulesView = {
   repo: string;
@@ -39,9 +42,9 @@ export function releaseApprovalHtml(view: ReleaseApprovalView): Html {
   const since = view.setBy === null ? "" : html` <span class="meta">Changed by ${view.setBy} on ${(view.at ?? "").slice(0, 10)}.</span>`;
   const current = html`<p class="current">${view.auto ? "Releases approve themselves once the pull request's CI and the release check pass on the exact commit. Anything red still asks you." : "Every release waits for your approval."}${since}</p>`;
   const heading = html`<h2>Release approval</h2>`;
-  if (!view.canChange) return html`<section class="approval-rules">${heading}${current}<p class="meta">An approver of this project sets this.</p></section>`;
+  if (!view.canChange) return html`<section class="release-approval">${heading}${current}<p class="meta">An approver of this project sets this.</p></section>`;
   const choice = (value: "ask" | "auto", title: string, hint: string) => html`<label class="choice"><input type="radio" name="action" value="${value}"${(view.auto ? "auto" : "ask") === value ? html` checked` : ""}><span><strong>${title}</strong><small>${hint}</small></span></label>`;
-  return html`<section class="approval-rules">${heading}${current}${postForm("/settings/release-approval", html`<fieldset aria-label="Release approval">${
+  return html`<section class="release-approval">${heading}${current}${postForm("/settings/release-approval", html`<fieldset aria-label="Release approval">${
     choice("ask", "Ask me", "A release deploys only after you approve it.")}${
     choice("auto", "Approve automatically when checks pass", "You're told when a release approves itself. A failed check, red CI or a CI failure after the deploy still stops and asks you.")}</fieldset><div class="step-up"><label>Your Toolroll password (to approve automatically)<input type="password" name="password" autocomplete="current-password"></label></div><button type="submit">Save</button>`, { hidden: { repo: view.repo } })}</section>`;
 }
