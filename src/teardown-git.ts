@@ -10,7 +10,6 @@
  * any of them the command never runs. The refusal is a failed git result, so every caller's existing doubt applies and
  * nothing is removed.
  */
-import { inReadOnlyRequest } from "./read-only-request.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -241,10 +240,12 @@ export const PAGE_READ_FLAGS: readonly string[] = [
   "--no-lazy-fetch", "--attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904",
   "-c", "protocol.allow=never", "-c", "core.pager=cat", "-c", "core.alternateRefsCommand=", "-c", "core.attributesFile=/dev/null",
 ];
-/** The read flags for now: a page visit gets all of PAGE_READ_FLAGS; a person's POST keeps the checkout's attributes
- * (their line-ending and encoding rules, so a clean file reads as clean), with the rest unchanged. */
+/** The read flags, for every read of an agent-written checkout, whatever the HTTP method (security review of
+ * 01bf3114): attributes always come from the empty tree, so no filter or textconv driver can run, even one the config
+ * gains after it was inspected. The cost is cosmetic: a checkout's line-ending or encoding rules are not applied, so
+ * a file they would normalize can read as changed (fail closed: shipping then asks for a clean commit). */
 export function readFlags(): readonly string[] {
-  return inReadOnlyRequest() ? PAGE_READ_FLAGS : PAGE_READ_FLAGS.filter(one => !one.startsWith("--attr-source="));
+  return PAGE_READ_FLAGS;
 }
 
 /**
