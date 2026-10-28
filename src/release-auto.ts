@@ -160,12 +160,16 @@ export function authorizeAutoCheck(store: Store, input: { taskId: string; digest
 
 /** Test infrastructure that lives under src/ (helpers and fixtures, not tests): a person approves changes to it. */
 const SRC_TEST_INFRA = /^src\/(fixtures\/|(.*\/)?(test-[^/]*|[^/]*-test-support[^/]*|[^/]*fixtures?[^/]*)\.[cm]?[jt]sx?$)/;
+/** A test file (normalized path): `*.test.ts`, never inside a fixtures folder. */
+const TEST_FILE = /^(?!.*(^|\/)fixtures?\/)[^]*\.test\.ts$/;
+
 /** Build or type configuration anywhere: a person approves it. */
 const BUILD_CONFIG = /(^|\/)(tsconfig[^/]*\.json|[^/]*\.config\.[cm]?[jt]s|\.npmrc|\.nvmrc|\.node-version)$/;
 
 /**
  * What an automatic approval may ship without a person, as an allowlist over each changed path (auto-approve-green.md):
- * product code under `src/` (its tests included; never its test helpers or fixtures, nor build configuration), docs
+ * product code under `src/` (its tests included; never its test helpers or fixtures, nor build configuration), test files
+ * under `test/` (only `*.test.ts`: never a helper, fixture or setup file; deleting any test needs a person), docs
  * (never the testing policy or plans, never agent or security policy), the changelog and README, and a version bump of
  * package.json and package-lock.json. Everything else — CI, scripts (the check, the build, the harness), test/,
  * dependencies, the lockfile beyond its version, config — and every path the release carry rules never carry, needs a
@@ -173,6 +177,9 @@ const BUILD_CONFIG = /(^|\/)(tsconfig[^/]*\.json|[^/]*\.config\.[cm]?[jt]s|\.npm
  */
 export function autoPathProblem(path: string): string | null {
   const normal = rulePath(path);
+  // Test files under test/ carry the same trust as src's (Alex: test authors are trusted) — only the `.test.ts` files
+  // themselves, never a helper, fixture, setup or config file beside them, nor one inside a fixtures folder.
+  if (TEST_FILE.test(normal) && normal.startsWith("test/")) return null;
   for (const rule of CARRY_RULES.never) if (rule.matches(normal)) return rule.why;
   if (BUILD_CONFIG.test(normal)) return "it configures the build or the checks";
   if (normal === "package.json" || normal === "package-lock.json") return null;
@@ -244,6 +251,8 @@ function changeProblem(repo: string, base: string | null, candidate: string): st
   for (const change of diff.value) {
     const modes = [change.before?.mode, change.after?.mode].filter((one): one is string => one !== undefined);
     if (modes.includes("120000") || modes.includes("160000")) return `${change.path} is a symlink or submodule`;
+    // Taking a test away is never automatic, wherever it lives.
+    if (change.kind === "deleted" && TEST_FILE.test(rulePath(change.path))) return `${change.path} was deleted (removing a test needs a person)`;
     const why = autoPathProblem(change.path);
     if (why !== null) return `${change.path} changed (${why})`;
     const normal = rulePath(change.path);

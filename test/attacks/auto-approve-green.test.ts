@@ -404,7 +404,10 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
     ["scripts/postbuild.mjs", "// build\n"],
     ["scripts/app-e2e.mjs", "// journeys, changed\n"],
     ["test/helpers.ts", "export {};\n"],
-    ["test/attacks/fence.test.ts", "test('fence', () => { /* weakened */ });\n"],
+    ["test/attacks/vitest.config.ts", "export default {};\n"],
+    ["test/release-fixture.ts", "export {};\n"],
+    ["test/fixtures/sample.test.ts", "test('x', () => {});\n"],
+    ["test/attacks/harness.ts", "export {};\n"],
     ["docs/testing.md", "# Testing\n"],
     ["docs/plans/next.md", "# Plan\n"],
     ["src/fixtures/sample.json", "{}\n"],
@@ -591,5 +594,20 @@ describe("codex r1: a direct deploy can't pass for the coordinator's", () => {
     expect(adoptReleaseOperation(f.store, { id: "d1", authority: a.id, candidate: f.approved, secret: "guess", now: LATER })).toMatchObject({ ok: false });
     expect(adoptReleaseOperation(f.store, { id: "d2", authority: a.id, candidate: f.approved, secret: "the-secret", now: LATER })).toMatchObject({ ok: false });
     expect(adoptReleaseOperation(f.store, { id: "d1", authority: a.id, candidate: f.approved, secret: "the-secret", now: LATER })).toEqual({ ok: true });
+  });
+});
+
+describe("coordinator: test files under test/ ship like src's tests", () => {
+  test("an added and a modified attack test, with product code, are approved", () => {
+    const f = open({ candidate: { "test/attacks/fence.test.ts": "test('fence', () => {});\ntest('more fence', () => {});\n", "test/attacks/new-guard.test.ts": "test('guard', () => {});\n", "src/index.js": "export const answer = 45;\n" } });
+    authorize(f);
+    const sealed = seal(f, check(f));
+    expect(sealed.ok ? "" : sealed.why).toBe("");
+  });
+
+  test.each([["test/attacks/fence.test.ts"], ["src/index.test.ts"]])("deleting %s needs a person", path => {
+    const f = open({ candidate: { [path]: null } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining(`${path} was deleted`) });
   });
 });

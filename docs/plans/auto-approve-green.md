@@ -62,11 +62,13 @@ person exactly as today, and `ownerApproval` still refuses every basis that isn'
   every required check present, earlier attempts finished and at most **two** failed per job; under five minutes old;
 - the change from the comparison base, read from verified objects in the project's own Git directory
   (commit-extract.ts), is confined to an **allowlist**: `src/**` (its tests included; never its test helpers or
-  fixtures — `src/fixtures/`, `test-*`, `*-test-support*`, `*fixture*` — nor build or type configuration), docs
+  fixtures — `src/fixtures/`, `test-*`, `*-test-support*`, `*fixture*` — nor build or type configuration), test files
+  under `test/` (`*.test.ts` only, added or modified — never a helper, fixture, setup or config file there, nor one in a
+  fixtures folder; test authors are trusted, the machinery around them isn't), docs
   (`docs/**.md`, README), CHANGELOG, and a **version-only** change of `package.json` and `package-lock.json`. Every
-  other path — `scripts/` (the check, the build, the journeys), `test/`, `.github/`, agent and security policy files,
+  other path — `scripts/` (the check, the build, the journeys), the rest of `test/`, `.github/`, agent and security policy files,
   `docs/testing.md`, `docs/plans/`, configuration, dependencies — and every path the carry rules never carry needs a
-  person, as do symlinks and submodules;
+  person, as do symlinks and submodules and deleting any test file (under `src/` or `test/`);
 - no earlier generation of this release (repo, version, pull request) was revoked: a revoked release, or one stopped by
   a CI failure after its deploy, asks a person;
 - everything a seal already checks (sealScopeApproval): no coordinator or machine-written text, no widened check
