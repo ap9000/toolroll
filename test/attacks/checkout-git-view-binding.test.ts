@@ -308,3 +308,40 @@ describe("every layout the product supports binds (Codex review of a0fa135d)", (
   });
 });
 
+describe("attack: links deeper inside the repository (Codex review of a0fa135d)", () => {
+  const head = () => readFileSync(join(b, ".git", "refs", "heads", "task"), "utf8");
+  test.each([
+    ["a branch file linked to another repository's", () => { rmSync(join(a, ".git", "refs", "heads", "task")); symlinkSync(join(b, ".git", "refs", "heads", "task"), join(a, ".git", "refs", "heads", "task")); }],
+    ["a ref log linked to another repository's", () => { rmSync(join(a, ".git", "logs", "refs", "heads", "task")); symlinkSync(join(b, ".git", "logs", "refs", "heads", "task"), join(a, ".git", "logs", "refs", "heads", "task")); }],
+    ["a ref log hard-linked to another repository's", () => { rmSync(join(a, ".git", "logs", "refs", "heads", "task")); execFileSync("ln", [join(b, ".git", "logs", "refs", "heads", "task"), join(a, ".git", "logs", "refs", "heads", "task")]); }],
+    ["a loose-object folder linked elsewhere", () => { const objects = join(a, ".git", "objects"); const one = readdirSync(objects).find(name => /^[0-9a-f]{2}$/.test(name))!; renameSync(join(objects, one), join(root, "moved")); symlinkSync(join(root, "moved"), join(objects, one)); }],
+    ["the worktree's own logs linked elsewhere", () => { const logs = join(a, ".git", "worktrees", "a-task", "logs"); rmSync(logs, { recursive: true, force: true }); symlinkSync(join(b, ".git", "logs"), logs); }],
+  ])("%s: refused before git runs, the other repository untouched", async (_name, plant) => {
+    const before = [head(), readFileSync(join(b, ".git", "logs", "refs", "heads", "task"), "utf8")];
+    plant();
+    for (const result of await attempt({ repo: a })) expect(refusal(result), result.stderr).toContain("link");
+    expect([head(), readFileSync(join(b, ".git", "logs", "refs", "heads", "task"), "utf8")]).toEqual(before);
+  });
+
+  test("a folder deeper in refs swapped for a link while git runs: an incident", async () => {
+    const heard: GitIncident[] = [];
+    const stop = onGitIncident(incident => heard.push(incident));
+    try {
+      await checkoutGit(run, "build", { repo: a })("git", ["add", "-A"], { cwd: aLinked, timeoutMs: 60_000 });
+      let swapped = false;
+      const inner: Runner = async (file, args, options) => {
+        const result = await run(file, args, options);
+        if (!swapped && args.includes("config") && args.includes("--show-scope")) {
+          swapped = true;
+          const heads = join(a, ".git", "refs", "heads");
+          renameSync(heads, join(root, "a-heads"));
+          symlinkSync(join(b, ".git", "refs", "heads"), heads);
+        }
+        return result;
+      };
+      const result = await checkoutGit(inner, "build", { repo: a })("git", ["commit", "--no-verify", "-m", "x"], { cwd: aLinked, timeoutMs: 60_000 });
+      expect(refusal(result), result.stderr).toContain("changed while git ran");
+      expect(heard.map(one => one.swapped.map(entry => entry.path))).toEqual([[join(realpathSync(a), ".git", "refs", "heads")]]);
+    } finally { stop(); }
+  });
+});
