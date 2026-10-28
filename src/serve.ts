@@ -1,11 +1,11 @@
-import { recoverLearning } from "./project-learning.js";
+import { secretFolder } from "./tool-secret-store.js";
+import { acceptedIdentities, recoverLearning } from "./project-learning.js";
 import { loadOrCreateVapidKeys } from "./push.js";
 import { checkoutPlan } from "./checkout-cleanup.js";
 import { latestReleaseFor } from "./server/render-settings.js";
 import { LastChecks } from "./server/last-checks.js";
 import { readProviderKey } from "./keys.js";
 import { closeExpiredUnattendedGrants } from "./flow-unattended.js";
-import { releaseStalledDesktopUpdate } from "./desktop-update.js";
 import { isKeyedProvider } from "./acp-agents.js";
 import { PROVIDER_IDS } from "./provider.js";
 import { taskMovedSince } from "./chat-ask.js";
@@ -197,7 +197,7 @@ LEAD_THREAD,
 type Decision,
 type LeadAsk,type LeadThreadScope
 } from "./store.js";
-import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
+import { waitingUpdate } from "./toolroll-update.js";
 import { PACKAGE_VERSION } from "./version.js";
 import { loadConsoleUrl } from "./webhooks.js";
 import {
@@ -426,6 +426,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (found.ok) ssoProvider = { issuer, provider: found.provider, at: Date.now() };
     return found;
   }
+  /** The identity provider as last discovered: what starting a sign-in uses (a GET, so it fetches nothing,
+   * docs/plans/get-side-effects.md). Discovered as the console starts, by the background checks every ten minutes, and
+   * when sign-in settings are saved or tested. */
+  function providerKnown(issuer: string): OidcProvider | null {
+    return ssoProvider !== null && ssoProvider.issuer === issuer ? ssoProvider.provider : null;
+  }
+  { const settings = ssoSettings(); if (settings !== null) void providerFor(settings.issuer).catch(() => undefined); }
   /** Password sign-in is only for instance operators when the provider says so (a way in if it's down). */
   const passwordAllowed = (name: string) => { const settings = ssoSettings(); return settings === null || settings.passwords === "everyone" || store.isInstanceOperator(name); };
   const minutesWords = (ms: number) => { const minutes = Math.max(1, Math.ceil(ms / 60_000)); return minutes >= 120 ? `${Math.round(minutes / 60)} hours` : `${minutes} minute${minutes === 1 ? "" : "s"}`; };
@@ -1824,6 +1831,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   let backgroundChecks: ReturnType<typeof startMaintenance> | null = null;
   let agentsCheckedAt = 0;
   if (options.backgroundChecks === true) server.once('listening', () => {
+    // This Toolroll's folder for secrets, checked once now, so a page can read which are set without preparing it.
+    try { secretFolder(); } catch { /* a page says secrets can't be read; the next action reports why */ }
     backgroundChecks = startMaintenance({ intervalMs: options.backgroundChecksMs ?? BACKGROUND_CHECKS_MS, shouldStop: () => leadClosing,
       run: async () => {
         const now = Date.now();
@@ -1835,17 +1844,21 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           for (const provider of PROVIDER_IDS.filter(isKeyedProvider).filter(one => one !== "claude" && one !== "codex")) waits.push(connectionCheck(provider).catch(() => undefined));
         }
         integrations.refreshIfDue();
+        const sso = ssoSettings();
+        if (sso !== null && (ssoProvider === null || ssoProvider.issuer !== sso.issuer || Date.now() - ssoProvider.at >= 10 * 60_000)) waits.push(providerFor(sso.issuer));
         if (chatKeyFor("openrouter-api") !== null) waits.push(chatCatalog());
         const openrouter = readProviderKey("openrouter", providerHome);
-        if (openrouter !== null && modelCatalog.known(openrouter) === null) waits.push(modelCatalog(openrouter));
+        // The cache answers until its list is due again (ten minutes, or 30 s after a failure), then fetches.
+        if (openrouter !== null) waits.push(modelCatalog(openrouter));
         // What used to be closed by whichever page read it first: an operating mode or a flow's "runs on its own"
-        // grant past its expiry, a stalled update, old coordinator proposals. The demo has no follow pass, so its
-        // lead turns past their deadline are settled here.
+        // grant past its expiry, a stalled update, old coordinator proposals. (Lead turns past their deadline are the
+        // follow pass's, which settles them even while an update drains.)
         const at = clock();
         store.closeExpiredModes(at);
         closeExpiredUnattendedGrants(store, at);
         store.sweepCoordinatorProposals(at);
-        if (store.isDemo()) store.sweepStaleLeadTurns(at);
+        // The demo's scripted story, if a beat timer missed (its pages only read it).
+        try { options.demoLead?.advance(at); } catch { /* the next pass tries again */ }
         const databaseFile = store.databaseFile();
         if (databaseFile !== null && !updateChecksOff(process.env, options.configDir ?? dirname(databaseFile)).off) {
           const last = lastChecks.known<{ version: string } | { problem: string }>("release");
@@ -1864,7 +1877,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         // Learning recovered from reviewed runs (and a project's saved rows carried to its current identity), which
         // Settings → Learning and Knowledge used to do as they opened.
         if (lastChecks.due("learning", 10 * 60_000)) {
-          waits.push(lastChecks.run("learning", async () => { for (const repo of managedRepos()) { try { recoverLearning(store, evidenceRoot, repo); } catch { /* the next pass tries again */ } } }));
+          waits.push(lastChecks.run("learning", async () => {
+            for (const repo of managedRepos()) {
+              try { acceptedIdentities(store, repo); } catch { /* the next pass tries again */ }
+              try { recoverLearning(store, evidenceRoot, repo); } catch { /* the next pass tries again */ }
+            }
+          }));
         }
         // What Codex has configured, per project, for Settings → Tools to offer.
         for (const repo of managedRepos()) {
@@ -1873,10 +1891,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         if (databaseFile !== null && lastChecks.due("storage", 30 * 60_000)) {
           waits.push(lastChecks.run("storage", () => checkoutPlan(store, storagePool(databaseFile), clock(), { manual: true })));
         }
-        if (databaseFile !== null) {
-          try { releaseStalledUpdate(dirname(databaseFile), at); } catch { /* shown as last saved */ }
-          try { releaseStalledDesktopUpdate(dirname(databaseFile)); } catch { /* shown as last saved */ }
-        }
+        // The same reading the chrome does, outside a page visit, so it releases a stalled `toolroll update` and a stalled
+        // desktop update in every folder the chrome looks in.
+        if (databaseFile !== null) { try { waitingUpdate(databaseFile, run => store.stopQuiescenceProblem(run) !== null, at); } catch { /* shown as last saved */ } }
         await Promise.all(waits);
       },
       onError: () => { /* each check keeps its own last answer; the next pass asks again */ },
@@ -2023,6 +2040,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get ssoProvider(): ServerRuntime['ssoProvider'] { return ssoProvider; },
     set ssoProvider(value) { ssoProvider = value; },
     get providerFor(): ServerRuntime['providerFor'] { return providerFor; },
+    get providerKnown(): ServerRuntime['providerKnown'] { return providerKnown; },
     get connectVisits(): ServerRuntime['connectVisits'] { return connectVisits; },
     get defaultProject(): ServerRuntime['defaultProject'] { return defaultProject; },
     get googleVisits(): ServerRuntime['googleVisits'] { return googleVisits; },

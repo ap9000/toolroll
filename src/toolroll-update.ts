@@ -31,7 +31,7 @@ import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
-import { clearWords, durableJson, LINGERING_LIMIT_MS, lingeringRun, lingeringWords, settleLeftoverRecords, sqliteLock, desktopUpdateWaitingOf, stoppedWaitingWords, updateWaitingWords, verifiedDatabaseBackup, type UpdateWaiting } from "./desktop-update.js";
+import { clearWords, durableJson, LINGERING_LIMIT_MS, lingeringRun, lingeringWords, settleLeftoverRecords, sqliteLock, lockHeld, desktopUpdateWaitingOf, stoppedWaitingWords, updateWaitingWords, verifiedDatabaseBackup, type UpdateWaiting } from "./desktop-update.js";
 import { activeUpdateWork, freezeUpdateGate, installUpdateGate, removeUpdateGate, updateAdmissionPaused, updateGateOwned } from "./desktop-update-gate.js";
 import { processMayBeAlive } from "./process-liveness.js";
 import { removeTerminalUpdateGate } from "./terminal-catalog.js";
@@ -1200,7 +1200,7 @@ export function runtimeUpdateStatus(stateDir: string): RuntimeUpdateStatus {
   let j: RuntimeUpdateJournal | null = null;
   try { j = readRuntimeUpdate(stateDir); } catch { j = null; }
   let running = false;
-  if (j && !runtimeUpdateTerminal(j.phase)) { const lock = sqliteLock(join(j.stageDir, "worker.sqlite")); running = lock === null; lock?.close(); }
+  if (j && !runtimeUpdateTerminal(j.phase)) running = lockHeld(join(j.stageDir, "worker.sqlite"));
   const whatsNew = j && j.kind === "update" && j.phase === "complete" && !j.seen ? { version: j.to.version, notes: j.notes ?? [] } : null;
   let last: RuntimeUpdateJournal | null = null;
   try { last = lastCompletedUpdate(stateDir); } catch { last = null; }

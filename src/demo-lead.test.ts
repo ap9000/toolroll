@@ -78,7 +78,8 @@ describe("the scripted demo lead", () => {
   const post = async (cookie: string, path: string, fields: Record<string, string>): Promise<Response> =>
     fetch(`${base}${path}`, { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(fields), redirect: "manual" });
   const lastId = (html: string): string => [...html.matchAll(/action="\/chat\/demo\/([0-9]+)\/approve"/g)].at(-1)![1]!;
-  const later = (ms: number): void => { now = new Date(now.getTime() + ms); };
+  // Time passes and the story moves on: its beat timers (or the console's background pass) advance it, never a page.
+  const later = (ms: number): void => { now = new Date(now.getTime() + ms); lead.advance(now); };
 
   test("any request gets a plan; Approve builds to Ready with a diff, a passing check and a screenshot; Complete works", async () => {
     const cookie = await login();

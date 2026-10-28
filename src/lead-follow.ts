@@ -164,8 +164,10 @@ export type LeadFollowInput = {
 
 export async function runLeadFollowPass(input: LeadFollowInput): Promise<void> {
   const { store } = input, clock = input.clock ?? (() => new Date());
-  if (store.isDemo() || updateAdmissionPaused(store.raw())) return;
+  // Turns past their deadline are settled first, even while an update drains (it waits on them) and in the demo: no
+  // page visit does it any more (docs/plans/get-side-effects.md). Nothing new starts below while either holds.
   store.sweepStaleLeadTurns(clock());
+  if (store.isDemo() || updateAdmissionPaused(store.raw())) return;
   // The lead's own promises are kept whether or not automatic crew updates are on: no model, one line when met.
   checkLeadCommitments(store, clock(), input.evidenceRoot);
   for (const grant of enabledGrants(store)) {

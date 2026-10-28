@@ -453,6 +453,9 @@ export function secretFolder(state?: string): SecretFolder {
   if (problem !== undefined) throw new SecretStoreError(problem);
   const known = folders.get(root);
   if (known !== undefined && unchanged(known)) return known;
+  // A page visit prepares nothing (docs/plans/get-side-effects.md): the console prepares its folder as it starts, and
+  // an action checks a changed one again. Until then the page says secrets can't be read right now.
+  if (inReadOnlyRequest()) throw new SecretStoreError(NOT_READY);
   // Changed since it was checked (or never seen): checked against the same record (the database's, for Toolroll's
   // own folder; this process's, for a test's), and refused if it doesn't match.
   const named = pending.get(root);

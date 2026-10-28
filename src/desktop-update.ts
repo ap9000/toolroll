@@ -317,17 +317,26 @@ export function sqliteLock(file: string, busyTimeoutMs = 0): DatabaseSync | null
   try { db.exec(`PRAGMA busy_timeout=${busyTimeoutMs}; BEGIN EXCLUSIVE`); return db; }
   catch (error) { db.close(); if (String(error).includes("locked") || [5, 6].includes((error as { errcode?: number }).errcode ?? 0)) return null; throw error; }
 }
+/** Whether another process holds the lock in `file`, without making the file or changing it: a status read (a page
+ * shows it, docs/plans/get-side-effects.md). A file that isn't there yet is held by nobody. */
+export function lockHeld(file: string): boolean {
+  if (!existsSync(file)) return false;
+  let db: DatabaseSync;
+  try { db = new (sqlite().DatabaseSync)(file); } catch { return false; }
+  try { db.exec("PRAGMA busy_timeout=0; BEGIN EXCLUSIVE"); db.exec("ROLLBACK"); return false; }
+  catch (error) { return String(error).includes("locked") || [5, 6].includes((error as { errcode?: number }).errcode ?? 0); }
+  finally { db.close(); }
+}
 const workerLock = (j: UpdateJournal, busyTimeoutMs = 0) => sqliteLock(join(j.workDir, "worker.sqlite"), busyTimeoutMs);
 export const installationLock = (j: UpdateJournal) => sqliteLock(join(dirname(j.workDir), `installation-${digest(j.old.path).slice(0, 24)}.sqlite`));
 export function desktopUpdateStatus(stateDir: string) {
   const j = readUpdateJournal(stateDir);
   if (!j) return { active: false, phase: "none", detail: "No update is in progress.", running: false, canResume: false, canCancel: false };
-  const lock = workerLock(j), running = lock === null; lock?.close();
+  const running = lockHeld(join(j.workDir, "worker.sqlite"));
   let recovery: DesktopRecoveryView | null = null;
   try { privateFile(join(j.workDir, "recovery.json")); recovery = readDesktopRecoveryView(JSON.parse(readFileSync(join(j.workDir, "recovery.json"), "utf8"))); } catch { /* A legacy/manual update has no guardian. */ }
   const wantsAutomatic = recovery?.id === j.id && ["armed", "running", "backoff"].includes(recovery.state ?? "") && !terminal(j.phase);
-  const guardianLock = wantsAutomatic ? sqliteLock(join(j.workDir, "guardian.sqlite")) : undefined;
-  const automatic = wantsAutomatic && (guardianLock === null || Date.now() - Date.parse(recovery?.updatedAt ?? "") < 45_000); guardianLock?.close();
+  const automatic = wantsAutomatic && (lockHeld(join(j.workDir, "guardian.sqlite")) || Date.now() - Date.parse(recovery?.updatedAt ?? "") < 45_000);
   const detail = wantsAutomatic && !automatic ? "Automatic recovery has not restarted. Work remains paused; use Retry safely in Update status." : recovery?.state === "attention" || (automatic && (!running || j.phase === "needs-attention")) ? recovery?.detail ?? j.detail : j.detail;
   return { active: !terminal(j.phase), phase: j.phase, detail, error: j.error ?? null, running, automaticRecovery: automatic, recoveryAttempts: recovery?.attempts ?? 0, recoveryRepairs: recovery?.repairs ?? 0, canResume: !running && !automatic && !terminal(j.phase), canCancel: !terminal(j.phase), wasRunning: j.wasRunning && !updateStopRequested(j), backupPath: j.backupPath ?? null, updateId: j.id, version: j.next.version, buildId: j.next.buildId, workDir: j.workDir };
 }

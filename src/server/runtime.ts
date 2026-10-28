@@ -162,6 +162,8 @@ export interface ServerRuntime {
   consumeApprovalNonce: (nonce: string, name: string, taskId: string, digest: string) => boolean;
   recordSignIn: (actor: string, action: string, outcome: string, detail?: string | null) => void;
   ssoProvider: { issuer: string; provider: OidcProvider; at: number; } | null;
+  /** The identity provider as last discovered; a page never discovers it. */
+  providerKnown: (issuer: string) => import("../oidc.js").OidcProvider | null;
   providerFor: (issuer: string) => Promise<{ ok: true; provider: OidcProvider; } | { ok: false; said: string; }>;
   connectVisits: Map<string, ConnectVisit>;
   defaultProject: string | null;
