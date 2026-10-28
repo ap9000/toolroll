@@ -40,7 +40,9 @@ export const STORAGE_CSS = `.storage{max-width:720px;min-width:0;overflow-wrap:a
   `.storage details.sweep-details ul{margin:4px 0 0;padding-left:18px;font-family:var(--font-mono, ui-monospace, monospace);font-size:.6875rem;color:var(--muted-foreground);overflow-wrap:anywhere}` +
   `@media (max-width:900px){.storage details.sweep-details>summary,.storage details.landed>summary{min-height:44px}.storage details.clean-up>summary,.storage form button{min-height:44px}.storage label{max-width:none}.storage select,.storage input[type=password]{min-height:44px;font-size:16px}.storage .preview form.remove button{width:100%}}`;
 
-export type StorageView = { plan: CheckoutPlan; csrf: string; sweep?: { last: SweepRecord | null; off: boolean; schedule?: SweepSchedule }; landed?: LandedSummary };
+export type StorageView = { plan: CheckoutPlan; csrf: string; sweep?: { last: SweepRecord | null; off: boolean; schedule?: SweepSchedule }; landed?: LandedSummary;
+  /** When the checkouts were last measured, and its Check now (docs/plans/get-side-effects.md). */
+  measured?: Html };
 
 /** Paths under the home folder as ~/…, as the checkout list shows them. */
 function homeAsTilde(line: string): string {
@@ -102,6 +104,6 @@ export function storageHtml(view: StorageView, notice: { said?: string | null; p
     plan.stay.length === 0 ? "" : html`<h3>Stays (${plan.stay.length})</h3><ul class="checkouts" data-stays>${plan.stay.map(one => item(one))}</ul>`}${
     remove}</div></details>`;
   const options = CLEANUP_CHOICES.map(one => html`<option value="${one.value}"${one.value === plan.cleanup ? html` selected` : ""}>${one.label}</option>`);
-  return html`<section class="storage">${note}<div class="card storage-state"><h2 data-checkout-bytes="${plan.totalBytes}">Checkouts use ${bytesWords(plan.totalBytes)}</h2><p class="meta">${facts}</p><p data-clean-bytes="${plan.freeBytes}">${frees}</p>${view.sweep === undefined ? "" : sweepHtml(view.sweep)}${view.landed === undefined ? "" : landedHtml(view.landed)}${preview}</div><h2>Automatic cleanup</h2>${
+  return html`<section class="storage">${note}<div class="card storage-state"><h2 data-checkout-bytes="${plan.totalBytes}">Checkouts use ${bytesWords(plan.totalBytes)}</h2><p class="meta">${facts}</p>${view.measured ?? ""}<p data-clean-bytes="${plan.freeBytes}">${frees}</p>${view.sweep === undefined ? "" : sweepHtml(view.sweep)}${view.landed === undefined ? "" : landedHtml(view.landed)}${preview}</div><h2>Automatic cleanup</h2>${
     postForm("/settings/storage", html`<label>Remove a finished task's clean checkout<select name="cleanup">${options}</select></label><p class="meta">Its branch stays. Checkouts with changes, commits on no branch, in use, or waiting for review are kept. When a task's work is already in main, Toolroll marks it complete and removes its checkout and local branches.</p>${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}<button type="submit">Save</button>`, { attrs: { class: "setting" } })}</section>`;
 }

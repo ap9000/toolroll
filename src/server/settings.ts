@@ -454,7 +454,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     }
     const plan = { ...measured.value, cleanup: store.checkoutCleanup() };
     const sweep = { last: lastSweep(store), off: storageSweepOff(), schedule: sweepSchedule(store, now) };
-    return sendScreen(response, 200, screen("Storage", html`<p><a href="/settings">Settings</a></p><h1>Storage</h1>${(storageHtml({ plan, csrf: who.session.csrf, sweep, landed: landedSummary(store) }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}<p class="meta">Measured ${new Date(measured.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })} ${check}</p>`,
+    return sendScreen(response, 200, screen("Storage", html`<p><a href="/settings">Settings</a></p><h1>Storage</h1>${(storageHtml({ plan, csrf: who.session.csrf, sweep, landed: landedSummary(store), measured: html`<p class="meta">Measured ${new Date(measured.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })} ${check}</p>` }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`,
       { chrome: chromeFor(project, "settings") }));
   }
   // Settings → Projects → Pull requests: one project's setup. Off, the checks run on open, so the page says

@@ -16,7 +16,7 @@ export function connectionWords(connection: ProviderConnection): string {
 export function connectionHtml(provider: ProviderId, connection: ProviderConnection | null, task = ""): Html {
   const query = new URLSearchParams({ provider, ...(task ? { task } : {}) });
   const back = `/control?${query.toString()}`;
-  const check = postForm("/settings/connection/check", html`<button type="submit" class="secondary">Check again</button>`, { attrs: { class: "inline" }, returnTo: back, hidden: { provider } });
+  const check = postForm("/settings/connection/check", html`<button type="submit" class="secondary">${connection === null ? "Check now" : "Check again"}</button>`, { attrs: { class: "inline" }, returnTo: back, hidden: { provider } });
   if (connection === null) return html`<div class="card assistant-account"><p><strong>${ASSISTANTS[provider].name} · Not checked yet</strong></p>${check}</div>`;
   return html`<div class="card assistant-account"><p><strong>${ASSISTANTS[provider].name} · ${connectionWords(connection)}</strong></p><p class="meta">${[connection.email, connection.plan, connection.method].filter(Boolean).join(" · ")}</p><p class="meta">Checked ${new Date(connection.checkedAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZoneName: "short" })} on the computer running this console. Sign-in does not prove model access or remaining quota.</p><a class="button-link" href="/control/connection?${query.toString()}">${connection.state === "connected" ? "Manage connection" : "Connect account"}</a> ${check}</div>`;
 }
