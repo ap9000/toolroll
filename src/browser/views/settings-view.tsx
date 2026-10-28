@@ -271,7 +271,7 @@ function Providers({ providers, csrf }: { providers: NonNullable<BrowserSettings
           <CollapsibleContent>
             <PostForm action="/settings/provider-key" className="mt-3 grid gap-3 rounded-lg bg-muted p-4">
               <input type="hidden" name="provider" value={one.provider} />
-              {one.connection && <p className="provider-connection text-sm"><strong>{one.connection.words}</strong> {one.connection.facts} · <a className="underline underline-offset-4" href={one.connection.checkHref}>Check again</a></p>}
+              {one.connection && <p className="provider-connection text-sm"><strong>{one.connection.words}</strong> {one.connection.facts} · <button type="submit" className="underline underline-offset-4" formAction={one.connection.checkAction} formNoValidate>Check again</button></p>}
               <p className="text-body text-muted-foreground">{one.usage} · <code className="font-mono text-xs">{one.envName}</code></p>
               {one.subscriptionCapable && <div className="grid gap-2"><Label htmlFor={`${one.provider}-auth`}>Sign-in</Label>
                 <Select name="auth-mode" defaultValue={one.mode}>

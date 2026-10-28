@@ -193,7 +193,7 @@ export type BrowserSettingsView = {
   quality: { mode: string; canManage: boolean; changed: string | null } | null;
   providers: {
     provider: string; name: string; tone: 'ok' | 'warn' | 'off' | 'neutral'; words: string;
-    connection: { words: string; facts: string; checkHref: string } | null;
+    connection: { words: string; facts: string; checkAction: string } | null;
     usage: string; envName: string; subscriptionCapable: boolean; mode: 'subscription' | 'api-key'; set: boolean;
   }[] | null;
   legacyWebhookWarning?: string;

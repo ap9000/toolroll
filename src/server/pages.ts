@@ -63,7 +63,7 @@ import { decisionAnswerScript,taskBody } from "./render-tasks.js";
 import { type Who } from "./session.js";
 import { rereadBrowser } from "./live.js";
 export function createPagesHandlers(runtime: ServerRuntime) {
-  const { clock, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession } = runtime;
+  const { clock, lastChecks, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession } = runtime;
 
   // The filesystem browser (operator request): pick a project folder by
   // looking, not typing. CONFINED to exactly what opening allows —
@@ -138,7 +138,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   async function projectsGithub(ctx: HandlerContext): Promise<void> {
     const { who, response } = ctx;
     if (store.isDemo()) return refuse(response, who, 403, "the sandbox never talks to GitHub");
-    const listed = await (options.ghList ?? listGithubRepos)();
+    // The last listing (docs/plans/get-side-effects.md): List repositories posts; opening the page asks GitHub nothing.
+    const listed = lastChecks.known<Awaited<ReturnType<typeof listGithubRepos>>>("github-repos")?.value ?? null;
     // What this machine already has, matched by the clone's own recorded
     // origin — registered projects first, then the immediate children of
     // the configured roots. Identities are compared case-insensitively
@@ -156,7 +157,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     // Roots are walked ONLY when there are listed repos to match against
     // (finding 1), through an iterator that stops at 400 entries — a
     // directory with a million children costs 400 stats, not a scan.
-    if (listed.ok && listed.repos.length > 0) {
+    if (listed !== null && listed.ok && listed.repos.length > 0) {
       for (const root of ceiling.roots) {
         const children: string[] = [];
         try {
@@ -196,6 +197,13 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     );
   }
 
+  // List repositories / Refresh list: ask the GitHub CLI signed in on this machine, then show the page.
+  async function projectsGithubList(ctx: HandlerContext): Promise<void> {
+    const { who, response } = ctx;
+    if (store.isDemo()) return refuse(response, who, 403, "the sandbox never talks to GitHub");
+    await lastChecks.run("github-repos", () => (options.ghList ?? listGithubRepos)());
+    return redirect(response, "/projects/github");
+  }
   async function projectsIndex(ctx: HandlerContext): Promise<void> {
     const { url, who, response } = ctx;
     return void projectsScreen(response, who, url.searchParams.get("said"), 200, safeReturn(url.searchParams.get("return")));
@@ -1106,6 +1114,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   const registrations = handlersOf("pages", {
     "projects.browse": projectsBrowse,
     "projects.github": projectsGithub,
+    "projects.github-list": projectsGithubList,
     "projects.page": projectsIndex,
     "home": homeRedirect,
     "morning": morningAlias,

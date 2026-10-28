@@ -49,7 +49,7 @@ export function leadSettingsHtml(data: { config: import("../store.js").ChatConfi
   const summary = config === null
     ? data.signedIn !== null
       ? html`<p>The lead is off.</p>${postForm("/settings/lead/on", html`<button type="submit">Use your ${data.signedIn} sign-in</button>`, { returnTo })}`
-      : html`<p>The lead is off. Sign in an agent on this computer to turn it on:</p><p><code>${data.command}</code></p>`
+      : html`<p>The lead is off. Sign in an agent on this computer to turn it on:</p><p><code>${data.command}</code></p>${postForm("/lead/check", html`<button type="submit" class="secondary">Check again</button>`, { returnTo })}`
     : data.words !== null
       ? html`<p>The lead uses ${data.words}.</p><p class="meta">${config.model === "default" ? "Its default model" : `Model ${config.model}`} · up to ${config.dailyTurns} turns a day · no dollar spend. Every action it proposes waits for you to confirm it.</p>`
       : html`<p>The lead uses the ${config.provider === "anthropic-api" ? "Anthropic" : "OpenRouter"} API with ${config.model}.</p><p class="meta">Up to ${chatMoney(config.weeklyCeilingMicrousd)} a week · up to ${config.dailyTurns} turns a day.</p>`;
@@ -331,7 +331,7 @@ ${[
               html`<details class="provider-manage"><summary>Manage</summary>`,
               postForm("/settings/provider-key", joinHtml([
                 "",
-                one.connection === undefined ? "" : html`<p class="provider-connection"><strong>${connectionWords(one.connection)}</strong> ${[one.connection.email, one.connection.plan, one.connection.method].filter(Boolean).join(" · ")} · <a href="/settings?check-connection=${encodeURIComponent(one.provider)}#providers">Check again</a></p>`,
+                one.connection === undefined ? "" : html`<p class="provider-connection"><strong>${connectionWords(one.connection)}</strong> ${[one.connection.email, one.connection.plan, one.connection.method].filter(Boolean).join(" · ")} · <button type="submit" class="secondary" formaction="/settings/connection/check" formnovalidate>Check again</button></p>`,
                 html`<p class="meta">${one.mode === "subscription" ? "Uses its own sign-in, so no API-key spend" : "Uses the API key"} · <span class="mono">${one.envName}</span> · ${
                   one.set ? `key stored${one.updatedAt === null ? "" : ` ${one.updatedAt.slice(0, 10)}`}` : one.ambient ? "key in this server's environment" : "no key stored"}</p>`,
                 one.subscriptionCapable
@@ -459,7 +459,7 @@ ${one.retiredAt === null
           : one.set ? { tone: "ok" as const, words: "API key saved" } : one.ambient ? { tone: "ok" as const, words: "Key from this computer’s environment" } : { tone: "off" as const, words: "Not set up" };
       return {
         provider: one.provider, name, tone: status.tone, words: status.words,
-        connection: one.connection === undefined ? null : { words: connectionWords(one.connection), facts: [one.connection.email, one.connection.plan, one.connection.method].filter(Boolean).join(" · "), checkHref: `/settings?check-connection=${encodeURIComponent(one.provider)}#providers` },
+        connection: one.connection === undefined ? null : { words: connectionWords(one.connection), facts: [one.connection.email, one.connection.plan, one.connection.method].filter(Boolean).join(" · "), checkAction: "/settings/connection/check" },
         usage: `${one.mode === "subscription" ? "Uses its own sign-in, so no API-key spend" : "Uses the API key"} · ${one.set ? `key stored${one.updatedAt === null ? "" : ` ${one.updatedAt.slice(0, 10)}`}` : one.ambient ? "key in this server's environment" : "no key stored"}`,
         envName: one.envName, subscriptionCapable: one.subscriptionCapable, mode: one.mode, set: one.set,
       };

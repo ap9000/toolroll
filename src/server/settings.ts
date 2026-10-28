@@ -55,7 +55,7 @@ import { ALL_PROJECTS as CHAT_APPROVAL_ALL,chatApprovalWords,setChatApproval } f
 import { ChatState } from "../chat-delivery-state.js";
 import { checkSettingsHtml } from '../check-levels-ui.js';
 import { CHECK_LEVEL_WORDS,isCheckLevel,liveQuickCommand,projectCheckLevel,quickVerifyKey,setProjectCheckLevel,suggestQuickCommand } from '../check-levels.js';
-import { checkoutPlan,cleanCheckouts,discardCheckout,previewDigest } from "../checkout-cleanup.js";
+import { checkoutPlan,cleanCheckouts,discardCheckout,previewDigest,type CheckoutPlan } from "../checkout-cleanup.js";
 import { approveSetup,previewSetup,type SetupInputs } from "../control-setup.js";
 import { connectionHtml,controlSetupHtml,setupPreviewHtml } from "../control-ui.js";
 import { hasDisguisedText } from '../decision.js';
@@ -130,17 +130,17 @@ import { teamsSettingsHtml } from "../teams-settings.js";
 import { telegramSettingsHtml } from "../telegram-settings.js";
 import { hashPairingCode,loadBotToken,mintPairingCode,PAIRING_TTL_MS,redactToken,saveBotToken } from "../telegram.js";
 import { newerThan,updatesHtml,updatesScript,updateStepsHtml } from "../toolroll-update-ui.js";
-import { abandonRuntimeUpdate,currentRuntime,launchRuntimeUpdate,markWhatsNewSeen,prepareRuntimeUpdate,releaseStalledUpdate,requestRuntimeUpdateCancel,runningWorkWords,runtimeUpdateStatus,runtimeUpdateTerminal,type When } from "../toolroll-update.js";
+import { abandonRuntimeUpdate,currentRuntime,launchRuntimeUpdate,markWhatsNewSeen,prepareRuntimeUpdate,requestRuntimeUpdateCancel,runningWorkWords,runtimeUpdateStatus,runtimeUpdateTerminal,type When } from "../toolroll-update.js";
 import { TOOLS_PROJECT_SCRIPT,toolsHtml,toolsProjectPicker } from "../tools-ui.js";
 import { effectivePrimary,isMessagingChannel,savePrimary } from "../webhooks.js";
 import type { EdgeContext } from './handler-context.js';
 import { personChip,ROLE_TITLES } from "./chrome.js";
 import { chatReturnWithSaid,goOutside } from "./http.js";
-import { latestReleaseFor,leadSettingsHtml,notificationProjects,SETTINGS_AUTOSAVE_SCRIPT,settingsPage,settingsWorkers,telegramDeliveryWords,telegramTrouble,type LeadFormFacts } from "./render-settings.js";
+import { leadSettingsHtml,notificationProjects,SETTINGS_AUTOSAVE_SCRIPT,settingsPage,settingsWorkers,telegramDeliveryWords,telegramTrouble,type LeadFormFacts } from "./render-settings.js";
 /** The five operations of each chat app's settings (Slack, Teams, Discord). */
 type ChatAppAction = "connect" | "pair" | "unpair" | "disconnect" | "alerts";
 export function createSettingsHandlers(runtime: ServerRuntime) {
-  const { store, providerHome, managedRepos, consoleProjects, sendScreen, chromeFor, connectionCheck, clock, modelCatalog, modelSeams, toolsViewOf, codexServers, projectViewOf, sessions, restricted, options, integrations, consoleOrigin, evidenceRoot, storagePool, visible, ssoSettings, checkLocalAgents, chatKeyFor, chatCatalog, leadWords, agentSignInCommand, settingsUpdates, phoneSetup, authenticateApprover, authenticateCredential, deletedRepos, projectOf, providerFor, admissionList, toolHome, connectVisits, mintApprovalNonce, consumeApprovalNonce, defaultProject, googleVisits } = runtime;
+  const { store, providerHome, managedRepos, consoleProjects, sendScreen, chromeFor, connectionCheck, connectionKnown, lastChecks, checkRelease, clock, modelCatalog, modelSeams, toolsViewOf, codexServers, projectViewOf, sessions, restricted, options, integrations, consoleOrigin, evidenceRoot, storagePool, visible, ssoSettings, checkLocalAgents, chatKeyFor, chatCatalog, chatCatalogKnown, leadWords, agentSignInCommand, settingsUpdates, phoneSetup, authenticateApprover, authenticateCredential, deletedRepos, projectOf, providerFor, admissionList, toolHome, connectVisits, mintApprovalNonce, consumeApprovalNonce, defaultProject, googleVisits } = runtime;
 
   // v105: what agent work cost, by month, and the monthly budgets. An instance operator's page.
   async function spendPage(ctx: HandlerContext): Promise<void> {
@@ -240,10 +240,11 @@ ${hasGrant ? "" : html`<span class="meta">self-merging needs a merge-capable pub
     const asked = url.searchParams.get("provider") ?? saved?.provider ?? "claude";
     if (!isProviderId(asked)) return refuse(response, who, 400, "Choose a known provider.", "/control");
     const task = url.searchParams.get("task") ?? "";
-    const connection = await connectionCheck(asked, url.searchParams.get("check-connection") === "1");
+    // The last sign-in check: Check again posts (docs/plans/get-side-effects.md).
+    const connection = connectionKnown(asked);
     if (view === "connection") {
       const command = asked === "claude" ? "claude auth login" : asked === "codex" ? "codex login" : asked === "gemini" ? "gemini" : null;
-      return sendScreen(response, 200, screen(`${ASSISTANTS[asked].name} connection`, html`<h1>${ASSISTANTS[asked].name} ${connection.state === "connected" ? "is connected" : "connection"}</h1>\
+      return sendScreen(response, 200, screen(`${ASSISTANTS[asked].name} connection`, html`<h1>${ASSISTANTS[asked].name} ${connection?.state === "connected" ? "is connected" : "connection"}</h1>\
 ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On the computer running Toolroll, sign in with:</p><pre class="recap">${command}</pre>`}\
 <p><a href="/settings#providers">Manage API keys and authentication mode</a></p><input type="hidden" name="resume-task" value="${task}">`, { chrome: chromeFor(project, "settings") }));
     }
@@ -256,21 +257,58 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const models = live.length === 0 ? modelChoices(asked, configured, providerHome)
       : configured && !live.some(one => one.value === configured) ? [{ value: configured, label: `${configured} — current choice` }, ...live] : live;
     const instructions = previewProjectInstructions(project);
-    const catalog = asked === "openrouter" ? await modelCatalog(readProviderKey("openrouter", providerHome), url.searchParams.get("refresh-models") === "1") : null;
+    // The model list as last loaded; Refresh models posts, and the background checks keep it current.
+    const catalog = asked === "openrouter" ? modelCatalog.known(readProviderKey("openrouter", providerHome)) ?? { ok: false as const, problem: "The model list has not loaded yet." } : null;
     const inputs: SetupInputs = { provider: asked, model: saved?.provider === asked ? saved.model ?? "" : models[0]?.value ?? "", command: setup?.command ?? (saved === null ? preparation?.command ?? "" : ""), seconds: String((setup?.timeoutMs ?? 300_000) / 1000) };
     return sendScreen(response, 200, screen("Project setup", controlSetupHtml({ repo: project, csrf: who.via === "cookie" ? who.session.csrf : "", provider: asked, inputs, models, connection, catalog, task, preparation,
       instructions: instructions.ok ? { installed: instructions.installed } : { installed: false, message: instructions.message } }),
       { chrome: chromeFor(project, "settings"), ...(catalog === null ? {} : { functional: { script: openRouterPickerScript() } }) }));
   };
+  // Settings → Projects → Pull requests → Check setup: git and GitHub, for one project, by an approver who may turn it on.
+  async function pullRequestsCheck(ctx: HandlerContext): Promise<void> {
+    const { who, response, posted } = ctx;
+    const repo = readForm(posted, CONSOLE_FORMS.pullRequestsCheck).get("repo") ?? "";
+    const known = [...new Set([...managedRepos(), ...store.knownRepos(), ...store.listProjects().map(one => one.path)])];
+    if (who.via !== "cookie" || !known.includes(repo) || !visible(repo)) return refuse(response, who, 404, "No such project.", "/projects");
+    if (who.role !== "approver" || store.isDemo()) return refuse(response, who, 403, "An approver can turn on pull requests.", "/projects");
+    await lastChecks.run(`publishing:${repo}`, () => checkPublishing(repo, options.publishExec === undefined ? {} : { exec: options.publishExec }));
+    return redirect(response, `/settings/pull-requests?repo=${encodeURIComponent(repo)}`);
+  }
+  // Settings → Storage → Check now: measure the checkouts again.
+  async function storageCheck(ctx: HandlerContext): Promise<void> {
+    const databaseFile = store.databaseFile();
+    if (databaseFile !== null) await measureStorage(databaseFile);
+    return redirect(ctx.response, "/settings/storage");
+  }
+  const measureStorage = (databaseFile: string) => lastChecks.run("storage", () => checkoutPlan(store, storagePool(databaseFile), clock(), { manual: true }));
+  // Settings → Updates → Check now: ask npm once, whether or not automatic checks are on.
+  async function updatesCheck(ctx: HandlerContext): Promise<void> {
+    await checkRelease();
+    return redirect(ctx.response, "/settings/updates");
+  }
+  // Check again (Settings → providers, Project setup): ask this computer's CLI, or test the saved key, now.
+  async function connectionCheckNow(ctx: HandlerContext): Promise<void> {
+    const { response, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.connectionCheck);
+    const provider = body.get("provider") ?? "";
+    const back = safeReturn(body.get("return") ?? "/settings#providers");
+    if (!isProviderId(provider)) return redirect(response, back);
+    await connectionCheck(provider, true).catch(() => undefined);
+    return redirect(response, back);
+  }
+  // Refresh models (Project setup, OpenRouter): load the list again, then show the setup page with it.
+  async function modelsRefresh(ctx: HandlerContext): Promise<void> {
+    const { response, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.modelsRefresh);
+    await modelCatalog(readProviderKey("openrouter", providerHome), true);
+    const query = new URLSearchParams({ provider: "openrouter", ...(body.get("task") ? { task: body.get("task")! } : {}) });
+    return redirect(response, `/control?${query.toString()}`);
+  }
   async function modelsPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
     const now = clock();
-    const watch = watchState(store);
-    // Opening the page refreshes a stale snapshot; the lists are public and
-    // the check sends nothing about the person or their projects.
-    if (who.role === "approver" && (watch.checkedAt === null || now.getTime() - Date.parse(watch.checkedAt) > 3_600_000)) {
-      await checkModels(store, now, modelSeams).catch(() => undefined);
-    }
+    // The page shows the last check and when it ran (docs/plans/get-side-effects.md): Check now, or the watch loop's
+    // automatic checks, fetch the lists and may queue a notice; opening the page never does.
     const view = modelsView(who.role === "approver", who.via === "cookie" ? who.session.csrf : "", now, url.searchParams.get("said"), url.searchParams.get("problem"));
     return sendScreen(response, 200, screen("Models", html`<p><a href="/settings">Settings</a></p><h1>Models</h1>${modelsHtml(view)}`, { chrome: chromeFor(project, "settings"), functional: { script: modelsScript() } }));
   }
@@ -299,7 +337,8 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     if (chosen) {
       try {
         const approver = who.role === "approver" && who.via === "cookie";
-        const view = toolsViewOf(chosen, approver ? await codexServers(chosen) : null, kit, wanted);
+        // What Codex had configured at the last background check (docs/plans/get-side-effects.md): the page starts no codex.
+        const view = toolsViewOf(chosen, approver ? lastChecks.known<unknown[] | null>(`codex-tools:${chosen}`)?.value ?? null : null, kit, wanted);
         if (approver) view.others = projects.filter(one => one !== chosen).map(one => ({ repo: one, project: projectName(one), open: connectionsOf(store, one).filter(c => c.state === "open").map(c => c.id) }));
         content = (toolsHtml(view, who.via === "cookie" ? who.session.csrf : "", approver,
           { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }));
@@ -378,15 +417,15 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const who = browserCaller(ctx.who);
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return refuse(response, who, 403, "An instance operator updates Toolroll.", "/settings");
-    // A record it cannot release is shown as it is; the page never fails over it.
-    try { releaseStalledUpdate(dirname(databaseFile), clock()); } catch { /* shown as last saved */ }
+    // A stalled update is released by the background pass, never by opening this page (docs/plans/get-side-effects.md).
     const status = runtimeUpdateStatus(dirname(databaseFile));
     if (url.searchParams.get("fragment") === "steps") return respond(response, 200, "text/html; charset=utf-8", status.journal ? updateStepsHtml(status.journal, status.running) : html`<div id="update-live" data-done="1"></div>`);
     const active = status.journal !== null && !runtimeUpdateTerminal(status.journal.phase);
     const current = options.updates?.current ?? PACKAGE_VERSION;
-    // While update checks are off the page asks npm nothing until Check now.
-    const checksOff = updateChecksOff(process.env, options.configDir ?? dirname(databaseFile)).off && url.searchParams.get("check") !== "now";
-    const view = { current, latest: active ? { version: current } : checksOff ? { off: true as const } : await latestReleaseFor(options.updates?.latest), method: options.updates?.method ?? installMethod(), journal: status.journal, running: status.running, whatsNew: status.whatsNew, rollbackTo: status.lastUpdate?.to === current ? status.lastUpdate.from : null, csrf: who.session.csrf };
+    // The last answer npm gave (the background checks ask while update checks are on; Check now asks once).
+    const checksOff = updateChecksOff(process.env, options.configDir ?? dirname(databaseFile)).off;
+    const known = lastChecks.known<{ version: string } | { problem: string }>("release")?.value ?? null;
+    const view = { current, latest: active ? { version: current } : known ?? (checksOff ? { off: true as const } : { pending: true as const }), method: options.updates?.method ?? installMethod(), journal: status.journal, running: status.running, whatsNew: status.whatsNew, rollbackTo: status.lastUpdate?.to === current ? status.lastUpdate.from : null, csrf: who.session.csrf };
     return sendScreen(response, 200, screen("Updates", html`<p><a href="/settings">Settings</a></p><h1>Updates</h1>${(updatesHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`,
       { chrome: chromeFor(project, "settings"), ...(active ? { functional: { script: updatesScript(), fetches: true } } : {}) }));
   }
@@ -405,9 +444,17 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const who = browserCaller(ctx.who);
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return refuse(response, who, 403, "An instance operator looks after storage.", "/settings");
-    const plan = await checkoutPlan(store, storagePool(databaseFile), now, { manual: true });
+    // The last measurement (docs/plans/get-side-effects.md): the background checks measure the checkouts, and so do
+    // Check now and every clean-up; opening the page runs no du or git.
+    const measured = lastChecks.known<CheckoutPlan>("storage");
+    const check = postForm("/settings/storage/check", html`<button type="submit" class="secondary">Check now</button>`, { attrs: { class: "inline" } });
+    if (measured === null) {
+      return sendScreen(response, 200, screen("Storage", html`<p><a href="/settings">Settings</a></p><h1>Storage</h1><section class="storage"><div class="card storage-state"><h2>Checkouts not measured yet</h2>${check}</div></section>`,
+        { chrome: chromeFor(project, "settings") }));
+    }
+    const plan = { ...measured.value, cleanup: store.checkoutCleanup() };
     const sweep = { last: lastSweep(store), off: storageSweepOff(), schedule: sweepSchedule(store, now) };
-    return sendScreen(response, 200, screen("Storage", html`<p><a href="/settings">Settings</a></p><h1>Storage</h1>${(storageHtml({ plan, csrf: who.session.csrf, sweep, landed: landedSummary(store) }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`,
+    return sendScreen(response, 200, screen("Storage", html`<p><a href="/settings">Settings</a></p><h1>Storage</h1>${(storageHtml({ plan, csrf: who.session.csrf, sweep, landed: landedSummary(store) }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}<p class="meta">Measured ${new Date(measured.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })} ${check}</p>`,
       { chrome: chromeFor(project, "settings") }));
   }
   // Settings → Projects → Pull requests: one project's setup. Off, the checks run on open, so the page says
@@ -419,7 +466,8 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     if (who.via !== "cookie" || !known.includes(repo) || !visible(repo)) return refuse(response, who, 404, "No such project.", "/projects");
     const publishing = publishingOf(store, repo);
     const canChange = who.role === "approver" && !store.isDemo();
-    const check = publishing.on || !canChange ? null : await checkPublishing(repo, options.publishExec === undefined ? {} : { exec: options.publishExec });
+    // The last setup check for this project (Check setup posts); opening the page asks git and GitHub nothing.
+    const check = publishing.on || !canChange ? null : lastChecks.known<Awaited<ReturnType<typeof checkPublishing>>>(`publishing:${repo}`)?.value ?? "unchecked";
     const body = (pullRequestSettingsHtml({ repo, name: projectName(repo), csrf: who.session.csrf, canChange, publishing, check,
       said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }));
     return sendScreen(response, 200, screen("Pull requests", html`<p><a href="/projects">Projects</a></p><h1>Pull requests</h1>${body}`, { chrome: chromeFor(project, "projects") }));
@@ -546,14 +594,13 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
   async function leadPage(ctx: HandlerContext): Promise<void> {
     const { url, response, now, project } = ctx;
     const who = browserCaller(ctx.who);
-    if (runtime.localSignIn === null) await Promise.race([checkLocalAgents(), new Promise(done => setTimeout(done, 6_000).unref?.())]);
     const config = store.getChatConfig();
     const facts: LeadFormFacts = {
       keyFacts: (["anthropic-api", "openrouter-api"] as const).map(one => {
         const found = chatKeyFor(one);
         return { provider: one, state: found === null ? "none" : found.source, tail: found === null || found.source === "environment" ? null : redactToken(found.key) };
       }),
-      openrouterModels: (await chatCatalog())?.map(one => one.id) ?? null,
+      openrouterModels: chatCatalogKnown()?.map(one => one.id) ?? null,
       liveModels: [...modelOptions(store, "claude", now, providerHome), ...modelOptions(store, "codex", now, providerHome)],
       csrf: who.session.csrf,
       returnTo: "/settings/lead",
@@ -624,7 +671,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
           provider,
           envName: PROVIDER_KEY_ENV[provider],
           ...keyStatus(provider, providerHome),
-          connection: await connectionCheck(provider, url.searchParams.get("check-connection") === provider),
+          ...(connectionKnown(provider) === null ? {} : { connection: connectionKnown(provider)! }),
           ambient: (process.env[PROVIDER_KEY_ENV[provider]] ?? "") !== "",
           mode: readAuthMode(provider, providerHome) === "api-key" ? "api-key" as const : "subscription" as const,
           subscriptionCapable: SUBSCRIPTION_CAPABLE[provider],
@@ -981,7 +1028,9 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const body = readForm(posted, CONSOLE_FORMS.storage);
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return refuse(response, who, 403, "An instance operator looks after storage.", "/settings");
-    const back = sayTo(response, "/settings/storage");
+    // What the page shows next is measured again after the change.
+    const said = sayTo(response, "/settings/storage");
+    const back = async (kind: Parameters<typeof said>[0], words: string) => { await measureStorage(databaseFile).catch(() => undefined); return said(kind, words); };
     const what = op === "clean" ? "clean up" : op === "discard" ? "discard a checkout" : "change checkout cleanup";
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", `Enter your Toolroll password to ${what}.`);
     if (op === "cleanup") {
@@ -2136,6 +2185,11 @@ ${modeWords(terms)
     "mode": modePage,
     "control": controlPage("setup"),
     "control.connection": controlPage("connection"),
+    "settings.updates-check-send": updatesCheck,
+    "settings.storage-check-send": storageCheck,
+    "settings.pull-requests-check-send": pullRequestsCheck,
+    "settings.connection-check": connectionCheckNow,
+    "control.models-refresh": modelsRefresh,
     "settings.models": modelsPage,
     "settings.tools": toolsPage,
     "settings.project": projectPage,

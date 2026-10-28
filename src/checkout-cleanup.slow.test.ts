@@ -272,6 +272,11 @@ test("Settings → Storage shows checkout space and what a clean-up frees; Clean
   try {
     const cookie = (await fetch(`${base}/login`, { method: "POST", body: new URLSearchParams({ name: "alex", token: alex.token }), redirect: "manual" }))
       .headers.getSetCookie().map(one => one.split(";")[0]!).find(one => one.startsWith("standing-orders_session="))!;
+    // Opening the page measures nothing (docs/plans/get-side-effects.md); Check now measures, then the page shows it.
+    const unmeasured = await (await fetch(`${base}/settings/storage`, { headers: { cookie } })).text();
+    expect(unmeasured).toContain("Checkouts not measured yet");
+    const measured = await fetch(`${base}/settings/storage/check`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf: /name="csrf" value="([0-9a-f]{64})"/.exec(unmeasured)![1]! }), redirect: "manual" });
+    expect(measured.headers.get("location")).toBe("/settings/storage");
     const page = await (await fetch(`${base}/settings/storage`, { headers: { cookie } })).text();
     expect(page).toContain("<h1>Storage</h1>");
     expect(page).toContain(goes);

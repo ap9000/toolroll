@@ -109,7 +109,8 @@ export function diskBytes(paths: readonly string[]): Map<string, number> {
   if (process.platform !== "win32") {
     for (let at = 0; at < paths.length; at += 200) {
       const batch = paths.slice(at, at + 200);
-      const du = spawnSync("du", ["-sk", ...batch], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+      // Bounded: a slow disk leaves the rest unmeasured rather than holding everything up.
+      const du = spawnSync("du", ["-sk", ...batch], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024, timeout: 60_000 });
       for (const line of (du.stdout ?? "").split("\n")) {
         const match = /^(\d+)\t(.+)$/.exec(line);
         if (match !== null && batch.includes(match[2]!)) sizes.set(match[2]!, Number(match[1]) * 1024);
