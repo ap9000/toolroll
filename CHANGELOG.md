@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.9.76 — 2026-10-28
+
+- **Releases can approve themselves when they're green.** A new per-project
+  setting, **Release approval: Ask me / Approve automatically when checks
+  pass**, is off by default. Turning it on takes your typed password;
+  turning it off takes one click and withdraws every automatic approval not
+  yet merged. When it's on, a release task first reads "Checking
+  automatically" (`auto-check`), which lets its release check run and
+  nothing else. Once GitHub CI and the release check both pass on the exact
+  candidate, it approves itself (`auto-green`) and the release continues as
+  after your yes. You're told, not asked.
+- **What an automatic approval must prove.** Up to two failed attempts per
+  CI job, and two failed release-check builds on the same commit, are
+  tolerated as flakes. Past that it asks you. The change must touch only
+  allowed paths: product code and its tests, test files under `test/`,
+  docs, the changelog and a version-only `package.json` bump. Scripts, CI,
+  configuration, dependencies, policy files and test helpers (found from the
+  tests' own imports) need a person. CI is read again before the deploy, the
+  CLI switch, the merge and the tag. Anything not green stops the release,
+  withdraws the approval and tells you.
+- **A red CI after the merge holds publishing.** No tag, npm publish or
+  Homebrew update happens until a person runs
+  `toolroll release publish-ok <task>` with their password.
+- **Stricter CI verdicts on every release, yours too.** Only checks on the
+  exact head count. Required checks must come from GitHub Actions, so
+  another app's same-name success can't hide a failure. A newer run of the
+  same workflow supersedes its older runs on the commit.
+- **Toolroll's own git on agent checkouts runs against a frozen view.**
+  Every git command the plane runs on a checkout an agent wrote (staging,
+  committing, cleanup, pool refresh, scouts, planners, coding sessions, page
+  reads) runs against a private copy of the repository's settings taken
+  once. Changes the agent makes to them afterwards are never read.
+- **Git settings are denied by default.** Only audited config sections and
+  variables pass. Aliases, URL rewrites that reach remote helpers, empty
+  filter names and `hook.*` are refused. Writes allow no network transport.
+  Local git-lfs installs still work.
+- **Writes are bound to the project's recorded repository.** A checkout
+  whose `.git` points anywhere else is refused. Before git writes through a
+  view, every path it could write is walked for links and hard links. Plane
+  git writes on one checkout run one at a time.
+- **A git incident is recorded and you're notified.** A swap seen after git
+  ran is logged and raised as an attention notification. The notification
+  names the project by Toolroll's own record, never by a path the agent
+  chose.
+- **`discover --dirty` reads repositories through the same hardened git.**
+- Database: schema v136 (unchanged).
+
 ## 0.9.75 — 2026-10-27
 
 - **Opening a page only shows it.** Pages no longer run checks, tidy up or
