@@ -1246,7 +1246,7 @@ describe("toolroll release: a regated check of the same approved commit (2026-10
 function autoWorld(options: { setting?: boolean; authorize?: string; approve?: string } = {}) {
   const w = releaseWorld();
   const { s, adapters, rel } = w;
-  const plane = { setting: options.setting ?? true, authorizations: 0, approvals: 0, gaveUp: [] as string[], released: [] as string[] };
+  const plane = { setting: options.setting ?? true, authorizations: 0, approvals: 0, gaveUp: [] as string[], released: [] as string[], checkFailed: [] as string[] };
   const at = () => new Date(s.now).toISOString();
   adapters.release!.auto = {
     setting: async () => plane.setting,
@@ -1270,6 +1270,7 @@ function autoWorld(options: { setting?: boolean; authorize?: string; approve?: s
     },
     giveUp: async (_task, why) => { plane.gaveUp.push(why); if (s.gate.approval?.basis === "auto-check" || s.gate.approval?.basis === "auto-green") s.gate.approval = null; },
     released: async (_task, tag) => { plane.released.push(tag); },
+    checkFailed: async (_task, why) => { plane.checkFailed.push(why); },
   };
   // The live predicate also asks the setting for an automatic anchor (scope.ts releaseApprovalOf).
   rel.live = (taskId, action) => {
@@ -1332,13 +1333,18 @@ describe("toolroll release: approve automatically when checks pass", () => {
     expect(plane).toMatchObject({ authorizations: 1, approvals: 1, released: [] });
   });
 
-  test("a failed release check stops, tells the owner, and is never approved", async () => {
+  test("a failed release check stops and tells the owner; a regate of the same commit that passes (a flake) then approves itself", async () => {
+    const dir = stateDir();
     const { s, adapters, plane } = autoWorld();
     s.onSleep = [state => { if (state.gate.approval !== null && state.gate.result === null) state.gate.result = { run: 2757, head: SHA, check: "failed", level: "full", receipt: RECEIPT, worktree: "/w" }; }];
-    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "check", reason: "check-failed" });
-    expect(plane.approvals).toBe(0);
-    expect(plane.gaveUp).toEqual([expect.stringContaining("did not pass")]);
-    expect(s.gate.approval).toBeNull();
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "check", reason: "check-failed" });
+    expect(plane).toMatchObject({ approvals: 0, gaveUp: [], checkFailed: [expect.stringContaining("did not pass")] });
+    // Still checking automatically: the regate reruns the same commit and digest, and its pass is sealed by the plane.
+    expect(s.gate.approval).toMatchObject({ basis: "auto-check" });
+    s.gate.pending = true;
+    s.onSleep = [state => { state.gate.pending = false; state.gate.result = { run: 2758, head: SHA, check: "passed", level: "full", receipt: RECEIPT, worktree: "/w" }; }];
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
+    expect(plane).toMatchObject({ approvals: 1, released: ["v0.9.52"] });
   });
 
   test("the setting lowered while the check runs: it doesn't approve, and a person is asked", async () => {

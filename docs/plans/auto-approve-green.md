@@ -47,11 +47,12 @@ person exactly as today, and `ownerApproval` still refuses every basis that isn'
   filed, the scope is sealed `auto-check` on it with its evidence row, and the candidate is unchanged;
 - the release check: the run is the task's builder run on that digest, its result receipt is the one the coordinator
   read, the native receipt says it ran the live approved command on that head with exit 0 and full coverage, the run's
-  level is Full, and **no other build of the task ever failed its check** (a regate after a red check needs a person);
+  level is Full, and at most **two** earlier builds of the task failed their check, each on this same digest (a flake
+  rerun through `task regate`; the candidate and digest are pinned, so only nondeterminism differs);
 - GitHub CI, observed by the plane's own `gh` (absolute path, allowlisted env) at this moment: the head is the
-  candidate, every required check is present, every attempt of every reported check on that head completed `success`
-  by `github-actions` (a failed attempt that was re-run green needs a person; skipped is not success, as today), and the
-  observation is less than five minutes old;
+  candidate, every required check is present, each reported check is judged by its **latest attempt**, which must be a
+  completed `success` by `github-actions` (skipped is not success, as today); earlier attempts must be finished GitHub
+  Actions runs, at most **two** failed per check (flakes on the same head); the observation is under five minutes old;
 - the change since the build's recorded base, read from verified objects in the project's own Git directory
   (commit-extract.ts), touches no CI definition (`.github/`), agent or security policy, or test harness file (the
   carry rules' "never" list): such a branch could make CI or the check pass without testing anything;
@@ -62,10 +63,12 @@ person exactly as today, and `ownerApproval` still refuses every basis that isn'
   refuse, as they refuse a mode), the organisation policy, an exact route, and the release terms' own seal checks.
 
 The evidence row (`release auto-approved`, outcome `auto-green`) records: candidate sha, digest, run, receipt, the
-check-run ids and names observed green, when, and the base. The seal's `mode_digest` is `auto:<row id>`; both the SQL
+check-run ids and names observed, when, the base, and the earlier failures it tolerated (`ciFailures`: check-run id,
+name, conclusion; `checkFailures`: failed release-check run ids). The seal's `mode_digest` is `auto:<row id>`; both the SQL
 belt and the JS reader require the row to match the seal's task, kind, digest and candidate.
 
-Any refusal unseals `auto-check`, so the task reads "Needs your approval" with its passing check kept; the coordinator
+A failed release check stops the release and tells the owner, but keeps `auto-check`, so a regate of the same commit
+and digest may still approve itself within the cap. Any refusal (including past the cap) unseals `auto-check`, so the task reads "Needs your approval" with its passing check kept; the coordinator
 stops at approval, says why and tells the owner. A person's yes then continues the release from the same check.
 
 ## Who accepts `auto-green`
@@ -95,8 +98,10 @@ unchanged carry rules (release-once.md), and only while the setting stays on.
 
 1. A lead token (or a remembered login, an API token, an empty password) turns the setting on: refused.
 2. A forged or stale CI observation: another head, a missing required check, a check named alike by another app, a
-   pending, skipped or failed attempt, an observation over five minutes old: refused.
-3. A check on a different sha, or a different digest's run, or a run whose check failed before: refused.
+   pending, skipped or failed latest attempt, a third failed attempt, an observation over five minutes old: refused.
+   One or two failed attempts before a green latest one: approved, and recorded.
+3. A check on a different sha, another task's run, an earlier failed run on a different digest, or a third failed run:
+   refused. One or two failed runs before a pass on the same digest: approved, and recorded.
 4. The scope digest changes after the check: refused.
 5. The setting is lowered mid-flight: the `auto-check` seal stops standing at dispatch, `auto-green` refuses, and an
    already approved release stops at its next step.

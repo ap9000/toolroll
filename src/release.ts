@@ -134,6 +134,9 @@ export type AutoReleaseAdapter = {
   approve(input: { taskId: string; digest: string; candidate: string; run: number; receipt: string }): Promise<{ ok: true; by: string; at: string; ci: { id: number; name: string }[] } | { ok: false; why: string }>;
   /** The automatic road ended without a release: the task asks a person, and the owner is told why. */
   giveUp(taskId: string, why: string): Promise<void>;
+  /** The release check failed while checking automatically: the owner is told; the commit may be checked again (a
+   * regate of the same commit and digest, within the plane's cap on failed runs). */
+  checkFailed(taskId: string, why: string): Promise<void>;
   /** "Released 0.9.x automatically". */
   released(taskId: string, tag: string): Promise<void>;
 };
@@ -701,7 +704,9 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             try { return await checkProbe(); }
             catch (error) {
               // A failed check (or a changed candidate) ends the automatic road: the owner is told, and a person decides.
-              if (error instanceof Stop && j.auto?.state === "checking" && error.reason !== "approval") await rel?.auto?.giveUp(j.task.id, error.message.replace(/\.$/, ""));
+              // A failed check is told, and stays checkable again on the same commit (a flake); anything else ends the road.
+              if (error instanceof Stop && j.auto?.state === "checking" && error.reason === "check-failed") await rel?.auto?.checkFailed(j.task.id, error.message.replace(/\.$/, ""));
+              else if (error instanceof Stop && j.auto?.state === "checking" && error.reason !== "approval") await rel?.auto?.giveUp(j.task.id, error.message.replace(/\.$/, ""));
               throw error;
             }
           });

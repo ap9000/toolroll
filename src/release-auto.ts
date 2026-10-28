@@ -151,21 +151,50 @@ export function autoHarnessPath(path: string): string | null {
   return null;
 }
 
-/** Every required check present, and every attempt of every reported check on the head a success by GitHub Actions. */
-export function ciProblem(observation: CiObservation, candidate: string, now: Date): string | null {
-  if (observation.head !== candidate) return `CI was read for ${observation.head.slice(0, 7)}, not ${candidate.slice(0, 7)}`;
+/** Flakes: how many failed attempts one CI check, and how many failed release-check runs, may have before a person decides.
+ * The head and digest are pinned, so between attempts only nondeterminism differs. */
+export const MAX_FAILED_ATTEMPTS = 2;
+
+/** One CI attempt that failed before its latest attempt passed, as the evidence records it. */
+export type CiFailure = { id: number; name: string; conclusion: string | null };
+
+/**
+ * GitHub CI on the exact head: fresh, every required check present, and each reported check judged by its LATEST attempt
+ * (highest check-run id), which must be a completed GitHub Actions success. Earlier attempts must be GitHub Actions too,
+ * completed, and at most MAX_FAILED_ATTEMPTS of them failed; they are returned for the evidence.
+ */
+export function ciVerdict(observation: CiObservation, candidate: string, now: Date): { ok: true; failures: CiFailure[] } | { ok: false; problem: string } {
+  const no = (problem: string) => ({ ok: false as const, problem });
+  if (observation.head !== candidate) return no(`CI was read for ${observation.head.slice(0, 7)}, not ${candidate.slice(0, 7)}`);
   const at = Date.parse(observation.observedAt);
-  if (!Number.isFinite(at) || at > now.getTime() + 60_000 || now.getTime() - at > CI_OBSERVATION_MS) return "the CI reading isn't fresh";
-  const names = new Set(observation.runs.map(run => run.name));
-  const missing = REQUIRED_PR_CHECKS.filter(name => !names.has(name));
-  if (missing.length > 0) return `required checks didn't run: ${missing.join(", ")}`;
+  if (!Number.isFinite(at) || at > now.getTime() + 60_000 || now.getTime() - at > CI_OBSERVATION_MS) return no("the CI reading isn't fresh");
+  const byName = new Map<string, ObservedCheckRun[]>();
   for (const run of observation.runs) {
-    if (run.id === null || !Number.isSafeInteger(run.id) || run.id <= 0) return `${run.name} has no check run id`;
-    if (run.app !== "github-actions") return `${run.name} was reported by ${run.app ?? "an unknown app"}, not GitHub Actions`;
-    if (run.status !== "completed") return `${run.name} is ${run.status}`;
-    if (run.conclusion !== "success") return `${run.name} ${run.conclusion === null ? "has no conclusion" : `ended ${run.conclusion}`}${observation.runs.filter(one => one.name === run.name).length > 1 ? " (an earlier attempt; a re-run needs a person)" : ""}`;
+    if (run.id === null || !Number.isSafeInteger(run.id) || run.id <= 0) return no(`${run.name} has no check run id`);
+    if (run.app !== "github-actions") return no(`${run.name} was reported by ${run.app ?? "an unknown app"}, not GitHub Actions`);
+    byName.set(run.name, [...(byName.get(run.name) ?? []), run]);
   }
-  return null;
+  const missing = REQUIRED_PR_CHECKS.filter(name => !byName.has(name));
+  if (missing.length > 0) return no(`required checks didn't run: ${missing.join(", ")}`);
+  const failures: CiFailure[] = [];
+  for (const [name, attempts] of byName) {
+    const ordered = [...attempts].sort((a, b) => a.id! - b.id!);
+    const latest = ordered.at(-1)!;
+    if (latest.status !== "completed") return no(`${name} is ${latest.status}`);
+    if (latest.conclusion !== "success") return no(`${name} ${latest.conclusion === null ? "has no conclusion" : `ended ${latest.conclusion}`}`);
+    const earlier = ordered.slice(0, -1);
+    if (earlier.some(one => one.status !== "completed")) return no(`an earlier attempt of ${name} hasn't finished`);
+    const failed = earlier.filter(one => one.conclusion !== "success");
+    if (failed.length > MAX_FAILED_ATTEMPTS) return no(`${name} failed ${failed.length} times before it passed, so a person decides`);
+    failures.push(...failed.map(one => ({ id: one.id!, name, conclusion: one.conclusion })));
+  }
+  return { ok: true, failures };
+}
+
+/** ciVerdict's problem, or null when CI passes. */
+export function ciProblem(observation: CiObservation, candidate: string, now: Date): string | null {
+  const verdict = ciVerdict(observation, candidate, now);
+  return verdict.ok ? null : verdict.problem;
 }
 
 /** What the change since the build's recorded base touches that an automatic approval never ships, from verified objects. */
@@ -217,9 +246,13 @@ export function sealAutoGreen(store: Store, input: {
     const head = run.headRevision;
     if (head === null) return refuse(`run ${input.run} recorded no commit`);
     if (runCheckLevel(store, run.id) !== "full") return refuse("the release check wasn't Full");
-    const failedBefore = store.handle.prepare(`SELECT c.run FROM run_check c JOIN run r ON r.id = c.run
-        WHERE r.task_ref = ? AND r.role = 'builder' AND c.status IS NOT NULL AND c.status <> 'passed' AND r.id <> ? LIMIT 1`).get(facts.taskRef, run.id);
-    if (failedBefore !== undefined) return refuse(`an earlier check of this release failed (run ${String(failedBefore["run"])}), so a person decides`);
+    // A flake: earlier release checks of this task may have failed, but only re-runs of the same signed scope (the
+    // regate road keeps the candidate and digest), and at most MAX_FAILED_ATTEMPTS of them.
+    const failedRuns = store.handle.prepare(`SELECT r.id, r.scope_digest FROM run_check c JOIN run r ON r.id = c.run
+        WHERE r.task_ref = ? AND r.role = 'builder' AND c.status IS NOT NULL AND c.status <> 'passed' AND r.id <> ? ORDER BY r.id`).all(facts.taskRef, run.id);
+    if (failedRuns.some(one => one["scope_digest"] !== input.digest)) return refuse("an earlier check of this release ran on different scope text, so a person decides");
+    if (failedRuns.length > MAX_FAILED_ATTEMPTS) return refuse(`the release check failed ${failedRuns.length} times before it passed, so a person decides`);
+    const checkFailures = failedRuns.map(one => Number(one["id"]));
     const newest = store.runsFor(facts.taskRef).find(one => one.role === "builder");
     if (newest?.id !== run.id) return refuse(`run ${input.run} isn't this task's newest build`);
     const evidence = verificationEvidence(store, input.evidenceRoot, run.id);
@@ -246,11 +279,13 @@ export function sealAutoGreen(store: Store, input: {
     const harness = harnessProblem(facts.repo, run.baseRevision, input.candidate);
     if (harness !== null) return refuse(harness);
     // GitHub CI, as the plane's own gh saw it moments ago, on exactly this commit.
-    const ci = ciProblem(input.ci, input.candidate, input.now);
-    if (ci !== null) return refuse(`CI: ${ci}`);
+    const ci = ciVerdict(input.ci, input.candidate, input.now);
+    if (!ci.ok) return refuse(`CI: ${ci.problem}`);
     const observed = input.ci.runs.map(one => ({ id: one.id!, name: one.name }));
     sealWith(store, "auto-green", input.taskId, facts.by, facts.repo, {
       digest: input.digest, candidate: input.candidate, run: run.id, receipt: input.receipt, head, base: run.baseRevision, ci: observed, observedAt: input.ci.observedAt,
+      // What failed first on this same commit and digest (flakes), for whoever reads the record later.
+      ciFailures: ci.failures, checkFailures,
     }, input.now, "the release terms can't be approved now (an unsettled deploy, a merge already started, or rules that need a person)");
     store.enqueueNotification({ dedupeKey: `release-auto-approved:${input.taskId}:${input.digest}`, kind: "release-auto",
       subject: `Release ${facts.version} approved automatically`,
@@ -276,6 +311,18 @@ export function giveUpAutoApproval(store: Store, input: { taskId: string; why: s
       body: `Not approved automatically: ${input.why}. Approve it yourself, or fix the branch and release the new commit.`,
       link: chatControlHref("task", input.taskId), source: { taskRef: ref.id } }, input.now);
   });
+}
+
+/** A release check failed while checking automatically: tell the owner. The `auto-check` stays, so a regate of the same
+ * commit and digest (a flake) may still approve itself, within MAX_FAILED_ATTEMPTS failed runs. */
+export function noteAutoCheckFailed(store: Store, input: { taskId: string; why: string; now: Date }): void {
+  const ref = store.lookupRef(input.taskId);
+  if (ref === null) return;
+  const version = store.getScope(input.taskId)?.releaseTerms?.packageVersion ?? null;
+  store.enqueueNotification({ dedupeKey: `release-auto-check-failed:${input.taskId}:${input.why.slice(0, 120)}`, kind: "release-auto", pushClass: "attention",
+    subject: `Release${version === null ? "" : ` ${version}`} check failed`,
+    body: `${input.why}. Rerun it on the same commit (a flake still approves itself, up to ${MAX_FAILED_ATTEMPTS} failed checks), or fix the branch and release the new commit.`,
+    link: chatControlHref("task", input.taskId), source: { taskRef: ref.id } }, input.now);
 }
 
 /** "Released 0.9.x automatically": the release that approved itself finished. */

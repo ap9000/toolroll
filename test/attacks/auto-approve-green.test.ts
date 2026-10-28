@@ -118,7 +118,10 @@ describe("attack 2: a forged or stale CI observation", () => {
     ["a commit status posing as a check (no app)", (ci) => ({ ...ci, runs: ci.runs.map((run, i) => i === 0 ? { ...run, app: null } : run) })],
     ["a pending check", (ci) => ({ ...ci, runs: ci.runs.map((run, i) => i === 0 ? { ...run, status: "in_progress", conclusion: null } : run) })],
     ["a skipped check", (ci) => ({ ...ci, runs: ci.runs.map((run, i) => i === 0 ? { ...run, conclusion: "skipped" } : run) })],
-    ["a failed attempt re-run green", (ci) => ({ ...ci, runs: [{ ...ci.runs[0]!, id: 1, conclusion: "failure" }, ...ci.runs] })],
+    ["a check that failed three times before passing", (ci) => ({ ...ci, runs: [1, 2, 3].map(id => ({ ...ci.runs[0]!, id, conclusion: "failure" })).concat(ci.runs) })],
+    ["a re-run that is still running after a pass", (ci) => ({ ...ci, runs: [...ci.runs, { ...ci.runs[0]!, id: 5000, status: "in_progress", conclusion: null }] })],
+    ["a re-run that failed after a pass", (ci) => ({ ...ci, runs: [...ci.runs, { ...ci.runs[0]!, id: 5000, conclusion: "failure" }] })],
+    ["an earlier attempt by another app", (ci) => ({ ...ci, runs: [{ ...ci.runs[0]!, id: 1, conclusion: "failure", app: "some-other-app" }, ...ci.runs] })],
     ["an extra failing check", (ci) => ({ ...ci, runs: [...ci.runs, { id: 2000, name: "lint", status: "completed", conclusion: "failure", app: "github-actions" }] })],
     ["a check run with no id", (ci) => ({ ...ci, runs: ci.runs.map((run, i) => i === 0 ? { ...run, id: null } : run) })],
     ["an observation an hour old", (ci) => ({ ...ci, observedAt: new Date(LATER.getTime() - 60 * 60_000).toISOString() })],
@@ -135,7 +138,18 @@ describe("attack 2: a forged or stale CI observation", () => {
     expect(f.store.handle.prepare("SELECT subject FROM notification WHERE kind = 'release-auto'").all().map(row => String(row["subject"]))).toEqual(["Release 0.9.71 needs you"]);
   });
 
-  test("the rule itself: only a fresh, complete, all-success GitHub Actions reading of the exact head passes", () => {
+  test.each([1, 2])("a flaky CI check (%i failed attempt(s), latest a GitHub Actions success) approves, and the failures are recorded", failed => {
+    const f = open();
+    authorize(f);
+    const run = check(f);
+    const ci = green(f.approved);
+    const flakes = Array.from({ length: failed }, (_, i) => ({ ...ci.runs[1]!, id: 10 + i, conclusion: "failure" }));
+    expect(seal(f, run, { ...ci, runs: [...flakes, ...ci.runs] })).toMatchObject({ ok: true });
+    const evidence = f.store.handle.prepare("SELECT detail FROM action_ledger WHERE task_id = ? AND action = 'release auto-approved' AND outcome = 'auto-green'").get(f.taskId);
+    expect(JSON.parse(String(evidence!["detail"]))).toMatchObject({ ciFailures: flakes.map(one => ({ id: one.id, name: one.name, conclusion: "failure" })), checkFailures: [] });
+  });
+
+  test("the rule itself: only a fresh, complete, latest-attempt-success GitHub Actions reading of the exact head passes", () => {
     expect(ciProblem(green("a".repeat(40)), "a".repeat(40), LATER)).toBeNull();
     for (const [name, spoil] of spoiled) expect(ciProblem(spoil(green("a".repeat(40)), null as never), "a".repeat(40), LATER), name).not.toBeNull();
   });
@@ -163,12 +177,31 @@ describe("attack 3: a check that isn't of this commit, this scope, or the first 
     expect(seal(f, stranger)).toMatchObject({ ok: false, why: expect.stringContaining("isn't a finished build of this release task") });
   });
 
-  test("a check that failed before (then passed on a rerun) needs a person", () => {
+  const red = () => reportOf(UNITS.map(file => file === "src/index.test.ts" ? { file, failed: ["answer"] } : { file }));
+  test.each([1, 2])("a flaky release check (%i failed run(s), then a pass on the same commit and digest) approves, and the failures are recorded", failed => {
     const f = open();
     authorize(f);
-    check(f, f.approved, () => reportOf(UNITS.map(file => file === "src/index.test.ts" ? { file, failed: ["answer"] } : { file })));
+    const failedRuns = Array.from({ length: failed }, () => check(f, f.approved, red));
     const rerun = check(f);
-    expect(seal(f, rerun)).toMatchObject({ ok: false, why: expect.stringContaining("an earlier check of this release failed") });
+    expect(seal(f, rerun)).toMatchObject({ ok: true });
+    const evidence = f.store.handle.prepare("SELECT detail FROM action_ledger WHERE task_id = ? AND action = 'release auto-approved' AND outcome = 'auto-green'").get(f.taskId);
+    expect(JSON.parse(String(evidence!["detail"]))).toMatchObject({ checkFailures: failedRuns, ciFailures: [] });
+  });
+
+  test("the cap: three failed release-check runs before the pass need a person", () => {
+    const f = open();
+    authorize(f);
+    for (let n = 0; n < 3; n++) check(f, f.approved, red);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("failed 3 times before it passed") });
+    expect(basis(f)).toBeNull();
+  });
+
+  test("an earlier failed check on different scope text needs a person", () => {
+    const f = open();
+    authorize(f);
+    const failedRun = check(f, f.approved, red);
+    f.store.handle.prepare("UPDATE run SET scope_digest = 'other' WHERE id = ?").run(failedRun);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("different scope text") });
   });
 
   test("a failing check is refused", () => {
