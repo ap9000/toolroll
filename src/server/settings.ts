@@ -47,7 +47,8 @@ import { browserCaller } from "./session.js";
 import { DEFAULT_ACCENT,normalHex } from "../accent-colors.js";
 import { resolvePhaseAgent } from "../agentconfig.js";
 import { parseProtectedPaths } from "../approval-policy.js";
-import { approvalRulesHtml } from "../approval-rules-ui.js";
+import { approvalRulesHtml, releaseApprovalHtml } from "../approval-rules-ui.js";
+import { releaseApprovalSetting, setReleaseApproval } from "../release-auto.js";
 import { backupHtml } from "../backup-ui.js";
 import { BACKUP_EVERY_HOURS,backupFolderOf,backupNow,checkBackupFolder,defaultBackupFolder,MAX_KEEP } from "../backup.js";
 import { projectBatchChecks,setProjectBatchChecks } from '../batch-policy.js';
@@ -366,7 +367,9 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     if (chosen && !projects.includes(chosen)) return refuse(response, who, 403, "That project is outside your access.", "/settings/approval");
     const selector = projects.length > 1 ? html`<form class="approval-project" method="get" action="/settings/approval"><label>Project<select name="repo">${projects.map(p => html`<option value="${p}"${p === chosen ? " selected" : ""}>${projectName(p)}</option>`)}</select></label><button>Show</button></form>` : "";
     const approvers = chosen === "" ? 0 : store.listApprovers().filter(one => { const account = store.accountOf(one.name); return account !== null && account.revokedAt === null && account.role === "approver" && store.accountCanAccess(one.name, chosen); }).length;
-    const content = chosen === "" ? html`<p>Add a project to set its approval rules.</p>` : (approvalRulesHtml({ repo: chosen, name: projectName(chosen), rules: store.approvalRules(chosen), canChange: who.via === "cookie" && store.isInstanceOperator(who.name), approvers }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }));
+    const release = chosen === "" ? null : releaseApprovalSetting(store, chosen);
+    const content = chosen === "" ? html`<p>Add a project to set its approval rules.</p>` : html`${approvalRulesHtml({ repo: chosen, name: projectName(chosen), rules: store.approvalRules(chosen), canChange: who.via === "cookie" && store.isInstanceOperator(who.name), approvers }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") })}${
+      releaseApprovalHtml({ repo: chosen, auto: release!.auto, setBy: release!.setBy, at: release!.at, canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, chosen) })}`;
     return sendScreen(response, 200, screen("Approval rules", html`<p><a href="/settings">Settings</a></p><h1>Approval rules</h1>${selector}${content}`, { chrome: chromeFor(chosen || project, "settings") }));
   }
   // Sprint 8: Settings → Policy, the organisation policy and its history. Anyone signed in reads it; an instance operator changes it.
@@ -2207,6 +2210,7 @@ ${modeWords(terms)
     "settings.sign-in": signInPage,
     "settings.passwordless": passwordlessPage,
     "settings.passwordless-send": passwordlessSave,
+    "settings.release-approval-send": releaseApprovalSave,
     "settings.lead": leadPage,
     "settings.teams": teamsPage,
     "settings.discord": discordPage,
@@ -2381,5 +2385,25 @@ ${modeWords(terms)
     return back("said", JSON.stringify(changed.before) === JSON.stringify(changed.after) ? "Nothing changed." : "Saved. Tasks scoped from now on use it; tasks already approved keep what they were approved with.");
   }
 
+  // Release approval (docs/plans/auto-approve-green.md): an approver of the project. Approving automatically is a
+  // credential act (a password typed now, never a session); asking again is one click and takes back automatic seals.
+  async function releaseApprovalSave(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.releaseApproval);
+    const repo = body.get("repo") ?? "";
+    if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/approval");
+    const back = sayTo(response, `/settings/approval?repo=${encodeURIComponent(repo)}`);
+    if (who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return back("problem", "An approver of this project sets how its releases are approved.");
+    const action = body.get("action");
+    if (action === "ask") {
+      const changed = setReleaseApproval(store, repo, false, who.name, now);
+      return back("said", !changed.changed ? "Saved." : `Releases ask you again.${changed.withdrawn.length === 0 ? "" : ` ${changed.withdrawn.length} automatic approval${changed.withdrawn.length === 1 ? " was" : "s were"} taken back.`}`);
+    }
+    if (action !== "auto") return back("problem", "Choose Ask me or Approve automatically when checks pass.");
+    if (!authenticateCredential(who, body.get("password") ?? "", repo).ok) return back("problem", "Enter your Toolroll password to approve releases automatically.");
+    const changed = setReleaseApproval(store, repo, true, who.name, now);
+    return back("said", changed.changed ? "Releases approve themselves once CI and the release check pass." : "Saved.");
+  }
   return { registrations, modelsView };
 }

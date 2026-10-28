@@ -285,7 +285,9 @@ async function observedByGit(repo: string, paths: readonly string[], runner: Run
     const asked = [path, `${normalise(path)}/`];
     const ignored = await Promise.all(
       asked.map(async candidate => {
-        const result = await runner("git", ["--no-optional-locks", "check-ignore", "-q", candidate], {
+        // check-ignore reads the index, so a planted fsmonitor would run: off (and hooks, lazy fetch) on the command line,
+        // which wins over any config the repository's builds can write.
+        const result = await runner("git", ["--no-optional-locks", "--no-lazy-fetch", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "check-ignore", "-q", candidate], {
           cwd: repo,
         });
         return result.code === 0;

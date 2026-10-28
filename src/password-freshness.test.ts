@@ -358,7 +358,8 @@ describe("where freshness may be honoured", () => {
     expect(hits["checkApproverPassword()"]).toEqual({ "src/server/guards.ts": 2 });
     // Passwordless: credential acts moved to authenticateCredential / credentialApprover / proveCredential (pinned below).
     expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1, "src/operate.ts": 58, "src/pull-request-flow.ts": 1,
-      "src/release-cli.ts": 2, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 9, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 23,
+      // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
+      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 9, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 23,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
@@ -487,7 +488,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/pull-request-flow.ts#<module>": 2,
     "src/pull-request-flow.ts#mergeAsPerson@22": 1,
     "src/release-cli.ts#<module>": 2,
-    "src/release-cli.ts#runAuthorityCommand@7": 2,
+    // Auto-approve green: `release publish-ok`, a person's step-up (reviewed new site).
+    "src/release-cli.ts#runAuthorityCommand@7": 3,
     "src/scope.ts#approve@46>store.transact(_)@1": 1,
     "src/scope.ts#authenticateApprover@42": 1,
     "src/serve.ts#createDecisionServer@1": 3,
@@ -878,6 +880,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>projectCheckAccess@100": 1,
     // Sandbox parity C9: Settings → Project → Home folder, a password typed now (reviewed new site).
     "src/server/settings.ts#createSettingsHandlers@1>projectSandbox@101": 1,
+    // Auto-approve green: Settings → Approval rules → Release approval, a password typed now (reviewed new site).
+    "src/server/settings.ts#createSettingsHandlers@1>releaseApprovalSave@102": 1,
   },
   credentialApprover: {
     "src/operate.ts#runnerCommand@22": 2,
@@ -901,6 +905,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Passwordless review round 1: reviewed new sites.
     "src/flows-cli.ts#<module>": 2,
     "src/flows-cli.ts#runFlowsCommand@3": 1,
+    // Auto-approve green: `release auto-approve on`, a password typed now (reviewed new site).
+    "src/release-cli.ts#<module>": 2,
+    "src/release-cli.ts#runAuthorityCommand@7": 1,
   },
   passwordlessSessionFor: {
     "src/chat-actions.ts#<module>": 2,

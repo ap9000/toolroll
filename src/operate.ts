@@ -295,6 +295,8 @@ import { scout as scoutTask } from "./scout.js";
 import { profileDigestOf } from "./scope.js";
 import { PROVIDER_KEY_ENV, clearProviderKey, keyStatus, readAuthMode, readAuthModeStrict, readProviderKey, saveProviderKey, setAuthMode, verifyProviderKey, verdictWords } from "./keys.js";
 import { run, terminateLiveProviders, run as execRun } from "./exec.js";
+import { hardenedGit } from "./teardown-git.js";
+import { noticeGitIncidents } from "./git-incident.js";
 import { containmentNotice, containmentStatus, currentContainment, describeContainment, resolveContainment, type EffectiveContainment } from "./containment.js";
 import { readPulls } from "./pulls.js";
 import { startMaintenance } from "./maintenance.js";
@@ -2503,7 +2505,7 @@ function flowIoOf(context: Context, pool: string, git: CommandRunner, base: stri
     replies: { fetch: context.flowTriggerIo?.fetch ?? fetch, dir: context.flowTriggerIo?.dir ?? dir,
       ...(context.flowTriggerIo?.mail === undefined ? {} : { mail: context.flowTriggerIo.mail }) },
     // Check and update steps run outside a model: an approved command in a fresh copy of the card's work, or a comment on the issue it came from.
-    steps: { gh: context.flowStepIo?.gh ?? run, git: context.flowStepIo?.git ?? git, shell: context.flowStepIo?.shell ?? run, fetch: context.flowStepIo?.fetch ?? fetch,
+    steps: { gh: context.flowStepIo?.gh ?? run, git: context.flowStepIo?.git ?? (git === run ? hardenedGit(run) : git), shell: context.flowStepIo?.shell ?? run, fetch: context.flowStepIo?.fetch ?? fetch,
       dir: context.flowStepIo?.dir ?? dir, scratch: context.flowStepIo?.scratch ?? join(pool, "flow-checks"), base,
       ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }) },
     ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }),
@@ -4293,6 +4295,8 @@ async function startConsole(options: {
   instanceSecret?: () => string | null;
 }): Promise<{ server: ReturnType<typeof createDecisionServer>; port: number; url: string }> {
   const { context } = options;
+  // A git incident (teardown-git.ts) raises an attention notification in this console's outbox.
+  noticeGitIncidents(context.store, context.clock);
   const server = createDecisionServer({
     store: context.store,
     // Sign-in, integration and model checks, and the tidy-ups no page visit does (docs/plans/get-side-effects.md).
@@ -6534,6 +6538,8 @@ async function runWatchLoop(args: {
 }): Promise<WatchLoopResult> {
   const { context, flags, runner, token, repo, progress } = args;
   const { store } = context;
+  // A git incident in this worker's builds raises an attention notification in its outbox (once per store).
+  noticeGitIncidents(store, context.clock);
 
   const tickEveryMs = Number(text(flags, "tick-every") ?? 60_000);
   const bridgeEveryMs = Number(text(flags, "bridge-every") ?? 45_000);

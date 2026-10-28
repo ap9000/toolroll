@@ -19,6 +19,7 @@ import type { Store, VerifyCommand } from "./store.js";
 import { belongsToRelease } from "./release-authority.js";
 import type { ExecResult } from "./exec.js";
 import { run as execRun } from "./exec.js";
+import { hardenedGit } from "./teardown-git.js";
 import { approvedCommandShell, SETUP_ENV_ALLOWLIST, SETUP_ENV_DENYLIST } from "./builder.js";
 import { runWithIsolatedDatabase } from "./child-database.js";
 import { boundStreamHeadTail, readVerifiedArtifact, redactSecretLines, scanForSecrets, storeEvidence } from "./evidence.js";
@@ -187,7 +188,8 @@ export type CheckRunDeps = { runner?: Runner; git?: Runner; now?: () => Date; sc
 export async function runFollowUpCheck(store: Store, root: string, request: number, deps: CheckRunDeps = {}): Promise<FollowUpCheck | null> {
   const now = deps.now ?? (() => new Date());
   const runner = deps.runner ?? execRun;
-  const git = deps.git ?? execRun;
+  // The project's repository and a checkout of a build's commit, both agent-writable: the hardened git (teardown-git.ts).
+  const git = deps.git ?? hardenedGit(execRun);
   const asked = store.handle.prepare("SELECT run_id FROM action_ledger WHERE id = ? AND action = ?").get(request, CHECKS_REQUESTED);
   if (asked === undefined) return null;
   const runId = Number(asked["run_id"]);

@@ -6,14 +6,17 @@
  * same checks for the deployment script, proven again there with the installed runtime's modules.)
  */
 import { assignmentOf } from "./assignment.js";
-import { liveReleaseOf, personApprovalOf } from "./scope.js";
+import { liveReleaseOf, personApprovalOf, releaseApprovalOf } from "./scope.js";
 import { verificationEvidence } from "./verification-evidence.js";
 import type { Store } from "./store.js";
 
 export type DeploymentGate = { ok: true; taskId: string; head: string; repo: string; approvedBy: string } | { ok: false; message: string };
 
 /** Whether run `runId` is a deployable candidate now, read only from the plane's records and this runtime's code. */
-export function deploymentGate(store: Store, input: { runId: number; evidenceRoot: string; now: Date }): DeploymentGate {
+export function deploymentGate(store: Store, input: { runId: number; evidenceRoot: string; now: Date;
+  /** Inside `toolroll release` (its own reserved deploy): a release's own automatic approval also stands
+   * (docs/plans/auto-approve-green.md). Anywhere else only a person's approval deploys. */
+  releaseFlow?: boolean }): DeploymentGate {
   const refuse = (message: string): DeploymentGate => ({ ok: false, message });
   const run = store.getRun(input.runId);
   const ref = run === null ? null : store.refById(run.taskRef);
@@ -33,7 +36,8 @@ export function deploymentGate(store: Store, input: { runId: number; evidenceRoo
   // needs a person's approval of its own.
   const release = liveReleaseOf(store, ref.externalId, "deploy", input.now);
   if (release.applies && !release.ok) return refuse(`This release can't deploy: ${release.why}.`);
-  const anchorPerson = release.applies && release.ok ? personApprovalOf(store, release.authority.anchorTask) : null;
+  const anchorPerson = release.applies && release.ok
+    ? (input.releaseFlow === true ? releaseApprovalOf(store, release.authority.anchorTask, input.now) : personApprovalOf(store, release.authority.anchorTask)) : null;
   const person = anchorPerson ?? personApprovalOf(store, ref.externalId);
   if (!person.ok) return refuse(`A person has to approve this candidate's scope: ${person.why}.`);
   const evidence = verificationEvidence(store, input.evidenceRoot, input.runId);

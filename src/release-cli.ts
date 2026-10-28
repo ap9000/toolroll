@@ -18,7 +18,8 @@ import { processes, releaseAdapters } from "./release-adapters.js";
 import { releaseGate, type GateReleaseWorld } from "./release-gate.js";
 import { databasePath, openStore, revokeRelease, type Database } from "./store.js";
 import { carryRefusalWords, proveCarry, setAskEveryReleaseCommit, setUnsandboxedCarry } from "./release-carry.js";
-import { authenticateApprover, machineActing, personProof } from "./scope.js";
+import { authenticateApprover, machineActing, personProof, proveCredential } from "./scope.js";
+import { allowAutoPublish, setReleaseApproval } from "./release-auto.js";
 import { createNightlyCheckFlow } from "./nightly-check.js";
 import { parseSchedule } from "./flow-schedule.js";
 
@@ -53,6 +54,13 @@ toolroll release nightly --repo <path> --as <you> --token <password> [--schedule
 
 toolroll release ask-every-commit on|off --repo <path> [--as <you> --token <password>] — this project's releases ask
   for every later commit (on), or carry test-only commits again (off: your password, never the lead's token)
+
+toolroll release auto-approve on|off --repo <path> [--as <you> --token <password>] — this project's release approval:
+  on approves a release automatically once its pull request's CI and the release check pass on the exact commit
+  (your password typed now, never the lead's token or a remembered login); off asks you again (no password).
+
+toolroll release publish-ok <task> --as <you> --token <password> — let an automatically approved release that was held
+  after its merge (its checks stopped passing) go on to its tag, publication and Homebrew (a person only)
 
 toolroll release unsandboxed-carry on|off --repo <path> [--as <you> --token <password>] — carry release approvals
   when this project's checks aren't sandboxed (on: your password, never the lead's token). With it on, later
@@ -135,8 +143,8 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
   }
   if (args.includes("--yes")) return refuse("usage", "--yes goes with --release-gate <id>; a release needs no confirmation beyond the owner's approval.", 2);
   if (positional[0] === "nightly" && positional.length === 1) return runNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, schedule: scheduleFlag, start: args.includes("--start") }, write, json, deps);
-  if (["carry", "revoke", "ask-every-commit", "unsandboxed-carry"].includes(positional[0] ?? "") && positional.length === 2) {
-    return runAuthorityCommand(positional[0] as "carry" | "revoke" | "ask-every-commit" | "unsandboxed-carry", positional[1]!, { to, request, as, token, repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo) }, write, json, deps);
+  if (["carry", "revoke", "ask-every-commit", "unsandboxed-carry", "auto-approve", "publish-ok"].includes(positional[0] ?? "") && positional.length === 2) {
+    return runAuthorityCommand(positional[0] as "carry" | "revoke" | "ask-every-commit" | "unsandboxed-carry" | "auto-approve" | "publish-ok", positional[1]!, { to, request, as, token, repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo) }, write, json, deps);
   }
   if (positional.length !== 1) return refuse("usage", `Which branch? \`toolroll release <branch>\`.\n${RELEASE_HELP}`, 2);
   const branch = positional[0]!;
@@ -219,7 +227,7 @@ function runGateRelease(id: string, yes: boolean, write: (line: string) => void,
  * included; only the rules decide), stop carrying (only ever stricter), or change the project's carry setting
  * (turning carrying back on is a person's own command, never the lead's or a remote token's).
  */
-async function runAuthorityCommand(command: "carry" | "revoke" | "ask-every-commit" | "unsandboxed-carry", target: string, flags: { to: string | undefined; request: string | undefined; repo: string | undefined; as: string | undefined; token: string | undefined },
+async function runAuthorityCommand(command: "carry" | "revoke" | "ask-every-commit" | "unsandboxed-carry" | "auto-approve" | "publish-ok", target: string, flags: { to: string | undefined; request: string | undefined; repo: string | undefined; as: string | undefined; token: string | undefined },
   write: (line: string) => void, json: boolean, deps: ReleaseCliDeps): Promise<number> {
   const name = `release ${command}`;
   const answer = (ok: boolean, fields: Record<string, unknown>, words: string, code: number) => {
@@ -248,6 +256,42 @@ async function runAuthorityCommand(command: "carry" | "revoke" | "ask-every-comm
       setAskEveryReleaseCommit(store, flags.repo, target === "on", actor, now);
       const words = target === "on" ? "Every later release commit in this project asks for approval." : "Later test-only release commits ship under the release approval.";
       return answer(true, { repo: flags.repo, ask: target === "on" }, words, 0);
+    }
+    if (command === "publish-ok") {
+      // A person's own decision to go on after an automatic release's checks stopped passing past its merge: never the
+      // lead, a remote token or a mode.
+      const refused = (message: string) => answer(false, { reason: "person-only", message }, message, 1);
+      if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return refused("Only a person lets a held release go on, never the lead or a remote token.");
+      if (flags.as === undefined || flags.token === undefined || flags.token === "") return refused("Letting a held release go on needs your password: add --as <you> --token <password>.");
+      const repo = store.lookupRef(target)?.repo ?? null;
+      if (repo === null) return answer(false, { reason: "not-found", message: `No release task ${target}.` }, `No release task ${target}.`, 1);
+      const proved = authenticateApprover(store, flags.as, flags.token, repo);
+      if (!proved.ok || !personProof(proved.method)) return refused("Only an approver of this project, proved as a person, lets a held release go on.");
+      const allowed = allowAutoPublish(store, { taskId: target, by: flags.as, now });
+      return allowed.ok ? answer(true, { task: target }, `Release task ${target} may be tagged and published: rerun \`toolroll release\` to go on.`, 0) : answer(false, { reason: "refused", message: allowed.why }, allowed.why, 1);
+    }
+    if (command === "auto-approve") {
+      if (target !== "on" && target !== "off") return answer(false, { reason: "usage", message: "auto-approve takes on or off." }, "auto-approve takes on or off.", 2);
+      if (flags.repo === undefined) return answer(false, { reason: "usage", message: "Name the project with --repo <path>." }, "Name the project with --repo <path>.", 2);
+      const repo = store.listProjects().map(one => one.path).find(path => path === flags.repo) ?? null;
+      if (repo === null) return answer(false, { reason: "not-found", message: "That isn't a project Toolroll knows." }, "That isn't a project Toolroll knows.", 1);
+      // Turning it on lets releases approve themselves: a credential act (docs/plans/passwordless.md), only a password
+      // typed now by an approver of this project — never the lead's token, an API token, a remembered login or a session.
+      // Turning it off only asks a person again, so it needs no password.
+      let actor = flags.as ?? "cli";
+      if (target === "on") {
+        const refused = (message: string) => answer(false, { reason: "person-only", message }, message, 1);
+        if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return refused("Only a person turns on automatic release approval, never the lead or a remote token.");
+        if (flags.as === undefined || flags.token === undefined || flags.token === "") return refused("Turning on automatic release approval needs your password: add --as <you> --token <password>.");
+        const proved = proveCredential(store, flags.as, flags.token, repo);
+        if (!proved.ok) return refused("Only an approver of this project, with their password typed now, turns on automatic release approval.");
+        actor = flags.as;
+      }
+      const changed = setReleaseApproval(store, repo, target === "on", actor, now);
+      const words = target === "on"
+        ? "Releases in this project approve themselves once the pull request's CI and the release check pass on the exact commit. You're told when one does; anything red still asks you."
+        : `Releases in this project ask you again.${changed.withdrawn.length === 0 ? "" : ` ${changed.withdrawn.length} automatic approval${changed.withdrawn.length === 1 ? " was" : "s were"} taken back.`}`;
+      return answer(true, { repo, autoApprove: target === "on", changed: changed.changed, withdrawn: changed.withdrawn }, words, 0);
     }
     if (command === "unsandboxed-carry") {
       if (target !== "on" && target !== "off") return answer(false, { reason: "usage", message: "unsandboxed-carry takes on or off." }, "unsandboxed-carry takes on or off.", 2);

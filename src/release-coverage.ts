@@ -30,7 +30,7 @@ export const gitIsAncestor: IsAncestor = (repo, ancestor, descendant) => {
   if (known !== undefined) return known;
   let answer: boolean | null;
   try {
-    execFileSync("git", ["-C", repo, "merge-base", "--is-ancestor", ancestor, descendant], { stdio: "ignore", timeout: 5_000 });
+    execFileSync("git", ["-C", repo, "--no-lazy-fetch", "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor", ancestor, descendant], { stdio: "ignore", timeout: 5_000 });
     answer = true;
   } catch (error) {
     // Exit 1 is Git's "no"; anything else (a missing object, no repository, a timeout) is no answer.

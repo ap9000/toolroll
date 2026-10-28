@@ -490,7 +490,7 @@ const BRANCH_QUERIES: readonly (readonly string[])[] = [
  */
 function buildCheckoutGit(given: Runner, worktree: string, mainCheckout: string | null = null): Runner {
   if (given !== run) return given;
-  const hardened = checkoutGit(given);
+  const hardened = checkoutGit(given, "build", { repo: mainCheckout });
   const real = (path: string): string | null => { try { return realpathSync(resolve(path)); } catch { return null; } };
   const trusted = mainCheckout === null ? null : real(mainCheckout);
   const own = real(worktree);

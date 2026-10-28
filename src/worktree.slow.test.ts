@@ -49,6 +49,21 @@ describe("the pool, against a stubbed git", () => {
   let store: Store;
   let root: string;
   const calls: string[][] = [];
+  // Teardown's git runs against a view of the checkout's repository (teardown-git.ts gitView), made from what is on
+  // disk and bound to one repository (boundDirs): the stub's checkouts are linked worktrees of a stand-in repository
+  // (a main checkout whose .git holds an empty config), the one the orphan survey asks.
+  let common: string;
+  let thing: string;
+  let made = 0;
+  const checkout = (path: string) => {
+    mkdirSync(path, { recursive: true });
+    const admin = join(common, "worktrees", `stub-${made++}`);
+    mkdirSync(admin, { recursive: true });
+    writeFileSync(join(admin, "gitdir"), `${realpathSync(path)}/.git\n`);
+    writeFileSync(join(admin, "commondir"), "../..\n");
+    writeFileSync(join(admin, "HEAD"), "ref: refs/heads/stub\n");
+    writeFileSync(join(path, ".git"), `gitdir: ${admin}\n`);
+  };
 
   const pool = (replies: (args: readonly string[]) => Partial<typeof OK> = () => ({})) => {
     const runner: Runner = async (_file, args) => {
@@ -59,7 +74,7 @@ describe("the pool, against a stubbed git", () => {
       // lease has nowhere to write its in-use marker.
       if (args[0] === "worktree" && args[1] === "add" && reply.code === 0) {
         const target = args[args.length - 2] as string;
-        mkdirSync(target, { recursive: true });
+        checkout(target);
       }
       return reply;
     };
@@ -72,6 +87,11 @@ describe("the pool, against a stubbed git", () => {
     // candidate under a symlinked root would never match itself.
     root = realpathSync(mkdtempSync(join(tmpdir(), "standing-orders-stub-")));
     calls.length = 0;
+    thing = join(realpathSync(mkdtempSync(join(tmpdir(), "standing-orders-stub-repo-"))), "thing");
+    common = join(thing, ".git");
+    mkdirSync(common, { recursive: true });
+    writeFileSync(join(common, "config"), "");
+    writeFileSync(join(common, "HEAD"), "ref: refs/heads/main\n");
     // A worktree can only be leased to a runner the control plane knows.
     for (const name of ["builder-1", "builder-2"]) {
       register(store, { name, host: "test", now: T0 });
@@ -189,7 +209,7 @@ describe("the pool, against a stubbed git", () => {
 
   test("checks a worktree recovered from a dead runner before reusing it", async () => {
     const path = worktreePath(root, "/code/thing", "feat/a");
-    mkdirSync(path, { recursive: true });
+    checkout(path);
     store.saveWorktree({
       path,
       repo: "/code/thing",
@@ -212,7 +232,7 @@ describe("the pool, against a stubbed git", () => {
 
   test("reuses a recovered worktree once it checks out clean", async () => {
     const path = worktreePath(root, "/code/thing", "feat/a");
-    mkdirSync(path, { recursive: true });
+    checkout(path);
     store.saveWorktree({
       path,
       repo: "/code/thing",
@@ -239,11 +259,11 @@ describe("the pool, against a stubbed git", () => {
   test("names worktrees git knows about that the pool does not", async () => {
     const it = pool(args =>
       args.includes("list")
-        ? { stdout: "worktree /code/thing\nworktree /elsewhere/stray\n" }
+        ? { stdout: `worktree ${thing}\nworktree /elsewhere/stray\n` }
         : {},
     );
 
-    const found = await it.orphans("/code/thing");
+    const found = await it.orphans(thing);
 
     // Somebody else's worktree is named, not adopted, and the repo itself is
     // not mistaken for one of ours.
@@ -253,7 +273,7 @@ describe("the pool, against a stubbed git", () => {
   test("names its own worktrees that are no longer on disk", async () => {
     store.saveWorktree({
       path: "/pool/thing/gone",
-      repo: "/code/thing",
+      repo: thing,
       branch: "gone",
       runner: null,
       taskRef: null,
@@ -264,8 +284,8 @@ describe("the pool, against a stubbed git", () => {
     });
 
     const found = await pool(args =>
-      args.includes("list") ? { stdout: "worktree /code/thing\n" } : {},
-    ).orphans("/code/thing");
+      args.includes("list") ? { stdout: `worktree ${thing}\n` } : {},
+    ).orphans(thing);
 
     expect(found).toMatchObject({ ok: true, missing: ["/pool/thing/gone"] });
   });
@@ -331,11 +351,11 @@ describe("the pool, against a stubbed git", () => {
     const crashed = join(root, "thing", "crashed");
     const it = pool(args =>
       args.includes("list")
-        ? { stdout: `worktree /code/thing\nworktree ${crashed}\nworktree /home/alex/mine\n` }
+        ? { stdout: `worktree ${thing}\nworktree ${crashed}\nworktree /home/alex/mine\n` }
         : {},
     );
 
-    const adopted = await it.adopt("/code/thing", T0);
+    const adopted = await it.adopt(thing, T0);
 
     expect(adopted).toMatchObject({ ok: true, adopted: [crashed] });
     expect(store.getWorktree(crashed)).toMatchObject({ verified: false, releasedAt: T0.toISOString() });
@@ -952,7 +972,7 @@ describe("fresh base: an untouched checkout starts from current main", () => {
 
     // A recovered draft is kept in place under a fresh lease; the same check inside it never moves the tree.
     const freshen = (pool as unknown as { freshen: (...args: unknown[]) => Promise<unknown> }).freshen.bind(pool);
-    const standing = await freshen(path, "toolroll/t-fresh", ref, { main: "main", recordedBase: head }, later(3_000));
+    const standing = await freshen(repo, path, "toolroll/t-fresh", ref, { main: "main", recordedBase: head }, later(3_000));
 
     expect(standing).toMatchObject({ ok: true, standing: { head, main, behind: 1, moved: null, kept: "has changes" } });
     expect(git(["rev-parse", "HEAD"], path)).toBe(head);

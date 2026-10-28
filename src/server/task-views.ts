@@ -533,6 +533,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         steeringRun: ref === null ? null : runtime.store.steeringLiveBuild(ref.id, now),
         release: ref === null ? null : releaseViewOf(runtime.store, ref.externalId, now, authority => releaseObligationsOf(runtime.store, runtime.evidenceRoot, authority)),
         canStopRelease: who.role === "approver" && who.via === "cookie",
+        autoRelease: ref === null ? null : autoReleaseOf(runtime.store.getScope(ref.externalId)),
         approvalProof: (() => {
           // The proof of the approval shown: its approver, its exact sealed digest (approvedDigest === digest when approved).
           const scope = ref === null ? null : runtime.store.getScope(ref.externalId);
@@ -1145,4 +1146,11 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     };
   }
   return { guided, projectFamilyPeek, familiesInView, familyTasksInView, revisionDestination, earlierLiveVersions, familyHistory, freshAssignment, workRowOf, taskListPane, runIsLive, runIsTaskResult, revisionViewOf, taskViewData, routeViewOf, taskChatFocus, pullRequestTargetOf, taskPullRequestOf, failureOf, explainAttempt, runChecksHere, taskScreen, armTaskResume, planViewOf, planContractViewOf, revisionDocOf, revisionLedgerOf, progressOf, resultDetailOf };
+}
+
+/** A release task the plane approved (or is checking) itself, for the task page (docs/plans/auto-approve-green.md). */
+function autoReleaseOf(scope: Scope | null): { kind: "checking" | "approved"; candidate: string } | null {
+  if (scope === null || scope.approvedDigest !== scope.digest || (scope.candidate ?? null) === null) return null;
+  return scope.approvalBasis === "auto-green" ? { kind: "approved", candidate: scope.candidate! }
+    : scope.approvalBasis === "auto-check" ? { kind: "checking", candidate: scope.candidate! } : null;
 }

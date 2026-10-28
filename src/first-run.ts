@@ -6,6 +6,7 @@
  * the composer: nothing is filed until the person sends it and confirms.
  */
 import { run } from "./exec.js";
+import { hardenedGit } from "./teardown-git.js";
 import type { Runner } from "./backend.js";
 import { githubIssues } from "./issues.js";
 
@@ -110,7 +111,8 @@ export async function findFirstTasks(repo: string, runner: Runner = run): Promis
   let todos: TodoComment[] = [];
   if (issues.length < 3) {
     try {
-      const result = await runner("git", [...TODO_GREP_ARGS], { cwd: repo, timeoutMs: 5_000 });
+      // The project's repository is shared with builds that can write its config: the hardened read (teardown-git.ts).
+      const result = await (runner === run ? hardenedGit(run, "read") : runner)("git", [...TODO_GREP_ARGS], { cwd: repo, timeoutMs: 5_000 });
       if (result.code === 0 || result.stdout !== "") todos = parseTodoLines(result.stdout);
     } catch { todos = []; }
   }

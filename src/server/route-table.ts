@@ -377,6 +377,9 @@ post("tasks", "sweep.cancel-rest", "^\\/sweeps\\/[1-9][0-9]{0,9}\\/cancel-rest$"
 // (the handler proves it as a credential act); turning it off is one click, so the row itself is not a step-up.
 get("settings", "settings.passwordless", "/settings/passwordless", { ...free, ...operator("An instance operator sets Passwordless.", "/settings") });
 post("settings", "settings.passwordless-send", "/settings/passwordless", { callers: ["cookie"], ...operator("An instance operator sets Passwordless.", "/settings") });
+// Release approval (docs/plans/auto-approve-green.md): an approver of the project, from a browser. Approving releases
+// automatically takes a typed password (the handler proves it as a credential act); asking again is one click.
+post("settings", "settings.release-approval-send", "/settings/release-approval", { callers: ["cookie"], ...approver("An approver sets how releases are approved.", "/settings/approval") });
 post("pages", "ledger.checkpoint", "/ledger/checkpoint", operator("An instance operator makes ledger checkpoints.", "/ledger"));
 const SETTINGS_ACT_ROLES: Record<string, RoleOptions> = {
   policy: operator("An instance operator sets the policy.", "/settings/policy"),

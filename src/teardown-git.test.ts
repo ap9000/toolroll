@@ -32,7 +32,7 @@ describe("command-running settings refuse teardown", () => {
 });
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { run } from "./exec.js";
@@ -45,14 +45,21 @@ test.each(["GPG.SSH.defaultKeyCommand", "FiLtEr.X.ClEaN", "IncludeIf.gitdir:X.PA
 });
 
 test("removal scans the target config immediately and refuses its command", async () => {
-  const calls: { cwd: string | undefined; args: readonly string[] }[] = [];
-  const git = teardownGit(async (_file, args, options) => {
-    calls.push({ cwd: options?.cwd, args });
-    return { code: 0, stdout: options?.cwd === "/target" ? listing(["worktree", "gpg.ssh.defaultKeyCommand", "planted"]) : "", stderr: "", timedOut: false, notFound: false };
-  });
-  expect(refusal(await git("/repo", ["worktree", "remove", "--force", "/target"]))).toContain("gpg.ssh.defaultkeycommand");
-  expect(calls.map(call => call.cwd)).toEqual(["/repo", "/target"]);
-  expect(calls.every(call => call.args.includes("--no-includes"))).toBe(true);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "teardown-scan-")));
+  const repo = join(root, "repo"), target = join(root, "target");
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--allow-empty", "-qm", "initial"], { cwd: repo });
+    execFileSync("git", ["worktree", "add", "-q", "--detach", target], { cwd: repo });
+    const calls: { cwd: string | undefined; args: readonly string[] }[] = [];
+    const git = teardownGit(async (_file, args, options) => {
+      calls.push({ cwd: options?.cwd, args });
+      return { code: 0, stdout: options?.cwd === target ? listing(["worktree", "gpg.ssh.defaultKeyCommand", "planted"]) : "", stderr: "", timedOut: false, notFound: false };
+    });
+    expect(refusal(await git(repo, ["worktree", "remove", "--force", target]))).toContain("gpg.ssh.defaultkeycommand");
+    expect(calls.map(call => call.cwd)).toEqual([repo, target]);
+    expect(calls.every(call => call.args.includes("--no-includes"))).toBe(true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("status and removal refuse an initialized staged gitlink without executing its clean filter", async () => {
@@ -83,14 +90,25 @@ test("status and removal refuse an initialized staged gitlink without executing 
 });
 
 test("inspection always has non-recursing flags and the hardened environment", async () => {
-  const git = teardownGit(async (_file, args, options) => {
-    expect(options?.env).toMatchObject({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" });
-    if (!args.includes("config")) expect(args.slice(0, TEARDOWN_FLAGS.length)).toEqual(TEARDOWN_FLAGS);
-    if (args.includes("status") || args.includes("diff")) expect(args).toContain("--ignore-submodules=all");
-    return { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
-  });
-  await git("/nonexistent-fixture", ["status", "--porcelain"]);
-  await git("/nonexistent-fixture", ["diff", "--", "file"]);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "teardown-flags-")));
+  const repo = join(root, "repo");
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    const seen: (readonly string[])[] = [];
+    const git = teardownGit(async (_file, args, options) => {
+      seen.push(args);
+      expect(options?.env).toMatchObject({ GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" });
+      if (!args.includes("config")) expect(args.slice(0, TEARDOWN_FLAGS.length)).toEqual(TEARDOWN_FLAGS);
+      if (args.includes("status") || args.includes("diff")) expect(args).toContain("--ignore-submodules=all");
+      return { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
+    });
+    await git(repo, ["status", "--porcelain"]);
+    await git(repo, ["diff", "--", "file"]);
+    // The stub ran: the inspection, the index preflight and the command, each time.
+    expect(seen.filter(args => args.includes("status")).length).toBe(1);
+    expect(seen.filter(args => args.includes("diff")).length).toBe(1);
+    expect(seen.filter(args => args.includes("config")).length).toBe(2);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 test("removal from the shared repository refuses the target worktree's fsmonitor command", async () => {

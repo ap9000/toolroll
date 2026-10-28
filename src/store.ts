@@ -8351,7 +8351,7 @@ export class Store {
    * approved profile — one UPDATE, no re-resolution, so what is sealed is
    * exactly what the signed digest was bound to. Returns false when the
    * scope vanished mid-ceremony. */
-  sealScopeApproval(taskId: string, by: string, now: Date, mutation: Mutation = {}, basis?: { kind: "mode" | "chat" | "grant" | "schedule"; modeDigest: string;
+  sealScopeApproval(taskId: string, by: string, now: Date, mutation: Mutation = {}, basis?: { kind: "mode" | "chat" | "grant" | "schedule" | "auto-check" | "auto-green"; modeDigest: string;
     /** A chat seal of a deploy gate: the release card it came from (chat-management.md §0a.5). */
     card?: "release"; cardDigest?: string }, approverKind?: ApproverKind): boolean {
     return (
@@ -8428,7 +8428,15 @@ export class Store {
         // one. Read from the raw row, so a terms column that doesn't parse is a deploy gate too.
         const deployGate = (typeof working["candidate"] === "string" && working["candidate"] !== "") || working["release_terms_json"] != null;
         if (deployGate && basis?.kind === "chat" && !(basis.card === "release" && typeof basis.cardDigest === "string" && /^[0-9a-f]{64}$/.test(basis.cardDigest))) return false;
-        if (terms.terms !== null && basis !== undefined && basis.kind !== "chat") return false;
+        // AUTOMATIC RELEASE SEALS (auto-approve-green.md): only on a release task (a candidate and release terms signed
+        // in), only naming the evidence row the plane wrote for exactly this task, kind, digest and candidate.
+        const automatic = basis?.kind === "auto-check" || basis?.kind === "auto-green";
+        if (automatic) {
+          if (terms.terms === null || typeof working["candidate"] !== "string" || working["candidate"] === "") return false;
+          const evidence = autoEvidenceOf(this, taskId, basis!.modeDigest, basis!.kind as "auto-check" | "auto-green");
+          if (evidence === null || evidence.digest !== String(working["digest"]) || evidence.candidate !== working["candidate"] || evidence.by !== by) return false;
+        }
+        if (terms.terms !== null && basis !== undefined && basis.kind !== "chat" && !automatic) return false;
         if (terms.terms !== null && releaseSealProblem(this, terms.terms) !== null) return false;
         const changed = this.db
           .prepare(
@@ -8447,7 +8455,8 @@ export class Store {
               WHERE task_id = ?`,
           )
           .run(now.toISOString(), by, basis === undefined ? "password" : basis.kind, basis === undefined ? null : basis.modeDigest, taskId);
-        if (changed.changes > 0 && terms.ok && terms.terms !== null) {
+        // `auto-check` only lets the check run: it opens no release authority (only `auto-green` and a person's yes do).
+        if (changed.changes > 0 && terms.ok && terms.terms !== null && basis?.kind !== "auto-check") {
           if (openReleaseAuthority(this, { taskId, digest: String(working["digest"]), terms: terms.terms, by, now }) === null) throw new ReleaseSealRefused();
         }
         if (changed.changes > 0) {
@@ -8479,6 +8488,10 @@ export class Store {
                         ? "Approved automatically: its flow runs on its own. A connected worker can take it next."
                         : basis.kind === "schedule"
                           ? "Approved by its standing order. A connected worker can take it next."
+                          : basis.kind === "auto-check"
+                            ? "Checking automatically: it approves itself once CI and the release check pass."
+                          : basis.kind === "auto-green"
+                            ? "Approved automatically: CI and the release check passed."
                           : "Approved automatically under the operating mode. A connected worker can take it next.",
                   link: chatControlHref("task", taskId),
                 },
@@ -24275,7 +24288,7 @@ export {
   type ReleaseAuthority, type ReleaseCarry, type ReleaseOperation, type ReleaseState,
 } from "./release-authority.js";
 import {
-  LIVE_RELEASE_STATES, belongsToRelease, newestReleaseGeneration, outstandingReleaseOperations, releaseAuthority, releaseCarryTo, releaseOperation, releaseSealProblem,
+  LIVE_RELEASE_STATES, autoEvidenceOf, belongsToRelease, newestReleaseGeneration, outstandingReleaseOperations, releaseAuthority, releaseCarryTo, releaseOperation, releaseSealProblem,
   type ReleaseCarry, type ReleaseOperation,
 } from "./release-authority.js";
 

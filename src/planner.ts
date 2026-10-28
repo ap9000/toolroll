@@ -22,6 +22,7 @@ import { unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { run } from "./exec.js";
+import { checkoutGit } from "./teardown-git.js";
 import { auditOf, isProviderId } from "./provider.js";
 import type { Store } from "./store.js";
 import { currentClaim, heartbeat } from "./claim.js";
@@ -672,10 +673,13 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
     branch,
     now,
     agent,
-    git = run,
+    git: givenGit = run,
     timeoutMs = DEFAULT_PLAN_TIMEOUT_MS,
     maxTurns = DEFAULT_PLAN_TURNS,
   } = request;
+  // The plane's git on the plan's checkout (agent-written, and its repository shared with every build) runs hardened, against
+  // a frozen view of the repository's config and info (teardown-git.ts checkoutGit); an injected runner is used as given.
+  const git = givenGit === run ? checkoutGit(run, "build", { repo: store.getWorktree(worktree)?.repo ?? null }) : givenGit;
   // An ACP agent works with full access inside the fence: it builds and repairs, and is never handed a plan (routing refuses it first).
   if (request.provider !== undefined && isAcpProvider(request.provider)) {
     return { ok: false, kind: "failure", reason: "provider-unsupported", message: `${ACP_AGENTS[request.provider].name} builds and repairs only — configure the planner to claude, codex or gemini` };

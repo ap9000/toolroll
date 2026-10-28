@@ -28,6 +28,7 @@ import type { VerifiedApprover } from "./principal.js";
 import type { Publication, Store } from "./store.js";
 import { NIGHTLY_CHECK_ONLY, RELEASE_MERGES_ONLY, nightlyTaskRef, releaseTaskRef } from "./store.js";
 import { belongsToRelease } from "./release-authority.js";
+import { autoReleaseSealed } from "./release-auto.js";
 import { fullCheckGate, requestFollowUpChecks } from "./result-follow-ups.js";
 
 export type MergeMethod = "squash" | "merge" | "rebase";
@@ -421,6 +422,8 @@ export async function mergePullRequest(
   // A release's task merges only through `toolroll release` (release-once.md), which proves the live release, reserves
   // the merge at its lease's epoch and checks the exact pull request: never here, by hand or automatically.
   if (mergedTask !== null && belongsToRelease(store, mergedTask)) return refuse("release", "This result belongs to a release; it merges only through `toolroll release`.");
+  // A release task the plane approved (or is checking) automatically (auto-approve-green.md) never merges here either.
+  if (mergedTask !== null && autoReleaseSealed(store, mergedTask)) return refuse("release", "This result was approved automatically for a release; it merges only through `toolroll release`.");
   const publication = store.publicationForRun(input.runId);
   const follow = publication === null ? null : followOf(store, publication.id);
   if (publication === null || follow === null || publication.prNumber === null) return refuse("no-pr", "This result has no open pull request to merge.");

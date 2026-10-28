@@ -351,8 +351,10 @@ export class CodingWorkspace {
     }
   }
 
-  private async git(repo: string, args: string[]): Promise<string> {
-    const result = await run('git', ['--no-optional-locks', '-c', 'core.hooksPath=/dev/null', ...args], { cwd: repo, timeoutMs: 60_000, maxBuffer: 1_048_576 });
+  private async git(repo: string, args: string[], project: string = repo): Promise<string> {
+    // The project's repository and the session's checkout are agent-written: the hardened git, against a frozen view of
+    // the repository's config and info (teardown-git.ts checkoutGit).
+    const result = await checkoutGit(run, 'build', { repo: project })('git', ['--no-optional-locks', ...args], { cwd: repo, timeoutMs: 60_000, maxBuffer: 1_048_576 });
     if (result.code !== 0) throw Error('Git could not complete this workspace operation. Check the repository and try again.');
     return result.stdout;
   }
@@ -445,12 +447,12 @@ export class CodingWorkspace {
 
   private async verifyWorktree(session: CodingSession): Promise<void> {
     const [branch, common, original] = await Promise.all([
-      this.git(session.worktree, ['symbolic-ref', '--short', 'HEAD']),
-      this.git(session.worktree, ['rev-parse', '--path-format=absolute', '--git-common-dir']),
+      this.git(session.worktree, ['symbolic-ref', '--short', 'HEAD'], session.repo),
+      this.git(session.worktree, ['rev-parse', '--path-format=absolute', '--git-common-dir'], session.repo),
       this.git(session.repo, ['rev-parse', '--path-format=absolute', '--git-common-dir']),
     ]);
     if (branch.trim() !== session.branch || realpathSync(common.trim()) !== realpathSync(original.trim())) throw Error('This checkout no longer matches the saved project and branch. Restore that checkout before resuming.');
-    await this.git(session.worktree, ['merge-base', '--is-ancestor', session.base, 'HEAD']);
+    await this.git(session.worktree, ['merge-base', '--is-ancestor', session.base, 'HEAD'], session.repo);
   }
 
   private priorProcessesGone(): boolean {

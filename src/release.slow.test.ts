@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
-  checksVerdict, gateTaskId, journalFile, ownerApproval, readJournal, writeJournal, REQUIRED_PR_CHECKS, RELEASE_TAG_CHECKS, runRelease, transientNetworkError,
+  checksVerdict, gateTaskId, journalFile, ownerApproval, prChecksVerdict, readJournal, writeJournal, REQUIRED_PR_CHECKS, RELEASE_TAG_CHECKS, runRelease, transientNetworkError,
   type CheckRun, type GateState, type HomebrewState, type ReleaseAdapters, type ReleaseJournal,
 } from "./release.js";
 
@@ -49,6 +49,8 @@ function world(options: { crashAfter?: Mutation } = {}) {
     brew: { kind: "missing" } as HomebrewState,
     brewChecked: true,
     brewStatuses: [] as CheckRun[],
+    /** Whether GitHub's check history reads whole (fewer than 1000 suites). */
+    ciComplete: true,
     calls: [] as string[],
     said: [] as string[],
   };
@@ -113,9 +115,11 @@ function world(options: { crashAfter?: Mutation } = {}) {
     },
     github: {
       authenticated: async () => true,
+      complete: async () => s.ciComplete,
       pullRequest: async () => ({ ...s.pr }),
-      checks: async (repo, sha) => !s.gateSeesChecks && repo !== "ap9000/homebrew-toolroll" && !(s.gate.exists && s.gate.candidate === sha) && sha !== MERGE ? passing(REQUIRED_PR_CHECKS)
-        : structuredClone(s.checks.get(`${repo === "ap9000/homebrew-toolroll" ? "brew:" : ""}${sha}`) ?? []),
+      // As the real adapter answers: every attempt, with its id, app, check suite and commit (a test's own fields win).
+      checks: async (repo, sha) => (!s.gateSeesChecks && repo !== "ap9000/homebrew-toolroll" && !(s.gate.exists && s.gate.candidate === sha) && sha !== MERGE ? passing(REQUIRED_PR_CHECKS)
+        : structuredClone(s.checks.get(`${repo === "ap9000/homebrew-toolroll" ? "brew:" : ""}${sha}`) ?? [])).map((run, i) => ({ id: i + 1, app: "github-actions", suite: 1, head: sha, ...run })),
       merge: async (_repo, _pr, head) => {
         if (head !== s.pr.head) throw new Error("Head branch was modified");
         s.pr = { ...s.pr, state: "merged", mergeCommit: MERGE };
@@ -509,7 +513,7 @@ describe("toolroll release", () => {
       adapters.github.checks = async (repo, sha) => {
         if (sha !== SHA) return checks(repo, sha);
         reads += 1;
-        return [...passing(REQUIRED_PR_CHECKS), ...(reads <= 2 ? passing([repeat]) : [{ name: repeat, status, conclusion }])];
+        return [...passing(REQUIRED_PR_CHECKS), ...(reads <= 2 ? passing([repeat]) : [{ name: repeat, status, conclusion }])].map((run, i) => ({ id: i + 1, app: "github-actions", suite: 1, head: sha, ...run }));
       };
       expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "merge", reason: "ci-failed" });
       // The gate's early look, the ci step, and the re-read at merge.
@@ -1235,5 +1239,286 @@ describe("toolroll release: a regated check of the same approved commit (2026-10
     s.onSleep.push(state => { if (state.gate.pending === true) { passes(state); state.gate.result!.head = NEXT; } });
     expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, reason: "drift" });
     expect(s.calls).not.toContain("complete");
+  });
+});
+
+/**
+ * Releases that approve themselves when green (docs/plans/auto-approve-green.md), through the state machine: a release
+ * world whose plane can seal `auto-check` and `auto-green`. The plane's own proofs are tested on a real store in
+ * test/attacks/auto-approve-green.test.ts; here the coordinator's order, stops and words.
+ */
+function autoWorld(options: { setting?: boolean; authorize?: string; approve?: string } = {}) {
+  const w = releaseWorld();
+  const { s, adapters, rel } = w;
+  const plane = { setting: options.setting ?? true, authorizations: 0, approvals: 0, gaveUp: [] as string[], released: [] as string[], checkFailed: [] as string[], held: null as string | null };
+  const at = () => new Date(s.now).toISOString();
+  adapters.release!.auto = {
+    setting: async () => plane.setting,
+    authorizeCheck: async () => {
+      plane.authorizations += 1;
+      if (!plane.setting) return { ok: false, why: "this project's releases aren't approved automatically" };
+      if (options.authorize !== undefined) return { ok: false, why: options.authorize };
+      s.gate.approval = { by: "alex", at: at(), digest: DIGEST, basis: "auto-check", role: "approver", active: true, person: { ok: false, why: "approved automatically, not by a person" } };
+      return { ok: true };
+    },
+    checking: async () => plane.setting && s.gate.approval?.basis === "auto-check" ? { ok: true } : { ok: false, why: "approving releases automatically was turned off" },
+    approve: async input => {
+      plane.approvals += 1;
+      const ci = checksVerdict(s.checks.get(input.candidate) ?? [], REQUIRED_PR_CHECKS);
+      const why = !plane.setting ? "approving releases automatically was turned off" : options.approve ?? (ci.state !== "passed" ? "CI: a required check didn't pass" : null);
+      if (why !== null) { s.gate.approval = null; return { ok: false, why }; }
+      s.gate.approval = { by: "alex", at: at(), digest: DIGEST, basis: "auto-green", role: "approver", active: true, person: { ok: false, why: "approved automatically, not by a person" } };
+      rel.tasks.add(input.taskId); rel.tipTask = input.taskId;
+      s.calls.push("autoGreen");
+      return { ok: true, by: "alex", at: at(), ci: REQUIRED_PR_CHECKS.map((name, i) => ({ id: 100 + i, name })) };
+    },
+    giveUp: async (_task, why) => { plane.gaveUp.push(why); if (s.gate.approval?.basis === "auto-check" || s.gate.approval?.basis === "auto-green") s.gate.approval = null; },
+    released: async (_task, tag) => { plane.released.push(tag); },
+    holdPublish: async (_task, why) => { plane.held = why; },
+    publishHeld: async () => plane.held,
+    checkFailed: async (_task, why) => { plane.checkFailed.push(why); },
+  };
+  // The live predicate also asks the setting for an automatic anchor (scope.ts releaseApprovalOf).
+  rel.live = (taskId, action) => {
+    if (!rel.tasks.has(taskId)) return { applies: false, ok: false, why: null };
+    if (s.gate.approval?.basis === "auto-green" && !plane.setting) return { applies: true, ok: false, why: "the release approval no longer stands: approving releases automatically was turned off" };
+    if (rel.state === "revoked") return { applies: true, ok: false, why: "the release was stopped" };
+    const states: Record<string, string[]> = { dispatch: ["open"], complete: ["open"], deploy: ["open", "deploying"], merge: ["deploying", "merge-reserved"] };
+    return states[action]!.includes(rel.state) ? { applies: true, ok: true, why: null } : { applies: true, ok: false, why: `the release is ${rel.state}` };
+  };
+  return { ...w, plane };
+}
+
+describe("toolroll release: approve automatically when checks pass", () => {
+  test("no person approves: auto-check lets the check run, auto-green seals after it passed, and the owner is told", async () => {
+    const dir = stateDir();
+    const { s, adapters, plane } = autoWorld();
+    const outcome = await runRelease(options(dir), adapters);
+    expect(outcome).toMatchObject({ ok: true });
+    expect(s.calls).toEqual(["fileGate", "autoGreen", "complete", "deploy", "switchLinks", "merge", "deleteBranch", "createTag", "propose", "brewMerge"]);
+    expect(s.gate.approval).toMatchObject({ basis: "auto-green" });
+    expect(plane).toMatchObject({ authorizations: 1, approvals: 1, gaveUp: [], released: ["v0.9.52"] });
+    expect(readJournal(journalFile(dir, "toolroll/simplify-release"))).toMatchObject({ step: "done", auto: { state: "approved", ci: [100, 101, 102, 103, 104] }, approval: { by: "alex (automatic)" } });
+    expect(s.said).toContain(`  Approved automatically: CI and the release check passed on ${SHA.slice(0, 7)}`);
+  });
+
+  test("with the setting off the release waits for a person, as before", async () => {
+    const { s, adapters, plane } = autoWorld({ setting: false });
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
+    expect(s.gate.approval).toMatchObject({ basis: "password" });
+    expect(plane).toMatchObject({ authorizations: 0, approvals: 0, released: [] });
+  });
+
+  test("a refused auto-check asks a person, tells the owner, and the person's yes releases it", async () => {
+    const { s, adapters, plane } = autoWorld({ authorize: "the scope can't be approved automatically" });
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
+    expect(s.gate.approval).toMatchObject({ basis: "password" });
+    expect(plane).toMatchObject({ approvals: 0, gaveUp: ["the scope can't be approved automatically"], released: [] });
+    expect(s.calls).not.toContain("autoGreen");
+  });
+
+  test.each([
+    ["red CI at the seal", (w: ReturnType<typeof autoWorld>) => { w.s.onSleep.push(state => { if (state.gate.result !== null) state.checks.set(SHA, passing(REQUIRED_PR_CHECKS).map((run, i) => i === 0 ? { ...run, conclusion: "failure" } : run)); }); }, "CI: a required check didn't pass"],
+    ["a plane refusal (a CI definition changed)", () => {}, ".github/workflows/ci.yml changed (it configures CI or agents)"],
+  ])("%s stops at approval for a person; nothing deploys; a person's yes then uses the same passing check", async (_name, spoil, why) => {
+    const dir = stateDir();
+    const w = autoWorld(why.startsWith(".github") ? { approve: why } : {});
+    const { s, adapters, plane } = w;
+    const person = s.onSleep[0]!;
+    s.onSleep = [state => { if (state.gate.approval !== null && state.gate.result === null) person(state); }];
+    spoil(w);
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "approval", reason: "approval", message: expect.stringContaining(`Not approved automatically: ${why}`) });
+    expect(s.calls).toEqual(["fileGate"]);
+    expect(plane.gaveUp).toEqual([why]);
+    expect(readJournal(journalFile(dir, "toolroll/simplify-release"))).toMatchObject({ step: "approval", auto: { state: "refused", why } });
+    // CI green again and the person approves: the journal asks a person, never the plane again, and the check stands.
+    s.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
+    s.onSleep = [person];
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
+    expect(s.gate.approval).toMatchObject({ basis: "password" });
+    expect(plane).toMatchObject({ authorizations: 1, approvals: 1, released: [] });
+  });
+
+  test("a failed release check stops and tells the owner; a regate of the same commit that passes (a flake) then approves itself", async () => {
+    const dir = stateDir();
+    const { s, adapters, plane } = autoWorld();
+    s.onSleep = [state => { if (state.gate.approval !== null && state.gate.result === null) state.gate.result = { run: 2757, head: SHA, check: "failed", level: "full", receipt: RECEIPT, worktree: "/w" }; }];
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "check", reason: "check-failed" });
+    expect(plane).toMatchObject({ approvals: 0, gaveUp: [], checkFailed: [expect.stringContaining("did not pass")] });
+    // Still checking automatically: the regate reruns the same commit and digest, and its pass is sealed by the plane.
+    expect(s.gate.approval).toMatchObject({ basis: "auto-check" });
+    s.gate.pending = true;
+    s.onSleep = [state => { state.gate.pending = false; state.gate.result = { run: 2758, head: SHA, check: "passed", level: "full", receipt: RECEIPT, worktree: "/w" }; }];
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
+    expect(plane).toMatchObject({ approvals: 1, released: ["v0.9.52"] });
+  });
+
+  test("the setting lowered while the check runs: it doesn't approve, and a person is asked", async () => {
+    const { s, adapters, plane } = autoWorld();
+    const person = s.onSleep[0]!;
+    s.onSleep = [state => { plane.setting = false; person(state); }];
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "approval", reason: "approval", message: expect.stringContaining("turned off") });
+    expect(plane.approvals).toBe(0);
+    expect(s.calls).toEqual(["fileGate"]);
+  });
+
+  test("the setting lowered after the automatic approval: the release stops before it deploys", async () => {
+    const { s, adapters, plane } = autoWorld();
+    const complete = adapters.toolroll.complete;
+    adapters.toolroll.complete = async (task, receipt) => { plane.setting = false; return complete(task, receipt); };
+    s.running = 1;
+    s.onSleep.push(state => { state.running = 0; });
+    const outcome = await runRelease(options(stateDir()), adapters);
+    expect(outcome).toMatchObject({ ok: false, reason: "release", message: expect.stringContaining("turned off") });
+    expect(s.calls).not.toContain("deploy");
+    expect(s.calls).not.toContain("merge");
+  });
+
+  test("a CI failure after the deploy stops, tells the owner, and --new asks a person (never the plane) for the same commit", async () => {
+    const dir = stateDir();
+    const { s, adapters, rel, plane } = autoWorld();
+    const ci = adapters.github.checks;
+    adapters.github.checks = async (repo, sha) => s.calls.includes("deploy") && sha === SHA ? passing(REQUIRED_PR_CHECKS).map((run, i) => ({ id: i + 1, app: "github-actions", suite: 1, head: sha, ...run, ...(i === 0 ? { conclusion: "failure" } : {}) })) : ci(repo, sha);
+    // Caught before the CLI names move (the re-read at the relink), not only at the ci step.
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "link", reason: "ci-failed" });
+    expect(s.calls).not.toContain("switchLinks");
+    expect(rel.approvalsNeeded).toHaveLength(1);
+    expect(plane.gaveUp).toEqual([expect.stringContaining("after the deploy")]);
+    expect(s.calls).not.toContain("merge");
+    await runRelease(options(dir, { fresh: true, limits: { approval: 1 } }), adapters);
+    expect(plane.authorizations).toBe(1);
+  });
+
+  const red = (sha: string, extra: Partial<CheckRun> = {}) => passing(REQUIRED_PR_CHECKS).map((run, i) => ({ id: i + 1, app: "github-actions", suite: 1, head: sha, ...run, ...(i === 0 ? { conclusion: "failure", ...extra } : {}) }));
+
+  test("codex r1 #5: CI that turns red after the seal stops the release before it deploys, and revokes it", async () => {
+    const dir = stateDir();
+    const { s, adapters, rel, plane } = autoWorld();
+    const ci = adapters.github.checks;
+    adapters.github.checks = async (repo, sha) => s.calls.includes("autoGreen") && sha === SHA ? red(sha) : ci(repo, sha);
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "deploy", reason: "ci-failed", message: expect.stringContaining("Nothing was deployed") });
+    expect(s.calls).toEqual(["fileGate", "autoGreen", "complete"]);
+    expect(rel.approvalsNeeded).toEqual(["a pull request check failed before the deploy"]);
+    expect(plane.gaveUp).toHaveLength(1);
+  });
+
+  test("codex r1 #5: a re-run left pending after the seal also stops it before the deploy", async () => {
+    const { s, adapters } = autoWorld();
+    const ci = adapters.github.checks;
+    adapters.github.checks = async (repo, sha) => s.calls.includes("autoGreen") && sha === SHA
+      ? [...await ci(repo, sha), { id: 99, app: "github-actions", suite: 1, head: sha, name: REQUIRED_PR_CHECKS[0], status: "in_progress", conclusion: null }] : ci(repo, sha);
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "deploy", reason: "ci-failed" });
+    expect(s.calls).not.toContain("deploy");
+  });
+
+  test("codex r1 #4: another app's later same-name success can't hide a GitHub Actions failure, for a person's release too", async () => {
+    const { s, adapters } = autoWorld({ setting: false });
+    const ci = adapters.github.checks;
+    adapters.github.checks = async (repo, sha) => s.calls.includes("deploy") && sha === SHA
+      ? [...red(sha), { id: 50, app: "some-other-app", suite: 9, head: sha, name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "success" }] : ci(repo, sha);
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "ci", reason: "ci-failed" });
+    expect(s.calls).not.toContain("merge");
+  });
+
+  test("codex r1 #4: a check filed under another commit fails the verdict", async () => {
+    const { s, adapters } = autoWorld({ setting: false });
+    const ci = adapters.github.checks;
+    adapters.github.checks = async (repo, sha) => s.calls.includes("deploy") && sha === SHA ? (await ci(repo, sha)).map(run => ({ ...run, head: OTHER })) : ci(repo, sha);
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "ci", reason: "ci-failed", message: expect.stringContaining("reported for") });
+  });
+
+  test("security scan: a build that failed before its check ends the automatic road (never counted as a flake retry)", async () => {
+    const { s, adapters, plane } = autoWorld();
+    s.onSleep = [state => { if (state.gate.approval !== null) state.gate.failed = "run 2757 ended error"; }];
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "check", reason: "check-failed" });
+    expect(plane.checkFailed).toEqual([]);
+    expect(plane.gaveUp).toEqual([expect.stringContaining("release build")]);
+  });
+
+  test("prChecksVerdict: jobs by app, suite and name, judged by the latest attempt; the cap only for an automatic approval", () => {
+    const at = (id: number, conclusion: string | null, extra: Partial<CheckRun> = {}): CheckRun => ({ id, name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion, app: "github-actions", suite: 1, head: SHA, ...extra });
+    const rest = passing(REQUIRED_PR_CHECKS.slice(1)).map((run, i) => ({ ...run, id: 100 + i, app: "github-actions", suite: 1, head: SHA }));
+    const flaky = [at(1, "failure"), at(2, "failure"), at(3, "failure"), at(4, "success"), ...rest];
+    expect(prChecksVerdict(flaky, SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "passed" });
+    expect(prChecksVerdict(flaky, SHA, REQUIRED_PR_CHECKS, { cap: 2 })).toMatchObject({ state: "failed", failed: [expect.stringContaining("failed 3 times")] });
+    expect(prChecksVerdict(flaky.slice(1), SHA, REQUIRED_PR_CHECKS, { cap: 2 })).toMatchObject({ state: "passed", failures: [{ id: 2 }, { id: 3 }] });
+    // Two workflow runs of the same job: each must pass on its own latest attempt.
+    expect(prChecksVerdict([at(1, "success"), at(2, "failure", { suite: 2 }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
+    expect(prChecksVerdict([at(1, "success", { app: "other" }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
+    expect(prChecksVerdict([at(1, "success", { suite: null }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
+    expect(prChecksVerdict([at(1, "success", { id: null }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
+    expect(prChecksVerdict(rest, SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "pending" });
+  });
+
+  test("codex r2 #2: a resumed deploy (saved deploy, runtime rolled back) re-reads CI and doesn't deploy a red candidate", async () => {
+    const dir = stateDir();
+    const { s, adapters } = autoWorld();
+    // The first deploy lands, then the coordinator stops before the services answer (as a crash during health would).
+    let served = 0;
+    const installed = adapters.toolroll.installed;
+    adapters.toolroll.installed = async () => { const now = await installed(); return s.calls.includes("deploy") && served++ < 1000 ? { ...now, services: [OLD] } : now; };
+    expect(await runRelease(options(dir, { limits: { deploy: 1 } }), adapters)).toMatchObject({ ok: false, step: "deploy", reason: "timeout" });
+    expect(s.calls.filter(one => one === "deploy")).toHaveLength(1);
+    // The runtime was put back, CI turned red: the resume issues no second deploy.
+    const ci = adapters.github.checks;
+    adapters.github.checks = async (repo, sha) => sha === SHA ? red(sha) : ci(repo, sha);
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "deploy", reason: "ci-failed" });
+    expect(s.calls.filter(one => one === "deploy")).toHaveLength(1);
+  });
+
+  test("codex r2 #3: CI that stops passing after the merge holds the tag across invocations until a person lets it go on", async () => {
+    const dir = stateDir();
+    const { s, adapters, plane } = autoWorld();
+    const ci = adapters.github.checks;
+    let red_ = false;
+    adapters.github.checks = async (repo, sha) => red_ && sha === SHA ? red(sha) : ci(repo, sha);
+    const merge = adapters.github.merge;
+    adapters.github.merge = async (...args) => { const merged = await merge(...args); red_ = true; return merged; };
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "tag", reason: "ci-failed" });
+    expect(plane.held).toContain("stopped passing after the merge");
+    // CI green again: the second invocation still tags nothing, publishes nothing, touches no Homebrew.
+    red_ = false;
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "tag", reason: "approval", message: expect.stringContaining("publish-ok") });
+    expect(s.calls).not.toContain("createTag");
+    // A person lets it go on (release-cli publish-ok): it finishes.
+    plane.held = null;
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
+    expect(s.calls).toContain("createTag");
+  });
+
+  test("codex r2 #5: a person's release isn't revoked by an older failed run of a workflow a newer run replaced", async () => {
+    const { s, adapters } = autoWorld({ setting: false });
+    const ci = adapters.github.checks;
+    adapters.github.checks = async (repo, sha) => sha !== SHA ? ci(repo, sha) : [
+      // The PR workflow (workflow 1), matrix names and all, green.
+      ...(await ci(repo, sha)).map(run => ({ ...run, workflow: 1 })),
+      // macos.yml run by hand twice on this commit: the first run failed, the second (a newer suite) passed.
+      { id: 500, name: "node 22 · macos-latest", status: "completed", conclusion: "failure", app: "github-actions", suite: 20, head: sha, workflow: 9 },
+      { id: 600, name: "node 22 · macos-latest", status: "completed", conclusion: "success", app: "github-actions", suite: 21, head: sha, workflow: 9 },
+    ];
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
+    expect(s.calls).toContain("merge");
+  });
+
+  test("codex r2 #5: a required check must be green in its newest run; the cap counts the superseded runs' failures", () => {
+    const run = (id: number, suite: number, conclusion: string, name: string = REQUIRED_PR_CHECKS[0]): CheckRun => ({ id, name, status: "completed", conclusion, app: "github-actions", suite, head: SHA, workflow: 1 });
+    const rest = REQUIRED_PR_CHECKS.slice(1).map((name, i) => run(100 + i, 3, "success", name));
+    // Newest run red, older green: failed.
+    expect(prChecksVerdict([run(1, 2, "success"), run(5, 3, "failure"), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
+    // Older runs red, newest green: passes for a person; with the cap, three failures across runs is too many.
+    const history = [run(1, 1, "failure"), run(2, 2, "failure"), run(3, 2, "failure"), run(4, 3, "success"), ...rest];
+    expect(prChecksVerdict(history, SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "passed" });
+    expect(prChecksVerdict(history, SHA, REQUIRED_PR_CHECKS, { cap: 2 })).toMatchObject({ state: "failed", failed: [expect.stringContaining("failed 3 times")] });
+    expect(prChecksVerdict(history.slice(1), SHA, REQUIRED_PR_CHECKS, { cap: 2 })).toMatchObject({ state: "passed", failures: [{ id: 2 }, { id: 3 }] });
+  });
+
+  test("codex r2 #6: history that can't be read whole stops an automatic release, and leaves a person's alone", async () => {
+    const auto = autoWorld();
+    auto.s.ciComplete = false;
+    expect(await runRelease(options(stateDir()), auto.adapters)).toMatchObject({ ok: false, step: "deploy", reason: "ci-failed", message: expect.stringContaining("can't be read whole") });
+    expect(auto.s.calls).not.toContain("deploy");
+    const person = autoWorld({ setting: false });
+    person.s.ciComplete = false;
+    expect(await runRelease(options(stateDir()), person.adapters)).toMatchObject({ ok: true });
   });
 });

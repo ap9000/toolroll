@@ -20,6 +20,7 @@ import { mkdtempSync, realpathSync, rmSync, unlinkSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, isAbsolute } from "node:path";
 import { run } from "./exec.js";
+import { checkoutGit } from "./teardown-git.js";
 import { auditOf } from "./provider.js";
 import type { Store } from "./store.js";
 import { currentClaim, heartbeat } from "./claim.js";
@@ -330,10 +331,13 @@ async function scoutWith(store: Store, request: ScoutRequest, outputDir: string)
     branch,
     now,
     agent,
-    git = run,
+    git: givenGit = run,
     timeoutMs = DEFAULT_SCOUT_TIMEOUT_MS,
     maxTurns = DEFAULT_SCOUT_TURNS,
   } = request;
+  // The plane's git on the scout's checkout (agent-written, and its repository shared with every build) runs hardened, against
+  // a frozen view of the repository's config and info (teardown-git.ts checkoutGit); an injected runner is used as given.
+  const git = givenGit === run ? checkoutGit(run, "build", { repo: store.getWorktree(worktree)?.repo ?? null }) : givenGit;
 
   const claim = currentClaim(store, taskRef, now);
   if (claim === null || claim.runner !== runner || claim.leaseId !== request.leaseId) {
