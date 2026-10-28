@@ -39,7 +39,9 @@
 - **Writes are bound to the project's recorded repository.** A checkout
   whose `.git` points anywhere else is refused. Before git writes through a
   view, every path it could write is walked for links and hard links. Plane
-  git writes on one checkout run one at a time.
+  git writes on one checkout run one at a time. On git before 2.48, a
+  checkout added through the view is pointed at its repository, not at the
+  view.
 - **A git incident is recorded and you're notified.** A swap seen after git
   ran is logged and raised as an attention notification. The notification
   names the project by Toolroll's own record, never by a path the agent
