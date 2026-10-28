@@ -5,7 +5,7 @@
  * in it between the inspection and the run. Guard: views are made under `~/.toolroll/git-views` (git-views.ts), which
  * every fence denies by name, made before any build launches; a view made after the fence was fixed is denied too.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { agentFence, codexFenceArgv, NO_GRANTS } from "../../src/agent-fence.js";
@@ -44,10 +44,15 @@ describe("attack: writing the plane's frozen git views from a build that writes 
 
   test("native OS fence (writes anywhere): a view's config and info can't be written, nor a view planted", ctx => {
     needs(ctx, osFence());
-    const { worktree, fence, view } = setup();
+    const { home, worktree, fence, view } = setup();
     const result = underSandbox(script(view), fence, NO_GRANTS, { cwd: worktree });
-    expect(lines(result), result.stderr).toEqual(["config-denied", "attributes-denied", "plant-denied", "mine"]);
+    // Seatbelt denies each write. Bubblewrap hides the denied folder behind an empty scratch one of the launch's own
+    // (the view isn't even there to write); what the build writes into that scratch never reaches the plane's folder.
+    const expected = process.platform === "linux" ? ["config-denied", "attributes-written", "planted", "mine"] : ["config-denied", "attributes-denied", "plant-denied", "mine"];
+    expect(lines(result), result.stderr).toEqual(expected);
     expect(readFileSync(join(view, "config"), "utf8")).not.toContain("filter");
+    expect(existsSync(join(view, "info"))).toBe(false);
+    expect(readdirSync(gitViewsRoot(home)).sort()).toEqual(["write-later"]);
   });
 
   test("native Codex (full access and not): the same", ctx => {

@@ -21,6 +21,9 @@ import type { Runner } from "../../src/worktree.js";
 
 let root: string, a: string, aLinked: string, b: string, bLinked: string;
 const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+/** The operator's identity, where a real one keeps it (~/.gitconfig): the plane's git carries it (carriedSettings). This
+ * file's home is a fresh empty one (test/setup-state.ts), and git off macOS can't guess an identity from the host. */
+writeFileSync(join(homedir(), ".gitconfig"), "[user]\n\tname = t\n\temail = t@t\n");
 const git = (at: string, ...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-C", at, ...args], { env, stdio: "pipe", encoding: "utf8" });
 const repository = (path: string, format: "files" | "reftable" = "files") => {
   execFileSync("git", ["init", "-q", "-b", "main", `--ref-format=${format}`, path], { env });

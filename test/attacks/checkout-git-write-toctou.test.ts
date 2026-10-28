@@ -11,7 +11,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { run } from "../../src/exec.js";
@@ -20,6 +20,9 @@ import type { Runner } from "../../src/worktree.js";
 
 let root: string, main: string, linked: string, marker: string;
 const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+/** The operator's identity, where a real one keeps it (~/.gitconfig): the plane's git carries it (carriedSettings). This
+ * file's home is a fresh empty one (test/setup-state.ts), and git off macOS can't guess an identity from the host. */
+writeFileSync(join(homedir(), ".gitconfig"), "[user]\n\tname = t\n\temail = t@t\n");
 /** The test's own git: hooks off, so its setup and cleanup never fire what it plants. */
 const git = (at: string, ...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-C", at, ...args], { env, stdio: "pipe", encoding: "utf8" });
 const common = () => join(main, ".git");
