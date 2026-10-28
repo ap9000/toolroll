@@ -138,13 +138,11 @@ test("Codex impl r1 #3: the viewer's card history is read once per request, howe
   // Old cards that name nothing on the grid.
   for (let n = 0; n < 2_000; n += 1) card(lead, `old-${n}`);
   const prepare = vi.spyOn(store.handle, "prepare");
-  const started = performance.now();
   expect(leadFiledLinks(store, "alex", runs).size).toBe(8);
-  const took = performance.now() - started;
   const reads = prepare.mock.calls.filter(([text]) => /FROM lead_proposal/.test(String(text))).length;
   prepare.mockRestore();
+  // The count is the proof; a wall-clock cap here only measured how busy the machine was.
   expect(reads).toBe(1);
-  expect(took).toBeLessThan(500);
 });
 
 test("Codex impl r1 #2: a replaced chat keeps its cards, and so its links; ending the chat erases only what the store erases", () => {

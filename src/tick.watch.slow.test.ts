@@ -149,7 +149,6 @@ describe("watch — the loop, zero tokens idle", () => {
     let recoveredDuringBuild = false;
     const busyAgent: Runner = async (_file, args, options) => {
       spawns++;
-      const started = Date.now();
       const oldToken = registerRunner(db, "abandoned-worker", repo, new Date());
       const observer = openStore(db);
       try {
@@ -166,8 +165,6 @@ describe("watch — the loop, zero tokens idle", () => {
         const liveRef = observer.refFor("built-in", "t-live").id;
         expect(observer.runsFor(liveRef), JSON.stringify(observer.getTask("t-live"))).toEqual(expect.arrayContaining([expect.objectContaining({ runner: "builder-1", outcome: null })]));
         recoveredDuringBuild = true;
-        // End the bounded watch after its current task, not by cancelling it.
-        while (Date.now() - started < 500) await new Promise(resolve => setTimeout(resolve, 10));
       } finally {
         observer.close();
       }
@@ -175,8 +172,12 @@ describe("watch — the loop, zero tokens idle", () => {
       await concludeDone(options!.cwd!, args, "completed", "Built while maintenance recovered another task.");
       return { ...OK, stdout: JSON.stringify({ result: "built" }) };
     };
+    // The watch stops when t-live is built (an event), not after a fixed window a loaded machine can outrun before the
+    // agent even starts; --for is only the hang guard.
+    const live = untilDone("t-live");
     const code = await run(["watch", "--runner", "builder-1", "--token", runnerToken, "--repo", repo, "--pool", pool,
-      "--for", "450", "--max", "1", "--tick-every", "3600000", "--bridge-every", "3600000", "--reconcile-every", "25", "--json"], busyAgent);
+      "--for", "60000", "--max", "1", "--tick-every", "3600000", "--bridge-every", "3600000", "--reconcile-every", "25", "--json"], busyAgent, live.stop)
+      .finally(live.close);
     expect(code, lines.join("\n")).toBe(EXIT.ok);
     expect(recoveredDuringBuild).toBe(true);
     expect(spawns).toBe(1);

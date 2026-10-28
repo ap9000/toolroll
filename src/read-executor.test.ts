@@ -3,7 +3,6 @@ import { afterEach, beforeEach, expect, test } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { monitorEventLoopDelay } from "node:perf_hooks";
 import { openStore, type Store } from "./store.js";
 import { createDecisionServer } from "./serve.js";
 import { mintApiToken } from "./api-tokens.js";
@@ -109,13 +108,30 @@ test("remote task list: identical output through the worker, and the request loo
   expect(offloaded.attached).toBeInstanceOf(ReadExecutor);
   try {
     for (const [index, argv] of commands.entries()) expect(await offloaded.list(argv)).toEqual(expected[index]);
-    // Many concurrent lists: the loop keeps answering timers (each read is on a worker connection).
-    const delay = monitorEventLoopDelay({ resolution: 5 });
-    delay.enable();
+    // The loop stays free while a read is outstanding, proven by events rather than a wall-clock budget (a 1 s
+    // event-loop-delay cap failed at 2 s on a loaded CI runner): one list's worker read is held open, and while it is
+    // held a timer fires and 24 more lists are answered through the worker, identical to the in-process pages.
+    const executor = offloaded.attached!;
+    const read = executor.workIndexPage.bind(executor);
+    let calls = 0;
+    let entered!: () => void, release!: () => void;
+    const held = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    executor.workIndexPage = async (...args) => {
+      const page = read(...args);
+      if (calls++ === 0) { entered(); await gate; }
+      return page;
+    };
+    let heldAnswered = false;
+    const first = offloaded.list(commands[0]!).then(result => { heldAnswered = true; return result; });
+    await held;
+    await new Promise(resolve => setTimeout(resolve, 0));
     const results = await Promise.all(Array.from({ length: 24 }, () => offloaded.list(commands[0]!)));
-    delay.disable();
+    expect(heldAnswered).toBe(false);
     for (const result of results) expect(result).toEqual(expected[0]);
-    expect(delay.max / 1e6).toBeLessThan(1_000);
+    expect(calls).toBe(25);
+    release();
+    expect(await first).toEqual(expected[0]);
   } finally { await new Promise(resolve => offloaded.server.close(resolve)); }
   // Close detaches the executor from the store, so later local commands read in-process again.
   expect(readExecutorOf(store)).toBeNull();
