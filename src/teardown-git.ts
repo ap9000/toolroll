@@ -335,8 +335,8 @@ function includeIn(path: string): string | null {
  * plane's git writes. A main checkout's `.git` is a real folder (not a link) holding no `commondir`; a linked one's is a
  * one-line `gitdir: ` file naming `<common>/worktrees/<id>`, a real folder whose `commondir` resolves to that common
  * folder and whose `gitdir` names this checkout's `.git` back, and whose common folder is the `.git` folder of a main
- * checkout. With `repo` (the project's main checkout, from the plane's own records) the common folder must be its
- * `.git`. Throws with the reason otherwise.
+ * checkout. With `repo` (the project's checkout, from the plane's own records: its main checkout or any linked
+ * worktree of it) the common folder must be the one that checkout binds to. Throws with the reason otherwise.
  */
 type BoundDirs = { checkout: string; gitdir: string; common: string; linked: boolean };
 export type GitBinding = { repo?: string | null };
@@ -375,8 +375,9 @@ function boundDirs(checkout: string, binding: GitBinding = {}): BoundDirs {
   if (basename(dirs.common) !== ".git") fail("belongs to a repository that isn't a checkout's");
   try { if (!lstatSync(dirs.common).isDirectory()) fail("belongs to a repository that is a link"); } catch { fail("belongs to a repository that isn't there"); }
   if (binding.repo != null) {
+    // The project's own repository, bound the same way: its checkout may be the main one or any linked worktree.
     let recorded: string | null = null;
-    try { recorded = lstatSync(join(binding.repo, ".git")).isDirectory() ? realpathSync(join(binding.repo, ".git")) : null; } catch { recorded = null; }
+    try { recorded = boundDirs(binding.repo).common; } catch { recorded = null; }
     if (recorded !== dirs.common) fail("belongs to another repository than the project's");
   }
   return dirs;

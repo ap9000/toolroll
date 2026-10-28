@@ -275,3 +275,26 @@ describe("writes through a view, as documented", () => {
     expect(git(a, "config", "branch.configured.description").trim()).toBe("kept");
   });
 });
+
+describe("every layout the product supports binds (Codex review of a0fa135d)", () => {
+  test("the project recorded as its main checkout, or as a linked worktree; checkouts linked from either", async () => {
+    // a's main checkout, a linked worktree of it (aLinked), and a worktree added from that linked one.
+    const fromLinked = join(root, "from-linked");
+    git(aLinked, "worktree", "add", "-q", "-b", "nested", fromLinked);
+    writeFileSync(join(fromLinked, "n.txt"), "nested\n");
+    for (const project of [a, aLinked, fromLinked]) {
+      for (const checkout of [a, aLinked, fromLinked]) {
+        const status = await checkoutGit(run, "build", { repo: project })("git", ["status", "--porcelain"], { cwd: checkout, timeoutMs: 60_000 });
+        expect(status.code, `${project} → ${checkout}: ${status.stderr}`).toBe(0);
+      }
+    }
+    // And a write from the nested worktree, recorded by its linked parent, lands.
+    for (const args of [["add", "-A"], ["commit", "--no-verify", "-m", "nested"]]) {
+      const result = await checkoutGit(run, "build", { repo: aLinked })("git", args, { cwd: fromLinked, timeoutMs: 60_000 });
+      expect(result.code, result.stderr).toBe(0);
+    }
+    expect(git(a, "show", "nested:n.txt")).toBe("nested\n");
+    // Another repository's checkout, under any of a's records, still doesn't bind.
+    for (const project of [a, aLinked, fromLinked]) expect(refusal(await checkoutGit(run, "build", { repo: project })("git", ["status"], { cwd: bLinked }))).toContain("another repository");
+  });
+});
