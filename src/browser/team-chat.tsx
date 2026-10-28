@@ -5,6 +5,7 @@ import type { TeamMessage, TeamOperation, TeamProposal, TeamResponse, TeamSnapsh
 import { Button } from './components/ui/button.js';
 import { Alert, Badge, Disclosure, Input, Label, Textarea } from './ui/index.js';
 import { ActionCards } from './chat-cards.js';
+import { leaveFor } from './first-run.js';
 
 type Draft = { text: string; requestId: string; uncertain: boolean };
 const fresh = (): Draft => ({ text: '', requestId: crypto.randomUUID(), uncertain: false });
@@ -117,8 +118,8 @@ export function TeamChat({ initial, user, csrf, onSnapshot }: { initial: TeamSna
     if (!projects.length) { setProblem('Choose at least one project.'); return; }
     const result = await execute(kind, kind === 'create-lead' ? { name: form.get('name'), instructions: form.get('instructions') ?? '', projects } : { leadId: newLead, title: form.get('title'), visibility: form.get('visibility'), projects });
     const resultId = result?.result && typeof result.result === 'object' ? result.result as Record<string, unknown> : {};
-    if (result?.ok && kind === 'create-lead' && typeof resultId.leadId === 'string') window.location.assign('/chat?lead=' + encodeURIComponent(resultId.leadId));
-    else if (result?.snapshot?.selected) window.location.assign('/chat?conversation=' + encodeURIComponent(result.snapshot.selected.id));
+    if (result?.ok && kind === 'create-lead' && typeof resultId.leadId === 'string') leaveFor('/chat?lead=' + encodeURIComponent(resultId.leadId));
+    else if (result?.snapshot?.selected) leaveFor('/chat?conversation=' + encodeURIComponent(result.snapshot.selected.id));
     else if (result?.ok) await refresh();
   }
   const createConversation = <form className="so-team-form" onSubmit={event => { void create(event, 'create-conversation'); }}>
@@ -141,7 +142,7 @@ export function TeamChat({ initial, user, csrf, onSnapshot }: { initial: TeamSna
     onChanged={() => { void refresh().catch(() => setDisconnected(true)); }} />;
   return <section className="so-team-chat" aria-label="Team conversation">
     <div className="so-team-toolbar">
-      {snapshot.leads.length > 1 && <label className="so-team-lead-select"><span className="so-sr-only">Lead</span><select aria-label="Lead" value={selectedLead} onChange={event => window.location.assign('/chat?lead=' + encodeURIComponent(event.target.value))}>{snapshot.leads.map(row => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>}
+      {snapshot.leads.length > 1 && <label className="so-team-lead-select"><span className="so-sr-only">Lead</span><select aria-label="Lead" value={selectedLead} onChange={event => leaveFor('/chat?lead=' + encodeURIComponent(event.target.value))}>{snapshot.leads.map(row => <option key={row.id} value={row.id}>{row.name}</option>)}</select></label>}
       {conversation ? <><div className="so-team-title"><h2>{conversation.title}</h2>{snapshot.leads.length === 1 && <span>{lead?.name ?? 'Lead'}</span>}</div><Disclosure summary={conversation.visibility === 'team' ? 'Team' : 'Private'} className="so-team-audience"><h3>People</h3><ul>{snapshot.participants.filter(person => person.active).map(person => <li key={person.account}><span>{person.account}</span><span>{person.role}</span>{snapshot.canManage && person.account !== user && <Button className="h-11 min-h-11" variant="ghost" onClick={() => { void execute('member', { conversationId: conversation.id, account: person.account, role: person.role, active: false, expectedRevision: conversation.revision }); }} disabled={busy}>Remove</Button>}</li>)}</ul>
         {snapshot.canManage && conversation.visibility === 'team' && <form className="so-team-form" onSubmit={event => { event.preventDefault(); const form = new FormData(event.currentTarget); void execute('member', { conversationId: conversation.id, account: form.get('account'), role: form.get('role'), active: true, expectedRevision: conversation.revision, joinLead: true, expectedLeadRevision: lead?.revision }); }}><label>Person<select name="account" required>{snapshot.accounts.filter(account => !snapshot.participants.some(person => person.account === account && person.active)).map(account => <option key={account}>{account}</option>)}</select></label><label>Access<select name="role" defaultValue="contributor"><option value="viewer">Viewer</option><option value="contributor">Contributor</option><option value="manager">Manager</option></select></label><p className="so-team-small">Adds access to this conversation and {lead?.name ?? 'the lead'} for these projects: {lead?.projects.map(project => project.split('/').pop()).join(', ')}. Existing private conversations stay private.</p><Button className="h-11 min-h-11" type="submit" disabled={busy}>Add person</Button></form>}
         <p className="so-team-small">Projects: {conversation.projects.map(project => project.split('/').pop()).join(', ')}</p></Disclosure></> : <h2>{snapshot.leads.length ? 'Start a conversation' : 'Your team lead'}</h2>}

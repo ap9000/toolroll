@@ -33,21 +33,67 @@ export function rechecked(answer: unknown): boolean {
   return body.lead === "on" || body.agent === true;
 }
 
-/** While no agent is signed in, ask this computer again every few seconds and show the new state once one is. */
+/** How long a started navigation keeps this page from reloading itself: a navigation that is still pending after this
+ * was cancelled or answered without leaving (Stay on a confirm prompt, a 204), and the page is the person's again. */
+export const LEAVING_HOLD_MS = 15_000;
+const LEAVING_EVENT = "so:leaving";
+/** A script's own navigation (a select that opens a project, a form handled in place): say so first, then go, so a
+ * page reloading itself on its own (useRecheck) never bounces the person back where beforeunload never fires. */
+export function leaveFor(href: string): void {
+  window.dispatchEvent(new Event(LEAVING_EVENT));
+  window.location.assign(href);
+}
+
+/**
+ * While no agent is signed in, ask this computer again every few seconds and show the new state once one is. Once the
+ * person has started leaving (a same-tab link, a form, Settings → Lead, a typed address), the page is not reloaded out
+ * from under them: the page they asked for may itself wait on the same sign-in check, and a reload here would bounce
+ * them back. Links and forms are seen directly (iOS Safari never fires beforeunload); the hold lapses on its own, so a
+ * navigation that never happened only delays the reload. A page restored from the back/forward cache is theirs again.
+ */
 function useRecheck(href: string | null | undefined) {
   useEffect(() => {
     if (!href) return;
     let stopped = false;
+    let leftAt: number | null = null;
     let timer = 0;
+    const leaving = () => leftAt !== null && Date.now() - leftAt < LEAVING_HOLD_MS;
+    const later = (ms: number) => { window.clearTimeout(timer); if (!stopped) timer = window.setTimeout(() => { void ask(); }, ms); };
     const ask = async () => {
       try {
         const answer = await fetch(href, { headers: { accept: "application/json" }, cache: "no-store" });
-        if (answer.ok && rechecked(await answer.json())) { window.location.reload(); return; }
+        const on = answer.ok && rechecked(await answer.json());
+        if (stopped) return;
+        // On, and the person is on their way elsewhere: ask again once the hold lapses (the new page, when it comes, ends this).
+        if (on && !leaving()) { window.location.reload(); return; }
+        if (on) { later(LEAVING_HOLD_MS - (Date.now() - leftAt!) + 100); return; }
       } catch { /* Offline or restarting: ask again shortly. */ }
-      if (!stopped) timer = window.setTimeout(() => { void ask(); }, 5000);
+      later(5000);
     };
-    timer = window.setTimeout(() => { void ask(); }, 3000);
-    return () => { stopped = true; window.clearTimeout(timer); };
+    const leave = () => { leftAt = Date.now(); };
+    const onClick = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      const link = event.target instanceof Element ? event.target.closest("a[href]") : null;
+      if (link === null || (link.getAttribute("target") ?? "_self") !== "_self" || link.hasAttribute("download")) return;
+      // A link within this page (Skip to content, #latest) moves the view, not the page.
+      let to: URL; try { to = new URL(link.getAttribute("href")!, window.location.href); } catch { return; }
+      if (to.hash !== "" && to.origin === window.location.origin && to.pathname === window.location.pathname && to.search === window.location.search) return;
+      leave();
+    };
+    const onSubmit = (event: SubmitEvent) => { if (!event.defaultPrevented) leave(); };
+    const restored = (event: PageTransitionEvent) => { if (event.persisted) { leftAt = null; later(3000); } };
+    window.addEventListener("beforeunload", leave);
+    window.addEventListener("click", onClick);
+    window.addEventListener("submit", onSubmit);
+    window.addEventListener("pageshow", restored);
+    window.addEventListener(LEAVING_EVENT, leave);
+    later(3000);
+    return () => {
+      stopped = true; window.clearTimeout(timer);
+      window.removeEventListener("beforeunload", leave); window.removeEventListener("click", onClick);
+      window.removeEventListener("submit", onSubmit); window.removeEventListener("pageshow", restored);
+      window.removeEventListener(LEAVING_EVENT, leave);
+    };
   }, [href]);
 }
 
