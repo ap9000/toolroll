@@ -103,7 +103,9 @@ test("on a machine that can't sandbox checks at all, the section says so before 
   // The words the section shows when no OS sandbox exists (rendered in the page; the flag comes from serve.ts).
   const ui = (await import("node:fs")).readFileSync("src/project-delete-ui.ts", "utf8");
   expect(ui).toContain("This machine can't sandbox checks, so they run without a sandbox whatever is chosen here.");
-  expect((await import("node:fs")).readFileSync("src/serve.ts", "utf8")).toMatch(/unconfinedHere: !\(options\.fenceAvailable\?\.\(\) \?\? \(macosFenceAvailable\(\) \|\| linuxFenceAvailable\(\)\)\) && store\.unfencedAgentsAllowed\(\)/);
+  expect((await import("node:fs")).readFileSync("src/serve.ts", "utf8")).toMatch(/unconfinedHere: !\(options\.fenceAvailable\?\.\(\) \?\? fenceHere\) && store\.unfencedAgentsAllowed\(\)/);
+  // Asked once as the console starts, never by a page (docs/plans/get-side-effects.md).
+  expect((await import("node:fs")).readFileSync("src/serve.ts", "utf8")).toMatch(/const fenceHere = options\.fenceAvailable === undefined \? macosFenceAvailable\(\) \|\| linuxFenceAvailable\(\) : false;/);
 });
 
 test("on every platform an instance operator saves sign-ins with a password typed now, and the page says it and the hosts still missing", async () => {

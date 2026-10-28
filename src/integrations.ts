@@ -570,17 +570,18 @@ export function renderIntegrations(list: readonly Integration[], secrets: Secret
 // ---------------------------------------------------------------- background
 
 export type IntegrationMonitor = {
-  /** The list now, without waiting; starts a background check when the last one is older than the cache. */
+  /** The list now, from the last answers saved. It only reads: a page calls it on every render (docs/plans/get-side-effects.md). */
   list(): Integration[];
-  /** Check now and wait (Send test, or the first answer in a test). */
+  /** Check now and wait (Send test, Check now, or the first answer in a test). */
   check(keys?: readonly string[]): Promise<Integration[]>;
+  /** The background pass: start a check when the last one is older than the cache. Never called from a page. */
+  refreshIfDue(): void;
   /** Whether a background check is running. */
   readonly checking: boolean;
 };
 
-/** Checks in the background with a short cache, as the first-run suggestions are: a render never waits on a check. */
 export function createIntegrationMonitor(io: () => IntegrationIo, options: { cacheMs?: number; now?: () => number } = {}): IntegrationMonitor {
-  const cacheMs = options.cacheMs ?? 60_000;
+  const cacheMs = options.cacheMs ?? 10 * 60_000;
   const now = options.now ?? Date.now;
   let lastStarted = 0;
   let running: Promise<unknown> | null = null;
@@ -595,12 +596,12 @@ export function createIntegrationMonitor(io: () => IntegrationIo, options: { cac
   };
   return {
     list() {
-      const current = io();
-      const list = integrationsNow(current);
-      if (running === null && now() - lastStarted >= cacheMs) void start();
-      return list;
+      return integrationsNow(io());
     },
     check: keys => start(keys),
+    refreshIfDue() {
+      if (running === null && now() - lastStarted >= cacheMs) void start();
+    },
     get checking() { return running !== null; },
   };
 }

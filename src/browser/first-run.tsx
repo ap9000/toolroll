@@ -3,13 +3,13 @@
  * Ready result, the phone. A suggestion only drafts words in the composer;
  * nothing is filed until the person sends it and confirms the lead's
  * proposal. */
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import type { BrowserFirstRun, BrowserPhoneCard } from "../browser-workspace.js";
 import type { JourneyStep } from "../first-run.js";
 import { Frame, FrameHeader, FramePanel } from "./components/ui/frame.js";
 import { StatusGlyph, type GlyphKind } from "./components/ui/status-glyph.js";
 import { Button } from "./components/ui/button.js";
-import { PostForm } from "./ui/index.js";
+import { FormToken, PostForm } from "./ui/index.js";
 
 function Command({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
@@ -52,6 +52,8 @@ export function leaveFor(href: string): void {
  * navigation that never happened only delays the reload. A page restored from the back/forward cache is theirs again.
  */
 function useRecheck(href: string | null | undefined) {
+  // A check is a POST with the page's form token: a page visit never sets one off (docs/plans/get-side-effects.md).
+  const csrf = useContext(FormToken);
   useEffect(() => {
     if (!href) return;
     let stopped = false;
@@ -61,7 +63,7 @@ function useRecheck(href: string | null | undefined) {
     const later = (ms: number) => { window.clearTimeout(timer); if (!stopped) timer = window.setTimeout(() => { void ask(); }, ms); };
     const ask = async () => {
       try {
-        const answer = await fetch(href, { headers: { accept: "application/json" }, cache: "no-store" });
+        const answer = await fetch(href, { method: "POST", headers: { accept: "application/json" }, body: new URLSearchParams({ csrf }), cache: "no-store" });
         const on = answer.ok && rechecked(await answer.json());
         if (stopped) return;
         // On, and the person is on their way elsewhere: ask again once the hold lapses (the new page, when it comes, ends this).
@@ -94,7 +96,7 @@ function useRecheck(href: string | null | undefined) {
       window.removeEventListener("submit", onSubmit); window.removeEventListener("pageshow", restored);
       window.removeEventListener(LEAVING_EVENT, leave);
     };
-  }, [href]);
+  }, [href, csrf]);
 }
 
 export function FirstRun({ firstRun }: { firstRun: BrowserFirstRun }) {

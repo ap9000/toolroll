@@ -172,6 +172,10 @@ export const CONSOLE_FORMS = {
   notifications: formContract("POST /settings/notifications", ["mode", "digest", "screenshots"]),
   notificationsMute: formContract("POST /settings/notifications/mute", ["repo", "pings"]),
   telegramDigest: formContract("POST /settings/telegram-digest", ["every"]),
+  // Check again sits in the provider-key form and the setup card; Refresh models in the setup form.
+  pullRequestsCheck: formContract("POST /settings/pull-requests/check", ["repo"]),
+  connectionCheck: formContract("POST /settings/connection/check", ["provider", "auth-mode", "value", "return"]),
+  modelsRefresh: formContract("POST /control/models-refresh", ["repo", "nonce", "fingerprint", "token", "provider", "model", "command", "seconds", "task"]),
   providerKey: formContract("POST /settings/provider-key, /settings/provider-key-clear", ["provider", "auth-mode", "value"]),
   telegramToken: formContract("POST /settings/telegram-token", ["token"]),
   email: formContract("POST /settings/email, /settings/email-test, /settings/email-read-test", ["host", "port", "secure", "user", "from", "password", "imapHost", "imapPort"]),
@@ -198,6 +202,7 @@ export const CONSOLE_FORMS = {
   leadIdentity: formContract("POST /settings/lead/identity", ["name", "persona"]),
   leadAbout: formContract("POST /settings/lead/about", ["about"]),
   leadPromiseCancel: formContract("POST /settings/lead/promise/cancel", ["promise"]),
+  leadCheck: formContract("POST /lead/check", ["return"]),
   chatConfig: formContract("POST /chat/config", ["return", "token", "off", "forget-key", "provider", "model", "weekly-usd", "daily-turns", "key"]),
   leadMint: formContract("POST /chat/mate/mint", ["return", "ceiling-usd", "token", "follow"]),
   leadFollow: formContract("POST /chat/mate/follow", ["enabled", "return"]),

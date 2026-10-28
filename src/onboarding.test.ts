@@ -177,7 +177,7 @@ test("with no agent signed in, Chat shows the install-and-sign-in command for th
   const agent = shown.firstRun!.steps.find(one => one.key === "agent")!;
   expect(agent.done).toBe(false);
   expect(agent.action).toEqual({ kind: "command", command: "npm install -g @anthropic-ai/claude-code && claude auth login" });
-  expect(shown.firstRun!.recheck).toBe("/lead/status");
+  expect(shown.firstRun!.recheck).toBe("/lead/check");
   // The page may ask: its policy lets it reach this server.
   expect((await fetch(`${base}/chat`, { headers: { cookie } })).headers.get("content-security-policy")).toContain("connect-src 'self'");
   // No jargon form on Chat any more.
@@ -185,12 +185,17 @@ test("with no agent signed in, Chat shows the install-and-sign-in command for th
   expect(shown.pageHtml ?? "").not.toContain("Weekly ceiling");
 
   expect(await (await fetch(`${base}/lead/status`, { headers: { cookie } })).json()).toMatchObject({ lead: "off", agent: false });
-  // The person runs the command; the next check finds it and the lead turns on.
+  // The person runs the command. Reading the status only reads (docs/plans/get-side-effects.md): nothing is asked and
+  // the lead stays off, however often a prefetch or a preview reads it.
   signedIn = "claude";
-  // The next check is due 4 s on: move the clock, not the wall.
   vi.useFakeTimers({ toFake: ["Date"] });
   vi.setSystemTime(Date.now() + 4100);
-  expect(await (await fetch(`${base}/lead/status`, { headers: { cookie } })).json()).toMatchObject({ lead: "on", agent: true });
+  expect(await (await fetch(`${base}/lead/status`, { headers: { cookie } })).json()).toMatchObject({ lead: "off", agent: false });
+  expect(store.getChatConfig()).toBeNull();
+  // The page's own check (a POST with its form token) finds it, and the lead turns on.
+  expect((await fetch(`${base}/lead/check`, { method: "POST", headers: { cookie, origin: base, accept: "application/json" }, body: new URLSearchParams({}) })).status).toBe(403);
+  const csrf = shown.csrf;
+  expect(await (await fetch(`${base}/lead/check`, { method: "POST", headers: { cookie, origin: base, accept: "application/json" }, body: new URLSearchParams({ csrf }) })).json()).toMatchObject({ lead: "on", agent: true });
   expect(store.getChatConfig()?.provider).toBe("claude-subscription");
   expect((await fetch(`${base}/lead/status`, { redirect: "manual" })).status).toBe(303);
 }, 15_000);
