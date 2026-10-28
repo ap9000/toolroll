@@ -76,6 +76,12 @@ describe("the config audit (git-config(1), git 2.50.1)", () => {
     // Writes a file as the plane, or brings in config nobody read.
     ["trace2.normalTarget", "/tmp/x"], ["trace2.eventTarget", "af_unix:/tmp/x"], ["include.path", "/tmp/x"], ["includeIf.onbranch:main.path", "/tmp/x"],
     ["lfs.standalonetransferagent", "x"], ["lfs.customtransfer.x.path", "x"], ["lfs.extension.x.clean", "x"],
+    // Deny by default: config-based hooks (git 2.36+), archive filters, any section or variable not audited.
+    ["hook.pre-commit.command", "x"], ["hook.x.event", "pre-commit"], ["tar.tgz.command", "gzip"], ["tar.tar.xz.command", "x"], ["mytool.setting", "x"],
+    ["git-town.main-branch", "main"], ["core.unauditedNewKey", "x"], ["remote.origin.unauditedKey", "x"], ["diff.x.unauditedKey", "x"], ["merge.x.unknown", "x"],
+    ["credential.username", "me"], ["gpg.format", "ssh"], ["filter.x.required", "maybe"],
+    // A scheme git has no transport of its own for runs git-remote-<scheme>.
+    ["remote.origin.url", "evil://host/repo"], ["remote.origin.pushurl", "hg://host/repo"], ["remote.origin.url", "persistent-https://h/r"],
   ])("%s = %s is refused", (key, value) => {
     expect(commandSetting(listing(key, value), { lfsChecked: true })).toBe(key.toLowerCase());
   });
@@ -87,8 +93,26 @@ describe("the config audit (git-config(1), git 2.50.1)", () => {
     ["receive.denyCurrentBranch", "updateInstead"], ["transfer.fsckObjects", "true"], ["fetch.prune", "true"], ["http.proxy", "http://proxy:3128"],
     ["http.https://h.extraHeader", "X: y"], ["gc.auto", "0"], ["maintenance.auto", "false"], ["ssh.variant", "ssh"], ["remote.origin.url", "git@github.com:o/r.git"],
     ["remote.origin.url", "https://github.com/o/r.git"], ["remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"], ["user.signingKey", "key::ssh-ed25519 AAAA"],
-    ["core.autocrlf", "input"], ["branch.main.remote", "origin"], ["lfs.url", "https://h/lfs"],
+    ["core.autocrlf", "input"], ["branch.main.remote", "origin"], ["lfs.url", "https://h/lfs"], ["filter.x.required", "true"],
+    ["remote.origin.url", "ssh://git@h/o/r.git"], ["remote.origin.url", "git://h/r"], ["remote.origin.url", "file:///srv/r.git"], ["remote.origin.url", "/srv/r.git"],
+    ["remote.origin.url", "../sibling"], ["remote.origin.url", "host:path/r.git"], ["submodule.lib.url", "https://h/lib"], ["gc.reflogExpire", "never"],
   ])("%s = %s is allowed", (key, value) => {
     expect(commandSetting(listing(key, value), { lfsChecked: true })).toBeNull();
+  });
+});
+
+describe("operator configs seen in practice still pass", () => {
+  const scopes = (at: string) => execFileSync("git", ["config", "--list", "--show-scope", "-z", "--local"], { cwd: at, env, encoding: "utf8" });
+  test("this repository's own config", () => {
+    const own = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim();
+    const listing = execFileSync("git", ["config", "--file", join(own, "config"), "--list", "-z"], { env, encoding: "utf8" }).split("\0").filter(Boolean).map(entry => `local\0${entry}\0`).join("");
+    expect(commandSetting(listing, { lfsChecked: true })).toBeNull();
+  });
+  test("a git-lfs local install, a typical remote and branch setup, worktree config, a hooks path", () => {
+    for (const [key, value] of [["filter.lfs.clean", "git-lfs clean -- %f"], ["filter.lfs.smudge", "git-lfs smudge -- %f"], ["filter.lfs.process", "git-lfs filter-process"],
+      ["filter.lfs.required", "true"], ["lfs.repositoryformatversion", "0"], ["remote.origin.url", "git@github.com:o/r.git"], ["remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+      ["branch.main.remote", "origin"], ["branch.main.merge", "refs/heads/main"], ["branch.main.vscode-merge-base", "origin/main"], ["user.name", "Op"], ["user.email", "op@h"],
+      ["extensions.worktreeConfig", "true"], ["core.hooksPath", ".husky"], ["pull.rebase", "false"], ["init.defaultBranch", "main"]]) git("config", key!, value!);
+    expect(commandSetting(scopes(repo), { lfsChecked: true })).toBeNull();
   });
 });

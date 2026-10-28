@@ -34,53 +34,55 @@ export const REFUSED_CODE = 128;
 const REFUSED_PREFIX = "Toolroll won't run git here: ";
 
 /**
- * Config settings that run a command, bring in unread config, or redirect inspection away from the checked path, by
- * their structure (security review of e48e9d8d: a name pattern let `filter..clean`, `[filter ""]` and names with odd
- * characters through). A key is `section[.subsection].variable`: the section is before the first dot, the variable
- * after the last, and the subsection — any bytes at all, empty included — between them. Each family below is refused
- * whatever its subsection is, or whether it has one; section and variable compare case-insensitively, as git reads them.
- * `*` as a variable is every variable of the section.
+ * Which repository config the plane's git accepts: deny by default (security scans of the round-2 fixes). A key is
+ * `section[.subsection].variable`: the section is before the first dot, the variable after the last, and the
+ * subsection — any bytes at all, empty included — between them; section and variable compare case-insensitively, as
+ * git reads them, and every rule holds whatever the subsection is (Codex review of e48e9d8d: `filter..clean`).
  *
- * Audited against git's documented config (git 2.50.1, git-config(1)) for every key that names a program, picks one
- * (a transport, a remote helper — `alias.remote-<x>` with a `url.<x>.insteadOf` rewrite ran one, Codex review of
- * a0fa135d), writes a file, or decides which protocol may run: the table in test/attacks/checkout-git-config-audit
- * .test.ts. Keys that name no program stay allowed there with the reason (core.hooksPath is overridden on every
- * command; receive.*, transfer.*, fetch.*, http.* proxies, gc.auto, maintenance.auto, ssh.variant name none).
+ * A section must be known (KNOWN_SECTIONS). A known section is wholly inert ("any"), inert but for named variables
+ * (`deny`), or inert only for named variables (`allow`: any other variable in it, known or not, is refused). Unknown
+ * sections are refused, whatever git version runs: the audit covers git 2.50.1's git-config(1) (and the keys our own
+ * product and git-lfs set), and a newer git's new keys land in a section this list doesn't know, or a variable an
+ * `allow` list doesn't name, and are refused until audited. test/attacks/checkout-git-config-audit.test.ts holds the
+ * table (aliases, URL rewrites, protocol policy, hooks by config, trace targets, tar filters, every program key).
  */
-const COMMAND_FAMILIES: ReadonlyMap<string, readonly string[]> = new Map(Object.entries({
-  core: ["sshcommand", "gitproxy", "askpass", "pager", "editor", "alternaterefscommand", "worktree"],
-  filter: ["clean", "smudge", "process"],
-  diff: ["external", "command", "textconv"],
-  merge: ["driver"],
-  difftool: ["*"],
-  mergetool: ["*"],
-  trailer: ["command", "cmd"],
-  submodule: ["update"],
-  sequence: ["editor"],
-  credential: ["helper"],
-  gpg: ["program", "defaultkeycommand"],
-  uploadpack: ["packobjectshook"],
-  remote: ["uploadpack", "receivepack", "vcs"],
-  interactive: ["difffilter"],
-  browser: ["*"],
-  web: ["browser"],
-  man: ["*"],
-  instaweb: ["*"],
-  sendemail: ["*"],
-  pager: ["*"],
-  include: ["path"],
-  includeif: ["path"],
-  // An alias is a command (a `!` one runs a shell; `remote-<x>` is run as a remote helper).
-  alias: ["*"],
-  // A rewrite can turn any URL into `<helper>::…`, and a repository's own protocol policy outranks the plane's.
-  url: ["insteadof", "pushinsteadof"],
-  protocol: ["*"],
-  // Trace targets are files (and sockets) git writes to, as the plane.
-  trace2: ["*"],
-  gc: ["recentobjectshook"],
+type SectionRule = "any" | { deny: readonly string[] } | { allow: readonly string[] };
+const KNOWN_SECTIONS: ReadonlyMap<string, SectionRule> = new Map<string, SectionRule>(Object.entries({
+  core: { allow: ["repositoryformatversion", "filemode", "bare", "logallrefupdates", "ignorecase", "precomposeunicode", "autocrlf", "eol", "safecrlf",
+    "symlinks", "hookspath", "fsmonitor", "excludesfile", "attributesfile", "quotepath", "longpaths", "untrackedcache", "sharedrepository", "compression",
+    "loosecompression", "bigfilethreshold", "preloadindex", "checkstat", "trustctime", "abbrev", "commentchar", "commentstring", "whitespace", "fscache",
+    "packedgitlimit", "packedgitwindowsize", "deltabasecachelimit", "multipackindex", "commitgraph", "splitindex", "warnambiguousrefs", "notesref",
+    "sparsecheckout", "sparsecheckoutcone", "filesreflocktimeout", "packedrefstimeout", "usereplacerefs", "fsync", "fsyncmethod", "fsyncobjectfiles",
+    "checkroundtripencoding", "protecthfs", "protectntfs", "logallrefupdates", "restrictinheritedhandles", "maxtreedepth", "createobject"] },
+  // A remote: never its helper programs; its URLs are checked apart (helperUrl).
+  remote: { allow: ["url", "pushurl", "fetch", "push", "mirror", "tagopt", "prune", "prunetags", "promisor", "partialclonefilter", "skipdefaultupdate",
+    "skipfetchall", "followremotehead", "serveroption", "proxy", "proxyauthmethod"] },
+  branch: "any", user: "any", init: "any", pull: "any", push: "any", fetch: "any", status: "any", color: "any", advice: "any", extensions: "any",
+  worktree: "any", index: "any", pack: "any", feature: "any", rerere: "any", tag: "any", log: "any", format: "any", i18n: "any", safe: "any",
+  blame: "any", column: "any", grep: "any", apply: "any", rebase: "any", help: "any", versionsort: "any", checkout: "any", clean: "any",
+  notes: "any", splitindex: "any", transfer: "any", fsck: "any", receive: "any", repack: "any", maintenance: "any", mailmap: "any", am: "any",
+  reset: "any", stash: "any", commit: "any", http: "any",
+  merge: { allow: ["conflictstyle", "ff", "log", "renormalize", "stat", "autostash", "defaulttoupstream", "renamelimit", "renames", "directoryrenames",
+    "verifysignatures", "tool", "guitool", "branchdesc", "suppressdest", "name", "recursive"] },
+  diff: { allow: ["algorithm", "renames", "renamelimit", "noprefix", "mnemonicprefix", "context", "interhunkcontext", "colormoved", "colormovedws",
+    "indentheuristic", "statgraphwidth", "statnamewidth", "submodule", "ignoresubmodules", "orderfile", "tool", "guitool", "wserrorhighlight", "relative",
+    "dirstat", "suppressblankempty", "autorefreshindex", "srcprefix", "dstprefix", "xfuncname", "funcname", "binary", "cachetextconv", "wordregex"] },
+  submodule: { deny: ["update"] },
+  gc: { deny: ["recentobjectshook"] },
+  uploadpack: { deny: ["packobjectshook"] },
+  // git-lfs's own: lfsCommand decides (inert keys only); filter: git-lfs's exact values only (runsCommand).
+  lfs: "any",
+  ssh: { allow: ["variant"] },
 }));
-/** A remote URL of the form `<helper>::<address>` runs git-remote-<helper>. */
-const HELPER_URL = /^[^:/\\]+::/;
+/** A remote URL git hands to a remote helper: `<helper>::…`, or a scheme git has no transport of its own for (it runs
+ * git-remote-<scheme>). scp-like `host:path`, `user@host:path` and plain paths are git's own. */
+const OWN_SCHEMES = new Set(["https", "http", "ssh", "git", "file", "git+ssh", "ssh+git"]);
+function helperUrl(value: string): boolean {
+  const url = value.trim();
+  if (url.includes("::")) return true;
+  const scheme = /^([A-Za-z][A-Za-z0-9+.-]*):\/\//.exec(url);
+  return scheme !== null && !OWN_SCHEMES.has(scheme[1]!.toLowerCase());
+}
 
 /** A config key's parts as git names them: section and variable lowercased, the subsection as it is (or null). */
 function keyParts(key: string): { section: string; subsection: string | null; variable: string } {
@@ -109,11 +111,16 @@ const BOOLEAN = /^(|true|false|yes|no|on|off|-?\d+)$/i;
 function runsCommand(key: string, value: string, lfsChecked: boolean): boolean {
   const { section, subsection, variable } = keyParts(key);
   if (section === "core" && variable === "fsmonitor") return !BOOLEAN.test(value.trim());
-  if (lfsChecked && section === "filter" && subsection === "lfs" && LFS_FILTER.get(`filter.lfs.${variable}`) === value) return false;
-  if (section === "remote" && (variable === "url" || variable === "pushurl") && HELPER_URL.test(value.trim())) return true;
-  const family = COMMAND_FAMILIES.get(section);
-  if (family !== undefined && (family.includes("*") || family.includes(variable))) return true;
-  return lfsCommand(key);
+  // A filter: whether it is required names no program; its commands only git-lfs's own, exactly, beside a checked
+  // .lfsconfig.
+  if (section === "filter") return !((variable === "required" && BOOLEAN.test(value.trim())) || (lfsChecked && subsection === "lfs" && LFS_FILTER.get(`filter.lfs.${variable}`) === value));
+  if (section === "lfs") return lfsCommand(key);
+  if (section === "remote" && (variable === "url" || variable === "pushurl") && helperUrl(value)) return true;
+  const rule = KNOWN_SECTIONS.get(section);
+  if (rule === undefined) return true;
+  if (rule === "any") return false;
+  if ("deny" in rule) return rule.deny.includes(variable);
+  return !rule.allow.includes(variable);
 }
 
 /** The command-running setting a `git config --list --show-scope -z` listing sets, or null. Only local and worktree

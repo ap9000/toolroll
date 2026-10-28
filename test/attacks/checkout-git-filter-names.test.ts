@@ -109,7 +109,8 @@ describe("the git-lfs exemption stands only beside a checked .lfsconfig", () => 
 describe("the classifier fails closed", () => {
   test.each(["constructor.x", "__proto__.x", "tostring.y", "hasownproperty.clean", "filter.__proto__.x", "valueof", "__proto__"])("%s is read as a plain key, never a crash", key => {
     expect(() => commandSetting(`local\0${key}\nv\0`, { lfsChecked: true })).not.toThrow();
-    expect(commandSetting(`local\0${key}\nv\0`, { lfsChecked: true })).toBeNull();
+    // Not a section the plane knows: refused (deny by default), as a value, never a throw.
+    expect(commandSetting(`local\0${key}\nv\0`, { lfsChecked: true })).toBe(key.toLowerCase());
   });
   test("a listing it can't read names a setting (a refusal), never nothing", () => {
     expect(commandSetting(undefined as unknown as string)).not.toBeNull();
