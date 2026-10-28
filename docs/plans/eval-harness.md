@@ -80,7 +80,8 @@ F. Process: delta review of post-review security changes (diff + affected invari
   (2.43) and Debian 12 (2.39) are below the floor.
 - D, git lanes: ci.yml job `git` (container node:22-trixie, matrix 2.44 built from the pinned kernel.org tarball by
   scripts/ci-git.sh, 2.47 = Debian's), running `npm run test:git` as the unprivileged `node` user, then
-  scripts/ci-no-skips.mjs fails the job if any test was skipped. **Integration TODO:** add "git 2.44 · debian trixie"
+  scripts/ci-no-skips.mjs fails the job if any test was skipped, except the "native …" OS-fence attacks (3 in these
+  files; a plain container has no bubblewrap/Seatbelt; the linux fence job runs them with TOOLROLL_REQUIRE_NATIVE). **Integration TODO:** add "git 2.44 · debian trixie"
   and "git 2.47 · debian trixie" to REQUIRED_PR_CHECKS (src/release.ts) and drop PENDING_REQUIRED from
   src/ci-workflow.test.ts.
 - D, identity: test/git-identity.ts. Every test file's home starts with `user.useConfigOnly = true` and no identity

@@ -164,7 +164,8 @@ jobs:
   # tests and the worktree/teardown tests, nothing else. 2.47 is Debian trixie's git and still has the pre-2.48
   # `worktree add` behaviour teardown-git.ts relinkAdded works around; 2.44 is the floor (`git --no-lazy-fetch`),
   # built from kernel.org's tarball by scripts/ci-git.sh. The tests run as the image's unprivileged user (root passes
-  # permission checks an operator's git can't), and a skipped test fails the job: a skip is not evidence.
+  # permission checks an operator's git can't), and a skipped test fails the job: a skip is not evidence. The only
+  # skips allowed are the "native …" OS-fence attacks, which need bubblewrap/Seatbelt and run in the linux fence job.
   git:
     name: git ${{ matrix.git }} · debian trixie
     runs-on: ubuntu-24.04
