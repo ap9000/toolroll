@@ -73,6 +73,9 @@ function built(id: string, title: string, at: Date, exitCode = 0): number {
   storeEvidence(store, root, run, "terminal-diff", "diff.patch", Buffer.from(`diff --git a/src/${id}.ts b/src/${id}.ts\n--- a/src/${id}.ts\n+++ b/src/${id}.ts\n@@ -1 +1 @@\n-a\n+b\n`), "git diff (exit 0)", at, { captureStatus: "ok" });
   storeEvidence(store, root, run, "check-log", "checks.txt", Buffer.from(failing ? "1 failed\n" : "612 passed\n"), "npm test", at, { captureStatus: "ok" });
   sealVerificationReceipt(store, root, run, head, store.liveVerifyCommand(REPO)!, { configured: true, ran: true, exitCode }, at);
+  // The builder records its check's result as it seals the receipt (builder.ts): a read without the evidence files
+  // (chat status, `toolroll status`) reads this, never a verdict alone.
+  store.recordRunCheck(run, { status: failing ? "failed" : "passed", exitCode, suites: [] }, at);
   runs[id] = run;
   return run;
 }

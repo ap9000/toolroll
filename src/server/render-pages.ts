@@ -1287,7 +1287,8 @@ export function originUrlOf(repoPath: string): string | null {
 export function githubReposPage(
   chrome: Chrome,
   data: {
-    listed: ListOutcome;
+    /** The last listing; null until someone lists (a POST: listing asks GitHub, so a page visit never does). */
+    listed: ListOutcome | null;
     local: Map<string, string>;
     registered: Set<string>;
     /** Unused: postForm adds the request's CSRF field. Kept for callers. */
@@ -1300,8 +1301,11 @@ export function githubReposPage(
     postForm("/projects/open", html`<button type="submit">${label}</button>`, { attrs: { class: "inline" }, hidden: { path } });
   const cloneForm = (nameWithOwner: string): Html =>
     postForm("/projects/onboard-preview", html`<button type="submit">Clone here →</button>`, { attrs: { class: "inline" }, hidden: { repo: nameWithOwner, root: "0" } });
+  const list = (label: string) => postForm("/projects/github", html`<button type="submit"${label === "Refresh list" ? html` class="secondary"` : ""}>${label}</button>`, { attrs: { class: "inline" } });
   const rows =
-    !data.listed.ok
+    data.listed === null
+      ? list("List repositories")
+      : !data.listed.ok
       ? html`<p class="meta">${data.listed.message}</p>`
       : data.listed.repos.length === 0
         ? html`<p class="meta">The signed-in GitHub account has no repositories to list</p>`
@@ -1330,6 +1334,7 @@ export function githubReposPage(
     html`<h1>Your GitHub repositories</h1>`,
     html`<p class="meta">Repositories available to the GitHub account signed in on this machine — open one you already have, or clone a new one after a quick preview.</p>`,
     rows,
+    data.listed === null ? null : list("Refresh list"),
     html`<p class="row" style="margin-top:.6rem"><a class="badge" href="/projects">← back to projects</a></p>`,
   ], "\n"), { chrome });
 }

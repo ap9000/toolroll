@@ -1831,6 +1831,12 @@ export function taskBodyParts(data: {
           proofDetails,
         );
       }
+      // A recorded pass the check read now doesn't stand behind (unreadable, failed since, or not read here) never
+      // reads "passed": the box says what holds now (task-status.ts approvedCheckOf).
+      if (proof.proofVerdict === "verified" && !accepted && !(proof.receipt?.checks !== undefined && ["ready-to-review", "pr-opened", "merge-observed", "pr-closed"].includes(resultStatus.token))) {
+        return withReview(box(resultStatus.tone === "problem" ? "problem" : "ok", resultStatus.label,
+          html`<a href="/r/${proof.runId}">Build #${proof.runId}</a> finished. ${resultStatus.detail}${publicationWords}`, resultStatus.token), proofDetails);
+      }
       if (proof.proofVerdict === "verified" && !accepted) {
         const recovered = verificationRecovered(proof.proofReasons);
         return withReview(box(
@@ -2847,10 +2853,8 @@ export function taskBodyParts(data: {
     journey: task.state === "cancelled" || data.status === undefined ? null : (() => {
       const planning = data.plan === "requested" && approveForm === "";
       const read = data.assignment != null ? assignmentStageOf(data.assignment, { token: data.status.token }, planning) : stageOfCode(data.status.token, { planning });
-      // The checks fact the status card shows, read as what happened: a "note" is a failure when its words say so.
-      const shown = statusCard?.status.details.find(one => one.key === "checks") ?? null;
-      const checks: RoadChecks = shown === null ? null : shown.mark === "ok" ? "passed" : shown.mark === "running" ? "running"
-        : shown.mark === "failed" || /\bfailed\b/i.test(shown.text) ? "failed" : shown.mark === "none" ? "not-run" : "unread";
+      // The one answer the status card's headline and Project checks row read (task-status.ts approvedCheckOf).
+      const checks: RoadChecks = statusCard?.status.check ?? null;
       const report = data.deliverable === "report" || data.report != null;
       return taskRoad(read, scope !== null && approvalOf(scope).approved, task.state === "done", { checks, report });
     })(),

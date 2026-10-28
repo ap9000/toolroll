@@ -4295,6 +4295,8 @@ async function startConsole(options: {
   const { context } = options;
   const server = createDecisionServer({
     store: context.store,
+    // Sign-in, integration and model checks, and the tidy-ups no page visit does (docs/plans/get-side-effects.md).
+    backgroundChecks: true,
     ...(context.desktopIdentity === undefined ? {} : { desktopIdentity: context.desktopIdentity }),
     ...(context.additionalProjectRepos === undefined || options.currentRepos === undefined ? {} : { additionalProjectRepos: options.currentRepos }),
     evidenceRoot: context.evidenceRoot,

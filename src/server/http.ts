@@ -162,6 +162,11 @@ export type ServeOptions = {
    * the exact part of the ceiling, so an addition or removal shows without a restart. */
   admittedRepos?: () => readonly string[];
   connectionProbe?: typeof execRun;
+  /** The console's background checks (docs/plans/get-side-effects.md): sign-in checks, integration checks, model
+   * lists and the tidy-ups pages used to do. On for `up` and `serve`; a test turns them on, and `backgroundChecksMs` sets
+   * how often they run and ask this computer's agents again. */
+  backgroundChecks?: boolean;
+  backgroundChecksMs?: number;
   connectionHome?: string;
   /** Test seam for Chat's first tasks: the `gh` and `git grep` reads. */
   firstTaskRunner?: typeof execRun;

@@ -74,9 +74,11 @@ for (const phase of ['plan', 'build', 'review']) store.setPhaseConfig('installat
 register(store, { name: 'mac-studio', host: 'fixture-host', capacity: 6, repos: [shop, payments], now: now(), newToken: () => 'fixture-runner-token' });
 
 /** File, approve, claim and start one task's build, as the worker would. */
-function startAgent(id, title, repo, startedMinutesAgo) {
+function startAgent(id, title, repo, startedMinutesAgo, byLead = false) {
   const filed = fileTaskProposal(store, { id, title, repo, goal: `${title}. (Synthetic fixture task.)`, outOfScope: 'No schema changes.',
-    touches: ['src/'], acceptance: [{ id: 'c1', statement: 'The change is covered by a test.', how: null, evidence: ['check'] }], filedVia: 'console', planning: 'skip' }, ago(startedMinutesAgo + 5));
+    touches: ['src/'], acceptance: [{ id: 'c1', statement: 'The change is covered by a test.', how: null, evidence: ['check'] }], planning: 'skip',
+    // Filed through the person's lead (a confirmed card), or from the console.
+    ...(byLead ? { filedVia: 'mate', filedBy: { name: 'alex', kind: 'person' }, proposedVia: 'mate' } : { filedVia: 'console' }) }, ago(startedMinutesAgo + 5));
   if (!filed.ok) throw new Error(`fixture ${id}: ${filed.reason}`);
   approve(store, id, 'alex', ago(startedMinutesAgo + 2), store.getScope(id).digest, login.token);
   const route = store.approvedRouteOf(id);
@@ -211,6 +213,36 @@ async function context(viewport) {
     body: new URLSearchParams({ csrf, task: 'checkout-tests', message: 'Where does the Safari fix stand?', request: 'c'.repeat(32), 'request-session': String(store.activeLeadSession('alex')?.id) }) });
   check('the lead is asked in the task chat', asked.status === 202, `status ${asked.status}`);
 }
+// The work the lead filed (docs/plans/lead-dispatched-tiles.md): two tasks from this task chat's confirmed cards, running
+// now, and one from an earlier lead chat whose turn has long ended (a sweep), so its run nests under a quiet header.
+{
+  const taskChat = store.liveLeadThreadFor('alex', { kind: 'task', key: 'checkout-tests' });
+  check('the task chat exists', taskChat !== null);
+  let turn = 1000;
+  const card = (thread, id, repo) => store.handle.prepare(`INSERT INTO lead_proposal (thread, turn, kind, payload_json, ceiling_digest, state, created_at, resolved_at, resolved_by, outcome_json)
+    VALUES (?, ?, 'task', ?, ?, 'confirmed', ?, ?, 'alex', ?)`).run(thread, ++turn, JSON.stringify({ repo, title: id, goal: 'synthetic' }), taskChat.ceilingDigest, now().toISOString(), now().toISOString(),
+    JSON.stringify({ ok: true, kind: 'task', said: `filed ${id}`, taskId: id, via: 'web' }));
+  const filedBuild = (id, title, repo, minutes, lines) => {
+    const agent = startAgent(id, title, repo, minutes, true);
+    const flog = openLiveLog(evidenceRoot, agent.run, { base: agent.worktree, commands: true });
+    flog.observe({ type: 'system', subtype: 'init' });
+    for (const line of lines) flog.observe(text(line));
+    flog.close();
+    recordAgentTurn(store, { run: agent.run, attemptKey: agent.key, state: 'busy', at: ago(minutes) });
+    store.recordRunActivity(agent.run, 'edit', ago(0.1));
+    return agent;
+  };
+  filedBuild('safari-date-parse', 'Parse delivery dates as ISO so Safari accepts them', shop, 3, ['Switching parseDeliveryDate to an ISO string with a T separator.', 'Adding a WebKit case to date.test.ts.']);
+  filedBuild('safari-date-copy', 'Show a plain message when a delivery date cannot be read', shop, 2, ['Reading the summary view for where the date is shown.']);
+  for (const id of ['safari-date-parse', 'safari-date-copy']) card(taskChat.id, id, shop);
+  const earlier = store.openLeadThread('alex', taskChat.ceilingDigest, ago(60), { kind: 'project', key: payments }).thread.id;
+  filedBuild('refund-rounding', 'Round partial refunds to the cent before saving', payments, 8, ['Found the float multiply in refunds/amount.ts; moving it to integer cents.']);
+  // The sweep's own card, confirmed, as fileSweep leaves it (a sweep links only while its card is kept).
+  const sweepCard = Number(store.handle.prepare(`INSERT INTO lead_proposal (thread, turn, kind, payload_json, ceiling_digest, state, created_at, resolved_at, resolved_by, outcome_json)
+    VALUES (?, ?, 'action', '{}', ?, 'confirmed', ?, ?, 'alex', '{"ok":true}')`).run(earlier, ++turn, taskChat.ceilingDigest, ago(20).toISOString(), ago(20).toISOString()).lastInsertRowid);
+  const sweep = store.createSweep({ owner: 'alex', thread: earlier, repo: payments, title: 'Refund fixes', brief: 'Synthetic sweep', maxParallel: 2, proposal: sweepCard }, ago(20));
+  store.addSweepTask(sweep, 'refund-rounding', 0, 'Round partial refunds to the cent before saving');
+}
 const until = async (page, test, ms = 15_000) => { try { await page.waitForFunction(test, null, { timeout: ms }); return true; } catch { return false; } };
 for (const [name, viewport] of [['desktop', { width: 1440, height: 900 }], ['tablet', { width: 900, height: 1100 }], ['phone', { width: 390, height: 844 }]]) {
   const { ctx, page, errors } = await context(viewport);
@@ -258,8 +290,19 @@ for (const [name, viewport] of [['desktop', { width: 1440, height: 900 }], ['tab
   if (name !== 'tablet') {
     check(`${name}: the lead's reply is a tile`, await until(page, () => (document.querySelector('[data-live-lead] [data-live-lines]')?.textContent ?? '').includes('helper'), 10_000));
     await page.locator('[data-live-lead]').first().screenshot({ path: join(out, `lead-tile-${name}.png`) });
+    // The two tasks it filed nest under it (indent and connector); the earlier chat's run under its quiet header; each once.
+    check(`${name}: the lead's two filed tasks nest under its tile`, await until(page, () => document.querySelectorAll('[data-live-lead] [data-live-filed] > [data-live-tile]').length === 2, 5_000));
+    check(`${name}: an ended lead's filed task nests under a quiet header`, await until(page, () =>
+      (document.querySelector('[data-live-filed-group]')?.firstElementChild?.textContent ?? '') === 'Filed by project chat · ' + 'payments-api'
+      && document.querySelectorAll('[data-live-filed-group] [data-live-filed] > [data-live-tile]').length === 1, 5_000));
+    const ids = await page.$$eval('[data-live-tile]', nodes => nodes.map(node => node.getAttribute('data-live-tile')));
+    check(`${name}: every run is shown once`, new Set(ids).size === ids.length, ids.join(','));
+    await page.locator('[data-live-filed-group]').first().screenshot({ path: join(out, `filed-group-${name}.png`) });
+    report.screenshots.push({ path: join(out, `lead-tile-${name}.png`), caption: `${name}: the lead's tile with the two tasks it filed` },
+      { path: join(out, `filed-group-${name}.png`), caption: `${name}: an ended lead chat's filed task under its header` });
     await page.click('[data-live-open-lead]');
     check(`${name}: the lead full screen links to its chat and task`, await until(page, () => document.querySelector('[role="dialog"] a[href^="/chat?task="]') !== null && document.querySelector('[role="dialog"] a[href^="/t/"]') !== null, 5_000));
+    check(`${name}: the lead full screen lists the tasks it filed`, await until(page, () => document.querySelectorAll('[role="dialog"] [data-live-full-filed] li').length === 2, 5_000));
     await page.waitForTimeout(400);
     await page.screenshot({ path: join(out, `lead-full-${name}.png`), fullPage: false });
     await page.keyboard.press('Escape');

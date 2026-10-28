@@ -23,7 +23,7 @@ export { ACCEPT_NEEDS_REASON, cantAcceptYetOf, evidenceProblemOf, type EvidenceP
 import { manualReviewOnly, plainReasonWords, type ProofVerdict } from "./proof.js";
 import type { ReviewRetryState, TaskState } from "./store.js";
 import type { TaskControlView } from "./task-control.js";
-import { OPEN_RESULT, plainReasonOf, stageOfCode, taskStatusOf, workToneOf } from "./task-status.js";
+import { CHECK_COMMAND_CHANGED, CHECK_UNREADABLE, OPEN_RESULT, approvedCheckOf, approvedCheckStateOf, plainReasonOf, stageOfCode, taskStatusOf, workToneOf, type ChecksFact } from "./task-status.js";
 import { whenUtc } from "./when-html.js";
 import { html, postForm, type Html } from "./html.js";
 
@@ -62,6 +62,10 @@ export type ResultFacts = {
    * per run so an older selected result keeps its own words; undefined
    * when the caller did not read it, null when never requested. */
   review?: ReviewFacts | null;
+  /** The saved approved check as read now (assignmentChecksForRun), for `approvedCheckOf`: the words say the check
+   * passed only when this reading does. Undefined: the caller read no check (a list or dispatch read), so the words
+   * name only what the verdict recorded when the build finished. */
+  checks?: ChecksFact | null;
 };
 
 /** The result's review facts as `reviewRetryStateOf` records them, plus
@@ -207,8 +211,13 @@ export function resultStatusOf(result: ResultFacts | null, publication: Publicat
 }
 
 /** What the machine itself recorded about a result, in a clause. */
-function machineVerdictWords(result: ResultFacts): string {
-  if (result.verdict === "verified") return "it verified the result before the acceptance";
+function machineVerdictWords(result: ResultFacts, check: ChecksFact | null | undefined): string {
+  if (check !== undefined && check?.status === "failed" && evidenceProblemOf(result.verdict, result.reasons) !== "checks-failed") {
+    return `the approved check failed against it${check.exitCode === null ? "" : ` (exit ${check.exitCode})`}`;
+  }
+  if (result.verdict === "verified" && passedNow(check)) return "it verified the result before the acceptance";
+  // Unread here, or unreadable now: never restated as a pass.
+  if (result.verdict === "verified") return check === undefined ? "open the result for its checks" : "its check result couldn't be read";
   if (result.verdict === "attested") return "the checks on record are the agent's own report";
   const problem = evidenceProblemOf(result.verdict, result.reasons);
   if (problem === "checks-failed") {
@@ -218,6 +227,16 @@ function machineVerdictWords(result: ResultFacts): string {
   if (problem === "mismatched") return "its evidence did not match the sealed record";
   return "its required evidence was missing";
 }
+
+/** The approved check passed (task-status.ts approvedCheckStateOf): its own pass, or checks Off covered by a passing
+ * release check. A re-run underway keeps the pass it had. */
+const passedNow = (check: ChecksFact | null | undefined): boolean => {
+  const state = approvedCheckStateOf(check);
+  return state === "passed" || (state === "running" && check?.status === "passed");
+};
+
+/** A result whose check this surface didn't read: no pass is claimed, the result page says. */
+const UNREAD_CHECK = "Open the result to see its checks.";
 
 function storedResultStatusOf(result: ResultFacts | null, publication: PublicationFacts): DisplayStatus {
   if (result === null || result.runId === null) {
@@ -234,6 +253,8 @@ function storedResultStatusOf(result: ResultFacts | null, publication: Publicati
   }
   const published = publicationStatusOf(publication);
   const withPublication = (detail: string): string => (published === null ? detail : `${detail} ${published.detail}`);
+  // Did the approved check pass for this result (task-status.ts): the one answer the Checks row and the road read.
+  const check = result.checks === undefined ? undefined : approvedCheckOf(result.verdict, result.reasons, result.checks);
   const humanReview = manualReviewOnly({ verdict: result.verdict ?? "", reasons: result.reasons });
   if (result.accepted && humanReview) {
     return { token: "accepted-exception", label: "Accepted by a person", detail: withPublication("A person accepted this result. The recorded checks are unchanged."), tone: "done", action: { label: "Open the acceptance", kind: "open-review" } };
@@ -245,14 +266,18 @@ function storedResultStatusOf(result: ResultFacts | null, publication: Publicati
       // Acceptance records a person's decision; it neither proves nor
       // disproves anything about the checks. The machine's own verdict is
       // restated as recorded.
-      detail: withPublication(`An approver accepted this result by hand, and the recorded exception says why. The machine's verdict is unchanged: ${machineVerdictWords(result)}.`),
+      detail: withPublication(`An approver accepted this result by hand, and the recorded exception says why. The machine's verdict is unchanged: ${machineVerdictWords(result, check)}.`),
       tone: "done",
       action: { label: "Open the recorded exception", kind: "open-review" },
     };
   }
-  const problem = evidenceProblemOf(result.verdict, result.reasons);
+  const recordedProblem = evidenceProblemOf(result.verdict, result.reasons);
+  // A failed check that a later check on the same commit passed no longer fails the result; a check that failed
+  // since a passing verdict does.
+  const problem = recordedProblem === "checks-failed" && passedNow(check) ? "none"
+    : recordedProblem !== "mismatched" && check?.status === "failed" ? "checks-failed" : recordedProblem;
   if (problem === "checks-failed") {
-    const exit = failedCheckExit(result.reasons);
+    const exit = check?.status === "failed" ? check.exitCode : failedCheckExit(result.reasons);
     return {
       token: "checks-failed",
       label: "Changes saved, but checks failed",
@@ -301,7 +326,14 @@ function storedResultStatusOf(result: ResultFacts | null, publication: Publicati
       action: { label: "See what is missing", kind: "open-review" },
     };
   }
-  if (result.verdict === "attested") {
+  // Any verdict short of a pass the check confirms: never "passed" when the check can't be read now.
+  if (check !== undefined && !passedNow(check) && result.verdict === "verified") {
+    return check?.status === "running"
+      ? { token: "checks-running", label: "Checks running", detail: withPublication("The approved check is running on this result."), tone: "live", action: { label: OPEN_RESULT, kind: "open-result" } }
+      : { token: "check-unreadable", label: "Result saved — check result couldn't be read", detail: withPublication(`${check?.cause === "command-changed" ? CHECK_COMMAND_CHANGED : CHECK_UNREADABLE} This result isn't verified.`),
+        tone: "problem", action: { label: "Open the check", kind: "open-review" } };
+  }
+  if (result.verdict === "attested" && !passedNow(check)) {
     return {
       token: "agent-attested",
       label: "Result saved — checks reported by the agent",
@@ -314,7 +346,7 @@ function storedResultStatusOf(result: ResultFacts | null, publication: Publicati
     return {
       token: published.token,
       label: published.label,
-      detail: `The approved check passed against this result. ${published.detail}`,
+      detail: check === undefined ? `${UNREAD_CHECK} ${published.detail}` : `The approved check passed against this result. ${published.detail}`,
       tone: published.token === "pr-closed" ? "muted" : "done",
       action: published.token === "merge-observed" ? { label: OPEN_RESULT, kind: "open-result" } : { label: "Open the pull request", kind: "open-pr" },
     };
@@ -322,7 +354,8 @@ function storedResultStatusOf(result: ResultFacts | null, publication: Publicati
   return {
     token: "ready-to-review",
     label: "Ready",
-    detail: withPublication("The approved check passed against this result."),
+    // Only a check read here may be called passed; a surface that read none says where to see it.
+    detail: withPublication(check === undefined ? UNREAD_CHECK : "The approved check passed against this result."),
     tone: "ready",
     action: { label: OPEN_RESULT, kind: "open-result" },
   };
@@ -417,7 +450,7 @@ export function dispatchActionLabel(dispatch: DispatchDiagnosis | null): string 
 
 /** Result tokens a done task can wear, as the shared stage they mean. A
  * result that is missing its record waits on a person; a failed check fails. */
-const RESULT_NEEDS_YOU = new Set(["no-build-record", "verification-needed", "evidence-mismatch", "record-incomplete", "evidence-damaged"]);
+const RESULT_NEEDS_YOU = new Set(["no-build-record", "verification-needed", "evidence-mismatch", "record-incomplete", "evidence-damaged", "check-unreadable"]);
 /** Result tokens that only follow a passing project check. */
 const VERIFIED_RESULT = new Set(["ready-to-review", "pr-opened", "merge-observed", "pr-closed"]);
 

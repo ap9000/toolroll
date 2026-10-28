@@ -538,7 +538,9 @@ if (!passed) { console.error('balance probe timed out; 163 passed, 1 failed'); p
         await writeFile(join(evidenceRoot, failedLog.key), "changed after the failed check was saved");
         const damaged = allowWhereUnfenced(openStore(db));
         const current = assignmentOf(damaged, "t-check", at(2), { principal: "operator", repos: [repo] }, evidenceRoot)!;
-        expect(current).toMatchObject({ state: "ready-to-check", receipt: { checks: { status: "unavailable" } } });
+        // The builder's recorded failure stands when its saved receipt can't be read now (task card truth): every
+        // surface shows the same known failure, and the changed file is still named.
+        expect(current).toMatchObject({ state: "ready-to-check", receipt: { checks: { status: "failed", exitCode: 1 } } });
         expect(current.attention).toContainEqual(expect.stringContaining("unavailable or changed"));
         expect(assignmentEvidenceIntact(damaged, evidenceRoot, current.receipt!)).toBe(false);
         damaged.close();

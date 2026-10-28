@@ -151,3 +151,24 @@ test("Codex av8 #4: a page's lead state goes with its room, and a viewer that le
   expect(connection.rooms).toBe(0);
   room.rooms.close();
 });
+
+test("Codex filed r1 #1: a lead's link to a run made or erased moves the owner's digest, with the run and its files unchanged", () => {
+  const bus = createLiveBus();
+  const run = running("filed");
+  store.handle.prepare("UPDATE task_ref SET filed_via = 'mate', filed_by = 'alex', filed_by_kind = 'person' WHERE external_id = 'filed'").run();
+  const thread = store.openLeadThread("alex", "D1", new Date()).thread.id;
+  const room = createAgentsLiveRooms({ store, bus, evidenceRoot: root, localRunner: "mac", clock: () => new Date(), visible: () => true });
+  const sent: string[] = [];
+  room.rooms.join(room.keyOf("alex", "all"), viewer("alex", sent));
+  const before = sent.length;
+  store.handle.prepare(`INSERT INTO lead_proposal (thread, turn, kind, payload_json, ceiling_digest, state, created_at, resolved_by, outcome_json) VALUES (?, 1, 'task', ?, 'D1', 'confirmed', ?, 'alex', ?)`)
+    .run(thread, JSON.stringify({ repo: REPO }), new Date().toISOString(), JSON.stringify({ ok: true, kind: "task", taskId: "filed" }));
+  bus.publish({ revision: "1" });
+  expect(sent.length).toBeGreaterThan(before);
+  const linked = sent.length;
+  store.closeLeadThreadsFor("alex", new Date()); // ending the chat erases the card: the link goes, and the page hears it
+  bus.publish({ revision: "2" });
+  expect(sent.length).toBeGreaterThan(linked);
+  expect(run).toBeGreaterThan(0);
+  room.rooms.close();
+});

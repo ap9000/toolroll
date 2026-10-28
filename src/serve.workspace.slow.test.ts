@@ -1021,9 +1021,10 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     // The receipt's criteria label still reads from the stored verdict.
     expect(queuedTask).toContain("the agent's own claim — not checked");
     expect(rowsOf(await page(cookie, "/work")).find(row => row.id === "t-rev")?.views).toEqual(["all", "needs-you"]);
-    // The older run keeps its own verdict: nothing masks a selected result.
+    // The older run keeps its own record: nothing masks a selected result. Its verdict recorded a pass, but it saved
+    // no check this page can read, so it is never called passed (task-status.ts approvedCheckOf).
     const olderPage = await page(cookie, `/r/${older}?record=1`);
-    expect(/<header class="result-head">[\s\S]*?data-work-status="([^"]+)"/.exec(olderPage)?.[1]).toBe("ready-to-review");
+    expect(/<header class="result-head">[\s\S]*?data-work-status="([^"]+)"/.exec(olderPage)?.[1]).toBe("check-unreadable");
     expect(olderPage).not.toContain("Waiting for review");
 
     // A live historical reviewer does not turn current work into Reviewing.

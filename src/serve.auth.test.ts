@@ -680,7 +680,8 @@ describe("the first run: three plain steps to a first result", () => {
   const signedOut = async (file: string) => ({ code: 1, stdout: file === "codex" ? "Not logged in\n" : JSON.stringify({ loggedIn: false }), stderr: "", timedOut: false, notFound: false });
   const quietRepo = async () => ({ code: 1, stdout: "", stderr: "", timedOut: false, notFound: false });
   const boot = async (options: Record<string, unknown> = {}) => {
-    server = createDecisionServer({ store, evidenceRoot, clock: () => new Date(), connectionProbe: signedOut, firstTaskRunner: quietRepo, ...options });
+    // The console's background checks ask this machine and the project (docs/plans/get-side-effects.md); pages only read.
+    server = createDecisionServer({ store, evidenceRoot, clock: () => new Date(), connectionProbe: signedOut, firstTaskRunner: quietRepo, backgroundChecks: true, ...options });
     await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     if (typeof address !== "object" || address === null) throw new Error("no address");
@@ -711,7 +712,7 @@ describe("the first run: three plain steps to a first result", () => {
     await vi.waitFor(async () => expect(await agentStep(cookie)).not.toContain("claude auth login"));
   });
 
-  test("with no worker registered yet, the first render checks this machine, and shows the step as checking until it answers", async () => {
+  test("with no worker registered yet, the background check asks this machine, and pages show the step as checking until it answers", async () => {
     let answer: (() => void) | null = null;
     const probe = vi.fn((file: string) => new Promise<Awaited<ReturnType<typeof signedIn>>>(done => {
       const reply = () => { void signedIn(file).then(done); };
@@ -738,8 +739,8 @@ describe("the first run: three plain steps to a first result", () => {
     const cookie = await login();
     expect(await agentStep(cookie)).toContain("claude auth login");
     await new Promise(resolve => setTimeout(resolve, 50));
+    // This machine may be asked (the background checks), but its answer never decides for a worker elsewhere.
     expect(await agentStep(cookie)).toContain("claude auth login");
-    expect(probe).not.toHaveBeenCalled();
     store.recordProviderReadiness("far-1", [{ provider: "codex", state: "ready", reason: "installed; logged in", probe: "identity" }], new Date());
     expect(await agentStep(cookie)).not.toContain("claude auth login");
   });
@@ -752,7 +753,7 @@ describe("the first run: three plain steps to a first result", () => {
     expect((await fetch(url("/inbox"), { headers: { cookie }, signal: AbortSignal.timeout(3_000) })).status).toBe(200);
     const chat = await (await fetch(url("/chat?format=workspace"), { headers: { cookie }, signal: AbortSignal.timeout(3_000) })).json() as import("./browser-workspace.js").BrowserWorkspace;
     expect(chat.firstRun!.suggestions.map(one => one.source)).toEqual(["generic", "generic", "generic"]);
-    // The reads were started, in the background.
+    // The reads were started by the background checks, never by the pages.
     expect(never.mock.calls.map(([file]) => file)).toEqual(expect.arrayContaining(["claude", "gh"]));
   });
 
@@ -834,6 +835,13 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
   const csrfFrom = async (cookie: string): Promise<string> => {
     const html = await (await fetch(url("/projects"), { headers: { cookie } })).text();
     return /name="csrf" value="([0-9a-f]{64})"/.exec(html)?.[1] as string;
+  };
+  // Listing asks GitHub, so it is a POST (docs/plans/get-side-effects.md): opening the page alone lists nothing.
+  const githubPage = async (cookie: string): Promise<string> => {
+    expect(await (await fetch(url("/projects/github"), { headers: { cookie } })).text()).toContain("List repositories");
+    const listed = await fetch(url("/projects/github"), { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf: await csrfFrom(cookie) }), redirect: "manual" });
+    expect(listed.headers.get("location")).toBe("/projects/github");
+    return (await fetch(url("/projects/github"), { headers: { cookie } })).text();
   };
 
   const boot = async (options: Record<string, unknown>) => {
@@ -946,7 +954,7 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
     });
     await boot({ projectRoots: [root], ghList });
     const cookie = await login();
-    const page = await (await fetch(url("/projects/github"), { headers: { cookie } })).text();
+    const page = await githubPage(cookie);
     // The on-disk clone is offered as add + open, with its path said plainly.
     expect(page).toContain("add + open");
     expect(page).toContain(cloned);
@@ -985,7 +993,7 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
     });
     await boot({ projectRoots: [root], ghList });
     const cookie = await login();
-    const page = await (await fetch(url("/projects/github"), { headers: { cookie } })).text();
+    const page = await githubPage(cookie);
     // Neither local directory mapped: both rows offer the clone ceremony.
     expect(page).not.toContain("add + open");
     expect((renderedHtmlOf(page).match(/Clone here/g) ?? []).length).toBe(2);
@@ -1008,7 +1016,7 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
     });
     await boot({ projectRoots: [root], ghList });
     const cookie = await login();
-    const page = await (await fetch(url("/projects/github"), { headers: { cookie } })).text();
+    const page = await githubPage(cookie);
     expect(page).toContain("alex/fine");
     // A non-ISO stamp was already rejected at ingestion in production; the
     // page never renders a raw one regardless.
@@ -1018,7 +1026,7 @@ describe("the onboarding ceremony over real HTTP, and root-mode placement proofs
   test("a gh that is missing or signed out renders its words, never a broken page", async () => {
     await boot({ projectRoots: [root], ghList: async () => ({ ok: false as const, reason: "gh-auth" as const, message: "gh is not signed in — run `gh auth login --hostname github.com` where serve runs" }) });
     const cookie = await login();
-    const page = await (await fetch(url("/projects/github"), { headers: { cookie } })).text();
+    const page = await githubPage(cookie);
     expect(page).toContain("gh is not signed in");
   });
 

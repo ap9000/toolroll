@@ -1,6 +1,8 @@
 /** Optional repository context. Callers admit project access; this module grants no authority.
  * The index is disposable. Every read hashes the current bounded tracked source set;
  * a missing/changed/unreadable index falls back to ordinary text search, never a task gate. */
+import { inReadOnlyRequest } from './read-only-request.js';
+import { checkoutGitSync } from './teardown-git.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -14,7 +16,10 @@ const CODE = /\.(?:[cm]?[jt]sx?)$/i;
 const TEXT = /\.(?:[cm]?[jt]sx?|md|txt|css|html|json)$/i;
 const MAX_NODES = 16_000, MAX_EDGES = 12_000;
 const sha = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
-const git = (repo: string, args: string[]) => execFileSync('git', ['--no-optional-locks', '-C', repo, ...args], { encoding: 'utf8', maxBuffer: 2_000_000, timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
+// Read-only and bounded: no index refresh, no hooks, no fsmonitor program.
+// On a page read (Settings -> Knowledge's search), the hardened checkout git: no filter, hook, program or network.
+const git = (repo: string, args: string[]) => inReadOnlyRequest() ? checkoutGitSync(repo, args, { timeoutMs: 10_000, maxBuffer: 2_000_000 }).trimEnd()
+  : execFileSync('git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-C', repo, ...args], { encoding: 'utf8', maxBuffer: 2_000_000, timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
 const inside = (root: string, path: string) => { const r = relative(root, path); return r !== '..' && !r.startsWith('..' + sep) && !isAbsolute(r); };
 
 export type RepositoryContextRequest = {

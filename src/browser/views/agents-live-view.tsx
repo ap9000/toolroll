@@ -4,7 +4,7 @@
  * stopped when the page goes), and hears its own room. Tiles keep their order; nothing leaves while the grid is being
  * looked at (pointer over it or focus in it) — changes wait, and the header says so. */
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactElement } from "react";
 import { Badge, cn } from "../components/ui/index.js";
 import { useLiveRoom } from "../live.js";
 import { useNow } from "../live-task.js";
@@ -12,7 +12,9 @@ import { elapsedWords } from "./agents-view.js";
 
 type Tile = { runId: number; role: string; taskId: string; title: string; project: string | null; agent: string; model: string | null; startedAt: string; endedAt: string | null;
   state: "working" | "needs-you" | "done" | "failed" | "stopped" | "parked"; why: "quiet" | "question" | null; quietSince: string | null; local: boolean; parentRun: number | null;
-  taskHref: string | null };
+  taskHref: string | null;
+  /** The viewer's own lead chat that filed this task (docs/plans/lead-dispatched-tiles.md): it nests under that lead. */
+  filedBy?: { thread: number; chat: "lead" | "project" | "task" } | null };
 type Wire = { k: string; at?: string; s?: number; t?: string[]; id?: string; kind?: string; target?: string; once?: boolean; ok?: boolean | null; out?: string[]; parent?: string | null; via?: number; desc?: string };
 type FileState = "loading" | "ready" | "off" | "unavailable" | "error";
 /** One stream's lines and its open steps (by id, in order), so the current step is the newest still open. */
@@ -189,15 +191,18 @@ function Lines({ lines, short, tall = false }: { lines: string[]; short: boolean
   </div>;
 }
 
+/** A nested tile's hairline elbow from its parent's spine; the spine runs on only to the next one. */
+const elbow = (last: boolean) => cn("relative pl-5", !last && "pb-2",
+  "before:absolute before:left-0 before:top-0 before:h-[22px] before:w-3.5 before:rounded-bl-sm before:border-b before:border-l before:border-border before:content-['']",
+  !last && "after:absolute after:bottom-0 after:left-0 after:top-[22px] after:border-l after:border-border after:content-['']");
+
 /** A subagent's tile: its description, what it is doing, how long, its lines; its own subagents nested under it. */
 function ChildTile({ child, all, now, last }: { child: Child; all: Child[]; now: number; last: boolean }) {
   const words = child.endedAt === null ? "Working" : child.ok === false ? "Ended with an error" : child.ok === true ? "Done" : "Ended";
   const key = child.endedAt === null ? "working" : child.ok === false ? "failed" : child.ok === true ? "done" : "stopped";
   const nested = all.filter(one => one.via === child.s);
   // A hairline elbow from the parent's spine to this tile; the spine runs on only to the next subagent.
-  return <li className={cn("relative pl-5", !last && "pb-2",
-    "before:absolute before:left-0 before:top-0 before:h-[22px] before:w-3.5 before:rounded-bl-sm before:border-b before:border-l before:border-border before:content-['']",
-    !last && "after:absolute after:bottom-0 after:left-0 after:top-[22px] after:border-l after:border-border after:content-['']")} data-live-child={child.s}>
+  return <li className={elbow(last)} data-live-child={child.s}>
     <article className="flex flex-col gap-2 rounded-card border border-border bg-card p-3">
       <header className="flex items-start gap-2">
         <h3 className="line-clamp-2 min-w-0 flex-1 text-[13px] font-semibold leading-[1.35]" title={child.desc}>{child.desc}</h3>
@@ -234,8 +239,10 @@ function Output({ tile, stream, streamed, showLive, tall = false, lost = false }
   </>;
 }
 
-function LiveTile({ tile, stream, streamed, now, repairs, streams, streamedIds, showLive, openRun }: { tile: Tile; stream: Stream; streamed: boolean; now: number;
-  repairs: Tile[]; streams: Map<number, Stream>; streamedIds: Set<number>; showLive: (run: number) => void; openRun: (run: number) => void }) {
+function LiveTile({ tile, stream, streamed, now, repairs, streams, streamedIds, showLive, openRun, nested }: { tile: Tile; stream: Stream; streamed: boolean; now: number;
+  repairs: Tile[]; streams: Map<number, Stream>; streamedIds: Set<number>; showLive: (run: number) => void; openRun: (run: number) => void;
+  /** Nested under the lead that filed it: its place among its siblings, for the connector. */
+  nested?: { last: boolean } }) {
   const needsYou = tile.state === "needs-you";
   // What it is doing right now; nothing rather than the chip's word again.
   const line = tile.why === "quiet" && tile.quietSince !== null ? `Quiet for ${elapsedWords(tile.quietSince, now)}` : tile.why === "question" ? "Asked a question" : tile.endedAt === null ? stepNow(stream.main) ?? "" : "";
@@ -243,7 +250,7 @@ function LiveTile({ tile, stream, streamed, now, repairs, streams, streamedIds, 
   const top = children.filter(child => child.via === undefined || !children.some(one => one.s === child.via));
   const meta = [tile.project?.split("/").pop(), tile.role, tile.agent, tile.model].filter(Boolean).join(" · ");
   const key = needsYou ? "needs" : tile.state;
-  return <li className="flex min-w-0 flex-col gap-2" data-live-tile={tile.runId} data-live-state={tile.state}>
+  return <li className={cn("flex min-w-0 flex-col gap-2", nested !== undefined && elbow(nested.last))} data-live-tile={tile.runId} data-live-state={tile.state}>
     <article className={cn("flex min-w-0 flex-col gap-2.5 rounded-card border bg-card p-3.5", needsYou ? NEEDS_TILE : "border-border")}>
       <header className="flex flex-col gap-1">
         <div className="flex items-start gap-2">
@@ -317,29 +324,46 @@ type Lead = { thread: number; turn: number | null; scope: "lead" | "project" | "
   startedAt: string; endedAt: string | null; stepAt: string[]; doing: string | null; lines: string[]; earlier: boolean; chatHref: string; taskHref: string | null };
 const leadMeta = (lead: Lead) => ["lead chat", lead.project?.split("/").pop(), lead.stepAt.length > 1 ? `step ${lead.stepAt.length}` : null].filter(Boolean).join(" · ");
 
-/** A lead's tile: what it is doing, how long, its lines. Watching only; the title opens it full screen. */
-function LeadTile({ lead, now, openLead }: { lead: Lead; now: number; openLead: (thread: number) => void }) {
-  return <li className="flex min-w-0 flex-col gap-2" data-live-lead={lead.thread} data-live-state={lead.state}>
-    <article className="flex min-w-0 flex-col gap-2.5 rounded-card border border-border bg-card p-3.5">
-      <header className="flex flex-col gap-1">
-        <div className="flex items-start gap-2">
-          <h2 className="line-clamp-2 min-w-0 flex-1 text-[15px] font-semibold leading-[1.3]" title={lead.title}>
-            <button type="button" data-live-open-lead={lead.thread} onClick={() => openLead(lead.thread)} className="text-left hover:underline hover:underline-offset-4 phone:min-h-11">{lead.title}</button>
-          </h2>
-          <Chip tone={TONE[lead.state] ?? "info"}>{STATE_WORDS[lead.state]}</Chip>
-        </div>
-        <p className="truncate font-mono text-[11px] text-muted-foreground">{leadMeta(lead)}</p>
-      </header>
-      <p className="flex gap-2 text-[13px]"><span className="min-w-0 flex-1 truncate">{lead.doing ?? ""}</span>
-        <span className="shrink-0 text-[12px] tabular-nums text-muted-foreground">{elapsedWords(lead.startedAt, lead.endedAt === null ? now : Date.parse(lead.endedAt))}</span></p>
-      {lead.earlier && <p className="text-[11.5px] text-muted-foreground">Earlier lines aren't shown.</p>}
-      <Lines lines={lead.lines} short={false} />
-    </article>
+const CHAT_WORDS: Record<NonNullable<Tile["filedBy"]>["chat"], string> = { lead: "lead chat", project: "project chat", task: "task chat" };
+/** The runs a lead filed, nested under it (its tile, or its quiet header once its tile has gone), each with its connector. */
+function Filed({ thread, runs, label, render }: { thread: number; runs: Tile[]; label: string; render: (tile: Tile, last: boolean) => ReactElement }) {
+  return runs.length === 0 ? null : <ul aria-label={label} className="ml-4 flex flex-col" data-live-filed={thread}>{runs.map((tile, index) => render(tile, index === runs.length - 1))}</ul>;
+}
+
+/** A lead's own tile: what it is doing, how long, its lines. Watching only; the title opens it full screen. */
+function LeadArticle({ lead, now, openLead }: { lead: Lead; now: number; openLead: (thread: number) => void }) {
+  return <article className="flex min-w-0 flex-col gap-2.5 rounded-card border border-border bg-card p-3.5">
+    <header className="flex flex-col gap-1">
+      <div className="flex items-start gap-2">
+        <h2 className="line-clamp-2 min-w-0 flex-1 text-[15px] font-semibold leading-[1.3]" title={lead.title}>
+          <button type="button" data-live-open-lead={lead.thread} onClick={() => openLead(lead.thread)} className="text-left hover:underline hover:underline-offset-4 phone:min-h-11">{lead.title}</button>
+        </h2>
+        <Chip tone={TONE[lead.state] ?? "info"}>{STATE_WORDS[lead.state]}</Chip>
+      </div>
+      <p className="truncate font-mono text-[11px] text-muted-foreground">{leadMeta(lead)}</p>
+    </header>
+    <p className="flex gap-2 text-[13px]"><span className="min-w-0 flex-1 truncate">{lead.doing ?? ""}</span>
+      <span className="shrink-0 text-[12px] tabular-nums text-muted-foreground">{elapsedWords(lead.startedAt, lead.endedAt === null ? now : Date.parse(lead.endedAt))}</span></p>
+    {lead.earlier && <p className="text-[11.5px] text-muted-foreground">Earlier lines aren't shown.</p>}
+    <Lines lines={lead.lines} short={false} />
+  </article>;
+}
+
+/** A lead and the runs it filed, as one grid item: its tile while that is shown, else a quiet header (no chip, no lines),
+ * there while any of its runs is. One component and one key either way, so the runs under it are never rebuilt (their
+ * scroll and follow state stay) when the lead's tile comes or goes: only the heading changes. */
+function LeadGroup({ thread, lead, runs, now, openLead, render }: { thread: number; lead: Lead | null; runs: Tile[]; now: number; openLead: (thread: number) => void;
+  render: (tile: Tile, last: boolean) => ReactElement }) {
+  const projects = [...new Set(runs.map(tile => tile.project?.split("/").pop()).filter(Boolean))].join(", ");
+  const words = runs.length === 0 ? "" : `Filed by ${CHAT_WORDS[runs[0]!.filedBy!.chat]}${projects === "" ? "" : ` · ${projects}`}`;
+  return <li className="flex min-w-0 flex-col gap-2" {...(lead !== null ? { "data-live-lead": thread, "data-live-state": lead.state } : { "data-live-filed-group": thread })}>
+    {lead !== null ? <LeadArticle lead={lead} now={now} openLead={openLead} /> : <p className="truncate text-[12px] text-muted-foreground" title={words}>{words}</p>}
+    <Filed thread={thread} runs={runs} label={lead !== null ? `Filed by ${lead.title}` : words} render={render} />
   </li>;
 }
 
 /** A lead turn full screen: the same dialog as an agent's, with its chat (and its task, for a task's chat) a link away. */
-function LeadFull({ thread, lead, now, lost, onClose }: { thread: number; lead: Lead | null; now: number; lost: boolean; onClose: () => void }) {
+function LeadFull({ thread, lead, now, lost, onClose, filed }: { thread: number; lead: Lead | null; now: number; lost: boolean; onClose: () => void; filed: Tile[] }) {
   const close = useRef<HTMLButtonElement>(null);
   const link = "shrink-0 text-[12.5px] underline decoration-border underline-offset-4 hover:decoration-current phone:inline-flex phone:min-h-11 phone:items-center";
   return <DialogPrimitive.Root open onOpenChange={open => { if (!open) onClose(); }}>
@@ -368,10 +392,20 @@ function LeadFull({ thread, lead, now, lost, onClose }: { thread: number; lead: 
             <a href={lead.chatHref} className={link}>Open chat</a>
             {lead.taskHref !== null && <a href={lead.taskHref} className={link}>Open task</a>}
           </p>
-          {lost && <p className="text-[11.5px] text-muted-foreground">Reconnecting… these lines may not be the latest.</p>}
           {lead.earlier && <p className="text-[11.5px] text-muted-foreground">Earlier lines aren't shown.</p>}
           <Lines lines={lead.lines} short={false} tall />
         </>}
+        {/* Said whatever is shown: the turn's lines or, once it has left, the runs it filed (Codex filed r2 #1). */}
+        {lost && (lead !== null || filed.length > 0) && <p className="text-[11.5px] text-muted-foreground">Reconnecting… these lines may not be the latest.</p>}
+        {/* The runs it filed stay listed after its turn has left the grid: they are still there, under its header. */}
+        {filed.length > 0 && <section aria-label="Tasks it filed" className="flex flex-col gap-2" data-live-full-filed>
+            <h3 className="text-[13px] font-semibold">Tasks it filed <span className="font-normal tabular-nums text-muted-foreground">{filed.length}</span></h3>
+            <ul className="flex flex-col gap-1.5">{filed.map(tile => <li key={tile.runId} className="flex items-center gap-2 text-[13px]">
+              <span className="min-w-0 flex-1 truncate" title={tile.title}>{tile.title}</span>
+              <Chip tone={tile.state === "needs-you" ? "needs" : TONE[tile.state] ?? "info"}>{STATE_WORDS[tile.state]}</Chip>
+              {tile.taskHref !== null && <a href={tile.taskHref} className={link}>Open task</a>}
+            </li>)}</ul>
+          </section>}
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>
   </DialogPrimitive.Root>;
@@ -543,6 +577,11 @@ export function LiveGrid() {
   const ids = new Set(shown.map(tile => tile.runId));
   const repairsOf = (runId: number) => shown.filter(tile => tile.role === "repair" && tile.parentRun === runId);
   const parents = shown.filter(tile => !(tile.role === "repair" && tile.parentRun !== null && ids.has(tile.parentRun)));
+  // Runs the viewer's own lead filed nest under it: under its tile while that is shown, else under a quiet header; either
+  // stands where the first of them stands in the grid's stable order. A run is shown once: nested, never also on its own.
+  const filedOf = (thread: number) => parents.filter(tile => tile.filedBy?.thread === thread);
+  const renderRun = (tile: Tile, last: boolean) => <LiveTile key={tile.runId} tile={tile} stream={streams.get(tile.runId) ?? EMPTY} streamed={streamedIds.has(tile.runId)} now={now}
+    repairs={repairsOf(tile.runId)} streams={streams} streamedIds={streamedIds} showLive={showLive} openRun={openRun} nested={{ last }} />;
   const working = shown.filter(tile => tile.endedAt === null).length + leads.filter(lead => lead.endedAt === null).length;
   const needsYou = shown.filter(tile => tile.state === "needs-you").length;
   const waiting = tiles.length !== shown.length || tiles.some(tile => !ids.has(tile.runId));
@@ -557,13 +596,19 @@ export function LiveGrid() {
       : <ul ref={grid} className="grid items-start gap-4 [grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr))]"
           onPointerEnter={() => hold(true, null)} onPointerLeave={() => hold(false, null)}
           onFocus={() => hold(null, true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) hold(null, false); }}>
-        {leads.map(lead => <LeadTile key={`lead-${lead.thread}`} lead={lead} now={now} openLead={openLead} />)}
-        {parents.map(tile => <LiveTile key={tile.runId} tile={tile} stream={streams.get(tile.runId) ?? EMPTY} streamed={streamedIds.has(tile.runId)} now={now}
-          repairs={repairsOf(tile.runId)} streams={streams} streamedIds={streamedIds} showLive={showLive} openRun={openRun} />)}
+        {leads.filter(lead => filedOf(lead.thread).length === 0).map(lead => <LeadGroup key={`lead-${lead.thread}`} thread={lead.thread} lead={lead} runs={[]} now={now} openLead={openLead} render={renderRun} />)}
+        {parents.map(tile => {
+          const thread = tile.filedBy?.thread;
+          if (thread === undefined) return <LiveTile key={tile.runId} tile={tile} stream={streams.get(tile.runId) ?? EMPTY} streamed={streamedIds.has(tile.runId)} now={now}
+            repairs={repairsOf(tile.runId)} streams={streams} streamedIds={streamedIds} showLive={showLive} openRun={openRun} />;
+          // The group stands where the first of its runs stands: its lead's tile while that is shown, else its header.
+          const group = filedOf(thread), lead = leads.find(one => one.thread === thread);
+          return group[0] !== tile ? null : <LeadGroup key={`group-${thread}`} thread={thread} lead={lead ?? null} runs={group} now={now} openLead={openLead} render={renderRun} />;
+        })}
       </ul>}
     {openRunId !== null && <FullScreen key={openRunId} runId={openRunId} tile={[...tiles, ...shown].find(tile => tile.runId === openRunId) ?? null} stream={streams.get(openRunId) ?? EMPTY}
       streamed={streamedIds.has(openRunId)} now={now} lost={lost} onClose={closeRun} showLive={() => showLive(openRunId)} />}
-    {openLeadId !== null && <LeadFull key={`lead-${openLeadId}`} thread={openLeadId} lead={leads.find(lead => lead.thread === openLeadId) ?? null} now={now} lost={lost} onClose={closeLead} />}
+    {openLeadId !== null && <LeadFull key={`lead-${openLeadId}`} thread={openLeadId} lead={leads.find(lead => lead.thread === openLeadId) ?? null} now={now} lost={lost} onClose={closeLead} filed={shown.filter(tile => tile.filedBy?.thread === openLeadId)} />}
     {terminals > 0 && <p className="border-t border-border pt-3 text-[12px] text-muted-foreground">
       <a href="/term" className="inline-block underline decoration-border underline-offset-4 hover:text-foreground hover:decoration-current phone:min-h-11 phone:py-3"><span className="tabular-nums">{terminals}</span> {terminals === 1 ? "terminal" : "terminals"} you're driving</a></p>}
   </section>;

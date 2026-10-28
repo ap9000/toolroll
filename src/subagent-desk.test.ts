@@ -80,6 +80,21 @@ test("what the lead asks a subagent lands on its desk, and its answer goes back 
   expect(askSubagent(store, store.getSubagent(mate.id)!, { who: "alex", via: "the lead" }, "one more thing", at(2))).toMatchObject({ ok: false, said: "Maya is paused, so nothing was passed on. Resume Maya first." });
 });
 
+test("what it can't do, it says so to whoever asked (in its words, or its reason), and the card goes to its manager", async () => {
+  askSubagent(store, mate, { who: "alex", via: "the lead" }, "Look up order #1204 and tell me when it ships.", T0);
+  askSubagent(store, mate, { who: "alex", via: "the lead" }, "where's order 2201?", T0);
+  const desk = deskOf(store, store.getSubagent(mate.id)!)!;
+  await runFlowSteps(store, repo, at(1), io(turns(
+    { action: "cant", note: "I can't look orders up: I have no order tool yet.", reason: "No tool for it." },
+    { action: "cant", note: "", reason: "No." },
+  )));
+  expect(store.flowCards(desk.id, false).map(card => card.stage)).toEqual(["person", "person"]);
+  expect(replies()).toEqual([
+    { recipient: "alex", subject: "Maya · Support: Look up order #1204 and tell me when it ships.", body: "I can't look orders up: I have no order tool yet." },
+    { recipient: "alex", subject: "Maya · Support: where's order 2201?", body: "Maya couldn't handle this: No." },
+  ]);
+});
+
 test("a code change it's asked for goes to the desk's Build zone, which files an ordinary task that still needs approving", async () => {
   askSubagent(store, mate, { who: "alex", via: "the lead" }, "the refund email has a typo: 'recieve'. Fix it?", T0);
   const desk = deskOf(store, store.getSubagent(mate.id)!)!;

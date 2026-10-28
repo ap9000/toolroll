@@ -29,6 +29,11 @@ const COOKIE_ONLY_POSTS = [
   'term.start', 'term.close', 'term.remove',
   // Passwordless: an operator's switch, from a browser (on proves a typed password in the handler; off is one click).
   'settings.passwordless-send',
+  // Quiet page visits (docs/plans/get-side-effects.md): asking this computer's agent CLIs again, listing GitHub
+  // repositories, from the person's own page.
+  'lead.check', 'projects.github-list',
+  // Reading a coding checkout (its changes, the shipping preview): the coding page's own POST.
+  'code.changes-read', 'code.ship-preview',
 ];
 
 test('cookie-only POST routes match the independent browser-only list exactly', () => {

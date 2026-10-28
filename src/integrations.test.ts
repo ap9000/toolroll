@@ -179,7 +179,9 @@ test("a render never waits on an integration check: the page answers while every
   let started = 0;
   const hang = (() => { started += 1; return new Promise<never>(() => {}); }) as unknown as typeof fetch;
   const hangGh: Gh = () => { started += 1; return new Promise<never>(() => {}); };
-  const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo, configDir: dir, telegramTokenFile: join(dir, "telegram-token"),
+  // The background checks start the integration checks; the page only reads what they saved.
+  const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo, configDir: dir, telegramTokenFile: join(dir, "telegram-token"), backgroundChecks: true,
+    connectionProbe: async () => ({ code: 1, stdout: "", stderr: "", timedOut: false, notFound: true }),
     integrationIo: { fetch: hang, gh: hangGh, reach: () => new Promise<never>(() => {}), checkConnection: () => new Promise<never>(() => {}) } });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -199,7 +201,7 @@ test("a render never waits on an integration check: the page answers while every
       expect(page).toContain("Checking");
       expect(page).toMatch(/data-integration="slack" data-state="not-set-up"[\s\S]*?href="\/settings\/slack">Set up</);
       expect(page).not.toContain(BOT_TOKEN);
-      // A second render while the checks still hang starts no second round and still answers at once.
+      // A second render while the checks still hang starts nothing and still answers at once.
       const again = started;
       expect((await fetch(`${base}/settings/integrations`, { headers: { cookie }, signal: AbortSignal.timeout(3_000) })).status).toBe(200);
       expect(started).toBe(again);
@@ -209,7 +211,7 @@ test("a render never waits on an integration check: the page answers while every
     }
   });
 
-  test("the monitor answers from saved checks and refreshes in the background after its short cache", async () => {
+  test("the monitor answers from saved checks; only the background pass refreshes, after its cache", async () => {
     writeFileSync(join(dir, "telegram-token"), `${BOT_TOKEN}\n`, { mode: 0o600 });
     let clock = 0, calls = 0;
     const counting = (async () => { calls += 1; return new Response(JSON.stringify({ ok: true, result: { username: "shop_alerts_bot" } })); }) as typeof fetch;
@@ -221,7 +223,11 @@ test("a render never waits on an integration check: the page answers while every
     monitor.list();
     expect(calls).toBe(before);
     clock = 61_000;
+    // Reading the list never checks (a page visit only reads); the background pass does.
     monitor.list();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(calls).toBe(before);
+    monitor.refreshIfDue();
     await new Promise(resolve => setTimeout(resolve, 50));
     expect(calls).toBeGreaterThan(before);
   });

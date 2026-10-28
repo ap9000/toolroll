@@ -112,6 +112,7 @@ import { REVIEW_SCHEMA, reviewSwitchWords, type ReviewSwitch } from "./review-sw
 import { SPEND_SCHEMA, billingOf, budgetStates, canPrice, claudeMachineBilling, countsToward, filersOf, monthOf, priceWork, seenBilling as seenBillingOf, spendItems, subagentFilers, usd, type Billing, type Budget, type BudgetAgent, type BudgetHold, type BudgetScope, type BudgetState, type SpendItem } from "./spend.js";
 import { DEFAULT_PERIODS, RETENTION_SCHEMA, periodWords, widenRetentionSchema, type RetentionKind, type RetentionPeriods } from "./retention.js";
 import { CHECKOUT_CLEANUP_SCHEMA, LANDED_CLEANUP_SCHEMA, STORAGE_SWEEP_SCHEMA, DEFAULT_CLEANUP, cleanupWords, type CheckoutCleanup } from "./storage.js";
+import { inReadOnlyRequest } from "./read-only-request.js";
 import { IN_RANGE, LEDGER_CHAIN_SCHEMA, safeWhole, sealLedger, verifyLedgerChain, type LedgerChainReport, type VerifiedHead } from "./ledger-chain.js";
 import { NO_RULES, filerFor, isProtectedWork, protectedChanges, rulesWords, type ApprovalGate, type ApprovalRules, type ApproverKind, type Filer, type FilerKind } from "./approval-policy.js";
 import { configBase, envValue, namedPath } from "./names.js";
@@ -8591,15 +8592,9 @@ export class Store {
       .get(repo);
     if (row === undefined) return null;
     if (Date.parse(String(row["absolute_expiry"])) <= now.getTime()) {
-      this.transact(() => {
-        this.db
-          .prepare("UPDATE operating_mode SET revoked_at = ?, revoked_by = ?, revoke_reason = 'expired' WHERE id = ? AND revoked_at IS NULL")
-          .run(now.toISOString(), "the-clock", Number(row["id"]));
-        this.db
-          .prepare("INSERT INTO operating_mode_event (mode, kind, actor, at) VALUES (?, 'expired-closed', 'the-clock', ?)")
-          .run(Number(row["id"]), now.toISOString());
-        this.reconcileIntentsForMode(String(row["repo"]), null, now);
-      });
+      // A page visit only reads (docs/plans/get-side-effects.md): it sees no mode, and the background pass or the
+      // next path that acts closes it.
+      if (!inReadOnlyRequest()) this.closeExpiredMode(Number(row["id"]), String(row["repo"]), now);
       return null;
     }
     return {
@@ -8610,6 +8605,34 @@ export class Store {
       signedBy: String(row["signed_by"]),
       absoluteExpiry: String(row["absolute_expiry"]),
     };
+  }
+
+  /** Close every operating mode past its expiry (the background pass). Returns how many were closed. */
+  closeExpiredModes(now: Date): number {
+    // The same rows activeMode would close: unrevoked, signed by a standing approver, past their expiry.
+    const rows = this.db.prepare(`SELECT operating_mode.id, operating_mode.repo, operating_mode.absolute_expiry FROM operating_mode
+      JOIN approver ON approver.name = operating_mode.signed_by AND approver.revoked_at IS NULL AND approver.role = 'approver'
+     WHERE operating_mode.revoked_at IS NULL`).all();
+    let closed = 0;
+    for (const row of rows) {
+      if (Date.parse(String(row["absolute_expiry"])) > now.getTime()) continue;
+      this.closeExpiredMode(Number(row["id"]), String(row["repo"]), now);
+      closed++;
+    }
+    return closed;
+  }
+
+  private closeExpiredMode(id: number, repo: string, now: Date): void {
+    this.transact(() => {
+      const closed = this.db
+        .prepare("UPDATE operating_mode SET revoked_at = ?, revoked_by = ?, revoke_reason = 'expired' WHERE id = ? AND revoked_at IS NULL")
+        .run(now.toISOString(), "the-clock", id);
+      if (Number(closed.changes) !== 1) return;
+      this.db
+        .prepare("INSERT INTO operating_mode_event (mode, kind, actor, at) VALUES (?, 'expired-closed', 'the-clock', ?)")
+        .run(id, now.toISOString());
+      this.reconcileIntentsForMode(repo, null, now);
+    });
   }
 
   /** Sign (or renew) a mode: closes any predecessor with a typed event and

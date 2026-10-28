@@ -1442,7 +1442,7 @@ async function runDemoCommand(argv: readonly string[], write: Write): Promise<nu
   const now = new Date();
   const { sandbox, store, seed, evidenceRoot, passwordFile, lead } = createDemoSandbox(now);
   const server = createDecisionServer({
-    store, evidenceRoot, clock: () => new Date(), repos: seed.repos, demoLead: lead,
+    store, evidenceRoot, clock: () => new Date(), repos: seed.repos, demoLead: lead, backgroundChecks: true,
     ...(allowedHosts.length === 0 ? {} : { allowedHosts }),
   });
   await new Promise<void>((ready, failed) => {

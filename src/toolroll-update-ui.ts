@@ -28,7 +28,7 @@ export const UPDATES_CSS = `.updates{max-width:640px;min-width:0;overflow-wrap:a
 export type UpdatesView = {
   current: string;
   /** The newest release, why it is unknown, or not asked because update checks are off. */
-  latest: { version: string } | { problem: string } | { off: true };
+  latest: { version: string } | { problem: string } | { off: true } | { pending: true };
   method: InstallMethod;
   journal: RuntimeUpdateJournal | null;
   running: boolean;
@@ -85,7 +85,8 @@ export function updatesHtml(view: UpdatesView, notice: { said?: string | null; p
     : view.method.kind === "source" ? html`<h2>Toolroll ${view.current}</h2><p class="meta">This runs from a source checkout. Update it with git.</p>`
     : newer && view.method.kind === "desktop" ? html`<h2>Toolroll ${latest} is available</h2><p class="meta">You have ${view.current}. Update it from the Toolroll app.</p>`
     : newer ? html`<h2>Toolroll ${latest} is available</h2><p class="meta">You have ${view.current}. Running work finishes first, and your current version is kept so you can go back.</p>`
-    : "off" in view.latest ? html`<h2>Toolroll ${view.current}</h2><p class="meta">Update checks are off.</p><form method="get" action="/settings/updates" class="update-actions"><input type="hidden" name="check" value="now"><button type="submit">Check now</button></form>`
+    : "off" in view.latest ? html`<h2>Toolroll ${view.current}</h2><p class="meta">Update checks are off.</p>${postForm("/settings/updates/check", html`<button type="submit">Check now</button>`, { attrs: { class: "update-actions" } })}`
+    : "pending" in view.latest ? html`<h2>Toolroll ${view.current}</h2><p class="meta">Not checked for a newer release yet.</p>${postForm("/settings/updates/check", html`<button type="submit">Check now</button>`, { attrs: { class: "update-actions" } })}`
     : latest === null ? html`<h2>Toolroll ${view.current}</h2><p class="meta">Couldn’t check for a newer release: ${"problem" in view.latest ? view.latest.problem : ""}</p>`
     : html`<h2>Toolroll ${view.current} is up to date</h2>`;
   const form = newer && !["npx", "source", "desktop"].includes(view.method.kind)

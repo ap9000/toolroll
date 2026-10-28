@@ -283,7 +283,12 @@ test("Settings → Updates: three buttons behind the password, --now refused whi
     const cookie = (await fetch(`${base}/login`, { method: "POST", body: new URLSearchParams({ name: "alex", token: alex.token }), redirect: "manual" }))
       .headers.getSetCookie().map(one => one.split(";")[0]!).find(one => one.startsWith("standing-orders_session="))!;
     const get = async (path = "/settings/updates") => (await fetch(`${base}${path}`, { headers: { cookie } })).text();
+    // The page shows the last check (docs/plans/get-side-effects.md): none yet, so Check now asks npm.
     let page = await get();
+    expect(page).toContain("Not checked for a newer release yet.");
+    const checkedNow = await fetch(`${base}/settings/updates/check`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf: /name="csrf" value="([0-9a-f]{64})"/.exec(page)![1]! }), redirect: "manual" });
+    expect(checkedNow.headers.get("location")).toBe("/settings/updates");
+    page = await get();
     expect(page).toContain("Toolroll 0.7.0 is available");
     expect(page).toContain('type="password" name="password"');
     const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)![1]!;
@@ -698,7 +703,12 @@ test("c6: Settings → Updates asks npm nothing while update checks are off, unt
     expect(asked).toBe(0);
     expect(off).toContain("Update checks are off.");
     expect(off).not.toContain("Update now");
-    const checked = await get("/settings/updates?check=now");
+    // A query string checks nothing; Check now is a POST with the form token.
+    await get("/settings/updates?check=now");
+    expect(asked).toBe(0);
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(off)![1]!;
+    expect((await fetch(`${base}/settings/updates/check`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf }), redirect: "manual" })).status).toBe(303);
+    const checked = await get("/settings/updates");
     expect(asked).toBe(1);
     expect(checked).toContain("Toolroll 0.7.0 is available");
     await get("/settings/updates");

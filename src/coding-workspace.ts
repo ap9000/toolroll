@@ -1,3 +1,4 @@
+import { checkoutGit } from './teardown-git.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, chmodSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -612,10 +613,20 @@ export class CodingWorkspace {
 
   async changes(id: string, actor: CodingActor): Promise<CodingChanges> {
     const session = this.get(id, actor);
+    // The code page reads this on a GET (docs/plans/get-side-effects.md), from a checkout the agent writes: every git
+    // here is the hardened checkout git, which refuses a config that could run a command and reads no global config.
+    // Read mode: the read flags, and the checkout's config and info/attributes as read once (teardown-git.ts readView),
+    // hold even if the agent changes them after checkoutGit read them: no hook, pager, filter or network.
+    const safe = checkoutGit(run, 'read');
+    const read = async (args: string[]) => {
+      const result = await safe('git', args, { cwd: session.worktree, timeoutMs: 60_000, maxBuffer: 1_048_576 });
+      if (result.code !== 0) throw Error('Git could not complete this workspace operation. Check the repository and try again.');
+      return result.stdout;
+    };
     const [head, status, tracked, untracked] = await Promise.all([
-      this.git(session.worktree, ['rev-parse', 'HEAD']), this.git(session.worktree, ['status', '--short']),
-      run('git', ['--no-optional-locks', 'diff', '--no-ext-diff', '--no-textconv', session.base, '--'], { cwd: session.worktree, timeoutMs: 60_000, maxBuffer: 1_048_576 }),
-      this.git(session.worktree, ['ls-files', '--others', '--exclude-standard', '-z']),
+      read(['rev-parse', 'HEAD']), read(['status', '--short']),
+      safe('git', ['diff', '--no-ext-diff', '--no-textconv', session.base, '--'], { cwd: session.worktree, timeoutMs: 60_000, maxBuffer: 1_048_576 }),
+      read(['ls-files', '--others', '--exclude-standard', '-z']),
     ]);
     let diff = tracked.stdout, truncated = tracked.code !== 0;
     // git's no-index diff describes symlinks themselves; it does not follow a
@@ -623,7 +634,7 @@ export class CodingWorkspace {
     const paths = untracked.split('\0').filter(Boolean);
     for (let index = 0; index < paths.length; index++) {
       if (index >= 100 || Buffer.byteLength(diff) >= 1_048_576) { truncated = true; break; }
-      const part = await run('git', ['--no-optional-locks', 'diff', '--no-index', '--no-ext-diff', '--no-textconv', '--', '/dev/null', paths[index]!], { cwd: session.worktree, timeoutMs: 60_000, maxBuffer: 131_072 });
+      const part = await safe('git', ['diff', '--no-index', '--no-ext-diff', '--no-textconv', '--', '/dev/null', paths[index]!], { cwd: session.worktree, timeoutMs: 60_000, maxBuffer: 131_072 });
       diff += part.stdout;
       if (part.code !== 0 && part.code !== 1) truncated = true;
     }

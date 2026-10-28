@@ -44,7 +44,7 @@ projectName
 import { fileTaskProposal } from "../proposal.js";
 import { providerName } from "../provider-auth.js";
 import { validModelId } from "../provider.js";
-import { loadOrCreateVapidKeys,validatePushEndpoint } from "../push.js";
+import { loadOrCreateVapidKeys,loadVapidKeys,validatePushEndpoint } from "../push.js";
 import {
 parseResultTab,
 RESULT_REVIEW_SCRIPT
@@ -68,7 +68,7 @@ import { type ProjectPeek } from "./render-pages.js";
 import { completionForm,hardBlockerOf,homePhaseWords,owedAcceptanceOf,resultPanelHtml } from "./render-results.js";
 import { browserCaller,oneLineUa,type ChatCandidate,type Session,type Who } from "./session.js";
 export function createChatHandlers(runtime: ServerRuntime) {
-  const { firstRunStepsNow, managedRepos, leadWords, store, options, phoneSetup, visible, liveTurns, leadSaid, evidenceRoot, clock, sessions, CHAT_CANDIDATE_TTL_MS, chatFetcher, CHAT_CANDIDATES_PER_APPROVER, chatCeilingDigest, workAccess, familyOf, firstTasks, leadPrincipal, taskChatFocus, chatScopeOf, leadConversationRows, demoLeadHere, sendScreen, chromeFor, teamBrowserReply, team, teamChatProvider, runVisible, runIsLive, resultDetailOf, pullRequestTargetOf, chatEnablement, startLeadConversation, projectFamilyPeek, needsYouBadge, liveRefreshSeconds, chatKeyFor, chatCatalog, providerHome, mintApprovalNonce, checkLocalAgents, agentSignInCommand, bustBadge, authenticateApprover, revisionDestination, armTaskResume, consumeApprovalNonce } = runtime;
+  const { firstRunStepsNow, managedRepos, leadWords, store, options, phoneSetup, visible, liveTurns, leadSaid, evidenceRoot, clock, sessions, CHAT_CANDIDATE_TTL_MS, chatFetcher, CHAT_CANDIDATES_PER_APPROVER, chatCeilingDigest, workAccess, familyOf, firstTasks, leadPrincipal, taskChatFocus, chatScopeOf, leadConversationRows, demoLeadHere, sendScreen, chromeFor, teamBrowserReply, team, teamChatProvider, runVisible, runIsLive, resultDetailOf, pullRequestTargetOf, chatEnablement, startLeadConversation, projectFamilyPeek, needsYouBadge, liveRefreshSeconds, chatKeyFor, chatCatalog, chatCatalogKnown, providerHome, mintApprovalNonce, checkLocalAgents, agentSignInCommand, bustBadge, authenticateApprover, revisionDestination, armTaskResume, consumeApprovalNonce } = runtime;
 
 
   // The read-only refresh (package 2): the same JSON status as before —
@@ -91,7 +91,6 @@ export function createChatHandlers(runtime: ServerRuntime) {
       return respond(response, 200, "application/json", JSON.stringify({ session: null }));
     }
     const sessionId = session?.id ?? NOT_STARTED_SESSION;
-    store.sweepStaleLeadTurns(now);
     const request = url.searchParams.get("request") ?? "";
     // Received: the engine took it, or the lead queue holds it (a queued acknowledgement lost on the way still frees the draft).
     const received = session !== null && /^[a-f0-9]{32}$/.test(request) && store.leadRequestReceived(session.id, request);
@@ -172,9 +171,8 @@ export function createChatHandlers(runtime: ServerRuntime) {
         chrome: chromeFor(null, 'chat', undefined, 'all'), workspace: { team: reply.snapshot, notices: [DEPRECATED_PAGE.team, ...(said ? [said] : [])] },
       }));
     }
-    store.sweepStaleChatTurns(now);
-    store.sweepStaleLeadTurns(now);
-    store.sweepCoordinatorProposals(now);
+    // Settling a turn past its deadline (its spend) and expiring old proposals are the background passes' work, never a
+    // page visit's (docs/plans/get-side-effects.md); the lead's follow pass sweeps every few seconds.
     sweepChatDrafts(Date.now());
     const requestedTask = url.searchParams.get("task");
     const focusTask = taskChatFocus(requestedTask, now, who, { mintNonce: !requestContext.getStore()?.workspaceRead });
@@ -362,7 +360,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
             tail: found === null || found.source === "environment" ? null : redactToken(found.key),
           };
         }),
-        openrouterModels: (await chatCatalog())?.map(one => one.id) ?? null,
+        openrouterModels: chatCatalogKnown()?.map(one => one.id) ?? null,
         liveModels: [...modelOptions(store, "claude", now, providerHome), ...modelOptions(store, "codex", now, providerHome)],
         csrf: who.session.csrf,
         problem:
@@ -435,21 +433,36 @@ export function createChatHandlers(runtime: ServerRuntime) {
   async function pushKey(ctx: HandlerContext): Promise<void> {
     const { who, response } = ctx;
     if (who.via !== "cookie") return respond(response, 403, "application/json", JSON.stringify({ error: "session" }));
-    const keys = loadOrCreateVapidKeys(dirname(options.telegramTokenFile ?? "."));
+    // The pair is made as the console starts (docs/plans/get-side-effects.md); this only reads it.
+    const keys = options.telegramTokenFile === undefined ? null : loadVapidKeys(dirname(options.telegramTokenFile));
     response.setHeader("cache-control", "no-store");
+    if (keys === null) return respond(response, 503, "application/json", JSON.stringify({ error: "push is not set up on this console" }));
     return respond(response, 200, "application/json", JSON.stringify({ key: keys.publicKey }));
   }
-  // While no agent is signed in, Chat asks this computer again on its own (onboarding): a fresh, non-spending sign-in
-  // check at most every few seconds, and the lead turns on as soon as one is found.
+  // What this computer's agent CLIs said last, and whether the lead is on. A read: the answer comes from the background
+  // checks or a Check now (POST /lead/check), never from this request (docs/plans/get-side-effects.md).
+  const leadState = () => JSON.stringify({ lead: store.getChatConfig() === null ? "off" : "on", agent: runtime.localSignIn?.signedIn ?? null,
+    checkedAt: runtime.localSignIn === null ? null : new Date(runtime.localSignIn.at).toISOString(), command: agentSignInCommand() });
   async function leadStatus(ctx: HandlerContext): Promise<void> {
     const { who, response } = ctx;
     if (who.via !== "cookie") return respond(response, 403, "application/json", JSON.stringify({ error: "sign in" }));
+    response.setHeader("cache-control", "no-store");
+    return respond(response, 200, "application/json", leadState());
+  }
+  // While no agent is signed in, Chat asks this computer again on its own (onboarding), and Settings → Lead has Check
+  // now: a fresh, non-spending sign-in check at most every few seconds, and the lead turns on as soon as one is found
+  // (the lead-by-default rule). A POST with the person's form token, so no prefetch or link preview can set it off.
+  async function leadCheck(ctx: HandlerContext): Promise<void> {
+    const { response, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.leadCheck);
     if (Date.now() - runtime.leadRecheckedAt > 4_000) {
       runtime.leadRecheckedAt = Date.now();
       await Promise.race([checkLocalAgents(true), new Promise(done => setTimeout(done, 8_000).unref?.())]);
     }
+    const back = body.get("return");
+    if (back !== null) return redirect(response, safeReturn(back));
     response.setHeader("cache-control", "no-store");
-    return respond(response, 200, "application/json", JSON.stringify({ lead: store.getChatConfig() === null ? "off" : "on", agent: runtime.localSignIn?.signedIn ?? null, command: agentSignInCommand() }));
+    return respond(response, 200, "application/json", leadState());
   }
   async function taskStatus(ctx: HandlerContext): Promise<void> {
     const { url, who, response, now } = ctx;
@@ -1112,7 +1125,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
       intro: HOW_IT_WORKS,
       lead: lead === null ? null : { words: `The lead uses ${lead}`, href: "/settings/lead" },
       // With no lead yet and no agent signed in, the page asks this computer again on its own.
-      recheck: store.getChatConfig() === null && agent !== undefined && !agent.done ? "/lead/status" : null,
+      recheck: store.getChatConfig() === null && agent !== undefined && !agent.done ? "/lead/check" : null,
     };
   }
   /** After the first Ready result, once (onboarding): the phone, by a chat app or the console over Tailscale. */
@@ -1405,18 +1418,10 @@ export function createChatHandlers(runtime: ServerRuntime) {
       planUse: (windows?.tiles ?? []).map(one => ({ name: one.name, window: one.window, percent: one.percent, detail: one.detail, tone: one.tone })),
     };
   }
+  /** The first tasks last found for a project (docs/plans/get-side-effects.md): the background checks ask gh and
+   * git grep while the first run is open; a page shows what they found, or the generic three. */
   function firstTasksFor(repo: string): FirstTaskSuggestion[] {
-    const at = Date.now();
-    let entry = firstTasks.get(repo);
-    if (entry === undefined || (entry.until <= at && !entry.reading)) {
-      const reading = { until: at + 10 * 60_000, found: entry?.found ?? null, reading: true };
-      firstTasks.set(repo, reading);
-      entry = reading;
-      void findFirstTasks(repo, options.firstTaskRunner ?? execRun)
-        .then(found => { reading.found = found; }, () => {})
-        .finally(() => { reading.reading = false; });
-    }
-    return entry.found ?? firstTaskSuggestions({ issues: [], todos: [] });
+    return firstTasks.get(repo)?.found ?? firstTaskSuggestions({ issues: [], todos: [] });
   }
 
   function approverCandidateCount(approver: string): number {
@@ -1451,6 +1456,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     "chat.action": sharedActionReview,
     "push.key": pushKey,
     "lead.status": leadStatus,
+    "lead.check": leadCheck,
     "chat.task-status": taskStatus,
     "chat.demo.ask": demoAsk,
     "chat.demo.approve": demoAct("approve"),

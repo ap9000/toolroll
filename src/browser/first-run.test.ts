@@ -2,6 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, onTestFinished, test, vi } from "vitest";
+import { FormToken } from "./ui/index.js";
 import { FirstRequest, FirstRun, Journey, LEAVING_HOLD_MS, leaveFor, PhoneCard, rechecked, withSuggestion } from "./first-run.js";
 import { firstTaskJourney, taskRoad } from "../first-run.js";
 import type { BrowserFirstRun } from "../browser-workspace.js";
@@ -27,7 +28,7 @@ async function render(element: ReturnType<typeof createElement>) {
   const host = document.createElement("div"); document.body.append(host); root = createRoot(host);
   await act(async () => root!.render(element));
 }
-const mount = (firstRun: BrowserFirstRun) => render(createElement(FirstRun, { firstRun }));
+const mount = (firstRun: BrowserFirstRun) => render(createElement(FormToken.Provider, { value: "f".repeat(64) }, createElement(FirstRun, { firstRun })));
 
 test("three steps, each done or with its one action", async () => {
   await mount(signedOut());
@@ -61,13 +62,15 @@ test("with no agent signed in, the page asks again on its own and shows the lead
     const real = Object.getOwnPropertyDescriptor(window, "location");
     onTestFinished(() => { if (real) Object.defineProperty(window, "location", real); });
     Object.defineProperty(window, "location", { configurable: true, value: { ...window.location, reload } });
-    await mount({ ...signedOut(), recheck: "/lead/status" });
+    await mount({ ...signedOut(), recheck: "/lead/check" });
     await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(reload).not.toHaveBeenCalled();
     await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
     expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(fetcher.mock.calls[1]![0]).toBe("/lead/status");
+    // A check is a POST carrying the page's form token: a prefetch or preview of the page never sets one off.
+    expect(fetcher.mock.calls[1]).toMatchObject(["/lead/check", { method: "POST" }]);
+    expect(String((fetcher.mock.calls[1] as unknown as [string, { body: URLSearchParams }])[1].body.get("csrf"))).toBe("f".repeat(64));
     expect(reload).toHaveBeenCalledTimes(1);
   } finally { vi.useRealTimers(); }
 });
@@ -82,7 +85,7 @@ async function recheckPage() {
   const { href, origin, pathname, search, hash } = window.location;
   const here = { href, origin, pathname, search, hash, reload };
   Object.defineProperty(window, "location", { configurable: true, value: here });
-  await mount({ ...signedOut(), recheck: "/lead/status" });
+  await mount({ ...signedOut(), recheck: "/lead/check" });
   const answer = async (body: unknown) => { await act(async () => { answers.shift()!({ ok: true, json: async () => body }); await vi.advanceTimersByTimeAsync(0); }); };
   const wait = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
   return { fetcher, reload, here, answer, wait, restore: () => { if (real) Object.defineProperty(window, "location", real); } };
@@ -190,8 +193,11 @@ test("a task's road says only what happened: no Checks for a report, skipped che
   expect(road({ stage: "finished" }, true, true, { report: true })).toEqual(["plan:done:Plan", "approve:done:You approve", "build:done:Build", "ready:done:Ready"]);
   // Past Checks without a passing check: the step is skipped and says why, never done.
   expect(road({ stage: "finished" }, true, true, { checks: "not-run" })[3]).toBe("checks:skipped:Checks not run");
-  expect(road({ stage: "complete" }, true, true, { checks: "unread" })[3]).toBe("checks:skipped:Checks unread");
-  expect(road({ stage: "finished" }, true, true, { checks: "failed" })[3]).toBe("checks:stuck:Checks failed");
+  expect(road({ stage: "finished" }, true, true, { checks: "off" })[3]).toBe("checks:skipped:Checks at release");
+  // A check that can't be read is never done, and Ready isn't either (fail closed), even on a completed task.
+  expect(road({ stage: "finished" }, true, true, { checks: "unreadable" }).slice(3)).toEqual(["checks:stuck!:Checks unreadable", "ready:todo:Ready"]);
+  expect(road({ stage: "complete" }, true, true, { checks: "unreadable" }).slice(3)).toEqual(["checks:stuck:Checks unreadable", "ready:todo:Ready"]);
+  expect(road({ stage: "finished" }, true, true, { checks: "failed" }).slice(3)).toEqual(["checks:stuck:Checks failed", "ready:todo:Ready"]);
   expect(road({ stage: "finished" }, true, true, { checks: "running" })[3]).toBe("checks:current:Checks running");
   expect(road({ stage: "finished" }, true, true, { checks: "passed" })[3]).toBe("checks:done:Checks");
   // With no checks fact the step is never shown done.

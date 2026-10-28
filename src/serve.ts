@@ -1,3 +1,13 @@
+import { secretFolder } from "./tool-secret-store.js";
+import { acceptedIdentities, recoverLearning } from "./project-learning.js";
+import { loadOrCreateVapidKeys } from "./push.js";
+import { checkoutPlan } from "./checkout-cleanup.js";
+import { latestReleaseFor } from "./server/render-settings.js";
+import { LastChecks } from "./server/last-checks.js";
+import { readProviderKey } from "./keys.js";
+import { closeExpiredUnattendedGrants } from "./flow-unattended.js";
+import { isKeyedProvider } from "./acp-agents.js";
+import { PROVIDER_IDS } from "./provider.js";
 import { taskMovedSince } from "./chat-ask.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
 import { signInsUnavailableWords } from "./check-access.js";
@@ -13,6 +23,10 @@ const RAIL_TASKS = 6;
 const PROXY_HEADER = /^(forwarded|via|x-forwarded-.+|x-real-ip|x-client-ip|x-original-.+|x-cluster-client-ip|true-client-ip|cf-connecting-ip|fastly-client-ip|x-proxyuser-ip)$/i;
 /** Asks a project names for the chime (its count is complete beyond them). */
 const ASKS_PER_PROJECT = 100;
+/** How often the background checks look at what is due (docs/plans/get-side-effects.md), and how often this
+ * computer's agent sign-ins are asked again. */
+const BACKGROUND_CHECKS_MS = 30_000;
+const LOCAL_AGENTS_EVERY_MS = 2 * 60_000;
 import { boundProjectSummary,browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserAsk,type BrowserProjectState,type BrowserRailTask,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
 import { sharedActionPayload } from './chat-actions.js';
 import { prepareCodingContext } from './coding-context.js';
@@ -26,6 +40,7 @@ import { configureLeadFollow,recordLeadFollowFailure,runLeadFollowPass } from '.
 import { leadNameOf } from "./lead-identity.js";
 import { createLiveBus,followWorkspace } from "./live-bus.js";
 import { startMaintenance } from './maintenance.js';
+import { asReadOnlyRequest } from './read-only-request.js';
 import { connectionsOf,localConnectOf,oneClickOf,type ConnectVisit } from "./mcp-connect.js";
 import { MOBILE_VIEWPORT_SCRIPT } from "./mobile-viewport.js";
 import { projectAuthority } from "./project-access.js";
@@ -112,7 +127,7 @@ import { hasForbiddenControls } from "./decision.js";
 import { UPDATE_PAUSED,updateAdmissionPaused } from "./desktop-update-gate.js";
 import { scanForSecrets } from "./evidence.js";
 import { run as execRun } from "./exec.js";
-import { firstRunSteps,signInCommandFor,type FirstRunStep,type FirstTaskSuggestion } from "./first-run.js";
+import { findFirstTasks,firstRunSteps,signInCommandFor,type FirstRunStep,type FirstTaskSuggestion } from "./first-run.js";
 import { installMethod } from "./install-method.js";
 import { createIntegrationMonitor } from "./integrations.js";
 import { logEvent } from "./log.js";
@@ -278,8 +293,21 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const providerHome = options.connectionHome ?? homedir();
   const checkConnection = createConnectionChecker({ home: providerHome, clock, ...(options.connectionProbe === undefined ? {} : { probe: options.connectionProbe }) });
   // Every sign-in check the console makes also answers a sign-in pause.
+  // Whether this computer can fence agents: asked once as the console starts (a sandbox running /usr/bin/true), so
+  // Settings → Project never starts a process (docs/plans/get-side-effects.md).
+  const fenceHere = options.fenceAvailable === undefined ? macosFenceAvailable() || linuxFenceAvailable() : false;
+  // Phone notifications' signing pair, made once as the console starts so /push/key only reads it.
+  if (options.telegramTokenFile !== undefined) { try { loadOrCreateVapidKeys(dirname(options.telegramTokenFile)); } catch { /* /push/key says push is not set up */ } }
+  // The last answer of every other check a page shows (docs/plans/get-side-effects.md).
+  const lastChecks = new LastChecks();
+  /** The newest release, asked of npm (Settings → Updates shows the last answer). */
+  const checkRelease = () => lastChecks.run("release", () => latestReleaseFor(options.updates?.latest));
+  // What each sign-in check said last: what a page shows (docs/plans/get-side-effects.md). A page never checks.
+  const knownConnections = new Map<ProviderId, ProviderConnection>();
+  const connectionKnown = (provider: ProviderId): ProviderConnection | null => knownConnections.get(provider) ?? null;
   const connectionCheck = async (provider: ProviderId, fresh?: boolean): Promise<ProviderConnection> => {
     const value = await checkConnection(provider, fresh);
+    knownConnections.set(provider, value);
     try { noteSignInProbe(store, provider, value.state, clock()); } catch { /* the pause keeps its own state */ }
     return value;
   };
@@ -398,6 +426,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (found.ok) ssoProvider = { issuer, provider: found.provider, at: Date.now() };
     return found;
   }
+  /** The identity provider as last discovered: what starting a sign-in uses (a GET, so it fetches nothing,
+   * docs/plans/get-side-effects.md). Discovered as the console starts, by the background checks every ten minutes, and
+   * when sign-in settings are saved or tested. */
+  function providerKnown(issuer: string): OidcProvider | null {
+    return ssoProvider !== null && ssoProvider.issuer === issuer ? ssoProvider.provider : null;
+  }
+  { const settings = ssoSettings(); if (settings !== null) void providerFor(settings.issuer).catch(() => undefined); }
   /** Password sign-in is only for instance operators when the provider says so (a way in if it's down). */
   const passwordAllowed = (name: string) => { const settings = ssoSettings(); return settings === null || settings.passwords === "everyone" || store.isInstanceOperator(name); };
   const minutesWords = (ms: number) => { const minutes = Math.max(1, Math.ceil(ms / 60_000)); return minutes >= 120 ? `${Math.round(minutes / 60)} hours` : `${minutes} minute${minutes === 1 ? "" : "s"}`; };
@@ -470,7 +505,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       setting: store.projectCheckAccess(repo), changed: store.projectCheckAccessChange(repo),
       canNarrow: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, repo),
       canWiden: who.via === "cookie" && !store.isDemo() && store.isInstanceOperator(who.name),
-      unconfinedHere: !(options.fenceAvailable?.() ?? (macosFenceAvailable() || linuxFenceAvailable())) && store.unfencedAgentsAllowed(),
+      unconfinedHere: !(options.fenceAvailable?.() ?? fenceHere) && store.unfencedAgentsAllowed(),
       signInsUnavailable: signInsUnavailableWords(options.platform ?? process.platform),
     },
     liveView: (() => {
@@ -615,7 +650,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const server = createServer((request, response) => {
     instrumentRequest(store.telemetry, request, response);
     // Every password checked while answering counts against where this request came from (sign-in-guard.ts).
-    void withPasswordSource(joinSourceOf(request), () => handle(request, response)).catch(error => {
+    // A GET or HEAD only reads (docs/plans/get-side-effects.md): store reads that would tidy up as they go don't.
+    const answer = () => handle(request, response);
+    void withPasswordSource(joinSourceOf(request), () => request.method === "GET" || request.method === "HEAD" ? asReadOnlyRequest(answer) : answer()).catch(error => {
       // Every unhandled error is logged (v99): the path and the message, never the request's body or query.
       logEvent("error", "serve.error", { method: request.method, path: redactedPath(new URL(request.url ?? "/", "http://placeholder").pathname), error: error instanceof Error ? error.message : String(error) });
       if (envValue(process.env, "SERVE_DEBUG") === "1") console.error("SERVE ERROR:", error);
@@ -1049,8 +1086,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       .finally(() => { localSignInChecking = null; });
     return localSignInChecking;
   }
+  /** The last answer only (docs/plans/get-side-effects.md): this computer is asked again by the background checks or a
+   * person's Check now, never because a page was opened. */
   function localAgentSignedIn(): boolean | null {
-    if (localSignInChecking === null && (localSignIn === null || Date.now() - localSignIn.at > 30_000)) void checkLocalAgents();
     return localSignIn?.signedIn ?? null;
   }
   /**
@@ -1281,6 +1319,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * catalog is unreachable; callers fall back to the compiled table. */
   let catalogCache: { at: number; models: import("./converse.js").CatalogModel[] } | null = null;
 
+  /** The catalog as last fetched, for a page to show (docs/plans/get-side-effects.md): a page never fetches it. The
+   * background checks keep it current while an OpenRouter key is saved; saving a choice fetches it (chatCatalog). */
+  function chatCatalogKnown(): import("./converse.js").CatalogModel[] | null {
+    return chatKeyFor("openrouter-api") === null ? null : catalogCache?.models ?? null;
+  }
   async function chatCatalog(): Promise<import("./converse.js").CatalogModel[] | null> {
     const key = chatKeyFor("openrouter-api")?.key;
     if (key === undefined) return null;
@@ -1781,6 +1824,82 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       onError: error => recordLeadFollowFailure(store, error, clock()),
     });
   });
+  // Background checks (docs/plans/get-side-effects.md): what pages show about this computer's agent sign-ins and the
+  // services Toolroll uses is asked here, on a timer, and a page reads the last answer. A page visit never starts a
+  // process or a network call, and never acts on what a check finds: lifting a sign-in pause and the lead-by-default
+  // rule run from this pass (or a person's Check now), not from a GET.
+  let backgroundChecks: ReturnType<typeof startMaintenance> | null = null;
+  let agentsCheckedAt = 0;
+  if (options.backgroundChecks === true) server.once('listening', () => {
+    // This Toolroll's folder for secrets, checked once now, so a page can read which are set without preparing it.
+    try { secretFolder(); } catch { /* a page says secrets can't be read; the next action reports why */ }
+    backgroundChecks = startMaintenance({ intervalMs: options.backgroundChecksMs ?? BACKGROUND_CHECKS_MS, shouldStop: () => leadClosing,
+      run: async () => {
+        const now = Date.now();
+        const waits: Promise<unknown>[] = [];
+        if (now - agentsCheckedAt >= (options.backgroundChecksMs ?? LOCAL_AGENTS_EVERY_MS)) {
+          agentsCheckedAt = now;
+          waits.push(checkLocalAgents());
+          // The other agents Settings lists: their last answer is what the page shows.
+          for (const provider of PROVIDER_IDS.filter(isKeyedProvider).filter(one => one !== "claude" && one !== "codex")) waits.push(connectionCheck(provider).catch(() => undefined));
+        }
+        integrations.refreshIfDue();
+        const sso = ssoSettings();
+        if (sso !== null && (ssoProvider === null || ssoProvider.issuer !== sso.issuer || Date.now() - ssoProvider.at >= 10 * 60_000)) waits.push(providerFor(sso.issuer));
+        if (chatKeyFor("openrouter-api") !== null) waits.push(chatCatalog());
+        const openrouter = readProviderKey("openrouter", providerHome);
+        // The cache answers until its list is due again (ten minutes, or 30 s after a failure), then fetches.
+        if (openrouter !== null) waits.push(modelCatalog(openrouter));
+        // What used to be closed by whichever page read it first: an operating mode or a flow's "runs on its own"
+        // grant past its expiry, a stalled update, old coordinator proposals. (Lead turns past their deadline are the
+        // follow pass's, which settles them even while an update drains.)
+        const at = clock();
+        store.closeExpiredModes(at);
+        closeExpiredUnattendedGrants(store, at);
+        store.sweepCoordinatorProposals(at);
+        // The demo's scripted story, if a beat timer missed (its pages only read it).
+        try { options.demoLead?.advance(at); } catch { /* the next pass tries again */ }
+        const databaseFile = store.databaseFile();
+        if (databaseFile !== null && !updateChecksOff(process.env, options.configDir ?? dirname(databaseFile)).off) {
+          const last = lastChecks.known<{ version: string } | { problem: string }>("release");
+          if (lastChecks.due("release", last !== null && "problem" in last.value ? 60_000 : 15 * 60_000)) waits.push(checkRelease());
+        }
+        // Chat's first tasks (issues and TODOs) while the first run is open and nothing is filed yet.
+        if (firstRunStepsNow(clock()) !== null && !store.hasAnyWork()) {
+          for (const repo of managedRepos()) {
+            const entry = firstTasks.get(repo);
+            if (entry !== undefined && (entry.reading || entry.until > Date.now())) continue;
+            const reading = { until: Date.now() + 10 * 60_000, found: entry?.found ?? null, reading: true };
+            firstTasks.set(repo, reading);
+            waits.push(findFirstTasks(repo, options.firstTaskRunner ?? execRun).then(found => { reading.found = found; }, () => {}).finally(() => { reading.reading = false; }));
+          }
+        }
+        // Learning recovered from reviewed runs (and a project's saved rows carried to its current identity), which
+        // Settings → Learning and Knowledge used to do as they opened.
+        if (lastChecks.due("learning", 10 * 60_000)) {
+          waits.push(lastChecks.run("learning", async () => {
+            for (const repo of managedRepos()) {
+              try { acceptedIdentities(store, repo); } catch { /* the next pass tries again */ }
+              try { recoverLearning(store, evidenceRoot, repo); } catch { /* the next pass tries again */ }
+            }
+          }));
+        }
+        // What Codex has configured, per project, for Settings → Tools to offer.
+        for (const repo of managedRepos()) {
+          if (lastChecks.due(`codex-tools:${repo}`, 10 * 60_000)) waits.push(lastChecks.run(`codex-tools:${repo}`, () => codexServers(repo)));
+        }
+        if (databaseFile !== null && lastChecks.due("storage", 30 * 60_000)) {
+          waits.push(lastChecks.run("storage", () => checkoutPlan(store, storagePool(databaseFile), clock(), { manual: true })));
+        }
+        // The same reading the chrome does, outside a page visit, so it releases a stalled `toolroll update` and a stalled
+        // desktop update in every folder the chrome looks in.
+        if (databaseFile !== null) { try { waitingUpdate(databaseFile, run => store.stopQuiescenceProblem(run) !== null, at); } catch { /* shown as last saved */ } }
+        await Promise.all(waits);
+      },
+      onError: () => { /* each check keeps its own last answer; the next pass asks again */ },
+    });
+    void backgroundChecks.runNow();
+  });
   // Keep native process custody until shutdown has verified agent/tool exit.
   // Coding custody does not depend on subagents or the lead's follow pass, so
   // it closes at once and never waits behind a model turn: a stop must release
@@ -1806,7 +1925,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     liveHandlers.close();
     detachReads();
     liveFollower.close();
-    void Promise.all([closeCoding(), terminalClosing.close?.().then(problem => { terminalClosing.problem = problem; }), bounded(team.close()), bounded(personalQueue.close()), bounded(leadMaintenance?.stop()), bounded(reads?.close())])
+    void Promise.all([closeCoding(), terminalClosing.close?.().then(problem => { terminalClosing.problem = problem; }), bounded(team.close()), bounded(personalQueue.close()), bounded(leadMaintenance?.stop()), bounded(backgroundChecks?.stop()), bounded(reads?.close())])
       // The server always closes; a terminal whose processes couldn't be proved stopped is the close's error.
       .then(() => closeServer(error => callback?.(error ?? terminalClosing.problem ?? undefined))).catch(error => {
       if (callback) callback(error instanceof Error ? error : Error('Coding session shutdown failed.'));
@@ -1881,6 +2000,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get liveRefreshSeconds(): ServerRuntime['liveRefreshSeconds'] { return liveRefreshSeconds; },
     get chatKeyFor(): ServerRuntime['chatKeyFor'] { return chatKeyFor; },
     get chatCatalog(): ServerRuntime['chatCatalog'] { return chatCatalog; },
+    get chatCatalogKnown(): ServerRuntime['chatCatalogKnown'] { return chatCatalogKnown; },
     get leadRecheckedAt(): ServerRuntime['leadRecheckedAt'] { return leadRecheckedAt; },
     set leadRecheckedAt(value) { leadRecheckedAt = value; },
     get checkLocalAgents(): ServerRuntime['checkLocalAgents'] { return checkLocalAgents; },
@@ -1888,6 +2008,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     set localSignIn(value) { localSignIn = value; },
     get agentSignInCommand(): ServerRuntime['agentSignInCommand'] { return agentSignInCommand; },
     get connectionCheck(): ServerRuntime['connectionCheck'] { return connectionCheck; },
+    get connectionKnown(): ServerRuntime['connectionKnown'] { return connectionKnown; },
+    get lastChecks(): ServerRuntime['lastChecks'] { return lastChecks; },
+    get checkRelease(): ServerRuntime['checkRelease'] { return checkRelease; },
     get modelCatalog(): ServerRuntime['modelCatalog'] { return modelCatalog; },
     get modelSeams(): ServerRuntime['modelSeams'] { return modelSeams; },
     get toolsViewOf(): ServerRuntime['toolsViewOf'] { return toolsViewOf; },
@@ -1917,6 +2040,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get ssoProvider(): ServerRuntime['ssoProvider'] { return ssoProvider; },
     set ssoProvider(value) { ssoProvider = value; },
     get providerFor(): ServerRuntime['providerFor'] { return providerFor; },
+    get providerKnown(): ServerRuntime['providerKnown'] { return providerKnown; },
     get connectVisits(): ServerRuntime['connectVisits'] { return connectVisits; },
     get defaultProject(): ServerRuntime['defaultProject'] { return defaultProject; },
     get googleVisits(): ServerRuntime['googleVisits'] { return googleVisits; },

@@ -12,20 +12,24 @@ export function connectionWords(connection: ProviderConnection): string {
     unverified: "Not verified", "key-present": "API key saved · not verified", "key-works": "API key works", "key-refused": "API key refused", "missing-key": "API key needed",
   }[connection.state];
 }
-export function connectionHtml(provider: ProviderId, connection: ProviderConnection, task = ""): Html {
+/** The last sign-in check (null: none yet). Check again posts: a page never runs a check (docs/plans/get-side-effects.md). */
+export function connectionHtml(provider: ProviderId, connection: ProviderConnection | null, task = ""): Html {
   const query = new URLSearchParams({ provider, ...(task ? { task } : {}) });
-  return html`<div class="card assistant-account"><p><strong>${ASSISTANTS[provider].name} · ${connectionWords(connection)}</strong></p><p class="meta">${[connection.email, connection.plan, connection.method].filter(Boolean).join(" · ")}</p><p class="meta">Checked ${new Date(connection.checkedAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZoneName: "short" })} on the computer running this console. Sign-in does not prove model access or remaining quota.</p><a class="button-link" href="/control/connection?${query.toString()}">${connection.state === "connected" ? "Manage connection" : "Connect account"}</a> · <a href="/control?${query.toString()}&amp;check-connection=1">Check again</a></div>`;
+  const back = `/control?${query.toString()}`;
+  const check = postForm("/settings/connection/check", html`<button type="submit" class="secondary">${connection === null ? "Check now" : "Check again"}</button>`, { attrs: { class: "inline" }, returnTo: back, hidden: { provider } });
+  if (connection === null) return html`<div class="card assistant-account"><p><strong>${ASSISTANTS[provider].name} · Not checked yet</strong></p>${check}</div>`;
+  return html`<div class="card assistant-account"><p><strong>${ASSISTANTS[provider].name} · ${connectionWords(connection)}</strong></p><p class="meta">${[connection.email, connection.plan, connection.method].filter(Boolean).join(" · ")}</p><p class="meta">Checked ${new Date(connection.checkedAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZoneName: "short" })} on the computer running this console. Sign-in does not prove model access or remaining quota.</p><a class="button-link" href="/control/connection?${query.toString()}">${connection.state === "connected" ? "Manage connection" : "Connect account"}</a> ${check}</div>`;
 }
 export function controlSetupHtml(data: {
   repo: string; csrf: string; provider: ProviderId; inputs: SetupInputs; models: ModelChoice[];
-  connection: ProviderConnection; catalog: OpenRouterModels | null; task?: string;
+  connection: ProviderConnection | null; catalog: OpenRouterModels | null; task?: string;
   preparation: { command: string; label: string; evidence: string } | null;
   instructions: { installed: boolean; message?: string };
 }): Html {
   const { provider, inputs, task = "" } = data;
   const query = new URLSearchParams({ provider, ...(task ? { task } : {}) });
   const model = data.catalog !== null
-    ? openRouterPicker(data.catalog, inputs.model || null, `/control?${query}&refresh-models=1`)
+    ? openRouterPicker(data.catalog, inputs.model || null, "/control/models-refresh")
     : html`<label>Model<input type="text" name="model" value="${inputs.model}" list="setup-models" required autocomplete="off" placeholder="Exact model id or supported alias"></label><datalist id="setup-models">${data.models.map(one => html`<option value="${one.value}">${one.label}</option>`)}</datalist>`;
   return html`<h1>Project setup</h1><p>${data.repo}</p><p class="meta">Choose the default builder for new tasks and the preparation command for this project.</p><nav class="assistant-picker row" aria-label="Choose provider">${joinHtml((Object.keys(ASSISTANTS) as ProviderId[]).map(id => html`<a class="button-link" href="/control?${new URLSearchParams({ provider: id, ...(task ? { task } : {}) }).toString()}"${id === provider ? html` aria-current="page"` : ""}>${ASSISTANTS[id].name}</a>`), " ")}</nav>${
     connectionHtml(provider, data.connection, task)}${

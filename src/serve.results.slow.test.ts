@@ -927,7 +927,15 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     };
     await boot({ publishExec });
     const cookie = await login();
-    const page = async () => (await fetch(url(`/settings/pull-requests?repo=${encodeURIComponent("/repo/main")}`), { headers: { cookie } })).text();
+    const read = async () => (await fetch(url(`/settings/pull-requests?repo=${encodeURIComponent("/repo/main")}`), { headers: { cookie } })).text();
+    // Opening the page asks git and GitHub nothing (docs/plans/get-side-effects.md); Check setup asks.
+    const first = await read();
+    expect(first).toContain("Check setup");
+    const page = async () => {
+      const checked = await post(cookie, "/settings/pull-requests/check", { csrf: csrfOf(first), repo: "/repo/main" });
+      expect(checked.status).toBe(303);
+      return read();
+    };
     const blocked = await page();
     expect(blocked).toContain("Can\u2019t turn on yet");
     expect(blocked).toContain("Your GitHub account can&#39;t push to alex/payouts. Ask for write access, then try again.");

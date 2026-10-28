@@ -42,7 +42,7 @@ export function sameVisitCheck(authTime: number | null, startedAt: number, now: 
   return Math.min(Math.max(at, startedAt), now);
 }
 export function createPeopleHandlers(runtime: ServerRuntime) {
-  const { joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, authenticateCredential, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, defaultProject, cookieSecure, consoleOrigin, providerFor, joinSourceOf, signInBudget, signInActor, minutesWords } = runtime;
+  const { joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, authenticateCredential, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, defaultProject, cookieSecure, consoleOrigin, providerFor, providerKnown, joinSourceOf, signInBudget, signInActor, minutesWords } = runtime;
 
   // v101: Settings → Sessions & tokens: where you're signed in, and your API tokens. An instance operator can see everyone's.
   async function sessionsPage(ctx: HandlerContext): Promise<void> {
@@ -356,8 +356,11 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
     if (intent !== "sign-in" && who?.via !== "cookie") return redirect(response, loginHref(returnTo));
     const origin = consoleOrigin(request.headers.host);
     if (origin === null) return page(response, 400, loginPage("Sign in from this computer (localhost) or from your https address.", returnTo, ssoOffer()));
-    const found = await providerFor(settings.issuer);
-    if (!found.ok) return page(response, 502, loginPage(`${settings.label} isn't answering: ${found.said}`, returnTo, ssoOffer()));
+    // Discovered as the console starts and in the background (docs/plans/get-side-effects.md): following this link
+    // fetches nothing.
+    const known = providerKnown(settings.issuer);
+    if (known === null) return page(response, 503, loginPage(`${settings.label} isn't answering yet. Try again in a moment.`, returnTo, ssoOffer()));
+    const found = { provider: known };
     const visit = newOidcVisit(), redirectUri = `${origin}${SSO_CALLBACK}`;
     for (const [key, one] of ssoVisits) if (one.expires < Date.now()) ssoVisits.delete(key);
     // Bounded: anyone may start a sign-in, so the oldest waiting ones give way.

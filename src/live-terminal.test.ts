@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import { fakePid } from "../test/fake-pid.js";
 import { createRequire } from "node:module";
-import { CLOSE_GRACE_MS, loadPtySpawn, MAX_PENDING_INPUT, membersOf, parseTerminalFrame, pendingInputOf, ScreenMirror, TerminalHost, type PtySpawn, type TerminalControl, type TerminalLedger } from "./live-terminal.js";
+import { CLOSE_GRACE_MS, loadPtySpawn, MAX_PENDING_INPUT, membersOf, parseTerminalFrame, pendingInputOf, readProcessTable, ScreenMirror, TerminalHost, type ProcessTable, type PtySpawn, type TerminalControl, type TerminalLedger } from "./live-terminal.js";
 import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const ALEX = { name: "alex", generation: 1 };
@@ -43,6 +43,31 @@ describe("the screen a later page gets", () => {
   });
 });
 
+/**
+ * The process table as this file would see it on a machine of its own. Other files in the run open terminals at the same
+ * time (serve.terminal, the fence attacks), and macOS gives a closed terminal's device to the next one opened anywhere:
+ * their shell on it, after ours ended, is rightly "maybe someone else's" and leaves the close uncertain. That is its own
+ * test below, not what a test asserting a clean close is about. Hidden: a process whose parents reach this run's runner
+ * (an ancestor of this worker) without passing through this worker. Kept: everything under this worker, and our own
+ * orphans (adopted by pid 1, never under the runner).
+ */
+const ownProcesses = (): ProcessTable | null => {
+  const table = readProcessTable();
+  if (table === null) return null;
+  const runners = new Set<number>();
+  for (let up = table.get(process.pid)?.ppid; up !== undefined && up > 1 && !runners.has(up); up = table.get(up)?.ppid) runners.add(up);
+  const others: number[] = [];
+  for (const pid of table.keys()) {
+    const seen = new Set<number>();
+    for (let up = table.get(pid)?.ppid; up !== undefined && up > 1 && up !== process.pid && !seen.has(up); up = table.get(up)?.ppid) {
+      if (runners.has(up)) { others.push(pid); break; }
+      seen.add(up);
+    }
+  }
+  for (const pid of others) table.delete(pid);
+  return table;
+};
+
 describe.skipIf(process.platform === "win32")("a terminal host", () => {
   let dir: string, repo: string, host: TerminalHost;
   const events: string[] = [];
@@ -52,7 +77,7 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     execFileSync("git", ["init", "-q", "-b", "main", repo]);
     execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"]);
     events.length = 0;
-    host = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "live"), closeGraceMs: 300,
+    host = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "live"), closeGraceMs: 300, processes: ownProcesses,
       programs: { shell: { file: "/bin/sh", args: [] }, claude: { file: "/bin/cat", args: [] } },
       env: () => ({ PATH: process.env["PATH"] ?? "", HOME: dir }), record: (event, one) => events.push(`${event}:${one.program}`) });
   });
@@ -174,7 +199,7 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
   // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
   test.skipIf(INSIDE_FENCE)("a child started during the close is caught too (round 2, finding 3)", async () => {
     // The product's own grace: the job's trap must get to run before the kill, on a loaded machine too.
-    const slow = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "slow"), closeGraceMs: CLOSE_GRACE_MS, programs: { shell: { file: "/bin/sh", args: [] } }, env: () => ({ PATH: process.env["PATH"] ?? "", HOME: dir }) });
+    const slow = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "slow"), closeGraceMs: CLOSE_GRACE_MS, processes: ownProcesses, programs: { shell: { file: "/bin/sh", args: [] } }, env: () => ({ PATH: process.env["PATH"] ?? "", HOME: dir }) });
     try {
       const started = await slow.start(ALEX, repo, "shell");
       const late = join(dir, "late.txt");
@@ -283,7 +308,7 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
     const calls: string[] = [];
     let paused = true;
     const ledger: TerminalLedger = { reserve: id => { if (paused) throw new Error("Toolroll is updating."); calls.push(`reserve:${id.length}`); }, running: () => { calls.push("running"); }, release: (_id, cleanup) => { calls.push(`release:${cleanup}`); } };
-    const led = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "led"), closeGraceMs: 200, programs: { shell: { file: "/bin/sh", args: [] } }, env: () => ({ PATH: process.env["PATH"] ?? "" }), ledger });
+    const led = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "led"), closeGraceMs: 200, processes: ownProcesses, programs: { shell: { file: "/bin/sh", args: [] } }, env: () => ({ PATH: process.env["PATH"] ?? "" }), ledger });
     await expect(led.start(ALEX, repo, "shell")).rejects.toThrow(/updating/);
     expect(execFileSync("git", ["-C", repo, "worktree", "list"]).toString().trim().split("\n")).toHaveLength(1);
     paused = false;
@@ -341,13 +366,19 @@ describe.skipIf(process.platform === "win32")("a terminal host", () => {
   // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
   test.skipIf(INSIDE_FENCE)("a process seen in the worktree must exit, not just leave the folder, before removal (round 4)", async () => {
     const started = await host.start(ALEX, repo, "shell");
-    // It starts in the worktree, then moves out while it keeps running.
-    const mover = spawnChild("/bin/sh", ["-c", "sleep 0.8; cd /; exec sleep 30"], { cwd: started.worktree, stdio: "ignore" });
+    // It starts in the worktree, then moves out while it keeps running. It moves when told, not on a clock: a timed
+    // move raced the close's sweep, which on a loaded machine read the folder after the mover had already left.
+    const mover = spawnChild("/bin/sh", ["-c", "read go; cd /; echo moved; exec sleep 30"], { cwd: started.worktree, stdio: ["pipe", "pipe", "ignore"] });
+    let said = "";
+    mover.stdout!.on("data", (data: Buffer) => { said += data.toString(); });
     try {
       await until(() => mover.pid !== undefined);
       await host.close(started.id);
       expect(host.get(started.id)).toMatchObject({ cleanup: "uncertain" });
-      await new Promise(resolve => setTimeout(resolve, 1200));
+      mover.stdin!.write("go\n");
+      // "moved" is printed after the cd: from here it works outside the worktree, the same process (exec keeps the pid
+      // and its start time).
+      await until(() => said.includes("moved"));
       await expect(host.remove(started.id)).rejects.toThrow(/may still be running/);
     } finally { mover.kill("SIGKILL"); }
     await until(() => gone(mover.pid!));

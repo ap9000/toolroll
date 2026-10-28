@@ -524,7 +524,6 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         incidents: ref === null ? [] : runtime.store.incidentsForTask(ref.id),
         coordinatorProposals: (() => {
           if (ref === null || ref.repo === null || who.role !== "approver") return null;
-          runtime.store.sweepCoordinatorProposals(now);
           const rows = runtime.store.listCoordinatorProposals({ repos: [ref.repo], taskId });
           return { rows, decisions: decisionsFor(runtime.store, rows), now };
         })(),

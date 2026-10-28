@@ -3,7 +3,8 @@ import type { CheckAccess } from "../check-access.js";
 import type { RunNetworkRecord } from "../egress.js";
 import { assignmentPresentationOf,historicalAssessmentReason,shortenedMaterialReason } from "../assignment-presentation.js";
 import { assignmentActionHref,assignmentStatusOf,assignmentWithEvidence } from "../assignment-ui.js";
-import { type AssignmentSnapshot,owedAcceptance } from "../assignment.js";
+import { assignmentChecksForRun,type AssignmentSnapshot,owedAcceptance } from "../assignment.js";
+import { releaseCoverageOf } from "../release-coverage.js";
 import { type BrowserCheckItem,type BrowserNeedAction,type BrowserResultPanel,type BrowserResultView } from "../browser-workspace.js";
 import { CHECK_LEVEL_WORDS,liveQuickCommand } from "../check-levels.js";
 import { LIMITS } from "../decision.js";
@@ -24,7 +25,7 @@ import { type AcceptanceCriterion,type approvalOf } from "../scope.js";
 import { parseReport,type ReportItem } from "../scout-report.js";
 import { type Artifact,type DiffComment,type Publication,type RepairChainRow,type ReviewRetryState,type Run,type Store,type TaskState } from "../store.js";
 import { runCostWords } from "../summary.js";
-import { checkBackingOf,CHECKED_AT_RELEASE,demoChecksOf,type ReleaseState,type PullRequestFact,pullRequestFactOf,requirementsOf,requirementWordOf,STATUS_MORE,statusDetailsHtml,statusIconSvg,statusWhyHtml,type TaskStatus } from "../task-status.js";
+import { approvedCheckOf,approvedCheckStateOf,CHECK_COMMAND_CHANGED,CHECK_UNREADABLE,checkBackingOf,CHECKED_AT_RELEASE,checksFactOf,receiptChecksOf,type ChecksFact,demoChecksOf,type ReleaseState,type PullRequestFact,pullRequestFactOf,requirementsOf,requirementWordOf,STATUS_MORE,statusDetailsHtml,statusIconSvg,statusWhyHtml,type TaskStatus } from "../task-status.js";
 import { ACCEPT_NEEDS_REASON,acceptWordsOf,cantAcceptYetOf,type DisplayStatus,evidenceProblemOf,MISMATCH_HEADLINE,type PublicationFacts,receiptHeadingOf,receiptPublicationWords,reportMismatchesOf,RESULT_DECISION_SENTENCE,resultHeadlineOf,resultStatusOf,REVIEW_TOKENS,type ReviewFacts } from "../workspace-ui.js";
 import { createHash,randomBytes } from "node:crypto";
 import { buildsViews,type Chrome,oneLineOf,projectChip,safePrUrl,screen,type Screen,sentenceCase,strokeIcon,when,whenTime } from "./chrome.js";
@@ -803,8 +804,11 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
     ? `${host.base}&run=${run.id}${section === "summary" ? "" : `&section=${section}`}`
     : `${here}&run=${run.id}${section === "summary" ? "" : `&tab=${section}`}`;
   const assignment = view.assignment === null ? null : assignmentWithEvidence(view.assignment, receiptStatusOf(view.detail.receipt), run.id);
-  const checks = assignment?.receipt?.checks;
-  if (checks !== undefined) parts.push(html`<p class="${checks.status === "failed" || checks.status === "unavailable" ? "problem" : "meta"}" data-actual-checks="${checks.status}">${checks.detail}${checks.logArtifactId === null ? "" : html` <a href="/r/${run.id}/evidence/${checks.logArtifactId}">Open check output</a>`}</p>`);
+  const saved = assignment?.receipt?.checks;
+  // The approved check as the task page reads it (task-status.ts approvedCheckOf): one answer for this whole page.
+  const checks = saved === undefined || assignment?.receipt == null ? undefined
+    : { ...saved, ...(receiptChecksOf(assignment.receipt) ?? {}), detail: saved.detail };
+  if (checks !== undefined) parts.push(html`<p class="${checks.status === "failed" || checks.status === "unavailable" ? "problem" : "meta"}" data-actual-checks="${checks.status}">${checks.status === "unavailable" && saved!.cause === "command-changed" ? CHECK_COMMAND_CHANGED : html`${checks.status === "unavailable" && saved!.status !== "unavailable" ? `${CHECK_UNREADABLE} ` : ""}${checks.detail}`}${checks.logArtifactId === null ? "" : html` <a href="/r/${run.id}/evidence/${checks.logArtifactId}">Open check output</a>`}</p>`);
   if (assignment?.completion != null) parts.push(html`<p class="meta" data-result-completed>Marked complete by ${assignment.completion.actor.replace(/^operator:/, "")}.</p>`);
   const panel = resultPanelParts(view.detail, {
     place: "review",
@@ -842,7 +846,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   const unanswered = accepted || youCheck == null ? [] : youCheck.items.length > 0 ? youCheck.items.map(one => one.statement === "" ? one.words : one.statement) : youCheck.lines;
   const base = !acceptsHere ? null : acceptWordsOf({
     // Checks Off that a release check already covers read as passed (release-coverage.ts).
-    checks: checks === undefined ? null : checks.running != null ? "running" : checks.level === "off" && checks.status !== "passed" ? checks.release != null ? "passed" : "off" : checks.status,
+    checks: checks === undefined ? null : ({ passed: "passed", failed: "failed", running: "running", "not-run": "not-run", off: "off", unreadable: "unavailable" } as const)[approvedCheckStateOf(checks)!],
     // Release-aware words (task-status.ts): a requirement waiting only on a release check, or covered by one, isn't unmet.
     unmet: matrix.filter(row => !["Met", "You check", CHECKED_AT_RELEASE].includes(requirementWordOf(row, null, checks === undefined ? undefined : checkBackingOf(checks)))).length,
     action: complete !== null ? "complete" : "accept",
@@ -1184,6 +1188,9 @@ export type ProofBundleView = {
   repairChain: RepairChainRow | null;
   /** v51: the policy semantic coverage is read under. */
   qualityMode: "default" | "strict";
+  /** The saved approved check read now (task-status.ts approvedCheckOf), for a finished build; absent otherwise, and
+   * then no words here claim the check passed. */
+  checks?: ChecksFact | null;
 };
 
 /** The smallest complete answer to "what did this task deliver?". It is a
@@ -1228,6 +1235,9 @@ export type CompletionReceiptView = {
   report: RunReportView | null;
   /** The facts every result surface prints identically (package 3). */
   facts: SharedResultFacts;
+  /** The saved approved check as read now (the receipt and any follow-up on the same commit), so the status words
+   * read the same answer as the Project checks row (task-status.ts approvedCheckOf). Absent on a scout's report. */
+  checks?: ChecksFact | null;
 };
 
 /** A scout run's report as this run stored it: verified and parsed, or
@@ -1369,6 +1379,7 @@ export function proofBundleView(store: Store, run: Run, artifacts: Artifact[], r
   }
 
   return {
+    ...(run.finishedAt !== null && run.role !== "scout" && run.role !== "reviewer" && run.role !== "planner" ? { checks: savedChecksOf(store, root, run, new Date()) } : {}),
     verdict: verdictRow?.verdict ?? null,
     reasons: verdictRow?.reasons ?? [],
     accepted: acceptanceRow === null ? null : { by: acceptanceRow.approver, note: acceptanceRow.note, at: acceptanceRow.acceptedAt },
@@ -1401,7 +1412,30 @@ export function proofBundleView(store: Store, run: Run, artifacts: Artifact[], r
   };
 }
 
-export function completionReceiptView(store: Store, run: Run, artifacts: Artifact[], root: string, review: ReviewFacts | null = null): CompletionReceiptView {
+/** What the verdict recorded when the build finished, said beside what holds now: a recorded pass is restated only
+ * when the check read now passed; unread, it points to the result; unreadable or failed since, it says so. */
+export function completionWords(verdict: ProofVerdict | null, reasons: readonly string[], checks: ChecksFact | null | undefined): string {
+  const recorded = verificationExplanation(verdict, reasons);
+  if (verdict !== "verified") return recorded;
+  const now = approvedCheckStateOf(approvedCheckOf(verdict, reasons, checks));
+  if (checks !== undefined && (now === "passed" || (now === "running" && checks?.status === "passed"))) return recorded;
+  if (checks === undefined) return "Open the result to see its checks.";
+  const said = now === "failed" ? `the approved check failed against it${checks?.exitCode == null ? "" : ` (exit ${checks.exitCode})`}.`
+    : checks?.cause === "command-changed" ? "the check command changed since this check." : `${CHECK_UNREADABLE.charAt(0).toLowerCase()}${CHECK_UNREADABLE.slice(1)}`;
+  return `At completion: ${recorded} Now: ${said} It doesn't count as passed.`;
+}
+
+/** A result's saved approved check as the assignment reads it (assignment.ts): the receipt, follow-ups on its commit,
+ * and with checks Off the passing release check that contains it. */
+function savedChecksOf(store: Store, root: string, run: Run, now: Date): ChecksFact {
+  const own = checksFactOf(assignmentChecksForRun(store, root, run.id, now), run.headRevision);
+  if (own.level !== "off" || own.status === "passed" || own.status === "failed") return own;
+  const repo = store.refById(run.taskRef)?.repo ?? null;
+  const release = releaseCoverageOf(store, root, repo, run.headRevision);
+  return release == null ? own : { ...own, release };
+}
+
+export function completionReceiptView(store: Store, run: Run, artifacts: Artifact[], root: string, review: ReviewFacts | null = null, now: Date = new Date()): CompletionReceiptView {
   const handoff = structuredHandoffView(artifacts, root);
   const proof = proofBundleView(store, run, artifacts, root);
   const terminal = terminalDiffView(artifacts, root);
@@ -1437,6 +1471,8 @@ export function completionReceiptView(store: Store, run: Run, artifacts: Artifac
     coverageSecondary: coverage.contextGaps.length === 0 && (coverage.satisfied === true || (coverage.satisfied === null && !coverage.required)),
     report,
     facts: sharedResultFactsOf(run, proof, terminal, handoff, report, publication),
+    // The same reading the task page's Project checks row shows (assignment.ts), never the verdict alone.
+    ...(run.role === "scout" ? {} : { checks: savedChecksOf(store, root, run, now) }),
   };
 }
 
@@ -1677,8 +1713,9 @@ export function evidenceBundleCard(view: ProofBundleView | null, run: Pick<Run, 
   if (view.verdict !== null) {
     // The same status line every other surface renders for this run
     // (workspace package 1), beside the verdict's own explanation.
-    const status = resultStatusOf({ runId, role: run.role, outcome: run.outcome, verdict: view.verdict, reasons: view.reasons, accepted: view.accepted !== null, review }, publication);
-    parts.push(html`<p class="row" data-proof-verdict="${dispatchStatusToken(view.verdict)}">${statusLineHtml(status)} <span class="meta">${verificationExplanation(view.verdict, view.reasons)}</span></p>`);
+    const status = resultStatusOf({ runId, role: run.role, outcome: run.outcome, verdict: view.verdict, reasons: view.reasons, accepted: view.accepted !== null, review,
+      ...(view.checks === undefined ? {} : { checks: view.checks }) }, publication);
+    parts.push(html`<p class="row" data-proof-verdict="${dispatchStatusToken(view.verdict)}">${statusLineHtml(status)} <span class="meta">${completionWords(view.verdict, view.reasons, view.checks)}</span></p>`);
   }
   if (view.accepted !== null) {
     parts.push(
@@ -1779,7 +1816,8 @@ export function receiptStatusOf(view: CompletionReceiptView, review: ReviewFacts
   // whose stored records are damaged is never called ready on the strength
   // of a verdict recorded before the damage.
   return evidenceResultStatusOf(
-    { runId: view.runId, role: view.role, outcome: view.outcome, verdict: view.verdict, reasons: view.reasons, accepted: view.accepted, recordComplete: view.recordComplete, review },
+    { runId: view.runId, role: view.role, outcome: view.outcome, verdict: view.verdict, reasons: view.reasons, accepted: view.accepted, recordComplete: view.recordComplete, review,
+      ...(view.checks === undefined ? {} : { checks: view.checks }) },
     view.publication, view.facts.evidenceHealth,
   );
 }
@@ -2017,7 +2055,11 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
   // The visible status already says verification is needed. Only omit the
   // generic repeat; failed checks, specific reasons and damaged evidence stay.
   const missingVerdictNamed = o.headStatus !== false && status.token === "verification-needed" && receipt.verdict === null && receipt.reasons.length === 0;
-  if (current == null && !humanReview && !awaitingGoalReview && (!directAssessment || physicalReasons.length > 0) && !missingVerdictNamed && stored.token !== "evidence-damaged" && (stored.tone === "problem" || stored.tone === "attention")) attention.push(verificationExplanation(receipt.verdict, physicalReasons));
+  if (current == null && !humanReview && !awaitingGoalReview && (!directAssessment || physicalReasons.length > 0) && !missingVerdictNamed && stored.token !== "evidence-damaged" && (stored.tone === "problem" || stored.tone === "attention")) {
+    // A recorded pass whose check can't be read now is said as what holds now, never as the verdict's pass.
+    // A recorded pass the check read now can't stand behind (unreadable, or failed since) is said as what holds now.
+    attention.push(stored.token === "check-unreadable" || (receipt.verdict === "verified" && stored.token === "checks-failed") ? stored.detail : verificationExplanation(receipt.verdict, physicalReasons));
+  }
   // Exact criterion assessment notes are already shown in Requirements;
   // do not repeat them as a second current attention message.
   if (presentation !== null) attention.push(...presentation.attention.map(one => one.detail).filter(detail => !assessmentReasons.has(detail)));
@@ -2214,7 +2256,12 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
     if (proof.verdict !== null && !directAssessment) {
       // The same status line the panel leads with (one status per surface,
       // workspace package 1), beside the machine verdict's own explanation.
-      checkParts.push(html`<p class="row result-verdict" data-proof-verdict="${dispatchStatusToken(proof.verdict)}"><span class="meta">At completion: ${humanReview ? "Human review required for the requirements below." : verificationExplanation(proof.verdict, proof.reasons)}</span></p>`);
+      // A recorded pass the saved check can't show now is said so here too (task-status.ts approvedCheckOf).
+      const shown = current?.receipt != null ? receiptChecksOf(current.receipt) : receipt.checks === undefined ? undefined : approvedCheckOf(proof.verdict, proof.reasons, receipt.checks);
+      const unreadNow = proof.verdict === "verified" && shown !== undefined && shown?.status !== "passed" && !humanReview;
+      // completionWords: the verdict at completion, and what holds now when they differ.
+      const words = humanReview ? "At completion: Human review required for the requirements below." : unreadNow ? completionWords(proof.verdict, proof.reasons, shown) : `At completion: ${verificationExplanation(proof.verdict, proof.reasons)}`;
+      checkParts.push(html`<p class="row result-verdict" data-proof-verdict="${dispatchStatusToken(proof.verdict)}"${unreadNow ? html` data-check-now="${approvedCheckStateOf(shown) ?? "unreadable"}"` : ""}><span class="meta">${words}</span></p>`);
     } else if (proof.verdict === null && run.outcome !== "no-change") {
       checkParts.push(html`<p class="meta" data-proof-verdict="none">No verification result is available for this build.</p>`);
     }

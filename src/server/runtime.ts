@@ -121,12 +121,19 @@ export interface ServerRuntime {
   liveRefreshSeconds: () => number;
   chatKeyFor: (provider: DirectChatProviderId) => { key: string; source: "environment" | "stored"; } | null;
   chatCatalog: () => Promise<import("../converse.js").CatalogModel[] | null>;
+  /** The catalog as last fetched: what a page shows. A page never fetches. */
+  chatCatalogKnown: () => import("../converse.js").CatalogModel[] | null;
   leadRecheckedAt: number;
   checkLocalAgents: (fresh?: boolean) => Promise<void>;
   localSignIn: { at: number; signedIn: boolean; states: Record<"claude" | "codex", ProviderConnection["state"] | "unverified">; } | null;
   agentSignInCommand: () => string;
   connectionCheck: (provider: ProviderId, fresh?: boolean) => Promise<ProviderConnection>;
-  modelCatalog: (key: string | null, refresh?: boolean) => Promise<OpenRouterModels>;
+  /** What the last sign-in check said: what a page shows. A page never checks (docs/plans/get-side-effects.md). */
+  connectionKnown: (provider: ProviderId) => ProviderConnection | null;
+  /** The last answer of each other check a page shows; a page only reads it. */
+  lastChecks: import("./last-checks.js").LastChecks;
+  checkRelease: () => Promise<{ version: string } | { problem: string }>;
+  modelCatalog: ((key: string | null, refresh?: boolean) => Promise<OpenRouterModels>) & { known: (key: string | null) => OpenRouterModels | null };
   modelSeams: CatalogSeams;
   toolsViewOf: (repo: string, codex: unknown[] | null, kit?: string | null, wanted?: string | null) => ToolsView;
   codexServers: (repo: string) => Promise<unknown[] | null>;
@@ -155,6 +162,8 @@ export interface ServerRuntime {
   consumeApprovalNonce: (nonce: string, name: string, taskId: string, digest: string) => boolean;
   recordSignIn: (actor: string, action: string, outcome: string, detail?: string | null) => void;
   ssoProvider: { issuer: string; provider: OidcProvider; at: number; } | null;
+  /** The identity provider as last discovered; a page never discovers it. */
+  providerKnown: (issuer: string) => import("../oidc.js").OidcProvider | null;
   providerFor: (issuer: string) => Promise<{ ok: true; provider: OidcProvider; } | { ok: false; said: string; }>;
   connectVisits: Map<string, ConnectVisit>;
   defaultProject: string | null;
