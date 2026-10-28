@@ -59,6 +59,8 @@ export type ChecksFact = {
   batch?: ChecksBatch | null;
   /** Off: the passing full release check whose commit contains this one (release-coverage.ts), read at read time. */
   release?: { run: number; head: string } | null;
+  /** Why it can't be read, when that is the project's check command approved again since it ran. */
+  cause?: "command-changed" | null;
 };
 /** What checks Off leaves for a release: `pending` until a passing full release check contains the commit, then
  * `covered`. `running`: a check is waiting for its batch or running on this commit. */
@@ -119,6 +121,9 @@ export function approvedCheckStateOf(checks: Pick<ChecksFact, "status" | "level"
 /** A saved check that can't be read, in the words every surface uses. */
 export const CHECK_UNREADABLE = "The check result couldn't be read.";
 export const CHECK_UNREADABLE_ASK = `${CHECK_UNREADABLE} Run checks on it, or open the result to see why.`;
+/** A saved check whose files are intact but whose command was approved again since it ran. */
+export const CHECK_COMMAND_CHANGED = "The check command changed since this check; run checks again.";
+const unreadableAsk = (checks: Pick<ChecksFact, "cause"> | null | undefined): string => checks?.cause === "command-changed" ? CHECK_COMMAND_CHANGED : CHECK_UNREADABLE_ASK;
 
 /** What stands between a finished result and Complete (`completionBlockersOf`): each with the exact next step. */
 export type CompletionBlocker = { key: "check-failed" | "check-missing" | "criteria" | "high"; message: string };
@@ -199,7 +204,7 @@ function resultAsk(facts: Pick<TaskStatusFacts, "report" | "checks" | "requireme
   const req = facts.requirements;
   if (req != null && facts.accepted !== true && req.unverified !== true && (req.yours > 0 || (req.unshown ?? 0) > 0) && req.ask != null) return req.ask;
   // A check that can't be read is never a pass: a person runs it again or looks at why, unless they already accepted.
-  if (facts.accepted !== true && approvedCheckStateOf(facts.checks) === "unreadable") return CHECK_UNREADABLE_ASK;
+  if (facts.accepted !== true && approvedCheckStateOf(facts.checks) === "unreadable") return unreadableAsk(facts.checks);
   return null;
 }
 
@@ -245,7 +250,7 @@ function sentenceOf(headline: Headline, facts: TaskStatusFacts): string {
         return `${facts.checks.level === "quick" ? "Quick checks" : "Checks"} passed${sha === null ? "" : ` on ${sha}`}. Review the change, then mark it complete.`;
       }
       if (facts.checks?.batch?.state === "waiting") return "Its full check runs with other results within 10 minutes. Review the change, then mark it complete.";
-      if (facts.checks?.status === "unavailable") return `${CHECK_UNREADABLE} Review the change, then mark it complete.`;
+      if (facts.checks?.status === "unavailable") return `${facts.checks.cause === "command-changed" ? CHECK_COMMAND_CHANGED : CHECK_UNREADABLE} Review the change, then mark it complete.`;
       // Never claim a check that isn't known to have passed.
       if (facts.checks == null) return "Review the change, then mark it complete.";
       return "Built without a passing project check. Review the change, then mark it complete.";
@@ -298,6 +303,7 @@ function detailsOf(headline: Headline, facts: TaskStatusFacts): StatusDetail[] {
     else if (checks.level === "off") row("checks", CHECKS_LABEL, CHECKED_AT_RELEASE, "none", runChecks === null ? {} : { action: runChecks });
     else if (checks.status === "not-run") row("checks", CHECKS_LABEL, "Didn't run", "none", runChecks === null ? {} : { action: runChecks });
     // A saved check that can't be read is run again where that is possible.
+    else if (checks.cause === "command-changed") row("checks", CHECKS_LABEL, "Check command changed since", "note", { action: runChecks ?? { label: OPEN_RESULT, href: facts.links?.result ?? null }, why: CHECK_COMMAND_CHANGED });
     else row("checks", CHECKS_LABEL, "Couldn't be read", "note", { action: runChecks ?? { label: OPEN_RESULT, href: facts.links?.result ?? null } });
   }
   const pr = facts.pullRequest;
@@ -529,7 +535,7 @@ export function requirementsOf(matrix: readonly RequirementRow[] | null | undefi
  * an unresolved requirement (a person's own check is theirs to give by completing; a recorded acceptance resolves
  * the rest); an unresolved HIGH review finding. A release check that covers the commit counts as passed. */
 export function completionBlockersOf(f: {
-  report: boolean; checks: Pick<ChecksFact, "status" | "exitCode" | "level" | "release" | "running" | "batch"> | null; checkRequired: boolean;
+  report: boolean; checks: Pick<ChecksFact, "status" | "exitCode" | "level" | "release" | "running" | "batch" | "cause"> | null; checkRequired: boolean;
   matrix: readonly RequirementRow[] | null | undefined; verdict: string | null | undefined; accepted: boolean; high: number;
 }): CompletionBlocker[] {
   const blockers: CompletionBlocker[] = [];
@@ -539,7 +545,7 @@ export function completionBlockersOf(f: {
     blockers.push({ key: "check-failed", message: `Checks failed${f.checks.exitCode === null ? "" : ` (exit ${f.checks.exitCode})`}. Fix them and run checks again, or ask for changes.` });
   } else if (!f.report && f.checkRequired && f.checks?.status !== "passed" && release === undefined) {
     blockers.push({ key: "check-missing", message: checksUnderway(f.checks) ? "Its project check hasn't finished yet. Mark it complete once it passes."
-      : f.checks?.status === "unavailable" ? `${CHECK_UNREADABLE} Run checks on it, then mark it complete.`
+      : f.checks?.status === "unavailable" ? f.checks.cause === "command-changed" ? `${CHECK_COMMAND_CHANGED.replace(/; run checks again\.$/, ".")} Run checks again, then mark it complete.` : `${CHECK_UNREADABLE} Run checks on it, then mark it complete.`
       : "No passing project check is recorded for this result. Run checks on it, then mark it complete." });
   }
   if (!f.accepted && f.checks?.status !== "failed") {
@@ -564,6 +570,8 @@ export function unverifiedWhenRefuted(requirements: NonNullable<TaskStatusFacts[
 /** Saved evidence health from the receipt's artifact list and its caveats. */
 export function evidenceOf(receipt: AssignmentSnapshot["receipt"], problems: readonly string[] = receipt?.caveats ?? []): NonNullable<TaskStatusFacts["evidence"]> | null {
   if (receipt === null) return null;
+  // The check's own reading is the Project checks row's to say (a changed command is not a missing file).
+  problems = problems.filter(one => one !== receipt.checks.detail);
   const shortened = receipt.artifacts.filter(one => !one.complete).length + problems.filter(one => /shortened|cut short/.test(one)).length;
   const damaged = problems.filter(one => /unavailable or changed|no longer verif|cannot be read|could not be read|failed capture|altered|damaged/i.test(one)).length;
   const missing = problems.filter(one => /missing|ambiguous|no longer exists/i.test(one) && !/unavailable or changed/.test(one)).length;
@@ -574,7 +582,8 @@ export function evidenceOf(receipt: AssignmentSnapshot["receipt"], problems: rea
 export function checksFactOf(checks: NonNullable<AssignmentSnapshot["receipt"]>["checks"], head: string | null): ChecksFact {
   return { status: checks.status, exitCode: checks.exitCode, head,
     ...(checks.level == null ? {} : { level: checks.level }), ...(checks.running == null ? {} : { running: checks.running }),
-    ...(checks.batch == null ? {} : { batch: checks.batch }), ...(checks.release == null ? {} : { release: checks.release }) };
+    ...(checks.batch == null ? {} : { batch: checks.batch }), ...(checks.release == null ? {} : { release: checks.release }),
+    ...(checks.cause == null ? {} : { cause: checks.cause }) };
 }
 /** A receipt's approved check, as every surface reads it (`approvedCheckOf` over its verdict and its saved check). */
 export function receiptChecksOf(receipt: NonNullable<AssignmentSnapshot["receipt"]>): ChecksFact | null {

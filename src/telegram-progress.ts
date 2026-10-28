@@ -8,7 +8,7 @@ import { assignmentOf, type AssignmentSnapshot } from "./assignment.js";
 import { chatResultHref, chatControlHref } from "./chat-controls.js";
 import { phoneText, projectLabel, type PhoneTaskLink } from "./telegram-status.js";
 import type { Run, Store } from "./store.js";
-import { assignmentStatusFacts, headlineEmoji, pullRequestFactOf, requirementsOf, statusDetailLines, unverifiedWhenRefuted, taskStatusOf, type ChecksFact, type TaskStatus, type TaskStatusFacts } from "./task-status.js";
+import { approvedCheckOf, assignmentStatusFacts, checksFactOf, headlineEmoji, pullRequestFactOf, requirementsOf, statusDetailLines, unverifiedWhenRefuted, taskStatusOf, type ChecksFact, type TaskStatus, type TaskStatusFacts } from "./task-status.js";
 import { leadClaimOf } from "./lead-voice.js";
 import { leadNameOf } from "./lead-identity.js";
 import { chatTitle } from "./chat-voice.js";
@@ -51,9 +51,9 @@ export function telegramProgressCard(store: Store, run: Run, taskId: string, pro
     const proof = store.proofVerdictFor(run.id);
     const machine = proof?.machineVerdict ?? proof?.verdict ?? null;
     const exit = failedCheckExit(proof?.reasons ?? []);
-    const checks: ChecksFact | null = recorded !== null ? { status: recorded.status, exitCode: recorded.exitCode, head: run.headRevision }
+    // The one answer (task-status.ts approvedCheckOf) when a saved check was read; a verdict alone claims no pass.
+    const checks: ChecksFact | null = recorded !== null ? approvedCheckOf(machine, proof?.reasons ?? [], checksFactOf(recorded, run.headRevision))
       : exit !== null ? { status: "failed", exitCode: exit, head: run.headRevision }
-      : machine === "verified" ? { status: "passed", exitCode: null, head: run.headRevision }
       : machine === "attested" ? { status: "not-run", exitCode: null, head: null } : null;
     facts = { stage: "finished", report: run.role === "scout", checks, requirements: unverifiedWhenRefuted(requirementsOf(proof?.matrix), proof?.verdict),
       ...(pullRequest === undefined ? {} : { pullRequest }) };

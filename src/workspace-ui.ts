@@ -23,7 +23,7 @@ export { ACCEPT_NEEDS_REASON, cantAcceptYetOf, evidenceProblemOf, type EvidenceP
 import { manualReviewOnly, plainReasonWords, type ProofVerdict } from "./proof.js";
 import type { ReviewRetryState, TaskState } from "./store.js";
 import type { TaskControlView } from "./task-control.js";
-import { CHECK_UNREADABLE, OPEN_RESULT, approvedCheckOf, approvedCheckStateOf, plainReasonOf, stageOfCode, taskStatusOf, workToneOf, type ChecksFact } from "./task-status.js";
+import { CHECK_COMMAND_CHANGED, CHECK_UNREADABLE, OPEN_RESULT, approvedCheckOf, approvedCheckStateOf, plainReasonOf, stageOfCode, taskStatusOf, workToneOf, type ChecksFact } from "./task-status.js";
 import { whenUtc } from "./when-html.js";
 import { html, postForm, type Html } from "./html.js";
 
@@ -330,7 +330,7 @@ function storedResultStatusOf(result: ResultFacts | null, publication: Publicati
   if (check !== undefined && !passedNow(check) && result.verdict === "verified") {
     return check?.status === "running"
       ? { token: "checks-running", label: "Checks running", detail: withPublication("The approved check is running on this result."), tone: "live", action: { label: OPEN_RESULT, kind: "open-result" } }
-      : { token: "check-unreadable", label: "Result saved — check result couldn't be read", detail: withPublication(`${CHECK_UNREADABLE} This result isn't verified.`),
+      : { token: "check-unreadable", label: "Result saved — check result couldn't be read", detail: withPublication(`${check?.cause === "command-changed" ? CHECK_COMMAND_CHANGED : CHECK_UNREADABLE} This result isn't verified.`),
         tone: "problem", action: { label: "Open the check", kind: "open-review" } };
   }
   if (result.verdict === "attested" && !passedNow(check)) {

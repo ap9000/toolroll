@@ -38,6 +38,9 @@ export type AssignmentChecks = {
   batch?: ChecksBatch | null;
   /** Checks Off: the passing full release check that contains this commit (release-coverage.ts), read now, never sealed. */
   release?: ReleaseCoverage | null;
+  /** Why a saved check can't be read, when it is the project's check command approved again since it ran (its files
+   * are intact; running checks again settles it). Presentation only, never sealed. */
+  cause?: "command-changed" | null;
 };
 export type AssignmentReceipt = {
   digest: string; rootId: string; taskId: string; runId: number;
@@ -103,7 +106,7 @@ function olderStoreSafe<T>(read: () => T, absent: T): T {
   try { return read(); } catch (error) { if (error instanceof TypeError || /no such (table|column)/.test(String(error))) return absent; throw error; }
 }
 /** A check as the receipt digest seals it: presentation-only fields (check-levels.ts) left out. */
-const sealedChecks = ({ level: _level, running: _running, batch: _batch, release: _release, ...proof }: AssignmentChecks): Omit<AssignmentChecks, "level" | "running" | "batch" | "release"> => proof;
+const sealedChecks = ({ level: _level, running: _running, batch: _batch, release: _release, cause: _cause, ...proof }: AssignmentChecks): Omit<AssignmentChecks, "level" | "running" | "batch" | "release" | "cause"> => proof;
 const OWNER_ACTION = "assignment claimed";
 const CHECK_ACTION = COMPLETION_ACTION;
 const actorOf = (owner: AssignmentOwner) => `${owner.kind}:${owner.id}`;
@@ -162,13 +165,21 @@ function recordedFailureStands(store: Store, runId: number, own: AssignmentCheck
     detail: `${own.level === "quick" ? "Quick checks" : "Checks"} failed${recorded.exitCode === null ? "" : ` (exit ${recorded.exitCode})`}. ${own.detail}` };
 }
 
+const COMMAND_MISSING_OR_CHANGED = "The original approved verification command is missing or changed.";
+
 function buildChecks(store: Store, root: string | undefined, runId: number): AssignmentChecks {
   const level = runCheckLevel(store, runId);
   const unavailable = (detail: string): AssignmentChecks => ({ status: "unavailable", exitCode: null, command: null, logArtifactId: null, detail, level });
   if (root === undefined) return unavailable("Saved checks are unavailable.");
   try {
     const gate = verificationEvidence(store, root, runId);
-    if (!gate.ok) return unavailable(gate.problem);
+    if (!gate.ok) {
+      // The approved command changed since this check ran: nothing is missing, the check just no longer binds to it.
+      const run = store.getRun(runId), repo = run === null ? null : store.refById(run.taskRef)?.repo ?? null;
+      const live = repo === null ? null : store.liveVerifyCommand(repo);
+      const changed = gate.problem === COMMAND_MISSING_OR_CHANGED && live !== null && run !== null && live.approvedAt > run.startedAt;
+      return changed ? { ...unavailable(gate.problem), cause: "command-changed" } : unavailable(gate.problem);
+    }
     const receipt = gate.bytes === null ? null : JSON.parse(gate.bytes);
     if (receipt === null) return { ...unavailable(level === "off" ? "Checks were off for this build." : "No machine check is recorded."), status: "not-run" };
     const ran = receipt.result.ran === true, exitCode = ran ? receipt.result.exitCode : null;

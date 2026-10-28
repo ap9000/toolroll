@@ -32,7 +32,9 @@ export function evidenceResultStatusOf(result: ResultFacts, publication: Publica
       label: "Result saved, but some saved material is unavailable",
       // Never "passed" when the check itself can't be read now (task-status.ts approvedCheckOf).
       detail: recorded.token === "check-unreadable" ? `Some saved material is missing, damaged, or could not be read. ${recorded.detail}`
-        : `Some saved material is missing, damaged, or could not be read. The machine's verdict at completion is unchanged: ${result.verdict === "verified" ? "the approved check passed against it then" : recorded.label.toLowerCase()}.`,
+        : `Some saved material is missing, damaged, or could not be read. ${result.verdict === "verified" && result.checks !== undefined && ["ready-to-review", "pr-opened", "merge-observed", "pr-closed"].includes(recorded.token)
+          ? "The machine's verdict at completion is unchanged: the approved check passed against it then."
+          : result.verdict === "verified" ? "Open the result to see its checks." : `The machine's verdict at completion is unchanged: ${recorded.label.toLowerCase()}.`}`,
       tone: "problem",
       action: { label: "See what is missing", kind: "open-result" },
     };

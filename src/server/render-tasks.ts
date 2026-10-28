@@ -1831,6 +1831,12 @@ export function taskBodyParts(data: {
           proofDetails,
         );
       }
+      // A recorded pass the check read now doesn't stand behind (unreadable, failed since, or not read here) never
+      // reads "passed": the box says what holds now (task-status.ts approvedCheckOf).
+      if (proof.proofVerdict === "verified" && !accepted && !(proof.receipt?.checks !== undefined && ["ready-to-review", "pr-opened", "merge-observed", "pr-closed"].includes(resultStatus.token))) {
+        return withReview(box(resultStatus.tone === "problem" ? "problem" : "ok", resultStatus.label,
+          html`<a href="/r/${proof.runId}">Build #${proof.runId}</a> finished. ${resultStatus.detail}${publicationWords}`, resultStatus.token), proofDetails);
+      }
       if (proof.proofVerdict === "verified" && !accepted) {
         const recovered = verificationRecovered(proof.proofReasons);
         return withReview(box(

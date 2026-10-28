@@ -20,6 +20,11 @@ import { sealVerificationReceipt } from "./verification-evidence.js";
 import { createDecisionServer } from "./serve.js";
 import { CHECKS_FINISHED, CHECKS_STARTED, FOLLOW_UP_LOG, FOLLOW_UP_RECEIPT, requestFollowUpChecks } from "./result-follow-ups.js";
 import { telegramProgressCard } from "./telegram-progress.js";
+import { phoneStatus, phoneTask } from "./telegram-status.js";
+import { installationStatus } from "./lead-status.js";
+import { workIndexPage } from "./work-index.js";
+import { acceptanceStatus } from "./chat-acceptance.js";
+import { completionWords } from "./server/render-results.js";
 import { approvedCheckOf, approvedCheckStateOf, type ApprovedCheckState, type ChecksFact } from "./task-status.js";
 import { taskRoad } from "./first-run.js";
 import { resultStatusOf } from "./workspace-ui.js";
@@ -91,7 +96,7 @@ const CASES: Case[] = [
 const PASSED_CLAIM = /\b(?:check|checks) passed\b|\bpassed against\b|\bPassed on\b|verified the result/i;
 /** The Project checks row's words for each answer. */
 const ROW: Record<ApprovedCheckState, RegExp> = {
-  passed: /^Passed/, failed: /^Failed/, running: /checks running$/i, "not-run": /^Didn't run$/, off: /^Checked at release$/, unreadable: /^Couldn't be read(?: · running again)?$/,
+  passed: /^Passed/, failed: /^Failed/, running: /checks running$/i, "not-run": /^Didn't run$/, off: /^Checked at release$/, unreadable: /^(?:Couldn't be read|Check command changed since)$/,
 };
 /** The road's Checks step for each answer. */
 const ROAD: Record<ApprovedCheckState, string> = {
@@ -214,7 +219,7 @@ describe("one answer to 'did the approved check pass', on every surface", () => 
     if (one.expect === "unreadable") {
       expect(status.headline, one.id).toBe("Needs you");
       // A hold is its own reason to need a person; otherwise the unreadable check is the ask.
-      if (one.held !== true) expect(status.sentence, one.id).toContain("couldn't be read");
+      if (one.held !== true) expect(status.sentence, one.id).toMatch(/couldn't be read|check command changed since this check/);
     }
     if (one.expect === "failed") expect(status.headline, one.id).toBe("Failed");
     if (one.expect === "passed") expect(["Ready for review", "Needs you"], one.id).toContain(status.headline);
@@ -224,6 +229,13 @@ describe("one answer to 'did the approved check pass', on every surface", () => 
     if (one.expect === "failed" || one.expect === "unreadable") expect(road[4], one.id).not.toMatch(/^ready:done/);
     // A passing check never reads stuck: the road reaches Ready, or waits there on a hold.
     if (one.expect === "passed") expect(road[4], one.id).toBe(one.held === true ? "ready:stuck:Ready" : "ready:done:Ready");
+
+    // A check command approved again since says exactly that, never that saved files are missing.
+    if (one.id === "verified-command-changed") {
+      expect(row!.text).toBe("Check command changed since");
+      expect(status.sentence).toBe("The check command changed since this check. Run checks again, then mark it complete.");
+      expect(status.details.find(detail => detail.key === "evidence")?.text, "Saved evidence").toBe("Complete");
+    }
 
     // ---- the Tasks list row: the same headline, never a pass the card doesn't show
     const list = workspaceOf(await page("/work")).view as Extract<BrowserWorkspace["view"], { kind: "tasks" }>;
@@ -246,7 +258,7 @@ describe("one answer to 'did the approved check pass', on every surface", () => 
     }
     const checksTab = selected.panel!.views.find(view => view.key === "checks")?.html ?? "";
     // A verdict that recorded a pass the check can't show now says so where it is shown.
-    if (one.verdict === "verified" && one.expect === "unreadable") expect(checksTab, one.id).toMatch(/Now: the check result couldn(?:'|&#39;|&#x27;)t be read\. It doesn(?:'|&#39;|&#x27;)t count as passed\./);
+    if (one.verdict === "verified" && one.expect === "unreadable") expect(checksTab, one.id).toMatch(/Now: the check (?:result couldn(?:'|&#39;|&#x27;)t be read|command changed since this check)\. It doesn(?:'|&#39;|&#x27;)t count as passed\./);
     // The road and the result page read the card's one answer, never the row's words.
     expect(status.check, `${one.id}: the card's one answer`).toBe(one.expect);
     expect(panel.check, `${one.id}: result panel answer`).toBe(one.expect);
@@ -281,6 +293,39 @@ test("no surface claims a pass beside a check row that says otherwise", async ()
     for (const [where, words] of texts) if (CLAIM.test(words)) violations.push(`${one.id} · ${where}: "${words.trim()}" beside Project checks "${row}"`);
   }
   expect(violations).toEqual([]);
+});
+
+/** Reads without the evidence files (chat status and task, `toolroll status` without a root, assignment briefs and
+ * the Tasks index read without one, the chat acceptance packet) can't know whether the check still reads: they make
+ * no claim about it at all, whatever the page says, and never say passed. */
+test("reads without the evidence files claim nothing about the check", () => {
+  const CLAIM = /\b(?:check|checks|command) passed\b|\bpassed against\b|\bPassed on\b|verified (?:the|this) result|"Passed"|Project checks · Passed/i;
+  const repos = [REPO, REPO_LATER, REPO_NONE];
+  const access = { principal: "operator" as const, repos };
+  const index = workIndexPage(store, NOW, access, { limit: 100 });
+  const status = installationStatus(store, NOW, "sam", null);
+  const chat = phoneStatus(store, repos, NOW);
+  expect(chat).not.toMatch(CLAIM);
+  for (const one of CASES) {
+    const item = index.items.find(row => row.rootId === one.id);
+    expect(item, one.id).toBeDefined();
+    expect(JSON.stringify(item!.status), `${one.id}: index row`).not.toMatch(CLAIM);
+    expect(JSON.stringify(status.tasks.find(row => row.task === one.id) ?? null), `${one.id}: status`).not.toMatch(CLAIM);
+    expect(phoneTask(store, repos, one.id, NOW), `${one.id}: chat task`).not.toMatch(CLAIM);
+    const recorded = store.proofVerdictFor(runs[one.id]!);
+    expect(acceptanceStatus(recorded, false), `${one.id}: acceptance packet`).not.toMatch(/Checks passed/);
+    expect(completionWords(recorded?.verdict ?? null, recorded?.reasons ?? [], undefined), `${one.id}: run page evidence card`).not.toMatch(CLAIM);
+  }
+});
+
+/** The run page's evidence card (live, failed or record view) says the verdict only beside what holds now. */
+test("the run record's evidence card reads the same answer", async () => {
+  for (const one of CASES.filter(c => c.verdict === "verified" && c.expect !== "passed" && c.expect !== "running")) {
+    const html = await page(`/r/${runs[one.id]}?record=1`);
+    const unqualified = [...html.matchAll(/independently verified this result\.(.{0,160})/g)].filter(m => !/Now: .*count as passed/.test(m[1]!));
+    expect(unqualified, one.id).toEqual([]);
+    expect(html, one.id).not.toMatch(/approved check passed against this result/);
+  }
 });
 
 /** An older result of a task, its recorded pass since contradicted by a failed check on its commit: its own page says
