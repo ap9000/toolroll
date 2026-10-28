@@ -2395,7 +2395,16 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   if (!(shown.indexOf(comment.id) >= 0 && shown.indexOf(comment.id) < shown.indexOf(answered[0]))) throw new Error(`the reply isn't shown after the comment: ${JSON.stringify({ shown, comment: comment.id, answered })}`);
   // A scripted lead's reply carries a code block, so a scripted run sees it rendered as one (a real lead may not write one).
   if (w.scripted) await waitFor(on.locator(answered.map(id => `[data-workspace-chat] [data-message-id="${id}"] pre.chat-code`).join(", ")).first(), "the lead's reply with its code block", { timeoutMs: 30_000 });
-  await waitFor(on.locator('[data-workspace-chat] [data-view="chat-card"][data-card-state="pending"] .so-needs-you').first(), "the card waiting on you", { timeoutMs: 30_000 });
+  // What the lead does with the comment waits on you: a scripted lead drafts a card to confirm; a real one drafts a card
+  // (a follow-up task, or changes to the result) or asks you first, as buttons under its reply.
+  const waitsOnYou = w.scripted ? '[data-workspace-chat] [data-view="chat-card"][data-card-state="pending"] .so-needs-you'
+    : '[data-workspace-chat] [data-view="chat-card"][data-card-state="pending"] .so-needs-you, [data-workspace-chat] .so-owner-ask .so-owner-ask-options button';
+  await waitFor(on.locator(waitsOnYou).first(), w.scripted ? "the card waiting on you" : "the card or question waiting on you", { timeoutMs: 30_000, seen: async () => {
+    const turn = freshRows(install.db, `SELECT turn FROM lead_message WHERE id = ${comment.id}`)[0]?.turn;
+    const drafted = freshRows(install.db, `SELECT kind, state FROM lead_proposal WHERE turn = ${turn ?? 0}`);
+    const said = freshRows(install.db, `SELECT text FROM lead_message WHERE id IN (${answered.join(", ")})`).map(one => String(one.text)).join(" | ");
+    return `drafted ${JSON.stringify(drafted)}; said ${JSON.stringify(said.slice(0, 600))}`;
+  } });
   await bothSizes(on, "chat-thread");
   // On a phone the task opens as a sheet; put it away to show the thread itself.
   await on.setViewportSize({ width: 390, height: 844 });
