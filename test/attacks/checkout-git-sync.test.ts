@@ -31,6 +31,7 @@ describe("attack: a checkout's git config runs a program when a page reads it", 
     "an include of a file naming one": () => { writeFileSync(join(root, "extra"), `[core]\n\tfsmonitor = touch ${marker}\n`); git("config", "include.path", join(root, "extra")); },
     "core.pager": () => git("config", "core.pager", `touch ${marker}`),
     "an external diff": () => git("config", "diff.external", `touch ${marker}`),
+    "an attributes file naming a filter": () => { git("config", "filter.y.clean", `sh -c 'touch ${marker}; cat'`); writeFileSync(join(root, "attrs"), "*.txt filter=y\n"); git("config", "core.attributesFile", join(root, "attrs")); },
   };
   for (const [name, plant] of Object.entries(plants)) {
     test(`${name}: refused before git reads, and nothing runs`, () => {

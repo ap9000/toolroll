@@ -320,11 +320,15 @@ export function sqliteLock(file: string, busyTimeoutMs = 0): DatabaseSync | null
 /** Whether another process holds the lock in `file`, without making the file or changing it: a status read (a page
  * shows it, docs/plans/get-side-effects.md). A file that isn't there yet is held by nobody. */
 export function lockHeld(file: string): boolean {
-  if (!existsSync(file)) return false;
+  let st: ReturnType<typeof lstatSync>;
+  try { st = lstatSync(file); } catch { return false; }
+  // Not a plain file of ours (a link, or one someone else made): treated as held, so nothing goes ahead on it.
+  if (!st.isFile() || (typeof process.getuid === "function" && st.uid !== process.getuid())) return true;
   let db: DatabaseSync;
-  try { db = new (sqlite().DatabaseSync)(file); } catch { return false; }
-  try { db.exec("PRAGMA busy_timeout=0; BEGIN EXCLUSIVE"); db.exec("ROLLBACK"); return false; }
-  catch (error) { return String(error).includes("locked") || [5, 6].includes((error as { errcode?: number }).errcode ?? 0); }
+  // Read-only: it never makes the file. The holder's exclusive lock stops even a read.
+  try { db = new (sqlite().DatabaseSync)(file, { readOnly: true }); } catch { return true; }
+  try { db.exec("PRAGMA busy_timeout=0"); db.prepare("SELECT COUNT(*) FROM sqlite_master").get(); return false; }
+  catch (error) { return String(error).includes("locked") || String(error).includes("busy") || [5, 6].includes((error as { errcode?: number }).errcode ?? 0); }
   finally { db.close(); }
 }
 const workerLock = (j: UpdateJournal, busyTimeoutMs = 0) => sqliteLock(join(j.workDir, "worker.sqlite"), busyTimeoutMs);

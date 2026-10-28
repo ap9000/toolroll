@@ -1,4 +1,4 @@
-import { checkoutGit, PAGE_READ_FLAGS } from './teardown-git.js';
+import { checkoutGit, readFlags } from './teardown-git.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, chmodSync, realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -616,8 +616,8 @@ export class CodingWorkspace {
     // The code page reads this on a GET (docs/plans/get-side-effects.md), from a checkout the agent writes: every git
     // here is the hardened checkout git, which refuses a config that could run a command and reads no global config.
     const hardened = checkoutGit(run);
-    // PAGE_READ_FLAGS hold even if the checkout's config changes after checkoutGit read it: no filter, hook or network.
-    const safe: typeof hardened = (file, args, options) => hardened(file, [...PAGE_READ_FLAGS, ...args], options);
+    // The read flags hold even if the checkout's config changes after checkoutGit read it: no hook, pager or network.
+    const safe: typeof hardened = (file, args, options) => hardened(file, [...readFlags(), ...args], options);
     const read = async (args: string[]) => {
       const result = await safe('git', args, { cwd: session.worktree, timeoutMs: 60_000, maxBuffer: 1_048_576 });
       if (result.code !== 0) throw Error('Git could not complete this workspace operation. Check the repository and try again.');

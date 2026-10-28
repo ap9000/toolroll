@@ -316,6 +316,10 @@ post("tasks", "code.start", "/code/start", CODING_ACT);
 post("tasks", "term.start", "/term/start", { ...TERM, scope: "step-up" });
 for (const one of ["close", "remove"]) post("tasks", `term.${one}`, `^\\/term\\/${TERMINAL}\\/${one}$`, { ...TERM, sample: `/term/${"a".repeat(32)}/${one}` });
 for (const one of ["send", "stop", "resume", "recover", "continue", "ship", "answer"]) post("tasks", `code.${one}-send`, `^\\/code\\/${SESSION}\\/${one}$`, { ...CODING_ACT, sample: `/code/${"a".repeat(32)}/${one}` });
+// Reading a coding checkout runs git in a folder an agent writes, so it is a POST with the form token, never a page
+// visit (docs/plans/get-side-effects.md): the session's changes, and the review-for-shipping preview.
+post("tasks", "code.changes-read", `^\\/code\\/${SESSION}\\/changes$`, { project: "coding", limited: "self", callers: ["cookie"], sample: `/code/${"a".repeat(32)}/changes` });
+post("tasks", "code.ship-preview", `^\\/code\\/${SESSION}\\/ship\\/preview$`, { project: "coding", limited: "self", callers: ["cookie"], sample: `/code/${"a".repeat(32)}/ship/preview` });
 // Any other coding action answers "not found" after the same access check.
 post("tasks", "code.act-other", "^\\/code(\\/.*)?$", { ...CODING_ACT, sample: "/code/unknown" });
 post("settings", "settings.skills-revise", "/settings/skills/revise", { project: "form", limited: "unscoped", ...approver("Sign in to revise a test.", "/settings/skills") });

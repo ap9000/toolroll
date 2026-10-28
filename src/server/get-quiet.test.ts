@@ -61,7 +61,7 @@ test("every GET and HEAD row only reads: no writes beyond bookkeeping, no proces
   // Each row's own sample, then the addresses that reach deeper into the pages that used to act: a project named,
   // a search typed, the old "check now" query strings, a task's chat.
   const project = encodeURIComponent(world.repo);
-  const deeper = [`/settings/pull-requests?repo=${project}`, `/settings/knowledge?repo=${project}&q=readme`, `/settings/tools?repo=${project}`,
+  const deeper = [`/settings/pull-requests?repo=${project}`, `/settings/knowledge?repo=${project}&q=refunds`, `/settings/tools?repo=${project}`,
     `/settings/project?repo=${project}`, "/control?provider=openrouter&refresh-models=1", "/control?check-connection=1", "/settings?check-connection=claude",
     "/settings/updates?check=now", "/chat?task=one", "/chat/mate/status?task=one", "/chat/task-status?task=one", "/workbench?t=one", "/t/one"];
   const targets = [...rows.flatMap(row => (row.method === "GET,HEAD" ? ["GET", "HEAD"] : ["GET"]).map(method => ({ method, path: row.sample, id: row.id }))),
@@ -96,6 +96,8 @@ test("every GET and HEAD row only reads: no writes beyond bookkeeping, no proces
     "/settings/storage", "/settings/skills", "/settings/learning", "/control", "/control/connection", "/projects/github", "/push/key", "/mode", "/t/one",
     ...deeper];
   expect(Object.fromEntries(rendered.map(path => [path, answered.get(path)]))).toEqual(Object.fromEntries(rendered.map(path => [path, 200])));
+  // The search really ran (through the hardened git) and found the committed file.
+  expect((await world.send(`/settings/knowledge?repo=${project}&q=refunds`, "GET", { cookie })).body).toContain("README.md");
   expect(world.store.getChatConfig()).toBeNull();
   expect(world.openModes()).toBe(1);
   expect(world.pauseOpen()).toBe(true);

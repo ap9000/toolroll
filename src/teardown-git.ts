@@ -10,6 +10,7 @@
  * any of them the command never runs. The refusal is a failed git result, so every caller's existing doubt applies and
  * nothing is removed.
  */
+import { inReadOnlyRequest } from "./read-only-request.js";
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -238,8 +239,13 @@ export function checkoutGit(inner: Runner = run): Runner {
  */
 export const PAGE_READ_FLAGS: readonly string[] = [
   "--no-lazy-fetch", "--attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904",
-  "-c", "protocol.allow=never", "-c", "core.pager=cat", "-c", "core.alternateRefsCommand=",
+  "-c", "protocol.allow=never", "-c", "core.pager=cat", "-c", "core.alternateRefsCommand=", "-c", "core.attributesFile=/dev/null",
 ];
+/** The read flags for now: a page visit gets all of PAGE_READ_FLAGS; a person's POST keeps the checkout's attributes
+ * (their line-ending and encoding rules, so a clean file reads as clean), with the rest unchanged. */
+export function readFlags(): readonly string[] {
+  return inReadOnlyRequest() ? PAGE_READ_FLAGS : PAGE_READ_FLAGS.filter(one => !one.startsWith("--attr-source="));
+}
 
 /**
  * checkoutGit, synchronously, for reads a page shows from a checkout an agent writes (docs/plans/get-side-effects.md):
@@ -263,7 +269,7 @@ export function checkoutGitSync(cwd: string, args: readonly string[], options: {
   if (command >= 0 && safeArgs[command] === "diff") safeArgs.splice(command + 1, 0, "--no-ext-diff", "--no-textconv");
   // The operator's own values, but no filter: PAGE_READ_FLAGS reads attributes from the empty tree anyway.
   const carried = carriedSettings(own.stdout).filter((one, at, all) => !(one.startsWith("filter.") || (one === "-c" && all[at + 1]?.startsWith("filter."))));
-  const ran = spawnSync("git", [...TEARDOWN_FLAGS, ...PAGE_READ_FLAGS, "-c", "diff.ignoreSubmodules=all", ...carried, ...safeArgs], bounded);
+  const ran = spawnSync("git", [...TEARDOWN_FLAGS, ...readFlags(), "-c", "diff.ignoreSubmodules=all", ...carried, ...safeArgs], bounded);
   if (ran.status !== 0) throw new Error(`git ${args[0] ?? ""} failed`);
   return ran.stdout;
 }

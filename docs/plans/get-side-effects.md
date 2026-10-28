@@ -54,8 +54,7 @@ What a read may still write, because it records the read itself or caches what i
 | Probe | Route | Why it may stay |
 | --- | --- | --- |
 | Protocol callbacks: OAuth returns (`edge.google-callback`, `edge.connect-callback`), SSO (`edge.sso-callback`, `edge.sso-finish`), the one-time sign-in link (`edge.login-link`), `edge.oauth-authorize` | the provider sends the browser back with a GET | The protocol is a GET carrying single-use state minted by the person's own POST; each is consumed once and a replay does nothing. |
-| `git` in a coding session's checkout | `code.changes`, `code.ship` | Read-only (`--no-optional-locks`), bounded (60 s), local, through the hardened checkout git (`checkoutGit`, new `checkoutGitSync`): a config that could run a command is refused, no system or global config, submodules skipped. On top, `PAGE_READ_FLAGS` hold even if the config changes after it was inspected: hooks, fsmonitor and the pager off, no lazy fetch, every protocol refused, attributes read from the empty tree (so no filter or textconv runs), and a diff takes `--no-ext-diff --no-textconv`. |
-| `git` for Settings → Knowledge's search (`?q=`) | `settings.knowledge` | Only when the person searches; the same hardened checkout git with `PAGE_READ_FLAGS`, bounded (10 s). |
+| `git` for Settings → Knowledge's search (`?q=`) | `settings.knowledge` | Only when the person searches, in the project's own folder (not an agent's checkout); the hardened checkout git (`checkoutGitSync`: a config that could run a command is refused, no system or global config) with `PAGE_READ_FLAGS`, which hold even if the config changes after it was inspected: hooks, fsmonitor and the pager off, no lazy fetch, every protocol refused, no attributes file, attributes read from the empty tree (no filter or textconv), a diff with `--no-ext-diff --no-textconv`; bounded (10 s). What the flags can't switch off is `.git/info/attributes` naming a filter that the config gains after the inspection: both live in the project's `.git`, which an agent's fence never lets it write. |
 | The update lock probe | `settings.updates`, the chrome for operators | Whether the updater holds its lock: opens the lock file only if it exists, takes and rolls back an exclusive lock, never creates or changes the file (`lockHeld`). |
 | The keychain read (`/usr/bin/security`, `secret-tool`) | Tools, Flows, Kits pages | Reads whether a secret is set; owner-checked binary, bounded (20 s), local. Moving legacy files in, the lock file and the names cache now wait for a non-GET read. |
 | Process liveness (`kill -0`, `/bin/ps`, the Windows job helper) | task, review, inbox, sweep pages | Reads whether a run's process is alive; bounded (1–5 s), local, writes nothing. |
@@ -92,7 +91,7 @@ page also renders the shared chrome, which did two of the actions below (marked 
 | `settings.tools`, `settings.project`, `flows.new`, `flows.gallery`, `flow.page`, `kit.page` | Prepared the secrets folder (lock, key file), moved legacy secret files into the keychain (and destroyed them), took lock files, wrote the names cache | Read the keychain or the old file; the folder is prepared as the console starts (a page before that says secrets can't be read yet); moving waits for a non-GET read |
 | `flow.page` | Closed an expired "runs on its own" grant (ledger line, approvals withdrawn) | Reads; `closeExpiredUnattendedGrants` in the background pass |
 | `recipes.preview`, `mode`, `settings.checks` | `activeMode` expiry, as the chrome | Reads |
-| `code.changes`, `code.ship` | git in the agent-written checkout without the hardened helper | Kept (see above), now hardened |
+| `code.changes`, `code.ship` | git in the agent-written checkout without the hardened helper | The session page loads changes, and opens the shipping preview, with POSTs (`code.changes-read`, `code.ship-preview`, form token, the coding page's own access). A GET of `/changes` goes back to the session; a GET of `/ship` shows one **Review the committed change** button. Those reads use the hardened checkout git with the read flags (keeping the checkout's line-ending attributes, so a clean file reads as clean) |
 | `edge.google-callback`, `edge.connect-callback`, `edge.sso-callback`, `edge.sso-finish`, `edge.login-link`, `edge.oauth-authorize` | Protocol state consumed, tokens exchanged, secrets stored, a tool added | Kept: protocol-required (see above) |
 | `edge.sso-start` | Fetched the identity provider's discovery document when not cached | Uses the provider as last discovered (at console start, by the background pass every ten minutes, when sign-in settings are saved or tested); before the first discovery it says the provider isn't answering yet |
 | `settings.updates` (and the chrome for operators) | The updater lock probe created `worker.sqlite` and changed its mode | `lockHeld` reads without creating or changing the file |
@@ -111,6 +110,10 @@ page also renders the shared chrome, which did two of the actions below (marked 
   a page can say "Not checked yet".
 - Chat's first run asks this computer again through a POST every few seconds, as before; a viewer's page no longer
   can (approvers only).
+- The coding page's **Review for shipping** is now a button (a POST), and opening `/code/<id>/ship` directly asks for
+  one more click.
+- **Sign in with your identity provider** says it isn't answering yet for the moment after a restart before the
+  provider has been discovered.
 - The lead turns on by default from the start-up look or the background pass (within about two minutes of signing
   in an agent), or at once from Chat's first run or Settings → Lead → **Check again**.
 - An expired mode or flow grant shows as ended at once; its row and notices are written within 30 seconds by the

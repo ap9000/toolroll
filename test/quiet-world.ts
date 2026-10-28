@@ -38,6 +38,11 @@ export async function openQuietWorld(note: (what: string) => void, extra: Partia
   const root = realpathSync(mkdtempSync(join(tmpdir(), "so-getquiet-")));
   const repo = join(root, "repo"); mkdirSync(repo);
   execFileSync("git", ["init", "-q", repo]);
+  // One committed file, so a Knowledge search has something to find.
+  writeFileSync(join(repo, "README.md"), "# Payments\n\nRefunds settle in the ledger module.\n");
+  const gitEnv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
+  execFileSync("git", ["-C", repo, "add", "README.md"], { env: gitEnv });
+  execFileSync("git", ["-C", repo, "-c", "user.email=q@example.com", "-c", "user.name=q", "commit", "-qm", "readme"], { env: gitEnv });
   const configDir = join(root, "config"); mkdirSync(configDir);
   const store: Store = openStore(join(configDir, "state.db"));
   const operator = addApprover(store, "alex", QUIET_T0);

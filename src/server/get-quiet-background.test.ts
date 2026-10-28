@@ -73,3 +73,26 @@ test("the follow pass settles a turn past its deadline even while an update drai
     expect(world.store.getLeadTurn(world.turnId)).toMatchObject({ state: "failed", failureReason: "crashed" });
   } finally { removeUpdateGate(world.store.raw(), "00000000-0000-4000-8000-000000000001"); }
 });
+
+test("the update status reads its lock without making or changing the file", async () => {
+  const { lockHeld, sqliteLock } = await import("../desktop-update.js");
+  const { mkdtempSync, existsSync, writeFileSync, symlinkSync, statSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "so-lockheld-"));
+  try {
+    const file = join(dir, "worker.sqlite");
+    expect(lockHeld(file)).toBe(false);
+    expect(existsSync(file)).toBe(false);
+    const held = sqliteLock(file)!;
+    const before = statSync(file);
+    expect(lockHeld(file)).toBe(true);
+    held.close();
+    expect(lockHeld(file)).toBe(false);
+    expect(statSync(file).mode).toBe(before.mode);
+    // A link where the lock should be is never followed: it counts as held.
+    writeFileSync(join(dir, "elsewhere"), "");
+    symlinkSync(join(dir, "elsewhere"), join(dir, "linked.sqlite"));
+    expect(lockHeld(join(dir, "linked.sqlite"))).toBe(true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

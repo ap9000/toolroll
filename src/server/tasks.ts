@@ -13,7 +13,7 @@ import { handlersOf } from './handler-registry.js';
 import { closedQuestionWords } from "../decision.js";
 import { DEPRECATED_PAGE } from "../deprecations.js";
 /** tasks handlers, moved without changing their route bodies. */
-import { html, htmlString, joinHtml, textHtml, type Html } from "../html.js";
+import { html, htmlString, joinHtml, postForm, textHtml, type Html } from "../html.js";
 import { createHash,randomBytes,randomUUID } from "node:crypto";
 import { lstatSync,realpathSync } from "node:fs";
 import { type ServerResponse } from "node:http";
@@ -107,7 +107,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
 
   /** The coding workspace and a session's own addresses: the row names the part, the path carries the session id. */
   type CodePart = "workspace" | "session" | "state" | "changes" | "ship" | "unknown";
-  const showCode = (part: CodePart) => async (ctx: HandlerContext): Promise<void> => {
+  // `posted`: the session page's own POST (form token). A GET of changes or the shipping preview runs no git in the
+  // agent's checkout: changes go back to the session page, the preview asks for one click.
+  const showCode = (part: CodePart, posted = false) => async (ctx: HandlerContext): Promise<void> => {
     const { url, who, response, project } = ctx;
     if (who.via !== 'cookie' || !codingActorAllowed({ name: who.name, generation: who.session.generation })) return refuse(response, who, 403, 'Coding sessions require installation-wide operator access. You can manage project tasks in Work.', '/work');
     const actor = { name: who.name, generation: who.session.generation };
@@ -116,6 +118,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     try {
       const selected = sessionId !== null && runtime.coding ? runtime.coding.get(sessionId, actor) : null;
       if (selected && !codingProjectAllowed(selected.repo)) return refuse(response, who, 403, 'That project is outside your access.', '/projects');
+      if (!posted && part === 'changes' && selected) return redirect(response, `/code/${selected.id}`);
+      if (!posted && part === 'ship' && selected) {
+        return sendScreen(response, 200, screen('Review for shipping', html`<section class="coding-workspace coding-handoff"><h1>Review for shipping</h1><p>${selected.title}</p>${postForm(`/code/${selected.id}/ship/preview`, html`<button type="submit">Review the committed change</button>`)}<p><a href="/code/${selected.id}">Back to coding</a></p></section>`, { chrome: chromeFor(selected.repo, 'code') }));
+      }
       if (part === 'ship' && selected) {
         const preview = codingHandoffPreview(store, { sessionId: selected.id, actor: who.name });
         return sendScreen(response, 200, screen('Review for shipping', codingShippingHtml(preview), { chrome: chromeFor(selected.repo, 'code') }));
@@ -2990,6 +2996,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     "code.state": showCode("state"),
     "code.changes": showCode("changes"),
     "code.ship": showCode("ship"),
+    "code.changes-read": showCode("changes", true),
+    "code.ship-preview": showCode("ship", true),
     "code.other": showCode("unknown"),
     "inbox": showInbox,
     "work": showWork,

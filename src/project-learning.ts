@@ -2,7 +2,7 @@
 import { inReadOnlyRequest } from "./read-only-request.js";
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { Store } from './store.js';
 import { readVerifiedArtifact, scanForSecrets } from './evidence.js';
@@ -80,19 +80,25 @@ function identityFacts(repo: string, seen?: Map<string, string>): { common: stri
  * `commondir` when it is a linked worktree. Throws when the folder holds neither. */
 function commonDirOnDisk(repo: string): string {
   const dotGit = join(repo, '.git');
-  const st = lstatSync(dotGit);
-  if (st.isDirectory()) return dotGit;
-  if (!st.isFile() || st.size > 4096) throw new Error('Project identity is unavailable.');
-  const named = /^gitdir: (.+)$/m.exec(readFileSync(dotGit, 'utf8'))?.[1]?.trim();
+  if (lstatSync(dotGit).isDirectory()) return dotGit;
+  const named = /^gitdir: (.+)$/m.exec(smallFile(dotGit))?.[1]?.trim();
   if (!named) throw new Error('Project identity is unavailable.');
   const gitDir = resolve(repo, named);
   if (!lstatSync(gitDir).isDirectory()) throw new Error('Project identity is unavailable.');
   const commondir = join(gitDir, 'commondir');
   if (!existsSync(commondir)) return gitDir;
-  // Only a small plain file is read (never a FIFO, a link or a device that could hold the console up).
-  const pointer = lstatSync(commondir);
-  if (!pointer.isFile() || pointer.size > 4096) throw new Error('Project identity is unavailable.');
-  return resolve(gitDir, readFileSync(commondir, 'utf8').trim());
+  return resolve(gitDir, smallFile(commondir).trim());
+}
+/** A small plain file's text, read through one descriptor that follows no link and never waits (a FIFO, a device or a
+ * file swapped in between is refused, never read), at most 4 KiB. */
+function smallFile(path: string): string {
+  const fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.size > 4096) throw new Error('Project identity is unavailable.');
+    const buffer = Buffer.alloc(4096);
+    return buffer.subarray(0, readSync(fd, buffer, 0, 4096, 0)).toString('utf8');
+  } finally { closeSync(fd); }
 }
 export function learningIdentity(repo: string, seen?: Map<string, string>): string {
   const { common, st } = identityFacts(repo, seen);
