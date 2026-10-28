@@ -422,7 +422,10 @@ type GitView = { env: Record<string, string>; restore: (output: string, args: re
   /** After git ran: its worktree-own writes carried back, and null, or why the run can't stand (an incident). */
   settle: () => string | null };
 /** What git keeps only per worktree and the plane never links: HEAD (git won't take it as a link) and the pointers. */
-const ADMIN_OWN = new Set(["HEAD", "commondir", "gitdir", "config", "config.worktree", "hooks", "info"]);
+/** What the plane links of a worktree's own git folder (git writes them in place through the link: the index and its
+ * logs by lockfile, per-worktree refs and logs inside the folders), whether or not they exist yet; a rebase's,
+ * cherry-pick's or sequencer's state folder only when one is already there. */
+const ADMIN_LINKED = ["index", "logs", "refs", "reftable"];
 /** What git keeps in a common directory (its path.c common_list, and reftable), linked whether or not it exists yet. */
 const COMMON_NAMES = ["branches", "gc.pid", "logs", "lost-found", "modules", "objects", "packed-refs", "reftable", "refs", "remotes", "rr-cache", "shallow", "svn", "worktrees"];
 function gitView(checkout: string, kind: "read" | "write", binding: GitBinding = {}): GitView {
@@ -479,15 +482,38 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
     // they exist), so git's lockfiles write them in place.
     // (A folder under a dangling link can't be made by git: the worktree's `logs` is made first, as git would.)
     if (kind === "write" && !existsSync(join(dirs.gitdir, "logs"))) { try { mkdirSync(join(dirs.gitdir, "logs")); } catch { /* git reports it */ } }
-    for (const name of new Set([...readdirSync(dirs.gitdir), "index", "logs"])) {
-      if (ADMIN_OWN.has(name)) continue;
-      symlinkSync(join(dirs.gitdir, name), join(admin, name));
+    // Only what git needs of the worktree's own folder is linked (ADMIN_LINKED, and a split index's shared files), each
+    // checked to be a real entry directly in it, never a link (Codex review of a0fa135d).
+    const linked = [...ADMIN_LINKED, ...readdirSync(dirs.gitdir).filter(name => name.startsWith("sharedindex."))];
+    for (const name of new Set(linked)) {
+      const path = join(dirs.gitdir, name);
+      let held: import("node:fs").Stats | null = null;
+      try { held = lstatSync(path); } catch { held = null; }
+      if (held !== null && (held.isSymbolicLink() || dirname(realpathSync(path)) !== dirs.gitdir)) throw new Error(`the checkout's git directory has ${name} as a link`);
+      symlinkSync(path, join(admin, name));
       initial.set(name, null);
     }
     const head = regularFile(join(dirs.gitdir, "HEAD"));
     if (head === null) throw new Error("the checkout's HEAD couldn't be read as a plain file");
-    writeFileSync(join(admin, "HEAD"), head, { mode: 0o600 });
-    initial.set("HEAD", head);
+    // The worktree's own state files (WORKTREE_STATE: HEAD, a merge's, cherry-pick's, rebase's or bisect's pseudo-refs
+    // and messages) are copies (git won't take them as links), carried back after the run; its state folders, when
+    // there, are linked.
+    for (const name of WORKTREE_STATE) {
+      const path = join(dirs.gitdir, name);
+      if (!existsSync(path) && name !== "HEAD") continue;
+      const text = name === "HEAD" ? head : regularFile(path);
+      if (text === null) throw new Error(`the checkout's ${name} couldn't be read as a plain file`);
+      writeFileSync(join(admin, name), text, { mode: 0o600 });
+      initial.set(name, text);
+    }
+    for (const name of WORKTREE_STATE_DIRS) {
+      const path = join(dirs.gitdir, name);
+      let held: import("node:fs").Stats | null = null;
+      try { held = lstatSync(path); } catch { continue; }
+      if (held.isSymbolicLink() || !held.isDirectory()) throw new Error(`the checkout's git directory has ${name} as a link`);
+      symlinkSync(path, join(admin, name));
+      initial.set(name, null);
+    }
     writeFileSync(join(admin, "commondir"), `${view}\n`, { mode: 0o600 });
     writeFileSync(join(admin, "gitdir"), `${join(dirs.checkout, ".git")}\n`, { mode: 0o600 });
     // A main checkout's own info (its sparse-checkout) is the view's frozen one; a linked one's is its own.
@@ -516,9 +542,11 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
       return "the checkout's repository changed while git ran";
     }
     if (kind === "write") {
-      // The worktree's own files git rewrote in the plane's GIT_DIR (HEAD, ORIG_HEAD, a merge's state) go back to it,
-      // and those it removed are removed there.
+      // The worktree's own state git rewrote in the plane's GIT_DIR goes back to it, and what it removed is removed
+      // there; anything else git left there the plane can't keep, and says so.
+      const left = readdirSync(admin).filter(name => !initial.has(name) && !WORKTREE_STATE.includes(name) && !["commondir", "gitdir", "info"].includes(name));
       try { carryBack(admin, dirs.gitdir, initial); } catch { return "the checkout's git state couldn't be carried back after git ran"; }
+      if (left.length > 0) return `git left state Toolroll can't keep in the checkout (${left.slice(0, 5).join(", ")})`;
     }
     return null;
   };
@@ -591,21 +619,16 @@ function pinned(dirs: BoundDirs): { ok: boolean; swapped: GitIncident["swapped"]
   return { ok: swapped.length === 0, swapped };
 }
 
-/** The worktree's own files a command may rewrite and the plane carries back (HEAD; a merge's state, so a conflicted
- * merge can be aborted); git's other per-worktree files written in the plane's GIT_DIR stay there and go with it. */
-const CARRIED_BACK = ["HEAD", "ORIG_HEAD", "MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "AUTO_MERGE"];
-
-/** Carry the CARRIED_BACK files git rewrote or removed in the plane's GIT_DIR back to the worktree's own folder: a new
- * file of a random name, created exclusively (never through a link), then renamed into place. */
+/** The worktree's own files a command may rewrite and the plane carries back: all of WORKTREE_STATE. */
 function carryBack(admin: string, gitdir: string, initial: ReadonlyMap<string, string | null>): void {
-  for (const name of CARRIED_BACK) {
+  for (const name of WORKTREE_STATE) {
     const here = join(admin, name);
     let held: import("node:fs").Stats | null = null;
     try { held = lstatSync(here); } catch { held = null; }
     const was = initial.get(name);
     if (held === null) {
       // Removed by git: removed in the worktree's own folder too (a merge's state once it concluded).
-      if (initial.has(name)) rmSync(join(gitdir, name), { force: true });
+      if (initial.get(name) != null) rmSync(join(gitdir, name), { force: true });
       continue;
     }
     if (held.isSymbolicLink() || !held.isFile()) continue;

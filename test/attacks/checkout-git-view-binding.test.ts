@@ -182,7 +182,7 @@ describe("the worktree's own files git rewrites go back to it", () => {
     expect(git(scratch, "status", "--porcelain")).toBe("");
   });
 
-  test("only HEAD and a merge's state go back, each through a fresh file no link can redirect", async () => {
+  test("the worktree's own state goes back, each file through a fresh one no link can redirect", async () => {
     const admin = join(a, ".git", "worktrees", "a-task");
     const outside = join(root, "outside");
     writeFileSync(outside, "untouched\n");
@@ -200,8 +200,8 @@ describe("the worktree's own files git rewrites go back to it", () => {
     const made = await checkoutGit(run, "build", { repo: a })("git", ["commit", "--no-verify", "-qam", "detached"], { cwd: aLinked, timeoutMs: 60_000 });
     expect(made.code, made.stderr).toBe(0);
     expect(git(aLinked, "log", "-1", "--format=%s").trim()).toBe("detached");
-    // The commit's message file stayed in the plane's view: never carried into the worktree's folder.
-    expect(existsSync(join(admin, "COMMIT_EDITMSG"))).toBe(false);
+    // The commit's message file persists in the worktree's own folder, as git leaves it.
+    expect(readFileSync(join(admin, "COMMIT_EDITMSG"), "utf8")).toContain("detached");
     expect(readdirSync(admin).filter(name => name.startsWith(".toolroll-"))).toEqual([]);
   });
 });
@@ -379,4 +379,40 @@ describe("the walk fails closed (security scan of the round-2 walk)", () => {
     }
     expect(shared.map(path => readFileSync(path).toString("base64"))).toEqual(before);
   });
+});
+
+describe("what git writes in the plane's GIT_DIR persists (Codex review of a0fa135d)", () => {
+  const admin = () => join(a, ".git", "worktrees", "a-task");
+  const build = (args: string[], cwd = aLinked) => checkoutGit(run, "build", { repo: a })("git", args, { cwd, timeoutMs: 60_000 });
+  test("the product's own commands: commit's message and HEAD's log, reset --keep's ORIG_HEAD, in a linked worktree and the main checkout", async () => {
+    expect((await build(["add", "-A"])).code).toBe(0);
+    expect((await build(["commit", "--no-verify", "-m", "kept"])).code).toBe(0);
+    expect(readFileSync(join(admin(), "COMMIT_EDITMSG"), "utf8")).toContain("kept");
+    expect(readFileSync(join(admin(), "logs", "HEAD"), "utf8")).toContain("kept");
+    const moved = await build(["reset", "--keep", "main"]);
+    expect(moved.code, moved.stderr).toBe(0);
+    expect(readFileSync(join(admin(), "ORIG_HEAD"), "utf8").trim()).toBe(git(a, "rev-parse", "task@{1}").trim());
+    // The main checkout's own (its folder is the common one).
+    writeFileSync(join(a, "m.txt"), "main\n");
+    expect((await build(["add", "-A"], a)).code).toBe(0);
+    expect((await build(["commit", "--no-verify", "-m", "on main"], a)).code).toBe(0);
+    expect(readFileSync(join(a, ".git", "COMMIT_EDITMSG"), "utf8")).toContain("on main");
+    expect(readFileSync(join(a, ".git", "logs", "HEAD"), "utf8")).toContain("on main");
+  });
+
+  test("a cherry-pick's stop is kept; state the plane can't keep (a sequencer) is said, not silently lost", async () => {
+    writeFileSync(join(a, "a.txt"), "main's\n"); git(a, "commit", "-qam", "main a");
+    writeFileSync(join(a, "z.txt"), "z\n"); git(a, "add", "z.txt"); git(a, "commit", "-qm", "main z");
+    writeFileSync(join(aLinked, "a.txt"), "task's\n"); git(aLinked, "commit", "-qam", "task a");
+    // One commit stopping on a conflict: its state files are the worktree's, kept.
+    const one = await build(["-c", "user.name=t", "-c", "user.email=t@t", "cherry-pick", "main~1"]);
+    expect(one.code).not.toBe(0);
+    expect(refusal(one)).toBeNull();
+    expect(existsSync(join(admin(), "CHERRY_PICK_HEAD"))).toBe(true);
+    git(aLinked, "cherry-pick", "--abort");
+    // A range stops with a sequencer folder (no product road runs one): refused as state Toolroll can't keep.
+    const range = await build(["-c", "user.name=t", "-c", "user.email=t@t", "cherry-pick", "main~1", "main"]);
+    expect(refusal(range), range.stderr).toContain("can't keep");
+  });
+
 });
