@@ -60,7 +60,9 @@ const POLL_MS = 15_000;
 /** One check attempt; `app` is the GitHub App that made it (github-actions for a workflow), when known; `id` its check
  * run id, `suite` its check suite (one workflow run: its re-runs stay in it) and `head` the commit GitHub filed it
  * under, when known. */
-export type CheckRun = { name: string; status: string; conclusion: string | null; app?: string | null; id?: number | null; suite?: number | null; head?: string | null };
+export type CheckRun = { name: string; status: string; conclusion: string | null; app?: string | null; id?: number | null; suite?: number | null; head?: string | null;
+  /** The workflow (its id, from GitHub's workflow-run API) that this check's suite is a run of, when known. */
+  workflow?: number | null };
 
 /** How many failed attempts of one CI check, and failed release-check runs, an automatic approval tolerates (flakes on a
  * pinned commit and digest), before a person decides (auto-approve-green.md). */
@@ -147,6 +149,11 @@ export type AutoReleaseAdapter = {
   checkFailed(taskId: string, why: string): Promise<void>;
   /** "Released 0.9.x automatically". */
   released(taskId: string, tag: string): Promise<void>;
+  /** CI stopped passing after the merge of an automatic release: hold its tag, publication and Homebrew until a person
+   * lets it go on (`toolroll release publish-ok`). Durable, in the plane. */
+  holdPublish(taskId: string, why: string): Promise<void>;
+  /** Why the release's publication waits for a person, or null. Read from the plane, whatever the journal says. */
+  publishHeld(taskId: string): Promise<string | null>;
 };
 
 export type ReleaseAdapters = {
@@ -198,6 +205,9 @@ export type ReleaseAdapters = {
     authenticated(): Promise<boolean>;
     pullRequest(repo: string, branch: string): Promise<PullRequest | null>;
     checks(repo: string, sha: string): Promise<CheckRun[]>;
+    /** Whether GitHub's check history of this commit can be read whole (fewer check suites than the check-runs
+     * endpoint's ceiling). Absent or false: an automatic release fails closed; a person's is unaffected. */
+    complete?(repo: string, sha: string): Promise<boolean>;
     merge(repo: string, pr: number, head: string, message?: string): Promise<string>;
     tag(repo: string, tag: string): Promise<string | null>;
     createTag(repo: string, tag: string, sha: string): Promise<void>;
@@ -550,15 +560,24 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
      */
     const autoCiHolds = async (before: string) => {
       if (j.auto?.state !== "approved") return;
-      const verdict = prChecksVerdict(await adapters.github.checks(j.github, j.candidate.sha), j.candidate.sha, REQUIRED_PR_CHECKS, { cap: AUTO_FLAKE_CAP });
+      const read = await adapters.github.checks(j.github, j.candidate.sha);
+      const whole = adapters.github.complete === undefined ? false : await adapters.github.complete(j.github, j.candidate.sha);
+      const verdict = whole ? prChecksVerdict(read, j.candidate.sha, REQUIRED_PR_CHECKS, { cap: AUTO_FLAKE_CAP }) : { state: "failed" as const, failed: ["GitHub's check history of this commit can't be read whole"] };
       if (verdict.state === "passed") return;
       if (before === "the tag") {
-        // Already merged: nothing to revoke. It isn't tagged or published, and a person decides.
-        await rel?.auto?.giveUp(j.task.id, `Pull request checks on ${j.candidate.sha.slice(0, 7)} stopped passing after the merge`);
+        // Already merged: nothing to revoke. It isn't tagged or published, and a person decides — durably, in the plane.
+        const why = `Pull request checks on ${j.candidate.sha.slice(0, 7)} stopped passing after the merge`;
+        await rel?.auto?.holdPublish(j.task.id, why);
+        await rel?.auto?.giveUp(j.task.id, why);
         throw new Stop("ci-failed", `Pull request checks on ${j.candidate.sha.slice(0, 7)} are no longer all passing: ${(verdict.state === "failed" ? verdict.failed : verdict.waiting).join(", ")}. It was merged, but nothing was tagged or published; a person decides how to go on.`);
       }
       await ciFailedAfterDeploy(`Pull request checks on ${j.candidate.sha.slice(0, 7)} are no longer all passing before ${before}: ${(verdict.state === "failed" ? verdict.failed : verdict.waiting).join(", ")}`,
-        before === "the deploy" ? "before" : "after");
+        before === "the deploy" && j.deploy === null ? "before" : "after");
+    };
+    /** A publication held for a person (the plane's record) stops the tag, the publication and Homebrew. */
+    const publishHold = async () => {
+      const held = rel?.auto === undefined ? null : await rel.auto.publishHeld(j.task.id);
+      if (held !== null) throw new Stop("approval", `${held}. It was merged; nothing more is tagged, published or sent to Homebrew until a person lets it go on: \`toolroll release publish-ok ${j.task.id} --as <you> --token <password>\`, then rerun.`);
     };
     /** identity(), on a plane that keeps release authority; a legacy plane keeps the old rules. */
     const watch = async (action: ReleaseAction) => { if (rel !== undefined) await identity(action, true); };
@@ -790,7 +809,6 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           const check = j.check!;
           await recoverDeploy();
           await checked(await adapters.toolroll.gate(j.task.id), "deploy");
-          if (j.deploy === null && j.intents.deploy === undefined) await autoCiHolds("the deploy");
           // A deployment that finished but whose answer was lost: the services already run a runtime of this commit.
           let runtime = await served(adapters, builtHead());
           // Already running this candidate (a new generation after a CI failure, or a lost answer): the release still
@@ -799,6 +817,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             const authority = await rel.authority(j.task.id);
             if (authority !== null && authority.state === "open") {
               await watch("deploy");
+              // Every deploy reservation, whatever the journal saved: CI must still be green on the exact commit.
+              await autoCiHolds("the deploy");
               const reserved = await rel.reserve({ authority: j.authority.id, kind: "deploy", taskId: j.task.id, candidate: j.candidate.sha, epoch });
               if (!reserved.ok) throw new Stop("release", `The deploy couldn't be reserved: ${reserved.why}`);
               if (!await rel.start(reserved.operation, epoch)) throw new Stop("lease", "Another release coordinator took over this release.");
@@ -809,6 +829,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             // The last moment a moved head restarts; then the deploy reservation freezes the candidate in the store.
             await watch("deploy");
             await pinned();
+            // Every deploy issued, whatever the journal saved (a retry after a rollback included): CI still green.
+            await autoCiHolds("the deploy");
             let operation: string | undefined, secret = "";
             if (rel !== undefined && j.authority && epoch !== null) {
               const reserved = await rel.reserve({ authority: j.authority.id, kind: "deploy", taskId: j.task.id, candidate: j.candidate.sha, epoch });
@@ -920,6 +942,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
         }
         case "tag": {
           const merge = j.merge!;
+          await publishHold();
           const at = await adapters.github.tag(j.github, j.tag);
           if (at !== null && at !== merge.sha) throw new Stop("conflict", `${j.tag} already points at ${at.slice(0, 7)}, not the merge ${merge.sha.slice(0, 7)}.`);
           if (at === null) { await autoCiHolds("the tag"); intend("tag"); await adapters.github.createTag(j.github, j.tag, merge.sha); }
@@ -928,6 +951,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           break;
         }
         case "publish": {
+          await publishHold();
           if (j.intents.publish === undefined) intend("publish");
           await waitFor("publish", `npm, the GitHub release and the tag's checks for ${j.tag}`, async () => {
             if (await adapters.github.tag(j.github, j.tag) !== j.tagged!.sha) throw new Stop("conflict", `${j.tag} no longer points at the verified merge commit. Homebrew was not updated.`);
@@ -941,6 +965,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           break;
         }
         case "homebrew": {
+          await publishHold();
           const brew = adapters.homebrew;
           let state = await brew.state(j.packageVersion);
           if (state.kind === "missing") { intend("homebrew"); const proposed = await brew.propose(j.packageVersion); state = { kind: "proposed", ...proposed }; }
@@ -1111,29 +1136,44 @@ function networkWords(error: unknown): string {
 export function prChecksVerdict(runs: readonly CheckRun[], head: string, required: readonly string[], options: { cap?: number } = {}):
   { state: "passed"; failures: CheckFailure[] } | { state: "pending"; waiting: string[] } | { state: "failed"; failed: string[] } {
   const failed: string[] = [], waiting: string[] = [], failures: CheckFailure[] = [];
-  const groups = new Map<string, CheckRun[]>();
+  const valid: CheckRun[] = [];
   for (const run of runs) {
     if (run.head !== head) { failed.push(`${run.name} (reported for ${run.head == null ? "no commit" : run.head.slice(0, 7)}, not ${head.slice(0, 7)})`); continue; }
     if (typeof run.id !== "number" || !Number.isSafeInteger(run.id) || run.id <= 0) { failed.push(`${run.name} (no check run id)`); continue; }
     if (required.includes(run.name) && run.app !== "github-actions") { failed.push(`${run.name} (reported by ${run.app ?? "an unknown app"}, not GitHub Actions)`); continue; }
     if (run.app === "github-actions" && (typeof run.suite !== "number" || !Number.isSafeInteger(run.suite))) { failed.push(`${run.name} (no workflow run)`); continue; }
-    const key = JSON.stringify([run.app ?? null, run.suite ?? null, run.name]);
-    groups.set(key, [...(groups.get(key) ?? []), run]);
+    valid.push(run);
   }
-  const named = new Set([...groups.values()].map(attempts => attempts[0]!.name));
-  for (const name of required) if (!named.has(name)) waiting.push(`${name} (not started)`);
+  // Supersession by trusted workflow identity (GitHub's workflow-run API, read by the adapter): a newer run of the same
+  // workflow on this commit replaces the older ones — its jobs are the current ones. A suite whose workflow isn't known
+  // is its own workflow (nothing supersedes it), and another app's suites stand on their own.
+  const workflowOf = (run: CheckRun): string => run.app === "github-actions" && typeof run.workflow === "number" ? `w:${run.workflow}` : `s:${run.app ?? ""}:${run.suite ?? ""}`;
+  const current = new Map<string, number | null>();
+  for (const run of valid) { const key = workflowOf(run), suite = run.suite ?? null; const was = current.get(key); if (was === undefined || (suite !== null && (was === null || suite > was))) current.set(key, suite); }
+  // Jobs: a workflow and a name, every attempt in every suite of it; judged by the latest attempt in the current suite.
+  const groups = new Map<string, CheckRun[]>();
+  for (const run of valid) { const key = JSON.stringify([workflowOf(run), run.name]); groups.set(key, [...(groups.get(key) ?? []), run]); }
+  const judged = new Set<string>();
   for (const attempts of groups.values()) {
     const ordered = [...attempts].sort((a, b) => a.id! - b.id!);
-    const latest = ordered.at(-1)!, name = latest.name;
+    const now = current.get(workflowOf(ordered[0]!)) ?? null;
+    const live = ordered.filter(one => (one.suite ?? null) === now);
+    // A job only an older run had (the newer run no longer has it) is history: not judged, and doesn't stand for a
+    // required check.
+    if (live.length === 0) continue;
+    const latest = live.at(-1)!, name = latest.name;
+    judged.add(name);
     if (latest.status !== "completed") { waiting.push(`${name} (${latest.status})`); continue; }
     if (latest.conclusion !== "success") { failed.push(`${name} (${latest.conclusion ?? "no conclusion"})`); continue; }
-    const earlier = ordered.slice(0, -1);
-    // An automatic approval also waits out an earlier attempt still running (its outcome counts toward the cap).
-    if (options.cap !== undefined && earlier.some(one => one.status !== "completed")) { waiting.push(`${name} (an earlier attempt still running)`); continue; }
-    const flaked = earlier.filter(one => one.conclusion !== "success");
+    const earlier = ordered.filter(one => one !== latest);
+    // An automatic approval also waits out an earlier attempt of the current run still running (it counts toward the cap).
+    if (options.cap !== undefined && earlier.some(one => (one.suite ?? null) === now && one.status !== "completed")) { waiting.push(`${name} (an earlier attempt still running)`); continue; }
+    // The cap counts every failed attempt of the job, in the current run and in the runs it superseded.
+    const flaked = earlier.filter(one => one.status === "completed" && one.conclusion !== "success");
     if (options.cap !== undefined && flaked.length > options.cap) { failed.push(`${name} (failed ${flaked.length} times before it passed)`); continue; }
     failures.push(...flaked.map(one => ({ id: one.id!, name, conclusion: one.conclusion })));
   }
+  for (const name of required) if (!judged.has(name)) waiting.push(`${name} (not started)`);
   if (failed.length > 0) return { state: "failed", failed };
   return waiting.length > 0 ? { state: "pending", waiting } : { state: "passed", failures };
 }

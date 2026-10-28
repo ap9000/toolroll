@@ -36,7 +36,7 @@ function open(options: Parameters<typeof releaseFixture>[0] = {}) {
 const digestOf = (f: ReleaseFixture) => f.store.getScope(f.taskId)!.digest;
 const ref = (f: ReleaseFixture) => f.store.refFor("built-in", f.taskId).id;
 const green = (head: string, at = LATER): CiObservation => ({ head, observedAt: at.toISOString(),
-  runs: REQUIRED_PR_CHECKS.map((name, i) => ({ id: 1000 + i, name, status: "completed", conclusion: "success", app: "github-actions", suite: 7, head })) });
+  runs: REQUIRED_PR_CHECKS.map((name, i) => ({ id: 1000 + i, name, status: "completed", conclusion: "success", app: "github-actions", suite: 7, head })), complete: true });
 /** The plane's auto-check, with the base GitHub names for the candidate (the main commit the branch left). */
 const authorize = (f: ReleaseFixture, base = f.base) => authorizeAutoCheck(f.store, { taskId: f.taskId, digest: digestOf(f), candidate: f.approved, base, now: LATER });
 /** The release check of the candidate, sealed as the builder seals it, on the build's real base. */
@@ -450,6 +450,8 @@ function fakeGitHub(attempts: { id: number; name: string; conclusion: string; su
   const calls: string[][] = [];
   const run: Exec = async (_cmd, args) => {
     calls.push([...args]);
+    // The workflow-run listing (which suite is a run of which workflow): none here.
+    if (args.some(arg => arg.includes("/actions/runs"))) return { code: 0, stdout: "", stderr: "" };
     const url = args.find(arg => arg.includes("/check-runs")) ?? "";
     const all = /[?&]filter=all(&|$)/.test(url);
     const rows = attempts.map(one => ({ id: one.id, name: one.name, status: "completed", conclusion: one.conclusion, app: one.app ?? "github-actions", suite: one.suite ?? 7, head: one.head ?? sha }));
@@ -488,7 +490,7 @@ describe("codex r1 #3: the cap counts every attempt GitHub holds, read through t
     ];
     const gh = fakeGitHub(attempts, f.approved);
     const rel = storeReleaseAdapter(() => f.store, () => {}, () => LATER, undefined, {
-      observe: async sha => ({ head: sha, observedAt: LATER.toISOString(), runs: (await readCheckRuns(gh.run, "/usr/bin/gh", "ap9000/toolroll", sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null })) }),
+      observe: async sha => ({ head: sha, observedAt: LATER.toISOString(), complete: true, runs: (await readCheckRuns(gh.run, "/usr/bin/gh", "ap9000/toolroll", sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null })) }),
       mergeBase: async () => f.base, evidenceRoot: EVIDENCE(f),
     });
     expect(await rel.auto!.authorizeCheck({ taskId: f.taskId, digest: digestOf(f), candidate: f.approved })).toEqual({ ok: true });
@@ -609,5 +611,131 @@ describe("coordinator: test files under test/ ship like src's tests", () => {
     const f = open({ candidate: { [path]: null } });
     authorize(f);
     expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining(`${path} was deleted`) });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------- Codex review round 2
+
+import { testInfrastructure } from "../../src/test-infra.js";
+import { readSuitesComplete } from "../../src/release-adapters.js";
+import { allowAutoPublish, autoPublishHeld, holdAutoPublish } from "../../src/release-auto.js";
+
+/** A project with a product entry (src/bin.ts → src/app.ts), a shared test helper only tests import, and its test. */
+const PROJECT = {
+  "src/bin.ts": "import { main } from \"./app.js\";\nmain();\n",
+  "src/app.ts": "export const main = () => 42;\n",
+  "src/contracts/contract-test.ts": "export const assertContract = (ok: boolean) => { if (!ok) throw new Error('contract'); };\n",
+  "src/contracts/receipt.test.ts": "import { assertContract } from \"./contract-test.js\";\ntest('receipt', () => assertContract(true));\n",
+};
+
+describe("codex r2 #1: test infrastructure is found from the import graph, not from file names", () => {
+  test("a helper only tests import (src/contracts/contract-test.ts) needs a person; product code beside it ships", () => {
+    const f = open({ files: PROJECT, candidate: { "src/contracts/contract-test.ts": "export const assertContract = (_ok: boolean) => {};\n" } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("src/contracts/contract-test.ts changed (tests import it and the product doesn't") });
+    fixture?.close(); fixture = null;
+    const g = open({ files: PROJECT, candidate: { "src/app.ts": "export const main = () => 43;\n" } });
+    authorize(g);
+    const sealed = seal(g, check(g));
+    expect(sealed.ok ? "" : sealed.why).toBe("");
+  });
+
+  test("the scan: dynamic imports count, commented-out ones don't, tsconfig path aliases resolve, vitest setup files are roots", () => {
+    const files = new Map(Object.entries({
+      "package.json": JSON.stringify({ name: "p", devDependencies: { vitest: "1" } }),
+      "tsconfig.json": "{ // comments allowed\n \"compilerOptions\": { \"baseUrl\": \".\", \"paths\": { \"@helpers/*\": [\"src/helpers/*\"] } } }",
+      "vitest.config.ts": "import { defineConfig } from \"vitest/config\";\nexport default defineConfig({ test: { setupFiles: [\"./src/setup-hook.ts\"] } });\n",
+      "src/bin.ts": "export {};\n",
+      "src/setup-hook.ts": "export {};\n",
+      "src/dyn.ts": "export {};\n",
+      "src/commented.ts": "export {};\n",
+      "src/helpers/alias.ts": "export {};\n",
+      "src/a.test.ts": "// import \"./commented.js\";\n/* import { x } from \"./commented.js\" */\nconst m = await import(\"./dyn.js\");\nimport { y } from \"@helpers/alias.js\";\nimport { test } from \"vitest\";\n",
+    }));
+    const found = testInfrastructure(files);
+    expect([...found.infra].sort()).toEqual(["src/dyn.ts", "src/helpers/alias.ts", "src/setup-hook.ts", "vitest.config.ts"]);
+    expect(found.infra.has("src/commented.ts")).toBe(false);
+    expect(found.unresolved).toEqual([]);
+  });
+
+  test("an import the tests make that can't be resolved refuses a change it might name", () => {
+    const f = open({ files: { ...PROJECT, "src/loader.test.ts": "const name = process.env.WHICH ?? \"x\";\nconst m = await import(name);\ntest('l', () => {});\n" },
+      candidate: { "src/new-orphan.ts": "export const x = 1;\n" } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("which couldn't be resolved and might name it") });
+  });
+
+  test("an unresolved relative import names exactly its target", () => {
+    const files = new Map(Object.entries({ "src/bin.ts": "export {};\n", "src/x.test.ts": "import \"./missing.js\";\n" }));
+    expect(testInfrastructure(files).unresolved).toEqual([{ from: "src/x.test.ts", specifier: "./missing.js", prefix: "src/missing.js" }]);
+  });
+
+  test("security scan: deny rules run before the test-file allowance", () => {
+    const f = open({ candidate: { "test/attacks/.github/a.test.ts": "test('a', () => {});\n" } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("test/attacks/.github/a.test.ts changed") });
+  });
+});
+
+describe("codex r2 #3: a held publication is the plane's, and only a person releases it", () => {
+  test("held stays held until a person allows it; the CLI refuses the lead", async () => {
+    const f = open();
+    holdAutoPublish(f.store, { taskId: f.taskId, why: "Checks stopped passing after the merge", now: LATER });
+    expect(autoPublishHeld(f.store, f.taskId)).toContain("stopped passing");
+    const saved = process.env["TOOLROLL_LEAD_TOKEN"]; process.env["TOOLROLL_LEAD_TOKEN"] = "lt_lead_synthetic";
+    try { expect(await runReleaseCommand(["publish-ok", f.taskId, "--as", "alex", "--token", f.password, "--json"], () => {}, { database: f.databaseFile, now: () => LATER })).not.toBe(0); }
+    finally { if (saved === undefined) delete process.env["TOOLROLL_LEAD_TOKEN"]; else process.env["TOOLROLL_LEAD_TOKEN"] = saved; }
+    expect(autoPublishHeld(f.store, f.taskId)).not.toBeNull();
+    expect(await runReleaseCommand(["publish-ok", f.taskId, "--as", "alex", "--token", "wrong", "--json"], () => {}, { database: f.databaseFile, now: () => LATER })).not.toBe(0);
+    expect(await runReleaseCommand(["publish-ok", f.taskId, "--as", "alex", "--token", f.password, "--json"], () => {}, { database: f.databaseFile, now: () => LATER })).toBe(0);
+    expect(autoPublishHeld(f.store, f.taskId)).toBeNull();
+    expect(allowAutoPublish(f.store, { taskId: f.taskId, by: "alex", now: LATER })).toMatchObject({ ok: false });
+  });
+});
+
+describe("codex r2 #4: an issued merge that later fails never regains the automatic approval", () => {
+  test("issued merge → off → the merge reconciles as failed → on: nothing stands", () => {
+    const f = open();
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: true });
+    const a = releaseAuthorityOfTask(f.store, f.taskId)!.authority;
+    const lease = takeReleaseLease(f.store, a.id, "coordinator", LATER);
+    if (!lease.ok) throw new Error(lease.why);
+    reserveRelease(f.store, { authority: a.id, kind: "deploy", taskId: f.taskId, candidate: f.approved, epoch: lease.epoch, operationId: "d1", now: LATER, secret: "s" });
+    runReleaseOperation(f.store, "d1", lease.epoch, LATER);
+    finishReleaseOperation(f.store, "d1", "succeeded", {}, LATER, lease.epoch);
+    reserveRelease(f.store, { authority: a.id, kind: "merge", taskId: f.taskId, candidate: f.approved, epoch: lease.epoch, operationId: "m1", now: LATER });
+    expect(runReleaseOperation(f.store, "m1", lease.epoch, LATER)).toBe(true);
+    setReleaseApproval(f.store, f.repo, false, "alex", LATER);
+    expect(finishReleaseOperation(f.store, "m1", "failed", { detail: "GitHub didn't merge" }, LATER, lease.epoch)).toBe(true);
+    expect(releaseAuthorityOfTask(f.store, f.taskId)!.authority.state).toBe("deploying");
+    setReleaseApproval(f.store, f.repo, true, "alex", LATER);
+    expect(installedScope.autoReleaseApprovalOf(f.store, f.taskId, "auto-green")).toMatchObject({ ok: false });
+    expect(releaseApprovalOf(f.store, f.taskId, LATER)).toMatchObject({ ok: false });
+    expect(liveReleaseOf(f.store, f.taskId, "merge", LATER)).toMatchObject({ ok: false });
+  });
+});
+
+describe("codex r2 #6: GitHub's 1000-suite ceiling fails an automatic approval closed", () => {
+  const answer = (stdout: string, code = 0): Exec => async () => ({ code, stdout, stderr: "" });
+  test.each([["999\n", true], ["1000\n", false], ["5000\n", false], ["", false], ["nope\n", false]] as const)("total_count %j: whole=%s", async (stdout, whole) => {
+    expect(await readSuitesComplete(answer(stdout), "/usr/bin/gh", "ap9000/toolroll", "a".repeat(40))).toBe(whole);
+  });
+  test("a failed read is not whole", async () => {
+    expect(await readSuitesComplete(answer("12\n", 1), "/usr/bin/gh", "ap9000/toolroll", "a".repeat(40))).toBe(false);
+  });
+  test("an observation that isn't whole refuses the seal", () => {
+    const f = open();
+    authorize(f);
+    expect(seal(f, check(f), { ...green(f.approved), complete: false })).toMatchObject({ ok: false, why: expect.stringContaining("can't be read whole") });
+  });
+  test("workflow identity comes from GitHub's workflow-run API, read through the real request", async () => {
+    const sha = "a".repeat(40);
+    const run: Exec = async (_cmd, args) => {
+      const url = args.find(arg => arg.startsWith("repos/")) ?? "";
+      if (url.includes("/actions/runs")) return { code: 0, stdout: `${JSON.stringify({ suite: 7, workflow: 3, head: sha })}\n`, stderr: "" };
+      return { code: 0, stdout: `${JSON.stringify({ id: 1, name: "x", status: "completed", conclusion: "success", app: "github-actions", suite: 7, head: sha })}\n`, stderr: "" };
+    };
+    expect(await readCheckRuns(run, "/usr/bin/gh", "ap9000/toolroll", sha)).toEqual([{ id: 1, name: "x", status: "completed", conclusion: "success", app: "github-actions", suite: 7, head: sha, workflow: 3 }]);
   });
 });

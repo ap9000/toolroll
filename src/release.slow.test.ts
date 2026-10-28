@@ -49,6 +49,8 @@ function world(options: { crashAfter?: Mutation } = {}) {
     brew: { kind: "missing" } as HomebrewState,
     brewChecked: true,
     brewStatuses: [] as CheckRun[],
+    /** Whether GitHub's check history reads whole (fewer than 1000 suites). */
+    ciComplete: true,
     calls: [] as string[],
     said: [] as string[],
   };
@@ -113,6 +115,7 @@ function world(options: { crashAfter?: Mutation } = {}) {
     },
     github: {
       authenticated: async () => true,
+      complete: async () => s.ciComplete,
       pullRequest: async () => ({ ...s.pr }),
       // As the real adapter answers: every attempt, with its id, app, check suite and commit (a test's own fields win).
       checks: async (repo, sha) => (!s.gateSeesChecks && repo !== "ap9000/homebrew-toolroll" && !(s.gate.exists && s.gate.candidate === sha) && sha !== MERGE ? passing(REQUIRED_PR_CHECKS)
@@ -1247,7 +1250,7 @@ describe("toolroll release: a regated check of the same approved commit (2026-10
 function autoWorld(options: { setting?: boolean; authorize?: string; approve?: string } = {}) {
   const w = releaseWorld();
   const { s, adapters, rel } = w;
-  const plane = { setting: options.setting ?? true, authorizations: 0, approvals: 0, gaveUp: [] as string[], released: [] as string[], checkFailed: [] as string[] };
+  const plane = { setting: options.setting ?? true, authorizations: 0, approvals: 0, gaveUp: [] as string[], released: [] as string[], checkFailed: [] as string[], held: null as string | null };
   const at = () => new Date(s.now).toISOString();
   adapters.release!.auto = {
     setting: async () => plane.setting,
@@ -1271,6 +1274,8 @@ function autoWorld(options: { setting?: boolean; authorize?: string; approve?: s
     },
     giveUp: async (_task, why) => { plane.gaveUp.push(why); if (s.gate.approval?.basis === "auto-check" || s.gate.approval?.basis === "auto-green") s.gate.approval = null; },
     released: async (_task, tag) => { plane.released.push(tag); },
+    holdPublish: async (_task, why) => { plane.held = why; },
+    publishHeld: async () => plane.held,
     checkFailed: async (_task, why) => { plane.checkFailed.push(why); },
   };
   // The live predicate also asks the setting for an automatic anchor (scope.ts releaseApprovalOf).
@@ -1443,5 +1448,77 @@ describe("toolroll release: approve automatically when checks pass", () => {
     expect(prChecksVerdict([at(1, "success", { suite: null }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
     expect(prChecksVerdict([at(1, "success", { id: null }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
     expect(prChecksVerdict(rest, SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "pending" });
+  });
+
+  test("codex r2 #2: a resumed deploy (saved deploy, runtime rolled back) re-reads CI and doesn't deploy a red candidate", async () => {
+    const dir = stateDir();
+    const { s, adapters } = autoWorld();
+    // The first deploy lands, then the coordinator stops before the services answer (as a crash during health would).
+    let served = 0;
+    const installed = adapters.toolroll.installed;
+    adapters.toolroll.installed = async () => { const now = await installed(); return s.calls.includes("deploy") && served++ < 1000 ? { ...now, services: [OLD] } : now; };
+    expect(await runRelease(options(dir, { limits: { deploy: 1 } }), adapters)).toMatchObject({ ok: false, step: "deploy", reason: "timeout" });
+    expect(s.calls.filter(one => one === "deploy")).toHaveLength(1);
+    // The runtime was put back, CI turned red: the resume issues no second deploy.
+    const ci = adapters.github.checks;
+    adapters.github.checks = async (repo, sha) => sha === SHA ? red(sha) : ci(repo, sha);
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "deploy", reason: "ci-failed" });
+    expect(s.calls.filter(one => one === "deploy")).toHaveLength(1);
+  });
+
+  test("codex r2 #3: CI that stops passing after the merge holds the tag across invocations until a person lets it go on", async () => {
+    const dir = stateDir();
+    const { s, adapters, plane } = autoWorld();
+    const ci = adapters.github.checks;
+    let red_ = false;
+    adapters.github.checks = async (repo, sha) => red_ && sha === SHA ? red(sha) : ci(repo, sha);
+    const merge = adapters.github.merge;
+    adapters.github.merge = async (...args) => { const merged = await merge(...args); red_ = true; return merged; };
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "tag", reason: "ci-failed" });
+    expect(plane.held).toContain("stopped passing after the merge");
+    // CI green again: the second invocation still tags nothing, publishes nothing, touches no Homebrew.
+    red_ = false;
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "tag", reason: "approval", message: expect.stringContaining("publish-ok") });
+    expect(s.calls).not.toContain("createTag");
+    // A person lets it go on (release-cli publish-ok): it finishes.
+    plane.held = null;
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
+    expect(s.calls).toContain("createTag");
+  });
+
+  test("codex r2 #5: a person's release isn't revoked by an older failed run of a workflow a newer run replaced", async () => {
+    const { s, adapters } = autoWorld({ setting: false });
+    const ci = adapters.github.checks;
+    adapters.github.checks = async (repo, sha) => sha !== SHA ? ci(repo, sha) : [
+      // The PR workflow (workflow 1), matrix names and all, green.
+      ...(await ci(repo, sha)).map(run => ({ ...run, workflow: 1 })),
+      // macos.yml run by hand twice on this commit: the first run failed, the second (a newer suite) passed.
+      { id: 500, name: "node 22 · macos-latest", status: "completed", conclusion: "failure", app: "github-actions", suite: 20, head: sha, workflow: 9 },
+      { id: 600, name: "node 22 · macos-latest", status: "completed", conclusion: "success", app: "github-actions", suite: 21, head: sha, workflow: 9 },
+    ];
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
+    expect(s.calls).toContain("merge");
+  });
+
+  test("codex r2 #5: a required check must be green in its newest run; the cap counts the superseded runs' failures", () => {
+    const run = (id: number, suite: number, conclusion: string, name: string = REQUIRED_PR_CHECKS[0]): CheckRun => ({ id, name, status: "completed", conclusion, app: "github-actions", suite, head: SHA, workflow: 1 });
+    const rest = REQUIRED_PR_CHECKS.slice(1).map((name, i) => run(100 + i, 3, "success", name));
+    // Newest run red, older green: failed.
+    expect(prChecksVerdict([run(1, 2, "success"), run(5, 3, "failure"), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
+    // Older runs red, newest green: passes for a person; with the cap, three failures across runs is too many.
+    const history = [run(1, 1, "failure"), run(2, 2, "failure"), run(3, 2, "failure"), run(4, 3, "success"), ...rest];
+    expect(prChecksVerdict(history, SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "passed" });
+    expect(prChecksVerdict(history, SHA, REQUIRED_PR_CHECKS, { cap: 2 })).toMatchObject({ state: "failed", failed: [expect.stringContaining("failed 3 times")] });
+    expect(prChecksVerdict(history.slice(1), SHA, REQUIRED_PR_CHECKS, { cap: 2 })).toMatchObject({ state: "passed", failures: [{ id: 2 }, { id: 3 }] });
+  });
+
+  test("codex r2 #6: history that can't be read whole stops an automatic release, and leaves a person's alone", async () => {
+    const auto = autoWorld();
+    auto.s.ciComplete = false;
+    expect(await runRelease(options(stateDir()), auto.adapters)).toMatchObject({ ok: false, step: "deploy", reason: "ci-failed", message: expect.stringContaining("can't be read whole") });
+    expect(auto.s.calls).not.toContain("deploy");
+    const person = autoWorld({ setting: false });
+    person.s.ciComplete = false;
+    expect(await runRelease(options(stateDir()), person.adapters)).toMatchObject({ ok: true });
   });
 });

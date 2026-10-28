@@ -250,6 +250,8 @@ describe("the release adapters", () => {
       calls.push([command, ...args]);
       const joined = args.join(" ");
       if (joined.includes("/pulls/170/merge")) return { code: 0, stdout: JSON.stringify({ sha: "m".repeat(40), merged: true }), stderr: "" };
+      // Which workflow each suite is a run of (the CI reader asks): none here.
+      if (joined.includes("/actions/runs")) return { code: 0, stdout: "", stderr: "" };
       if (joined.includes("check-runs")) return { code: 0, stdout: `{"id":9,"name":"x","status":"completed","conclusion":"success","app":"github-actions"}\n{"id":3,"name":"x","status":"completed","conclusion":"failure","app":null}\n`, stderr: "" };
       if (joined.includes("git/ref/tags/v0.9.52")) return { code: 1, stdout: "", stderr: "gh: Not Found (HTTP 404)" };
       return { code: 1, stdout: "", stderr: "unexpected" };

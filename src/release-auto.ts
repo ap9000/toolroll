@@ -15,7 +15,8 @@
 import { assignmentOf } from "./assignment.js";
 import { projectGitDir } from "./check-report.js";
 import { runCheckLevel } from "./check-levels.js";
-import { readVerifiedCommit, verifiedBlobs, verifiedTreeDiff } from "./commit-extract.js";
+import { readVerifiedCommit, verifiedBlobs, verifiedTreeDiff, verifiedTreeEntries } from "./commit-extract.js";
+import { mightName, testInfrastructure, type TestInfrastructure } from "./test-infra.js";
 import { chatControlHref } from "./chat-controls.js";
 import { AUTO_FLAKE_CAP, REQUIRED_PR_CHECKS, prChecksVerdict, type CheckFailure } from "./release.js";
 import { CARRY_RULES, rulePath } from "./release-carry.js";
@@ -32,9 +33,11 @@ export const RELEASE_APPROVAL_WORDS = { ask: "Ask me", auto: "Approve automatica
 export const CI_OBSERVATION_MS = 5 * 60_000;
 
 /** One check run on the candidate as the plane's own `gh` reported it (oldest first). */
-export type ObservedCheckRun = { id: number | null; name: string; status: string; conclusion: string | null; app: string | null; suite?: number | null; head?: string | null };
+export type ObservedCheckRun = { id: number | null; name: string; status: string; conclusion: string | null; app: string | null; suite?: number | null; head?: string | null; workflow?: number | null };
 /** The plane's own look at GitHub CI for one commit (release-adapters.ts makes it, right before the seal). */
-export type CiObservation = { head: string; observedAt: string; runs: readonly ObservedCheckRun[] };
+export type CiObservation = { head: string; observedAt: string; runs: readonly ObservedCheckRun[];
+  /** Whether the history is whole (fewer check suites than GitHub's check-runs ceiling): false or absent refuses. */
+  complete?: boolean };
 
 type Refusal = { ok: false; why: string };
 const refuse = (why: string): Refusal => ({ ok: false, why });
@@ -62,7 +65,12 @@ export function setReleaseApproval(store: Store, repo: string, auto: boolean, by
           // A merge already issued (running, or its outcome unknown) is genuinely in flight: it finishes through its own
           // reconciliation. One only reserved, never issued, is stopped for good here, so it can't come back.
           const issued = releaseOperations(store, a.id).some(op => op.kind === "merge" && (op.state === "running" || op.state === "unknown" || op.state === "succeeded"));
-          if (issued) continue;
+          if (issued) {
+            // In flight: it reconciles on its own (merged finishes; failed goes back to deploying) — but the seal is
+            // withdrawn now, so a failed merge never regains the automatic approval, even with the setting back on.
+            withdraw(store, taskId, now);
+            continue;
+          }
           store.handle.prepare("UPDATE release_authority SET state = 'revoked', ended_at = ?, ended_by = ?, rev = rev + 1 WHERE id = ? AND rev = ?")
             .run(now.toISOString(), `${by}: automatic release approval turned off`, a.id, a.rev);
           store.recordAction({ at: now.toISOString(), actor: by, repo: a.repo, taskId, runId: null, action: "release revoked", outcome: "revoked", source: "work", detail: `release ${a.id}: automatic release approval turned off before its merge was issued` });
@@ -81,10 +89,15 @@ export function setReleaseApproval(store: Store, repo: string, auto: boolean, by
 /** Take back an automatic seal for good: the task asks a person again (its result, if any, is kept), and its evidence is
  * marked withdrawn, so no later reading — the setting turned on again included — lets it stand. */
 function unseal(store: Store, taskId: string, now: Date): void {
-  const sealedWith = store.handle.prepare("SELECT mode_digest FROM task_scope WHERE task_id = ? AND approval_basis IN ('auto-check', 'auto-green')").get(taskId)?.["mode_digest"];
-  if (typeof sealedWith === "string") store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: store.lookupRef(taskId)?.repo ?? null, taskId, runId: null, action: AUTO_WITHDRAWN_ACTION, outcome: sealedWith, source: "work" });
+  withdraw(store, taskId, now);
   store.handle.prepare(`UPDATE task_scope SET approved_at = NULL, approved_by = NULL, approved_digest = NULL, approved_profile_json = NULL,
       approved_route_json = NULL, approval_basis = NULL, mode_digest = NULL WHERE task_id = ? AND approval_basis IN ('auto-check', 'auto-green')`).run(taskId);
+}
+
+/** Mark a task's automatic seal's evidence withdrawn for good (its seal row may stay while an issued merge reconciles). */
+function withdraw(store: Store, taskId: string, now: Date): void {
+  const sealedWith = store.handle.prepare("SELECT mode_digest FROM task_scope WHERE task_id = ? AND approval_basis IN ('auto-check', 'auto-green')").get(taskId)?.["mode_digest"];
+  if (typeof sealedWith === "string") store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: store.lookupRef(taskId)?.repo ?? null, taskId, runId: null, action: AUTO_WITHDRAWN_ACTION, outcome: sealedWith, source: "work" });
 }
 
 /** What every automatic seal needs before anything else: the setting on now, a release task in this project with its
@@ -177,10 +190,16 @@ const BUILD_CONFIG = /(^|\/)(tsconfig[^/]*\.json|[^/]*\.config\.[cm]?[jt]s|\.npm
  */
 export function autoPathProblem(path: string): string | null {
   const normal = rulePath(path);
+  const testUnderTest = TEST_FILE.test(normal) && normal.startsWith("test/");
+  // Every deny rule first — the carry rules' never list (minus its blanket test/ rule, for test files there only) and
+  // build configuration — so a test file can't slip a policy or CI path through (test/attacks/.github/a.test.ts).
+  for (const rule of CARRY_RULES.never) {
+    if (testUnderTest && rule.matches("test/__probe__.test.ts")) continue;
+    if (rule.matches(normal)) return rule.why;
+  }
   // Test files under test/ carry the same trust as src's (Alex: test authors are trusted) — only the `.test.ts` files
   // themselves, never a helper, fixture, setup or config file beside them, nor one inside a fixtures folder.
-  if (TEST_FILE.test(normal) && normal.startsWith("test/")) return null;
-  for (const rule of CARRY_RULES.never) if (rule.matches(normal)) return rule.why;
+  if (testUnderTest) return null;
   if (BUILD_CONFIG.test(normal)) return "it configures the build or the checks";
   if (normal === "package.json" || normal === "package-lock.json") return null;
   if (normal.startsWith("src/")) return SRC_TEST_INFRA.test(normal) ? "it's a test helper or fixture" : null;
@@ -206,6 +225,7 @@ export function ciVerdict(observation: CiObservation, candidate: string, now: Da
   if (observation.head !== candidate) return no(`CI was read for ${observation.head.slice(0, 7)}, not ${candidate.slice(0, 7)}`);
   const at = Date.parse(observation.observedAt);
   if (!Number.isFinite(at) || at > now.getTime() + 60_000 || now.getTime() - at > CI_OBSERVATION_MS) return no("the CI reading isn't fresh");
+  if (observation.complete !== true) return no("GitHub's check history of this commit can't be read whole");
   const other = observation.runs.find(run => run.app !== "github-actions");
   if (other !== undefined) return no(`${other.name} was reported by ${other.app ?? "an unknown app"}, not GitHub Actions`);
   const verdict = prChecksVerdict(observation.runs, candidate, REQUIRED_PR_CHECKS, { cap: MAX_FAILED_ATTEMPTS });
@@ -238,6 +258,18 @@ function withoutVersion(path: string, bytes: Buffer | undefined): string | null 
   return JSON.stringify(canonical(copy));
 }
 
+/** The test infrastructure of one verified tree: its source files under src/ and test/ and its vitest configs, scanned. */
+function infrastructureAt(gitDir: string, tree: string): TestInfrastructure | null {
+  const entries = verifiedTreeEntries(gitDir, tree);
+  if (!entries.ok) return null;
+  const files = entries.value.filter(one => one.mode === "100644" || one.mode === "100755");
+  const paths = files.filter(one => (/\.(?:[cm]?[jt]sx?)$/.test(one.path) && !one.path.startsWith("node_modules/")) || one.path === "tsconfig.json" || one.path === "package.json").map(one => one.path);
+  const blobs = verifiedBlobs(gitDir, tree, paths);
+  if (!blobs.ok) return null;
+  try { return testInfrastructure(new Map([...blobs.value].map(([path, blob]) => [path, blob.bytes.toString("utf8")])), new Set(entries.value.map(one => one.path))); }
+  catch { return null; }
+}
+
 /** What the candidate changes since `base` (the plane's own reading of where it left its base branch), from verified
  * objects, that an automatic approval never ships. Null when every change may ship. */
 function changeProblem(repo: string, base: string | null, candidate: string): string | null {
@@ -248,6 +280,15 @@ function changeProblem(repo: string, base: string | null, candidate: string): st
   if (!before.ok || !after.ok) return "the candidate's commits can't be read";
   const diff = verifiedTreeDiff(gitDir, before.value.tree, after.value.tree);
   if (!diff.ok) return `the candidate's change can't be read: ${diff.message}`;
+  // Test infrastructure found from the import graph (test-infra.ts), at the base — which the candidate can't rewrite —
+  // and at the candidate (a new helper only tests import). Unreadable: refuse.
+  const scans: TestInfrastructure[] = [];
+  for (const tree of [before.value.tree, after.value.tree]) {
+    const found = infrastructureAt(gitDir, tree);
+    if (found === null) return "the tests' imports can't be read";
+    scans.push(found);
+  }
+  const infra = new Set(scans.flatMap(one => [...one.infra]));
   for (const change of diff.value) {
     const modes = [change.before?.mode, change.after?.mode].filter((one): one is string => one !== undefined);
     if (modes.includes("120000") || modes.includes("160000")) return `${change.path} is a symlink or submodule`;
@@ -255,6 +296,12 @@ function changeProblem(repo: string, base: string | null, candidate: string): st
     if (change.kind === "deleted" && TEST_FILE.test(rulePath(change.path))) return `${change.path} was deleted (removing a test needs a person)`;
     const why = autoPathProblem(change.path);
     if (why !== null) return `${change.path} changed (${why})`;
+    if (infra.has(change.path)) return `${change.path} changed (tests import it and the product doesn't: it's test infrastructure)`;
+    // An import the tests make that couldn't be resolved might name this file: fail closed.
+    for (const scan of scans) {
+      const open = scan.unresolved.find(one => mightName(one, change.path, scan));
+      if (open !== undefined) return `${change.path} changed, and ${open.from} imports ${open.specifier === null ? "a computed path" : open.specifier}, which couldn't be resolved and might name it`;
+    }
     const normal = rulePath(change.path);
     if (normal === "package.json" || normal === "package-lock.json") {
       const read = (tree: string) => { const blobs = verifiedBlobs(gitDir, tree, [change.path]); return blobs.ok ? withoutVersion(normal, blobs.value.get(change.path)?.bytes) : undefined; };
@@ -381,4 +428,28 @@ export function noteAutoRelease(store: Store, input: { taskId: string; tag: stri
 /** Whether a task carries an automatic release seal (any state): it never merges or deploys outside `toolroll release`. */
 export function autoReleaseSealed(store: Store, taskId: string): boolean {
   return store.handle.prepare("SELECT 1 AS hit FROM task_scope WHERE task_id = ? AND approval_basis IN ('auto-check', 'auto-green')").get(taskId) !== undefined;
+}
+
+/** The plane's record that an automatic release's publication waits for a person (CI stopped passing after its merge),
+ * and a person's answer. The newest row for the task wins. */
+export const PUBLISH_HELD_ACTION = "release publish held";
+export const PUBLISH_ALLOWED_ACTION = "release publish allowed";
+
+export function holdAutoPublish(store: Store, input: { taskId: string; why: string; now: Date }): void {
+  store.recordAction({ at: input.now.toISOString(), actor: "toolroll", repo: store.lookupRef(input.taskId)?.repo ?? null, taskId: input.taskId, runId: null,
+    action: PUBLISH_HELD_ACTION, outcome: "held", source: "work", detail: input.why });
+}
+
+/** Why the release's tag, publication and Homebrew wait for a person, or null. */
+export function autoPublishHeld(store: Store, taskId: string): string | null {
+  const row = store.handle.prepare("SELECT action, detail FROM action_ledger WHERE task_id = ? AND action IN (?, ?) ORDER BY id DESC LIMIT 1").get(taskId, PUBLISH_HELD_ACTION, PUBLISH_ALLOWED_ACTION);
+  return row === undefined || row["action"] !== PUBLISH_HELD_ACTION ? null : String(row["detail"] ?? "This release's publication waits for a person");
+}
+
+/** A person lets a held publication go on: the caller proved a person (never the lead, a token or a mode). */
+export function allowAutoPublish(store: Store, input: { taskId: string; by: string; now: Date }): { ok: true } | Refusal {
+  if (autoPublishHeld(store, input.taskId) === null) return refuse("nothing about this release waits for a person");
+  store.recordAction({ at: input.now.toISOString(), actor: input.by, repo: store.lookupRef(input.taskId)?.repo ?? null, taskId: input.taskId, runId: null,
+    action: PUBLISH_ALLOWED_ACTION, outcome: "allowed", source: "request", detail: `${input.by} lets the release's tag, publication and Homebrew go on` });
+  return { ok: true };
 }

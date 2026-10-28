@@ -25,7 +25,7 @@ import {
 } from "./store.js";
 import { acquireDeploymentLock } from "./deploy-lock.js";
 import { autoReleaseApprovalOf, liveReleaseOf } from "./scope.js";
-import { authorizeAutoCheck, giveUpAutoApproval, noteAutoCheckFailed, noteAutoRelease, releaseAutoApproves, sealAutoGreen, type CiObservation } from "./release-auto.js";
+import { autoPublishHeld, holdAutoPublish, authorizeAutoCheck, giveUpAutoApproval, noteAutoCheckFailed, noteAutoRelease, releaseAutoApproves, sealAutoGreen, type CiObservation } from "./release-auto.js";
 import { proveCarry, type BuildRunner } from "./release-carry.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { deploymentGate } from "./deploy-gate.js";
@@ -240,7 +240,8 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   const ciGh = options.tools?.gh ?? releaseTools("").gh;
   const observeCi = async (sha: string): Promise<CiObservation> => {
     const observedAt = (options.now ?? (() => new Date()))().toISOString();
-    return { head: sha, observedAt, runs: (await readCheckRuns(run, ciGh, releaseRepo().slug, sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null })) };
+    const runs = (await readCheckRuns(run, ciGh, releaseRepo().slug, sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, workflow: one.workflow ?? null }));
+    return { head: sha, observedAt, runs, complete: await readSuitesComplete(run, ciGh, releaseRepo().slug, sha) };
   };
   const database = options.database ?? databasePath(process.env, homedir());
   let recorded: ReleaseRepo | null = options.releaseRepo ?? null;
@@ -486,6 +487,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
       },
       // Every attempt (filter=all), with its app, check suite and commit: the release judges each job by its latest attempt.
       async checks(repo, sha) { return readCheckRuns(run, ciGh, repo, sha); },
+      async complete(repo, sha) { return readSuitesComplete(run, ciGh, repo, sha); },
       async merge(repo, pr, head, message) {
         // The squash commit's message lists every commit that landed after the approval (release-once.md).
         const merged = object(await ghJson("gh api pulls merge", "api", "-X", "PUT", `repos/${repo}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`,
@@ -717,6 +719,8 @@ function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now:
     async giveUp(taskId, why) { withStore(store => giveUpAutoApproval(store, { taskId, why, now: now() })); },
     async checkFailed(taskId, why) { withStore(store => noteAutoCheckFailed(store, { taskId, why, now: now() })); },
     async released(taskId, tag) { withStore(store => noteAutoRelease(store, { taskId, tag, now: now() })); },
+    async holdPublish(taskId, why) { withStore(store => holdAutoPublish(store, { taskId, why, now: now() })); },
+    async publishHeld(taskId) { return withStore(store => autoPublishHeld(store, taskId)); },
   };
 }
 
@@ -743,14 +747,36 @@ export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: st
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^[0-9a-f]{40}$/.test(sha)) throw new Error("not a repository and commit GitHub can be asked about");
   const out = await must(run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${repo}/commits/${sha}/check-runs?filter=all&per_page=100`,
     "--jq", ".check_runs[] | {id, name, status, conclusion, app: .app.slug, suite: .check_suite.id, head: .head_sha}"], { cwd: "/", env: ciEnv() }), "gh api check-runs");
+  // Which workflow each check suite is a run of (GitHub's workflow-run API): a newer run of a workflow supersedes its
+  // older runs on this commit (release.ts prChecksVerdict).
+  const flows = await must(run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${repo}/actions/runs?head_sha=${sha}&per_page=100`,
+    "--jq", ".workflow_runs[] | {suite: .check_suite_id, workflow: .workflow_id, head: .head_sha}"], { cwd: "/", env: ciEnv() }), "gh api actions/runs");
+  const workflowOf = new Map<number, number>();
+  for (const line of flows.split("\n").filter(Boolean)) {
+    const one = object(JSON.parse(line));
+    if (!Number.isSafeInteger(one["suite"]) || !Number.isSafeInteger(one["workflow"]) || one["head"] !== sha) throw new Error("GitHub answered a workflow run this can't read");
+    const known = workflowOf.get(Number(one["suite"]));
+    if (known !== undefined && known !== Number(one["workflow"])) throw new Error("GitHub named two workflows for one check suite");
+    workflowOf.set(Number(one["suite"]), Number(one["workflow"]));
+  }
   const runs = out.split("\n").filter(Boolean).map(line => {
     const one = object(JSON.parse(line));
     if (!Number.isSafeInteger(one["id"]) || typeof one["name"] !== "string" || typeof one["status"] !== "string") throw new Error("GitHub answered a check run this can't read");
+    const suite = Number.isSafeInteger(one["suite"]) ? Number(one["suite"]) : null;
     return { id: Number(one["id"]), name: one["name"], status: one["status"], conclusion: textOr(one["conclusion"]), app: textOr(one["app"]),
-      suite: Number.isSafeInteger(one["suite"]) ? Number(one["suite"]) : null, head: textOr(one["head"]) } satisfies CheckRun;
+      suite, head: textOr(one["head"]), workflow: suite === null ? null : workflowOf.get(suite) ?? null } satisfies CheckRun;
   });
   if (new Set(runs.map(one => one.id)).size !== runs.length) throw new Error("GitHub answered the same check run twice");
   return runs.sort((a, b) => a.id - b.id);
+}
+
+/** GitHub lists check runs from at most the latest 1000 check suites of a commit: the history is whole only below that. */
+export const CHECK_SUITE_CEILING = 1000;
+export async function readSuitesComplete(run: Exec, gh: string, repo: string, sha: string): Promise<boolean> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^[0-9a-f]{40}$/.test(sha)) return false;
+  const out = await run(gh, ["api", "--hostname", "github.com", `repos/${repo}/commits/${sha}/check-suites?per_page=1`, "--jq", ".total_count"], { cwd: "/", env: ciEnv() });
+  const total = Number(out.stdout.trim());
+  return out.code === 0 && out.stdout.trim() !== "" && Number.isSafeInteger(total) && total >= 0 && total < CHECK_SUITE_CEILING;
 }
 
 /** GitHub's merge base of `sha` with branch `base` (the compare API), read by the plane. */

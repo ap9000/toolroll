@@ -21,8 +21,8 @@ release check, or a CI failure after the deploy still stops, tells him, and need
   with a typed password. Never a session, a remembered login, a lead token, an API token, a mode or chat.
 - Turning it off needs no password. In the same transaction it withdraws every automatic seal in the project whose
   release hasn't merged and stops (revokes) their releases — including one whose merge was reserved but never issued —
-  so nothing approves on the old setting, even after it is turned on again. A merge already issued is in flight and
-  finishes through its own reconciliation.
+  so nothing approves on the old setting, even after it is turned on again. A merge already issued is in flight: its
+  seal is withdrawn too, and it reconciles on its own — merged finishes; failed never regains the automatic approval.
 
 ## Two automatic seals, in order
 
@@ -68,7 +68,15 @@ person exactly as today, and `ownerApproval` still refuses every basis that isn'
   (`docs/**.md`, README), CHANGELOG, and a **version-only** change of `package.json` and `package-lock.json`. Every
   other path — `scripts/` (the check, the build, the journeys), the rest of `test/`, `.github/`, agent and security policy files,
   `docs/testing.md`, `docs/plans/`, configuration, dependencies — and every path the carry rules never carry needs a
-  person, as do symlinks and submodules and deleting any test file (under `src/` or `test/`);
+  person, as do symlinks and submodules and deleting any test file (under `src/` or `test/`). Deny rules run first, so
+  a test file can't carry a CI or policy path through (`test/attacks/.github/a.test.ts`). **Test infrastructure** is found
+  structurally (src/test-infra.ts), at the base and at the candidate: every non-test source file the tests, the vitest
+  configs or their `setupFiles`/`globalSetup` import (transitively), that the product's entry points (the CLI, the
+  processes it starts by file name, the browser bundles) never reach. Imports are read with the TypeScript compiler
+  (`preProcessFile`; comments never count) and the syntax tree for computed `import()`/`require()`, resolved like the
+  build (relative paths, tsconfig `paths`, package.json `imports`); an import reached from the tests that resolves to no
+  file and no known package refuses any change it might name (a computed one: any changed source file that is neither a
+  test nor product code);
 - no earlier generation of this release (repo, version, pull request) was revoked: a revoked release, or one stopped by
   a CI failure after its deploy, asks a person;
 - everything a seal already checks (sealScopeApproval): no coordinator or machine-written text, no widened check
@@ -83,12 +91,22 @@ belt and the JS reader require the row to match the seal's task, kind, digest an
 
 ### CI at every boundary after the seal
 
+Workflow identity comes from GitHub's workflow-run API (`actions/runs?head_sha=`): a newer run (check suite) of the same
+workflow supersedes its older runs on the commit, so a hand-run workflow that failed once and passed on a second run
+doesn't veto a release; required checks must be green in their newest run, and the automatic flake cap counts failures
+across the superseded runs too. GitHub lists check runs from at most the latest 1000 check suites of a commit: when the
+commit has that many (`check-suites` `total_count`), or the count can't be read, an automatic approval fails closed;
+a person's release is unaffected.
+
 Every release (a person's too) judges pull-request CI with the same verdict (release.ts `prChecksVerdict`): every attempt,
 exact head, required checks only from GitHub Actions, jobs by app, suite and name, each by its latest attempt — so
 another app's same-name success can't hide an Actions failure. An automatically approved release also applies the flake
 cap, and re-reads complete current CI immediately before the deploy, before the CLI names move, before the merge and
-before the tag: anything not green (failed, a re-run pending, past the cap) stops it, revokes its approval (before the
-deploy: "Nothing was deployed or merged") and tells the owner; the commit then needs a person.
+before the tag — on every deploy reservation, whatever the journal saved (a retry after a rollback included): anything
+not green (failed, a re-run pending, past the cap, history not whole) stops it, revokes its approval and tells the owner;
+the commit then needs a person. After the merge, a red CI holds the release durably in the plane (`release publish
+held`): no tag, publication or Homebrew until a person runs `toolroll release publish-ok <task>` with their password
+(never the lead or a token).
 
 A failed release check (not a failed build) stops the release and tells the owner, but keeps `auto-check`, so a regate of the same commit
 and digest may still approve itself within the cap. Any refusal (including past the cap) unseals `auto-check`, so the task reads "Needs your approval" with its passing check kept; the coordinator
@@ -132,6 +150,11 @@ unchanged carry rules (release-once.md), and only while the setting stays on.
 7. A branch that changes `.github/` or the check harness: refused.
 
 ## Out of scope / remaining limits
+
+- **Product code runs inside the test process** (Alex's accepted residual): product modules load in the tests and in
+  the per-file setup (e.g. `src/tool-secret-store.ts`), so an agent-written change to product code can always tamper
+  with the runner. That is inherent to auto-approving agent-written `src/`; the guard is on the infrastructure that
+  only tests use, not on product code.
 
 - An OS-level process running as the user (outside Toolroll's fence) can still change `gh`'s own sign-in or the
   database; that is the accepted "remembered login" limit of approval-policy.md.
