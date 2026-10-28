@@ -14,7 +14,8 @@ const CODE = /\.(?:[cm]?[jt]sx?)$/i;
 const TEXT = /\.(?:[cm]?[jt]sx?|md|txt|css|html|json)$/i;
 const MAX_NODES = 16_000, MAX_EDGES = 12_000;
 const sha = (value: string | Buffer) => createHash('sha256').update(value).digest('hex');
-const git = (repo: string, args: string[]) => execFileSync('git', ['--no-optional-locks', '-C', repo, ...args], { encoding: 'utf8', maxBuffer: 2_000_000, timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
+// Read-only and bounded: no index refresh, no hooks, no fsmonitor program (it also answers Settings → Knowledge's search).
+const git = (repo: string, args: string[]) => execFileSync('git', ['--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-C', repo, ...args], { encoding: 'utf8', maxBuffer: 2_000_000, timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
 const inside = (root: string, path: string) => { const r = relative(root, path); return r !== '..' && !r.startsWith('..' + sep) && !isAbsolute(r); };
 
 export type RepositoryContextRequest = {

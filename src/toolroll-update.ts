@@ -22,6 +22,7 @@
  * previous runtime and its backups. Every update, rollback, refusal and
  * failure is a ledger entry.
  */
+import { inReadOnlyRequest } from "./read-only-request.js";
 import { createHash, randomUUID, verify as signatureValid, X509Certificate } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { accessSync, chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, renameSync, rmSync, statfsSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -1246,7 +1247,8 @@ export function releaseStalledUpdate(stateDir: string, now: Date): string | null
  * waiting update, `toolroll update`'s or the desktop app's. */
 export function waitingUpdate(databaseFile: string, inTheWay: (run: number) => boolean, now: Date, desktopStates?: readonly string[]): UpdateWaiting | null {
   const stateDir = dirname(databaseFile);
-  try { releaseStalledUpdate(stateDir, now); } catch { /* an unreadable record is shown as it is */ }
+  // A page visit only reads (docs/plans/get-side-effects.md): the console's background pass releases a stalled update.
+  if (!inReadOnlyRequest()) { try { releaseStalledUpdate(stateDir, now); } catch { /* an unreadable record is shown as it is */ } }
   return updateWaitingOf(stateDir, inTheWay) ?? desktopUpdateWaitingOf(databaseFile, inTheWay, desktopStates);
 }
 export function markWhatsNewSeen(stateDir: string): void {

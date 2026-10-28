@@ -19,6 +19,7 @@
  * the agent. A tool connected by signing in gives a run only an access token
  * of its own (oauth-run-token.ts).
  */
+import { inReadOnlyRequest } from "./read-only-request.js";
 import { toolRefusal } from "./policy.js";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -316,6 +317,16 @@ function moveIn(backend: SecretBackend | null, folder: SecretFolder, repo: strin
 export function readToolSecrets(repo: string, tool: string, state?: string): Record<string, string> {
   const folder = secretFolder(state);
   const backend = secretBackend();
+  // A page visit moves nothing (docs/plans/get-side-effects.md): it reads the store, else the file not yet moved in.
+  if (inReadOnlyRequest()) {
+    const stored = readStored(backend, folder, repo, tool);
+    if (stored !== null) return stored;
+    for (const file of [legacyFile(folder, repo, tool), backend === null ? null : toolFile(folder, repo, tool, ".json")]) {
+      if (file === null || !existsSync(file)) continue;
+      try { const values = readSecretFile(file); if (values !== null) return values; } catch { /* kept as it is, and never used */ }
+    }
+    return {};
+  }
   moveIn(backend, folder, repo, tool);
   return readStored(backend, folder, repo, tool) ?? {};
 }
@@ -996,7 +1007,7 @@ export function secretsSetFor(repo: string, tool: ToolSpec, state?: string): str
   if (names === null) {
     const values = readToolSecrets(repo, tool.name, state);
     names = Object.keys(values).filter(name => values[name] !== "");
-    if (backend !== null) writeNames(folder, repo, tool.name, names);
+    if (backend !== null && !inReadOnlyRequest()) writeNames(folder, repo, tool.name, names);
   }
   return tool.secrets.filter(one => names!.includes(one.name)).map(one => one.name);
 }

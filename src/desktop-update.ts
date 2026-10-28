@@ -1,3 +1,4 @@
+import { inReadOnlyRequest } from "./read-only-request.js";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, chmodSync, copyFileSync, cpSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -228,7 +229,8 @@ export function desktopUpdateWaitingOf(databaseFile: string, inTheWay: (run: num
     let j: UpdateJournal | null;
     try { j = readUpdateJournal(stateDir); } catch { continue; }
     if (!j || resolve(j.databaseFile) !== resolve(databaseFile)) continue;
-    try { if (releaseStalledDesktopUpdate(stateDir)) j = readUpdateJournal(stateDir)!; } catch { /* shown as last saved */ }
+    // A page visit only reads (docs/plans/get-side-effects.md): the console's background pass releases it.
+    if (!inReadOnlyRequest()) { try { if (releaseStalledDesktopUpdate(stateDir)) j = readUpdateJournal(stateDir)!; } catch { /* shown as last saved */ } }
     const version = j.next.version;
     if (j.phase === "draining") return updateWaitingWords({ app: true, version, stopped: false, lingering: j.waiting ?? null });
     if (j.phase === "cancelled" && j.waiting && inTheWay(j.waiting.run)) return updateWaitingWords({ app: true, version, stopped: true, lingering: j.waiting });

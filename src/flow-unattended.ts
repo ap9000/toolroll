@@ -24,6 +24,7 @@
  * This module owns the terms, digest, words and transactions; the flow engine
  * asks for coverage inside its filing transaction, and plan-auto.ts seals.
  */
+import { inReadOnlyRequest } from "./read-only-request.js";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, readFile, realpath, stat } from "node:fs/promises";
@@ -254,10 +255,19 @@ export function activeUnattendedGrant(store: Store, flowId: number, now: Date): 
   const row = store.handle.prepare("SELECT * FROM flow_unattended_grant WHERE flow = ? AND revoked_at IS NULL").get(flowId);
   if (row === undefined) return null;
   if (Date.parse(String(row["absolute_expiry"])) <= now.getTime()) {
-    store.transact(() => closeGrant(store, row, "the-clock", "expired", now));
+    // A page visit only reads (docs/plans/get-side-effects.md): the background pass or the next path that acts closes it.
+    if (!inReadOnlyRequest()) store.transact(() => closeGrant(store, row, "the-clock", "expired", now));
     return null;
   }
   return readGrant(row);
+}
+
+/** Close every grant past its expiry (the console's background pass). Returns how many ended. */
+export function closeExpiredUnattendedGrants(store: Store, now: Date): number {
+  const rows = store.handle.prepare("SELECT * FROM flow_unattended_grant WHERE revoked_at IS NULL").all()
+    .filter(row => Date.parse(String(row["absolute_expiry"])) <= now.getTime());
+  for (const row of rows) store.transact(() => closeGrant(store, row, "the-clock", "expired", now));
+  return rows.length;
 }
 
 /** Why the grant can't cover this flow right now (the same checks signing makes), or null. */

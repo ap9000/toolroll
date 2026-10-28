@@ -1,8 +1,9 @@
 /** Optional, project-local advice. Core review and approval never depend on it. */
+import { inReadOnlyRequest } from "./read-only-request.js";
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { realpathSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import type { Store } from './store.js';
 import { readVerifiedArtifact, scanForSecrets } from './evidence.js';
 import { normalizeStructuredJson } from "./structured-output.js";
@@ -70,8 +71,22 @@ export const legacyIdentityOf = (repo: string, common: string, st: IdentityFacts
   learningSha(JSON.stringify([repo, common, sameValue(st.dev), sameValue(st.ino), st.birthtimeMs]));
 function identityFacts(repo: string, seen?: Map<string, string>): { common: string; st: IdentityFacts } {
   if (canonicalProject(repo) !== repo) throw new Error('Project identity changed.');
-  const common = realpathSync(resolve(repo, git(repo, ['rev-parse', '--git-common-dir'], seen)));
+  // A page visit starts no git (docs/plans/get-side-effects.md): it reads the same answer from the folder itself.
+  const common = realpathSync(resolve(repo, inReadOnlyRequest() ? commonDirOnDisk(repo) : git(repo, ['rev-parse', '--git-common-dir'], seen)));
   return { common, st: statSync(common) };
+}
+/** The shared Git folder as git finds it for a checkout: `.git` itself, or the folder a `.git` file names, through its
+ * `commondir` when it is a linked worktree. Throws when the folder holds neither. */
+function commonDirOnDisk(repo: string): string {
+  const dotGit = join(repo, '.git');
+  const st = lstatSync(dotGit);
+  if (st.isDirectory()) return dotGit;
+  if (!st.isFile() || st.size > 4096) throw new Error('Project identity is unavailable.');
+  const named = /^gitdir: (.+)$/m.exec(readFileSync(dotGit, 'utf8'))?.[1]?.trim();
+  if (!named) throw new Error('Project identity is unavailable.');
+  const gitDir = resolve(repo, named);
+  const commondir = join(gitDir, 'commondir');
+  return existsSync(commondir) ? resolve(gitDir, readFileSync(commondir, 'utf8').trim()) : gitDir;
 }
 export function learningIdentity(repo: string, seen?: Map<string, string>): string {
   const { common, st } = identityFacts(repo, seen);
@@ -119,7 +134,8 @@ export function reconcileIdentity(store: Store, repo: string, seen?: Map<string,
   let done = reconciled.get(store);
   if (!done) reconciled.set(store, done = new Set());
   const key = `${repo}\n${legacy}`;
-  if (legacy !== current && !done.has(key)) {
+  // Carrying saved rows to the current identity is a write: never a page visit's (the background pass does it).
+  if (legacy !== current && !done.has(key) && !inReadOnlyRequest()) {
     if (!store.handle.prepare('SELECT 1 FROM project_identity_carry WHERE repo=? AND from_identity=? AND to_identity=?').get(repo, legacy, current)
       && store.handle.prepare(STORED_IDENTITY).get(repo, legacy)) {
       // Damaged knowledge history keeps its own error; retry on the next read.
@@ -350,7 +366,8 @@ function supported(store: Store, root: string, lesson: Lesson, seen?: Map<string
 }
 export function learningView(store: Store, root: string, repo: string, actor: string, before = 0) {
   admission(store, repo, actor);
-  recoverLearning(store, root, repo);
+  // Recovering learning from reviewed runs writes: the console's background pass and each run's start do it.
+  if (!inReadOnlyRequest()) recoverLearning(store, root, repo);
   const identity = learningIdentity(repo), accepted = acceptedIdentities(store, repo);
   const p = store.handle.prepare('SELECT * FROM learning_policy WHERE repo=?').get(repo);
   const revision = Number(p?.['revision'] ?? 0), enabled = accepted.has(String(p?.['identity'])) && p?.['enabled'] === 1;
