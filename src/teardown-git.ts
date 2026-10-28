@@ -724,7 +724,11 @@ function carryBack(admin: string, gitdir: string, initial: ReadonlyMap<string, s
  * Only a worktree folder this run made (not there when the view was made) whose checkout's `.git` is a plain file
  * reading exactly `gitdir: <view>/worktrees/<id>` (a name private to this run, in a folder every fence denies) is
  * rewritten: a new file created exclusively (never through a link) and renamed into place, then bound to the repository
- * (boundDirs) as any checkout is. Null when every such checkout is bound, or why one isn't.
+ * (boundDirs) as any checkout is. Before it writes, the repository's own record of the worktree must name this very
+ * checkout and repository, and every folder down to the checkout is anchored (anchorOf) and proven the same one before
+ * the open, the re-read and the rename, as carryBack does. A failure after the rename isn't undone (the old content
+ * names a view that no longer exists, so the checkout is unusable either way); it refuses. Null when every such
+ * checkout is bound, or why one isn't.
  */
 function relinkAdded(view: string, common: string, prior: ReadonlySet<string>): string | null {
   let ids: string[];
@@ -738,12 +742,26 @@ function relinkAdded(view: string, common: string, prior: ReadonlySet<string>): 
     const dotgit = join(folder, ".git");
     const read = (): string | null => { try { return lstatSync(dotgit).isFile() ? regularFile(dotgit) : null; } catch { return null; } };
     if (read()?.trim() !== stale) continue;
+    // The repository's record of this worktree names this checkout and this repository, before anything is written.
+    const admin = join(common, "worktrees", id);
+    let recorded: boolean;
+    try {
+      const commondir = regularFile(join(admin, "commondir"))?.trim();
+      recorded = lstatSync(admin).isDirectory() && commondir !== undefined && commondir !== ""
+        && realpathSync(resolve(admin, commondir)) === realpathSync(common) && realpathSync(named) === dotgit;
+    } catch { recorded = false; }
+    if (!recorded) return "the new checkout's record in its repository doesn't name it";
+    let anchor: Anchor;
+    try { anchor = anchorOf(folder); } catch { return "the new checkout's folder changed before it could be pointed at its repository"; }
     const temporary = join(folder, `.toolroll-${randomBytes(16).toString("hex")}`);
     try {
+      holdAnchor(anchor);
       const fd = openSync(temporary, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o644);
-      try { writeSync(fd, `gitdir: ${join(common, "worktrees", id)}\n`); } finally { closeSync(fd); }
-      // Checked again at the moment of use: still the plain file git wrote.
+      try { writeSync(fd, `gitdir: ${admin}\n`); } finally { closeSync(fd); }
+      // Checked again at the moment of use: the same folders, and still the plain file git wrote.
+      holdAnchor(anchor);
       if (read()?.trim() !== stale) { rmSync(temporary, { force: true }); return "the new checkout's .git changed before it could be pointed at its repository"; }
+      holdAnchor(anchor);
       renameSync(temporary, dotgit);
     } catch { rmSync(temporary, { force: true }); return "the new checkout's .git couldn't be pointed at its repository"; }
     try { boundDirs(folder, { repo: dirname(common) }); } catch (error) { return error instanceof Error ? error.message : "the new checkout isn't bound to its repository"; }
