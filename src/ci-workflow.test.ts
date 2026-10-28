@@ -127,7 +127,7 @@ describe("the CI workflows", () => {
       expect(proof, id).toBeGreaterThan(checkout);
       expect(steps[proof]?.run, id).toContain("git rev-parse HEAD");
       expect(steps[proof]?.run, id).toContain("$TESTED_SHA");
-      expect(steps.slice(checkout + 1, proof).filter(step => /\bnpm\b|vitest/.test(step.run ?? "")), id).toEqual([]);
+      expect(steps.slice(checkout + 1, proof).filter(step => step.uses !== undefined || /\bnpm\b|vitest|scripts\//.test(step.run ?? "")), id).toEqual([]);
     }
     // The test job's migration tests read old releases from history.
     expect(ci.jobs["test"]?.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with?.["fetch-depth"]).toBe(0);

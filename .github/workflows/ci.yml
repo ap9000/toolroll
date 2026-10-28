@@ -179,13 +179,13 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ env.TESTED_SHA }}
-      - run: scripts/ci-git.sh ${{ matrix.git }}
       - run: chown -R node:node "$GITHUB_WORKSPACE"
       - name: Tested commit
         run: |
           head="$(runuser -u node -- git rev-parse HEAD)"
           test "$head" = "$TESTED_SHA" || { echo "checked out $head, expected $TESTED_SHA" >&2; exit 1; }
-          echo "tested commit: $TESTED_SHA on $(git --version)" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: scripts/ci-git.sh ${{ matrix.git }}
       - run: runuser -u node -- npm ci
       - run: runuser -u node -- npm run test:git -- --reporter=default --reporter=json --outputFile.json=git-lane.json
         env:
