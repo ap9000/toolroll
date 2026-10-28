@@ -535,12 +535,12 @@ const WORKTREE_STATE_DIRS = ["sequencer", "rebase-merge", "rebase-apply"];
 /**
  * Whether every path git may write through a view is still the repository's own (Codex review of a0fa135d: git
  * writes deeper than the top-level folders, through a link at `refs/heads/x`, `logs/…` or `objects/xx` as well). The
- * walk, by lstat, never following a link: the common and worktree folders themselves; `refs` and `logs` all the way
- * down (common and the worktree's own); every folder directly under `objects`; `packed-refs`, `reftable` and its tables,
- * `worktrees`; and the worktree's own state (WORKTREE_STATE: its HEAD, index, a merge's, rebase's or bisect's state,
- * a split index's shared files). Any
- * link is refused, and so is a ref log or index with another name for the same file (a hard link: git appends to a
- * log in place). For each one found, where it leads (for an incident's record).
+ * walk, by lstat, never following a link: every name of the common folder git may write (COMMON_NAMES: refs, logs,
+ * reftable, packed-refs, worktrees with each worktree's own folder, rr-cache, modules, …) all the way down, HEAD and
+ * the index; the worktree's own state (WORKTREE_STATE: its HEAD, index, refs, logs, a merge's, rebase's or bisect's
+ * state, a split index's shared files); and `objects` with its fan-out folders, for links only (not each object file:
+ * a big repository has very many, and hard-linked objects are legitimate). Any link is refused, so is a folder that
+ * can't be listed, and so is any file walked with a second hard link (git appends to a log in place). For each one found, where it leads (for an incident's record).
  *
  * Checked when the view is made and again after git ran; between the two, a process that outlived the agent's turn
  * can still swap one of these for a link and have git write through it mid-command. That window is an accepted
@@ -549,9 +549,11 @@ const WORKTREE_STATE_DIRS = ["sequencer", "rebase-merge", "rebase-apply"];
 function pinned(dirs: BoundDirs): { ok: boolean; swapped: GitIncident["swapped"] } {
   const swapped: GitIncident["swapped"] = [];
   const seen = new Set<string>();
-  let budget = 200_000;
-  const check = (path: string, recurse: boolean, appendOnly: boolean): void => {
-    if (seen.has(path) || budget-- <= 0) return;
+  let budget = 400_000;
+  /** One path: a link, a folder that can't be listed, or (`linked` files) a file with a second hard link, is swapped. */
+  const check = (path: string, recurse: boolean, linked: boolean): void => {
+    if (seen.has(path)) return;
+    if (budget-- <= 0) return;
     seen.add(path);
     let held: import("node:fs").Stats;
     try { held = lstatSync(path); } catch { return; }
@@ -561,27 +563,28 @@ function pinned(dirs: BoundDirs): { ok: boolean; swapped: GitIncident["swapped"]
       swapped.push({ path, leadsTo: real });
       return;
     }
-    if (held.isFile() && appendOnly && held.nlink > 1) { swapped.push({ path, leadsTo: null }); return; }
-    if (!held.isDirectory()) return;
-    let entries: string[] = [];
-    try { entries = readdirSync(path); } catch { return; }
-    for (const name of entries) {
-      const child = join(path, name);
-      if (recurse) check(child, true, appendOnly);
-      else { try { if (lstatSync(child).isSymbolicLink()) check(child, false, false); } catch { /* gone */ } }
-    }
+    if (held.isFile() && linked && held.nlink > 1) { swapped.push({ path, leadsTo: null }); return; }
+    if (!held.isDirectory() || !recurse) return;
+    let entries: string[];
+    // A folder that can't be listed hides what's in it: it counts as swapped (fail closed).
+    try { entries = readdirSync(path); } catch { swapped.push({ path, leadsTo: null }); return; }
+    // A nested repository's objects (a submodule's, under modules/): checked for a link, not walked.
+    for (const name of entries) check(join(path, name), name !== "objects", linked && name !== "objects");
   };
-  // The worktree's own state git writes (its HEAD, index, refs, logs, a merge's, rebase's or bisect's state).
-  for (const name of [...WORKTREE_STATE, ...WORKTREE_STATE_DIRS]) check(join(dirs.gitdir, name), WORKTREE_STATE_DIRS.includes(name), false);
-  try { for (const name of readdirSync(dirs.gitdir)) if (name.startsWith("sharedindex.")) check(join(dirs.gitdir, name), false, false); } catch { /* none */ }
-  for (const tree of ["refs", "logs", "reftable"]) {
-    check(join(dirs.common, tree), true, tree === "logs");
-    check(join(dirs.gitdir, tree), true, tree === "logs");
+  // The common folder's every name git may write, all the way down (refs, logs, reftable, packed-refs, worktrees with
+  // each worktree's own folder, rr-cache, modules, the rest of COMMON_NAMES), and the worktree's own state.
+  for (const name of COMMON_NAMES) if (name !== "objects") check(join(dirs.common, name), true, true);
+  for (const name of ["HEAD", "index"]) check(join(dirs.common, name), false, true);
+  for (const name of [...WORKTREE_STATE, ...WORKTREE_STATE_DIRS, "index", "refs", "logs"]) check(join(dirs.gitdir, name), true, true);
+  try { for (const name of readdirSync(dirs.gitdir)) if (name.startsWith("sharedindex.")) check(join(dirs.gitdir, name), false, true); } catch { swapped.push({ path: dirs.gitdir, leadsTo: null }); }
+  // Objects: the folder and its fan-out folders (and pack/, info/), never a link; each object file isn't walked (a big
+  // repository has very many) nor held to one hard link (`clone --local` hard-links them, legitimately): git writes a
+  // new object to a fresh temporary file and links it into place, never through an existing one.
+  check(join(dirs.common, "objects"), false, false);
+  if (existsSync(join(dirs.common, "objects"))) {
+    try { for (const name of readdirSync(join(dirs.common, "objects"))) check(join(dirs.common, "objects", name), false, false); }
+    catch { swapped.push({ path: join(dirs.common, "objects"), leadsTo: null }); }
   }
-  for (const name of ["objects", "packed-refs", "worktrees", "index", "HEAD"]) check(join(dirs.common, name), false, false);
-  check(join(dirs.gitdir, "index"), false, true);
-  // Every folder directly under objects (where git writes loose objects and packs): none a link.
-  try { for (const name of readdirSync(join(dirs.common, "objects"))) check(join(dirs.common, "objects", name), false, false); } catch { /* none */ }
   if (budget <= 0) swapped.push({ path: dirs.common, leadsTo: null });
   // A path that is no longer its own real path (a folder on the way swapped) counts too.
   for (const path of [dirs.common, dirs.gitdir]) { try { if (realpathSync(path) !== path) swapped.push({ path, leadsTo: realpathSync(path) }); } catch { swapped.push({ path, leadsTo: null }); } }

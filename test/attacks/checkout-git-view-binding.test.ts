@@ -186,8 +186,12 @@ describe("the worktree's own files git rewrites go back to it", () => {
     const admin = join(a, ".git", "worktrees", "a-task");
     const outside = join(root, "outside");
     writeFileSync(outside, "untouched\n");
-    // The temporary name the plane once used, planted as a link: never followed.
+    // The temporary name the plane once used, planted as a link: the walk refuses while it is there, and it is never
+    // followed.
     for (const name of ["HEAD", "ORIG_HEAD"]) symlinkSync(outside, join(admin, `.${name}.toolroll-${process.pid}`));
+    expect(refusal(await checkoutGit(run, "build", { repo: a })("git", ["checkout", "-q", "--detach", "main"], { cwd: aLinked, timeoutMs: 60_000 }))).toContain("link");
+    expect(readFileSync(outside, "utf8")).toBe("untouched\n");
+    for (const name of ["HEAD", "ORIG_HEAD"]) rmSync(join(admin, `.${name}.toolroll-${process.pid}`));
     rmSync(join(admin, "COMMIT_EDITMSG"), { force: true });
     const detached = await checkoutGit(run, "build", { repo: a })("git", ["checkout", "-q", "--detach", "main"], { cwd: aLinked, timeoutMs: 60_000 });
     expect(detached.code, detached.stderr).toBe(0);
@@ -343,5 +347,36 @@ describe("attack: links deeper inside the repository (Codex review of a0fa135d)"
       expect(refusal(result), result.stderr).toContain("changed while git ran");
       expect(heard.map(one => one.swapped.map(entry => entry.path))).toEqual([[join(realpathSync(a), ".git", "refs", "heads")]]);
     } finally { stop(); }
+  });
+});
+
+describe("the walk fails closed (security scan of the round-2 walk)", () => {
+  const ln = (from: string, to: string) => execFileSync("ln", [from, to]);
+  test.each([
+    ["a refs folder that can't be listed", () => { const dir = join(a, ".git", "refs", "heads", "locked"); execFileSync("mkdir", ["-p", dir]); execFileSync("chmod", ["000", dir]); }],
+    ["a branch file hard-linked to another repository's", () => { rmSync(join(a, ".git", "refs", "heads", "task")); ln(join(b, ".git", "refs", "heads", "task"), join(a, ".git", "refs", "heads", "task")); }],
+    ["packed-refs hard-linked to another repository's", () => { git(b, "pack-refs", "--all"); git(a, "pack-refs", "--all"); rmSync(join(a, ".git", "packed-refs")); ln(join(b, ".git", "packed-refs"), join(a, ".git", "packed-refs")); }],
+    ["the worktree's ORIG_HEAD hard-linked elsewhere", () => { writeFileSync(join(b, "orig"), "x\n"); rmSync(join(a, ".git", "worktrees", "a-task", "ORIG_HEAD"), { force: true }); ln(join(b, "orig"), join(a, ".git", "worktrees", "a-task", "ORIG_HEAD")); }],
+    ["rr-cache linked elsewhere", () => symlinkSync(join(b, ".git"), join(a, ".git", "rr-cache"))],
+    ["a module's folder linked elsewhere", () => { execFileSync("mkdir", ["-p", join(a, ".git", "modules")]); symlinkSync(join(b, ".git"), join(a, ".git", "modules", "lib")); }],
+  ])("%s: refused before git runs", async (_name, plant) => {
+    plant();
+    try {
+      for (const result of await attempt({ repo: a })) expect(refusal(result), result.stderr).toContain("link");
+    } finally { try { execFileSync("chmod", ["-R", "755", join(a, ".git", "refs")]); } catch { /* not changed */ } }
+  });
+
+  test("objects hard-linked by `clone --local` are legitimate: the plane commits there, and the shared object files are never written", async () => {
+    const clone = join(root, "clone");
+    execFileSync("git", ["clone", "-q", "--local", a, clone], { env });
+    const shared = execFileSync("find", [join(clone, ".git", "objects"), "-type", "f", "-links", "+1"], { encoding: "utf8" }).trim().split("\n").filter(Boolean);
+    expect(shared.length).toBeGreaterThan(0);
+    const before = shared.map(path => readFileSync(path).toString("base64"));
+    writeFileSync(join(clone, "c.txt"), "clone\n");
+    for (const args of [["add", "-A"], ["commit", "--no-verify", "-m", "in a local clone"]]) {
+      const result = await checkoutGit(run, "build", { repo: clone })("git", args, { cwd: clone, timeoutMs: 60_000 });
+      expect(result.code, result.stderr).toBe(0);
+    }
+    expect(shared.map(path => readFileSync(path).toString("base64"))).toEqual(before);
   });
 });
