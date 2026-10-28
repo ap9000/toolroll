@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.9.75 — 2026-10-27
+
+- **Opening a page only shows it.** Pages no longer run checks, tidy up or
+  call out as you open them. Sign-ins, integrations, update checks, storage
+  and Codex's tools are checked in the background, and Models, Updates,
+  Storage, Pull requests, Tools, Project setup and the GitHub listing show
+  their last answer and when it was checked, with a **Check now** button to
+  ask again. On a coding session, **Review for shipping** and the changes
+  view are buttons, so a link preview or prefetch can't run them. Reading a
+  checkout an agent wrote never runs that checkout's own git settings.
+- **The task card never contradicts itself.** One answer to "did the
+  approved check pass" across the task page, the road, the Tasks list, the
+  result page and chat. A check whose saved log can't be read is never
+  shown as passed, and a check whose command was approved again since it ran
+  says so: "The check command changed since this check; run checks again."
+- **Lead-filed runs nest under the lead on Agents → Live.** Runs your own
+  lead filed sit under its tile. Once its turn has gone, they stay grouped
+  under a quiet "Filed by lead chat" header. The lead's full screen lists
+  every task it filed. Only you see what your lead filed.
+- **The lead passes asks to a helper instead of answering for them.** "Ask
+  Maya to …" now reaches Maya even when she seems to lack a tool or the
+  knowledge for it; she says so herself or asks you first.
+- **A helper's "can't" reaches whoever asked.** When a helper can't do
+  something asked at its desk, its note (or its reason) goes back to the
+  person or agent who asked, instead of waiting in an inbox.
+- Database: schema v136 (unchanged).
+
 ## 0.9.74 — 2026-10-27
 
 - **Agents → Live: every agent and subagent at a glance.** A read-only grid
