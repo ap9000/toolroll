@@ -12,6 +12,7 @@ import { agentsLiveOf } from "../agents-live.js";
 import { createLiveRooms, type LiveBus, type LiveViewer } from "../live-bus.js";
 import { openLiveTrusted } from "../live-open.js";
 import type { Store } from "../store.js";
+import { leadFiledLinks } from "./agents-live-filed.js";
 import { requestContext } from "./request-context.js";
 
 /** How often a viewer's runs and files are looked at again. */
@@ -83,7 +84,9 @@ export function createAgentsLiveRooms<V extends LiveViewer>(input: {
         return repo !== null && visible(repo) && store.accountCanAccess(account, repo);
       };
       const kept = new Set(tiles.filter(tile => still(tile.runId)).map(tile => tile.runId));
-      const seen = tiles.filter(tile => kept.has(tile.runId)).map(tile => [tile.runId, tile.state, tile.why, tile.endedAt]);
+      // Which of the viewer's own lead chats filed each run (agents-live-filed.ts): a link made or erased is a change too.
+      const filed = leadFiledLinks(store, account, [...kept]);
+      const seen = tiles.filter(tile => kept.has(tile.runId)).map(tile => [tile.runId, tile.state, tile.why, tile.endedAt, filed.get(tile.runId)?.thread ?? null]);
       const shownMarks = marks.filter(([runId]) => kept.has(runId as number) && (!tiles.find(tile => tile.runId === runId)?.local || sees(runId as number)()));
       return createHash("sha256").update(JSON.stringify([seen, shownMarks, input.leads?.(key) ?? null])).digest("base64url");
     });

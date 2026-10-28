@@ -28,6 +28,7 @@ import { agentLanesOf, agentRowOf, agentsBoardOf, agentFactsFor, laneWindowOf, s
 import { markAgentSeen } from "../agent-board.js";
 import { agentsLiveOf } from "../agents-live.js";
 import { readChildWindow } from "../live-children-read.js";
+import { leadFiledLinks } from "./agents-live-filed.js";
 import { readMainWindow } from "../live-main-read.js";
 import { runLiveCommands } from "../store.js";
 import type { BrowserAgentDetail,BrowserAgentsView } from "../browser-workspace.js";
@@ -1060,7 +1061,10 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const again = current === null ? null : rereadBrowser(runtime, request, browser);
     if (again === null) return respond(response, 401, "application/json", JSON.stringify({ error: "session" }));
     const shown = tiles.filter(tile => { const run = store.getRun(tile.runId); return run !== null && canSee(run); });
-    return respond(response, 200, "application/json", JSON.stringify({ tiles: shown, leads: leadsStillAdmitted(runtime, again, leads) }));
+    // Work the viewer's own lead filed nests under it (docs/plans/lead-dispatched-tiles.md): proved from the store now,
+    // for the tiles already shown, and only ever for their owner.
+    const filed = again.role === "approver" ? leadFiledLinks(store, again.name, shown.map(tile => tile.runId)) : new Map();
+    return respond(response, 200, "application/json", JSON.stringify({ tiles: shown.map(tile => ({ ...tile, filedBy: filed.get(tile.runId) ?? null })), leads: leadsStillAdmitted(runtime, again, leads) }));
   }
 
   /** This console's key for the Live grid's read cursors: random, in memory only (never where a build can reach), so a
