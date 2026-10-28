@@ -49,7 +49,7 @@ function checks(job: Job, id: string): { name: string; runner: string }[] {
  * The git lanes (ci.yml job "git"): pull-request checks that `toolroll release` doesn't wait for by name yet.
  * TODO(eval-harness phase 1 integration): add them to REQUIRED_PR_CHECKS in src/release.ts, then drop this list.
  */
-const PENDING_REQUIRED = ["git 2.44 · debian trixie", "git 2.47 · debian trixie"];
+const PENDING_REQUIRED = ["git 2.45 · debian trixie", "git 2.47 · debian trixie"];
 const prChecks = () => [...new Set([...REQUIRED_PR_CHECKS, ...PENDING_REQUIRED])].sort();
 
 const running = (event: Event) => workflows.filter(one => triggered(one, event)).flatMap(one => Object.entries(one.jobs).flatMap(([id, job]) => checks(job, id)));
@@ -136,7 +136,7 @@ describe("the CI workflows", () => {
   test("the git lanes run the git tests on the declared floor and on 2.47, unprivileged, and refuse a skip", () => {
     const job = workflows.find(one => one.file === "ci.yml")!.jobs["git"]!;
     expect(job.container).toBe("node:22-trixie");
-    expect(job.strategy?.matrix?.["git"]).toEqual(["2.44", "2.47"]);
+    expect(job.strategy?.matrix?.["git"]).toEqual(["2.45", "2.47"]);
     const runs = (job.steps ?? []).map(step => step.run ?? "");
     expect(runs).toContain("scripts/ci-git.sh ${{ matrix.git }}");
     expect(runs.filter(run => /\bnpm (ci|run)\b|\bnode scripts\//.test(run)).every(run => run.startsWith("runuser -u node -- "))).toBe(true);

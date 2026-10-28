@@ -11,10 +11,10 @@ case "$want" in
     apt-get update -qq
     apt-get install -y -qq --no-install-recommends git >/dev/null
     ;;
-  2.44)
-    # Toolroll's declared floor (README: Requirements): `git --no-lazy-fetch` arrived in 2.44.
-    release=2.44.4
-    sha256=f36296411c58f21488abfacf365c5ba77c08ac39bc19d3aa1ef666e60d2da08f
+  2.45)
+    # Toolroll's declared floor (README): the `git --no-lazy-fetch` option arrived in 2.45.
+    release=2.45.4
+    sha256=93f82ed1cab772acf3167db3be2bd2e54876e0ab53c6a9af744940752b961d88
     work="$(mktemp -d)"
     curl -fsSL --retry 3 -o "$work/git.tar.xz" "https://mirrors.edge.kernel.org/pub/software/scm/git/git-$release.tar.xz"
     echo "$sha256  $work/git.tar.xz" | sha256sum -c -

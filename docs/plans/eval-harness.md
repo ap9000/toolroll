@@ -73,15 +73,16 @@ F. Process: delta review of post-review security changes (diff + affected invari
   whose head does not contain origin/main's head (`git merge-base --is-ancestor <main head> <candidate>`, read at the
   gate and again before the merge), so the tree CI tested is the tree that merges. Without it, testing the head instead
   of the merge commit is weaker, not stronger, for a branch behind main. Belongs in src/release.ts / release-auto.ts.
-- D, git floor: **git 2.44** (README). The binding feature is the `git --no-lazy-fetch` global option (2.44; git 2.43.7
-  answers "unknown option: --no-lazy-fetch", checked in Docker), used by every hardened read. Others in use are older:
+- D, git floor: **git 2.45** (README). The binding feature is the `git --no-lazy-fetch` global option, used by every
+  hardened read: checked in Docker, 2.44.4 and 2.43.7 answer "unknown option: --no-lazy-fetch", 2.45.4 accepts it (a
+  first 2.44 lane failed 12 git tests on exactly that, plus reftable, which also arrived in 2.45). Others in use are older:
   `--attr-source` 2.40, `worktree list -z` 2.36, `GIT_CONFIG_COUNT` and `--path-format` 2.31; `worktree.useRelativePaths`
   (2.48) is a setting older git ignores. No runtime git-version check exists, so none was added; stock Ubuntu 24.04
-  (2.43) and Debian 12 (2.39) are below the floor.
-- D, git lanes: ci.yml job `git` (container node:22-trixie, matrix 2.44 built from the pinned kernel.org tarball by
+  (2.43) and Debian 12 (2.39) are below the floor; so is 2.44.
+- D, git lanes: ci.yml job `git` (container node:22-trixie, matrix 2.45 built from the pinned kernel.org tarball by
   scripts/ci-git.sh, 2.47 = Debian's), running `npm run test:git` as the unprivileged `node` user, then
   scripts/ci-no-skips.mjs fails the job if any test was skipped, except the "native …" OS-fence attacks (3 in these
-  files; a plain container has no bubblewrap/Seatbelt; the linux fence job runs them with TOOLROLL_REQUIRE_NATIVE). **Integration TODO:** add "git 2.44 · debian trixie"
+  files; a plain container has no bubblewrap/Seatbelt; the linux fence job runs them with TOOLROLL_REQUIRE_NATIVE). **Integration TODO:** add "git 2.45 · debian trixie"
   and "git 2.47 · debian trixie" to REQUIRED_PR_CHECKS (src/release.ts) and drop PENDING_REQUIRED from
   src/ci-workflow.test.ts.
 - D, identity: test/git-identity.ts. Every test file's home starts with `user.useConfigOnly = true` and no identity
