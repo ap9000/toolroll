@@ -335,8 +335,8 @@ function includeIn(path: string): string | null {
  * plane's git writes. A main checkout's `.git` is a real folder (not a link) holding no `commondir`; a linked one's is a
  * one-line `gitdir: ` file naming `<common>/worktrees/<id>`, a real folder whose `commondir` resolves to that common
  * folder and whose `gitdir` names this checkout's `.git` back, and whose common folder is the `.git` folder of a main
- * checkout. With `repo` (the project's checkout, from the plane's own records: its main checkout or any linked
- * worktree of it) the common folder must be the one that checkout binds to. Throws with the reason otherwise.
+ * checkout. With `repo` (the project's main checkout, from the plane's own records) the common folder must be the real
+ * path of its `.git` folder, a real one holding no `commondir`. Throws with the reason otherwise.
  */
 type BoundDirs = { checkout: string; gitdir: string; common: string; linked: boolean };
 export type GitBinding = { repo?: string | null };
@@ -375,9 +375,17 @@ function boundDirs(checkout: string, binding: GitBinding = {}): BoundDirs {
   if (basename(dirs.common) !== ".git") fail("belongs to a repository that isn't a checkout's");
   try { if (!lstatSync(dirs.common).isDirectory()) fail("belongs to a repository that is a link"); } catch { fail("belongs to a repository that isn't there"); }
   if (binding.repo != null) {
-    // The project's own repository, bound the same way: its checkout may be the main one or any linked worktree.
+    // The anchor is the plane's own record, never a pointer file: the recorded project's main checkout, whose `.git`
+    // must be a real folder (not a link, holding no `commondir`); its real path is the only common folder accepted. A
+    // record that isn't such a checkout (a linked worktree, as agent-fence.ts trustedWorktreeBinding also refuses) or
+    // can't be read is refused, never taken as unbound.
     let recorded: string | null = null;
-    try { recorded = boundDirs(binding.repo).common; } catch { recorded = null; }
+    try {
+      const dotgit = join(realpathSync(binding.repo), ".git");
+      const held = lstatSync(dotgit);
+      recorded = held.isDirectory() && !held.isSymbolicLink() && !existsSync(join(dotgit, "commondir")) ? realpathSync(dotgit) : null;
+    } catch { recorded = null; }
+    if (recorded === null) fail("can't be checked against the project's record: its main checkout's .git isn't a real folder");
     if (recorded !== dirs.common) fail("belongs to another repository than the project's");
   }
   return dirs;
