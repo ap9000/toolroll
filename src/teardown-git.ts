@@ -40,14 +40,20 @@ const REFUSED_PREFIX = "Toolroll won't run git here: ";
  * after the last, and the subsection — any bytes at all, empty included — between them. Each family below is refused
  * whatever its subsection is, or whether it has one; section and variable compare case-insensitively, as git reads them.
  * `*` as a variable is every variable of the section.
+ *
+ * Audited against git's documented config (git 2.50.1, git-config(1)) for every key that names a program, picks one
+ * (a transport, a remote helper — `alias.remote-<x>` with a `url.<x>.insteadOf` rewrite ran one, Codex review of
+ * a0fa135d), writes a file, or decides which protocol may run: the table in test/attacks/checkout-git-config-audit
+ * .test.ts. Keys that name no program stay allowed there with the reason (core.hooksPath is overridden on every
+ * command; receive.*, transfer.*, fetch.*, http.* proxies, gc.auto, maintenance.auto, ssh.variant name none).
  */
 const COMMAND_FAMILIES: ReadonlyMap<string, readonly string[]> = new Map(Object.entries({
   core: ["sshcommand", "gitproxy", "askpass", "pager", "editor", "alternaterefscommand", "worktree"],
   filter: ["clean", "smudge", "process"],
   diff: ["external", "command", "textconv"],
   merge: ["driver"],
-  difftool: ["cmd", "path"],
-  mergetool: ["cmd", "path"],
+  difftool: ["*"],
+  mergetool: ["*"],
   trailer: ["command", "cmd"],
   submodule: ["update"],
   sequence: ["editor"],
@@ -56,12 +62,25 @@ const COMMAND_FAMILIES: ReadonlyMap<string, readonly string[]> = new Map(Object.
   uploadpack: ["packobjectshook"],
   remote: ["uploadpack", "receivepack", "vcs"],
   interactive: ["difffilter"],
-  browser: ["cmd", "path"],
-  man: ["cmd", "path"],
+  browser: ["*"],
+  web: ["browser"],
+  man: ["*"],
+  instaweb: ["*"],
+  sendemail: ["*"],
   pager: ["*"],
   include: ["path"],
   includeif: ["path"],
+  // An alias is a command (a `!` one runs a shell; `remote-<x>` is run as a remote helper).
+  alias: ["*"],
+  // A rewrite can turn any URL into `<helper>::…`, and a repository's own protocol policy outranks the plane's.
+  url: ["insteadof", "pushinsteadof"],
+  protocol: ["*"],
+  // Trace targets are files (and sockets) git writes to, as the plane.
+  trace2: ["*"],
+  gc: ["recentobjectshook"],
 }));
+/** A remote URL of the form `<helper>::<address>` runs git-remote-<helper>. */
+const HELPER_URL = /^[^:/\\]+::/;
 
 /** A config key's parts as git names them: section and variable lowercased, the subsection as it is (or null). */
 function keyParts(key: string): { section: string; subsection: string | null; variable: string } {
@@ -91,6 +110,7 @@ function runsCommand(key: string, value: string, lfsChecked: boolean): boolean {
   const { section, subsection, variable } = keyParts(key);
   if (section === "core" && variable === "fsmonitor") return !BOOLEAN.test(value.trim());
   if (lfsChecked && section === "filter" && subsection === "lfs" && LFS_FILTER.get(`filter.lfs.${variable}`) === value) return false;
+  if (section === "remote" && (variable === "url" || variable === "pushurl") && HELPER_URL.test(value.trim())) return true;
   const family = COMMAND_FAMILIES.get(section);
   if (family !== undefined && (family.includes("*") || family.includes(variable))) return true;
   return lfsCommand(key);
@@ -545,8 +565,10 @@ function checkoutRootOf(cwd: string): string | null {
 const NOT_A_REPOSITORY: ExecResult = { code: 128, stdout: "", stderr: "fatal: not a git repository (or any of the parent directories): .git\n", timedOut: false, notFound: false };
 
 /** Settings fixed on every write through a view: `worktree add` records absolute paths (relative ones would need a
- * config write, which a view keeps). */
-export const WRITE_VIEW_FLAGS: readonly string[] = ["-c", "worktree.useRelativePaths=false"];
+ * config write, which a view keeps); no transport at all (a caller that fetches allows its one protocol by name, as the
+ * nightly check's local fetch does with protocol.file.allow); and no split index (its shared index files would be
+ * written in the plane's GIT_DIR). */
+export const WRITE_VIEW_FLAGS: readonly string[] = ["-c", "worktree.useRelativePaths=false", "-c", "protocol.allow=never", "-c", "core.splitIndex=false"];
 
 /** Whether the checkout's .lfsconfig (read as git parses it, that file only) sets any git-lfs key that could name a
  * program (anything but INERT_LFS). A file that
