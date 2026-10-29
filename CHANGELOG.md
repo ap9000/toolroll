@@ -16,6 +16,15 @@
   CI instead of after it. Nothing is approved, by Toolroll or a person, before
   every pull request check passed on the commit; a person is still asked only
   once CI passed.
+- **The console stays responsive while builds and checks run.** `toolroll up`
+  now runs two processes: the console (pages, sign-in and approvals) and the
+  worker (builds, checks, follow-ups and housekeeping). On a copy of a real
+  database, the slowest console answer during a heavy check fell from about
+  5–6 seconds to under 0.3 seconds. A worker that crashes is started again
+  and recovers its interrupted work as a restarted `up` does; a stop still
+  lets running builds finish first. A running check's progress is saved at
+  most once a second, and its final result at once. `--single-process` keeps
+  the old one-process layout.
 
 ## 0.9.77 — 2026-10-29
 

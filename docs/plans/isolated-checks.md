@@ -59,6 +59,55 @@ eval-harness.md, pipeline-speed.md and the research summary below.
 Total: about 3–5 focused weeks. The release that ships stages 3–4 needs a person (harness and policy changes are
 excluded from automatic approval by design).
 
+## Stage 1 build notes (2026-10-29, branch `isolated-checks`)
+
+**What was built.** `toolroll up` keeps the identities it mints (the approver's login, the runner and its token) and
+supervises two role processes with controller-supervisor (IPC channel, `[console]` / `[worker]` labelled output):
+- **console** (`up-role-child.js console`): `startConsole` (HTTP, sign-in, ceremonies, the console's own background
+  checks), the attach socket and instance secret, sign-in link minting. It never receives the runner token.
+- **worker** (`up-role-child.js worker`): every watch loop (builds, checks, batch checks, follow-ups, reconcilers,
+  storage sweep, flows, publishing, push), the project registry, the one Telegram follower, provider readiness. It opens
+  no port and mints no console secret.
+- `up` itself: identity minting and retirement, the runner heartbeat, the greeting, and relaying the worker's project
+  list to the console. Both roles must report `up`'s own build identity (version + hash of operate.js) or `up` stops.
+- Each role's whole start goes over the IPC channel (validated, closed shapes in `src/up-processes.ts`): no token in any
+  command line or environment. A console start that carries a token, a role/argv mismatch or another build is refused.
+- Restart policy: a role that never became ready fails the start (as before); after readiness a crashed role is started
+  again with controller-supervisor's backoff. A restarted worker waits for its predecessor's watch lease to lapse (90 s)
+  and takes it over with `recoverIncarnation` in the same transaction — exactly the recovery a restarted `up` does; it
+  never holds a lease while the dead worker's is live. If the runner credential no longer authenticates, the whole `up`
+  stops (a service restart registers again, as before).
+- Stop: first signal → the console releases the coding owner record and keeps serving, the worker drains (stop grace,
+  then its providers are stopped; a second signal stops them at once), the runner retires, then the console closes.
+  Children ignore SIGINT (a terminal's Ctrl-C reaches the whole group; `up` decides) and drain if `up` disappears.
+- `toolroll serve` and `toolroll watch` are unchanged. `--single-process`, and any in-memory seam a child can't receive
+  (tests' fakes, the desktop host's proof key and store), keep both roles in one process with the same messages.
+- Check progress: display snapshots are coalesced to at most one write a second (newest wins); the final snapshot is
+  written at once and nothing older is written after it (`coalescedProgressWriter`, check-progress.ts).
+
+**What each process holds.** Both are the same user on the same database folder, so files beside the database (saved
+login, tool secrets, Telegram token) are reachable from either; the split keeps secrets out of each other's memory and
+messages, not out of the folder. Isolation from build code is stages 2–4.
+
+**Latency** (`scripts/isolated-checks-latency.mjs`: temp HOME, sandbox-exec fence — no writes under the owner's home, no
+network but localhost, no signals outside the run — a settled copy of the owner's database (760 tasks, 1,300 runs), a
+scripted provider, and a check printing ~114,000 test-runner lines over 30 s; each route read in turn every ~50 ms;
+milliseconds):
+
+| Build | Busy window | /healthz p50 / p95 / max | /board p50 / p95 / max | task page p50 / p95 / max |
+|---|---|---|---|---|
+| before (0.9.77 + pipeline-speed, one process) | 58.9 s | 1 / 1 / **5,009** | 35 / 37 / **5,688** | 51 / 207 / **4,706** |
+| after, `--single-process` (coalescing only) | 44.6 s | 1 / 1 / 82 | 35 / 38 / 45 | 51 / 240 / 668 |
+| after (two processes + coalescing) | 38.8 s | 1 / 1 / **1** | 35 / 37 / **252** | 50 / 57 / **265** |
+
+Idle (the first 8 s after start, reconcile running): before /board p95 147 ms, max 391; after 53 / 92. On a fresh
+database the same check: before /healthz max 6,892 ms and /board 7,537 ms; after 182 and 28. The multi-second stalls
+were the per-line progress writes on the shared event loop; the remaining task-page time is the console's own render.
+
+**Residual.** Heavy HTTP reads beyond the work index are not yet routed through ReadExecutor; a deploy's
+"service stopped" check watches `up` and its supervisor, and the role children end with `up` (same process group, and
+they drain when its channel closes) rather than being checked by pid.
+
 ## Decisions for the owner
 | Decision | Recommendation |
 |---|---|
