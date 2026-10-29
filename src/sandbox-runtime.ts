@@ -132,8 +132,17 @@ export const SEATBELT_NO_OTHER_TERMINAL = [
  */
 export const SEATBELT_NO_KEYCHAIN = [
   "; Toolroll: no keychain",
-  "(deny mach-lookup (global-name \"com.apple.SecurityServer\") (global-name \"com.apple.securityd.xpc\"))",
+  "(deny mach-lookup (with no-report) (global-name \"com.apple.SecurityServer\") (global-name \"com.apple.securityd.xpc\"))",
 ].join("\n");
+
+/**
+ * First after the profile's default deny: a mach service lookup the profile doesn't allow is still denied, unreported.
+ * On macOS 26.5 a reported mach-lookup denial now and then never answers: bootstrap_look_up blocks in launchd for good
+ * (seen as npm stuck in Node's DNS setup, dns_configuration_copy → com.apple.SystemConfiguration.DNSConfiguration, about
+ * 1 launch in 70 under load; never with the report off). Every allow after it still wins, so what is reachable is the
+ * same; only the report goes.
+ */
+export const SEATBELT_QUIET_MACH_DENY = "(deny mach-lookup (with no-report))";
 
 /**
  * Chromium, a project check's launch only: Playwright's default browser (its Chromium headless shell) registers its
@@ -224,9 +233,13 @@ export function withSeatbeltRules(command: string, rules: string, expected?: str
   }
   const profile = words[exec + 2]!;
   if (!profile.startsWith("(version 1)\n(deny default")) throw shape();
+  // Where the default deny's line ends (the profile's end when it is the last line).
+  const lineEnd = profile.indexOf("\n", "(version 1)\n".length);
+  const opening = lineEnd < 0 ? profile.length : lineEnd;
   if (!/^\/[A-Za-z0-9_./-]+$/.test(words[exec + 3]!)) throw shape();
   if (expected !== undefined && words[exec + 5] !== expected) throw shape();
-  return srtQuote([...words.slice(0, exec + 2), `${profile}\n${rules}\n`, ...words.slice(exec + 3)]);
+  const quiet = `${profile.slice(0, opening)}\n${SEATBELT_QUIET_MACH_DENY}${profile.slice(opening)}`;
+  return srtQuote([...words.slice(0, exec + 2), `${quiet}\n${rules}\n`, ...words.slice(exec + 3)]);
 }
 
 /** The runtime's macOS invocation for `file args` run from `cwd`: a command line for /bin/sh. */
