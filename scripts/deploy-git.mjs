@@ -23,7 +23,7 @@ import {
   accessSync, closeSync, constants as fsConstants, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readlinkSync,
   realpathSync, rmSync, symlinkSync, writeFileSync, writeSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
 
 /** Every transport git knows by name, each refused on the command line, and the general setting. */
@@ -98,7 +98,15 @@ export function repositoryView(repo, git) {
   const { gitdir, common } = gitDirsOf(repo);
   let objects;
   try { objects = realpathSync(join(common, "objects")); if (!lstatSync(objects).isDirectory()) throw Error(); } catch { throw Error("The repository has no object store."); }
-  const view = realpathSync(mkdtempSync(join(tmpdir(), "so-deploy-git-")));
+  // The same build-denied root as src/git-views.ts. A surviving build can rewrite a view in shared temp storage,
+  // including its otherwise trusted config, between inspection and use. Scripts cannot import the installed reader.
+  const home = realpathSync(homedir()), base = join(home, ".toolroll"), root = join(base, "git-views");
+  for (const dir of [base, root]) {
+    try { mkdirSync(dir, { mode: 0o700 }); } catch (error) { if (error?.code !== "EEXIST") throw error; }
+    const held = lstatSync(dir);
+    if (!held.isDirectory() || held.isSymbolicLink() || (process.getuid && held.uid !== process.getuid())) throw Error(`${dir} isn't a folder of this user's own.`);
+  }
+  const view = realpathSync(mkdtempSync(join(root, "deploy-")));
   const dispose = () => rmSync(view, { recursive: true, force: true });
   try {
     const config = regularFile(join(common, "config"));

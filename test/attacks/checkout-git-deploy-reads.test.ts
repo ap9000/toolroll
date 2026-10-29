@@ -8,13 +8,16 @@
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 // @ts-expect-error plain ESM script without declarations
-import { gitExecutable, lazyFetchFlagSupported, normalizedTreePath as scriptNormalized, objectsOf, parseTree as scriptParseTree, PINNED_PROTOCOLS, TRANSPORTS } from "../../scripts/deploy-git.mjs";
+import { gitExecutable, lazyFetchFlagSupported, normalizedTreePath as scriptNormalized, objectsOf, parseTree as scriptParseTree, PINNED_PROTOCOLS, TRANSPORTS, repositoryView } from "../../scripts/deploy-git.mjs";
 import { normalizedTreePath, parseTree } from "../../src/commit-extract.js";
+import { agentFence, NO_GRANTS } from "../../src/agent-fence.js";
+import { gitViewsRoot } from "../../src/git-views.js";
+import { codexSandbox, needs, osFence, q, underCodex, underSandbox } from "./harness.js";
 
 let root: string, source: string, partial: string, missing: string;
 const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
@@ -66,6 +69,29 @@ beforeEach(() => {
 afterEach(() => { rmSync(root, { recursive: true, force: true }); });
 
 describe("the deployment script's git reads", () => {
+  test("attack: a deployment view is in the build-denied folder, never shared temporary storage", () => {
+    const fence = agentFence({ databaseFile: null, worktree: source, home: homedir() });
+    const view = repositoryView(["-C", source], gitExecutable(plain));
+    try {
+      expect(fence).toContain(realpathSync(gitViewsRoot(homedir())));
+      expect(view.dir.startsWith(realpathSync(gitViewsRoot(homedir())) + "/")).toBe(true);
+    } finally { view.dispose(); }
+  });
+
+  test.for(["OS", "Codex"])("native %s: a surviving build cannot rewrite a deployment view", (kind, ctx) => {
+    needs(ctx, kind === "OS" ? osFence() : codexSandbox());
+    const fence = agentFence({ databaseFile: null, worktree: source, home: homedir() });
+    const view = repositoryView(["-C", source], gitExecutable(plain));
+    try {
+      const config = join(view.dir, "config"), before = readFileSync(config, "utf8");
+      const script = `printf '\\n[protocol "custom"]\\n\\tallow = always\\n' >> ${q(config)} 2>/dev/null && echo written || echo denied\necho own > own.txt && cat own.txt`;
+      const ran = kind === "OS" ? underSandbox(script, fence, NO_GRANTS, { cwd: source })
+        : underCodex(script, fence, true, NO_GRANTS, { cwd: source, codexHome: join(root, "codex-home") });
+      expect(ran.stdout.trim().split("\n"), ran.stderr).toEqual(["denied", "own"]);
+      expect(readFileSync(config, "utf8")).toBe(before);
+    } finally { view.dispose(); }
+  });
+
   test("attack (installed git): a read of a blob the partial clone lacks never fetches it, whatever the repository allows", () => {
     expect(() => objectsOf(["-C", partial], [missing], plain)).toThrow(/missing or unreadable|failed/);
     expect(holds(missing)).toBe(false);
