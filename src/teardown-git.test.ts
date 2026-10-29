@@ -162,10 +162,7 @@ describe("the plane's git on a build's checkout (checkoutGit)", () => {
   });
 });
 
-// Skipped inside the Mac release check only (owner's decision, 2026-10-29): it hung for 90 s in release checks 3267 and
-// 3268 while passing alone every time; GitHub CI still runs it on every commit. Root cause under investigation (branch
-// fix-sub-hang); remove this skip with that fix.
-test.skipIf(process.env["TOOLROLL_RELEASE_BUILD"] !== undefined)("checkoutGit's status never enters a submodule whose config would run a command", async () => {
+test("checkoutGit's status never enters a submodule whose config would run a command", async () => {
   const dir = mkdtempSync(join(tmpdir(), "so-checkout-sub-"));
   const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
   // Each setup step bounded: one that stalls fails here, naming its command, instead of as the test's own timeout.

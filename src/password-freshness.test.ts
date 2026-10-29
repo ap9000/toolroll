@@ -489,7 +489,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/pull-request-flow.ts#mergeAsPerson@22": 1,
     "src/release-cli.ts#<module>": 2,
     // Auto-approve green: `release publish-ok`, a person's step-up (reviewed new site).
-    "src/release-cli.ts#runAuthorityCommand@7": 3,
+    "src/release-cli.ts#runAuthorityCommand@9": 3,
     "src/scope.ts#approve@46>store.transact(_)@1": 1,
     "src/scope.ts#authenticateApprover@42": 1,
     "src/serve.ts#createDecisionServer@1": 3,
@@ -572,12 +572,21 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/serve.ts#createDecisionServer@1>freshFactsOf@53": 1,
   },
   "credentialHash": {
+    // Deploy robustness (runner-process.ts): a digest of the runner's own stored hash names the incarnation in the
+    // process record, and `up` compares its own token's hash to confirm the registration is still its own. Neither
+    // authenticates anyone; a proof only retires a holder whose every process has exited (reviewed new sites).
+    "src/operate.ts#recordRunnerProcess@186": 2,
+    "src/operate.ts#upCommand@68": 1,
+    "src/operate.ts#upCommand@68>roleSpawned@22": 1,
+    "src/runner-process.ts#credentialDigest@2": 2,
+    "src/runner-process.ts#holderProvedGone@10": 2,
     "src/runner.ts#authenticate@3": 1,
+    "src/runner.ts#registerRunnerIfIdle@10": 1,
     "src/scope.ts#authenticateAccount@32": 1,
     "src/server/people-tokens.ts#createPeopleHandlers@2>joinSend@17": 1,
     "src/store.ts#Store.accountOf@148": 2,
-    "src/store.ts#Store.bootstrapApproverIfNone@875": 1,
-    "src/store.ts#Store.bootstrapApproverIfNone@875>transact(_)@1": 1,
+    "src/store.ts#Store.bootstrapApproverIfNone@876": 1,
+    "src/store.ts#Store.bootstrapApproverIfNone@876>transact(_)@1": 1,
     "src/store.ts#Store.consumeInviteAndCreateAccount@202": 1,
     "src/store.ts#Store.consumeInviteAndCreateAccount@202>transact(_)@1": 1,
     "src/store.ts#Store.getRunner@235": 2,
@@ -592,7 +601,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#<module>": 1,
     "src/store.ts#Store.accountOf@148": 2,
     "src/store.ts#Store.approverHash@157": 2,
-    "src/store.ts#Store.bootstrapApproverIfNone@875>transact(_)@1": 1,
+    "src/store.ts#Store.bootstrapApproverIfNone@876>transact(_)@1": 1,
     "src/store.ts#Store.consumeInviteAndCreateAccount@202>transact(_)@1": 1,
     "src/store.ts#Store.getRunner@235": 1,
     "src/store.ts#Store.saveApprover@147>once(mutation,saveApprover,_)@1>transact(_)@1": 1,
@@ -658,7 +667,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/release-cli.ts#runReleaseCommand@3": 1,
     "src/release-gate.ts#releaseGate@5": 11,
     "src/release.ts#<module>": 1,
-    "src/release.ts#runRelease@13": 1,
+    "src/release.ts#runRelease@14": 2,
     "src/restart-certification.ts#verifyRestartRecovery@6": 4,
     "src/run-closeout.ts#closeOutCheckouts@11": 4,
     "src/runner.ts#recoverDead@17>recovery:store.transact(_)@1": 3,
@@ -684,7 +693,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/store.ts#Store.ledgerChain@176": 1,
     "src/store.ts#Store.ledgerChain@176>recent@1": 2,
     "src/store.ts#Store.recordApprovalVote@171": 2,
-    "src/store.ts#Store.seedPushPairs@1007": 2,
+    "src/store.ts#Store.seedPushPairs@1008": 2,
     "src/store.ts#initializeStore@41": 3,
     "src/telegram-flow.ts#applyFlowReply@16": 3,
     "src/telegram-lead.ts#applyProposalTap@8": 2,
@@ -907,7 +916,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/flows-cli.ts#runFlowsCommand@3": 1,
     // Auto-approve green: `release auto-approve on`, a password typed now (reviewed new site).
     "src/release-cli.ts#<module>": 2,
-    "src/release-cli.ts#runAuthorityCommand@7": 1,
+    "src/release-cli.ts#runAuthorityCommand@9": 1,
   },
   passwordlessSessionFor: {
     "src/chat-actions.ts#<module>": 2,
