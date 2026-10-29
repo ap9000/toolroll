@@ -355,8 +355,16 @@ export function partEnding(one) {
     + `timed out ${yes(one.timedOut)}, stopped ${yes(one.stopped)}${one.spawnFailed ? ", could not start" : ""}, took ${took(one.ms)}`;
 }
 /**
+ * The tag that starts each streamed line of a part: `<part> | `. Never `[flows] ` or `[app] `: a plane's live progress
+ * reader (src/check-progress.ts, every plane up to 0.9.76) reads a line starting `[flows]`/`[app]` (or `flows:`/`app:`)
+ * as one journey's own words, so a part's tagged group lines (`[app] [console] [app] PASS …`) counted every group's
+ * journeys against the first group's total, the snapshot no longer verified, and a 0.9.76 plane's builder threw before
+ * it stored the check's log, report or receipt (release check 3264: "unavailable", nothing saved).
+ */
+export const partTag = label => `${label} | `;
+/**
  * Runs the check's parts. Every part's output reaches the check's stdout as it arrives, each line tagged with its part
- * (`[unit] …`), so whatever stops the check — the plane's limit, a signal, a crash — the plane already holds every
+ * (`unit | …`, partTag), so whatever stops the check — the plane's limit, a signal, a crash — the plane already holds every
  * part's latest lines (release check 3261 was ended at five minutes with nothing but its header stored: each part's
  * output was only printed once the whole check finished). As each part ends, one line on stderr records its start, exit
  * code, signal, timeout and cancellation apart, and a failed part's log follows at once (written synchronously, so an
@@ -385,7 +393,7 @@ export function partRunner(dir, { timeoutMs = PART_MS, graceMs = 15_000, failFas
   };
   const run = (label, command, argv, env = {}, onResult = null) => {
     let partial = "", pending = "";
-    const tag = `[${label}] `;
+    const tag = partTag(label);
     const streamLines = (lines) => { if (lines.length > 0) { try { stream(lines.map(line => `${tag}${line}\n`).join("")); } catch { /* the reader is gone */ } } };
     running.add(label);
     return runSuite({ command, args: argv, env: { TOOLROLL_CHECK_GATE: undefined, ...env },

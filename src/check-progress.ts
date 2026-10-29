@@ -108,7 +108,9 @@ export class CheckProgressTracker {
   private readonly events = new Set<string>();
   private last = "";
   private recognized = false;
-  private parallel: ParallelRun | null = null;
+  /** Each part's parallel journey run (scripts/e2e-parallel.mjs), by its release-check tag ("" for untagged output):
+   * the scripted flows and app parts run at once, so one shared run would mix their groups. */
+  private readonly parallels = new Map<string, ParallelRun>();
 
   constructor(private readonly update: (snapshot: CheckProgressSnapshot) => void) {}
 
@@ -145,7 +147,9 @@ export class CheckProgressTracker {
   private emit(final = false, force = false): CheckProgressSnapshot {
     const snapshot = this.snapshot(final);
     const identity = JSON.stringify(snapshot);
-    if (force || identity !== this.last) {
+    // Live progress is advisory: a snapshot the store would refuse (output read in a way that counted past a total) is
+    // never handed on, so reading output can't break the check that prints it (release check 3264).
+    if ((force || identity !== this.last) && parseCheckProgressSnapshot(identity) !== null) {
       this.last = identity;
       this.update(snapshot);
     }
@@ -153,7 +157,15 @@ export class CheckProgressTracker {
   }
 
   private read(raw: string): void {
-    const line = cleanLine(raw);
+    const cleaned = cleanLine(raw);
+    if (cleaned === "") return;
+    // scripts/release-check.mjs streams each part's lines as they come, tagged `<part> | ` (partTag). The unit part and
+    // the scripted journeys are read as their own output; the other parts (the build, the real-model journeys, the
+    // upgrade path) count toward no suite here.
+    const tagged = /^(typecheck|build|unit|flows|app|flows-real|app-real|upgrade) \| ?(.*)$/.exec(cleaned);
+    if (tagged !== null && !["unit", "flows", "app"].includes(tagged[1]!)) return;
+    const key = tagged === null ? "" : tagged[1]!;
+    const line = tagged === null ? cleaned : tagged[2]!.trim();
     if (line === "") return;
 
     const testFiles = /\bTest Files\b(.+)$/.exec(line);
@@ -169,6 +181,8 @@ export class CheckProgressTracker {
       }
       return;
     }
+    // The unit part speaks only through its Vitest summary; a test's own print is never a journey's.
+    if (key === "unit") return;
 
     // scripts/e2e-parallel.mjs: "Running 7 groups, at most 4 at once (12.0 GB available, about 400 MB each): console,
     // task, …" (before: "Running 7 groups at once: …"), then every group's lines as "[group] [app] …", then
@@ -177,10 +191,10 @@ export class CheckProgressTracker {
     if (starting !== null) {
       const total = safeCount(starting[1]);
       const names = starting[2]!.split(",").map(one => one.trim()).filter(one => one !== "");
-      if (total !== null && names.length === total) this.parallel = { suite: null, total, groups: new Map(names.map(one => [one, emptyGroup()])) };
+      if (total !== null && names.length === total) this.parallels.set(key, { suite: null, total, groups: new Map(names.map(one => [one, emptyGroup()])) });
       return;
     }
-    const parallel = this.parallel;
+    const parallel = this.parallels.get(key) ?? null;
     if (parallel !== null) {
       const exited = /^(✅|❌)\s+(\S+)\s+[0-9.]+ min$/.exec(line);
       const group = exited === null ? undefined : parallel.groups.get(exited[2]!);
@@ -193,7 +207,7 @@ export class CheckProgressTracker {
       if (summary !== null && parallel.suite !== null && safeCount(summary[2]) === parallel.total) {
         const passed = safeCount(summary[1]) ?? 0;
         this.summarize(parallel, passed === parallel.total);
-        this.parallel = null;
+        this.parallels.delete(key);
         return;
       }
     }

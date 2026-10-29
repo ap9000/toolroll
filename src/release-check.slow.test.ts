@@ -567,11 +567,11 @@ describe("release check speed without weakening checks", () => {
       let seen = false;
       const killed = parts.run("unit", process.execPath, ["-e", "console.log('first line'); process.stdout.write('dots···'); setTimeout(() => process.kill(process.pid, 'SIGKILL'), 300)"]);
       // Before the part ends, its first line is already out.
-      for (let n = 0; n < 100 && !seen; n++) { await new Promise(done => setTimeout(done, 20)); seen = streamed.join("").includes("[unit] first line\n"); }
+      for (let n = 0; n < 100 && !seen; n++) { await new Promise(done => setTimeout(done, 20)); seen = streamed.join("").includes("unit | first line\n"); }
       expect(seen).toBe(true);
       const ended = await killed;
       expect(ended).toMatchObject({ code: 137, signal: "SIGKILL", timedOut: false, stopped: false, cancelled: false });
-      expect(streamed.join("")).toContain("[unit] dots···\n");
+      expect(streamed.join("")).toContain("unit | dots···\n");
       expect(parts.failure()).toBe("unit: exit 137 (ended by SIGKILL)");
       expect(said).toContainEqual(expect.stringMatching(/^== unit ended: started \d{4}-\d\d-\d\dT[^,]+, exit 137, signal SIGKILL, timed out no, stopped no, took \d+ s$/));
       expect(said).toContainEqual(expect.stringContaining("== unit failed (exit 137, ended by SIGKILL)"));

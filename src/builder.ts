@@ -2293,11 +2293,15 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
       try {
         store.setRunPhase(request.runId, "verifying-proof");
         await settleProof(captured, diffEvidence.statId, head);
-      } catch {
+      } catch (error) {
         // Adjudication itself must never fail the attempt — if even the
         // catch-all inside settleProof somehow throws, the build still
         // stands; the run simply has no verdict, which every surface
-        // treats the same as "no proof was written".
+        // treats the same as "no proof was written". It is said, though:
+        // release check 3264 ended with no log and no word why.
+        try {
+          store.addRunNote(request.runId, "Toolroll", `The check's result could not be saved: ${error instanceof Error ? error.message : String(error)}`.slice(0, 500), clock());
+        } catch { /* the missing verdict still says enough */ }
       }
     }
   }
@@ -2712,8 +2716,10 @@ async function settleProof(
       }
       if (checkAttempt !== null && decision.mode === "targeted") store.addRunNote(runId, "Toolroll", `Re-running only what failed at run #${decision.plan.base}: ${decision.plan.units.length} unit files, ${decision.plan.groups.reduce((n, one) => n + one.groups.length, 0)} journey groups, ${decision.plan.versions.length} upgrade versions${decision.plan.parts.length > 0 ? `, and in full: ${decision.plan.parts.join(", ")}` : ""}.`, now());
     } else checkAttempt = null;
+    // Live progress is advisory: a snapshot that can't be saved never stops the check's log, report and receipt from
+    // being sealed (release check 3264 lost all three to one refused progress snapshot).
     const checkProgress = new CheckProgressTracker(snapshot => {
-      store.saveCheckProgress(runId, snapshot, now());
+      try { store.saveCheckProgress(runId, snapshot, now()); } catch { /* the next snapshot, or the sealed check, says it */ }
     });
     const runVerification = async (label: string, missing: string | null = null): Promise<ExecResult> => {
       const streamed = { stdout: false, stderr: false };

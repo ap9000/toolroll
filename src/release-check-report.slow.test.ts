@@ -179,12 +179,12 @@ describe("the release check's report (phase A)", () => {
     child.stdout.on("data", chunk => { stdout += chunk; });
     child.stderr.on("data", chunk => { stderr += chunk; });
     const closed = new Promise<number | null>(done => child.on("close", (_code, signal) => done(signal === null ? 0 : 1)));
-    for (let n = 0; n < 600 && !(stdout.includes("[flows] flows: waiting on the worker") && stdout.includes("[app] app: waiting on the worker")); n++) await new Promise(done => setTimeout(done, 100));
+    for (let n = 0; n < 600 && !(stdout.includes("flows | flows: waiting on the worker") && stdout.includes("app | app: waiting on the worker")); n++) await new Promise(done => setTimeout(done, 100));
     process.kill(-child.pid!, "SIGKILL");
     await closed;
-    expect(stdout).toContain("[flows] flows: step one done\n");
-    expect(stdout).toContain("[flows] flows: waiting on the worker\n");
-    expect(stdout).toContain("[app] app: waiting on the worker\n");
+    expect(stdout).toContain("flows | flows: step one done\n");
+    expect(stdout).toContain("flows | flows: waiting on the worker\n");
+    expect(stdout).toContain("app | app: waiting on the worker\n");
     // The parts that had ended said so, each fact apart.
     expect(stderr).toMatch(/== typecheck ended: started [^,]+, exit 0, signal none, timed out no, stopped no/);
     expect(reportFromOutput(stdout, nonce).ok).toBe(false);
