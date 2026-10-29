@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- **CI finishes in about a third of the time.** The unit suite runs in four
+  shards per Node version instead of one 14–21 minute job. The required
+  checks keep their names ("node 22 · ubuntu-latest", "node 24 ·
+  ubuntu-latest") and pass only when every shard passed on the tested commit
+  and the shards together ran every test file once, so main's branch
+  protection needs no change. A flaky shard reruns in minutes, not twenty.
+- **The release check's real-model journeys start sooner.** They run in the
+  browser lanes as soon as the scripted journeys end, instead of also waiting
+  for the unit suite; the check's load budget is unchanged.
+- **An automatic release checks while CI runs.** With "Approve automatically
+  when checks pass" on, the release files its task and runs its check beside
+  CI instead of after it. Nothing is approved, by Toolroll or a person, before
+  every pull request check passed on the commit; a person is still asked only
+  once CI passed.
+
 ## 0.9.77 — 2026-10-29
 
 - **A renamed or dropped CI job no longer hides its failure.** Every failed
