@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+- **A deploy no longer gets stuck behind an `up` that won't stop.** When the
+  old service's processes outlive their stop (a supervisor that exited while
+  its `up` ignored SIGTERM), the deployment stops them itself, but only
+  processes proved, by exact runtime path and arguments, to be that service's
+  supervisor, `up` or console and worker. Anything it can't prove refuses and
+  nothing is signalled.
+- **A killed `up` no longer blocks the next start for three minutes.** `up`
+  records each process it gives its worker credential to. A new start that
+  proves every one of them has exited signs the old worker off and takes over
+  at once; a second live `up` is still refused.
+- **`up` signs off however it is stopped.** SIGTERM, Ctrl-C, its supervisor
+  dying or its channel closing all end with the worker retired. A stop that
+  hangs past the worker's grace stops the console and worker outright
+  instead of waiting for launchd to kill it.
+- **Deployments wait long enough, and say why.** Restoring the previous
+  service, starting the new one and waiting for its project leases now allow
+  four minutes (past a stale worker heartbeat's three) and name what they are
+  waiting for. "Current work must finish first" now says what is running and
+  what to do.
+- **One command puts back a deployment that stopped half way.**
+  `toolroll release --recover-deploy` shows what recovery will do for the
+  unfinished deployment; `--yes` does it: stops only that service's proved
+  leftovers, starts the previous service again and lifts the update pause.
+  It is safe to run again.
+
 ## 0.9.77 — 2026-10-29
 
 - **CI finishes in about a third of the time.** The unit suite runs in four

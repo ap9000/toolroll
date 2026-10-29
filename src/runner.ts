@@ -274,13 +274,34 @@ export function normalizeRunnerName(raw: string): string {
  */
 export function registerRunnerIfIdle(
   store: Store,
-  options: RegisterOptions,
+  options: RegisterOptions & {
+    /**
+     * Whether the name's current holder is proved gone (runner-process.ts): every process it handed its credential to
+     * has exited, verified by identity. Asked only while the holder still blocks the name, inside this transaction;
+     * a proof retires that holder and lapses its watch leases here, so a stale heartbeat never outlives its processes.
+     */
+    previousGone?: (holder: { runner: Runner; credentialHash: string }) => { gone: true; detail: string } | { gone: false; why: string };
+  },
 ):
-  | (Registration & { ok: true; recoveredRuns: number })
+  | (Registration & { ok: true; recoveredRuns: number; signedOff: string | null })
   | { ok: false; reason: "runner-alive" | "watch-live"; detail: string } {
-  const { name, now } = options;
+  const { name, now, previousGone, ...registration } = options;
   return store.transact(() => {
-    const existing = store.getRunner(name);
+    let existing = store.getRunner(name);
+    // The protection against two live holders stands: only a holder whose every process is proved gone is signed off.
+    let signedOff: string | null = null;
+    const blocked = existing !== null && ((existing.runner.retiredAt === null && isAlive(existing.runner, now)) || store.liveWatchLeaseOf(name, now) !== null);
+    if (blocked && existing !== null && previousGone !== undefined) {
+      const proof = previousGone(existing);
+      if (proof.gone) {
+        store.retireRunner(name, now);
+        store.expireWatchLeasesOf(name, now);
+        store.recordAction({ at: now.toISOString(), actor: "toolroll up", repo: null, taskId: null, runId: null,
+          action: "worker signed off", outcome: "processes proved gone", source: "policy", detail: proof.detail });
+        signedOff = proof.detail;
+        existing = store.getRunner(name);
+      }
+    }
     if (existing !== null && existing.runner.retiredAt === null && isAlive(existing.runner, now)) {
       return {
         ok: false as const,
@@ -301,8 +322,8 @@ export function registerRunnerIfIdle(
     // otherwise hide it from every later recovery.
     const recoveredRuns = existing === null ? 0 : store.recoverRunnerWork(name, now).runs.length;
     // A restart keeps the capacity an operator set; only an explicit one changes it.
-    const registration = register(store, { ...options, capacity: options.capacity ?? existing?.runner.capacity ?? 1 });
-    return { ok: true as const, ...registration, recoveredRuns };
+    const registered = register(store, { ...registration, name, now, capacity: options.capacity ?? existing?.runner.capacity ?? 1 });
+    return { ok: true as const, ...registered, recoveredRuns, signedOff };
   });
 }
 

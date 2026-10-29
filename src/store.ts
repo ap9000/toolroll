@@ -20806,6 +20806,13 @@ export class Store {
       .run(now.toISOString(), runner, repo, owner);
   }
 
+  /** Lapse every watch lease a runner holds now: its holder was proved gone (runner.ts registerRunnerIfIdle). The rows
+   * stay, so the next acquire takes them over and recovers the superseded incarnation as after any crash. */
+  expireWatchLeasesOf(runner: string, now: Date): number {
+    const stamp = now.toISOString();
+    return Number(this.db.prepare("UPDATE watch_lease SET expires_at = ? WHERE runner = ? AND expires_at > ?").run(stamp, runner, stamp).changes);
+  }
+
   /** The first still-unexpired watch lease this runner holds, if any (arc 2:
    * the takeover door refuses while one exists). */
   liveWatchLeaseOf(runner: string, now: Date): { repo: string; owner: string; until: string } | null {

@@ -113,6 +113,60 @@ describe("registerRunnerIfIdle — the atomic take-or-refuse door", () => {
   });
 });
 
+describe("registerRunnerIfIdle — a holder proved gone signs off (2026-10-29 deploy)", () => {
+  /** A holder `up` killed outright: fresh heartbeat, live lease, an open run. */
+  const killedHolder = () => {
+    const first = register(store, { name: "w-1", host: "here", repos: [REPO], now: T0 });
+    store.acquireWatchLease("w-1", REPO, "inc-a", 90_000, later(1_000));
+    store.createTask({ id: "t-k", title: "in flight when killed" }, T0);
+    const ref = store.refFor("built-in", "t-k").id;
+    store.placeTask(ref, REPO);
+    acquire(store, ref, "w-1", { token: first.token, now: T0, ttlMs: 60_000, newLeaseId: () => "lease-k", incarnation: "inc-a" });
+    store.setTaskState("t-k", "running", T0);
+    const runId = store.startRun({ taskRef: ref, leaseId: "lease-k", runner: "w-1", branch: "b", worktree: "/w", ...bareLegacy("build", "claude", null), now: T0 });
+    return { first, runId };
+  };
+
+  test("the holder's processes proved gone: retired, its lease lapsed and its work recovered in the same door", () => {
+    const { first, runId } = killedHolder();
+    const asked: string[] = [];
+    const taken = registerRunnerIfIdle(store, { name: "w-1", host: "here", repos: [REPO], now: later(2_000),
+      previousGone: holder => { asked.push(`${holder.runner.name}@${holder.runner.registeredAt}`); return { gone: true, detail: "w-1: process 4242 (up) proved gone" }; } });
+    expect(taken).toMatchObject({ ok: true, signedOff: "w-1: process 4242 (up) proved gone" });
+    if (!taken.ok) return;
+    expect(asked).toEqual([`w-1@${first.runner.registeredAt}`]);
+    expect(taken.recoveredRuns).toBeGreaterThan(0);
+    expect(store.getRun(runId)).toMatchObject({ outcome: "failed", reason: "interrupted" });
+    expect(heartbeat(store, "w-1", first.token, later(2_000))).toMatchObject({ ok: false, reason: "bad-token" });
+    expect(store.liveWatchLeaseOf("w-1", later(2_000))).toBeNull();
+    // The lapsed lease is taken over like any crashed one: the superseded incarnation is recovered.
+    expect(acquireWatchLeaseAuthed(store, { runner: "w-1", token: taken.token, repo: REPO, owner: "inc-b", ttlMs: 90_000 }, later(3_000)))
+      .toMatchObject({ ok: true, superseded: "inc-a" });
+    expect(store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE action = 'worker signed off'").get())
+      .toEqual({ outcome: "processes proved gone", detail: "w-1: process 4242 (up) proved gone" });
+  });
+
+  test("two live holders stay impossible: an unproved holder still refuses, and nothing changes", () => {
+    const { first } = killedHolder();
+    for (const proof of [{ gone: false as const, why: "process 4242 is still running" }]) {
+      expect(registerRunnerIfIdle(store, { name: "w-1", host: "here", now: later(2_000), previousGone: () => proof }))
+        .toMatchObject({ ok: false, reason: "runner-alive" });
+    }
+    // Without a proof function the door is exactly as before.
+    expect(registerRunnerIfIdle(store, { name: "w-1", host: "here", now: later(2_000) })).toMatchObject({ ok: false, reason: "runner-alive" });
+    expect(heartbeat(store, "w-1", first.token, later(2_000))).toMatchObject({ ok: true });
+    expect(store.liveWatchLeaseOf("w-1", later(2_000))).not.toBeNull();
+  });
+
+  test("the proof is asked only while the holder blocks the name", () => {
+    register(store, { name: "w-1", host: "here", now: T0 });
+    let asked = 0;
+    expect(registerRunnerIfIdle(store, { name: "w-1", host: "here", now: DEAD, previousGone: () => { asked++; return { gone: true, detail: "x" }; } }))
+      .toMatchObject({ ok: true, signedOff: null });
+    expect(asked).toBe(0);
+  });
+});
+
 describe("authenticated heartbeats and leases", () => {
   test("the lease door refuses a stale credential after rotation", () => {
     const first = register(store, { name: "w-1", host: "here", repos: ["/repo"], now: T0 });

@@ -262,7 +262,11 @@ import {
   RUNNER_NAME_MAX,
   RUNNER_CAPACITY_MAX,
   parseRunnerCapacity,
+  hashToken as hashRunnerToken,
+  type Runner as RunnerRow,
 } from "./runner.js";
+import { credentialDigest, holderProvedGone, processGone, processStart, readRunnerProcessRecord, runnerProcessFile, writeRunnerProcessRecord, type RunnerProcessRecord, type RunnerProcessRole } from "./runner-process.js";
+import { stopProcessTree } from "./process-tree.js";
 import { mintCoordinator, revokeCoordinator, listCoordinators } from "./coordinator.js";
 import { serveMcp } from "./mcp.js";
 import { createInterface } from "node:readline";
@@ -7643,11 +7647,18 @@ async function upCommand(
       // The runner's authority is BOUND to the canonical roots this up
       // serves (MCP spec v6): the claim gate enforces membership, so an
       // unbound registration would deny-all its own dispatches.
-      const answer = registerRunnerIfIdle(store, { name, host: hostname(), repos, now: clock() });
+      // A holder whose every process is proved gone (its record beside the database) no longer blocks the name: an
+      // `up` killed outright can't leave a fresh heartbeat in the way of the next start (the 2026-10-29 deploy).
+      const answer = registerRunnerIfIdle(store, { name, host: hostname(), repos, now: clock(),
+        previousGone: holder => holderProvedGone(readRunnerProcessRecord(runnerProcessFile(context.databaseFile, name)), holder, hostname()) });
       if (answer.ok) {
         runnerName = name;
         runnerToken = answer.token;
+        if (answer.signedOff !== null) progress(`signed off the previous ${name}: its processes had already exited`);
         if (answer.recoveredRuns > 0) progress(`recovered ${answer.recoveredRuns} interrupted attempt(s) left by the previous ${name}`);
+        // Every process given this credential is recorded (pid and start time) before it gets it: this one now, each
+        // role child as it is spawned. A later start proves them gone by this record.
+        recordRunnerProcess(context.databaseFile, { runner: answer.runner, credentialHash: hashRunnerToken(answer.token) }, "up", process.pid);
         doorAnswer = answer;
         break;
       }
@@ -7702,6 +7713,13 @@ async function upCommand(
   let currentRepos: string[] = [...repos];
   let consoleRole: UpRoleHandle | null = null;
   let workerRole: UpRoleHandle | null = null;
+  // A stop that can't finish (a role that ignores its stop, a drain that hangs) still signs off: past the worker's own
+  // drain bound and a margin, both roles' process trees are stopped outright, the runner is retired, and `up` ends. A
+  // service's launchd window (ExitTimeOut 60 s, controller-service's 55 s) is longer than this at the default grace.
+  let resolveForced: () => void = () => {};
+  const forced = new Promise<void>(resolveForce => (resolveForced = resolveForce));
+  let forceTimer: ReturnType<typeof setTimeout> | undefined;
+  const stopDeadlineMs = Math.max(1, stopGraceMs) + 20_000;
   const stop = (): void => {
     if (stopping) {
       workerRole?.hardStop();
@@ -7709,6 +7727,13 @@ async function upCommand(
     }
     stopping = true;
     resolveStopped();
+    forceTimer = setTimeout(() => {
+      fatal ??= `stopping took longer than ${Math.round(stopDeadlineMs / 1000)} s; its console and worker were stopped outright`;
+      workerRole?.kill();
+      consoleRole?.kill();
+      resolveForced();
+    }, stopDeadlineMs);
+    forceTimer.unref?.();
     // The coding owner record is released first, whatever else is still finishing: launchd kills a service that
     // outlasts its exit window, and a killed process cannot release it. The console keeps serving until the end.
     consoleRole?.send({ type: "stopping" });
@@ -7716,12 +7741,27 @@ async function upCommand(
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
+  // The process that started `up` gone (its service supervisor killed, or the IPC parent that ran it): nobody is left to
+  // forward a stop, so `up` stops itself — it drains, retires its runner and ends instead of running on as an orphan.
+  let parentGone = false;
+  const parentAtStart = process.ppid;
+  const parentWatch = context.upSeams === undefined && parentAtStart > 1 ? setInterval(() => {
+    if (process.ppid === parentAtStart || parentGone) return;
+    parentGone = true;
+    progress("the process that started Toolroll is gone; stopping");
+    stop();
+  }, 1_000) : undefined;
+  parentWatch?.unref?.();
+  const onDisconnect = (): void => { if (!parentGone) { parentGone = true; progress("the process that started Toolroll closed its channel; stopping"); stop(); } };
+  if (context.upSeams === undefined && process.channel !== undefined && process.channel !== null) process.once("disconnect", onDisconnect);
   // A log (a service, an agent, --json or --verbose) says whose each line is; a person at a terminal reads plain lines.
   const labelled = split && (json || flags.has("verbose") || !(context.upSeams?.terminal ?? process.stdout.isTTY === true));
   const roleLine = (role: UpRoleName) => (line: string): void => progress(labelled ? `[${role}] ${line}` : line);
   const dropSignals = (): void => {
     process.removeListener("SIGINT", stop);
     process.removeListener("SIGTERM", stop);
+    process.removeListener("disconnect", onDisconnect);
+    if (parentWatch !== undefined) clearInterval(parentWatch);
   };
 
   const consoleConfig: UpConsoleConfig = {
@@ -7730,8 +7770,12 @@ async function upCommand(
   };
   const pendingLinks = new Map<number, (link: string | null) => void>();
   let linkRequests = 0;
+  const roleSpawned = (role: RunnerProcessRole, pid: number): void => {
+    const held = store.getRunner(runnerName);
+    if (held !== null && held.credentialHash === hashRunnerToken(runnerToken)) recordRunnerProcess(context.databaseFile, held, role, pid);
+  };
   consoleRole = startUpRole({
-    role: "console", split, context, build, shutdownMs: 15_000,
+    role: "console", split, context, build, shutdownMs: 15_000, onSpawned: pid => roleSpawned("console", pid),
     start: () => ({ type: "start", role: "console", databaseFile: context.databaseFile, containment: containmentFlag, build, config: { ...consoleConfig, repos: [...currentRepos] } }),
     onMessage: message => {
       if (message.type === "log") roleLine("console")(message.line);
@@ -7755,7 +7799,7 @@ async function upCommand(
 
   if (!stopping) {
     workerRole = startUpRole({
-      role: "worker", split, context, build,
+      role: "worker", split, context, build, onSpawned: pid => roleSpawned("worker", pid),
       // The worker drains its builds for the stop grace, then stops them; past that it is stopped outright.
       shutdownMs: Math.max(1, stopGraceMs) + 15_000,
       start: generation => ({
@@ -7878,13 +7922,16 @@ async function upCommand(
   // 10. Supervise to the end: the worker drains first (its builds finish or are saved), the builder retires, and
   // only then does the console stop serving.
   await stopped;
-  if (workerRole !== null) await workerRole.done;
+  if (workerRole !== null) await Promise.race([workerRole.done, forced]);
   clearInterval(runnerHeartbeat);
   if (runTimer !== undefined) clearTimeout(runTimer);
   dropSignals();
   retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
   consoleRole.stop();
-  const closed = await consoleRole.done;
+  const closed = await Promise.race([consoleRole.done, forced.then(() => ({ problem: null }))]);
+  if (forceTimer !== undefined) clearTimeout(forceTimer);
+  // With nobody left to wait for it, `up` ends once it has signed off, whatever handle lingers.
+  if (parentGone) setTimeout(() => process.exit(fatal === null ? EXIT.ok : EXIT.failed), 1_000).unref?.();
   // A live terminal that couldn't be proved stopped (or any other close failure) is said, never "stopped".
   if (closed.problem !== null && fatal === null) fatal = closed.problem;
 
@@ -12127,6 +12174,26 @@ function upNeedsOneProcess(options: OperateOptions): boolean {
 }
 
 /** The entry a role child runs: the built sibling when installed, the TypeScript source through tsx in a checkout. */
+/**
+ * Add one process to the record of who holds this runner's credential (runner-process.ts), replacing that role's
+ * earlier processes once they are gone. Best effort: without a record a later start only waits out the heartbeat.
+ */
+function recordRunnerProcess(databaseFile: string, holder: { runner: RunnerRow; credentialHash: string }, role: RunnerProcessRole, pid: number): void {
+  try {
+    const started = processStart(pid);
+    if (started === null) return;
+    const file = runnerProcessFile(databaseFile, holder.runner.name);
+    const credential = credentialDigest(holder.credentialHash);
+    const current = readRunnerProcessRecord(file);
+    const same = current !== null && current.runner === holder.runner.name && current.registeredAt === holder.runner.registeredAt && current.credential === credential;
+    // A role's replaced generations leave the record only once proved gone; a start the record can't name stays out.
+    const kept = same ? current.processes.filter(one => one.role !== role || !processGone(one)) : [];
+    const record: RunnerProcessRecord = { v: 1, runner: holder.runner.name, host: holder.runner.host, registeredAt: holder.runner.registeredAt, credential,
+      processes: [...kept.filter(one => one.pid !== pid), { pid, role, started }].slice(-32) };
+    writeRunnerProcessRecord(file, record);
+  } catch { /* best effort: no record proves nothing, and the door then waits as before */ }
+}
+
 function upRoleChildCommand(role: UpRoleName): { file: string; argv: string[] } {
   const source = import.meta.url.endsWith(".ts");
   const entry = fileURLToPath(new URL(source ? "./up-role-child.ts" : "./up-role-child.js", import.meta.url));
@@ -12144,6 +12211,8 @@ type UpRoleHandle = {
   stop: () => void;
   /** The second signal: stop its builds now. */
   hardStop: () => void;
+  /** A stop that ran past its deadline: the role's whole process tree is stopped now, and nothing restarts it. */
+  kill: () => void;
   /** The role ended for good: its own close problem, if it reported one. */
   done: Promise<{ problem: string | null }>;
   /** The live process's id (this process's when in-process). */
@@ -12166,6 +12235,8 @@ function startUpRole(args: {
   onMessage: (message: RoleToParent) => void;
   onReady: (message: Extract<RoleToParent, { type: "ready" }>, again: boolean) => void;
   onEnded: (detail: string, restarting: boolean) => void;
+  /** A role child was spawned with this pid, before its start (and any credential) is sent to it. */
+  onSpawned?: (pid: number) => void;
 }): UpRoleHandle {
   const { role } = args;
   let resolveReady: (value: UpRoleReady) => void = () => {};
@@ -12228,6 +12299,7 @@ function startUpRole(args: {
       send: message => channel.parent.send(message),
       stop: () => { stopping = true; channel.parent.stop(false); },
       hardStop: () => { channel.parent.stop(true); },
+      kill: () => { stopping = true; channel.parent.stop(true); },
       pid: () => livePid,
     };
   }
@@ -12246,6 +12318,9 @@ function startUpRole(args: {
       generations.spawned();
       owned.on("message", raw => receive(raw, () => controller.abort()));
       owned.on("error", () => {});
+      if (owned.pid !== undefined) {
+        try { args.onSpawned?.(owned.pid); } catch { /* the record only speeds up a later start; it never blocks this one */ }
+      }
       // The start, including the runner token for the worker, goes over the private channel only.
       owned.send(args.start(generation), error => { if (error !== null && error !== undefined) owned.kill("SIGTERM"); });
     },
@@ -12291,6 +12366,13 @@ function startUpRole(args: {
     hardStop: () => {
       const owned = child as ChildProcess | null;
       if (owned !== null && owned.connected) { try { owned.send({ type: "hard-stop" } satisfies ParentToRole, () => {}); } catch { /* ending */ } }
+    },
+    kill: () => {
+      stopping = true;
+      controller.abort();
+      const owned = child as ChildProcess | null;
+      // Only the still-owned ChildProcess is signalled, never a recorded pid.
+      if (owned !== null && owned.exitCode === null && owned.signalCode === null && !stopProcessTree(owned)) owned.kill("SIGKILL");
     },
     pid: () => livePid,
   };
