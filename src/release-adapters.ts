@@ -877,7 +877,8 @@ export async function readContains(run: Exec, gh: string, repo: string, sha: str
 /**
  * Main's protection, judged for the principal that merges (eval-harness review 2, finding 1; review 1, finding 4): the
  * plane's own gh, which merges as the same account. A layer holds only when it requires branches to be up to date, names
- * a non-empty set of required checks covering PROTECTION_MINIMUM_CHECKS, and can't be bypassed by that account:
+ * a non-empty set of required checks covering PROTECTION_MINIMUM_CHECKS, bound to GitHub Actions (app 15368), and
+ * can't be bypassed by that account:
  * classic protection with "Do not allow bypassing the above settings" (`enforce_admins`); an active ruleset whose
  * bypass list reads whole, names no role, team or organization admin, and says this account never bypasses it. Read
  * only — Toolroll never changes a repository's settings. A layer that can't be read never holds; null only when nothing
@@ -888,16 +889,18 @@ export async function readMainProtection(run: Exec, gh: string, repo: string, br
   const missing: string[] = [];
   const held: string[][] = [];
   let read = 0;
-  const judge = (where: string, strict: boolean, checks: string[], bypass: string[]): void => {
+  const judge = (where: string, strict: boolean, checks: string[], bound: string[], bypass: string[]): void => {
     const own: string[] = [];
     if (!strict) own.push(`${where}: "Require branches to be up to date before merging" is off`);
     if (checks.length === 0) own.push(`${where}: no required status checks`);
     else {
       const lacking = PROTECTION_MINIMUM_CHECKS.filter(name => !checks.includes(name));
       if (lacking.length > 0) own.push(`${where}: required checks lack ${lacking.join(", ")}`);
+      const unbound = PROTECTION_MINIMUM_CHECKS.filter(name => checks.includes(name) && !bound.includes(name));
+      if (unbound.length > 0) own.push(`${where}: required checks must require GitHub Actions (app 15368) as their source: ${unbound.join(", ")}`);
     }
     own.push(...bypass.map(why => `${where}: ${why}`));
-    if (own.length === 0) held.push(checks); else missing.push(...own);
+    if (own.length === 0) held.push(bound); else missing.push(...own);
   };
   const notProtected = (out: { stdout: string; stderr: string }) => /HTTP 404|Not Found|not protected|not enabled/i.test(`${out.stderr}\n${out.stdout}`);
   const names = (list: unknown, key: string): string[] | null => {
@@ -910,7 +913,9 @@ export async function readMainProtection(run: Exec, gh: string, repo: string, br
     }
     return out;
   };
-  // Classic branch protection, read whole.
+  const actionsChecks = (list: unknown, appKey: string): string[] => Array.isArray(list)
+    ? list.flatMap(one => { const check = object(one); return check[appKey] === 15368 && typeof check["context"] === "string" ? [check["context"]] : []; }) : [];
+  // Classic branch protection, read whole. Context names alone allow an arbitrary writer to supply their status.
   const classic = await run(gh, ["api", "--hostname", "github.com", `repos/${repo}/branches/${branch}/protection`], { cwd: "/", env: ciEnv() });
   if (classic.code === 0) {
     let answer: unknown = null;
@@ -924,7 +929,7 @@ export async function readMainProtection(run: Exec, gh: string, repo: string, br
       if (contexts === null || apps === null || typeof rsc["strict"] !== "boolean" || admins === undefined || admins === null || typeof object(admins)["enabled"] !== "boolean") missing.push("classic protection couldn't be read");
       else {
         read++;
-        judge("classic protection", rsc["strict"] === true, [...new Set([...contexts, ...apps])],
+        judge("classic protection", rsc["strict"] === true, [...new Set([...contexts, ...apps])], actionsChecks(rsc["checks"], "app_id"),
           object(admins)["enabled"] === true ? [] : ["\"Do not allow bypassing the above settings\" is off, so administrators can merge past it"]);
       }
     }
@@ -956,7 +961,7 @@ export async function readMainProtection(run: Exec, gh: string, repo: string, br
       if (!Array.isArray(actors)) bypass.push("its bypass list couldn't be read");
       // Only a deploy key never merges as this account; a role, team, app or organization admin might.
       else if (actors.some(one => object(one)["actor_type"] !== "DeployKey")) bypass.push("its bypass list names a role, team, app or organization admin");
-      judge(where, params["strict_required_status_checks_policy"] === true, checks, bypass);
+      judge(where, params["strict_required_status_checks_policy"] === true, checks, actionsChecks(params["required_status_checks"], "integration_id"), bypass);
     }
   }
   if (held.length > 0) {

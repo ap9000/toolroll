@@ -1002,13 +1002,19 @@ describe("codex r2 #1: main's protection holds only when it is effective and nob
 
   test("the live settings (classic, strict, the five checks, no bypassing) hold, and the git lanes not yet required are named", async () => {
     expect(await read(P.exec())).toEqual({ effective: true, missing: [], notYetRequired: [...PROTECTION_REPORT_ONLY_CHECKS] });
-    const all = { ...P.live(), required_status_checks: { strict: true, contexts: [...REQUIRED_PR_CHECKS], checks: [] } };
+    const all = { ...P.live(), required_status_checks: { strict: true, contexts: [...REQUIRED_PR_CHECKS], checks: REQUIRED_PR_CHECKS.map(context => ({ context, app_id: 15368 })) } };
     expect(await read(P.exec({ classic: P.json(all) }))).toEqual({ effective: true, missing: [], notYetRequired: [] });
     expect(PROTECTION_MINIMUM_CHECKS).toHaveLength(5);
   });
 
   test.each([
     ["strict with no required checks", (l: ReturnType<typeof P.live>) => ({ ...l, required_status_checks: { strict: true, contexts: [], checks: [] } }), /classic protection: no required status checks/],
+    ...[null, -1, 42, "15368", undefined].map(app_id => [
+      `a required check accepts source ${String(app_id)}`,
+      (l: ReturnType<typeof P.live>) => ({ ...l, required_status_checks: { ...l.required_status_checks, checks: l.required_status_checks.checks.map((check, i) => i === 0 ? { ...check, app_id } : check) } }),
+      /must require GitHub Actions/,
+    ] as const),
+    ["context names without app bindings", (l: ReturnType<typeof P.live>) => ({ ...l, required_status_checks: { ...l.required_status_checks, checks: [] } }), /must require GitHub Actions/],
     ["a minimum check missing", (l: ReturnType<typeof P.live>) => ({ ...l, required_status_checks: { strict: true, contexts: PROTECTION_MINIMUM_CHECKS.slice(1), checks: [] } }), /required checks lack node 22 · ubuntu-latest/],
     ["administrators exempt", (l: ReturnType<typeof P.live>) => ({ ...l, enforce_admins: { enabled: false } }), /"Do not allow bypassing the above settings" is off/],
     ["not up to date", (l: ReturnType<typeof P.live>) => ({ ...l, required_status_checks: { ...l.required_status_checks, strict: false } }), /"Require branches to be up to date before merging" is off/],
@@ -1022,6 +1028,11 @@ describe("codex r2 #1: main's protection holds only when it is effective and nob
 
   test.each([
     ["strict with zero required checks", () => P.rule(7, []), () => P.ruleset(), /ruleset 7: no required status checks/],
+    ...[null, -1, 42, "15368", undefined].map(integration_id => [
+      `a required check accepts source ${String(integration_id)}`,
+      () => { const rule = JSON.parse(P.rule(7, REQUIRED_PR_CHECKS)); rule.parameters.required_status_checks[0].integration_id = integration_id; return JSON.stringify(rule); },
+      () => P.ruleset(), /must require GitHub Actions/,
+    ] as const),
     ["not strict", () => P.rule(7, REQUIRED_PR_CHECKS, false), () => P.ruleset(), /up to date before merging" is off/],
     ["the merging account can bypass it", () => P.rule(7, REQUIRED_PR_CHECKS), () => P.ruleset({ current_user_can_bypass: "always" }), /can bypass it \(always\)/],
     ["bypass only on pull requests", () => P.rule(7, REQUIRED_PR_CHECKS), () => P.ruleset({ current_user_can_bypass: "pull_requests_only" }), /can bypass it/],

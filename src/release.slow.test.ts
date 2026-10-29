@@ -551,20 +551,21 @@ describe("toolroll release", () => {
     expect(s.pr.state).toBe("open");
   });
 
-  test("eval review 1 #4: a person's release without GitHub's up-to-date rule goes on, and says which setting", async () => {
+  test("eval review 1 #4: a person's release also refuses absent or unreadable protection", async () => {
     for (const upToDate of [false, null] as const) {
       const { s, adapters } = world();
       s.upToDate = upToDate;
-      expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
-      expect(s.said).toContainEqual(expect.stringContaining("Require branches to be up to date before merging"));
+      expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, reason: "base-unprotected" });
+      expect(s.calls).not.toContain("fileGate");
+      expect(s.calls).not.toContain("merge");
     }
   });
 
   test("eval review 2 #1: a person's release names exactly what main's protection lacks, and the git lanes it doesn't require yet", async () => {
     const { s, adapters } = world();
     s.protection = { effective: false, missing: ["classic protection: \"Do not allow bypassing the above settings\" is off, so administrators can merge past it"], notYetRequired: [] };
-    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
-    expect(s.said).toContainEqual(expect.stringContaining("main's protection doesn't hold: classic protection: \"Do not allow bypassing the above settings\" is off"));
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, reason: "base-unprotected", message: expect.stringContaining(s.protection.missing[0]!) });
+    expect(s.calls).not.toContain("merge");
     const held = world();
     held.s.protection = { effective: true, missing: [], notYetRequired: [...PROTECTION_REPORT_ONLY_CHECKS] };
     expect(await runRelease(options(stateDir()), held.adapters)).toMatchObject({ ok: true });
@@ -1544,8 +1545,8 @@ describe("toolroll release: approve automatically when checks pass", () => {
     expect(prChecksVerdict(rest, SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "pending" });
   });
 
-  test("eval review 1 #4: an automatic release doesn't merge once GitHub's up-to-date rule is off", async () => {
-    const { s, adapters } = autoWorld();
+  test.each([true, false])("eval review 1 #4: a release (automatic=%s) doesn't merge once protection stops holding", async automatic => {
+    const { s, adapters } = automatic ? autoWorld() : world();
     s.onSleep.push(state => { if (state.calls.includes("deploy")) state.upToDate = false; });
     s.upToDate = true;
     const at = adapters.github.upToDateRequired;

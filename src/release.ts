@@ -60,7 +60,7 @@ export const PROTECTION_REPORT_ONLY_CHECKS: readonly string[] = ["git 2.41 · de
 export const PROTECTION_MINIMUM_CHECKS: readonly string[] = REQUIRED_PR_CHECKS.filter(name => !PROTECTION_REPORT_ONLY_CHECKS.includes(name));
 /**
  * Main's protection as the plane's gh reads it (release-adapters.ts readMainProtection): `effective` only when one layer
- * (classic protection or one active ruleset) requires up-to-date branches, names every PROTECTION_MINIMUM_CHECKS check,
+ * (classic protection or one active ruleset) requires up-to-date branches, binds every PROTECTION_MINIMUM_CHECKS check to GitHub Actions,
  * and nobody merging as this gh can bypass it. `missing` names each absent property; `notYetRequired` the report-only
  * checks the effective layer doesn't name.
  */
@@ -967,8 +967,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             await pinned();
             // A squash merge only reproduces the gated (and CI-tested) tree when main hasn't moved past the branch's base.
             const main = await containsMain(adapters, j, "Nothing was merged");
-            // An automatic release merges only where GitHub itself refuses a branch behind main.
-            if (j.auto?.state === "approved") await mainProtection(adapters, j, true, "Nothing was merged");
+            // Every release merges only where GitHub itself refuses a branch behind main.
+            await mainProtection(adapters, j, j.auto?.state === "approved", "Nothing was merged");
             // The checks again, at the moment of merging: a rerun that failed since must not merge.
             const verdict = prChecksVerdict(await adapters.github.checks(j.github, j.candidate.sha), j.candidate.sha, REQUIRED_PR_CHECKS, autoCap());
             if (verdict.state !== "passed") await ciFailedAfterDeploy(`Pull request checks are no longer all passing on ${j.candidate.sha.slice(0, 7)}`);
@@ -1167,13 +1167,9 @@ async function containsMain(adapters: ReleaseAdapters, j: ReleaseJournal, nothin
   throw new Stop("base-moved", `The branch is behind main; update it and push. ${j.branch} at ${j.candidate.sha.slice(0, 7)} doesn't contain main's head ${main.slice(0, 7)}, so what merges wouldn't be the tree CI tested. ${nothing}: release the updated commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
 }
 
-/** The words a person's release says when GitHub doesn't itself refuse a merge of a branch behind main. */
-export const UP_TO_DATE_WARNING = "Without it, a main that moves in the moment before the merge isn't refused by GitHub itself (Settings → Branches → main's protection rule: \"Require status checks to pass before merging\" with the required checks, \"Require branches to be up to date before merging\", and \"Do not allow bypassing the above settings\"). Toolroll checks main again right before merging; those settings close the rest. Releases don't approve themselves until they are on.";
-
 /**
- * Whether GitHub refuses to merge a branch behind main (eval-harness review 1, finding 4): an automatic release stops
- * when it doesn't (its approval was sealed only with it on, and it must still be on at the merge); a person's release
- * is told plainly, once, and goes on.
+ * GitHub must refuse a branch behind main for every release (eval-harness review 1, finding 4). A person's approval
+ * cannot make the final main read and merge atomic, so absent or unreadable protection stops that release too.
  */
 async function mainProtection(adapters: ReleaseAdapters, j: ReleaseJournal, auto: boolean, nothing: string): Promise<void> {
   let protection: MainProtection | null;
@@ -1182,8 +1178,7 @@ async function mainProtection(adapters: ReleaseAdapters, j: ReleaseJournal, auto
   if (protection !== null && protection.notYetRequired.length > 0) adapters.say(`  Note: main's protection doesn't require ${protection.notYetRequired.join(", ")} yet; add ${protection.notYetRequired.length === 1 ? "it" : "them"} to its required checks.`);
   if (protection?.effective === true) return;
   const lacking = protection === null ? "GitHub's branch protection for main couldn't be read" : `main's protection doesn't hold: ${protection.missing.join("; ")}`;
-  if (auto) throw new Stop("base-unprotected", `${lacking}, so this release can't merge automatically. ${nothing}: a person releases it with \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
-  adapters.say(`  Warning: ${lacking}. ${UP_TO_DATE_WARNING}`);
+  throw new Stop("base-unprotected", `${lacking}, so this release can't merge${auto ? " automatically" : ""}. ${nothing}. Restore effective main protection and try again.`);
 }
 
 async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal, wait: <T>(what: string, probe: () => Promise<T | null>) => Promise<T>): Promise<void> {
