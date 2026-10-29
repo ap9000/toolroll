@@ -24,6 +24,9 @@ function world(options: { crashAfter?: Mutation } = {}) {
     now: T0,
     branchHead: SHA as string | null,
     main: "e".repeat(40),
+    mainReads: 0,
+    mainAt: null as ((read: number) => string | null) | null,
+    upToDate: true as boolean | null,
     /** main gained a commit the branch doesn't have. */
     mainMoved: false,
     pr: { number: 170, state: "open" as "open" | "closed" | "merged", head: SHA, base: "main", mergeCommit: null as string | null },
@@ -81,8 +84,6 @@ function world(options: { crashAfter?: Mutation } = {}) {
       },
       tree: async sha => { const tree = s.trees.get(sha); if (tree === undefined) throw new Error(`no ${sha}`); return tree; },
       fileAt: async (_sha, path) => s.files.get(path) ?? null,
-      mainHead: async () => s.main,
-      contains: async (_sha, ancestor) => ancestor === s.main && !s.mainMoved,
     },
     toolroll: {
       installed: async () => structuredClone(s.installed),
@@ -116,6 +117,10 @@ function world(options: { crashAfter?: Mutation } = {}) {
     },
     github: {
       authenticated: async () => true,
+      // main as GitHub's API answers it, and its comparison; a branch behind main once main moved.
+      mainHead: async () => { s.mainReads++; return s.mainAt?.(s.mainReads) ?? s.main; },
+      contains: async (_repo, _sha, ancestor) => ancestor === s.main && !s.mainMoved,
+      upToDateRequired: async () => s.upToDate,
       complete: async () => s.ciComplete,
       pullRequest: async () => ({ ...s.pr }),
       // As the real adapter answers: every attempt, with its id, app, check suite and commit (a test's own fields win).
@@ -531,6 +536,25 @@ describe("toolroll release", () => {
     s.mainMoved = true;
     expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "gate", reason: "base-moved", message: expect.stringMatching(/^The branch is behind main; update it and push\..*Nothing was filed/) });
     expect(s.calls).toEqual([]);
+  });
+
+  test("eval review 1 #4: main moving between the comparison and the merge is refused, read from GitHub again", async () => {
+    const { s, adapters } = world();
+    // GitHub's main moves in the moment after the merge step compared it (the read right before the merge sees it).
+    let mergeStep = 0;
+    s.mainAt = () => s.calls.includes("deploy") && ++mergeStep >= 2 ? "f".repeat(40) : null;
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "merge", reason: "base-moved", message: expect.stringContaining("Main moved to fffffff") });
+    expect(s.calls).not.toContain("merge");
+    expect(s.pr.state).toBe("open");
+  });
+
+  test("eval review 1 #4: a person's release without GitHub's up-to-date rule goes on, and says which setting", async () => {
+    for (const upToDate of [false, null] as const) {
+      const { s, adapters } = world();
+      s.upToDate = upToDate;
+      expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
+      expect(s.said).toContainEqual(expect.stringContaining("Require branches to be up to date before merging"));
+    }
   });
 
   test("attack: main moving after the gate is refused right before the merge", async () => {
@@ -1503,6 +1527,16 @@ describe("toolroll release: approve automatically when checks pass", () => {
     expect(prChecksVerdict([at(1, "success", { suite: null }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
     expect(prChecksVerdict([at(1, "success", { id: null }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
     expect(prChecksVerdict(rest, SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "pending" });
+  });
+
+  test("eval review 1 #4: an automatic release doesn't merge once GitHub's up-to-date rule is off", async () => {
+    const { s, adapters } = autoWorld();
+    s.onSleep.push(state => { if (state.calls.includes("deploy")) state.upToDate = false; });
+    s.upToDate = true;
+    const at = adapters.github.upToDateRequired;
+    adapters.github.upToDateRequired = async repo => s.calls.includes("deploy") ? false : at(repo);
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "merge", reason: "base-unprotected" });
+    expect(s.calls).not.toContain("merge");
   });
 
   test("eval review 1 #3: a person's release says when its retry record can't be read, never that nothing was retried", async () => {

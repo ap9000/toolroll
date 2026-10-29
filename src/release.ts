@@ -194,10 +194,6 @@ export type ReleaseAdapters = {
     deleteBranch(branch: string, head: string): Promise<void>;
     tree(sha: string): Promise<string>;
     fileAt(sha: string, path: string): Promise<string | null>;
-    /** origin/main as the last sync fetched it. */
-    mainHead(): Promise<string>;
-    /** Whether `ancestor` is in `sha`'s history. */
-    contains(sha: string, ancestor: string): Promise<boolean>;
   };
   toolroll: {
     /** Which runtime each launchd service and each CLI name (`toolroll`, `standing-orders`) runs from. */
@@ -231,6 +227,13 @@ export type ReleaseAdapters = {
      * endpoint's ceiling). Absent or false: an automatic release fails closed; a person's is unaffected. */
     complete?(repo: string, sha: string): Promise<boolean>;
     merge(repo: string, pr: number, head: string, message?: string): Promise<string>;
+    /** main's head as GitHub's API answers now (never a local ref a build could move). */
+    mainHead(repo: string): Promise<string>;
+    /** Whether `sha` already holds `ancestor`, by GitHub's own comparison. */
+    contains(repo: string, sha: string, ancestor: string): Promise<boolean>;
+    /** Whether GitHub refuses to merge a branch that is behind main ("Require branches to be up to date before
+     * merging"); null when it can't be read. Read only. */
+    upToDateRequired(repo: string): Promise<boolean | null>;
     tag(repo: string, tag: string): Promise<string | null>;
     createTag(repo: string, tag: string, sha: string): Promise<void>;
     release(repo: string, tag: string): Promise<boolean>;
@@ -694,6 +697,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           // The tree CI tested (the pull request's head, not GitHub's merge commit) is the tree that merges only when the
           // branch already contains main's head: refused here, before anything is filed, and again right before merging.
           await containsMain(adapters, j, "Nothing was filed or sent for approval");
+          if (j.intents.gate === undefined) await mainProtection(adapters, j, false, "Nothing was filed or sent for approval");
           const existing = await adapters.toolroll.gate(j.task.id);
           // A fresh task this journal never filed has appeared under its id: it isn't ours, and isn't a fresh approval.
           if (existing.exists && j.freshTask === true && j.intents.gate === undefined) throw new Stop("approval", `Task ${j.task.id} appeared before this release filed it; rerun with --new.`);
@@ -947,10 +951,16 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             if (rel !== undefined && j.authority) await identity("merge", false);
             await pinned();
             // A squash merge only reproduces the gated (and CI-tested) tree when main hasn't moved past the branch's base.
-            await containsMain(adapters, j, "Nothing was merged");
+            const main = await containsMain(adapters, j, "Nothing was merged");
+            // An automatic release merges only where GitHub itself refuses a branch behind main.
+            if (j.auto?.state === "approved") await mainProtection(adapters, j, true, "Nothing was merged");
             // The checks again, at the moment of merging: a rerun that failed since must not merge.
             const verdict = prChecksVerdict(await adapters.github.checks(j.github, j.candidate.sha), j.candidate.sha, REQUIRED_PR_CHECKS, autoCap());
             if (verdict.state !== "passed") await ciFailedAfterDeploy(`Pull request checks are no longer all passing on ${j.candidate.sha.slice(0, 7)}`);
+            // Main once more, from GitHub, the last thing before the merge is reserved: moved since the comparison, it
+            // stops here (finding 4). GitHub's own up-to-date rule refuses the rest of the window.
+            const now = await adapters.github.mainHead(j.github);
+            if (now !== main) throw new Stop("base-moved", `The branch is behind main; update it and push. Main moved to ${now.slice(0, 7)} while ${j.branch} was being merged, so what merges wouldn't be the tree CI tested. Nothing was merged: release the updated commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
             let operation: string | undefined;
             if (rel !== undefined && j.authority && epoch !== null) {
               const reserved = await rel.reserve({ authority: j.authority.id, kind: "merge", taskId: j.task.id, candidate: j.candidate.sha, epoch });
@@ -1128,14 +1138,34 @@ async function deployed(adapters: ReleaseAdapters, candidate: string): Promise<s
  * not answering is waited out the same way, never taken for a pass. The ci step still checks again before merging.
  */
 /**
- * The branch must contain main's head as GitHub has it now (fetched by sync): CI tests the pull request's head commit,
+ * The branch must contain main's head as GitHub's API answers now: CI tests the pull request's head commit,
  * so only a branch that already holds main merges into exactly the tested tree. Refused in plain words otherwise.
  */
-async function containsMain(adapters: ReleaseAdapters, j: ReleaseJournal, nothing: string): Promise<void> {
+async function containsMain(adapters: ReleaseAdapters, j: ReleaseJournal, nothing: string): Promise<string> {
+  // GitHub's own answers (eval-harness review 1, finding 4): main's head and the comparison are read from its API by
+  // this coordinator, never from refs/remotes/origin/main in a checkout a build can write. The checkout is still synced
+  // for what the gate reads from it later.
   await adapters.repo.sync(j.branch);
-  const main = await adapters.repo.mainHead();
-  if (await adapters.repo.contains(j.candidate.sha, main)) return;
+  const main = await adapters.github.mainHead(j.github);
+  if (!/^[0-9a-f]{40}$/.test(main)) throw new Stop("base-moved", `GitHub named no commit for main. ${nothing}.`);
+  if (await adapters.github.contains(j.github, j.candidate.sha, main)) return main;
   throw new Stop("base-moved", `The branch is behind main; update it and push. ${j.branch} at ${j.candidate.sha.slice(0, 7)} doesn't contain main's head ${main.slice(0, 7)}, so what merges wouldn't be the tree CI tested. ${nothing}: release the updated commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
+}
+
+/** The words a person's release says when GitHub doesn't itself refuse a merge of a branch behind main. */
+export const UP_TO_DATE_WARNING = "GitHub doesn't require branches to be up to date before merging into main (Settings → Branches → main's protection rule → \"Require status checks to pass before merging\" → \"Require branches to be up to date before merging\"), so a main that moves in the moment before the merge isn't refused by GitHub itself. Toolroll checks main again right before merging; turning that setting on closes the rest. Releases don't approve themselves until it is on.";
+
+/**
+ * Whether GitHub refuses to merge a branch behind main (eval-harness review 1, finding 4): an automatic release stops
+ * when it doesn't (its approval was sealed only with it on, and it must still be on at the merge); a person's release
+ * is told plainly, once, and goes on.
+ */
+async function mainProtection(adapters: ReleaseAdapters, j: ReleaseJournal, auto: boolean, nothing: string): Promise<void> {
+  let required: boolean | null;
+  try { required = await adapters.github.upToDateRequired(j.github); } catch { required = null; }
+  if (required === true) return;
+  if (auto) throw new Stop("base-unprotected", `${required === null ? "GitHub's branch protection for main couldn't be read" : "GitHub doesn't require branches to be up to date before merging into main"}, so this release can't merge automatically. ${nothing}: a person releases it with \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
+  adapters.say(`  Warning: ${required === null ? "GitHub's branch protection for main couldn't be read. " : ""}${UP_TO_DATE_WARNING}`);
 }
 
 async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal, wait: <T>(what: string, probe: () => Promise<T | null>) => Promise<T>): Promise<void> {

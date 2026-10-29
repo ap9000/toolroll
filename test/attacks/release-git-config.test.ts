@@ -119,7 +119,7 @@ describe("the release coordinator's Git: a poisoned gate checkout runs nothing",
     const resumed = await runRelease({ branch: "release-1.2.3", checkout: at.gate, stateDir: journal }, made);
     expect(resumed.ok).toBe(false);
     if (!resumed.ok) expect(resumed.message).toMatch(/won't run Git/);
-    for (const look of [() => made.repo.remoteHead("release-1.2.3"), () => made.repo.sync("release-1.2.3"), () => made.repo.tree(at.head), () => made.repo.mainHead(), () => made.repo.deleteBranch("release-1.2.3", at.head)]) {
+    for (const look of [() => made.repo.remoteHead("release-1.2.3"), () => made.repo.sync("release-1.2.3"), () => made.repo.tree(at.head), () => made.repo.deleteBranch("release-1.2.3", at.head)]) {
       await expect(look()).rejects.toThrow(/won't run Git/);
     }
     expect(existsSync(at.ran), `the marker ran for ${key}`).toBe(false);

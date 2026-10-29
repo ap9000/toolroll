@@ -333,7 +333,8 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   };
 
   const release = storeReleaseAdapter(() => openStore(database), store => store.close(), options.now ?? (() => new Date()), undefined,
-    { observe: sha => observeCi(sha), mergeBase: (base, sha) => readMergeBase(run, ciGh, releaseRepo().slug, base, sha), evidenceRoot: join(dirname(database), "evidence") });
+    { observe: sha => observeCi(sha), mergeBase: (base, sha) => readMergeBase(run, ciGh, releaseRepo().slug, base, sha),
+      upToDateRequired: () => readUpToDateRequired(run, ciGh, releaseRepo().slug), evidenceRoot: join(dirname(database), "evidence") });
 
   return {
     ...(existsSync(database) ? { release } : {}),
@@ -379,8 +380,6 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         const result = await git("show", `${sha}:${path}`);
         return result.code === 0 ? result.stdout : null;
       },
-      async mainHead() { return (await must(git("rev-parse", "refs/remotes/origin/main"), "git rev-parse origin/main")).trim(); },
-      async contains(sha, ancestor) { return (await git("merge-base", "--is-ancestor", ancestor, sha)).code === 0; },
     },
     toolroll: {
       async installed() { return { services: serviceRuntimes(), clis: cliRuntimes() }; },
@@ -490,6 +489,9 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
       // Every attempt (filter=all), with its app, check suite and commit: the release judges each job by its latest attempt.
       async checks(repo, sha) { return readCheckRuns(run, ciGh, repo, sha); },
       async complete(repo, sha) { return readSuitesComplete(run, ciGh, repo, sha); },
+      async mainHead(repo) { return readMainHead(run, ciGh, repo); },
+      async contains(repo, sha, ancestor) { return readContains(run, ciGh, repo, sha, ancestor); },
+      async upToDateRequired(repo) { return readUpToDateRequired(run, ciGh, repo); },
       async merge(repo, pr, head, message) {
         // The squash commit's message lists every commit that landed after the approval (release-once.md).
         const merged = object(await ghJson("gh api pulls merge", "api", "-X", "PUT", `repos/${repo}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`,
@@ -731,7 +733,9 @@ function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now:
         return { ok: false as const, why };
       }
       const observed = ci;
-      return withStore(store => sealAutoGreen(store, { ...input, ci: observed, evidenceRoot: auto.evidenceRoot, now: now() }));
+      let upToDate: boolean | null;
+      try { upToDate = await auto.upToDateRequired(); } catch { upToDate = null; }
+      return withStore(store => sealAutoGreen(store, { ...input, ci: observed, mainUpToDate: upToDate, evidenceRoot: auto.evidenceRoot, now: now() }));
     },
     async giveUp(taskId, why) { withStore(store => giveUpAutoApproval(store, { taskId, why, now: now() })); },
     async checkFailed(taskId, why) { withStore(store => noteAutoCheckFailed(store, { taskId, why, now: now() })); },
@@ -746,6 +750,8 @@ export type AutoObservers = {
   observe: (sha: string) => Promise<CiObservation>;
   /** GitHub's merge base of `sha` with the branch `base` of the recorded repository. */
   mergeBase: (base: string, sha: string) => Promise<string>;
+  /** Whether GitHub refuses to merge a branch behind main (release.ts mainProtection); null when unreadable. */
+  upToDateRequired: () => Promise<boolean | null>;
   evidenceRoot: string;
 };
 
@@ -843,4 +849,43 @@ export async function readMergeBase(run: Exec, gh: string, repo: string, base: s
   const out = (await must(run(gh, ["api", "--hostname", "github.com", `repos/${repo}/compare/${base}...${sha}`, "--jq", ".merge_base_commit.sha"], { cwd: "/", env: ciEnv() }), "gh api compare")).trim();
   if (!/^[0-9a-f]{40}$/.test(out)) throw new Error("GitHub named no merge base");
   return out;
+}
+
+/**
+ * Main's head as GitHub has it now (eval-harness review 1, finding 4): read by the plane's own gh from GitHub's API,
+ * never from a ref in a checkout a build can write.
+ */
+export async function readMainHead(run: Exec, gh: string, repo: string, branch = "main"): Promise<string> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^[A-Za-z0-9._/-]+$/.test(branch) || branch.includes("..")) throw new Error("not a repository and branch GitHub can be asked about");
+  const out = (await must(run(gh, ["api", "--hostname", "github.com", `repos/${repo}/git/ref/heads/${branch}`, "--jq", ".object.type + \" \" + .object.sha"], { cwd: "/", env: ciEnv() }), "gh api git/ref")).trim();
+  const match = /^commit ([0-9a-f]{40})$/.exec(out);
+  if (match === null) throw new Error(`GitHub named no commit for ${branch}`);
+  return match[1]!;
+}
+
+/** Whether `sha` already holds `ancestor` (GitHub's compare: `sha` is not behind it), as GitHub answers now. */
+export async function readContains(run: Exec, gh: string, repo: string, sha: string, ancestor: string): Promise<boolean> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^[0-9a-f]{40}$/.test(sha) || !/^[0-9a-f]{40}$/.test(ancestor)) throw new Error("not a repository and commits GitHub can be asked about");
+  const out = (await must(run(gh, ["api", "--hostname", "github.com", `repos/${repo}/compare/${ancestor}...${sha}`, "--jq", "[.status, .behind_by] | @json"], { cwd: "/", env: ciEnv() }), "gh api compare")).trim();
+  let answer: unknown;
+  try { answer = JSON.parse(out); } catch { throw new Error("GitHub's comparison couldn't be read"); }
+  if (!Array.isArray(answer) || typeof answer[0] !== "string" || !Number.isSafeInteger(answer[1])) throw new Error("GitHub's comparison couldn't be read");
+  return answer[1] === 0 && (answer[0] === "ahead" || answer[0] === "identical");
+}
+
+/**
+ * Whether GitHub itself refuses to merge into `branch` a pull request whose branch is behind it (eval-harness review 1,
+ * finding 4): required status checks with "Require branches to be up to date before merging" (classic branch
+ * protection's `strict`, or a ruleset's `strict_required_status_checks_policy`). Read only — Toolroll never changes a
+ * repository's settings. True only when GitHub says so; false when it plainly doesn't; null when it can't be read.
+ */
+export async function readUpToDateRequired(run: Exec, gh: string, repo: string, branch = "main"): Promise<boolean | null> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^[A-Za-z0-9._/-]+$/.test(branch) || branch.includes("..")) return null;
+  const classic = await run(gh, ["api", "--hostname", "github.com", `repos/${repo}/branches/${branch}/protection/required_status_checks`, "--jq", ".strict"], { cwd: "/", env: ciEnv() });
+  if (classic.code === 0 && classic.stdout.trim() === "true") return true;
+  const classicAnswered = classic.code === 0 || /HTTP 404|Not Found|not protected|not enabled/i.test(`${classic.stderr}\n${classic.stdout}`);
+  const rules = await run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${repo}/rules/branches/${branch}`,
+    "--jq", ".[] | select(.type == \"required_status_checks\") | .parameters.strict_required_status_checks_policy"], { cwd: "/", env: ciEnv() });
+  if (rules.code === 0 && rules.stdout.split("\n").map(line => line.trim()).includes("true")) return true;
+  return rules.code === 0 && classicAnswered ? false : null;
 }

@@ -55,8 +55,9 @@ const infraCheck = (f: ReleaseFixture, rerun = true) => {
 };
 const rerunRecorded = (f: ReleaseFixture, run: number) => f.store.recordAction({ at: LATER.toISOString(), actor: "toolroll", repo: f.repo, taskId: f.taskId, runId: run, action: RELEASE_RECHECK_ACTION, outcome: "infrastructure", source: "work" });
 const receiptOf = (f: ReleaseFixture) => assignmentOf(f.store, f.taskId, LATER, { principal: "operator", repos: null, includeUnplaced: true }, EVIDENCE(f))!.receipt!.digest;
-const seal = (f: ReleaseFixture, run: number, ci: CiObservation = green(f.approved), extra: { digest?: string; receipt?: string } = {}) =>
-  sealAutoGreen(f.store, { taskId: f.taskId, digest: extra.digest ?? digestOf(f), candidate: f.approved, run, receipt: extra.receipt ?? receiptOf(f), ci, evidenceRoot: EVIDENCE(f), now: LATER });
+const seal = (f: ReleaseFixture, run: number, ci: CiObservation = green(f.approved), extra: { digest?: string; receipt?: string; mainUpToDate?: boolean | null } = {}) =>
+  sealAutoGreen(f.store, { taskId: f.taskId, digest: extra.digest ?? digestOf(f), candidate: f.approved, run, receipt: extra.receipt ?? receiptOf(f), ci, evidenceRoot: EVIDENCE(f), now: LATER,
+    mainUpToDate: extra.mainUpToDate === undefined ? true : extra.mainUpToDate });
 const basis = (f: ReleaseFixture) => f.store.getScope(f.taskId)!.approvalBasis ?? null;
 
 describe("the legitimate road", () => {
@@ -477,7 +478,7 @@ describe("what a person's approval refuses, an automatic one refuses too", () =>
 // ---------------------------------------------------------------------------------------------- Codex review round 1
 
 import { execFileSync } from "node:child_process";
-import { readCheckRuns, readMergeBase, storeReleaseAdapter, type Exec } from "../../src/release-adapters.js";
+import { readCheckRuns, readContains, readMainHead, readMergeBase, readUpToDateRequired, storeReleaseAdapter, type Exec } from "../../src/release-adapters.js";
 import { adoptReleaseOperation, finishReleaseOperation, releaseOperations, reserveRelease, runReleaseOperation, takeReleaseLease } from "../../src/store.js";
 
 describe("codex r1 #1: the comparison base is the plane's own reading of where the candidate left main", () => {
@@ -497,6 +498,41 @@ describe("codex r1 #1: the comparison base is the plane's own reading of where t
     expect(calls[0]).toEqual(["api", "--hostname", "github.com", `repos/ap9000/toolroll/compare/main...${"b".repeat(40)}`, "--jq", ".merge_base_commit.sha"]);
     await expect(readMergeBase(async () => ({ code: 0, stdout: "null\n", stderr: "" }), "/usr/bin/gh", "ap9000/toolroll", "main", "b".repeat(40))).rejects.toThrow();
     await expect(readMergeBase(run, "/usr/bin/gh", "ap9000/toolroll", "main..x", "b".repeat(40))).rejects.toThrow();
+  });
+
+  test("eval review 1 #4: nothing approves itself unless GitHub refuses a branch behind main (read, never set)", () => {
+    for (const mainUpToDate of [false, null] as const) {
+      const f = open();
+      authorize(f);
+      expect(seal(f, check(f), green(f.approved), { mainUpToDate }), String(mainUpToDate)).toMatchObject({ ok: false, why: expect.stringMatching(/up to date|branch protection/) });
+      expect(basis(f)).toBeNull();
+      f.close(); fixture = null;
+    }
+  });
+
+  test("eval review 1 #4: main's head, the comparison and the protection come from GitHub's API, strictly read", async () => {
+    const calls: string[][] = [];
+    const answer = (stdout: string, code = 0, stderr = ""): Exec => async (_gh, args) => { calls.push([...args]); return { code, stdout, stderr }; };
+    expect(await readMainHead(answer(`commit ${"a".repeat(40)}\n`), "/usr/bin/gh", "ap9000/toolroll")).toBe("a".repeat(40));
+    expect(calls.at(-1)).toEqual(["api", "--hostname", "github.com", "repos/ap9000/toolroll/git/ref/heads/main", "--jq", ".object.type + \" \" + .object.sha"]);
+    await expect(readMainHead(answer(`tag ${"a".repeat(40)}\n`), "/usr/bin/gh", "ap9000/toolroll")).rejects.toThrow();
+    await expect(readMainHead(answer("", 1, "HTTP 502"), "/usr/bin/gh", "ap9000/toolroll")).rejects.toThrow();
+    expect(await readContains(answer('["ahead",0]'), "/usr/bin/gh", "ap9000/toolroll", "b".repeat(40), "a".repeat(40))).toBe(true);
+    expect(await readContains(answer('["identical",0]'), "/usr/bin/gh", "ap9000/toolroll", "b".repeat(40), "a".repeat(40))).toBe(true);
+    expect(await readContains(answer('["diverged",2]'), "/usr/bin/gh", "ap9000/toolroll", "b".repeat(40), "a".repeat(40))).toBe(false);
+    expect(await readContains(answer('["behind",1]'), "/usr/bin/gh", "ap9000/toolroll", "b".repeat(40), "a".repeat(40))).toBe(false);
+    await expect(readContains(answer("null"), "/usr/bin/gh", "ap9000/toolroll", "b".repeat(40), "a".repeat(40))).rejects.toThrow();
+    // Protection: classic strict, a ruleset's strict policy, plainly off, or unreadable.
+    const protection = (classic: { code: number; stdout: string; stderr?: string }, rules: { code: number; stdout: string }): Exec => async (_gh, args) =>
+      args.some(one => one.endsWith("/protection/required_status_checks")) ? { stderr: "", ...classic } : { stderr: "", ...rules };
+    expect(await readUpToDateRequired(protection({ code: 0, stdout: "true\n" }, { code: 0, stdout: "" }), "/usr/bin/gh", "ap9000/toolroll")).toBe(true);
+    expect(await readUpToDateRequired(protection({ code: 1, stdout: "", stderr: "HTTP 404: Branch not protected" }, { code: 0, stdout: "true\n" }), "/usr/bin/gh", "ap9000/toolroll")).toBe(true);
+    expect(await readUpToDateRequired(protection({ code: 0, stdout: "false\n" }, { code: 0, stdout: "" }), "/usr/bin/gh", "ap9000/toolroll")).toBe(false);
+    expect(await readUpToDateRequired(protection({ code: 1, stdout: "", stderr: "HTTP 404: Branch not protected" }, { code: 0, stdout: "false\n" }), "/usr/bin/gh", "ap9000/toolroll")).toBe(false);
+    expect(await readUpToDateRequired(protection({ code: 1, stdout: "", stderr: "HTTP 403" }, { code: 0, stdout: "" }), "/usr/bin/gh", "ap9000/toolroll")).toBeNull();
+    expect(await readUpToDateRequired(protection({ code: 0, stdout: "false\n" }, { code: 1, stdout: "" }), "/usr/bin/gh", "ap9000/toolroll")).toBeNull();
+    // Only reads: no call this makes writes to GitHub.
+    expect(calls.flat()).not.toContain("-X");
   });
 
   test("a base that isn't in the project's own Git directory refuses the auto-check", () => {
@@ -611,7 +647,7 @@ describe("codex r1 #3: the cap counts every attempt GitHub holds, read through t
     const gh = fakeGitHub(attempts, f.approved);
     const rel = storeReleaseAdapter(() => f.store, () => {}, () => LATER, undefined, {
       observe: async sha => ({ head: sha, observedAt: LATER.toISOString(), complete: true, runs: (await readCheckRuns(gh.run, "/usr/bin/gh", "ap9000/toolroll", sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, beforeTests: one.beforeTests ?? null })) }),
-      mergeBase: async () => f.base, evidenceRoot: EVIDENCE(f),
+      mergeBase: async () => f.base, upToDateRequired: async () => true, evidenceRoot: EVIDENCE(f),
     });
     expect(await rel.auto!.authorizeCheck({ taskId: f.taskId, digest: digestOf(f), candidate: f.approved })).toEqual({ ok: true });
     const run = check(f);
