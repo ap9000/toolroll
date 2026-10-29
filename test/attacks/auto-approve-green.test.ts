@@ -629,7 +629,7 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
  */
 function fakeGitHub(attempts: { id: number; name: string; conclusion: string; suite?: number; app?: string; head?: string; steps?: { number: number; name: string; status: string; conclusion: string | null }[] }[], sha: string,
   /** Each suite's workflow-run row (codex round 1, inherited CI limitation): ci.yml for the default suite 7. */
-  flows: { suite: number; workflow: number; path: string; event?: string; branch?: string; bases?: string[] }[] = [{ suite: 7, workflow: 3, path: ".github/workflows/ci.yml" }]) {
+  flows: { suite: number; workflow: number; path: string; event?: string; branch?: string; bases?: string[]; prs?: number[] }[] = [{ suite: 7, workflow: 3, path: ".github/workflows/ci.yml" }]) {
   const calls: string[][] = [];
   const run: Exec = async (_cmd, args) => {
     calls.push([...args]);
@@ -640,7 +640,14 @@ function fakeGitHub(attempts: { id: number; name: string; conclusion: string; su
       return one === undefined ? { code: 1, stdout: "", stderr: "not found" } : { code: 0, stdout: JSON.stringify({ id: one.id, status: "completed", conclusion: one.conclusion, steps: one.steps ?? [] }), stderr: "" };
     }
     // The workflow-run listing: which suite is a run of which workflow, and that workflow's file.
-    if (args.some(arg => arg.includes("/actions/runs"))) return { code: 0, stdout: flows.map(one => `${JSON.stringify({ event: "pull_request", branch: "release-x", bases: ["main"], ...one, head: sha })}\n`).join(""), stderr: "" };
+    if (args.some(arg => arg.includes("/actions/runs"))) return { code: 0, stdout: flows.map(one => `${JSON.stringify({ event: "pull_request", branch: "release-x", bases: ["main"], prs: [254], ...one, head: sha })}\n`).join(""), stderr: "" };
+    // A pull request's timeline events (the retarget check): none by default; "retargeted-<n>" names one that was.
+    const timeline = args.find(arg => /\/issues\/\d+\/timeline/.test(arg));
+    if (timeline !== undefined) {
+      const pr = Number(/\/issues\/(\d+)\//.exec(timeline)![1]);
+      if (pr === 999) return { code: 1, stdout: "", stderr: "not found" };
+      return { code: 0, stdout: pr === 666 ? "labeled\nbase_ref_changed\n" : "labeled\n", stderr: "" };
+    }
     const url = args.find(arg => arg.includes("/check-runs")) ?? "";
     const all = /[?&]filter=all(&|$)/.test(url);
     const rows = attempts.map(one => ({ id: one.id, name: one.name, status: "completed", conclusion: one.conclusion, app: one.app ?? "github-actions", suite: one.suite ?? 7, head: one.head ?? sha }));
@@ -963,7 +970,7 @@ describe("codex r2 #6: GitHub's 1000-suite ceiling fails an automatic approval c
     const sha = "a".repeat(40);
     const run: Exec = async (_cmd, args) => {
       const url = args.find(arg => arg.startsWith("repos/")) ?? "";
-      if (url.includes("/actions/runs")) return { code: 0, stdout: `${JSON.stringify({ suite: 7, workflow: 3, path: ".github/workflows/ci.yml", head: sha, event: "pull_request", branch: "release-x", bases: ["main"] })}\n`, stderr: "" };
+      if (url.includes("/actions/runs")) return { code: 0, stdout: `${JSON.stringify({ suite: 7, workflow: 3, path: ".github/workflows/ci.yml", head: sha, event: "pull_request", branch: "release-x", bases: ["main"], prs: [254] })}\n`, stderr: "" };
       return { code: 0, stdout: `${JSON.stringify({ id: 1, name: "x", status: "completed", conclusion: "success", app: "github-actions", suite: 7, head: sha })}\n`, stderr: "" };
     };
     expect(await readCheckRuns(run, "/usr/bin/gh", "ap9000/toolroll", sha)).toEqual([{ id: 1, name: "x", status: "completed", conclusion: "success", app: "github-actions", suite: 7, head: sha, workflow: 3, workflowPath: ".github/workflows/ci.yml" }]);
@@ -984,6 +991,12 @@ describe("codex r2 #6: GitHub's 1000-suite ceiling fails an automatic approval c
     const gh = fakeGitHub(attempts, f.approved, [{ suite: 7, workflow: 3, path: ".github/workflows/ci.yml", ...trigger }]);
     const runs = await readCheckRuns(gh.run, "/usr/bin/gh", "ap9000/toolroll", f.approved);
     expect(runs.every(run => run.workflowPath === null)).toBe(true);
+  });
+  test.each([["was retargeted after it ran", 666], ["has a timeline GitHub won't show", 999]])("security scan: a pull request into main that %s never stands for a required check", async (_why, pr) => {
+    const f = open();
+    const attempts = [{ id: 100, name: REQUIRED_PR_CHECKS[0]!, conclusion: "success" }];
+    const runs = await readCheckRuns(fakeGitHub(attempts, f.approved, [{ suite: 7, workflow: 3, path: ".github/workflows/ci.yml", event: "pull_request", bases: ["main"], prs: [pr] }]).run, "/usr/bin/gh", "ap9000/toolroll", f.approved);
+    expect(runs[0]!.workflowPath).toBeNull();
   });
   test("security scan of the join: a pull request into main and a push to main bind ci.yml", async () => {
     const f = open();

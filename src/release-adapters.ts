@@ -806,7 +806,21 @@ export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: st
   // Which workflow each check suite is a run of (GitHub's workflow-run API): a newer run of a workflow supersedes its
   // older runs on this commit (release.ts prChecksVerdict).
   const flows = await must(run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${repo}/actions/runs?head_sha=${sha}&per_page=100`,
-    "--jq", ".workflow_runs[] | {suite: .check_suite_id, workflow: .workflow_id, path: .path, head: .head_sha, event: .event, branch: .head_branch, bases: [(.pull_requests // [])[] | .base.ref]}"], { cwd: "/", env: ciEnv() }), "gh api actions/runs");
+    "--jq", ".workflow_runs[] | {suite: .check_suite_id, workflow: .workflow_id, path: .path, head: .head_sha, event: .event, branch: .head_branch, bases: [(.pull_requests // [])[] | .base.ref], prs: [(.pull_requests // [])[] | .number]}"], { cwd: "/", env: ciEnv() }), "gh api actions/runs");
+  // A pull request's base can be edited after its runs: a run counts only if no pull request it belongs to ever had its
+  // base changed (GitHub's timeline), so a run made against another base can't later read as a run into main.
+  const retargeted = new Map<number, boolean>();
+  const everRetargeted = async (pr: number): Promise<boolean> => {
+    const known = retargeted.get(pr);
+    if (known !== undefined) return known;
+    let changed = true;
+    try {
+      const events = await run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${repo}/issues/${pr}/timeline?per_page=100`, "--jq", ".[] | .event"], { cwd: "/", env: ciEnv() });
+      changed = events.code !== 0 || events.stdout.split("\n").some(line => line.trim() === "base_ref_changed");
+    } catch { changed = true; }
+    retargeted.set(pr, changed);
+    return changed;
+  };
   const workflowOf = new Map<number, number>();
   // Each suite's workflow file: a required check counts only from the workflow that defines it (release.ts).
   const pathOf = new Map<number, string>();
@@ -819,7 +833,9 @@ export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: st
     // Only a run on a pull request into main, or a push to main, binds its workflow file: a pull request into another
     // branch reads that branch's workflow and join verifier, which the candidate may control (security scan of the
     // join). Any other run keeps no path, so no required check counts from it.
-    if (mainTriggered(one)) pathOf.set(Number(one["suite"]), String(one["path"]));
+    const prs = Array.isArray(one["prs"]) ? one["prs"] : [];
+    const untouched = one["event"] !== "pull_request" || (prs.length > 0 && prs.every(pr => Number.isSafeInteger(pr)) && !(await Promise.all(prs.map(pr => everRetargeted(Number(pr))))).some(Boolean));
+    if (mainTriggered(one) && untouched) pathOf.set(Number(one["suite"]), String(one["path"]));
   }
   const runs = out.split("\n").filter(Boolean).map(line => {
     const one = object(JSON.parse(line));
