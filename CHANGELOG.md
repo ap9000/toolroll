@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- **A renamed or dropped CI job no longer hides its failure.** Every failed
+  attempt on a commit is judged before newer runs replace older ones, so a
+  job a newer run renamed or dropped can't erase a test failure from an
+  automatic approval. The Windows containment repeat job keeps one name
+  whatever its count.
+- **Toolroll decides what a Full release check owes.** Before the check runs,
+  Toolroll works out from its own record of the last release which parts it
+  owes (units, scripted and real-model journeys, upgrades), seals that, and
+  tells the check, which runs at least those. Every owed part needs a result,
+  whatever the check's report says it selected. CI never stands in for a
+  release's unit suite, and a journey or upgrade run that listed nothing it
+  ran is no result.
+- **Missing evidence is unknown, not clean.** What passed only on a retry is
+  sealed in the check's receipt. If a check's report is lost or damaged, its
+  retries are unknown and nothing approves itself; the receipt's report and
+  inventory files are checked byte for byte. A check that passed only when
+  rerun after the approved setup counts as a retry, and the setup rerun only
+  happens when the check never started.
+- **Merging checks main on GitHub itself.** A release reads main's head and
+  compares the branch through GitHub's API, never a local ref, and reads
+  main again right before merging. Releases approve themselves only while
+  main's branch protection requires branches to be up to date before
+  merging; without it, a person's release says which setting to turn on.
+  Toolroll only reads that setting.
+- **No lazy fetch on any supported git.** Protected Git reads (the release's
+  object reader and extraction, project knowledge and learning, the task
+  base, release coverage, review screenshots, grants) run through a frozen
+  copy of the repository's config on every git version, refuse every
+  network transport and are time-bounded, so an include, a partial clone or
+  a planted filter can't fetch, run or hang anything. The deployment script
+  reads a commit's files with no filter or attribute applied. CI's oldest-git
+  lane now tests git 2.41.0 exactly.
 - **A release check that's cut short still leaves its evidence.** Every
   part of the release check (typecheck, build, units, journeys, upgrades)
   now prints its output as it runs, each line tagged with its part (and

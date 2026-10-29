@@ -70,8 +70,7 @@ F. Process: delta review of post-review security changes (diff + affected invari
   `TESTED_SHA`) and a "Tested commit" step proves `git rev-parse HEAD` equals it before anything builds, writing it to
   the step summary; src/ci-workflow.test.ts holds every job to that.
 - D, merge compatibility (integrated): the release gate refuses a candidate whose head does not contain main's head
-  (src/release.ts containsMain: sync from the recorded GitHub remote, then `git merge-base --is-ancestor <main head>
-  <candidate>`), at the gate before anything is filed and again right before the merge, reason `base-moved`, words
+  (src/release.ts containsMain: main's head and the comparison from GitHub's API — review round 1, finding 4), at the gate before anything is filed and again right before the merge, reason `base-moved`, words
   "The branch is behind main; update it and push." Attack tests in src/release.slow.test.ts (behind at the gate; main
   moved after the gate).
 - D, git floor: **git 2.41** (README; src/git-floor.ts). The binding feature is the global `git --attr-source` option,
@@ -104,6 +103,38 @@ F. Process: delta review of post-review security changes (diff + affected invari
 - E: read-executor.test.ts holds one worker read open and proves 24 more lists are answered meanwhile (no event-loop
   delay cap); tick.watch.slow.test.ts stops the watch when t-live is built instead of after a 450 ms window. The
   60 s `--for` and the 90 s test timeout are the hang guards.
+
+### Codex review round 1 fixes
+1. CI history: release.ts prChecksVerdict classifies every failed attempt on the commit that no current job stands on
+   before supersession (a renamed or dropped job never erases a failure); the Windows repeat job's name is fixed
+   ("… · c2 repeat"), and src/ci-workflow.test.ts holds every job name to its workflow and matrix.
+2. Obligations: check-report.ts fullObligationsOf decides a Full check's owed parts from verified trees — the candidate
+   and the plane's own last release (release-card.ts releaseBaseline), never a tag — sealed in the inventory with the
+   release decision (`release`, `ciSubstitute`); the handshake carries `owed` and the script runs at least those.
+   fullCheckProblem requires an outcome for every sealed obligation, refuses CI stand-ins and a check not sealed as a
+   release's, and requires journey/upgrade inventories (`inventoried`; explicitly empty is an outcome, missing is not).
+   Security scan: what the last release's tree could run stays owed when a candidate deletes or symlinks it.
+3. Retries: retriedInside(null) is null (unknown); the receipt seals `check.retried`; check-failure.ts retriedOfRun reads
+   it; sealAutoGreen refuses unknown retries, needs the run's readable Full report and inventory with no
+   fullCheckProblem, and verificationEvidence verifies the report and inventory bytes a v3 receipt names.
+4. Main: release.ts containsMain reads main's head and the comparison from GitHub's API (release-adapters.ts
+   readMainHead/readContains), reads main again right before the merge, and reads (never sets) GitHub's "require
+   branches to be up to date" (readUpToDateRequired: classic `strict` or a ruleset's strict policy). sealAutoGreen
+   refuses without it; an automatic release stops at the merge without it (`base-unprotected`); a person's release
+   warns once at the gate. The post-merge tree comparison stays.
+5. Old git: commit-extract.ts verifiedReader/extractCommit run through the frozen view (viewedGitSync, now with stdin
+   and a git path) and `protocol.allow=never`; nothing leans on GIT_NO_LAZY_FETCH (2.41.0 ignores it; 2.41.1, 2.42.2,
+   2.43.4 and 2.44.1 backported it). Decision: keep the floor at 2.41 and test its oldest release — the CI floor lane
+   builds 2.41.0 exactly (hash cross-checked with kernel.org's sha256sums.asc) — rather than raise it to a patch level,
+   because distributions ship patched builds under the unpatched number (Ubuntu 24.04's "2.43.0"). The deployment
+   script (scripts/deploy-git.mjs) pins every transport off by name, takes --no-lazy-fetch on 2.45+, refuses lazy-fetch
+   config on older git, and reads commits with ls-tree/cat-file and hashes them (no archive, show or status).
+6. Setup recovery: builder.ts launchFailedBeforeCheck — a missing executable and no report carrying the run's nonce; a
+   rerun after setup is a retry (SETUP_REPLAY_RETRY), and sealAutoGreen refuses `setupReplayed`.
+7. Direct reads: project knowledge and learning, task base, release coverage, prepared evidence, grant check-ignore and
+   the revision-base merge-base use frozen views on every git version (lazyFetchSafeGit always views), bounded; config
+   files open with O_NOFOLLOW|O_NONBLOCK. Attack: test/attacks/checkout-git-direct-reads.test.ts (an include naming a
+   FIFO).
 
 ## Phase 2 (after phase 1 ships)
 Results ledger across commits; a 20–30 case versioned eval set from real failures and representative successes, run
