@@ -185,6 +185,12 @@ export type AutoReleaseAdapter = {
   approve(input: { taskId: string; digest: string; candidate: string; run: number; receipt: string }): Promise<{ ok: true; by: string; at: string; ci: { id: number; name: string }[] } | { ok: false; why: string }>;
   /** The automatic road ended without a release: the task asks a person, and the owner is told why. */
   giveUp(taskId: string, why: string): Promise<void>;
+  /** Hold every approval but the automatic road's until the plane reads CI passing on `candidate` (recorded in the
+   * plane before the task is filed). The gate files ahead of CI only when this and ciPassed exist. */
+  holdForCi?(taskId: string, candidate: string): Promise<void>;
+  /** The plane reads CI on `candidate` itself and, when every required check passed, lifts the hold; `ask` tells the
+   * owner the release needs them now. */
+  ciPassed?(taskId: string, candidate: string, ask: boolean): Promise<{ ok: true } | { ok: false; why: string }>;
   /** The release check failed while checking automatically: the owner is told; the commit may be checked again (a
    * regate of the same commit and digest, within the plane's cap on failed runs). */
   checkFailed(taskId: string, why: string): Promise<void>;
@@ -664,6 +670,16 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       throw new Stop("approval", `Not approved automatically: ${why}. A person approves task ${j.task.id} (\`toolroll task approve ${j.task.id} --digest ${j.task.scopeDigest}\`, or the console), then rerun \`${resume}\`.`);
     };
     /**
+     * CI passed on the candidate as the coordinator read it: the plane reads it itself and lifts the approval hold it
+     * placed when the task was filed ahead of CI (round 1, finding 4). A refusal stops here; nobody was asked.
+     */
+    const liftCiHold = async (ask: boolean, nothing: string): Promise<void> => {
+      const lift = rel?.auto?.ciPassed;
+      if (lift === undefined) return;
+      const lifted = await lift(j.task.id, j.candidate.sha, ask);
+      if (!lifted.ok) throw new Stop("ci-failed", `The plane didn't confirm CI passed on ${j.candidate.sha.slice(0, 7)}: ${lifted.why}. ${nothing}. Rerun \`${resume}\` once every pull request check passes.`);
+    };
+    /**
      * The task is approved for `action`: a release task (a carried commit, or any task once the release has an
      * authority) only when the live-release predicate applies to it AND accepts it — fail closed, whatever its own seal
      * says. Anything else needs the owner's own approval of these exact words (which a carried seal never is).
@@ -731,8 +747,11 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             // On the automatic road the gate only stops on a check that already failed: the release check then runs
             // beside CI (pipeline-speed.md, D2), and nothing is approved before CI passes (the approval and check steps).
             const auto = rel?.auto;
-            const ahead = auto?.settingFor !== undefined && j.freshTask !== true && j.auto?.state !== "refused" && await auto.settingFor(j.checkout);
+            const ahead = auto?.settingFor !== undefined && auto.holdForCi !== undefined && auto.ciPassed !== undefined && j.freshTask !== true && j.auto?.state !== "refused" && await auto.settingFor(j.checkout);
             const settled = await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { pendingIsEnough: ahead });
+            // Filed ahead of CI: the plane holds every approval but the automatic road's until it reads CI passing —
+            // recorded before the task exists, so it is never approvable with CI pending (round 1, finding 4).
+            if (!settled) await auto!.holdForCi!(j.task.id, j.candidate.sha);
             j.ciAhead = !settled; save();
             if (!settled) { say(`  Pull request checks on ${j.candidate.sha.slice(0, 7)} are still running: the release check runs beside them, and nothing is approved before they pass`); }
             intend("gate");
@@ -772,7 +791,11 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           }
           // Filed while CI still ran (the automatic road, which a person's approval replaced): a person is asked only once
           // every pull request check passed, as when the gate waits.
-          if (j.ciAhead === true) { await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { nothing: "Nothing was sent for approval" }); j.ciAhead = false; save(); }
+          if (j.ciAhead === true) {
+            await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { nothing: "Nothing was sent for approval" });
+            await liftCiHold(true, "Nothing was sent for approval");
+            j.ciAhead = false; save();
+          }
           say(`  The release scope needs your approval: \`toolroll task approve ${j.task.id} --digest ${j.task.scopeDigest}\`, or open the task in the console.`);
           const approved = await waitFor("approval", `a person to approve task ${j.task.id}`, async () => {
             await watch("dispatch");
@@ -847,7 +870,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             // The check ran beside CI (the gate didn't wait): it waits for every pull request check now. A failure ends the
             // automatic road, and the person's road refuses it too (the approval step waits for CI first).
             if (j.ciAhead === true) {
-              try { await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { nothing: "Nothing was approved" }); }
+              try { await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { nothing: "Nothing was approved" }); await liftCiHold(false, "Nothing was approved"); }
               catch (error) {
                 if (error instanceof Stop && error.reason === "ci-failed") { j.auto = { state: "refused", why: error.message }; j.check = null; j.step = "approval"; save(); await rel?.auto?.giveUp(j.task.id, error.message.replace(/\.$/, "")); }
                 throw error;

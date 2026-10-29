@@ -27,7 +27,7 @@ import {
 import { acquireDeploymentLock } from "./deploy-lock.js";
 import { autoReleaseApprovalOf, liveReleaseOf } from "./scope.js";
 import { recheckReleaseTask, releaseCheckStanding } from "./check-failure.js";
-import { autoPublishHeld, holdAutoPublish, authorizeAutoCheck, giveUpAutoApproval, noteAutoCheckFailed, noteAutoRelease, releaseAutoApproves, sealAutoGreen, type CiObservation } from "./release-auto.js";
+import { autoPublishHeld, holdAutoPublish, holdApprovalForCi, liftCiHold, authorizeAutoCheck, giveUpAutoApproval, noteAutoCheckFailed, noteAutoRelease, releaseAutoApproves, sealAutoGreen, type CiObservation } from "./release-auto.js";
 import { proveCarry, type BuildRunner } from "./release-carry.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { deploymentGate } from "./deploy-gate.js";
@@ -743,6 +743,17 @@ function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now:
       return withStore(store => sealAutoGreen(store, { ...input, ci: observed, mainUpToDate: upToDate, evidenceRoot: auto.evidenceRoot, now: now() }));
     },
     async giveUp(taskId, why) { withStore(store => giveUpAutoApproval(store, { taskId, why, now: now() })); },
+    async holdForCi(taskId, candidate) { withStore(store => holdApprovalForCi(store, { taskId, candidate, now: now() })); },
+    async ciPassed(taskId, candidate, ask) {
+      // The plane reads CI itself; a short network failure is asked again a few times, and unreadable is never a pass.
+      let ci: CiObservation | null = null, problem = "";
+      for (let attempt = 0; attempt < 3 && ci === null; attempt++) {
+        try { ci = await auto.observe(candidate); } catch (error) { problem = String((error as Error)?.message ?? error).slice(0, 200); }
+      }
+      if (ci === null) return { ok: false as const, why: `GitHub CI on ${candidate.slice(0, 7)} couldn't be read (${problem})` };
+      const observed = ci;
+      return withStore(store => liftCiHold(store, { taskId, candidate, ci: observed, ask, now: now() }));
+    },
     async checkFailed(taskId, why) { withStore(store => noteAutoCheckFailed(store, { taskId, why, now: now() })); },
     async released(taskId, tag) { withStore(store => noteAutoRelease(store, { taskId, tag, now: now() })); },
     async holdPublish(taskId, why) { withStore(store => holdAutoPublish(store, { taskId, why, now: now() })); },

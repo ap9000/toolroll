@@ -1666,9 +1666,17 @@ describe("toolroll release: approve automatically when checks pass", () => {
     w.s.gateSeesChecks = true;
     w.s.checks.set(SHA, running(REQUIRED_PR_CHECKS));
     const seen = { filedWhileRunning: false, checkedWhileRunning: false };
+    // The plane's CI hold (codex round 1 #4): placed before filing, lifted only on the plane's own reading of CI.
+    const ciHold = { held: null as string | null, heldBeforeFiling: false, lifts: [] as boolean[] };
+    w.adapters.release!.auto!.holdForCi = async (_task, candidate) => { ciHold.held = candidate; };
+    w.adapters.release!.auto!.ciPassed = async (_task, candidate, ask) => {
+      if (checksVerdict(w.s.checks.get(candidate) ?? [], REQUIRED_PR_CHECKS).state !== "passed") return { ok: false, why: "CI hasn't finished" };
+      ciHold.held = null; ciHold.lifts.push(ask);
+      return { ok: true };
+    };
     const fileGate = w.adapters.toolroll.fileGate;
-    w.adapters.toolroll.fileGate = async input => { seen.filedWhileRunning = w.s.checks.get(SHA)![0]!.status !== "completed"; return fileGate(input); };
-    return { ...w, seen };
+    w.adapters.toolroll.fileGate = async input => { seen.filedWhileRunning = w.s.checks.get(SHA)![0]!.status !== "completed"; ciHold.heldBeforeFiling = ciHold.held === SHA; return fileGate(input); };
+    return { ...w, seen, ciHold };
   };
 
   test("pipeline-speed D2: the automatic road files and checks while CI runs, and approves only once CI passed", async () => {
@@ -1699,6 +1707,22 @@ describe("toolroll release: approve automatically when checks pass", () => {
     expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, reason: "ci-failed", message: expect.stringContaining("Nothing was sent for approval") });
     expect(s.said.some(line => line.includes("needs your approval"))).toBe(false);
     expect(s.calls).not.toContain("deploy");
+  });
+
+  test("codex round 1 #4: the automatic road refusing with CI pending asks nobody until the plane lifts its CI hold", async () => {
+    const { s, adapters, plane, ciHold } = ciAheadWorld(true);
+    adapters.release!.auto!.authorizeCheck = async () => ({ ok: false, why: "its checks run unsandboxed" });
+    let sleeps = 0, askedWhileHeld = false;
+    s.onSleep.push(state => {
+      if (s.said.some(line => line.includes("needs your approval")) && ciHold.held !== null) askedWhileHeld = true;
+      if (++sleeps === 3) state.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
+      if (ciHold.held === null && state.gate.approval === null) state.gate.approval = { by: "alex", at: new Date(state.now).toISOString(), digest: DIGEST, basis: null, role: "approver", active: true, person: { ok: true } } as never;
+    });
+    await runRelease(options(stateDir()), adapters);
+    expect(ciHold.heldBeforeFiling).toBe(true);
+    expect(plane.gaveUp).toEqual(["its checks run unsandboxed"]);
+    expect(askedWhileHeld).toBe(false);
+    expect(ciHold.lifts).toEqual([true]);
   });
 
   test("pipeline-speed D2: without automatic approval the gate still waits for CI before filing anything", async () => {

@@ -77,6 +77,7 @@ import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
 import { liveReleaseOf } from "./scope.js";
+import { releaseCiHoldOf } from "./release-ci-hold.js";
 import { APPROVAL_BASES, approvalOf, machineActing, personProof, proofDetailOf, quarantinedAuthor, sealOriginOf, type ScopeAuthor, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
 import { resolveScopeProfile, resolveRouteCandidates, exactPinOf, routeOfTask, agentChoicesFor } from "./agentconfig.js";
 import {
@@ -8361,6 +8362,9 @@ export class Store {
         // ceremony (scope.ts approve), so a machine — the lead's token, a remote API run — never mints one, whatever
         // road it came by.
         if (basis === undefined && machineActing()) return false;
+        // A RELEASE WAITING FOR CI (Codex review round 1, finding 4): filed while its pull request's checks still ran,
+        // only the automatic road (which proves CI itself) seals it until the plane read exact-head CI passing.
+        if (basis?.kind !== "auto-check" && basis?.kind !== "auto-green" && releaseCiHoldOf(this, taskId) !== null) return false;
         // `carried` is written by the carry transaction alone (carryReleaseApproval), never through a seal.
         if ((basis as { kind: string } | undefined)?.kind === "carried") return false;
         // THE COORDINATOR QUARANTINE, enforced in the primitive (MCP spec
@@ -24691,4 +24695,5 @@ export function agentsLiveRuns(store: Store, endedSince: Date): AgentsLiveRun[] 
     repo: row["live_task_repo"] === null || row["live_task_repo"] === undefined ? null : String(row["live_task_repo"]),
   }));
 }
+
 

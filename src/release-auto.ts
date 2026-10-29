@@ -25,6 +25,7 @@ import { CARRY_RULES, rulePath } from "./release-carry.js";
 import { AUTO_EVIDENCE_ACTION, AUTO_WITHDRAWN_ACTION, LIVE_RELEASE_STATES, RELEASE_APPROVAL_ACTION, releaseAuthorityOfTask, releaseAutoApproves, type ReleaseApprovalSetting, releaseApprovalSetting } from "./release-authority.js";
 import { autoReleaseApprovalOf, personApprovalOf } from "./scope.js";
 import { releaseOperations, revokeRelease, type Store } from "./store.js";
+import { RELEASE_CI_HELD_ACTION, RELEASE_CI_PASSED_ACTION, releaseCiHoldOf } from "./release-ci-hold.js";
 import { verificationEvidence } from "./verification-evidence.js";
 
 export { RELEASE_APPROVAL_ACTION, releaseApprovalSetting, releaseAutoApproves, type ReleaseApprovalSetting };
@@ -427,6 +428,15 @@ export function giveUpAutoApproval(store: Store, input: { taskId: string; why: s
     unseal(store, input.taskId, input.now);
     const scope = store.getScope(input.taskId);
     const version = scope?.releaseTerms?.packageVersion ?? null;
+    // Still waiting for CI (round 1, finding 4): nobody is asked to approve yet; `liftCiHold` asks once CI passed.
+    const ciHold = releaseCiHoldOf(store, input.taskId);
+    if (ciHold !== null) {
+      store.enqueueNotification({ dedupeKey: `release-auto-stopped:${input.taskId}:${input.why.slice(0, 120)}`, kind: "release-auto",
+        subject: `Release${version === null ? "" : ` ${version}`} won't approve itself`,
+        body: `Not approved automatically: ${input.why}. GitHub CI is still running on ${ciHold.candidate?.slice(0, 7) ?? "its commit"}; you're asked to approve it once CI passes.`,
+        link: chatControlHref("task", input.taskId), source: { taskRef: ref.id } }, input.now);
+      return;
+    }
     store.enqueueNotification({ dedupeKey: `release-auto-stopped:${input.taskId}:${input.why.slice(0, 120)}`, kind: "release-auto", pushClass: "attention",
       subject: `Release${version === null ? "" : ` ${version}`} needs you`,
       body: `Not approved automatically: ${input.why}. Approve it yourself, or fix the branch and release the new commit.`,
@@ -482,4 +492,52 @@ export function allowAutoPublish(store: Store, input: { taskId: string; by: stri
   store.recordAction({ at: input.now.toISOString(), actor: input.by, repo: store.lookupRef(input.taskId)?.repo ?? null, taskId: input.taskId, runId: null,
     action: PUBLISH_ALLOWED_ACTION, outcome: "allowed", source: "request", detail: `${input.by} lets the release's tag, publication and Homebrew go on` });
   return { ok: true };
+}
+
+/**
+ * A release filed while its pull request's CI still ran (pipeline-speed.md D2): hold every approval but the automatic
+ * road's until the plane reads exact-head CI passing (Codex review round 1, finding 4). Recorded before the task is
+ * filed, so no moment exists where the filed task is approvable with CI pending. Idempotent.
+ */
+export function holdApprovalForCi(store: Store, input: { taskId: string; candidate: string; now: Date }): void {
+  if (!/^[0-9a-f]{40}$/.test(input.candidate)) throw new Error("a CI hold needs the exact candidate commit");
+  const held = releaseCiHoldOf(store, input.taskId);
+  if (held !== null && held.candidate === input.candidate) return;
+  store.recordAction({ at: input.now.toISOString(), actor: "toolroll", repo: store.lookupRef(input.taskId)?.repo ?? null, taskId: input.taskId, runId: null,
+    action: RELEASE_CI_HELD_ACTION, outcome: "held", source: "work", detail: input.candidate });
+}
+
+/**
+ * Lift a release's CI hold on the plane's own reading of GitHub CI (never the coordinator's word): fresh, whole, every
+ * run GitHub Actions, on exactly the held candidate, and every required check passed (release.ts prChecksVerdict, as a
+ * person's road judges it: a person decides about earlier attempts). With `ask`, the owner is told the release needs
+ * them now. Nothing held is a pass.
+ */
+export function liftCiHold(store: Store, input: { taskId: string; candidate: string; ci: CiObservation; ask: boolean; now: Date }): { ok: true } | Refusal {
+  return store.transact(() => {
+    const held = releaseCiHoldOf(store, input.taskId);
+    if (held === null) return { ok: true as const };
+    if (held.candidate !== input.candidate) return refuse(`the release waits for CI on ${held.candidate?.slice(0, 7) ?? "an unreadable commit"}, not ${input.candidate.slice(0, 7)}`);
+    const ci = input.ci;
+    if (ci.head !== input.candidate) return refuse(`CI was read for ${ci.head.slice(0, 7)}, not ${input.candidate.slice(0, 7)}`);
+    const at = Date.parse(ci.observedAt);
+    if (!Number.isFinite(at) || at > input.now.getTime() + 60_000 || input.now.getTime() - at > CI_OBSERVATION_MS) return refuse("the CI reading isn't fresh");
+    if (ci.complete !== true) return refuse("GitHub's check history of this commit can't be read whole");
+    const other = ci.runs.find(run => run.app !== "github-actions");
+    if (other !== undefined) return refuse(`${other.name} was reported by ${other.app ?? "an unknown app"}, not GitHub Actions`);
+    const verdict = prChecksVerdict(ci.runs, input.candidate, REQUIRED_PR_CHECKS);
+    if (verdict.state === "failed") return refuse(`CI failed: ${verdict.failed.join(", ")}`);
+    if (verdict.state === "pending") return refuse(`CI hasn't finished: ${verdict.waiting.join(", ")}`);
+    const ref = store.lookupRef(input.taskId);
+    store.recordAction({ at: input.now.toISOString(), actor: "toolroll", repo: ref?.repo ?? null, taskId: input.taskId, runId: null,
+      action: RELEASE_CI_PASSED_ACTION, outcome: "passed", source: "work", detail: input.candidate });
+    if (input.ask && ref !== null) {
+      const version = store.getScope(input.taskId)?.releaseTerms?.packageVersion ?? null;
+      store.enqueueNotification({ dedupeKey: `release-ci-passed:${input.taskId}:${input.candidate}`, kind: "release-auto", pushClass: "attention",
+        subject: `Release${version === null ? "" : ` ${version}`} needs you`,
+        body: `GitHub CI passed on ${input.candidate.slice(0, 7)}. Approve it yourself, or fix the branch and release the new commit.`,
+        link: chatControlHref("task", input.taskId), source: { taskRef: ref.id } }, input.now);
+    }
+    return { ok: true as const };
+  });
 }

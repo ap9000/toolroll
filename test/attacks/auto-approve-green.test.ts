@@ -7,7 +7,7 @@
  */
 import { afterEach, describe, expect, test } from "vitest";
 import { releaseFixture, builtRun, sealedCheck, reportOf, RELEASE_NOW, EVIDENCE, type ReleaseFixture } from "../release-fixture.js";
-import { authorizeAutoCheck, ciProblem, sealAutoGreen, setReleaseApproval, type CiObservation } from "../../src/release-auto.js";
+import { authorizeAutoCheck, ciProblem, giveUpAutoApproval, holdApprovalForCi, liftCiHold, sealAutoGreen, setReleaseApproval, type CiObservation } from "../../src/release-auto.js";
 import { releaseAutoApproves } from "../../src/release-authority.js";
 import { approve, liveReleaseOf, personApprovalOf, propose, releaseApprovalOf } from "../../src/scope.js";
 import { releaseAuthorityOfTask } from "../../src/store.js";
@@ -1066,5 +1066,48 @@ describe("codex r2 #1: main's protection holds only when it is effective and nob
     expect(await read(P.exec({ classic: { code: 1, stdout: "", stderr: "HTTP 403" }, rules: { code: 1, stdout: "", stderr: "HTTP 500" } }))).toBeNull();
     expect((await read(P.exec({ classic: { code: 1, stdout: "", stderr: "HTTP 403" } })))?.missing).toEqual(["classic protection couldn't be read"]);
     expect((await read(P.exec({ classic: { code: 0, stdout: "not json" } })))?.effective).toBe(false);
+  });
+});
+
+describe("codex round 1 #4: a release filed while CI runs is approvable by nobody until the plane reads CI passing", () => {
+  const notices = (f: ReleaseFixture) => f.store.handle.prepare("SELECT subject, body FROM notification WHERE kind = 'release-auto' ORDER BY id").all().map(row => `${String(row["subject"])}: ${String(row["body"])}`);
+  test("the automatic road refuses with CI pending: no 'approve it yourself', and a person's, a chat's or a mode's yes is refused in words", () => {
+    const f = open();
+    holdApprovalForCi(f.store, { taskId: f.taskId, candidate: f.approved, now: RELEASE_NOW });
+    // The automatic road refuses (as for unsandboxed checks without release terms): nobody is asked yet.
+    giveUpAutoApproval(f.store, { taskId: f.taskId, why: "its checks run unsandboxed", now: LATER });
+    expect(notices(f).join("\n")).not.toMatch(/Approve it yourself/);
+    expect(notices(f)).toEqual([expect.stringContaining("you're asked to approve it once CI passes")]);
+    // A person's typed password: refused, saying why, and nothing is sealed.
+    const person = approve(f.store, f.taskId, "alex", LATER, digestOf(f), f.password);
+    expect(person).toMatchObject({ ok: false, reason: "policy", message: expect.stringContaining(`GitHub CI is still running on ${f.approved.slice(0, 7)}`) });
+    expect(basis(f)).toBeNull();
+    expect(f.store.getScope(f.taskId)!.approvedBy ?? null).toBeNull();
+    // The seal primitive itself: a chat card, a mode or a grant never seals it either.
+    for (const kind of ["chat", "mode", "grant", "schedule"] as const) expect(f.store.sealScopeApproval(f.taskId, "alex", LATER, {}, { kind, modeDigest: "x" })).toBe(false);
+    // The automatic road's check may still run beside CI.
+    expect(authorize(f)).toMatchObject({ ok: true });
+  });
+
+  test("only the plane's reading of exact-head CI passing lifts it; then the person is asked and their yes seals", () => {
+    const f = open();
+    holdApprovalForCi(f.store, { taskId: f.taskId, candidate: f.approved, now: RELEASE_NOW });
+    const pending: CiObservation = { ...green(f.approved), runs: green(f.approved).runs.map((run, i) => i === 0 ? { ...run, status: "in_progress", conclusion: null } : run) };
+    for (const [ci, words] of [
+      [pending, /hasn't finished/],
+      [green("e".repeat(40)), /read for eeeeeee/],
+      [{ ...green(f.approved), complete: false }, /can't be read whole/],
+      [green(f.approved, new Date(LATER.getTime() - 3_600_000)), /isn't fresh/],
+      [{ ...green(f.approved), runs: green(f.approved).runs.slice(1) }, /hasn't finished/],
+    ] as const) {
+      expect(liftCiHold(f.store, { taskId: f.taskId, candidate: f.approved, ci, ask: true, now: LATER })).toMatchObject({ ok: false, why: expect.stringMatching(words) });
+      expect(approve(f.store, f.taskId, "alex", LATER, digestOf(f), f.password)).toMatchObject({ ok: false, reason: "policy" });
+    }
+    // A pass on another commit than the held one lifts nothing.
+    expect(liftCiHold(f.store, { taskId: f.taskId, candidate: "e".repeat(40), ci: green("e".repeat(40)), ask: true, now: LATER })).toMatchObject({ ok: false });
+    expect(notices(f).join("\n")).not.toMatch(/Approve it yourself/);
+    expect(liftCiHold(f.store, { taskId: f.taskId, candidate: f.approved, ci: green(f.approved), ask: true, now: LATER })).toEqual({ ok: true });
+    expect(notices(f).at(-1)).toMatch(/needs you: GitHub CI passed on .*Approve it yourself/);
+    expect(approve(f.store, f.taskId, "alex", LATER, digestOf(f), f.password)).toMatchObject({ ok: true });
   });
 });
