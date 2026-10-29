@@ -5,7 +5,7 @@ import { activityAge as age, activityMoney as money, ACTIVITY_ACTORS as actors, 
 function Tasks({ rows }: { rows: ActivityFamily[] }) {
   return rows.length === 0 ? <p className="py-2 text-muted-foreground">No tasks in this group.</p> : <ul className="divide-y divide-border">
     {rows.map(row => <li key={row.root} className="min-w-0 py-2">
-      <a href={row.href} className="inline-flex min-h-11 items-center break-words text-foreground underline underline-offset-4 [overflow-wrap:anywhere]">{row.title}</a>
+      <a href={row.href} className="flex min-h-11 max-w-full min-w-0 items-center text-foreground underline underline-offset-4"><span className="min-w-0 [overflow-wrap:anywhere]">{row.title}</span></a>
       <p className="text-xs text-muted-foreground">{row.actor === null ? row.state === 'ready' ? 'Ready' : 'History unavailable' : actors[row.actor]} · {row.kind} · Recorded checks: {row.checks}</p>
       {row.state === 'completed' && <p className="text-xs text-muted-foreground">{age(row.elapsedMs)} finished to decision · {row.revisions} revisions · {money(row.recordedUsd)} recorded{row.totalUsd === null ? ' · Total unknown' : ''}</p>}
     </li>)}
