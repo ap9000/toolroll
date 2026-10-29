@@ -1,5 +1,5 @@
 /** A committed native session enters the existing review flow, never another executor. */
-import { checkoutGitSync } from './teardown-git.js';
+import { checkoutGitSync, noLazyFetch } from './teardown-git.js';
 import { execFileSync } from 'node:child_process';
 import { lstatSync, realpathSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
@@ -61,7 +61,7 @@ function catalog(store: Store, readOnly: boolean): DatabaseSync {
 // checkout git, which the code page's GET preview also uses (docs/plans/get-side-effects.md).
 function git(repo: string, args: string[]): string {
   try {
-    return checkoutGitSync(repo, ['--no-replace-objects', '--no-lazy-fetch', ...args]).trimEnd();
+    return checkoutGitSync(repo, ['--no-replace-objects', ...noLazyFetch(), ...args]).trimEnd();
   } catch { throw Error('The committed coding result could not be verified in Git. Check the project and try again.'); }
 }
 function branchHead(repo: string, branch: string): string | null {

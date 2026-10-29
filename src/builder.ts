@@ -18,7 +18,7 @@ import { learningContext } from "./project-learning.js";
 import { knowledgeContext } from "./project-knowledge.js";
 import { flowGoalCuts } from "./flow-engine.js";
 import { readCodingHandoff, verifyCodingHandoffBase } from "./coding-handoff.js";
-import { PREPARED_EVIDENCE_FILE, PREPARED_EVIDENCE_GIT, preparedScreenshotMatches, readPreparedEvidence, writePreparedEvidence, type PreparedEvidence } from "./prepared-evidence.js";
+import { PREPARED_EVIDENCE_FILE, preparedEvidenceGit, preparedScreenshotMatches, readPreparedEvidence, writePreparedEvidence, type PreparedEvidence } from "./prepared-evidence.js";
 /**
  * The first thing here that runs an agent.
  *
@@ -914,7 +914,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
     const refusal = await proveCandidate(git, worktree, preparedCandidate, store.firstBuilderBase(taskRef, branch));
     if (refusal !== null) return { ok: false, reason: "no-op", message: refusal };
     // Check the exact candidate before setup or the full gate spends anything.
-    const listed = await git(GIT, [...PREPARED_EVIDENCE_GIT, "ls-tree", "-z", preparedCandidate, "--", PREPARED_EVIDENCE_FILE], { cwd: worktree, maxBuffer: 2048 });
+    const listed = await git(GIT, [...preparedEvidenceGit(), "ls-tree", "-z", preparedCandidate, "--", PREPARED_EVIDENCE_FILE], { cwd: worktree, maxBuffer: 2048 });
     if (listed.code !== 0) return { ok: false, reason: "no-op", message: "The committed screenshot inventory could not be inspected. Restore the saved candidate before review." };
     const required = scope?.acceptance.some(criterion => criterion.evidence.includes("screenshot")) ?? false;
     try { if (required || listed.stdout.length > 0) preparedEvidence = readPreparedEvidence(worktree, preparedCandidate, required); }

@@ -296,7 +296,8 @@ import { scout as scoutTask } from "./scout.js";
 import { profileDigestOf } from "./scope.js";
 import { PROVIDER_KEY_ENV, clearProviderKey, keyStatus, readAuthMode, readAuthModeStrict, readProviderKey, saveProviderKey, setAuthMode, verifyProviderKey, verdictWords } from "./keys.js";
 import { run, terminateLiveProviders, run as execRun } from "./exec.js";
-import { hardenedGit } from "./teardown-git.js";
+import { hardenedGit, noLazyFetch, partialCloneRefusal } from "./teardown-git.js";
+import { installedGitFloorProblem } from "./git-floor.js";
 import { noticeGitIncidents } from "./git-incident.js";
 import { containmentNotice, containmentStatus, currentContainment, describeContainment, resolveContainment, type EffectiveContainment } from "./containment.js";
 import { readPulls } from "./pulls.js";
@@ -1540,11 +1541,11 @@ async function dispatch(
     case "sync":
       return syncCommand(flags, context);
     case "serve":
-      return serveCommand(flags, context);
+      return gitTooOld(command, context) ?? serveCommand(flags, context);
     case "watch":
-      return watchCommand(flags, context);
+      return gitTooOld(command, context) ?? watchCommand(flags, context);
     case "up":
-      return upCommand(flags, context);
+      return gitTooOld(command, context) ?? upCommand(flags, context);
     case "onboard":
       return onboardCommand(flags, context);
     case "daemon":
@@ -3394,8 +3395,10 @@ async function tickCommand(
         if (exists.code !== 0 && text(flags, "base") === undefined) buildBase = source.head;
         else {
           const descendant = exists.code === 0 ? branch : base;
-          const ancestry = await git("git", ["--no-lazy-fetch", "--no-replace-objects", "merge-base", "--is-ancestor", source.head, descendant], { cwd: repo });
-          if (ancestry.code !== 0) problem = "the requested revision base does not contain its source head";
+          const partial = partialCloneRefusal(repo);
+          const ancestry = partial !== null ? null : await git("git", [...noLazyFetch(), "-c", "protocol.allow=never", "--no-replace-objects", "merge-base", "--is-ancestor", source.head, descendant], { cwd: repo });
+          if (partial !== null) problem = partial;
+          else if (ancestry!.code !== 0) problem = "the requested revision base does not contain its source head";
         }
       }
       if (problem !== null) {
@@ -12234,4 +12237,11 @@ async function projectSandboxCommand(positional: readonly string[], flags: Map<s
     ...words(changed.after),
     "Scopes written from now on use this; scopes already approved keep what they were approved with.",
   ]);
+}
+
+/** Starting the console or the worker on a git older than Toolroll's floor (git-floor.ts): refused, with one message
+ * naming the installed and the required version. Other commands aren't held. */
+function gitTooOld(command: string, context: Context): number | null {
+  const problem = installedGitFloorProblem();
+  return problem === null ? null : fail(context.write, context.json, command, "git-too-old", problem, EXIT.refused);
 }

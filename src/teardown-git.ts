@@ -818,12 +818,14 @@ export function checkoutGit(inner: Runner = run, mode: "build" | "read" = "build
       if (own.code !== 0) return refused("its config couldn't be read");
       const key = commandSetting(own.stdout, { lfsChecked: true });
       if (key !== null) return refused(`the checkout's git config sets ${key}, which can run a command`);
+      // A git without --no-lazy-fetch: a repository that could fetch lazily is refused, from the view's frozen config.
+      if (!lazyFetchSupported() && lazyFetchSetting(own.stdout) !== null) return refused(PARTIAL_CLONE_REFUSAL);
       // The operator's own config contributes values only (carriedSettings); git then reads no global or system config.
       // A read carries no filter: it reads attributes from the empty tree anyway.
       const carried = mode === "read" ? withoutFilters(carriedSettings(own.stdout)) : carriedSettings(own.stdout);
       const env = { ...viewed.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
       // Never into a submodule or nested repository, whose own config this never read: status and diff skip them.
-      const safeArgs = [...args];
+      const safeArgs = withoutUnsupportedFlags(args);
       const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
       if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
       const flags = mode === "read" ? readFlags() : WRITE_VIEW_FLAGS;
@@ -859,7 +861,7 @@ export const PAGE_READ_FLAGS: readonly string[] = [
  * also runs against a view of the checkout's repository (gitView; checkoutGitSync, checkoutGit "read"), whose config and info are the plane's. The cost is cosmetic: a checkout's line-ending or encoding rules are not applied, so
  * a file they would normalize can read as changed (fail closed: shipping then asks for a clean commit). */
 export function readFlags(): readonly string[] {
-  return PAGE_READ_FLAGS;
+  return lazyFetchSupported() ? PAGE_READ_FLAGS : PAGE_READ_FLAGS.filter(flag => flag !== "--no-lazy-fetch");
 }
 
 /**
@@ -880,7 +882,9 @@ export function checkoutGitSync(cwd: string, args: readonly string[], options: {
     if (own.status !== 0) throw new Error("its config couldn't be read");
     const key = commandSetting(own.stdout, { lfsChecked: true });
     if (key !== null) throw new Error(`the checkout's git config sets ${key}, which can run a command`);
-    const safeArgs = [...args];
+    // A git without --no-lazy-fetch: a repository that could fetch lazily is refused, from the view's frozen config.
+    if (!lazyFetchSupported() && lazyFetchSetting(own.stdout) !== null) throw new Error(PARTIAL_CLONE_REFUSAL);
+    const safeArgs = withoutUnsupportedFlags(args);
     const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
     if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
     // An external diff program is named by config, which may change after it was read: never used here.
@@ -910,4 +914,74 @@ export function hardenedGit(inner: Runner = run, mode: "build" | "read" = "build
     while (rest[0] === "-C" && rest.length > 1) { cwd = resolve(cwd ?? process.cwd(), rest[1]!); rest = rest.slice(2); }
     return hardened("git", rest, { ...options, ...(cwd === undefined ? {} : { cwd }) });
   };
+}
+
+/**
+ * Git older than 2.45 has no `--no-lazy-fetch` (and no GIT_NO_LAZY_FETCH): there, every hardened read leaves the flag
+ * out and instead refuses a repository whose config makes lazy fetching possible (lazyFetchSetting), while
+ * `protocol.allow=never` stays on every read and write, so a lazy fetch that slipped past would still find no
+ * transport. Asked once per process, as the plane's other plain git probes run: no system or global config.
+ */
+let lazyFetch: boolean | undefined;
+export function lazyFetchSupported(): boolean {
+  if (lazyFetch === undefined) {
+    const probe = spawnSync("git", ["--no-lazy-fetch", "version"], { cwd: "/", encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "pipe"],
+      env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
+    lazyFetch = probe.status === 0;
+  }
+  return lazyFetch;
+}
+/** For tests: forget the probe's answer, or set it (null forgets). */
+export function setLazyFetchSupportedForTest(value: boolean | null): void { lazyFetch = value ?? undefined; }
+
+/** The words for a partial clone refused on a git without `--no-lazy-fetch`. */
+export const PARTIAL_CLONE_REFUSAL = "this project is a partial clone; protected reads need git 2.45 or newer";
+
+/** `--no-lazy-fetch` where the installed git has it, else nothing (and lazyFetchSetting refuses partial clones). */
+export function noLazyFetch(): readonly string[] { return lazyFetchSupported() ? ["--no-lazy-fetch"] : []; }
+
+/** A caller's own arguments with `--no-lazy-fetch` taken out when the installed git doesn't know it. */
+function withoutUnsupportedFlags(args: readonly string[]): string[] {
+  return lazyFetchSupported() ? [...args] : args.filter(arg => arg !== "--no-lazy-fetch");
+}
+
+/**
+ * The repository setting (local or worktree scope of a `git config --list --show-scope -z` listing) that makes lazy
+ * fetching possible, or null: `extensions.partialClone` set at all, any `remote.<name>.promisor` not plainly false, or
+ * any `remote.<name>.partialCloneFilter` set (git makes that remote a promisor). Fails closed: a listing that can't be
+ * read names a setting.
+ */
+export function lazyFetchSetting(listing: string): string | null {
+  try {
+    const fields = listing.split("\0");
+    for (let at = 0; at + 1 < fields.length; at += 2) {
+      const scope = fields[at]!;
+      if (scope !== "local" && scope !== "worktree") continue;
+      const entry = fields[at + 1]!;
+      const newline = entry.indexOf("\n");
+      const key = newline < 0 ? entry : entry.slice(0, newline);
+      const value = newline < 0 ? null : entry.slice(newline + 1);
+      const { section, subsection, variable } = keyParts(key);
+      if (section === "extensions" && variable === "partialclone") return key.toLowerCase();
+      if (section === "remote" && subsection !== null && variable === "partialclonefilter") return key.toLowerCase();
+      if (section === "remote" && subsection !== null && variable === "promisor" && !/^(false|no|off|0)$/i.test((value ?? "true").trim())) return key.toLowerCase();
+    }
+    return null;
+  } catch { return "a setting that couldn't be read"; }
+}
+
+/**
+ * For a hardened read that runs git directly on a repository rather than through a view (gitView): on a git without
+ * `--no-lazy-fetch`, the refusal words when the repository's own config (read now, with includes off and no system or
+ * global config) makes lazy fetching possible; null otherwise, and always null on a git that has the flag. Not frozen
+ * like a view's config: such reads also carry `protocol.allow=never`, so a setting added after this check still finds
+ * no transport.
+ */
+export function partialCloneRefusal(repo: string): string | null {
+  if (lazyFetchSupported()) return null;
+  const listed = spawnSync("git", ["--no-optional-locks", "-C", repo, "config", "--list", "--no-includes", "--show-scope", "-z"],
+    { cwd: "/", encoding: "utf8", timeout: 5_000, maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+      env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
+  if (listed.status !== 0) return PARTIAL_CLONE_REFUSAL;
+  return lazyFetchSetting(listed.stdout) === null ? null : PARTIAL_CLONE_REFUSAL;
 }

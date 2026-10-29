@@ -1,6 +1,6 @@
 /** Optional, project-local advice. Core review and approval never depend on it. */
 import { inReadOnlyRequest } from "./read-only-request.js";
-import { checkoutGitSync } from './teardown-git.js';
+import { checkoutGitSync, noLazyFetch, partialCloneRefusal } from './teardown-git.js';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
@@ -59,7 +59,9 @@ const git = (repo: string, args: string[], seen?: Map<string, string>): string =
   if (known !== undefined) return known;
   // Bounded, and no hook or fsmonitor program: it also runs from the console's background pass.
   // No lazy fetch either: a partial clone's fetch runs whatever transport command the shared config names.
-  const out = execFileSync('git', ['--no-optional-locks', '--no-lazy-fetch', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-C', repo, ...args], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
+  const partial = partialCloneRefusal(repo);
+  if (partial !== null) throw new Error(partial);
+  const out = execFileSync('git', ['--no-optional-locks', ...noLazyFetch(), '-c', 'protocol.allow=never', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-C', repo, ...args], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
   seen?.set(key, out);
   return out;
 };

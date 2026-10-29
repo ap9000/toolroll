@@ -27,7 +27,7 @@ vi.mock("node:child_process", async original => {
 
 import { execFileSync } from "node:child_process";
 import { run } from "../../src/exec.js";
-import { checkoutGit, checkoutGitSync } from "../../src/teardown-git.js";
+import { checkoutGit, checkoutGitSync, noLazyFetch } from "../../src/teardown-git.js";
 import type { Runner } from "../../src/worktree.js";
 
 let root: string, main: string, linked: string, marker: string;
@@ -72,7 +72,7 @@ const cases = [
 describe("attack: a filter named by info/attributes, planted between the inspection and the read", () => {
   test("control: the probe runs its command under the page-read flags alone", () => {
     viaConfig();
-    try { execFileSync("git", ["--no-lazy-fetch", "--attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-c", "core.attributesFile=/dev/null", "status", "--short"], { cwd: main, env, stdio: "pipe" }); } catch { /* the process driver speaks no protocol */ }
+    try { execFileSync("git", [...noLazyFetch(), "--attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904", "-c", "core.attributesFile=/dev/null", "status", "--short"], { cwd: main, env, stdio: "pipe" }); } catch { /* the process driver speaks no protocol */ }
     expect(existsSync(marker)).toBe(true);
   });
 

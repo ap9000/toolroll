@@ -39,11 +39,21 @@
 - **CI tests the commit a release trusts.** Every pull-request job now checks
   out the pull request's own head commit, not the merge commit GitHub makes,
   and proves it before building.
-- **Git 2.45 or newer is required, and tested.** Toolroll's hardened git reads
-  need `git --no-lazy-fetch`, which arrived in git 2.45; on older git, page
-  reads of agent checkouts fail. Two new CI jobs run the git attack and
-  worktree tests on git 2.45 and 2.47, as an unprivileged user, and fail if
-  any test is skipped.
+- **Git 2.41 or newer is required, and tested.** Toolroll's hardened git reads
+  need `git --attr-source`, which arrived in git 2.41. `toolroll up`, `serve`
+  and `watch` won't start on an older git, and `toolroll doctor` names it,
+  each with the installed and the required version. Git 2.41 to 2.44 has no
+  `--no-lazy-fetch`: there Toolroll leaves it out and instead refuses a
+  project that is a partial clone for protected reads ("this project is a
+  partial clone; protected reads need git 2.45 or newer"), judged from the
+  config it inspected, and every read still refuses all network protocols.
+  Two CI jobs run the git attack and worktree tests on git 2.41 and 2.47, as
+  an unprivileged user, fail if any test is skipped, and are now required
+  for a release.
+- **A release branch must contain main.** CI tests the pull request's own
+  commit, so `toolroll release` refuses a branch that doesn't contain main's
+  head ("the branch is behind main; update it and push"), at the gate before
+  anything is filed and again right before the merge.
 - **Tests can't lean on a guessed git identity.** Each test's home tells git
   never to guess a name and email from the host, so a test that commits
   without setting one fails on a Mac just as it would on Linux CI.

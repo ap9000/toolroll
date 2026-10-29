@@ -11,10 +11,11 @@ case "$want" in
     apt-get update -qq
     apt-get install -y -qq --no-install-recommends git >/dev/null
     ;;
-  2.45)
-    # Toolroll's declared floor (README): the `git --no-lazy-fetch` option arrived in 2.45.
-    release=2.45.4
-    sha256=93f82ed1cab772acf3167db3be2bd2e54876e0ab53c6a9af744940752b961d88
+  2.41)
+    # Toolroll's declared floor (README): the global `git --attr-source` option arrived in 2.41. Older than 2.45 has no `--no-lazy-fetch`,
+    # so Toolroll refuses partial clones for protected reads there (teardown-git.ts lazyFetchSupported).
+    release=2.41.3
+    sha256=baa39125deee194b440ac7d0138f6c34f0d87ceb1cb9da5b2becf704f45b0819
     work="$(mktemp -d)"
     curl -fsSL --retry 3 -o "$work/git.tar.xz" "https://mirrors.edge.kernel.org/pub/software/scm/git/git-$release.tar.xz"
     echo "$sha256  $work/git.tar.xz" | sha256sum -c -

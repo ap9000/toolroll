@@ -162,8 +162,9 @@ jobs:
 
   # Git's own behaviour, on the declared floor and on the last release before 2.48 (README, Requirements): the git attack
   # tests and the worktree/teardown tests, nothing else. 2.47 is Debian trixie's git and still has the pre-2.48
-  # `worktree add` behaviour teardown-git.ts relinkAdded works around; 2.45 is the floor (`git --no-lazy-fetch`),
-  # built from kernel.org's tarball by scripts/ci-git.sh. The tests run as the image's unprivileged user (root passes
+  # `worktree add` behaviour teardown-git.ts relinkAdded works around; 2.41 is the floor (the global `git --attr-source`,
+  # src/git-floor.ts), built from kernel.org's tarball by scripts/ci-git.sh. Below 2.45 git has no `--no-lazy-fetch`, so
+  # the floor lane also proves a partial clone is refused for protected reads. The tests run as the image's unprivileged user (root passes
   # permission checks an operator's git can't), and a skipped test fails the job: a skip is not evidence. The only
   # skips allowed are the "native …" OS-fence attacks, which need bubblewrap/Seatbelt and run in the linux fence job.
   git:
@@ -175,7 +176,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        git: ["2.45", "2.47"]
+        git: ["2.41", "2.47"]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -195,3 +196,8 @@ jobs:
           CI: "true"
       - name: Every git test ran
         run: runuser -u node -- node scripts/ci-no-skips.mjs git-lane.json
+      - name: Partial clones are refused on the floor's git
+        if: matrix.git == '2.41'
+        run: runuser -u node -- npx vitest run test/attacks/checkout-git-partial-clone.test.ts --reporter=default --reporter=json --outputFile.json=partial-clone.json && runuser -u node -- node scripts/ci-no-skips.mjs partial-clone.json
+        env:
+          CI: "true"

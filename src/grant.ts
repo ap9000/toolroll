@@ -31,6 +31,7 @@
  */
 
 import { run, type ExecResult, type RunOptions } from "./exec.js";
+import { noLazyFetch, partialCloneRefusal } from "./teardown-git.js";
 
 /**
  * What a write actually does, split by how much it can hurt.
@@ -280,6 +281,8 @@ export async function proposeGrant(options: ProposeOptions): Promise<BackendGran
 async function observedByGit(repo: string, paths: readonly string[], runner: Runner): Promise<boolean> {
   const local = paths.filter(path => !isRemoteRef(path));
   if (local.length === 0) return false;
+  // A git without --no-lazy-fetch can't establish it for a partial clone: observed (teardown-git.ts partialCloneRefusal).
+  if (partialCloneRefusal(repo) !== null) return true;
 
   for (const path of local) {
     const asked = [path, `${normalise(path)}/`];
@@ -287,7 +290,7 @@ async function observedByGit(repo: string, paths: readonly string[], runner: Run
       asked.map(async candidate => {
         // check-ignore reads the index, so a planted fsmonitor would run: off (and hooks, lazy fetch) on the command line,
         // which wins over any config the repository's builds can write.
-        const result = await runner("git", ["--no-optional-locks", "--no-lazy-fetch", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "check-ignore", "-q", candidate], {
+        const result = await runner("git", ["--no-optional-locks", ...noLazyFetch(), "-c", "protocol.allow=never", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "check-ignore", "-q", candidate], {
           cwd: repo,
         });
         return result.code === 0;

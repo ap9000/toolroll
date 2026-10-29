@@ -69,22 +69,30 @@ F. Process: delta review of post-review security changes (diff + affected invari
 - D, head commit: every ci.yml job checks out `github.event.pull_request.head.sha || github.sha` (job env
   `TESTED_SHA`) and a "Tested commit" step proves `git rev-parse HEAD` equals it before anything builds, writing it to
   the step summary; src/ci-workflow.test.ts holds every job to that.
-- D, merge compatibility, **integration TODO (release side, not built here)**: the release gate must refuse a candidate
-  whose head does not contain origin/main's head (`git merge-base --is-ancestor <main head> <candidate>`, read at the
-  gate and again before the merge), so the tree CI tested is the tree that merges. Without it, testing the head instead
-  of the merge commit is weaker, not stronger, for a branch behind main. Belongs in src/release.ts / release-auto.ts.
-- D, git floor: **git 2.45** (README). The binding feature is the `git --no-lazy-fetch` global option, used by every
-  hardened read: checked in Docker, 2.44.4 and 2.43.7 answer "unknown option: --no-lazy-fetch", 2.45.4 accepts it (a
-  first 2.44 lane failed 12 git tests on exactly that, plus reftable, which also arrived in 2.45). Others in use are older:
-  `--attr-source` 2.40, `worktree list -z` 2.36, `GIT_CONFIG_COUNT` and `--path-format` 2.31; `worktree.useRelativePaths`
-  (2.48) is a setting older git ignores. No runtime git-version check exists, so none was added; stock Ubuntu 24.04
-  (2.43) and Debian 12 (2.39) are below the floor; so is 2.44.
-- D, git lanes: ci.yml job `git` (container node:22-trixie, matrix 2.45 built from the pinned kernel.org tarball by
+- D, merge compatibility (integrated): the release gate refuses a candidate whose head does not contain main's head
+  (src/release.ts containsMain: sync from the recorded GitHub remote, then `git merge-base --is-ancestor <main head>
+  <candidate>`), at the gate before anything is filed and again right before the merge, reason `base-moved`, words
+  "The branch is behind main; update it and push." Attack tests in src/release.slow.test.ts (behind at the gate; main
+  moved after the gate).
+- D, git floor: **git 2.41** (README; src/git-floor.ts). The binding feature is the global `git --attr-source` option,
+  used by every page read: checked in Docker, 2.40.4 answers "unknown option: --attr-source" and fails 14 git tests;
+  2.41.3 passes all of `npm run test:git`. Others in use are older: `worktree list -z` 2.36, `GIT_CONFIG_COUNT` and
+  `--path-format` 2.31; `worktree.useRelativePaths` (2.48) is a setting older git ignores; reftable (2.45) can't be
+  made on older git, so its test proves that instead. `git --no-lazy-fetch` arrived in 2.45 (2.44.4 and 2.43.7 refuse
+  it): teardown-git.ts asks once per process (`git --no-lazy-fetch version`, plain env) and on older git leaves the flag
+  out of every hardened read and instead refuses any repository whose config makes lazy fetching possible
+  (`extensions.partialClone`, `remote.<name>.promisor` not plainly false, `remote.<name>.partialCloneFilter`): from the
+  view's frozen config listing in checkoutGit/checkoutGitSync, and for the direct reads outside a view
+  (partialCloneRefusal) from the config read just before, backstopped by `protocol.allow=never` on every read and write.
+  Words: "this project is a partial clone; protected reads need git 2.45 or newer". `toolroll up`/`serve`/`watch` refuse
+  to start below the floor (reason `git-too-old`) and `toolroll doctor` names it; other commands aren't held. Stock
+  Ubuntu 24.04 (2.43) is above the floor; Debian 12 (2.39) is below it.
+- D, git lanes: ci.yml job `git` (container node:22-trixie, matrix 2.41 built from the pinned kernel.org tarball by
   scripts/ci-git.sh, 2.47 = Debian's), running `npm run test:git` as the unprivileged `node` user, then
   scripts/ci-no-skips.mjs fails the job if any test was skipped, except the "native …" OS-fence attacks (3 in these
-  files; a plain container has no bubblewrap/Seatbelt; the linux fence job runs them with TOOLROLL_REQUIRE_NATIVE). **Integration TODO:** add "git 2.45 · debian trixie"
-  and "git 2.47 · debian trixie" to REQUIRED_PR_CHECKS (src/release.ts) and drop PENDING_REQUIRED from
-  src/ci-workflow.test.ts.
+  files; a plain container has no bubblewrap/Seatbelt; the linux fence job runs them with TOOLROLL_REQUIRE_NATIVE). The
+  floor lane also runs test/attacks/checkout-git-partial-clone.test.ts by name. "git 2.41 · debian trixie" and
+  "git 2.47 · debian trixie" are in REQUIRED_PR_CHECKS (src/release.ts).
 - D, identity: test/git-identity.ts. Every test file's home starts with `user.useConfigOnly = true` and no identity
   (test/setup-state.ts), so a test that commits without setting one fails on the Mac as it would on Linux CI;
   `withGitIdentity()` gives a home the test identity.

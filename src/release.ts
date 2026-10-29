@@ -46,6 +46,9 @@ export const REQUIRED_PR_CHECKS = [
   "linux native containment · delegated cgroup v2",
   "linux fence · sandbox-runtime",
   "Windows Job Object containment",
+  // The git lanes (ci.yml job "git"): the declared floor (git-floor.ts) and Debian trixie's 2.47.
+  "git 2.41 · debian trixie",
+  "git 2.47 · debian trixie",
 ] as const;
 /** The checks a release tag runs (.github/workflows/publish.yml), awaited before Homebrew moves. */
 export const RELEASE_TAG_CHECKS = ["node 22 · macos-latest", "node 24 · macos-latest", "publish"] as const;
