@@ -824,6 +824,10 @@ function verificationFailureWords(failure: Extract<VerifyCommandFacts, { ran: fa
           return "automatic recovery stopped because this worker no longer owned the build";
         case "coverage-incomplete":
           return "the release check didn't cover everything it owed, or a required test went missing or was skipped";
+        case "no-result":
+          return "the release check gave no complete result (no valid report, or a part, file or journey with no outcome), so it can't count as a pass";
+        case "stopped-by-toolroll":
+          return "Toolroll's own shutdown stopped the approved verification command before it finished";
         case "timed-out":
           return "the approved verification command timed out before checks finished";
         case "spawn-failed":

@@ -556,6 +556,32 @@ describe("release check speed without weakening checks", () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
+  // Release check 3261: killed at five minutes, it left only its header, because each part's output was printed only
+  // once the whole check ended. Now every line reaches the check's stdout as it comes, tagged with its part, and each
+  // part's end is recorded with its start, exit code, signal, timeout and cancellation apart.
+  test("each part's output is streamed as it comes, tagged; its end records start, exit, signal, timeout and stop apart", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "so-streamed-"));
+    try {
+      const streamed: string[] = [], said: string[] = [];
+      const parts = partRunner(dir, { failFast: false, graceMs: 10, stream: text => { streamed.push(text); }, say: line => { said.push(line); } });
+      let seen = false;
+      const killed = parts.run("unit", process.execPath, ["-e", "console.log('first line'); process.stdout.write('dots···'); setTimeout(() => process.kill(process.pid, 'SIGKILL'), 300)"]);
+      // Before the part ends, its first line is already out.
+      for (let n = 0; n < 100 && !seen; n++) { await new Promise(done => setTimeout(done, 20)); seen = streamed.join("").includes("[unit] first line\n"); }
+      expect(seen).toBe(true);
+      const ended = await killed;
+      expect(ended).toMatchObject({ code: 137, signal: "SIGKILL", timedOut: false, stopped: false, cancelled: false });
+      expect(streamed.join("")).toContain("[unit] dots···\n");
+      expect(parts.failure()).toBe("unit: exit 137 (ended by SIGKILL)");
+      expect(said).toContainEqual(expect.stringMatching(/^== unit ended: started \d{4}-\d\d-\d\dT[^,]+, exit 137, signal SIGKILL, timed out no, stopped no, took \d+ s$/));
+      expect(said).toContainEqual(expect.stringContaining("== unit failed (exit 137, ended by SIGKILL)"));
+      const missing = await parts.run("app", join(dir, "no-such-program"), []);
+      expect(missing).toMatchObject({ spawnFailed: true });
+      expect(said).toContainEqual(expect.stringContaining("== app ended: started"));
+      expect(said.find(line => line.startsWith("== app ended"))).toContain("could not start");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
   test("release-only gate reservation lets four turns start even with other sessions", async () => {
     const dir = mkdtempSync(join(tmpdir(), "so-reserved-gate-"));
     const gate = openGate({ dir, env: {}, reserve: true, sessions: () => 20, everyMs: 1 });

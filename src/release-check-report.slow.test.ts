@@ -5,7 +5,7 @@
  * report as the last stdout line with the nonce.
  */
 import { afterEach, describe, expect, test } from "vitest";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -160,6 +160,34 @@ describe("the release check's report (phase A)", () => {
     expect(ran.stderr).toContain("apiRequestContext.post: Timeout 30000ms exceeded.");
     expect(ran.stderr).not.toContain("Opens the board");
   }, 150_000);
+
+  // Release check 3261: the check was ended by a signal at five minutes and its stored log held only its header. Each
+  // part's output now reaches the check's stdout as it comes, tagged, so a killed check still leaves every part's tail.
+  test("a check killed outright (SIGKILL, no chance to print) still leaves every running part's latest lines, tagged", async () => {
+    const { at, base } = fixture();
+    writeFileSync(join(at, "scripts", "e2e-parallel.mjs"), [
+      "const script = process.argv[2].includes('app') ? 'app' : 'flows';",
+      "console.log(script + ': step one done');",
+      "console.log(script + ': waiting on the worker');",
+      "setInterval(() => {}, 1000);",
+    ].join("\n"));
+    const nonce = randomBytes(32).toString("hex");
+    const child = spawn(process.execPath, [script, "--base", base], { cwd: at, env: cleanEnv(), detached: true, stdio: ["pipe", "pipe", "pipe"] });
+    child.stdin.end(JSON.stringify({ nonce, mode: "full", plan: null, watch: [] }));
+    let stdout = "", stderr = "";
+    child.stdout.on("data", chunk => { stdout += chunk; });
+    child.stderr.on("data", chunk => { stderr += chunk; });
+    const closed = new Promise<number | null>(done => child.on("close", (_code, signal) => done(signal === null ? 0 : 1)));
+    for (let n = 0; n < 600 && !(stdout.includes("[flows] flows: waiting on the worker") && stdout.includes("[app] app: waiting on the worker")); n++) await new Promise(done => setTimeout(done, 100));
+    process.kill(-child.pid!, "SIGKILL");
+    await closed;
+    expect(stdout).toContain("[flows] flows: step one done\n");
+    expect(stdout).toContain("[flows] flows: waiting on the worker\n");
+    expect(stdout).toContain("[app] app: waiting on the worker\n");
+    // The parts that had ended said so, each fact apart.
+    expect(stderr).toMatch(/== typecheck ended: started [^,]+, exit 0, signal none, timed out no, stopped no/);
+    expect(reportFromOutput(stdout, nonce).ok).toBe(false);
+  }, 120_000);
 });
 
 describe("the handshake and the report line", () => {

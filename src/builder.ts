@@ -2573,10 +2573,14 @@ async function settleProof(
     const safe = hits.length > 0 ? redactSecretLines(value, hits) : value;
     return boundStreamHeadTail(safe, cap);
   };
+  // How the command ended, each fact apart: a signal or the plane's own hard stop is never read as a plain exit
+  // (release check 3261 was recorded as "exit 1" when a signal had ended it).
+  const endedBy = (result: ExecResult, sep: string): string =>
+    `${result.signal ? `${sep}ended by ${result.signal}` : ""}${result.stoppedByPlane === true ? `${sep}stopped by Toolroll's own shutdown` : ""}`;
   const attemptOutcome = (label: string, result: ExecResult): string =>
-    `${label}: (exit ${result.code}${result.notFound ? " · could not start" : ""}${result.timedOut ? " · timed out" : ""})`;
+    `${label}: (exit ${result.code}${result.notFound ? " · could not start" : ""}${result.timedOut ? " · timed out" : ""}${endedBy(result, " · ")})`;
   const attemptLog = (label: string, command: string, result: ExecResult): string => {
-    const prefix = `=== ${label} ===\n$ ${command}\n(exit ${result.code}${result.notFound ? ", could not start" : ""}${result.timedOut ? ", timed out" : ""})\n\n--- stdout ---\n`;
+    const prefix = `=== ${label} ===\n$ ${command}\n(exit ${result.code}${result.notFound ? ", could not start" : ""}${result.timedOut ? ", timed out" : ""}${endedBy(result, ", ")})\n\n--- stdout ---\n`;
     const between = "\n\n--- stderr ---\n";
     checkLogSourceBodyBytes += Buffer.byteLength(prefix) + Buffer.byteLength(result.stdout) + Buffer.byteLength(between) + Buffer.byteLength(result.stderr);
     return `${prefix}${boundedAttemptStream(result.stdout)}${between}${boundedAttemptStream(result.stderr)}`;
@@ -2728,6 +2732,9 @@ async function settleProof(
       verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: ownInstall ?? "own-install-failed" };
     } else if (first.notFound || first.timedOut) {
       verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: first.timedOut ? "timed-out" : "spawn-failed" };
+    } else if (first.stoppedByPlane === true) {
+      // This worker's own hard stop ended it (a shutdown): it never finished, and its exit says nothing about the code.
+      verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "stopped-by-toolroll" };
     } else if (!verificationExecutableMissing(first)) {
       verifyCommand = { configured: true, ran: true, exitCode: first.code };
     } else {
@@ -2848,6 +2855,10 @@ async function settleProof(
       const effective = effectiveCheckFacts(verifyCommand, { coverage: settled.coverage, check: { attempt: checkAttempt.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE) }, composed: settled.composed });
       verifyCommand = effective.result;
       releaseFacts = effective.facts;
+    } else if (verifyCommand.configured && verifyCommand.ran && chosenCheck?.level === "full" && (store.getScope(request.taskId)?.releaseTerms ?? null) !== null) {
+      // A release's Full check that couldn't be sealed before it ran (no nonce, no inventory) has no result it can count.
+      verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "no-result" };
+      recordCheckNote("The release check ran without a sealed attempt (its commit couldn't be read before it ran), so it has no result that can count.");
     }
   }
   if (configured !== null && checkLog.length > 0) {

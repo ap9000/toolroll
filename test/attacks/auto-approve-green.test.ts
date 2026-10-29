@@ -25,7 +25,8 @@ let fixture: ReleaseFixture | null = null;
 afterEach(() => { fixture?.close(); fixture = null; });
 const LATER = new Date(RELEASE_NOW.getTime() + 60_000);
 const UNITS = ["src/index.test.ts", "src/browser/app.test.ts"];
-const passingReport = () => reportOf(UNITS.map(file => ({ file })));
+/** A passing Full check reports every unit file it owed (check-report.ts fullCheckProblem): the tree's own. */
+const passingReport = (units: readonly string[] = UNITS) => reportOf(units.map(file => ({ file })));
 
 /** An unapproved release task in a project whose releases approve themselves (alex turned it on). */
 function open(options: Parameters<typeof releaseFixture>[0] = {}) {
@@ -40,7 +41,7 @@ const green = (head: string, at = LATER): CiObservation => ({ head, observedAt: 
 /** The plane's auto-check, with the base GitHub names for the candidate (the main commit the branch left). */
 const authorize = (f: ReleaseFixture, base = f.base) => authorizeAutoCheck(f.store, { taskId: f.taskId, digest: digestOf(f), candidate: f.approved, base, now: LATER });
 /** The release check of the candidate, sealed as the builder seals it, on the build's real base. */
-const check = (f: ReleaseFixture, head = f.approved, report = passingReport) => sealedCheck(f, f.taskId, head, () => report(), { base: f.base }).runId;
+const check = (f: ReleaseFixture, head = f.approved, report: (units: readonly string[]) => ReturnType<typeof reportOf> = passingReport) => sealedCheck(f, f.taskId, head, (_plan, units) => report(units), { base: f.base }).runId;
 const receiptOf = (f: ReleaseFixture) => assignmentOf(f.store, f.taskId, LATER, { principal: "operator", repos: null, includeUnplaced: true }, EVIDENCE(f))!.receipt!.digest;
 const seal = (f: ReleaseFixture, run: number, ci: CiObservation = green(f.approved), extra: { digest?: string; receipt?: string } = {}) =>
   sealAutoGreen(f.store, { taskId: f.taskId, digest: extra.digest ?? digestOf(f), candidate: f.approved, run, receipt: extra.receipt ?? receiptOf(f), ci, evidenceRoot: EVIDENCE(f), now: LATER });
@@ -376,7 +377,7 @@ describe("codex r1 #1: the comparison base is the plane's own reading of where t
     const f = open({ intermediate: { ".github/workflows/ci.yml": "on: push\njobs: {}\n" }, candidate: { "src/index.js": "export const answer = 43;\n" } });
     const h = f.git("rev-parse", `${f.approved}^`);
     expect(authorize(f)).toMatchObject({ ok: true });
-    const run = sealedCheck(f, f.taskId, f.approved, () => passingReport(), { base: h }).runId;
+    const run = sealedCheck(f, f.taskId, f.approved, (_plan, units) => passingReport(units), { base: h }).runId;
     expect(seal(f, run)).toMatchObject({ ok: false, why: expect.stringContaining(".github/workflows/ci.yml changed") });
   });
 
@@ -559,7 +560,7 @@ describe("codex r1 #7 and the scan: flake retries as the builder and regate real
     sealedCheck(f, f.taskId, b1, () => red(), { base: f.base });
     // The regate's attempt starts at B1 (the previous build commit) and commits B2 on it.
     const b2 = buildCommit(f, b1);
-    const rerun = sealedCheck(f, f.taskId, b2, () => passingReport(), { base: b1 }).runId;
+    const rerun = sealedCheck(f, f.taskId, b2, (_plan, units) => passingReport(units), { base: b1 }).runId;
     expect(seal(f, rerun)).toMatchObject({ ok: true });
   });
 

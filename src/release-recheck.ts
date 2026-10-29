@@ -20,7 +20,7 @@
  * Coverage trusts test code (Alex, 2026-10-25): these results protect against accidental damage, not a hostile test.
  * Authority never reads them; the release's own records do.
  */
-import { CHECK_CONTEXT_CAPTURE, CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, OBLIGATION_SNAPSHOT_CAPTURE, TARGETED_PLAN_CAPTURE, checkContextOf, isUnitFile, payloadDigest, projectGitDir, readSealedJson, treeFactsOf } from "./check-report.js";
+import { CHECK_CONTEXT_CAPTURE, CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, OBLIGATION_SNAPSHOT_CAPTURE, TARGETED_PLAN_CAPTURE, checkContextOf, fullCheckProblem, isUnitFile, payloadDigest, projectGitDir, readSealedJson, treeFactsOf } from "./check-report.js";
 import { readVerifiedCommit, verifiedTreeDiff } from "./commit-extract.js";
 import {
   checkContextSchema, fileIdentity, groupIdentity, journeyIdentity, obligationSnapshotSchema, readCheckReport, sealedInventorySchema, targetedPlanSchema, unitIdentity, versionIdentity,
@@ -276,7 +276,7 @@ export function planTargetedRecheck(store: Store, root: string, input: { runId: 
 }
 
 /** Coverage of a check: full, composed from A, partial (never passes), or identity-removed (asks again). */
-export type Coverage = "full" | "composed" | "partial" | "identity-removed";
+export type Coverage = "full" | "composed" | "partial" | "identity-removed" | "no-result";
 
 /**
  * Whether a targeted run B, with A's sealed evidence, its plan and snapshot, covers every item of B's inventory
@@ -410,6 +410,10 @@ export function settleCoverage(store: Store, root: string, input: { runId: numbe
       // Every identity that ever failed in this generation stays protected, passed since or not (review round 2).
       if (removedProtected(b.report, b.inventory, protectedIdentities(store, root, b.attempt.authority, input.runId))) return removed();
     }
+    // A release's Full check (its task carries signed release terms, before or after its authority opens — an automatic
+    // approval's check runs before) counts only with a complete, valid result (check-report.ts): anything less is no result.
+    const release = b.attempt.authority !== null || (store.getScope(input.taskId)?.releaseTerms ?? null) !== null;
+    if (release && fullCheckProblem({ report: b.report, inventory: b.inventory, exitCode: input.exitCode }) !== null) return { coverage: "no-result", composed: null };
     return { coverage: "full", composed: null };
   }
   if (b.plan === null || b.snapshot === null || b.attempt.baseRun === null || b.attempt.authority === null) return { coverage: "partial", composed: null };

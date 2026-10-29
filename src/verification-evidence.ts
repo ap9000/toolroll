@@ -37,7 +37,9 @@ export const coveragePasses = (coverage: unknown): boolean => coverage === undef
 export function effectiveCheckFacts(raw: VerifyCommandFacts, facts: ReleaseCheckFacts | null): { result: VerifyCommandFacts; facts: ReleaseCheckFacts | null } {
   if (facts === null || coveragePasses(facts.coverage)) return { result: raw, facts };
   const exitCode = raw.configured && raw.ran ? raw.exitCode : null;
-  return { result: { configured: true, ran: false, attemptFailed: true, failure: "coverage-incomplete" }, facts: { ...facts, check: { ...facts.check, exitCode } } };
+  // A check that stopped before it could report keeps its own failure (it timed out, Toolroll stopped it): that is why.
+  if (facts.coverage === "no-result" && raw.configured && !raw.ran) return { result: raw, facts };
+  return { result: { configured: true, ran: false, attemptFailed: true, failure: facts.coverage === "no-result" ? "no-result" : "coverage-incomplete" }, facts: { ...facts, check: { ...facts.check, exitCode } } };
 }
 
 export function sealVerificationReceipt(store: Store, root: string, runId: number, head: string, command: VerifyCommand, result: VerifyCommandFacts, now: Date, reusedFrom?: { run: number; digest: string }, release?: ReleaseCheckFacts): void {

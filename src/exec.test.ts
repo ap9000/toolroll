@@ -155,6 +155,18 @@ describe("the provider process group (M6.12)", () => {
     expect(result.timedOut).toBe(false);
   });
 
+  // Release check 3261 was stored as "exit 1": a signal had ended it and the code alone said nothing of that.
+  test("the buffered group transport keeps a signal apart from the exit, and says when its own hard stop ended it", async () => {
+    const killed = await run(process.execPath, ["-e", "console.log('before'); process.kill(process.pid, 'SIGKILL')"], { processGroup: true, timeoutMs: 10_000 });
+    expect(killed).toMatchObject({ code: 1, signal: "SIGKILL", timedOut: false });
+    expect(killed.stoppedByPlane).toBeUndefined();
+    expect((await run(process.execPath, ["-e", "process.exit(1)"], { processGroup: true, timeoutMs: 10_000 })).signal).toBeUndefined();
+    const pending = run(process.execPath, ["-e", "setInterval(()=>{},1000)"], { processGroup: true, timeoutMs: 60_000 });
+    await new Promise(resolve => setTimeout(resolve, 200));
+    expect(terminateLiveProviders()).toBeGreaterThan(0);
+    expect(await pending).toMatchObject({ stoppedByPlane: true, timedOut: false });
+  });
+
   test("the buffered group transport keeps execFile's contract — output, timeout, not-found", async () => {
     const ok = await run(process.execPath, ["-e", "console.log('hi')"], { processGroup: true, timeoutMs: 10_000 });
     expect(ok).toMatchObject({ code: 0, timedOut: false });

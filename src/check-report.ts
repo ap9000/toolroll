@@ -9,7 +9,11 @@
  * After the check, the report is the last `TOOLROLL_CHECK_REPORT <json>` line of its output that carries that nonce
  * (a line a test prints, or one a leftover process writes, has no nonce and is ignored). It is read strictly and sealed
  * as `check-report.json`, beside `check-inventory.json` (what was sealed, and the groups and versions the check
- * declared). A run with no valid report still passes or fails as before; it just can't be the base of a targeted check.
+ * declared). A Full release check qualifies only with all of it (fullCheckProblem): a valid report carrying this run's
+ * nonce, a complete inventory, a terminal result for every part, file, journey group and upgrade version it owed, and a
+ * successful exit. Anything less — no report, a malformed or cut-short one, one whose exit disagrees, a part that never
+ * finished, a file with no result — is an error, "no result", and never a pass. A failed check's report only has to be
+ * valid: what it failed on is its result.
  *
  * Coverage trusts test code (the trust decision in the plan). Nothing here decides who may release or deploy.
  */
@@ -208,4 +212,60 @@ export function readSealedJson(store: Store, root: string, runId: number, captur
   const read = readVerifiedArtifact(root, artifact);
   if (!read.ok) return null;
   try { return { value: JSON.parse(read.content.toString("utf8")), digest: artifact.sha256 }; } catch { return null; }
+}
+
+/**
+ * Why a Full release check has no result it can count — or null when it qualifies as one. The plane's own facts are the
+ * exit it saw (`exitCode`, null when the check didn't exit on its own: timed out or stopped) and the inventory it sealed
+ * before the check ran; the report must agree with both. A failed check (a nonzero exit) needs only a valid report: what
+ * it failed on is its result. A passing exit needs everything accounted for: every part once, every selected part run to
+ * its end, the unit suite finished with a result for every sealed unit file (unless CI's exact run stood in for the
+ * units), every journey run finished with no group left unrun, and the upgrade path finished with every version run.
+ * Missing, malformed, truncated or skipped-required results never read as a pass.
+ */
+export function fullCheckProblem(input: { report: CheckReport | null; inventory: SealedInventory | null; exitCode: number | null }): string | null {
+  const { report, inventory, exitCode } = input;
+  if (exitCode === null) return "the check didn't end on its own (it timed out or was stopped), so it has no result";
+  if (report === null) return "the check gave no valid report for this run (none, a malformed or cut-short one, or one without this run's nonce)";
+  if (report.mode !== "full") return "the check reported a targeted run, not the full one it was asked for";
+  if (report.exitCode !== exitCode) return `the check's report says exit ${report.exitCode}, but it exited ${exitCode}`;
+  if (inventory === null) return "the check's sealed inventory can't be read";
+  if (exitCode !== 0) return null;
+  const parts = new Map(report.parts.map(one => [one.part, one]));
+  if (parts.size !== report.parts.length || CHECK_PARTS.some(part => !parts.has(part))) return "the report doesn't account for every part of the check exactly once";
+  for (const part of ["typecheck", "build"] as const) if (parts.get(part)!.selected !== true) return `the report says the ${part} wasn't selected`;
+  for (const part of report.parts) {
+    if (!part.selected) continue;
+    if (!part.ran || part.code === null) return `${part.part} has no result: it was selected and never ran`;
+    if (part.timedOut || part.stopped === true || part.signal != null) return `${part.part} has no result: it was stopped before it finished`;
+    if (part.code !== 0) return `${part.part} exited ${part.code}, yet the check exited 0`;
+  }
+  if (parts.get("unit")!.selected) {
+    const units = report.units;
+    if (units === null) return "the unit suite reported nothing";
+    if (!units.finished) return "the unit suite didn't reach its end";
+    if (units.runErrors > 0) return `the unit suite had ${units.runErrors} errors no test owned`;
+    if (units.files.some(one => one.state === "failed")) return "a unit file failed, yet the check exited 0";
+    if (!units.reusedFromCI) {
+      const reported = new Set(units.files.map(one => one.file));
+      const missing = inventory.sealed.units.filter(file => !reported.has(file));
+      if (missing.length > 0) return `${missing.length} unit file${missing.length === 1 ? " has" : "s have"} no result (${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ", …" : ""})`;
+    }
+  }
+  for (const label of ["flows", "app", "flows-real", "app-real"] as const) {
+    if (!parts.get(label)!.selected) continue;
+    const script = label.replace(/-real$/, ""), kind = label.endsWith("-real") ? "real" : "scripted";
+    const run = report.journeys.find(one => one.script === script && one.kind === kind);
+    if (run === undefined) return `the ${label} journeys reported nothing`;
+    if (!run.finished) return `the ${label} journeys didn't reach their end`;
+    const open = run.groups.filter(group => group.state !== "passed");
+    if (open.length > 0) return `the ${label} journey group ${open[0]!.group} ${open[0]!.state === "not-run" ? "never ran" : "failed"}, yet the check exited 0`;
+  }
+  if (parts.get("upgrade")!.selected) {
+    const upgrades = report.upgrades;
+    if (upgrades === null || !upgrades.finished) return "the upgrade path didn't reach its end";
+    const open = upgrades.versions.filter(one => one.state !== "passed");
+    if (open.length > 0) return `the upgrade from ${open[0]!.version} ${open[0]!.state === "not-run" ? "never ran" : "failed"}, yet the check exited 0`;
+  }
+  return null;
 }

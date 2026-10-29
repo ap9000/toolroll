@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFil
 import { basename, dirname, join } from "node:path";
 import { gateWords, openGate } from "./provider-gate.mjs";
 import { passedCandidateCI, macUnitFiles } from "./release-check-ci.mjs";
-import { makeTempRoot, runSuite } from "./suite-lifecycle.mjs";
+import { makeTempRoot, runSuite, writeNow } from "./suite-lifecycle.mjs";
 import { createHash } from "node:crypto";
 
 const args = process.argv.slice(2);
@@ -321,7 +321,23 @@ export function loadWords(samples, cores, budget) {
 
 /** A part runs past this, and it is stopped (with everything it started) and fails. */
 const PART_MS = (Number(process.env.TOOLROLL_CHECK_PART_MINUTES) || 120) * 60_000;
-export function partRunner(dir, { timeoutMs = PART_MS, graceMs = 15_000, failFast = true, say = line => process.stderr.write(`${line}\n`) } = {}) {
+/** A partial line (Vitest's progress dots) is streamed once it reaches this many bytes. */
+const STREAM_LINE_BYTES = 2048;
+const yes = value => value ? "yes" : "no";
+/** How a part ended, in one line: its start, exit code, signal, timeout and cancellation, each said apart. */
+export function partEnding(one) {
+  return `== ${one.label} ended: started ${one.startedAt ?? "never (cancelled before it started)"}, exit ${one.cancelled ? "none" : one.code}, signal ${one.signal ?? "none"}, `
+    + `timed out ${yes(one.timedOut)}, stopped ${yes(one.stopped)}${one.spawnFailed ? ", could not start" : ""}, took ${took(one.ms)}`;
+}
+/**
+ * Runs the check's parts. Every part's output reaches the check's stdout as it arrives, each line tagged with its part
+ * (`[unit] …`), so whatever stops the check — the plane's limit, a signal, a crash — the plane already holds every
+ * part's latest lines (release check 3261 was ended at five minutes with nothing but its header stored: each part's
+ * output was only printed once the whole check finished). As each part ends, one line on stderr records its start, exit
+ * code, signal, timeout and cancellation apart, and a failed part's log follows at once (written synchronously, so an
+ * exit right after can't drop it).
+ */
+export function partRunner(dir, { timeoutMs = PART_MS, graceMs = 15_000, failFast = true, say = line => writeNow(2, `${line}\n`), stream = text => process.stdout.write(text) } = {}) {
   const abort = new AbortController();
   let failure = null, stopped = null;
   const running = new Set();
@@ -330,7 +346,7 @@ export function partRunner(dir, { timeoutMs = PART_MS, graceMs = 15_000, failFas
   const fail = (label, detail) => {
     if (failure !== null) return;
     failure = `${label}: ${detail}`;
-    console.error(`Release check failed: ${failure}${failFast ? "; stopping other parts" : "; the other parts keep running"}`);
+    say(`Release check failed: ${failure}${failFast ? "; stopping other parts" : "; the other parts keep running"}`);
     if (failFast) abort.abort();
   };
   // The check's own limit (a release run, checkDeadline): every part still running is stopped, so the check still
@@ -339,31 +355,43 @@ export function partRunner(dir, { timeoutMs = PART_MS, graceMs = 15_000, failFas
     if (stopped !== null) return;
     stopped = why;
     if (failure === null) failure = why;
-    console.error(`Release check stopped: ${why}; stopping ${running.size === 0 ? "nothing (no part is running)" : [...running].join(", ")}`);
+    say(`Release check stopped: ${why}; stopping ${running.size === 0 ? "nothing (no part is running)" : [...running].join(", ")}`);
     abort.abort();
   };
   const run = (label, command, argv, env = {}, onResult = null) => {
-    let partial = "";
+    let partial = "", pending = "";
+    const tag = `[${label}] `;
+    const streamLines = (lines) => { if (lines.length > 0) { try { stream(lines.map(line => `${tag}${line}\n`).join("")); } catch { /* the reader is gone */ } } };
     running.add(label);
     return runSuite({ command, args: argv, env: { TOOLROLL_CHECK_GATE: undefined, ...env },
       signal: abort.signal, prefix: `so-check-${label}-`, timeoutMs, graceMs, tempRoot: partTempRoot(label),
       ...(onResult === null ? {} : { onResult }),
-      onExit: code => { if (code !== 0) fail(label, `exit ${code}`); },
+      // Stopped on purpose (another part failed, or the check's limit) is not this part's own failure.
+      onExit: (code, facts) => { if (code !== 0 && facts?.stopped !== true) fail(label, facts?.signal ? `exit ${code} (ended by ${facts.signal})` : `exit ${code}`); },
       onData: chunk => {
-        const lines = (partial + chunk).split("\n"); partial = lines.pop();
+        const text = String(chunk);
+        const lines = (partial + text).split("\n"); partial = lines.pop();
         for (const line of lines) if (/^(app|flows)(-real)?$|^upgrade$/.test(label) && line.includes("TOOLROLL_CHECK_FAILURE ")) fail(label, line.slice(line.indexOf("TOOLROLL_CHECK_FAILURE ") + 23));
+        const shown = (pending + text).split("\n"); pending = shown.pop();
+        if (Buffer.byteLength(pending) >= STREAM_LINE_BYTES) { shown.push(pending); pending = ""; }
+        streamLines(shown);
       },
     }).then(one => {
       running.delete(label);
+      if (pending !== "") { streamLines([pending]); pending = ""; }
       const log = join(dir, `${label}.log`);
       // Stopped at the check's limit: it timed out, as a part that ran past its own timeout does.
       const limited = stopped !== null && one.cancelled !== true && one.code !== 0;
-      const ending = one.timedOut ? `\n${label} timed out and was stopped\n` : limited ? `\n${label} was stopped: ${stopped}\n` : "";
-      writeFileSync(log, ending === "" ? one.output : Buffer.concat([one.output, Buffer.from(ending)]));
+      const ending = one.timedOut ? `${label} timed out and was stopped` : limited ? `${label} was stopped: ${stopped}` : one.stopped ? `${label} was stopped: another part failed` : "";
+      if (ending !== "") streamLines([ending]);
+      writeFileSync(log, ending === "" ? one.output : Buffer.concat([one.output, Buffer.from(`\n${ending}\n`)]));
+      const ended = { label, code: one.code, log, ms: one.ms, timedOut: one.timedOut === true || limited, cancelled: one.cancelled === true,
+        stopped: one.stopped === true, signal: one.signal ?? null, spawnFailed: one.spawnFailed === true, startedAt: one.startedAt ?? null };
+      say(partEnding(ended));
       // A failed part's log, as it fails: on stderr, which the plane keeps whole when the command is stopped before its
       // end (release check 3249: the flows log was only ever printed at the end, so it was never stored).
-      if (one.code !== 0 && one.cancelled !== true) say(failureExcerpt(label, one.code, readFileSync(log, "utf8")));
-      return { label, code: one.code, log, ms: one.ms, timedOut: one.timedOut === true || limited, cancelled: one.cancelled === true };
+      if (one.code !== 0 && one.cancelled !== true) say(failureExcerpt(label, one.code, readFileSync(log, "utf8"), undefined, one.signal ?? null));
+      return ended;
     });
   };
   return { run, stop, signal: abort.signal, failure: () => failure, stopped: () => stopped };
@@ -375,13 +403,13 @@ const FAILURE_LINE = /❌|✗|^\s+- (?!skipped:)|\bFAIL\b|\bfailed\b|[Tt]imed ou
  * A failed part's log in brief, for stderr: the lines that say what failed (ANSI colours removed), and when none do, the
  * log's last lines; at most `max` bytes, keeping the end.
  */
-export function failureExcerpt(label, code, text, max = 8 * 1024) {
+export function failureExcerpt(label, code, text, max = 8 * 1024, signal = null) {
   const lines = String(text).replace(/\x1b\[[0-9;]*m/g, "").split("\n").map(line => line.trimEnd()).filter(line => line !== "");
   const failing = lines.filter(line => FAILURE_LINE.test(line));
   let kept = failing.length > 0 ? failing : lines.slice(-40), size = 0, from = kept.length;
   while (from > 0 && size + Buffer.byteLength(kept[from - 1]) + 1 <= max) size += Buffer.byteLength(kept[--from]) + 1;
   kept = kept.slice(from);
-  return [`== ${label} failed (exit ${code}); ${failing.length > 0 ? "what its log says failed" : "the end of its log"}${from > 0 ? ` (the last ${kept.length} of ${failing.length > 0 ? failing.length : Math.min(40, lines.length)} lines)` : ""}:`, ...kept].join("\n");
+  return [`== ${label} failed (exit ${code}${signal === null ? "" : `, ended by ${signal}`}); ${failing.length > 0 ? "what its log says failed" : "the end of its log"}${from > 0 ? ` (the last ${kept.length} of ${failing.length > 0 ? failing.length : Math.min(40, lines.length)} lines)` : ""}:`, ...kept].join("\n");
 }
 
 /** The plane's limit when its handshake doesn't say (the approved release check's timeout, 60 minutes). */
@@ -559,7 +587,7 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   }).then(list => Promise.all(list));
   const first = await Promise.all([typecheck, build]);
   const results = [...await Promise.all(units), ...await journeys, ...await upgraded];
-  for (const one of [...first, ...results]) { console.log(`== ${one.label}`); console.log(readFileSync(one.log, "utf8")); }
+  // Every part's output was streamed as it came (each line tagged with its part); the summary follows.
   console.log("== summary");
   console.log(`plan: ${targeted === null ? plan.why : `targeted from run ${targeted.base}`}`);
   if (parts.failure()) console.log(`failed: ${parts.failure()}`);
@@ -588,7 +616,10 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     const selected = new Set(["typecheck", "build", ...(unitsRun ? ["unit"] : []), ...journeyRuns.map(one => one.label), ...(upgradeSelected ? ["upgrade"] : [])]);
     const reportParts = ["typecheck", "build", "unit", "flows", "app", "flows-real", "app-real", "upgrade"].map(part => {
       const one = byLabel.get(part);
-      return { part, selected: selected.has(part), ran: one !== undefined && !one.cancelled, code: one === undefined || one.cancelled ? null : Math.min(255, Math.max(0, one.code)), timedOut: one?.timedOut === true };
+      return { part, selected: selected.has(part), ran: one !== undefined && !one.cancelled, code: one === undefined || one.cancelled ? null : Math.min(255, Math.max(0, one.code)), timedOut: one?.timedOut === true,
+        // Each said apart: when it started, the signal that ended it, whether it was stopped (another part's failure
+        // or the check's limit) and whether it could start at all.
+        startedAt: one?.startedAt ?? null, signal: one?.signal ?? null, stopped: one?.stopped === true, spawnFailed: one?.spawnFailed === true };
     });
     const ranJourneys = journeyRuns.filter(one => byLabel.has(one.label) && !byLabel.get(one.label).cancelled);
     const report = buildReport({ handshake, exitCode, parts: reportParts,

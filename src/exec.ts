@@ -38,6 +38,13 @@ export type ExecResult = {
    * returned — a transport exit alone never proves that.
    */
   containment?: ContainmentOutcome;
+  /** The signal that ended the process, when one did (its `code` then reads 1, as it always has): kept apart so a
+   * killed command is never mistaken for one that exited 1 on its own (release check 3261). Only the buffered
+   * process-group transport says. */
+  signal?: NodeJS.Signals | null;
+  /** This process (the plane) ended it with its hard stop (terminateLiveProviders: a worker shutting down), not
+   * anything the command or another process did. */
+  stoppedByPlane?: boolean;
 };
 
 export type ContainmentOutcome =
@@ -182,6 +189,8 @@ export type RunOptions = ProcessTreeObserver & {
 
 /** Live provider children, for the deterministic stop. Registered only when `processGroup` was set. */
 const liveProviders = new Set<import("node:child_process").ChildProcess>();
+/** Children this process's own hard stop ended: their results say so (`stoppedByPlane`). */
+const hardStopped = new WeakSet<import("node:child_process").ChildProcess>();
 
 /** Live children by owner tag (v52): the exact-attempt stop's handle. A
  * child is registered here beside liveProviders when its options named an
@@ -500,6 +509,7 @@ function killGroup(child: import("node:child_process").ChildProcess): void {
 export function terminateLiveProviders(): number {
   let terminated = 0;
   for (const child of liveProviders) {
+    hardStopped.add(child);
     killGroup(child);
     terminated += 1;
   }
@@ -820,6 +830,7 @@ function runBufferedGroup(
 
     let settled = false;
     let transient = false;
+    let endSignal: NodeJS.Signals | null = null;
     const finish = (code: number | null): void => {
       if (settled) return;
       settled = true;
@@ -839,6 +850,8 @@ function runBufferedGroup(
             timedOut: timedOut && !overflowed,
             notFound,
             ...containmentOf(container, empty, attachFailure),
+            ...(endSignal === null ? {} : { signal: endSignal }),
+            ...(hardStopped.has(child) ? { stoppedByPlane: true } : {}),
           },
           transient,
         });
@@ -850,7 +863,7 @@ function runBufferedGroup(
       if (stderr === "") stderr = String(error);
       finish(null);
     });
-    child.on("close", code => finish(code));
+    child.on("close", (code, signal) => { endSignal = code === null ? signal ?? null : null; finish(code); });
     if (bag.stdin !== undefined && child.stdin !== null) {
       child.stdin.on("error", () => {
         inputFailed = true;

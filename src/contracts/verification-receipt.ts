@@ -32,6 +32,10 @@ export const VERIFICATION_FAILURES = [
   "custody-lost",
   // A release check that didn't cover what it owed, or lost a required test (release-once.md): never a pass.
   "coverage-incomplete",
+  // A Full release check with no complete, valid result (check-report.ts fullCheckProblem): an error, never a pass.
+  "no-result",
+  // Toolroll's own shutdown stopped the check (its hard stop): it never finished.
+  "stopped-by-toolroll",
 ] as const;
 
 /**
@@ -74,7 +78,7 @@ export const receiptLogSchema = z.strictObject({
 
 export const RECEIPT_VERSION = 3;
 
-export const RECEIPT_COVERAGES = ["full", "composed", "partial", "identity-removed"] as const;
+export const RECEIPT_COVERAGES = ["full", "composed", "partial", "identity-removed", "no-result"] as const;
 export type ReceiptCoverage = typeof RECEIPT_COVERAGES[number];
 
 const receiptFields = {

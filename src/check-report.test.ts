@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { openStore, checkAttemptOf, type Store } from "./store.js";
 import {
   CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, payloadDigest, prepareCheckAttempt, readSealedJson,
-  reportFromOutput, sealCheckOutcome, treeFactsOf, projectGitDir,
+  fullCheckProblem, reportFromOutput, sealCheckOutcome, treeFactsOf, projectGitDir,
 } from "./check-report.js";
 
 const NOW = new Date("2026-10-25T10:00:00.000Z");
@@ -166,5 +166,74 @@ describe("the harness digest has no import parser to get around", () => {
   test("a unit test, a journey script or a doc leaves it alone", () => {
     const { before, after } = digestAfter({ "src/a.test.ts": "test('a2', () => {});\n", "scripts/app-e2e.mjs": "// journeys\n", "docs/x.md": "# x\n" });
     expect(after).toBe(before);
+  });
+});
+
+// Eval harness phase 1 (docs/plans/eval-harness.md, A): a Full release check qualifies only with a valid nonce'd report,
+// a complete inventory, terminal results for every obligation and a successful exit. Anything less is "no result".
+describe("a Full release check without a complete result has no result, never a pass", () => {
+  const NONCE = "a".repeat(64);
+  const UNIT_FILES = ["src/a.test.ts", "src/b.test.ts"];
+  const inventory = { version: 1 as const, sealed: { version: 1 as const, units: UNIT_FILES, parts: ["typecheck", "build", "unit", "flows", "app", "flows-real", "app-real", "upgrade"] as const }, declared: { groups: [], versions: [] } };
+  const part = (name: string, selected: boolean, extra: Record<string, unknown> = {}) => ({ part: name, selected, ran: selected, code: selected ? 0 : null, timedOut: false, ...extra });
+  const passing = (over: Record<string, unknown> = {}) => ({
+    version: 1, nonce: NONCE, mode: "full", planDigest: null, exitCode: 0,
+    parts: [part("typecheck", true), part("build", true), part("unit", true), part("flows", true), part("app", false), part("flows-real", false), part("app-real", false), part("upgrade", true)],
+    units: { reusedFromCI: false, finished: true, runErrors: 0, identities: [], files: UNIT_FILES.map(file => ({ file, state: "passed", passed: 1, failed: 0, skipped: 0, flaky: false })) },
+    journeys: [{ script: "flows", kind: "scripted", finished: true, groups: [{ group: "alpha", state: "passed", retried: false, unattributed: false, journeys: [] }] }],
+    upgrades: { finished: true, versions: [{ version: "0.9.1", state: "passed" }] },
+    ...over,
+  });
+  /** The report as the plane would seal it: read from the check's stdout by this run's nonce, strictly. */
+  const sealed = (stdout: string) => { const read = reportFromOutput(stdout, NONCE); return read.ok ? read.report : null; };
+  const problem = (stdout: string, exitCode: number | null, inv: typeof inventory | null = inventory) => fullCheckProblem({ report: sealed(stdout), inventory: inv as never, exitCode });
+  const out = (report: unknown) => `checks\nTOOLROLL_CHECK_REPORT ${JSON.stringify(report)}\n`;
+
+  test("a complete, valid report with a successful exit qualifies", () => {
+    expect(problem(out(passing()), 0)).toBeNull();
+    // A failed check's valid report is its result (what it failed on), not "no result".
+    expect(problem(out(passing({ exitCode: 1, parts: [part("typecheck", true, { code: 2 }), part("build", true), part("unit", true, { ran: false, code: null })] })), 1)).toBeNull();
+  });
+
+  test.each([
+    // A crash: the check died before it printed a report (release check 3261: header only).
+    ["a crash before the report", "Release check against v0.9.75 …\nUnits: local\n", 1],
+    // Killed or stopped (the plane's limit, a signal): the plane saw no exit of its own.
+    ["a cancelled or killed check (no exit of its own)", out(passing()), null],
+    // Spawn failure: the command never started.
+    ["a spawn failure (nothing printed)", "", 127],
+    // Report loss: cut short in the middle of its line.
+    ["a report cut short", out(passing()).slice(0, 200), 0],
+    ["a malformed report", "TOOLROLL_CHECK_REPORT {not json\n", 0],
+    // A candidate printing a fake report without this run's nonce, and fake result lines.
+    ["a fake report without this run's nonce", out(passing({ nonce: "f".repeat(64) })), 0],
+    ["fake result lines a test printed (a passing look-alike, unit lines on stdout)", `{"kind":"unit-file","file":"src/a.test.ts","state":"passed"}\nTest Files  2 passed (2)\nTOOLROLL_CHECK_REPORT {"version":1,"exitCode":0}\n`, 0],
+    ["a report whose exit disagrees with the check's", out(passing({ exitCode: 0 })), 1],
+    ["a targeted report for a full check", out(passing({ mode: "targeted" })), 0],
+  ] as const)("%s: no result", (_name, stdout, exitCode) => {
+    expect(problem(stdout, exitCode)).not.toBeNull();
+  });
+
+  test.each([
+    ["a selected part that never ran", { parts: [part("typecheck", true), part("build", true), part("unit", true, { ran: false, code: null }), part("flows", true), part("app", false), part("flows-real", false), part("app-real", false), part("upgrade", true)] }],
+    ["a part stopped by a signal", { parts: [part("typecheck", true), part("build", true), part("unit", true, { signal: "SIGKILL" }), part("flows", true), part("app", false), part("flows-real", false), part("app-real", false), part("upgrade", true)] }],
+    ["a part that timed out", { parts: [part("typecheck", true), part("build", true), part("unit", true, { timedOut: true }), part("flows", true), part("app", false), part("flows-real", false), part("app-real", false), part("upgrade", true)] }],
+    ["a part missing from the report", { parts: [part("typecheck", true), part("build", true), part("unit", true)] }],
+    ["the typecheck reported as not selected", { parts: [part("typecheck", false), part("build", true), part("unit", true), part("flows", true), part("app", false), part("flows-real", false), part("app-real", false), part("upgrade", true)] }],
+    ["a unit file with no result (truncated inventory)", { units: { reusedFromCI: false, finished: true, runErrors: 0, identities: [], files: [{ file: "src/a.test.ts", state: "passed", passed: 1, failed: 0, skipped: 0, flaky: false }] } }],
+    ["a unit suite that didn't reach its end", { units: { reusedFromCI: false, finished: false, runErrors: 0, identities: [], files: UNIT_FILES.map(file => ({ file, state: "passed", passed: 1, failed: 0, skipped: 0, flaky: false })) } }],
+    ["unit errors no test owned", { units: { reusedFromCI: false, finished: true, runErrors: 1, identities: [], files: UNIT_FILES.map(file => ({ file, state: "passed", passed: 1, failed: 0, skipped: 0, flaky: false })) } }],
+    ["no unit report at all", { units: null }],
+    ["a journey run that didn't reach its end", { journeys: [{ script: "flows", kind: "scripted", finished: false, groups: [] }] }],
+    ["a journey group that never ran", { journeys: [{ script: "flows", kind: "scripted", finished: true, groups: [{ group: "alpha", state: "not-run", retried: false, unattributed: false, journeys: [] }] }] }],
+    ["a selected journey script that reported nothing", { journeys: [] }],
+    ["an upgrade version that never ran", { upgrades: { finished: true, versions: [{ version: "0.9.1", state: "not-run" }] } }],
+    ["an upgrade path that didn't reach its end", { upgrades: { finished: false, versions: [] } }],
+  ] as const)("exit 0 but %s: no result", (_name, over) => {
+    expect(problem(out(passing(over as Record<string, unknown>)), 0)).not.toBeNull();
+  });
+
+  test("the sealed inventory unreadable: no result", () => {
+    expect(problem(out(passing()), 0, null)).not.toBeNull();
   });
 });

@@ -45,6 +45,12 @@ export const checkReportSchema = versioned(1, {
     ran: z.boolean(),
     code: z.int().min(0).max(255).nullable(),
     timedOut: z.boolean(),
+    /** When it started, the signal that ended it, whether the check stopped it (another part's failure or the check's
+     * own limit) and whether it could start at all — each apart from its code. Absent from an older orchestrator. */
+    startedAt: z.string().max(40).nullable().optional(),
+    signal: z.string().max(20).nullable().optional(),
+    stopped: z.boolean().optional(),
+    spawnFailed: z.boolean().optional(),
   })).max(CHECK_PARTS.length),
   /** The unit suite, from the Vitest main process's fd-3 lines: every file's outcome, and the identities that failed,
    * were skipped, passed on a retry or were asked about. Null when the unit part didn't run. */

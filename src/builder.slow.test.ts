@@ -3866,6 +3866,29 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     expect(saved.ok && JSON.parse(saved.content.toString("utf8")).result.failure).toBe("timed-out");
   });
 
+  // Release check 3261: a signal ended the check and the log said only "(exit 1)".
+  test("a check ended by a signal says so in its log; one Toolroll's own shutdown stopped never reads as finished", async () => {
+    claimIt();
+    approveScope();
+    bindRecoverySetup();
+    const killed = request({ agent: agentWithProof(soundProof), verify: async () => ({ ...OK, code: 1, signal: "SIGKILL" as const, stdout: "Release check against v0.9.75" }) });
+    expect(await build(store, killed)).toMatchObject({ ok: true, committed: true });
+    expect(checkLogFor(killed.runId as number)).toContain("(exit 1, ended by SIGKILL)");
+    expect(checkLogFor(killed.runId as number)).toContain("Project check · attempt 1: (exit 1 · ended by SIGKILL)");
+  });
+
+  test("a check Toolroll's own hard stop ended is recorded as stopped by Toolroll, never as an exit", async () => {
+    claimIt();
+    approveScope();
+    bindRecoverySetup();
+    const stopped = request({ agent: agentWithProof(soundProof), verify: async () => ({ ...OK, code: 1, signal: "SIGKILL" as const, stoppedByPlane: true }) });
+    expect(await build(store, stopped)).toMatchObject({ ok: true, committed: true });
+    const receipt = store.artifactsFor(stopped.runId as number).find(isVerificationReceipt)!;
+    const saved = readVerifiedArtifact(join2(wt, ".evidence"), receipt);
+    expect(saved.ok && JSON.parse(saved.content.toString("utf8")).result).toEqual({ configured: true, ran: false, attemptFailed: true, failure: "stopped-by-toolroll" });
+    expect(checkLogFor(stopped.runId as number)).toContain("stopped by Toolroll's own shutdown");
+  });
+
   test("setup that changes tracked files stops recovery short and never retries verification", async () => {
     claimIt();
     approveScope();
