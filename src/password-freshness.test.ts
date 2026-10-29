@@ -575,11 +575,15 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     // Deploy robustness (runner-process.ts): a digest of the runner's own stored hash names the incarnation in the
     // process record, and `up` compares its own token's hash to confirm the registration is still its own. Neither
     // authenticates anyone; a proof only retires a holder whose every process has exited (reviewed new sites).
-    "src/operate.ts#recordRunnerProcess@186": 2,
+    "src/operate.ts#recordRunnerProcess@186": 4,
     "src/operate.ts#upCommand@68": 1,
     "src/operate.ts#upCommand@68>roleSpawned@22": 1,
-    "src/runner-process.ts#credentialDigest@2": 2,
-    "src/runner-process.ts#holderProvedGone@10": 2,
+    "src/runner-process.ts#credentialDigest@4": 2,
+    "src/runner-process.ts#holderProvedGone@12": 3,
+      // Codex review of 0.9.78: the record is sealed with an HMAC keyed by the plane-held hash (a build can't read it),
+      // and checked before a holder is retired; neither authenticates a person or grants anything.
+      "src/runner-process.ts#recordedHolderProvedGone@13": 1,
+      "src/runner-process.ts#sealRunnerProcessRecord@2": 2,
     "src/runner.ts#authenticate@3": 1,
     "src/runner.ts#registerRunnerIfIdle@10": 1,
     "src/scope.ts#authenticateAccount@32": 1,

@@ -206,7 +206,10 @@ export function browserDeployment({
       if (words) console.error(words);
       else if (r.phase === "preparing") console.error(`The deployment stopped while preparing, before it paused new work (update ${r.id}); nothing was paused. Rerun --phase prepare with --stage ${stageDir} to resume it.`);
       else if (!["released", "deployed"].includes(r.phase)) console.error(`The deployment stopped at ${r.phase}, where the old service is not proved stopped or the new one may be running. New work stays paused (update ${r.id}); inspect ${journalFile}. \`toolroll release --recover-deploy\` shows what recovery can still do.`);
-      return words !== null || ["preparing", "released", "deployed"].includes(r.phase);
+      const done = words !== null || ["preparing", "released", "deployed"].includes(r.phase);
+      // Only a finished recovery latches: a refused one (old processes still running) may be retried in this process.
+      if (!done) recoveryAttempted = false;
+      return done;
     } catch (error) {
       console.error(`✗ The previous service was not started again (update ${r.id}, at ${r.phase}): ${error.message}`);
       console.error(`  The previous service is not confirmed running and new work stays paused. Once the cause is fixed, run \`toolroll release --recover-deploy --yes\` (or: node ${script} --run ${runId} --stage ${stageDir} --phase recover).`);
