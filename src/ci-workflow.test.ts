@@ -52,6 +52,13 @@ const running = (event: Event) => workflows.filter(one => triggered(one, event))
 const names = (event: Event) => running(event).map(one => one.name).sort();
 
 describe("the CI workflows", () => {
+  test("eval review 1 #1: every job's check name is fixed by the workflow and its matrix, never by an input or event", () => {
+    // A name that varies between runs on one commit (a dispatch count, a branch) reads as another job, and an older
+    // run's job under the old name would be history only. Only matrix values may appear in a name.
+    const varying = workflows.flatMap(one => Object.entries(one.jobs).flatMap(([id, job]) => /\$\{\{(?!\s*matrix\.\w+\s*\}\})/.test(job.name ?? id) ? [`${one.file}: ${job.name}`] : []));
+    expect(varying).toEqual([]);
+  });
+
   test("a pull request runs Ubuntu on Node 22 and 24 plus the Linux and Windows containment jobs, and no macOS", () => {
     // No branch or path filter may omit required checks on a PR (including documentation-only changes).
     expect(workflows.find(one => one.file === "ci.yml")?.on["pull_request"]).toBeNull();
@@ -64,7 +71,7 @@ describe("the CI workflows", () => {
     expect(running(pr).find(one => one.name === "linux native containment · delegated cgroup v2")?.runner).toBe("ubuntu-latest");
     // The Windows repeat job only joins pull requests that touch Windows containment; it is never a required check.
     const windows = names({ kind: "pull_request", paths: ["src/containment.ts"] });
-    expect(windows.filter(name => !prChecks().includes(name))).toEqual(["Windows Job Object containment · c2 × ${{ inputs.runs || 20 }}"]);
+    expect(windows.filter(name => !prChecks().includes(name))).toEqual(["Windows Job Object containment · c2 repeat"]);
   });
 
   test("a failed or skipped macOS leg prevents npm publication through the tag workflow dependency", () => {

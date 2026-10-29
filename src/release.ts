@@ -1184,8 +1184,8 @@ function networkWords(error: unknown): string {
  * each reported attempt must be filed under `head` with a check-run id; a required check counts only from GitHub
  * Actions (an app that names a check alike can't stand in for it); attempts are grouped by the job they belong to — the
  * app, its check suite (a workflow run, whose re-runs stay in it) and the name — and every group is judged by its
- * latest attempt; every required check needs a group. With `auto` (an automatic approval), every earlier failed attempt
- * must be one GitHub's own job record shows ending before any workflow step ran (`beforeTests`: confirmed
+ * latest attempt; every required check needs a group. With `auto` (an automatic approval), every other failed attempt on
+ * the commit — an earlier attempt, or a job a newer run renamed or dropped — must be one GitHub's own job record shows ending before any workflow step ran (`beforeTests`: confirmed
  * infrastructure), and at most INFRA_RERUNS_PER_CANDIDATE of them on the commit; any other earlier failure — a test,
  * a typecheck, or one nothing explains — fails the verdict, so a person decides. The failures it tolerated are returned.
  */
@@ -1210,30 +1210,39 @@ export function prChecksVerdict(runs: readonly CheckRun[], head: string, require
   const groups = new Map<string, CheckRun[]>();
   for (const run of valid) { const key = JSON.stringify([workflowOf(run), run.name]); groups.set(key, [...(groups.get(key) ?? []), run]); }
   const judged = new Set<string>();
-  let infrastructure = 0;
+  // The attempt each current job stands on (its latest in the current run); every other attempt on the commit is
+  // history, whatever its job is called now.
+  const standing = new Set<CheckRun>();
   for (const attempts of groups.values()) {
     const ordered = [...attempts].sort((a, b) => a.id! - b.id!);
     const now = current.get(workflowOf(ordered[0]!)) ?? null;
     const live = ordered.filter(one => (one.suite ?? null) === now);
-    // A job only an older run had (the newer run no longer has it) is history: not judged, and doesn't stand for a
-    // required check.
+    // A job only an older run had (the newer run no longer has it, or calls it something else) doesn't stand for a
+    // required check; its failures are still history below.
     if (live.length === 0) continue;
     const latest = live.at(-1)!, name = latest.name;
     judged.add(name);
+    standing.add(latest);
     if (latest.status !== "completed") { waiting.push(`${name} (${latest.status})`); continue; }
     if (latest.conclusion !== "success") { failed.push(`${name} (${latest.conclusion ?? "no conclusion"})`); continue; }
-    const earlier = ordered.filter(one => one !== latest);
-    // An automatic approval also waits out an earlier attempt of the current run still running.
-    if (options.auto === true && earlier.some(one => (one.suite ?? null) === now && one.status !== "completed")) { waiting.push(`${name} (an earlier attempt still running)`); continue; }
-    // Every failed attempt of the job, in the current run and in the runs it superseded.
-    const flaked = earlier.filter(one => one.status === "completed" && one.conclusion !== "success");
-    if (options.auto === true) {
-      const unexplained = flaked.filter(one => one.beforeTests !== true);
-      if (unexplained.length > 0) { failed.push(`${name} (failed ${unexplained.length === 1 ? "once" : `${unexplained.length} times`} before it passed, and GitHub doesn't show its runner failing before the tests ran)`); continue; }
-      infrastructure += flaked.length;
-    }
-    failures.push(...flaked.map(one => ({ id: one.id!, name, conclusion: one.conclusion })));
   }
+  // Every failed attempt on the commit that no current job stands on — an earlier attempt of a job, a job a newer run
+  // renamed, dropped, or never ran again — is classified before anything is superseded (eval-harness review 1, finding
+  // 1): a renamed or vanished job never erases a failure. An automatic approval tolerates only confirmed
+  // infrastructure (GitHub's job record shows the runner failing before any workflow step ran), and waits out any
+  // earlier attempt still running.
+  const history = valid.filter(one => !standing.has(one));
+  if (options.auto === true) {
+    for (const one of history) if (one.status !== "completed") waiting.push(`${one.name} (an earlier attempt still running)`);
+  }
+  const flaked = history.filter(one => one.status === "completed" && one.conclusion !== "success");
+  if (options.auto === true) {
+    const unexplained = new Map<string, number>();
+    for (const one of flaked) if (one.beforeTests !== true) unexplained.set(one.name, (unexplained.get(one.name) ?? 0) + 1);
+    for (const [name, count] of unexplained) failed.push(`${name} (failed ${count === 1 ? "once" : `${count} times`} on this commit, and GitHub doesn't show its runner failing before the tests ran)`);
+  }
+  const infrastructure = flaked.filter(one => one.beforeTests === true).length;
+  failures.push(...flaked.map(one => ({ id: one.id!, name: one.name, conclusion: one.conclusion })));
   if (options.auto === true && infrastructure > INFRA_RERUNS_PER_CANDIDATE) failed.push(`GitHub's runners failed ${infrastructure} times on this commit before the tests ran (at most ${INFRA_RERUNS_PER_CANDIDATE} are rerun)`);
   for (const name of required) if (!judged.has(name)) waiting.push(`${name} (not started)`);
   if (failed.length > 0) return { state: "failed", failed };

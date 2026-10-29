@@ -1488,8 +1488,8 @@ describe("toolroll release: approve automatically when checks pass", () => {
     const flaky = [at(1, "failure"), at(2, "failure"), at(3, "failure"), at(4, "success"), ...rest];
     expect(prChecksVerdict(flaky, SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "passed" });
     // An automatic approval: an earlier failure nothing shows as the runner's own is never tolerated, however few.
-    expect(prChecksVerdict(flaky, SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "failed", failed: [expect.stringContaining("failed 3 times before it passed")] });
-    expect(prChecksVerdict([at(3, "failure"), at(4, "success"), ...rest], SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "failed", failed: [expect.stringContaining("failed once before it passed")] });
+    expect(prChecksVerdict(flaky, SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "failed", failed: [expect.stringContaining("failed 3 times on this commit, and GitHub doesn't show")] });
+    expect(prChecksVerdict([at(3, "failure"), at(4, "success"), ...rest], SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "failed", failed: [expect.stringContaining("failed once on this commit")] });
     // Confirmed infrastructure (GitHub's job record: no workflow step ran), at most two on the commit.
     const infra = (id: number) => at(id, "failure", { beforeTests: true });
     expect(prChecksVerdict([infra(2), infra(3), at(4, "success"), ...rest], SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "passed", failures: [{ id: 2 }, { id: 3 }] });
@@ -1502,6 +1502,26 @@ describe("toolroll release: approve automatically when checks pass", () => {
     expect(prChecksVerdict([at(1, "success", { suite: null }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
     expect(prChecksVerdict([at(1, "success", { id: null }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
     expect(prChecksVerdict(rest, SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "pending" });
+  });
+
+  test("eval review 1 #1: a newer workflow run that renames or drops a job never erases its earlier failure", () => {
+    const rest = passing(REQUIRED_PR_CHECKS).map((run, i) => ({ ...run, id: 100 + i, app: "github-actions", suite: 1, head: SHA, workflow: 1 }));
+    // The Windows containment repeat: a failed "× 20" run, then an on-demand "× 1" dispatch of the same workflow passes.
+    const repeat = (id: number, name: string, suite: number, conclusion: string, extra: Partial<CheckRun> = {}): CheckRun =>
+      ({ id, name, status: "completed", conclusion, app: "github-actions", suite, head: SHA, workflow: 7, ...extra });
+    const renamed = [...rest, repeat(200, "repeat × 20", 20, "failure"), repeat(201, "repeat × 1", 21, "success")];
+    expect(prChecksVerdict(renamed, SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "failed", failed: [expect.stringContaining("repeat × 20 (failed once on this commit")] });
+    // Dropped: the newer run of the workflow doesn't have the job at all.
+    const dropped = [...rest, repeat(200, "repeat", 20, "failure"), repeat(201, "something else", 21, "success")];
+    expect(prChecksVerdict(dropped, SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "failed" });
+    // A person's release still sees it as a failure the history keeps.
+    expect(prChecksVerdict(renamed, SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "passed", failures: [{ id: 200, name: "repeat × 20" }] });
+    // A vanished job whose failure GitHub shows as the runner's own counts toward the candidate's infrastructure limit.
+    const infra = [...rest, repeat(200, "a", 20, "failure", { beforeTests: true }), repeat(201, "b", 21, "failure", { beforeTests: true }), repeat(202, "c", 22, "failure", { beforeTests: true }), repeat(203, "d", 23, "success")];
+    expect(prChecksVerdict(infra, SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "failed", failed: [expect.stringContaining("failed 3 times on this commit before the tests ran")] });
+    expect(prChecksVerdict(infra.filter(one => one.id !== 202), SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "passed", failures: [{ id: 200 }, { id: 201 }] });
+    // An older run's job still running is waited out by an automatic approval.
+    expect(prChecksVerdict([...rest, repeat(200, "old", 20, null as unknown as string, { status: "in_progress" }), repeat(201, "new", 21, "success")], SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "pending" });
   });
 
   test("codex r2 #2: a resumed deploy (saved deploy, runtime rolled back) re-reads CI and doesn't deploy a red candidate", async () => {

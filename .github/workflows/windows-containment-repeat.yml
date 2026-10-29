@@ -19,7 +19,9 @@ on:
 
 jobs:
   repeat:
-    name: Windows Job Object containment · c2 × ${{ inputs.runs || 20 }}
+    # One name for every run, whatever the count (the count is in the log): a job whose name changes between runs on a
+    # commit reads as a different job (eval-harness review 1, finding 1).
+    name: Windows Job Object containment · c2 repeat
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
