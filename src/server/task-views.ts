@@ -1,3 +1,4 @@
+import { parseFeedbackImage } from "../result-review.js";
 import { releaseViewOf } from "../release-view.js";
 import { releaseObligationsOf } from "../release-recheck.js";
 import { approvalProofOf, freshlyApprovable, freshnessFor, withFreshness } from "../scope.js";
@@ -261,7 +262,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         sourceTask?: unknown;
         sourceRun?: unknown;
         kind?: unknown;
-        comments?: { path?: unknown; line?: unknown; note?: unknown; author?: unknown }[];
+        comments?: { path?: unknown; line?: unknown; note?: unknown; author?: unknown; image?: unknown }[];
       };
       return {
         sourceTask: String(parsed.sourceTask ?? "?"),
@@ -273,6 +274,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
           line: one.line === null || one.line === undefined ? null : Number(one.line),
           note: String(one.note ?? ""),
           author: String(one.author ?? "?"),
+          image: parseFeedbackImage(one.image) || null,
         })),
       };
     } catch {

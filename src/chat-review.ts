@@ -1,14 +1,16 @@
 import type { Store } from "./store.js";
 import type { VerifiedApprover } from "./principal.js";
+import { selectResultImages } from "./chat-evidence.js";
 import { readVerifiedArtifact } from "./evidence.js";
 import { hasForbiddenControls, validateNote } from "./decision.js";
-import { isRevisionFeedback, revisionSourceOf } from "./result-review.js";
-import { createResultRevision } from "./result-actions.js";
+import { parseFeedbackImage, type FeedbackImage, isRevisionFeedback, revisionSourceOf } from "./result-review.js";
+import { createResultRevision, feedbackImageProblem } from "./result-actions.js";
 
 export type ReviewSnapshot = {
   task: string; root: string; execution: string; run: number; artifact: number;
   sha: string; source: string; title: string;
-  notes: { id: number; note: string; path: string | null; line: number | null }[];
+  images?: FeedbackImage[];
+  notes: { id: number; note: string; path: string | null; line: number | null; image?: FeedbackImage | null }[];
 };
 type Problem = { ok: false; message: string };
 
@@ -27,15 +29,17 @@ export function readChatResult(store: Store, who: VerifiedApprover, evidenceRoot
   if (artifact === undefined || evidenceRoot === undefined) return { ok: false, message: "The saved changes are unavailable. Feedback has not been added." };
   const proven = readVerifiedArtifact(evidenceRoot, artifact);
   if (!proven.ok) return { ok: false, message: "The saved changes could not be verified. Restore the result before adding feedback." };
+  const images = selectResultImages(store, who, evidenceRoot, task, found.id);
   return { ok: true, snapshot: {
     task, root: family.root.id, execution: family.current.id, run: found.id,
     artifact: artifact.id, sha: artifact.sha256, source: revisionSourceOf(store.getScope(task)?.digest ?? null),
     title: store.getTask(task)?.title ?? task,
-    notes: store.liveDiffComments(found.id).filter(isRevisionFeedback).map(one => ({ id: one.id, note: one.note, path: one.path, line: one.line })),
+    images: images.ok ? images.selection.images.map(one => ({ run: found.id, artifact: one.artifact, sha256: one.sha256 })) : [],
+    notes: store.liveDiffComments(found.id).filter(isRevisionFeedback).map(one => ({ id: one.id, note: one.note, path: one.path, line: one.line, image: one.image ?? null })),
   } };
 }
 
-export type ReviewRequest = { snapshot: ReviewSnapshot; operation: "note" | "revise"; note: string | null; path: string | null; line: number | null; notes: number[] };
+export type ReviewRequest = { snapshot: ReviewSnapshot; operation: "note" | "revise"; note: string | null; path: string | null; line: number | null; notes: number[]; image?: FeedbackImage | null };
 
 export function reviewInputProblem(note: string | null, path: string | null, line: number | null): string | null {
   if (note !== null) { const valid = validateNote(note); if (!valid.ok) return valid.problem; }
@@ -63,9 +67,13 @@ export function applyChatReview(store: Store, who: VerifiedApprover, evidenceRoo
       if (operation === "revise" && saw.execution !== saw.task) return fail("A newer revision is current. Review that version before requesting changes.");
       if (!Array.isArray(notes) || new Set(notes).size !== notes.length || notes.some(id => !saw.notes.some(n => n.id === id) || !live.notes.some(n => n.id === id))) return fail("Some feedback changed or was already used. Review it again.");
       if (operation === "note" && (note === null || notes.length > 0)) return fail("A saved note needs feedback text and cannot consume other notes.");
+      const image = parseFeedbackImage(request.image);
+      if (image === false || (image !== null && note === null)) return fail("Choose a screenshot and write its feedback again.");
+      const imageProblem = feedbackImageProblem(store, evidenceRoot, live.run, image);
+      if (imageProblem !== null) return fail(imageProblem);
       const batch = [...notes].sort((a, b) => a - b);
       if (note !== null) {
-        const id = store.addDiffComment({ artifactId: live.artifact, runId: live.run, path, line, note, author: who.name }, now);
+        const id = store.addDiffComment({ artifactId: live.artifact, runId: live.run, path, line, note, author: who.name, image }, now);
         if (id === null) return fail("The note could not be saved.");
         batch.push(id);
       }

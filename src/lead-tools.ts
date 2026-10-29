@@ -1,3 +1,4 @@
+import { type FeedbackImage, sameFeedbackImage } from "./result-review.js";
 import { sweepLine, sweepTable } from "./lead-sweep.js";
 import { connectionsOf, oneClickOf } from "./mcp-connect.js";
 import { checkLevelFromWords, isCheckLevel } from "./check-levels.js";
@@ -20,6 +21,7 @@ import { integrationsNow, STATE_WORDS, type Integration } from "./integrations.j
 import { CAPABILITIES_UNREAD, capabilitiesOf, needsCapabilities } from "./lead-capabilities.js";
 import type { AuthMode } from "./keys.js";
 import type { ProviderId } from "./provider.js";
+import { feedbackImageProblem } from "./result-actions.js";
 import { readChatResult, reviewInputProblem, type ReviewSnapshot } from "./chat-review.js";
 import { RESULT_IMAGES_PER_TURN_CAP, selectResultImages, type ResultImagePick } from "./chat-evidence.js";
 import { CHAT_CONTROLS, isChatControl } from "./chat-controls.js";
@@ -75,6 +77,7 @@ export type LeadToolContext = {
   step: number;
   readDecisions: Map<number, number>;
   readResults?: Map<number, { step: number; snapshot: ReviewSnapshot }>;
+  replyImage?: FeedbackImage;
   /** Where evidence lives, when the surface knows — a scout's report reads from here. */
   evidenceRoot?: string;
   /** Records the screenshots this turn selected, under the turn, for a channel that delivers files; returns how many are recorded. Absent: nothing durable is kept. */
@@ -699,6 +702,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
         changes: snippet.slice(0, 1000), changesShortened: snippet.length > 1000,
         verification: ctx.store.proofVerdictFor(snapshot.run)?.verdict ?? "not verified",
         accepted: ctx.store.proofAcceptance(snapshot.run) !== null,
+        images: (snapshot.images ?? []).map(one => ({ id: one.artifact, run: one.run })),
         evidenceTool: "get_acceptance_evidence",
         canRevise: snapshot.execution === snapshot.task } };
     },
@@ -818,7 +822,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
     },
   },
   propose_review: {
-    description: "Read get_result first. revise uses selected saved_notes plus optional note on the SAME task; note saves only. Omitted saved_notes stays untouched.",
+    description: "Read get_result first. revise uses selected saved_notes plus optional note on the SAME task; note saves only. Omitted saved_notes stays untouched. To comment on a screenshot, use its image id from get_result_images. If this channel cannot select one, link to the result Comment control and say feedback still needs submitting there.",
     handle: (ctx, args) => {
       const read = ctx.readResults?.get(Number(args["run"]));
       if (read === undefined || read.step >= ctx.step) return { ok: false, message: "Read this result with get_result in an earlier step first." };
@@ -834,8 +838,17 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       if (new Set(notes).size !== notes.length || notes.some(id => !read.snapshot.notes.some(one => one.id === id))) return { ok: false, message: "Select only feedback ids from the result you read." };
       if ((operation === "note" && (note === null || notes.length > 0)) || (note === null && notes.length === 0)) return { ok: false, message: "Write feedback or select saved notes for a revision." };
       if (operation === "revise" && read.snapshot.task !== read.snapshot.execution) return { ok: false, message: "A newer revision is current. Read that version before requesting changes." };
+      const wanted = args["image"] === null ? undefined : args["image"] ?? (note !== null && ctx.replyImage?.run === read.snapshot.run ? ctx.replyImage.artifact : undefined);
+      let image = null;
+      if (wanted !== undefined) {
+        image = read.snapshot.images?.find(one => one.artifact === wanted) ?? null;
+        if (image === null || ctx.evidenceRoot === undefined || note === null) return { ok: false, message: "Choose a saved screenshot from the result you read and write feedback." };
+        if (ctx.replyImage?.artifact === wanted && !sameFeedbackImage(ctx.replyImage, image)) return { ok: false, message: "The screenshot you replied to changed. Open the result and select it again." };
+        const problem = feedbackImageProblem(ctx.store, ctx.evidenceRoot, read.snapshot.run, image);
+        if (problem !== null) return { ok: false, message: problem };
+      }
       const id = ctx.draft("review", { task: read.snapshot.task, taskTitle: read.snapshot.title, run: read.snapshot.run,
-        snapshot: read.snapshot, operation, note, path, line, notes });
+        snapshot: read.snapshot, operation, note, path, line, notes, image });
       return id === null ? tooMany() : { ok: true, body: { proposal: id, kind: "review", awaiting: "confirmation", operation } };
     },
   },

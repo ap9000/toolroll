@@ -1357,7 +1357,7 @@ export function proofBundleView(store: Store, run: Run, artifacts: Artifact[], r
     } catch {
       problem = "the file could not be read";
     }
-    return [{ path, caption: captionFor(path), artifactId: artifact.id, problem }];
+    return [{ path, caption: captionFor(path), artifactId: artifact.id, sha256: artifact.sha256, problem }];
   });
   const stored = new Set(screenshots.map(one => one.path));
   const uncapturedScreenshots = (proof?.screenshots ?? []).map(one => one.path).filter(path => !stored.has(path));
@@ -2040,6 +2040,9 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
   const physicalReasons = receipt.reasons.filter(reason => !assessmentReasons.has(reason));
   const runId = run.id;
   const shots = proof?.screenshots ?? [];
+  const picture = (shot: ResultScreenshot): Html => html`<figure class="result-image"><a class="receipt-shot" href="/r/${runId}/evidence/${shot.artifactId}"><img src="/r/${runId}/evidence/${shot.artifactId}" alt="${shot.caption}"><span>${shot.caption}</span></a>${
+    detail.canAnnotate && o.csrf !== "" && shot.sha256 !== undefined
+      ? html`<button type="button" class="quiet" data-comment-image="${JSON.stringify({ run: runId, artifact: shot.artifactId, sha256: shot.sha256 })}" data-image-caption="${shot.caption}">Comment</button>` : ""}</figure>`;
   const shown = shots.filter(one => one.problem === null);
   const stat = terminal?.stat ?? null;
   const statOk = stat !== null && !("problem" in stat);
@@ -2136,7 +2139,7 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
   } else if (lead === "screenshots") {
     summaryParts.push(
       html`<div class="receipt-visuals result-visuals" aria-label="validated screenshots">${shown
-        .map(shot => html`<a class="receipt-shot" href="/r/${runId}/evidence/${shot.artifactId}"><img src="/r/${runId}/evidence/${shot.artifactId}" alt="${shot.caption}"><span>${shot.caption}</span></a>`)}</div>`,
+        .map(picture)}</div>`,
     );
   }
   const unavailableShots = shots.filter(one => one.problem !== null);
@@ -2296,7 +2299,7 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
         : lead === "screenshots"
           ? html`<p class="meta" data-cockpit-source="screenshots">${shown.length} validated screenshot${shown.length === 1 ? "" : "s"} shown in Summary${unavailableShots.length > 0 ? `; ${unavailableShots.length} unavailable` : ""}.</p>`
           : html`<details class="cockpit-proof-group" data-cockpit-source="screenshots"><summary>Screenshots · ${shown.length}${unavailableShots.length > 0 ? ` (${unavailableShots.length} unavailable)` : ""}</summary><div class="receipt-visuals" aria-label="validated screenshots">${
-            shown.map(shot => html`<a class="receipt-shot" href="/r/${runId}/evidence/${shot.artifactId}"><img src="/r/${runId}/evidence/${shot.artifactId}" alt="${shot.caption}"><span>${shot.caption}</span></a>`)
+            shown.map(picture)
           }</div></details>`,
     );
     checkParts.push(
@@ -2313,6 +2316,12 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
 
   // ---- request changes: both feedback styles, one sealed road ------------
   const requestParts: Html[] = [html`<h3 class="so-sr-only">What should change?</h3>`];
+  const imageNote = (one: DiffComment): Html => {
+    if (one.image == null) return html``;
+    const shot = shots.find(shot => shot.artifactId === one.image!.artifact && shot.sha256 === one.image!.sha256 && one.image!.run === runId && shot.problem === null);
+    return html`<figure class="feedback-image">${shot === undefined ? html`<figcaption>Screenshot ${one.image.artifact} is unavailable.</figcaption>`
+      : html`<a href="/r/${runId}/evidence/${shot.artifactId}"><img src="/r/${runId}/evidence/${shot.artifactId}" alt="${shot.caption}"></a><figcaption>${shot.caption} · Screenshot ${shot.artifactId}</figcaption>`}</figure>`;
+  };
   const pathWords = (path: string, line: number | null): Html => {
     const shownPath = `${path}${line === null ? "" : `:${line}`}`;
     const href = detail.editor === null ? null : editorFileHref(detail.editor.worktree, path, line);
@@ -2321,7 +2330,7 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
   if (detail.comments.length > 0) {
     requestParts.push(
       html`<p class="meta">Saved for later · ${detail.comments.length}</p><div class="diff-comments" data-result-notes="${detail.comments.length}">${
-        detail.comments.map(one => html`<div class="diff-comment"><span class="diff-comment-pin" aria-hidden="true"></span><p>${one.path === null ? "" : pathWords(one.path, one.line)}${one.note}</p><span class="meta">${one.author} · ${whenTime(one.createdAt)}</span></div>`)
+        detail.comments.map(one => html`<div class="diff-comment">${imageNote(one)}<span class="diff-comment-pin" aria-hidden="true"></span><p>${one.path === null ? "" : pathWords(one.path, one.line)}${one.note}</p><span class="meta">${one.author} · ${whenTime(one.createdAt)}</span></div>`)
       }</div>`,
     );
     if (o.csrf !== "" && !detail.canAnnotate) {
@@ -2332,7 +2341,7 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
     }
   }
   if ((detail.pastComments?.length ?? 0) > 0) {
-    requestParts.push(html`<details class="result-feedback-history"><summary>Earlier feedback</summary><div class="diff-comments" data-past-feedback>${detail.pastComments!.map(one => html`<div class="diff-comment"><p>${one.path === null ? "" : pathWords(one.path, one.line)}${one.note}</p><span class="meta">${one.author} · ${whenTime(one.createdAt)}</span></div>`)}</div></details>`);
+    requestParts.push(html`<details class="result-feedback-history"><summary>Earlier feedback</summary><div class="diff-comments" data-past-feedback>${detail.pastComments!.map(one => html`<div class="diff-comment">${imageNote(one)}<p>${one.path === null ? "" : pathWords(one.path, one.line)}${one.note}</p><span class="meta">${one.author} · ${whenTime(one.createdAt)}</span></div>`)}</div></details>`);
   }
   for (const revision of detail.revisions) {
     // The child's standing is the shared status projection's own words
@@ -2349,6 +2358,7 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
       postForm(`/r/${runId}/comment`, joinHtml([
         revisionSealFields(detail.comments, detail.sourceDigest),
         html`<input type="hidden" data-recorded-requests value="${[...detail.comments, ...(detail.pastComments ?? [])].filter(one => one.sourceKey?.startsWith(`review:${o.user}:`)).map(one => one.sourceKey!.slice(`review:${o.user}:`.length)).join(",")}">`,
+        html`<input type="hidden" name="image" value=""><figure class="feedback-image" data-feedback-image hidden><img alt="Selected screenshot" hidden><figcaption></figcaption><button type="button" class="quiet" data-remove-image>Remove image</button></figure>`,
         html`<textarea name="note" rows="2" maxlength="${LIMITS.note}" placeholder="Describe the change…" aria-label="review comment" aria-describedby="comment-note-limit"${o.noted ? " autofocus" : ""}></textarea>`,
         html`<span class="meta diff-comment-limit" id="comment-note-limit">up to ${LIMITS.note} characters</span>`,
         html`<details class="result-pin"><summary>Attach to a file or line</summary>`,
@@ -2445,7 +2455,7 @@ export function personCheckItems(proof: ProofBundleView, patchText: string | nul
     return {
       id: row.id, statement: row.statement, words: personCheckWords(row.statement), note: notes.length === 0 ? null : notes.join(" "),
       excerpts: files.filter(one => one.lines.length > 0).slice(0, 3),
-      shots: pictures.slice(0, 4).map(shot => ({ src: `/r/${runId}/evidence/${shot.artifactId}`, href: `/r/${runId}/evidence/${shot.artifactId}`, caption: shot.caption })),
+      shots: pictures.slice(0, 4).map(shot => ({ src: `/r/${runId}/evidence/${shot.artifactId}`, href: `/r/${runId}/evidence/${shot.artifactId}`, caption: shot.caption, ...(shot.sha256 === undefined ? {} : { image: { run: runId, artifact: shot.artifactId, sha256: shot.sha256 } }) })),
     };
   });
 }
@@ -2743,7 +2753,7 @@ export function runPage(
           noted,
           requestToken: result.requestToken,
           hrefFor: one => (one === "summary" ? `/r/${run.id}` : `/r/${run.id}?tab=${one}`),
-          returnTo: `/r/${run.id}`,
+          returnTo: `/r/${run.id}?record=1`,
           back: null,
         });
   return screen(`build #${run.id}`, joinHtml([

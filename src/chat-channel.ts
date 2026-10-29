@@ -1,6 +1,7 @@
+import { parseFeedbackImage, type FeedbackImage } from "./result-review.js";
 /** Shared membership-chat identity, proposal previews and result links. Transport adapters never grant authority. */
 import { FLOW_HREF } from "./flow-engine.js";
-import { closedQuestionWords } from "./decision.js";
+import { closedQuestionWords, LIMITS } from "./decision.js";
 import { createHash } from "node:crypto";
 import {
   sharedActionPayload,
@@ -192,12 +193,13 @@ export function whichTaskText(titles: readonly string[]): string {
 }
 
 /** The server-authored context a reply to a result message carries into the turn — the exact execution and run, never a guess. */
-export function replyContextFor(taskId: string, run: number | null): string {
+export function replyContextFor(taskId: string, run: number | null, image?: FeedbackImage): string {
   return [
     `Current task: ${taskId}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.`,
     run === null
       ? `The operator is replying to a message about execution ${taskId}.`
       : `The operator is replying to result #${run} from execution ${taskId}. Use get_result for that exact execution and run when responding to feedback; do not substitute another result. If the operator asks for changes, use propose_review revise; use note only when they explicitly ask to save feedback without starting work.`,
+    ...(image === undefined ? [] : [`The reply targets screenshot ${image.artifact} on result #${image.run}. Retain image: ${image.artifact} in propose_review so the exact screenshot stays with new feedback; pass image: null only when the feedback is not about it. Read get_result_images for this result first.`]),
   ].join(" ");
 }
 
@@ -208,6 +210,10 @@ export function focusContextFor(taskId: string): string {
 
 /** A step the phone cannot take itself: said once; the button (or its absence) says where. */
 const HANDOFF = "This step finishes in Toolroll.";
+/** One Telegram message; a card that cannot fit is never confirmed from a shortened copy. */
+const TELEGRAM_TEXT_MAX = 4_096;
+const PHONE_TOO_LONG = "This is too long to show in full here. It is waiting in your Toolroll chat to review and confirm.";
+const LEAD_CHAT_LINK: PhoneLink = { label: "Open chat", path: "/chat" };
 /** No trusted https origin is configured: one honest line, no localhost, no promise. */
 export const NO_PHONE_LINK =
   "Phone access isn't configured. Open Toolroll on your computer.";
@@ -330,6 +336,35 @@ export function proposalLink(
       : null;
   }
   return null;
+}
+
+/** A personal Telegram card fits one message, or it waits, whole, in the person's lead conversation in Toolroll. */
+function fitsPhone(preview: { text: string; buttons: boolean }): boolean {
+  return !preview.buttons || preview.text.length <= TELEGRAM_TEXT_MAX;
+}
+
+/** The personal Telegram card: the shared preview, or a handoff to the lead conversation when it cannot be shown in full. */
+export function phoneProposalPreview(
+  store: Store,
+  proposal: LeadProposal,
+  repos: readonly string[],
+): { text: string; buttons: boolean; closed?: true } {
+  const preview = proposalPreview(store, proposal, repos, "telegram");
+  return fitsPhone(preview)
+    ? preview
+    : { text: [preview.text.split("\n")[0]!, PHONE_TOO_LONG, "", HANDOFF].join("\n"), buttons: false };
+}
+
+/** The personal Telegram card's link: the lead conversation holding a card too long to show, else the shared link. */
+export function phoneProposalLink(
+  store: Store,
+  proposal: LeadProposal,
+  repos: readonly string[],
+  channel: ChatChannelName | null = null,
+): PhoneLink | null {
+  return fitsPhone(proposalPreview(store, proposal, repos, "telegram"))
+    ? proposalLink(store, proposal, repos, channel)
+    : LEAD_CHAT_LINK;
 }
 
 /**
@@ -582,6 +617,7 @@ export function proposalPreview(
               note: string;
               path: string | null;
               line: number | null;
+              image?: FeedbackImage | null;
             }[];
           }
         | undefined;
@@ -591,7 +627,8 @@ export function proposalPreview(
       const saved = (snapshot?.notes ?? []).filter((one) =>
         selected.includes(one.id),
       );
-      const note = t("note", 1_000);
+      const note = t("note", LIMITS.note);
+      const image = parseFeedbackImage(payload["image"]);
       const path = t("path", 300);
       return card(
         `${revise ? "Request changes to" : "Save feedback on"} result #${String(payload["run"] ?? "?")} of ${taskName}`,
@@ -600,7 +637,8 @@ export function proposalPreview(
             ? []
             : [
                 `Your feedback${path === "" ? "" : ` (${path}${typeof payload["line"] === "number" ? `:${payload["line"]}` : ""})`}:`,
-                ...lines(note, 1_000),
+                ...(image ? [`Screenshot ${image.artifact} · result #${image.run}`] : []),
+                ...lines(note, LIMITS.note),
               ]),
           ...(saved.length === 0
             ? []
@@ -608,7 +646,7 @@ export function proposalPreview(
                 "Saved notes included:",
                 ...saved.map(
                   (one) =>
-                    `• ${one.path === null ? "" : `${phoneText(one.path, 120)}${one.line === null ? "" : `:${one.line}`}: `}${phoneText(one.note, 300)}`,
+                    `• ${one.image ? `Screenshot ${one.image.artifact} · result #${one.image.run}: ` : ""}${one.path === null ? "" : `${phoneText(one.path, 120)}${one.line === null ? "" : `:${one.line}`}: `}${phoneText(one.note, LIMITS.note)}`,
                 ),
               ]),
         ],

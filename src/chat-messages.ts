@@ -711,7 +711,7 @@ export class ChatMessages extends ChatCore {
    * result image names its exact task and run, the lead's reply names the
    * task its turn was about, a card names its task, and (v79) a status
    * message names the task it showed. */
-  messageBindings(binding: TelegramBinding, messageId: string): { taskId: string | null; taskRef: number | null; run: number | null; project: string | null }[] {
+  messageBindings(binding: TelegramBinding, messageId: string): { taskId: string | null; taskRef: number | null; run: number | null; project: string | null; image?: { run: number; artifact: number; sha256: string } }[] {
     const chat = this;
     const facts = chat
       .prepare(
@@ -738,7 +738,7 @@ export class ChatMessages extends ChatCore {
     const images = parts.filter(one => one.part.kind === "image").map(({ part }) => {
       const taskId = part.taskId!;
       const ref = this.store.lookupRef(taskId);
-      return { taskId, taskRef: ref?.id ?? null, run: part.run!, project: ref?.repo ?? null };
+      return { taskId, taskRef: ref?.id ?? null, run: part.run!, project: ref?.repo ?? null, ...(part.run === null || part.artifact === null || part.sha256 === null ? {} : { image: { run: part.run, artifact: part.artifact, sha256: part.sha256 } }) };
     });
     // The lead's own messages: a reply from a turn that was about one task,
     // and a card, which names its task (or, once it filed one, the new task).

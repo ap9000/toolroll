@@ -1,3 +1,5 @@
+import { verifyResultImage } from "./chat-evidence.js";
+import { parseFeedbackImage, type FeedbackImage } from "./result-review.js";
 import { WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
 import { checkAccessOf, widerThan, type CheckAccess } from "./check-access.js";
 import { PROJECT_SANDBOX_DEFAULT, sandboxOf, type ProjectSandbox } from "./project-sandbox.js";
@@ -805,7 +807,8 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v136 adds, and changes no saved row: each run's own "Show commands in the live view" answer, captured once before its
 // live file opens (run_live_detail; docs/plans/agents-view.md §2.4). Saved runs have none, which every reader takes as
 // commands off: permission is never recovered from a transcript or the project's current setting.
-export const SCHEMA_VERSION = 136;
+// v137 adds optional exact-image context to feedback; old notes retain their file/line target.
+export const SCHEMA_VERSION = 137;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -943,7 +946,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1072,6 +1075,10 @@ export const V134_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 /** v135 (docs/plans/release-once.md): a scope's release terms, part of its digest when present. Saved rows read NULL. */
 export const V135_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
   task_scope: { release_terms_json: { definition: "TEXT", saved: "NULL" } },
+});
+/** v137: optional screenshot context; existing feedback stays unchanged. */
+export const V137_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  diff_comment: { image_json: { definition: "TEXT", saved: "NULL" } },
 });
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
@@ -5248,6 +5255,9 @@ function initializeStore(db: Database, file: string): Store {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   }
   db.exec(LIVE_STEER_SCHEMA);
+  for (const [table, columns] of Object.entries(V137_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
   installLedgerTriggers(db);
   // Attention/history indexes come AFTER migration: on a database whose
   // constrained tables still carry a pre-rebuild shape, creating a partial
@@ -10874,6 +10884,7 @@ export class Store {
       author: string;
       /** Ingested comments carry their origin id — the idempotency key (M8.17). */
       sourceKey?: string;
+      image?: FeedbackImage | null;
     },
     now: Date,
   ): number | null {
@@ -10881,12 +10892,18 @@ export class Store {
     if (artifact === undefined || artifact.kind !== "terminal-diff") {
       throw new Error(`artifact ${args.artifactId} is not run ${args.runId}'s terminal diff — comments bind to the exact bytes reviewed`);
     }
+    const image = parseFeedbackImage(args.image);
+    if (image === false) throw new Error("Invalid feedback image.");
+    if (image !== null) {
+      const shot = this.artifactForRun(args.runId, image.artifact);
+      if (image.run !== args.runId || shot?.kind !== "screenshot" || shot.sha256 !== image.sha256) throw new Error("The feedback image does not belong to this result.");
+    }
     // The unique index is the real concurrent guard (audit C-9): a race on
     // the same source key lands in DO NOTHING, not in a thrown constraint.
     const inserted = this.db
       .prepare(
-        `INSERT INTO diff_comment (artifact, artifact_sha, run, path, line, note, author, created_at, source_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO diff_comment (artifact, artifact_sha, run, path, line, note, author, created_at, source_key, image_json)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (source_key) WHERE source_key IS NOT NULL DO NOTHING`,
       )
       .run(
@@ -10899,6 +10916,7 @@ export class Store {
         args.author,
         now.toISOString(),
         args.sourceKey ?? null,
+        image === null ? null : JSON.stringify(image),
       );
     return Number(inserted.changes) === 0 ? null : Number(inserted.lastInsertRowid);
   }
@@ -11783,7 +11801,12 @@ export class Store {
             if (ids.size !== args.commentIds.length || live.length !== ids.size) {
               throw new RevisionRaced("this annotation batch is no longer whole — read the current comments before sealing it");
             }
-            const exactComment = (one: Record<string, unknown>) => ({ id: one["id"], path: one["path"], line: one["line"], note: one["note"], author: one["author"], createdAt: one["createdAt"] });
+            for (const one of live) {
+              if (one.image == null) continue;
+              const image = sourceRef.repo === null ? null : verifyResultImage(this, args.brief.evidenceRoot, [sourceRef.repo], { taskId: args.source.task, ...one.image });
+              if (one.image.run !== sourceRun.id || image === null || !image.ok) return refuse("brief-custody", "A feedback screenshot is unavailable or changed. The notes were not consumed.");
+            }
+            const exactComment = (one: Record<string, unknown>) => ({ id: one["id"], path: one["path"], line: one["line"], note: one["note"], author: one["author"], createdAt: one["createdAt"], image: one["image"] ?? null });
             const expected = live.map(one => exactComment({ ...one }));
             const described = Array.isArray(named.comments) && named.comments.every(one => one !== null && typeof one === "object" && !Array.isArray(one))
               ? named.comments.map(one => exactComment(one as Record<string, unknown>)) : null;
@@ -23524,6 +23547,7 @@ export type DiffComment = {
   id: number;
   artifact: number;
   artifactSha: string;
+  image?: FeedbackImage | null;
   run: number;
   path: string | null;
   line: number | null;
@@ -24061,11 +24085,18 @@ function readIntakeGrant(row: Record<string, unknown>): IntakeGrant {
   };
 }
 
+function readFeedbackImage(value: unknown): FeedbackImage | null {
+  const image = parseFeedbackImage(value);
+  if (image === false) throw new Error("The saved feedback image is damaged.");
+  return image;
+}
+
 function readDiffComment(row: Record<string, unknown>): DiffComment {
   return {
     id: Number(row["id"]),
     artifact: Number(row["artifact"]),
     artifactSha: String(row["artifact_sha"]),
+    image: readFeedbackImage(row["image_json"]),
     run: Number(row["run"]),
     path: row["path"] === null ? null : String(row["path"]),
     line: row["line"] === null ? null : Number(row["line"]),

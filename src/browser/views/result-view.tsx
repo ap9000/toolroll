@@ -218,7 +218,7 @@ function CheckItems({ panel, chatHref, answers, answer }: { panel: BrowserResult
           {item.shots.length > 0 && <ul className="flex flex-wrap gap-2" aria-label="Screenshots">
             {item.shots.map(shot => <li key={shot.src}><a href={shot.href} className="block overflow-hidden rounded-md border border-border hover:border-muted-foreground" title={shot.caption}>
               <img src={shot.src} alt={shot.caption} loading="lazy" className="h-24 w-auto max-w-[12rem] object-cover phone:h-20" />
-            </a></li>)}
+            </a>{panel.canRequest && shot.image !== undefined && <Button variant="ghost" className="min-h-11" data-comment-image={JSON.stringify(shot.image)} data-image-caption={shot.caption}>Comment</Button>}</li>)}
           </ul>}
           <div className="flex flex-wrap gap-2">
             <Button variant="outline" aria-pressed={said === "right"} className="min-h-11 aria-pressed:bg-success-soft aria-pressed:text-success phone:flex-1" data-looks-right
