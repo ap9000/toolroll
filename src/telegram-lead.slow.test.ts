@@ -30,6 +30,8 @@ import { knowledgeView } from './project-knowledge.js';
 import { mintSharedActionReview, prepareSharedAction } from './chat-actions.js';
 import { assignmentOf } from './assignment.js';
 import { confirmLeadProposal } from "./lead-doors.js";
+import { leadProposalCardParts } from "./server/render-chat.js";
+import { withFormToken } from "./server/request-context.js";
 import { LEAD_TOOL_SCHEMAS, executeLeadTool } from "./lead-tools.js";
 import { runLeadCli } from "./lead-cli.js";
 import { readChatResult } from "./chat-review.js";
@@ -1673,41 +1675,65 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(store.getTask("payout")?.state).toBe("done");
     });
 
-    test("a reply to a screenshot hands overlong feedback to the result, can leave the screenshot off, and revises with only saved notes", async () => {
-      origin = "https://console.example";
-      const { run } = seedSource("payout");
-      shot(run, "screenshot-home.png", PNG);
+    const replyToScreenshot = async (run: number) => {
       askForImages(run, "One screenshot follows.");
       expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1, problems: [] } });
-      const imageMessage = script.documents()[0]!.messageId as number;
-      const reply = (text: string, args: Record<string, unknown>) => {
+      const imageMessage = script.documents().at(-1)!.messageId as number;
+      return async (text: string, args: Record<string, unknown>) => {
         answers.push(
           { text: "Reading.", calls: [{ id: "r1", name: "get_result", args: { task: "payout", run } }] },
           { text: "Proposing.", calls: [{ id: "r2", name: "propose_review", args: { run, ...args } }] },
           { text: "Confirm the card." },
         );
         script.updates.push([textUpdate(nextUpdate++, text, { reply_to_message: { message_id: imageMessage } })]);
+        expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1, problems: [] } });
       };
-      const long = "Tighten the form spacing. ".repeat(140).trim();
-      reply("Revise it with my long notes.", { operation: "revise", note: long });
-      expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1, problems: [] } });
-      const handed = script.card();
-      expect(handed.rows.flat().some(button => /Confirm/.test(button.text))).toBe(false);
-      expect(urlButtons(script.sends().at(-1))).toEqual([["Open result", `https://console.example/chat?task=payout&result=${run}`]]);
-      expect(handed.text.length).toBeLessThan(4_096);
-      reply("Save that the footer is fine.", { operation: "note", note: "The footer is fine as is.", image: null });
-      expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1, problems: [] } });
+    };
+
+    test("a reply to a screenshot can leave the screenshot off and revises with only saved notes", async () => {
+      origin = "https://console.example";
+      const { run } = seedSource("payout");
+      shot(run, "screenshot-home.png", PNG);
+      const reply = await replyToScreenshot(run);
+      await reply("Save that the footer is fine.", { operation: "note", note: "The footer is fine as is.", image: null });
       const save = script.card();
       expect(save.text).not.toContain("Screenshot");
       expect(await tapPass(save.button(/^Confirm$/), save.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
       expect(store.allDiffComments(run).map(one => [one.note, one.image ?? null, one.consumedBy])).toEqual([["The footer is fine as is.", null, null]]);
-      reply("Revise using my saved notes.", { operation: "revise", note: null, saved_notes: [store.allDiffComments(run)[0]!.id] });
-      expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1, problems: [] } });
+      await reply("Revise using my saved notes.", { operation: "revise", note: null, saved_notes: [store.allDiffComments(run)[0]!.id] });
       expect(toolResult("propose_review")).toMatchObject({ kind: "review", operation: "revise", awaiting: "confirmation" });
       const revise = script.card();
       expect(await tapPass(revise.button(/^Confirm$/), revise.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
       const child = (store.listLeadProposals(store.liveLeadThreadFor("alex")!.id, ["confirmed"]).find(one => one.payload["operation"] === "revise")!.outcome as { taskId: string }).taskId;
       expect(store.allDiffComments(run).map(one => [one.note, one.image ?? null, one.consumedBy])).toEqual([["The footer is fine as is.", null, child]]);
+    });
+
+    test("feedback too long for one Telegram message waits, whole and with its screenshot, in the lead chat, where the person confirms it", async () => {
+      origin = "https://console.example";
+      const { run } = seedSource("payout");
+      const first = shot(run, "screenshot-home.png", PNG);
+      const reply = await replyToScreenshot(run);
+      const saved = "Keep the footer links aligned. ".repeat(95).trim();
+      await reply("Save my footer notes.", { operation: "note", note: saved, image: null });
+      const save = script.card();
+      expect(await tapPass(save.button(/^Confirm$/), save.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
+      const typed = "Tighten the form spacing. ".repeat(115).trim();
+      await reply("Revise with my long notes.", { operation: "revise", note: typed, saved_notes: [store.allDiffComments(run)[0]!.id] });
+      const handed = script.card();
+      expect(handed.rows.flat().some(button => /Confirm/.test(button.text))).toBe(false);
+      expect(urlButtons(script.sends().at(-1))).toEqual([["Open chat", "https://console.example/chat"]]);
+      expect(handed.text.length).toBeLessThan(4_096);
+      const pending = store.listLeadProposals(store.liveLeadThreadFor("alex")!.id, ["pending"]);
+      expect(pending).toHaveLength(1);
+      const shown = withFormToken("t".repeat(32), () => leadProposalCardParts(pending[0]!, false, null).card);
+      expect(shown.primary).toMatchObject({ kind: "confirm" });
+      expect(shown.body).toContain(typed);
+      expect(shown.body).toContain(saved);
+      expect(shown.body).toContain(`Screenshot ${first} · result #${run}`);
+      expect(confirmLeadProposal(store, who(), pending[0]!.id, now, { via: "web", evidenceRoot })).toMatchObject({ ok: true });
+      const child = (store.getLeadProposal(pending[0]!.id)!.outcome as { taskId: string }).taskId;
+      const image = { run, artifact: first, sha256: createHash("sha256").update(PNG).digest("hex") };
+      expect(store.allDiffComments(run).map(one => [one.note, one.image ?? null, one.consumedBy])).toEqual([[saved, null, child], [typed, image, child]]);
     });
 
     test("asked for a result's screenshots: the shared tool selects that exact result's verified images, Telegram sends each original as a document after the reply, a reply to an image revises that exact run, and a newer revision is said, never switched to", async () => {

@@ -1,5 +1,5 @@
 import { CHAT_ACTIONS, sharedActionAllowsChallenge, sharedActionPayload } from "./chat-actions.js";
-import { taskInCeiling, mirrorToTaskChat, couldNotAnswerText, channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, NO_PHONE_LINK, NO_TASK_LINK, proposalLink, confirmedLink, proposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, type PhoneLink } from "./chat-channel.js";
+import { taskInCeiling, mirrorToTaskChat, couldNotAnswerText, channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, NO_PHONE_LINK, NO_TASK_LINK, phoneProposalLink, confirmedLink, phoneProposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, type PhoneLink } from "./chat-channel.js";
 export { channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, tooLongText, whichTaskText, replyContextFor, NO_PHONE_LINK, NO_TASK_LINK, proposalLink, confirmedLink, proposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, CHAT_ACTION_PARITY as TELEGRAM_ACTION_PARITY, parityGaps, type PhoneLink, type ResolvedLead, type ParitySupport } from "./chat-channel.js";
 /**
  * The paired phone as one more way to use the same assistant.
@@ -255,7 +255,7 @@ export function applyProposalTap(
     return { effects, confirmed: false, ignored: true };
   }
   const who = verified.who;
-  const preview = proposalPreview(store, proposal, actionRepos, "telegram");
+  const preview = phoneProposalPreview(store, proposal, actionRepos);
   const origin = options.phoneOrigin?.() ?? null;
 
   if (preview.closed) {
@@ -286,7 +286,7 @@ export function applyProposalTap(
     // A forged keyboard on a handoff card: nothing acts; the card is
     // repainted with its current link (or the honest absence of one).
     store.consumeTelegramProposalActions(proposal.id, now);
-    const wanted = proposalLink(store, proposal, actionRepos, "telegram");
+    const wanted = phoneProposalLink(store, proposal, actionRepos, "telegram");
     const link = phoneLinkButton(origin, wanted);
     ack(link === null ? "this step finishes on the computer" : "open the button below to finish this step");
     edit(handoffCardText(preview.text, linkNote(origin, wanted)), keyboardWith(null, link));
@@ -589,7 +589,7 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
         // or went away carries the current truth, never a stored URL.
         const proposal = part.kind === "card" && part.proposal !== null ? store.getLeadProposal(part.proposal) : null;
         const origin = proposal === null ? null : options.phoneOrigin?.() ?? null;
-        const wanted = proposal === null ? null : proposalLink(store, proposal, repos);
+        const wanted = proposal === null ? null : phoneProposalLink(store, proposal, repos);
         const keyboard = keyboardWith(part.keyboard, phoneLinkButton(origin, wanted));
         // The lead's own words carry their bold anchors and labelled links as entities, never as Markdown characters.
         const voiced = part.kind === "reply" ? telegramReply(part.text) : null;
@@ -661,7 +661,7 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
         const selected = store.getLeadTurn(turn)?.state === "answered" ? store.listLeadTurnEvidence(turn) : [];
         for (const image of selected) parts.push({ kind: "image", text: image.caption, taskId: image.taskId, run: image.run, artifact: image.artifact, sha256: image.sha256 });
         for (const proposal of proposals) {
-          const preview = proposalPreview(store, proposal, repos, "telegram");
+          const preview = phoneProposalPreview(store, proposal, repos);
           const keyboard = preview.buttons ? mintCardTokens(store, binding, proposal.id, now).keyboard : null;
           parts.push({ kind: "card", text: preview.text, proposal: proposal.id, keyboard });
         }

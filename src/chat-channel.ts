@@ -210,8 +210,10 @@ export function focusContextFor(taskId: string): string {
 
 /** A step the phone cannot take itself: said once; the button (or its absence) says where. */
 const HANDOFF = "This step finishes in Toolroll.";
-/** Feedback a card cannot show in full is never confirmed from it; Telegram's 4,096-character message bounds every card. */
-const REVIEW_CARD_BODY_MAX = 3_000;
+/** One Telegram message; a card that cannot fit is never confirmed from a shortened copy. */
+const TELEGRAM_TEXT_MAX = 4_096;
+const PHONE_TOO_LONG = "This is too long to show in full here. It is waiting in your Toolroll chat to review and confirm.";
+const LEAD_CHAT_LINK: PhoneLink = { label: "Open chat", path: "/chat" };
 /** No trusted https origin is configured: one honest line, no localhost, no promise. */
 export const NO_PHONE_LINK =
   "Phone access isn't configured. Open Toolroll on your computer.";
@@ -333,13 +335,36 @@ export function proposalLink(
       ? controlLink(control, task, payload["run"])
       : null;
   }
-  if (proposal.kind === "review")
-    return task !== "" &&
-      taskInCeiling(store, task, repos) &&
-      !proposalPreview(store, proposal, repos).buttons
-      ? controlLink("result", task, payload["run"])
-      : null;
   return null;
+}
+
+/** A personal Telegram card fits one message, or it waits, whole, in the person's lead conversation in Toolroll. */
+function fitsPhone(preview: { text: string; buttons: boolean }): boolean {
+  return !preview.buttons || preview.text.length <= TELEGRAM_TEXT_MAX;
+}
+
+/** The personal Telegram card: the shared preview, or a handoff to the lead conversation when it cannot be shown in full. */
+export function phoneProposalPreview(
+  store: Store,
+  proposal: LeadProposal,
+  repos: readonly string[],
+): { text: string; buttons: boolean; closed?: true } {
+  const preview = proposalPreview(store, proposal, repos, "telegram");
+  return fitsPhone(preview)
+    ? preview
+    : { text: [preview.text.split("\n")[0]!, PHONE_TOO_LONG, "", HANDOFF].join("\n"), buttons: false };
+}
+
+/** The personal Telegram card's link: the lead conversation holding a card too long to show, else the shared link. */
+export function phoneProposalLink(
+  store: Store,
+  proposal: LeadProposal,
+  repos: readonly string[],
+  channel: ChatChannelName | null = null,
+): PhoneLink | null {
+  return fitsPhone(proposalPreview(store, proposal, repos, "telegram"))
+    ? proposalLink(store, proposal, repos, channel)
+    : LEAD_CHAT_LINK;
 }
 
 /**
@@ -605,8 +630,9 @@ export function proposalPreview(
       const note = t("note", LIMITS.note);
       const image = parseFeedbackImage(payload["image"]);
       const path = t("path", 300);
-      const headline = `${revise ? "Request changes to" : "Save feedback on"} result #${String(payload["run"] ?? "?")} of ${taskName}`;
-      const body = [
+      return card(
+        `${revise ? "Request changes to" : "Save feedback on"} result #${String(payload["run"] ?? "?")} of ${taskName}`,
+        [
           ...(note === ""
             ? []
             : [
@@ -623,14 +649,7 @@ export function proposalPreview(
                     `• ${one.image ? `Screenshot ${one.image.artifact} · result #${one.image.run}: ` : ""}${one.path === null ? "" : `${phoneText(one.path, 120)}${one.line === null ? "" : `:${one.line}`}: `}${phoneText(one.note, LIMITS.note)}`,
                 ),
               ]),
-      ];
-      if (body.join("\n").length > REVIEW_CARD_BODY_MAX)
-        return handoff(headline, [
-          "This feedback is too long to show in full here. Open the result to review and send it.",
-        ]);
-      return card(
-        headline,
-        body,
+        ],
         revise
           ? "Creates a revision of the same task. Its approval follows your settings."
           : "Saves feedback; no work starts.",
