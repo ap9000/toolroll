@@ -94,7 +94,8 @@ describe("the release check's report (phase A)", () => {
     // Only what failed, was skipped or was asked about is named: the passing tests are counted, not listed.
     expect(report.units!.identities.map(one => `${one.file}::${one.name}::${one.state}`).sort()).toEqual(["src/b.test.ts::breaks::failed", "src/c.test.ts::later::skipped"]);
     expect(report.journeys.map(one => [one.script, one.groups.map(group => `${group.group}:${group.state}`)])).toEqual(expect.arrayContaining([["app", ["alpha:passed", "beta:failed"]], ["flows", ["alpha:passed", "beta:passed"]]]));
-    expect(report.upgrades).toEqual({ finished: true, versions: [{ version: "0.9.1", state: "passed" }, { version: "0.9.2", state: "passed" }] });
+    expect(report.upgrades).toEqual({ finished: true, inventoried: true, versions: [{ version: "0.9.1", state: "passed" }, { version: "0.9.2", state: "passed" }] });
+    expect(report.journeys.every(one => one.inventoried === true)).toBe(true);
     // The printed look-alike and the stale files changed nothing: the fake line carries no nonce of this run.
     expect(reportFromOutput(ran.stdout, "0".repeat(64)).ok).toBe(false);
   });

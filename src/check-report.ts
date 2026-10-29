@@ -23,9 +23,10 @@ import { join } from "node:path";
 import { readVerifiedCommit, verifiedTreeEntries, type VerifiedEntry } from "./commit-extract.js";
 import {
   CHECK_PARTS, CHECK_REPORT_MAX_BYTES, CHECK_REPORT_PREFIX, readCheckReport,
-  type CheckContext, type CheckInventory, type CheckReport, type ObligationSnapshot, type SealedInventory, type TargetedPlan,
+  type CheckContext, type CheckPart, type CheckInventory, type CheckReport, type ObligationSnapshot, type SealedInventory, type TargetedPlan,
 } from "./contracts/release-check.js";
 import { readVerifiedArtifact, storeEvidence } from "./evidence.js";
+import { releaseBaseline } from "./release-card.js";
 import { checkAttemptOf, recordCheckAttempt, type Store, type VerifyCommand } from "./store.js";
 
 /** The sealed artifacts' capture labels: what a reader looks for, by exact name. */
@@ -102,13 +103,67 @@ export function checkContextOf(facts: TreeFacts, command: VerifyCommand, access:
   return { version: 1, node: process.version, platform: process.platform, arch: process.arch, lockfile: facts.lockfile, harness: facts.harnessDigest, grant: { id: command.id, digest: command.digest }, access };
 }
 
-/** The parts a full check selects, as far as the plane knows them before it runs. */
-export const FULL_PARTS: readonly (typeof CHECK_PARTS[number])[] = CHECK_PARTS;
+/** Every part a check can have. */
+export const FULL_PARTS: readonly CheckPart[] = CHECK_PARTS;
+
+/** Changes no test reads: the plane's copy of scripts/release-check.mjs NOTHING (check-report.test.ts holds them equal). */
+export const NOTHING_PATHS: readonly RegExp[] = Object.freeze([/\.md$/, /^docs\//, /^evidence\//, /^design\//, /^output\//, /^LICENSE$/, /\.png$/]);
+/** Model-facing code, whose change runs the real-model journeys: the plane's copy of scripts/release-check.mjs MODEL. */
+export const MODEL_PATHS: readonly RegExp[] = Object.freeze([
+  /^src\/(lead|converse|subscription-chat|chat-[a-z-]+|lead-[a-z-]+|memory-pass)\.ts$/,
+  /^src\/(planner|planner-[a-z-]+|plan|builder|build-review|reviewer|scout|scout-[a-z-]+|decision|evidence)\.ts$/,
+  /^src\/(subagents|subagent-work|task-sizing|flow-sort|flow-draft)\.ts$/,
+  /^src\/(provider|provider-[a-z-]+|invoke|exec|attest|coding-provider|assignment-adapters|subscription-[a-z-]+)\.ts$/,
+]);
+
+/** Whether a changed path can affect an upgrade: the plane's copy of scripts/release-check.mjs needsUpgrade, without its
+ * version-only exception (the plane counts a version bump as a change, so it owes more, never less). */
+export function upgradeRelevant(file: string): boolean {
+  if (/^(docs|evidence|design|output)\//.test(file) || /\.md$/.test(file) || file === "LICENSE") return false;
+  if (/\.test\.[cm]?[jt]sx?$/.test(file) || /^test\//.test(file)) return false;
+  if (/^src\/(browser|design)\//.test(file) || /\.css$/.test(file)) return false;
+  if (/^scripts\/(app-e2e|flows-e2e|e2e-parallel)\.mjs$/.test(file)) return false;
+  return true;
+}
+
+/** The paths that differ between two verified trees: added, removed, or with another mode or blob. */
+export function changedPaths(facts: TreeFacts, base: TreeFacts): string[] {
+  const before = new Map(base.entries.map(one => [one.path, `${one.mode} ${one.id}`]));
+  const after = new Map(facts.entries.map(one => [one.path, `${one.mode} ${one.id}`]));
+  return [...new Set([...before.keys(), ...after.keys()])].filter(path => before.get(path) !== after.get(path)).sort();
+}
+
+/**
+ * The parts a Full check owes, decided by the plane before it runs (eval-harness review 1, finding 2), never by the
+ * check's own report: the typecheck and the build always; the unit suite when anything a test reads changed since
+ * `base` (the plane's own record of the last release, both trees verified here) and the tree has unit files; the
+ * scripted journeys likewise when the tree has the journey scripts; the real-model journeys when model-facing code
+ * changed; the upgrade path when a change can affect an upgrade and the tree has it. With no base every one the tree
+ * can run is owed. The check is told these on its handshake and runs at least them.
+ */
+export function fullObligationsOf(facts: TreeFacts, base: TreeFacts | null): CheckPart[] {
+  const has = (path: string) => facts.entries.some(one => one.path === path && (one.mode === "100644" || one.mode === "100755"));
+  const journeys = has("scripts/flows-e2e.mjs") && has("scripts/app-e2e.mjs");
+  const changed = base === null ? null : changedPaths(facts, base);
+  const code = changed?.filter(path => !NOTHING_PATHS.some(re => re.test(path))) ?? null;
+  const checks = code === null || code.length > 0;
+  const real = code === null || code.some(path => !/\.test\.[cm]?[jt]s$/.test(path) && MODEL_PATHS.some(re => re.test(path)));
+  const upgrade = has("scripts/upgrade-path.mjs") && (changed === null || changed.some(upgradeRelevant));
+  return [
+    "typecheck", "build",
+    ...(checks && facts.units.length > 0 ? ["unit" as const] : []),
+    ...(checks && journeys ? ["flows" as const, "app" as const] : []),
+    ...(real && journeys ? ["flows-real" as const, "app-real" as const] : []),
+    ...(upgrade ? ["upgrade" as const] : []),
+  ];
+}
 
 /** What a check must account for, sealed before it runs: every unit file of the tree, whatever runs (a targeted
- * check accounts for the rest through its base), and the parts it selects. */
-export function inventoryOf(facts: TreeFacts, plan: TargetedPlan | null): CheckInventory {
-  return { version: 1, units: facts.units, parts: plan === null ? [...FULL_PARTS] : ["typecheck", "build", ...plan.parts.filter(one => one !== "typecheck" && one !== "build")] };
+ * check accounts for the rest through its base), and the parts it owes (a full check's from fullObligationsOf), and
+ * whether CI may stand in for its unit suite. */
+export function inventoryOf(facts: TreeFacts, plan: TargetedPlan | null, full: { owed: readonly CheckPart[]; ciSubstitute: boolean } = { owed: FULL_PARTS, ciSubstitute: false }): CheckInventory {
+  if (plan !== null) return { version: 1, units: facts.units, parts: ["typecheck", "build", ...plan.parts.filter(one => one !== "typecheck" && one !== "build")] };
+  return { version: 1, units: facts.units, parts: [...full.owed], ciSubstitute: full.ciSubstitute };
 }
 
 /** A check about to run: its handshake (written on stdin, then closed) and the facts sealed with it. */
@@ -133,6 +188,8 @@ export type PreparedAttempt = {
 export function prepareCheckAttempt(store: Store, root: string, input: {
   runId: number; repo: string; head: string; command: VerifyCommand; access: string;
   authority?: number | null; plan?: TargetedPlan | null; snapshot?: ObligationSnapshot | null; watch?: readonly string[];
+  /** A release's check (signed release terms or a release authority): CI never stands in for its unit suite. */
+  release?: boolean;
 }, now: Date): PreparedAttempt | null {
   if (checkAttemptOf(store, input.runId) !== null) return null;
   const gitDir = projectGitDir(input.repo);
@@ -140,7 +197,12 @@ export function prepareCheckAttempt(store: Store, root: string, input: {
   const read = treeFactsOf(gitDir, input.head);
   if (!read.ok) return null;
   const plan = input.plan ?? null, snapshot = input.snapshot ?? null;
-  const inventory = inventoryOf(read.facts, plan);
+  // A full check owes what the plane decides here, from the last release it recorded (never a tag the checkout holds).
+  const baseline = plan === null ? releaseBaseline(store, input.repo) : null;
+  const baseRead = baseline === null ? null : treeFactsOf(gitDir, baseline);
+  const owed = fullObligationsOf(read.facts, baseRead !== null && baseRead.ok ? baseRead.facts : null);
+  const ciSubstitute = input.release !== true;
+  const inventory = inventoryOf(read.facts, plan, { owed, ciSubstitute });
   const context = checkContextOf(read.facts, input.command, input.access);
   const nonce = randomBytes(32).toString("hex");
   const mode = plan === null ? "full" as const : "targeted" as const;
@@ -153,7 +215,7 @@ export function prepareCheckAttempt(store: Store, root: string, input: {
     inventoryDigest: payloadDigest(inventory), contextDigest: payloadDigest(context), nonceHash: sha256(nonce),
   }, now);
   // The command's own limit rides along, so the check ends itself (logs and report printed) before the plane stops it.
-  const stdin = JSON.stringify({ nonce, mode, plan, watch: [...(input.watch ?? [])], limitMs: input.command.timeoutMs });
+  const stdin = JSON.stringify({ nonce, mode, plan, watch: [...(input.watch ?? [])], limitMs: input.command.timeoutMs, ...(plan === null ? { owed, ciSubstitute } : {}) });
   return { runId: input.runId, nonce, stdin, mode, inventory, context, plan, snapshot, watch: [...(input.watch ?? [])] };
 }
 
@@ -218,10 +280,12 @@ export function readSealedJson(store: Store, root: string, runId: number, captur
  * Why a Full release check has no result it can count — or null when it qualifies as one. The plane's own facts are the
  * exit it saw (`exitCode`, null when the check didn't exit on its own: timed out or stopped) and the inventory it sealed
  * before the check ran; the report must agree with both. A failed check (a nonzero exit) needs only a valid report: what
- * it failed on is its result. A passing exit needs everything accounted for: every part once, every selected part run to
- * its end, the unit suite finished with a result for every sealed unit file (unless CI's exact run stood in for the
- * units), every journey run finished with no group left unrun, and the upgrade path finished with every version run.
- * Missing, malformed, truncated or skipped-required results never read as a pass.
+ * it failed on is its result. A passing exit needs every obligation the plane sealed (the inventory's parts, never the
+ * report's own "selected") to have an outcome, and every part the report ran too: every part once, each run to its
+ * end; the unit suite finished with a result for every sealed unit file (CI stands in only when the sealed plan allowed
+ * it); every journey run finished, its groups listed before they ran, each passed group with a journey result; and the
+ * upgrade path finished, its versions listed, every one run. An explicitly empty inventory (no groups of that kind) is
+ * an outcome; a missing one is not. Missing, malformed, truncated or skipped-required results never read as a pass.
  */
 export function fullCheckProblem(input: { report: CheckReport | null; inventory: SealedInventory | null; exitCode: number | null }): string | null {
   const { report, inventory, exitCode } = input;
@@ -233,7 +297,9 @@ export function fullCheckProblem(input: { report: CheckReport | null; inventory:
   if (exitCode !== 0) return null;
   const parts = new Map(report.parts.map(one => [one.part, one]));
   if (parts.size !== report.parts.length || CHECK_PARTS.some(part => !parts.has(part))) return "the report doesn't account for every part of the check exactly once";
-  for (const part of ["typecheck", "build"] as const) if (parts.get(part)!.selected !== true) return `the report says the ${part} wasn't selected`;
+  // The obligations are the plane's, sealed before the run: the typecheck and build always, and every part it owed.
+  const owed = new Set<CheckPart>(["typecheck", "build", ...inventory.sealed.parts]);
+  for (const part of CHECK_PARTS) if (owed.has(part) && parts.get(part)!.selected !== true) return `the report says the ${part} wasn't selected, but the check owed it`;
   for (const part of report.parts) {
     if (!part.selected) continue;
     if (!part.ran || part.code === null) return `${part.part} has no result: it was selected and never ran`;
@@ -246,6 +312,7 @@ export function fullCheckProblem(input: { report: CheckReport | null; inventory:
     if (!units.finished) return "the unit suite didn't reach its end";
     if (units.runErrors > 0) return `the unit suite had ${units.runErrors} errors no test owned`;
     if (units.files.some(one => one.state === "failed")) return "a unit file failed, yet the check exited 0";
+    if (units.reusedFromCI && inventory.sealed.ciSubstitute !== true) return "CI's run stood in for the unit suite, which this check's sealed plan doesn't allow";
     if (!units.reusedFromCI) {
       const reported = new Set(units.files.map(one => one.file));
       const missing = inventory.sealed.units.filter(file => !reported.has(file));
@@ -255,15 +322,21 @@ export function fullCheckProblem(input: { report: CheckReport | null; inventory:
   for (const label of ["flows", "app", "flows-real", "app-real"] as const) {
     if (!parts.get(label)!.selected) continue;
     const script = label.replace(/-real$/, ""), kind = label.endsWith("-real") ? "real" : "scripted";
-    const run = report.journeys.find(one => one.script === script && one.kind === kind);
-    if (run === undefined) return `the ${label} journeys reported nothing`;
+    const runs = report.journeys.filter(one => one.script === script && one.kind === kind);
+    if (runs.length === 0) return `the ${label} journeys reported nothing`;
+    if (runs.length > 1) return `the ${label} journeys reported more than one run`;
+    const run = runs[0]!;
     if (!run.finished) return `the ${label} journeys didn't reach their end`;
+    if (run.inventoried !== true) return `the ${label} journeys never listed their groups, so what they owed can't be told`;
     const open = run.groups.filter(group => group.state !== "passed");
     if (open.length > 0) return `the ${label} journey group ${open[0]!.group} ${open[0]!.state === "not-run" ? "never ran" : "failed"}, yet the check exited 0`;
+    const unread = run.groups.find(group => group.unattributed || !group.journeys.some(one => one.state === "passed"));
+    if (unread !== undefined) return `the ${label} journey group ${unread.group} reported no journey's result`;
   }
   if (parts.get("upgrade")!.selected) {
     const upgrades = report.upgrades;
     if (upgrades === null || !upgrades.finished) return "the upgrade path didn't reach its end";
+    if (upgrades.inventoried !== true) return "the upgrade path never listed its versions, so what it owed can't be told";
     const open = upgrades.versions.filter(one => one.state !== "passed");
     if (open.length > 0) return `the upgrade from ${open[0]!.version} ${open[0]!.state === "not-run" ? "never ran" : "failed"}, yet the check exited 0`;
   }

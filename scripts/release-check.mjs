@@ -70,14 +70,14 @@ function baseOf() {
 
 /** Model-facing code: a change here runs the real-model journeys (the lead and its tools, chat, the planner, the builder,
  * subagents, task sizing and sorting, the provider adapters and how a turn is run and read). */
-const MODEL = [
+export const MODEL = [
   /^src\/(lead|converse|subscription-chat|chat-[a-z-]+|lead-[a-z-]+|memory-pass)\.ts$/,
   /^src\/(planner|planner-[a-z-]+|plan|builder|build-review|reviewer|scout|scout-[a-z-]+|decision|evidence)\.ts$/,
   /^src\/(subagents|subagent-work|task-sizing|flow-sort|flow-draft)\.ts$/,
   /^src\/(provider|provider-[a-z-]+|invoke|exec|attest|coding-provider|assignment-adapters|subscription-[a-z-]+)\.ts$/,
 ];
 /** Changes no test reads. */
-const NOTHING = [/\.md$/, /^docs\//, /^evidence\//, /^design\//, /^output\//, /^LICENSE$/, /\.png$/];
+export const NOTHING = [/\.md$/, /^docs\//, /^evidence\//, /^design\//, /^output\//, /^LICENSE$/, /\.png$/];
 /** Where a release bumps the project's own version. */
 const VERSIONED = ["package.json", "package-lock.json"];
 /** Browser groups at once, for each journey script. */
@@ -214,7 +214,30 @@ export function parseHandshake(text) {
   }
   // The plane's own limit on the command (its approved timeout), when it says: the check ends itself before it.
   const limitMs = Number.isSafeInteger(value.limitMs) && value.limitMs > 0 ? value.limitMs : null;
-  return { nonce: value.nonce, mode: value.mode, plan, watch, limitMs, planDigest: plan === null ? null : createHash("sha256").update(JSON.stringify(plan)).digest("hex") };
+  // A full check's obligations, decided by the plane before it ran: the check runs at least these, and CI stands in for
+  // the unit suite only when the plane says it may. A part it doesn't know is no handshake.
+  const owed = value.owed ?? [];
+  if (!Array.isArray(owed) || owed.some(one => !CHECK_PART_NAMES.includes(one))) return null;
+  const ciSubstitute = value.ciSubstitute === undefined ? true : value.ciSubstitute;
+  if (typeof ciSubstitute !== "boolean") return null;
+  return { nonce: value.nonce, mode: value.mode, plan, watch, limitMs, owed, ciSubstitute, planDigest: plan === null ? null : createHash("sha256").update(JSON.stringify(plan)).digest("hex") };
+}
+
+/** Every part a check can have (src/contracts/release-check.ts CHECK_PARTS). */
+const CHECK_PART_NAMES = ["typecheck", "build", "unit", "flows", "app", "flows-real", "app-real", "upgrade"];
+
+/**
+ * The selection a full check runs: its own plan (from the diff since the last release tag), widened to every part the
+ * plane's handshake says it owes. The plane checks the report against its own sealed obligations, so running less
+ * would be no result. Returns the widened plan, whether the upgrade path runs, and whether CI may stand in for units.
+ */
+export function owedSelection(plan, upgrade, handshake) {
+  const owed = handshake?.mode === "full" ? handshake.owed ?? [] : [];
+  return {
+    plan: { ...plan, checks: plan.checks || owed.some(one => ["unit", "flows", "app"].includes(one)), real: plan.real || owed.some(one => one === "flows-real" || one === "app-real") },
+    upgrade: upgrade || owed.includes("upgrade"),
+    ciSubstitute: handshake === null || handshake.ciSubstitute !== false,
+  };
 }
 
 /** A unit file from the identities the plane asks about (`unit:<file>::<name>`, `file:<file>`). */
@@ -246,28 +269,30 @@ export function buildReport({ handshake, exitCode, parts, unitLines, reusedFromC
   })();
   const journeys = journeyRuns.map(run => {
     const groups = new Map();
-    let finished = false;
+    let finished = false, inventoried = false;
     for (const line of run.lines) {
       if (line.kind === "journey-inventory" && Array.isArray(line.groups)) {
+        inventoried = true;
         for (const group of line.groups) if (typeof group === "string" && !groups.has(group)) groups.set(group, { group, state: "not-run", retried: false, unattributed: false, journeys: [] });
       } else if (line.kind === "journey-group" && typeof line.group === "string") groups.set(line.group, { group: line.group, state: ["passed", "failed", "not-run"].includes(line.state) ? line.state : "failed",
         retried: line.retried === true, unattributed: line.unattributed === true,
         journeys: Array.isArray(line.results) ? line.results.filter(one => typeof one?.name === "string" && ["passed", "failed", "skipped"].includes(one.state)).map(one => ({ name: one.name, state: one.state })) : [] });
       else if (line.kind === "journey-end") finished = true;
     }
-    return { script: run.script, kind: run.kind, finished, groups: [...groups.values()] };
+    return { script: run.script, kind: run.kind, finished, inventoried, groups: [...groups.values()] };
   });
   const upgrades = upgradeLines === null ? null : (() => {
     const versions = new Map();
-    let finished = false;
+    let finished = false, inventoried = false;
     for (const line of upgradeLines) {
       if (line.kind === "upgrade-inventory" && Array.isArray(line.versions)) {
+        inventoried = true;
         for (const version of line.versions) if (typeof version === "string" && !versions.has(version)) versions.set(version, { version, state: "not-run" });
       }
       if (line.kind === "upgrade-version" && typeof line.version === "string") versions.set(line.version, { version: line.version, state: ["passed", "failed", "not-run"].includes(line.state) ? line.state : "failed" });
       if (line.kind === "upgrade-end") finished = true;
     }
-    return { finished, versions: [...versions.values()] };
+    return { finished, inventoried, versions: [...versions.values()] };
   })();
   return { version: 1, nonce: handshake.nonce, mode: handshake.mode, planDigest: handshake.planDigest ?? null, exitCode, parts, units, journeys, upgrades };
 }
@@ -468,12 +493,12 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   const scripts = existsSync(join("scripts", "flows-e2e.mjs")) && existsSync(join("scripts", "app-e2e.mjs"));
   // No release comparison, or no difference: retain the full unit/journey selection.
   // Upgrades independently use the last release tag and --full below.
-  const plan = planFor(changed, { full: full || changed.length === 0, real, versionBumps, journeys: scripts });
+  let plan = planFor(changed, { full: full || changed.length === 0, real, versionBumps, journeys: scripts });
   // --base can narrow the ordinary comparison, never the migration safety comparison.
   const releaseBase = tryGit("describe", "--tags", "--match", "v*", "--abbrev=0", "HEAD");
   const upgradeDiff = upgradeChanges(releaseBase, git);
   const upgradeBumps = releaseBase === null ? [] : VERSIONED.filter(file => versionOnly(file, tryGit("show", `${releaseBase}:${file}`), (() => { try { return readFileSync(file, "utf8"); } catch { return null; } })()));
-  const upgrade = needsUpgrade(upgradeDiff, full, upgradeBumps)
+  let upgrade = needsUpgrade(upgradeDiff, full, upgradeBumps)
     && existsSync(join("scripts", "upgrade-path.mjs"));
   console.log(`Release check against ${base === null ? "nothing (no reachable v* release tag)" : base} (${changed.length} changed files): ${plan.why}${upgrade ? full ? "; the upgrade path from every release since 0.5.0" : "; upgrade path: last five release tags, baseline and 0.5.0" : ""}.`);
   if (planOnly) process.exit(0);
@@ -482,6 +507,13 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
   const handshake = await readHandshake();
   const releaseRun = handshake !== null;
   const targeted = handshake?.mode === "targeted" ? handshake.plan : null;
+  // A full release run runs at least what the plane owes it (its handshake), whatever the diff selected.
+  const selection = owedSelection(plan, upgrade, handshake);
+  if (handshake?.mode === "full" && (selection.plan.checks !== plan.checks || selection.plan.real !== plan.real || selection.upgrade !== upgrade)) {
+    console.log(`The plane owes this check more than the diff selected: ${handshake.owed.join(", ")}.`);
+  }
+  plan = selection.plan;
+  upgrade = selection.upgrade;
   if (targeted !== null) {
     console.log(`Targeted check (from run ${targeted.base}): ${targeted.units.length} unit files, ${targeted.sanity.length} sanity files, ` +
       `${targeted.groups.reduce((n, one) => n + one.groups.length, 0)} journey groups, ${targeted.versions.length} upgrade versions${targeted.parts.length > 0 ? `; whole parts: ${targeted.parts.join(", ")}` : ""}.`);
@@ -514,7 +546,8 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     return { label, kind, script, argv: [`scripts/${script}-e2e.mjs`, ...(script === "app" ? ["--skip-build"] : []), "--journeys", kind, "--at-once", String(budget.lanes[script]), ...(groups === null ? [] : ["--run-groups", groups.join(",")])] };
   }).filter(one => one !== null);
   // The logs and the build's outcome; removed when the check ends, however it ends.
-  const ci = targeted !== null ? { passed: false, why: "a targeted check runs its own units" } : plan.checks ? passedCandidateCI({ full, git }) : { passed: false, why: "no unit suite selected" };
+  const ci = targeted !== null ? { passed: false, why: "a targeted check runs its own units" } : !selection.ciSubstitute ? { passed: false, why: "a release's check runs its own units" }
+    : plan.checks ? passedCandidateCI({ full, git }) : { passed: false, why: "no unit suite selected" };
   let localUnits = [];
   if (ci.passed && process.platform === "darwin") {
     try { localUnits = macUnitFiles(); if (localUnits.length === 0) throw Error("no macOS tests found"); }

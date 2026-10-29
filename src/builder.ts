@@ -2655,8 +2655,10 @@ async function settleProof(
     if (repo !== null && chosenCheck?.level === "full" && (store.getScope(request.taskId)?.candidate ?? null) !== null) {
       const access = checkLaunchOf(store, runId, captured.effective.profile).access;
       const decision = planTargetedRecheck(store, root, { runId, taskId: request.taskId, repo, head: sealedHead, command: configured, access, now: now() });
+      // A release's check (signed terms or an open authority): CI never stands in for its unit suite.
+      const release = decision.authority !== null || (store.getScope(request.taskId)?.releaseTerms ?? null) !== null;
       checkAttempt = prepareCheckAttempt(store, root, { runId, repo, head: sealedHead, command: configured, access, authority: decision.authority,
-        ...(decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch }, now());
+        ...(decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch, release }, now());
       if (checkAttempt !== null && decision.mode === "targeted") store.addRunNote(runId, "Toolroll", `Re-running only what failed at run #${decision.plan.base}: ${decision.plan.units.length} unit files, ${decision.plan.groups.reduce((n, one) => n + one.groups.length, 0)} journey groups, ${decision.plan.versions.length} upgrade versions${decision.plan.parts.length > 0 ? `, and in full: ${decision.plan.parts.join(", ")}` : ""}.`, now());
     } else checkAttempt = null;
     const checkProgress = new CheckProgressTracker(snapshot => {

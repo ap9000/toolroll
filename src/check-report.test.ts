@@ -12,8 +12,9 @@ import { join } from "node:path";
 import { openStore, checkAttemptOf, type Store } from "./store.js";
 import {
   CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, payloadDigest, prepareCheckAttempt, readSealedJson,
-  fullCheckProblem, reportFromOutput, sealCheckOutcome, treeFactsOf, projectGitDir,
+  fullCheckProblem, fullObligationsOf, reportFromOutput, sealCheckOutcome, treeFactsOf, projectGitDir, MODEL_PATHS, NOTHING_PATHS,
 } from "./check-report.js";
+import { MODEL, NOTHING, owedSelection, parseHandshake } from "../scripts/release-check.mjs";
 
 const NOW = new Date("2026-10-25T10:00:00.000Z");
 const git = (dir: string, ...argv: string[]) => execFileSync("git", ["-C", dir, "-c", "user.name=T", "-c", "user.email=t@example.invalid", ...argv], { encoding: "utf8" }).trim();
@@ -67,7 +68,10 @@ describe("the check attempt, sealed before the check runs", () => {
     const prepared = prepareCheckAttempt(store, root, { runId, repo, head, command, access: "sandboxed" }, NOW)!;
     expect(prepared).not.toBeNull();
     const handshake = JSON.parse(prepared.stdin) as { nonce: string; mode: string; plan: unknown };
-    expect(handshake).toEqual({ nonce: prepared.nonce, mode: "full", plan: null, watch: [], limitMs: 60_000 });
+    // No release recorded: everything the tree can run is owed (no journey scripts or upgrade path here); a check that
+    // isn't a release's may let CI stand in for its units.
+    expect(handshake).toEqual({ nonce: prepared.nonce, mode: "full", plan: null, watch: [], limitMs: 60_000, owed: ["typecheck", "build", "unit"], ciSubstitute: true });
+    expect(prepared.inventory).toMatchObject({ parts: ["typecheck", "build", "unit"], ciSubstitute: true });
     const row = checkAttemptOf(store, runId)!;
     expect(row).toMatchObject({ mode: "full", baseRun: null, planDigest: null, inventoryDigest: payloadDigest(prepared.inventory), contextDigest: payloadDigest(prepared.context) });
     expect(row.nonceHash).toBe(createHash("sha256").update(prepared.nonce).digest("hex"));
@@ -75,6 +79,16 @@ describe("the check attempt, sealed before the check runs", () => {
     expect(prepared.context).toMatchObject({ grant: { id: command.id, digest: command.digest }, access: "sandboxed" });
     // One attempt per run: a second preparation seals nothing new.
     expect(prepareCheckAttempt(store, root, { runId, repo, head, command, access: "sandboxed" }, NOW)).toBeNull();
+    store.close();
+  });
+
+  test("eval review 1 #2: a release's check is sealed with no CI stand-in, and told so on its handshake", () => {
+    const { repo, head, store, runId, root } = setup();
+    const command = store.setVerifyCommand({ repo, command: "node scripts/release-check.mjs", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
+    const prepared = prepareCheckAttempt(store, root, { runId, repo, head, command, access: "sandboxed", release: true }, NOW)!;
+    expect(JSON.parse(prepared.stdin)).toMatchObject({ owed: ["typecheck", "build", "unit"], ciSubstitute: false });
+    expect(prepared.inventory.ciSubstitute).toBe(false);
+    expect(checkAttemptOf(store, runId)!.inventoryDigest).toBe(payloadDigest(prepared.inventory));
     store.close();
   });
 
@@ -174,19 +188,20 @@ describe("the harness digest has no import parser to get around", () => {
 describe("a Full release check without a complete result has no result, never a pass", () => {
   const NONCE = "a".repeat(64);
   const UNIT_FILES = ["src/a.test.ts", "src/b.test.ts"];
-  const inventory = { version: 1 as const, sealed: { version: 1 as const, units: UNIT_FILES, parts: ["typecheck", "build", "unit", "flows", "app", "flows-real", "app-real", "upgrade"] as const }, declared: { groups: [], versions: [] } };
+  const sealedWith = (parts: readonly string[], extra: Record<string, unknown> = {}) => ({ version: 1 as const, sealed: { version: 1 as const, units: UNIT_FILES, parts, ...extra }, declared: { groups: [], versions: [] } });
+  const inventory = sealedWith(["typecheck", "build", "unit", "flows", "upgrade"]);
   const part = (name: string, selected: boolean, extra: Record<string, unknown> = {}) => ({ part: name, selected, ran: selected, code: selected ? 0 : null, timedOut: false, ...extra });
   const passing = (over: Record<string, unknown> = {}) => ({
     version: 1, nonce: NONCE, mode: "full", planDigest: null, exitCode: 0,
     parts: [part("typecheck", true), part("build", true), part("unit", true), part("flows", true), part("app", false), part("flows-real", false), part("app-real", false), part("upgrade", true)],
     units: { reusedFromCI: false, finished: true, runErrors: 0, identities: [], files: UNIT_FILES.map(file => ({ file, state: "passed", passed: 1, failed: 0, skipped: 0, flaky: false })) },
-    journeys: [{ script: "flows", kind: "scripted", finished: true, groups: [{ group: "alpha", state: "passed", retried: false, unattributed: false, journeys: [] }] }],
-    upgrades: { finished: true, versions: [{ version: "0.9.1", state: "passed" }] },
+    journeys: [{ script: "flows", kind: "scripted", finished: true, inventoried: true, groups: [{ group: "alpha", state: "passed", retried: false, unattributed: false, journeys: [{ name: "opens", state: "passed" }] }] }],
+    upgrades: { finished: true, inventoried: true, versions: [{ version: "0.9.1", state: "passed" }] },
     ...over,
   });
   /** The report as the plane would seal it: read from the check's stdout by this run's nonce, strictly. */
   const sealed = (stdout: string) => { const read = reportFromOutput(stdout, NONCE); return read.ok ? read.report : null; };
-  const problem = (stdout: string, exitCode: number | null, inv: typeof inventory | null = inventory) => fullCheckProblem({ report: sealed(stdout), inventory: inv as never, exitCode });
+  const problem = (stdout: string, exitCode: number | null, inv: ReturnType<typeof sealedWith> | null = inventory) => fullCheckProblem({ report: sealed(stdout), inventory: inv as never, exitCode });
   const out = (report: unknown) => `checks\nTOOLROLL_CHECK_REPORT ${JSON.stringify(report)}\n`;
 
   test("a complete, valid report with a successful exit qualifies", () => {
@@ -235,5 +250,77 @@ describe("a Full release check without a complete result has no result, never a 
 
   test("the sealed inventory unreadable: no result", () => {
     expect(problem(out(passing()), 0, null)).not.toBeNull();
+  });
+
+  test("eval review 1 #2: the plane's sealed obligations, not the report's own selection, decide what needs an outcome", () => {
+    const only = [part("typecheck", true), part("build", true), part("unit", false), part("flows", false), part("app", false), part("flows-real", false), part("app-real", false), part("upgrade", false)];
+    // The review's probe: only the typecheck and build selected, no units, no journeys, no upgrades.
+    expect(problem(out(passing({ parts: only, units: null, journeys: [], upgrades: null })), 0)).toMatch(/unit wasn't selected, but the check owed it/);
+    // Each owed part unselected on its own.
+    for (const owed of ["flows", "upgrade"]) {
+      const parts = passing().parts.map(one => one.part === owed ? part(owed, false) : one);
+      expect(problem(out(passing({ parts })), 0), owed).toMatch(/wasn't selected, but the check owed it/);
+    }
+    // Nothing owed beyond the typecheck and build (the plane saw only docs change): that alone qualifies.
+    expect(problem(out(passing({ parts: only, units: null, journeys: [], upgrades: null })), 0, sealedWith(["typecheck", "build"]))).toBeNull();
+    // CI standing in for the unit suite only when the sealed plan allows it.
+    const reused = { units: { reusedFromCI: true, finished: true, runErrors: 0, identities: [], files: [] } };
+    expect(problem(out(passing(reused)), 0)).toMatch(/CI's run stood in/);
+    expect(problem(out(passing(reused)), 0, sealedWith(["typecheck", "build", "unit", "flows", "upgrade"], { ciSubstitute: false }))).toMatch(/CI's run stood in/);
+    expect(problem(out(passing(reused)), 0, sealedWith(["typecheck", "build", "unit", "flows", "upgrade"], { ciSubstitute: true }))).toBeNull();
+  });
+
+  test.each([
+    ["journeys with only an end marker (no inventory, no groups)", { journeys: [{ script: "flows", kind: "scripted", finished: true, groups: [] }] }],
+    ["journeys that never listed their groups", { journeys: [{ script: "flows", kind: "scripted", finished: true, groups: [{ group: "alpha", state: "passed", retried: false, unattributed: false, journeys: [{ name: "opens", state: "passed" }] }] }] }],
+    ["a passed group with no journey's result", { journeys: [{ script: "flows", kind: "scripted", finished: true, inventoried: true, groups: [{ group: "alpha", state: "passed", retried: false, unattributed: false, journeys: [] }] }] }],
+    ["a passed group the runner couldn't read", { journeys: [{ script: "flows", kind: "scripted", finished: true, inventoried: true, groups: [{ group: "alpha", state: "passed", retried: false, unattributed: true, journeys: [{ name: "opens", state: "passed" }] }] }] }],
+    ["two runs of one journey script", { journeys: [...passing().journeys, { script: "flows", kind: "scripted", finished: true, inventoried: true, groups: [] }] }],
+    ["an upgrade path with only an end marker", { upgrades: { finished: true, versions: [] } }],
+    ["an upgrade path that never listed its versions", { upgrades: { finished: true, versions: [{ version: "0.9.1", state: "passed" }] } }],
+  ] as const)("eval review 1 #2: exit 0 but %s: no result", (_name, over) => {
+    expect(problem(out(passing(over as Record<string, unknown>)), 0)).not.toBeNull();
+  });
+
+  test("eval review 1 #2: an explicitly empty inventory is an outcome; a missing one is not", () => {
+    const empty = passing({ journeys: [{ script: "flows", kind: "scripted", finished: true, inventoried: true, groups: [] }], upgrades: { finished: true, inventoried: true, versions: [] } });
+    expect(problem(out(empty), 0)).toBeNull();
+    const missing = passing({ journeys: [{ script: "flows", kind: "scripted", finished: true, groups: [] }], upgrades: { finished: true, versions: [] } });
+    expect(problem(out(missing), 0)).not.toBeNull();
+  });
+});
+
+describe("eval review 1 #2: what a Full check owes, decided by the plane from verified trees", () => {
+  const entry = (path: string, id = "1".repeat(40)) => ({ path, mode: "100644", id });
+  const facts = (entries: { path: string; mode: string; id: string }[], units: string[] = []) => ({ tree: "t", entries, units, harness: [], harnessDigest: "d", lockfile: null });
+  const tree = [entry("scripts/flows-e2e.mjs"), entry("scripts/app-e2e.mjs"), entry("scripts/upgrade-path.mjs"), entry("src/a.test.ts"), entry("src/lead.ts"), entry("src/store.ts"), entry("docs/x.md"), entry("src/a.test.ts")];
+  const candidate = (changes: Record<string, string>) => facts(tree.map(one => changes[one.path] === undefined ? one : entry(one.path, changes[one.path]!)), ["src/a.test.ts"]);
+  const base = facts(tree, ["src/a.test.ts"]);
+  test.each([
+    ["no recorded release: everything the tree can run", null, {}, ["typecheck", "build", "unit", "flows", "app", "flows-real", "app-real", "upgrade"]],
+    ["docs only", base, { "docs/x.md": "2".repeat(40) }, ["typecheck", "build"]],
+    ["a test only", base, { "src/a.test.ts": "2".repeat(40) }, ["typecheck", "build", "unit", "flows", "app"]],
+    ["store code", base, { "src/store.ts": "2".repeat(40) }, ["typecheck", "build", "unit", "flows", "app", "upgrade"]],
+    ["model-facing code", base, { "src/lead.ts": "2".repeat(40) }, ["typecheck", "build", "unit", "flows", "app", "flows-real", "app-real", "upgrade"]],
+  ] as const)("%s", (_name, from, changes, owed) => {
+    expect(fullObligationsOf(candidate(changes), from)).toEqual(owed);
+  });
+
+  test("the plane's path rules are the check's own (scripts/release-check.mjs)", () => {
+    expect(MODEL_PATHS.map(String)).toEqual(MODEL.map(String));
+    expect(NOTHING_PATHS.map(String)).toEqual(NOTHING.map(String));
+  });
+
+  test("the check runs at least what the handshake owes, and CI stands in only when it says so", () => {
+    const nonce = "a".repeat(64);
+    const handshake = parseHandshake(JSON.stringify({ nonce, mode: "full", plan: null, watch: [], owed: ["typecheck", "build", "unit", "flows-real", "upgrade"], ciSubstitute: false }));
+    const widened = owedSelection({ checks: false, real: false, why: "docs" }, false, handshake);
+    expect(widened).toMatchObject({ plan: { checks: true, real: true }, upgrade: true, ciSubstitute: false });
+    // An older plane (no obligations on its handshake), or a person's own run: the diff's own selection.
+    expect(owedSelection({ checks: false, real: false, why: "docs" }, false, parseHandshake(JSON.stringify({ nonce, mode: "full", plan: null, watch: [] })))).toMatchObject({ plan: { checks: false, real: false }, upgrade: false, ciSubstitute: true });
+    expect(owedSelection({ checks: false, real: false, why: "docs" }, false, null)).toMatchObject({ plan: { checks: false }, ciSubstitute: true });
+    // An obligation the check doesn't know, or a malformed stand-in setting, is no handshake.
+    expect(parseHandshake(JSON.stringify({ nonce, mode: "full", plan: null, watch: [], owed: ["everything"] }))).toBeNull();
+    expect(parseHandshake(JSON.stringify({ nonce, mode: "full", plan: null, watch: [], ciSubstitute: "no" }))).toBeNull();
   });
 });
