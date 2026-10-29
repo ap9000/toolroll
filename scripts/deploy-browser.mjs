@@ -174,7 +174,7 @@ async function verifyServiceStopped(pids, dist) {
 }
 /** Processes still running this runtime's `up` on this database or its role children; unreadable is a process left. */
 function leftFrom(dist) {
-  if (dist === undefined) return [];
+  if (typeof dist !== "string" || dist === "") return ["(the runtime is unknown)"];
   const listed = spawnSync("/bin/ps", ["-A", "-o", "pid=,command="], { encoding: "utf8" });
   if (listed.status !== 0) return ["(the process list couldn't be read)"];
   return listed.stdout.split("\n").map(line => /^\s*(\d+)\s+(.*)$/.exec(line)).filter(match => match !== null)
@@ -336,7 +336,7 @@ async function pruneStaged(keep) {
 // The journaled phases and their recovery, run with the real services, runtimes and records.
 const { save, loadPhase, assertPreserved, assertMigrated, ensureCodingBackup, prepare, swap, finish, recoverJournal } = browserDeployment({
   database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script: fileURLToPath(import.meta.url), oldRt, deploymentLock, signal,
-  facts, quiet, service, proveStaged, verifyServiceStopped, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
+  facts, quiet, service, proveStaged, verifyServiceStopped, leftFrom, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
 });
 recover = recoverJournal;
 

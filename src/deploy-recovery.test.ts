@@ -245,7 +245,7 @@ test('a migrated database is replaced by the verified backup, and what it held i
 
 /** deploy-browser's stop proof, with the processes still running and launchd's answer supplied. */
 const stopProof = (running: number[], launchdHasLabel: boolean) => (r: object) =>
-  stopProved(r, { alive: (pid: number) => running.includes(pid), loaded: () => launchdHasLabel }) as boolean;
+  stopProved(r, { alive: (pid: number) => running.includes(pid), loaded: () => launchdHasLabel, remaining: () => [] }) as boolean;
 
 test('a stop is proved from whichever service record the journal holds, never from none', () => {
   // Review of build #2234: a journal with only one record put undefined in the pid set and never proved the stop.
@@ -263,6 +263,14 @@ test('a stop is proved from whichever service record the journal holds, never fr
   // A recorded pid that is not a real process id still refuses.
   expect(stopProof([], false)({ oldService: { supervisor: 1, children: [] } })).toBe(false);
   expect(stopProof([], false)({ oldService: { supervisor: String(oldSupervisor), children: [] } })).toBe(false);
+});
+
+test.each([[['a replacement worker still draining']], [undefined], [null]])('recovery refuses an unrecorded or unreadable live process list: %j', remaining => {
+  const r = { oldService: { supervisor: fakePid(1), children: [fakePid(2)] } };
+  const e = effects();
+  const proof = () => stopProved(r, { alive: () => false, loaded: () => false, remaining: () => remaining });
+  expect(recoverFailedDeployment('stopping', { ...e, stopProved: proof })).toBeNull();
+  expect(e.done).toEqual([]);
 });
 
 test('codex round 1 #3: the stop proof covers up\'s console and worker, and a dead console releases its stale coding owner', async () => {
@@ -298,6 +306,8 @@ test('codex round 1 #3: a failed new service is stopped as its whole tree, and a
   const pgrep = (_: string, args: string[]) => { const kids = tree[Number(args[1])] ?? []; return { status: kids.length > 0 ? 0 : 1, stdout: kids.join('\n') }; };
   expect(processTree(100, pgrep)).toEqual([100, 200, 300, 301, 400]);
   expect(processTree(100, () => ({ status: 3, stdout: '' }))).toBeNull();
+  // A depth bound must refuse an incomplete tree, never claim it enumerated every descendant.
+  expect(processTree(100, (_: string, args: string[]) => ({ status: 0, stdout: String(Number(args[1]) + 1) }))).toBeNull();
 });
 
 test('the coding database goes back with orders.db, and what it held is kept aside with it', () => {

@@ -45,9 +45,11 @@ export function snapshot(db, includeVersion = false) {
 /** Interrupted while the old service was stopping: every process recorded for it is gone and launchd no longer has it.
  * A journal may hold only one of the two service records; the absent one adds no pid.
  * alive(pid) says whether a process runs; loaded() whether launchd still has the service. */
-export function stopProved(r, { alive, loaded }) {
+export function stopProved(r, { alive, loaded, remaining }) {
   const pids = recordedServicePids(r);
-  return pids.length > 0 && pids.every(pid => Number.isInteger(pid) && pid > 1 && !alive(pid)) && !loaded();
+  const left = remaining?.();
+  return Array.isArray(left) && left.length === 0 && pids.length > 0
+    && pids.every(pid => Number.isInteger(pid) && pid > 1 && !alive(pid)) && !loaded();
 }
 /**
  * Every process a journal recorded for the service it stops: the supervisor, its `up`, and `up`'s console and worker
@@ -105,7 +107,7 @@ export function codingBackupBeforeSwap(r, database) {
  * requireTrue (which ends the deployment) and pruneStaged. */
 export function browserDeployment({
   database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script, oldRt, deploymentLock, signal,
-  facts, quiet, service, proveStaged, verifyServiceStopped, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
+  facts, quiet, service, proveStaged, verifyServiceStopped, leftFrom, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
 }) {
   const short = candidateHead.slice(0, 7);
   const assertLocked = () => deploymentLock.assertHeld(journalFile);
@@ -155,7 +157,10 @@ export function browserDeployment({
     try { r = readJournal(); } catch { return false; }
     try {
       const words = recoverFailedDeployment(r.phase, {
-        stopProved: () => stopProved(r, { alive, loaded: () => spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status === 0 }),
+        // A replacement can have started after the recorded snapshot. Recovery needs the same runtime scan as
+        // normal shutdown; absent or unreadable process evidence leaves the pause and the service untouched.
+        stopProved: () => stopProved(r, { alive, remaining: () => leftFrom?.(priorDist),
+          loaded: () => spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status === 0 }),
         restoreBackup: () => restoreDeploymentBackup(r, { database, stageDir }),
         restoreService: () => restorePriorService(r),
         removeGate: () => {
@@ -427,5 +432,5 @@ export function processTree(root, spawnSync) {
     }
     level = next;
   }
-  return all;
+  return level.length === 0 ? all : null;
 }
