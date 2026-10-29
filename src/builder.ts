@@ -81,7 +81,7 @@ import { closeSteerMailbox, openSteerMailbox, STEER_HANDLED, type SteerMailbox }
 import { LiveInput, type LiveCloseReason } from "./live-input.js";
 import { LIVE_TICK_MS, tickLiveSteer } from "./steer-live.js";
 import { withRunActivity } from "./task-activity.js";
-import { CheckProgressTracker } from "./check-progress.js";
+import { CheckProgressTracker, coalescedProgressWriter } from "./check-progress.js";
 import {
   captureParkEvidence,
   captureTerminalDiff,
@@ -2712,9 +2712,9 @@ async function settleProof(
       }
       if (checkAttempt !== null && decision.mode === "targeted") store.addRunNote(runId, "Toolroll", `Re-running only what failed at run #${decision.plan.base}: ${decision.plan.units.length} unit files, ${decision.plan.groups.reduce((n, one) => n + one.groups.length, 0)} journey groups, ${decision.plan.versions.length} upgrade versions${decision.plan.parts.length > 0 ? `, and in full: ${decision.plan.parts.join(", ")}` : ""}.`, now());
     } else checkAttempt = null;
-    const checkProgress = new CheckProgressTracker(snapshot => {
-      store.saveCheckProgress(runId, snapshot, now());
-    });
+    // Display snapshots are coalesced (at most one write a second); the final one is written at once, exactly.
+    const progressWrites = coalescedProgressWriter(snapshot => { store.saveCheckProgress(runId, snapshot, now()); });
+    const checkProgress = new CheckProgressTracker(snapshot => progressWrites.push(snapshot));
     const runVerification = async (label: string, missing: string | null = null): Promise<ExecResult> => {
       const streamed = { stdout: false, stderr: false };
       // The check runs under the stop watch (v52), owned by this run.
@@ -2898,6 +2898,7 @@ async function settleProof(
       }
     }
     checkProgress.finish();
+    progressWrites.flush();
     // The check's own report (the last line carrying the nonce), sealed beside what was sealed before it ran.
     const last = verification.last;
     let sealedReport: CheckReport | null = null;

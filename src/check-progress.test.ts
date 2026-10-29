@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CheckProgressTracker, isCheckProgressLine, parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-progress.js";
+import { CheckProgressTracker, coalescedProgressWriter, isCheckProgressLine, parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-progress.js";
 import { isTelegramProgressNotification, openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { register } from "./runner.js";
@@ -233,5 +233,71 @@ describe("saved and delivered progress", () => {
     const again = openStore(file);
     expect(again.checkProgress(run)).toMatchObject({ run, line: first.line, final: first.final });
     again.close();
+  });
+});
+
+describe("coalesced display writes", () => {
+  // A virtual clock and timer: the writer's schedule is the whole subject.
+  function harness() {
+    let clock = 0;
+    const timers: { at: number; run: () => void }[] = [];
+    const saved: CheckProgressSnapshot[] = [];
+    const writer = coalescedProgressWriter(snapshot => saved.push(snapshot), {
+      intervalMs: 1_000, now: () => clock,
+      setTimer: (run, ms) => { const timer = { at: clock + ms, run }; timers.push(timer); return timer; },
+      clearTimer: timer => { const at = timers.indexOf(timer as never); if (at >= 0) timers.splice(at, 1); },
+    });
+    const advance = (ms: number) => {
+      clock += ms;
+      for (const due of timers.filter(one => one.at <= clock)) { timers.splice(timers.indexOf(due), 1); due.run(); }
+    };
+    return { writer, saved, advance, pending: () => timers.length };
+  }
+  const snap = (passed: number, final = false): CheckProgressSnapshot =>
+    ({ version: 1, final, line: `unit ${passed}`, suites: { unit: { state: final ? "passed" : "running", passed, failed: 0, skipped: 0, total: null }, flows: { state: "pending", passed: 0, failed: 0, skipped: 0, total: null }, app: { state: "pending", passed: 0, failed: 0, skipped: 0, total: null } } });
+
+  test("a burst writes the first at once and the newest one interval later; the final is written at once and is the last", () => {
+    const { writer, saved, advance, pending } = harness();
+    for (let passed = 1; passed <= 500; passed++) { writer.push(snap(passed)); advance(1); }
+    // 500 snapshots in half a second: the first, then nothing until its interval is up.
+    expect(saved.map(one => one.line)).toEqual(["unit 1"]);
+    advance(600);
+    expect(saved.map(one => one.line)).toEqual(["unit 1", "unit 500"]);
+    writer.push(snap(501));
+    writer.push(snap(502));
+    // The final snapshot: exact, at once, and nothing kept from before it is written after it.
+    writer.push(snap(503, true));
+    expect(saved.at(-1)).toEqual(snap(503, true));
+    expect(pending()).toBe(0);
+    advance(5_000);
+    writer.push(snap(504));
+    writer.flush();
+    expect(saved.map(one => one.line)).toEqual(["unit 1", "unit 500", "unit 503"]);
+  });
+
+  test("flush writes what is kept, once; a quiet stream writes every snapshot", () => {
+    const { writer, saved, advance } = harness();
+    writer.push(snap(1));
+    writer.push(snap(2));
+    writer.flush();
+    writer.flush();
+    expect(saved.map(one => one.line)).toEqual(["unit 1", "unit 2"]);
+    advance(2_000);
+    writer.push(snap(3));
+    advance(2_000);
+    writer.push(snap(4));
+    expect(saved.map(one => one.line)).toEqual(["unit 1", "unit 2", "unit 3", "unit 4"]);
+  });
+
+  test("through the store: the saved row ends as the exact final snapshot", () => {
+    const store = openStore(":memory:");
+    const run = fixture(store);
+    const all = samples();
+    const writer = coalescedProgressWriter(snapshot => { store.saveCheckProgress(run, snapshot, T0); });
+    for (const one of all) writer.push(one);
+    writer.flush();
+    expect(store.checkProgress(run)).toMatchObject({ run, line: all.at(-1)!.line, final: true });
+    expect(JSON.parse(String(store.handle.prepare("SELECT snapshot FROM run_check WHERE run = ?").get(run)?.["snapshot"]))).toEqual(all.at(-1));
+    store.close();
   });
 });

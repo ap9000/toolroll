@@ -302,3 +302,66 @@ type GroupRun = { passed: number; failed: number; skipped: number; total: number
 type ParallelRun = { suite: "flows" | "app" | null; total: number; groups: Map<string, GroupRun> };
 
 const emptyGroup = (): GroupRun => ({ passed: 0, failed: 0, skipped: 0, total: null, result: null });
+
+/** How often a running check's display snapshot may be written: the page and the phone read it, nobody needs more. */
+export const CHECK_PROGRESS_WRITE_MS = 1_000;
+
+export type ProgressWriter = {
+  /** A display snapshot: written now if the last write is old enough, else kept (the newest wins) for one later write. */
+  push: (snapshot: CheckProgressSnapshot) => void;
+  /** Write a kept snapshot now; nothing waits after. */
+  flush: () => void;
+};
+
+/**
+ * Coalesced display writes for a running check (isolated-checks.md, stage 1): a test runner can print thousands of
+ * lines a second, and every changed snapshot was its own write transaction. Display snapshots are now written at most
+ * once per interval, the latest one winning; the final snapshot is written at once, exactly, and nothing older is ever
+ * written after it. The check's evidence (its log, exit and report) never passes through here.
+ */
+export function coalescedProgressWriter(save: (snapshot: CheckProgressSnapshot) => void, options: {
+  intervalMs?: number;
+  now?: () => number;
+  setTimer?: (run: () => void, ms: number) => unknown;
+  clearTimer?: (timer: unknown) => void;
+} = {}): ProgressWriter {
+  const intervalMs = options.intervalMs ?? CHECK_PROGRESS_WRITE_MS;
+  const now = options.now ?? (() => Date.now());
+  const setTimer = options.setTimer ?? ((run, ms) => { const timer = setTimeout(run, ms); timer.unref?.(); return timer; });
+  const clearTimer = options.clearTimer ?? (timer => clearTimeout(timer as ReturnType<typeof setTimeout>));
+  let lastWrite = Number.NEGATIVE_INFINITY;
+  let pending: CheckProgressSnapshot | null = null;
+  let timer: unknown = null;
+  let finished = false;
+  const cancel = (): void => { if (timer !== null) clearTimer(timer); timer = null; };
+  const write = (snapshot: CheckProgressSnapshot): void => { lastWrite = now(); save(snapshot); };
+  const later = (): void => {
+    timer = null;
+    const snapshot = pending;
+    pending = null;
+    // A display write that fails here only leaves the page one snapshot behind; the next one (or the final) follows.
+    if (snapshot !== null && !finished) { try { write(snapshot); } catch { /* display only */ } }
+  };
+  return {
+    push(snapshot) {
+      if (finished) return;
+      if (snapshot.final) {
+        finished = true;
+        cancel();
+        pending = null;
+        write(snapshot);
+        return;
+      }
+      const wait = lastWrite + intervalMs - now();
+      if (wait <= 0 && timer === null) { pending = null; write(snapshot); return; }
+      pending = snapshot;
+      if (timer === null) timer = setTimer(later, Math.max(0, wait));
+    },
+    flush() {
+      cancel();
+      const snapshot = pending;
+      pending = null;
+      if (snapshot !== null && !finished) write(snapshot);
+    },
+  };
+}
