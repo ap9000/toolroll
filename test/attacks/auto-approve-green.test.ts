@@ -680,11 +680,11 @@ describe("codex r1 #3: the cap counts every attempt GitHub holds, read through t
       if (url.includes("/actions/runs")) return { code: 0, stdout: runs.map((run, i) => JSON.stringify({ suite: 10 + i, workflow: 7, path: ".github/workflows/publish.yml", head: sha, bases: [], prs: [], ...run })).join("\n") + "\n", stderr: "" };
       return { code: 1, stdout: "", stderr: "unexpected" };
     };
-    const runs = [{ event: "push", branch: "v0.9.78" }, { event: "push", branch: "v0.9.79" }, { event: "push", branch: "feature" }, { event: "workflow_dispatch", branch: "v0.9.78" }];
+    const runs = [{ event: "push", branch: "v0.9.78" }, { event: "push", branch: "v0.9.79" }, { event: "push", branch: "feature" }, { event: "workflow_dispatch", branch: "v0.9.78" }, { event: "push", branch: "main" }];
     const read = await readCheckRuns(fake(runs), "/usr/bin/gh", "ap9000/toolroll", sha, { tag: "v0.9.78" });
-    expect(read.map(one => one.workflowPath)).toEqual([".github/workflows/publish.yml", null, null, null]);
-    // Without the tag nothing of these binds; a tag that isn't a release tag is refused.
-    expect((await readCheckRuns(fake(runs), "/usr/bin/gh", "ap9000/toolroll", sha)).map(one => one.workflowPath)).toEqual([null, null, null, null]);
+    expect(read.map(one => one.workflowPath)).toEqual([".github/workflows/publish.yml", null, null, null, null]);
+    // A normal main-check read binds main alone; a tag that is not a release tag is refused.
+    expect((await readCheckRuns(fake(runs), "/usr/bin/gh", "ap9000/toolroll", sha)).map(one => one.workflowPath)).toEqual([null, null, null, null, ".github/workflows/publish.yml"]);
     await expect(readCheckRuns(fake(runs), "/usr/bin/gh", "ap9000/toolroll", sha, { tag: "main" })).rejects.toThrow();
   });
 

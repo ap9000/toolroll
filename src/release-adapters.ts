@@ -909,7 +909,7 @@ export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: st
     const prs = (Array.isArray(one["prs"]) ? one["prs"] : []).map(pr => (pr !== null && typeof pr === "object" ? pr as Record<string, unknown> : {}));
     const ours = prs.length > 0 && prs.every(pr => Number.isSafeInteger(pr["number"]) && pr["repo"] === `https://api.github.com/repos/${repo}`);
     const untouched = one["event"] !== "pull_request" || (ours && !(await Promise.all(prs.map(pr => everRetargeted(Number(pr["number"]))))).some(Boolean));
-    if ((mainTriggered(one) || tagTriggered(one, options.tag)) && untouched) pathOf.set(Number(one["suite"]), String(one["path"]));
+    if ((options.tag === undefined ? mainTriggered(one) : tagTriggered(one, options.tag)) && untouched) pathOf.set(Number(one["suite"]), String(one["path"]));
   }
   const runs = out.split("\n").filter(Boolean).map(line => {
     const one = object(JSON.parse(line));
