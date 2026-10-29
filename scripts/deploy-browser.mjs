@@ -144,13 +144,41 @@ function service(dist) {
   if (!command.includes(`${dist}/controller-service.js`)) return null;
   const children = execFileSync("/usr/bin/pgrep", ["-P", String(pid)], { encoding: "utf8" }).trim().split(/\s+/).filter(Boolean).map(Number);
   const commands = children.map(p => spawnSync("/bin/ps", ["-p", String(p), "-o", "command="], { encoding: "utf8" }).stdout);
-  return commands.some(c => c.includes(`${dist}/cli.js up --db ${database}`)) ? { supervisor: pid, children, command, commands } : null;
+  const up = children.filter((_, at) => commands[at].includes(`${dist}/cli.js up --db ${database}`));
+  if (up.length !== 1) return null;
+  // `up`'s console and worker (isolated-checks stage 1), each verified by its command: this runtime's role entry and
+  // its one role argument. Deployment proves their exit too (round 1, finding 3). A role from another runtime is not
+  // this service. An `up` from before the split has none.
+  const roles = [];
+  const below = spawnSync("/usr/bin/pgrep", ["-P", String(up[0])], { encoding: "utf8" });
+  if (below.status !== 0 && below.status !== 1) return null;
+  for (const child of below.stdout.trim().split(/\s+/).filter(Boolean).map(Number)) {
+    const roleCommand = spawnSync("/bin/ps", ["-p", String(child), "-o", "command="], { encoding: "utf8" }).stdout.trim();
+    if (!roleCommand.includes("up-role-child.js")) continue;
+    const role = / (console|worker)$/.exec(roleCommand)?.[1];
+    if (!roleCommand.includes(`${dist}/up-role-child.js `) || role === undefined) return null;
+    roles.push({ role, pid: child });
+  }
+  return { supervisor: pid, children, command, commands, roles };
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function verifyServiceStopped(pids) {
-  for (let i = 0; i < 60; i++) { signal.throwIfAborted(); if (pids.every(pid => spawnSync("/bin/ps", ["-p", String(pid), "-o", "pid="], { encoding: "utf8" }).status === 1)) break; await sleep(1000); }
+async function verifyServiceStopped(pids, dist) {
+  const gone = () => pids.every(pid => spawnSync("/bin/ps", ["-p", String(pid), "-o", "pid="], { encoding: "utf8" }).status === 1) && leftFrom(dist).length === 0;
+  for (let i = 0; i < 60; i++) { signal.throwIfAborted(); if (gone()) break; await sleep(1000); }
   for (const pid of pids) requireTrue(spawnSync("/bin/ps", ["-p", String(pid), "-o", "pid="], { encoding: "utf8" }).status === 1, `Service process has not exited: ${pid}`);
+  // Belt to the recorded pids (round 1, finding 3): no `up` of this database and no role child of this runtime is left,
+  // whatever pid a restarted role got after the record was taken.
+  const left = leftFrom(dist);
+  requireTrue(left.length === 0, `Service process has not exited: ${left.join(", ")}`);
   requireTrue(spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status !== 0, "The service is still loaded.");
+}
+/** Processes still running this runtime's `up` on this database or its role children; unreadable is a process left. */
+function leftFrom(dist) {
+  if (dist === undefined) return [];
+  const listed = spawnSync("/bin/ps", ["-A", "-o", "pid=,command="], { encoding: "utf8" });
+  if (listed.status !== 0) return ["(the process list couldn't be read)"];
+  return listed.stdout.split("\n").map(line => /^\s*(\d+)\s+(.*)$/.exec(line)).filter(match => match !== null)
+    .filter(([, , command]) => command.includes(`${dist}/up-role-child.js `) || command.includes(`${dist}/cli.js up --db ${database}`)).map(([, pid]) => Number(pid));
 }
 const schemaDigest = db => sha(JSON.stringify(db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name").all()));
 const list = (root, prefix = "") => readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(e => e.isDirectory() ? list(root, join(prefix, e.name)) : [join(prefix, e.name)]).sort();
