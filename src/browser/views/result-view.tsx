@@ -485,7 +485,7 @@ function Details({ selected }: { selected: Selected }) {
     {rows.map(row => <details key={row.id} id={row.id} className="group scroll-mt-4" data-cockpit-section={row.id}>
       <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-3.5 hover:bg-accent/50 phone:min-h-12 phone:px-4 [&::-webkit-details-marker]:hidden">
         <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true" />
-        <h2 className="text-title leading-normal">{row.title}</h2>
+        <h2 className="shrink-0 text-title leading-normal">{row.title}</h2>
         {row.count !== undefined && <Badge>{row.count}</Badge>}
         {row.hint != null && <span className="min-w-0 truncate text-body text-muted-foreground">{row.hint}</span>}
       </summary>
