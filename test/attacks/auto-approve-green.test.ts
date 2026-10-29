@@ -43,7 +43,7 @@ function open(options: Parameters<typeof releaseFixture>[0] = {}) {
 const digestOf = (f: ReleaseFixture) => f.store.getScope(f.taskId)!.digest;
 const ref = (f: ReleaseFixture) => f.store.refFor("built-in", f.taskId).id;
 const green = (head: string, at = LATER): CiObservation => ({ head, observedAt: at.toISOString(),
-  runs: REQUIRED_PR_CHECKS.map((name, i) => ({ id: 1000 + i, name, status: "completed", conclusion: "success", app: "github-actions", suite: 7, head })), complete: true });
+  runs: REQUIRED_PR_CHECKS.map((name, i) => ({ id: 1000 + i, name, status: "completed", conclusion: "success", app: "github-actions", suite: 7, head, workflowPath: ".github/workflows/ci.yml" })), complete: true });
 /** The plane's auto-check, with the base GitHub names for the candidate (the main commit the branch left). */
 const authorize = (f: ReleaseFixture, base = f.base) => authorizeAutoCheck(f.store, { taskId: f.taskId, digest: digestOf(f), candidate: f.approved, base, now: LATER });
 /** The release check of the candidate, sealed as the builder seals it, on the build's real base. */
@@ -627,7 +627,9 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
  * GitHub's check-runs endpoint as it behaves: `filter=latest` (its default) lists only the newest attempt of each job;
  * `filter=all` lists every attempt. Answers as gh does with --paginate --jq (one JSON object per line).
  */
-function fakeGitHub(attempts: { id: number; name: string; conclusion: string; suite?: number; app?: string; head?: string; steps?: { number: number; name: string; status: string; conclusion: string | null }[] }[], sha: string) {
+function fakeGitHub(attempts: { id: number; name: string; conclusion: string; suite?: number; app?: string; head?: string; steps?: { number: number; name: string; status: string; conclusion: string | null }[] }[], sha: string,
+  /** Each suite's workflow-run row (codex round 1, inherited CI limitation): ci.yml for the default suite 7. */
+  flows: { suite: number; workflow: number; path: string }[] = [{ suite: 7, workflow: 3, path: ".github/workflows/ci.yml" }]) {
   const calls: string[][] = [];
   const run: Exec = async (_cmd, args) => {
     calls.push([...args]);
@@ -637,8 +639,8 @@ function fakeGitHub(attempts: { id: number; name: string; conclusion: string; su
       const one = attempts.find(attempt => job.endsWith(`/${attempt.id}`));
       return one === undefined ? { code: 1, stdout: "", stderr: "not found" } : { code: 0, stdout: JSON.stringify({ id: one.id, status: "completed", conclusion: one.conclusion, steps: one.steps ?? [] }), stderr: "" };
     }
-    // The workflow-run listing (which suite is a run of which workflow): none here.
-    if (args.some(arg => arg.includes("/actions/runs"))) return { code: 0, stdout: "", stderr: "" };
+    // The workflow-run listing: which suite is a run of which workflow, and that workflow's file.
+    if (args.some(arg => arg.includes("/actions/runs"))) return { code: 0, stdout: flows.map(one => `${JSON.stringify({ ...one, head: sha })}\n`).join(""), stderr: "" };
     const url = args.find(arg => arg.includes("/check-runs")) ?? "";
     const all = /[?&]filter=all(&|$)/.test(url);
     const rows = attempts.map(one => ({ id: one.id, name: one.name, status: "completed", conclusion: one.conclusion, app: one.app ?? "github-actions", suite: one.suite ?? 7, head: one.head ?? sha }));
@@ -681,7 +683,7 @@ describe("codex r1 #3: the cap counts every attempt GitHub holds, read through t
     ];
     const gh = fakeGitHub(attempts, f.approved);
     const rel = storeReleaseAdapter(() => f.store, () => {}, () => LATER, undefined, {
-      observe: async sha => ({ head: sha, observedAt: LATER.toISOString(), complete: true, runs: (await readCheckRuns(gh.run, "/usr/bin/gh", "ap9000/toolroll", sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, beforeTests: one.beforeTests ?? null })) }),
+      observe: async sha => ({ head: sha, observedAt: LATER.toISOString(), complete: true, runs: (await readCheckRuns(gh.run, "/usr/bin/gh", "ap9000/toolroll", sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, workflowPath: one.workflowPath ?? null, beforeTests: one.beforeTests ?? null })) }),
       mergeBase: async () => f.base, upToDateRequired: async () => true, evidenceRoot: EVIDENCE(f),
     });
     expect(await rel.auto!.authorizeCheck({ taskId: f.taskId, digest: digestOf(f), candidate: f.approved })).toEqual({ ok: true });
@@ -921,10 +923,32 @@ describe("codex r2 #6: GitHub's 1000-suite ceiling fails an automatic approval c
     const sha = "a".repeat(40);
     const run: Exec = async (_cmd, args) => {
       const url = args.find(arg => arg.startsWith("repos/")) ?? "";
-      if (url.includes("/actions/runs")) return { code: 0, stdout: `${JSON.stringify({ suite: 7, workflow: 3, head: sha })}\n`, stderr: "" };
+      if (url.includes("/actions/runs")) return { code: 0, stdout: `${JSON.stringify({ suite: 7, workflow: 3, path: ".github/workflows/ci.yml", head: sha })}\n`, stderr: "" };
       return { code: 0, stdout: `${JSON.stringify({ id: 1, name: "x", status: "completed", conclusion: "success", app: "github-actions", suite: 7, head: sha })}\n`, stderr: "" };
     };
-    expect(await readCheckRuns(run, "/usr/bin/gh", "ap9000/toolroll", sha)).toEqual([{ id: 1, name: "x", status: "completed", conclusion: "success", app: "github-actions", suite: 7, head: sha, workflow: 3 }]);
+    expect(await readCheckRuns(run, "/usr/bin/gh", "ap9000/toolroll", sha)).toEqual([{ id: 1, name: "x", status: "completed", conclusion: "success", app: "github-actions", suite: 7, head: sha, workflow: 3, workflowPath: ".github/workflows/ci.yml" }]);
+    // A workflow run GitHub answers without its file can't be read: no required check stands on an unnamed workflow.
+    const pathless: Exec = async (_cmd, args) => (args.find(arg => arg.startsWith("repos/")) ?? "").includes("/actions/runs")
+      ? { code: 0, stdout: `${JSON.stringify({ suite: 7, workflow: 3, head: sha })}\n`, stderr: "" } : run(_cmd, args);
+    await expect(readCheckRuns(pathless, "/usr/bin/gh", "ap9000/toolroll", sha)).rejects.toThrow(/workflow run this can't read/);
+  });
+
+  test("codex round 1 (inherited CI limitation): a lookalike job in another workflow never stands for a required check", async () => {
+    // Every required job passes in ci.yml except the first, which is missing there; another workflow has a job of
+    // exactly its name that passes. Read through the real request, the plane refuses it.
+    const f = open();
+    const attempts = REQUIRED_PR_CHECKS.map((name, i) => ({ id: 100 + i, name, conclusion: "success", suite: i === 0 ? 8 : 7 }));
+    const gh = fakeGitHub(attempts, f.approved, [{ suite: 7, workflow: 3, path: ".github/workflows/ci.yml" }, { suite: 8, workflow: 4, path: ".github/workflows/lookalike.yml" }]);
+    const runs = (await readCheckRuns(gh.run, "/usr/bin/gh", "ap9000/toolroll", f.approved)).map(one => ({ ...one, id: one.id ?? null, app: one.app ?? null }));
+    const ci: CiObservation = { head: f.approved, observedAt: LATER.toISOString(), complete: true, runs };
+    expect(ciProblem(ci, f.approved, LATER)).toMatch(new RegExp(`${REQUIRED_PR_CHECKS[0]} \\(from .github/workflows/lookalike.yml, not .github/workflows/ci.yml\\)`));
+    // A required job whose workflow GitHub doesn't name is refused the same way.
+    expect(ciProblem({ ...ci, runs: runs.map((one, i) => i === 0 ? { ...one, workflowPath: null } : one) }, f.approved, LATER)).toMatch(/a workflow GitHub doesn't name/);
+    // The person's road judges the same: the plane doesn't lift a CI hold on a lookalike.
+    holdApprovalForCi(f.store, { taskId: f.taskId, candidate: f.approved, now: RELEASE_NOW });
+    expect(liftCiHold(f.store, { taskId: f.taskId, candidate: f.approved, ci, ask: true, now: LATER })).toMatchObject({ ok: false, why: expect.stringContaining("lookalike.yml") });
+    // With the job in ci.yml it stands.
+    expect(ciProblem({ ...ci, runs: runs.map(one => ({ ...one, workflowPath: ".github/workflows/ci.yml" })) }, f.approved, LATER)).toBeNull();
   });
 });
 

@@ -19,7 +19,7 @@ import { runCheckLevel } from "./check-levels.js";
 import { readVerifiedCommit, verifiedBlobs, verifiedTreeDiff, verifiedTreeEntries } from "./commit-extract.js";
 import { mightName, testInfrastructure, type TestInfrastructure } from "./test-infra.js";
 import { chatControlHref } from "./chat-controls.js";
-import { INFRA_RERUNS_PER_CANDIDATE, REQUIRED_PR_CHECKS, prChecksVerdict, type CheckFailure } from "./release.js";
+import { INFRA_RERUNS_PER_CANDIDATE, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW, prChecksVerdict, type CheckFailure } from "./release.js";
 import { releaseCheckStanding } from "./check-failure.js";
 import { CARRY_RULES, rulePath } from "./release-carry.js";
 import { AUTO_EVIDENCE_ACTION, AUTO_WITHDRAWN_ACTION, LIVE_RELEASE_STATES, RELEASE_APPROVAL_ACTION, releaseAuthorityOfTask, releaseAutoApproves, type ReleaseApprovalSetting, releaseApprovalSetting } from "./release-authority.js";
@@ -37,6 +37,8 @@ export const CI_OBSERVATION_MS = 5 * 60_000;
 
 /** One check run on the candidate as the plane's own `gh` reported it (oldest first). */
 export type ObservedCheckRun = { id: number | null; name: string; status: string; conclusion: string | null; app: string | null; suite?: number | null; head?: string | null; workflow?: number | null;
+  /** The workflow's file (GitHub's workflow-run `path`): a required check counts only from ci.yml. */
+  workflowPath?: string | null;
   /** GitHub's job record shows this unsuccessful attempt ended before any workflow step ran (release-adapters.ts). */
   beforeTests?: boolean | null };
 /** The plane's own look at GitHub CI for one commit (release-adapters.ts makes it, right before the seal). */
@@ -232,7 +234,7 @@ export function ciVerdict(observation: CiObservation, candidate: string, now: Da
   if (observation.complete !== true) return no("GitHub's check history of this commit can't be read whole");
   const other = observation.runs.find(run => run.app !== "github-actions");
   if (other !== undefined) return no(`${other.name} was reported by ${other.app ?? "an unknown app"}, not GitHub Actions`);
-  const verdict = prChecksVerdict(observation.runs, candidate, REQUIRED_PR_CHECKS, { auto: true });
+  const verdict = prChecksVerdict(observation.runs, candidate, REQUIRED_PR_CHECKS, { auto: true, workflow: REQUIRED_PR_CHECKS_WORKFLOW });
   if (verdict.state === "failed") return no(verdict.failed.join(", "));
   if (verdict.state === "pending") return no(`not finished: ${verdict.waiting.join(", ")}`);
   return { ok: true, failures: verdict.failures };
@@ -525,7 +527,7 @@ export function liftCiHold(store: Store, input: { taskId: string; candidate: str
     if (ci.complete !== true) return refuse("GitHub's check history of this commit can't be read whole");
     const other = ci.runs.find(run => run.app !== "github-actions");
     if (other !== undefined) return refuse(`${other.name} was reported by ${other.app ?? "an unknown app"}, not GitHub Actions`);
-    const verdict = prChecksVerdict(ci.runs, input.candidate, REQUIRED_PR_CHECKS);
+    const verdict = prChecksVerdict(ci.runs, input.candidate, REQUIRED_PR_CHECKS, { workflow: REQUIRED_PR_CHECKS_WORKFLOW });
     if (verdict.state === "failed") return refuse(`CI failed: ${verdict.failed.join(", ")}`);
     if (verdict.state === "pending") return refuse(`CI hasn't finished: ${verdict.waiting.join(", ")}`);
     const ref = store.lookupRef(input.taskId);

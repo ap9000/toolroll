@@ -50,6 +50,9 @@ export const REQUIRED_PR_CHECKS = [
   "git 2.41 · debian trixie",
   "git 2.47 · debian trixie",
 ] as const;
+/** The workflow file every REQUIRED_PR_CHECKS job belongs to: a job of that name from any other workflow (a lookalike
+ * added beside it) never stands for it (Codex review round 1, inherited CI limitation). */
+export const REQUIRED_PR_CHECKS_WORKFLOW = ".github/workflows/ci.yml";
 /**
  * The pull-request checks main's GitHub protection is not yet required to name (eval-harness review 2, finding 1): the
  * git lanes join main's protection once they have run there, so a protection without them is reported, never refused.
@@ -81,6 +84,8 @@ const POLL_MS = 15_000;
 export type CheckRun = { name: string; status: string; conclusion: string | null; app?: string | null; id?: number | null; suite?: number | null; head?: string | null;
   /** The workflow (its id, from GitHub's workflow-run API) that this check's suite is a run of, when known. */
   workflow?: number | null;
+  /** That workflow's file in the repository (GitHub's workflow-run `path`), when known. */
+  workflowPath?: string | null;
   /** GitHub's own job record (its steps, read by the plane's gh) shows this unsuccessful attempt ended before any of the
    * workflow's own steps ran: the runner failed, not the tests. Absent or false: nothing shows that. */
   beforeTests?: boolean | null };
@@ -617,7 +622,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       if (j.auto?.state !== "approved") return;
       const read = await adapters.github.checks(j.github, j.candidate.sha);
       const whole = adapters.github.complete === undefined ? false : await adapters.github.complete(j.github, j.candidate.sha);
-      const verdict = whole ? prChecksVerdict(read, j.candidate.sha, REQUIRED_PR_CHECKS, { auto: true }) : { state: "failed" as const, failed: ["GitHub's check history of this commit can't be read whole"] };
+      const verdict = whole ? prChecksVerdict(read, j.candidate.sha, REQUIRED_PR_CHECKS, { auto: true, workflow: REQUIRED_PR_CHECKS_WORKFLOW }) : { state: "failed" as const, failed: ["GitHub's check history of this commit can't be read whole"] };
       if (verdict.state === "passed") return;
       if (before === "the tag") {
         // Already merged: nothing to revoke. It isn't tagged or published, and a person decides — durably, in the plane.
@@ -996,7 +1001,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
         case "ci": {
           await waitFor("ci", `the pull request checks on ${j.candidate.sha.slice(0, 7)}`, async () => {
             await pinned();
-            const verdict = prChecksVerdict(await adapters.github.checks(j.github, j.candidate.sha), j.candidate.sha, REQUIRED_PR_CHECKS, autoCap());
+            const verdict = prChecksVerdict(await adapters.github.checks(j.github, j.candidate.sha), j.candidate.sha, REQUIRED_PR_CHECKS, { ...autoCap(), workflow: REQUIRED_PR_CHECKS_WORKFLOW });
             if (verdict.state === "failed") await ciFailedAfterDeploy(`Pull request checks failed on ${j.candidate.sha.slice(0, 7)}: ${verdict.failed.join(", ")}`);
             return verdict.state === "passed" ? true : null;
           });
@@ -1019,7 +1024,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             // Every release merges only where GitHub itself refuses a branch behind main.
             await mainProtection(adapters, j, j.auto?.state === "approved", "Nothing was merged");
             // The checks again, at the moment of merging: a rerun that failed since must not merge.
-            const verdict = prChecksVerdict(await adapters.github.checks(j.github, j.candidate.sha), j.candidate.sha, REQUIRED_PR_CHECKS, autoCap());
+            const verdict = prChecksVerdict(await adapters.github.checks(j.github, j.candidate.sha), j.candidate.sha, REQUIRED_PR_CHECKS, { ...autoCap(), workflow: REQUIRED_PR_CHECKS_WORKFLOW });
             if (verdict.state !== "passed") await ciFailedAfterDeploy(`Pull request checks are no longer all passing on ${j.candidate.sha.slice(0, 7)}`);
             // Main once more, from GitHub, the last thing before the merge is reserved: moved since the comparison, it
             // stops here (finding 4). GitHub's own up-to-date rule refuses the rest of the window.
@@ -1250,7 +1255,7 @@ async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal, wait: <
         unread = true;
         return null;
       }
-      const verdict = prChecksVerdict(runs.filter(run => required.includes(run.name)), j.candidate.sha, required);
+      const verdict = prChecksVerdict(runs.filter(run => required.includes(run.name)), j.candidate.sha, required, { workflow: REQUIRED_PR_CHECKS_WORKFLOW });
       if (verdict.state === "failed") {
         throw new Stop("ci-failed", `Pull request checks already failed on ${sha}: ${verdict.failed.join(", ")}. ${nothing}. Fix the branch, then release the new commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\` (or rerun the failed job on GitHub and run this command again).`);
       }
@@ -1290,7 +1295,7 @@ function networkWords(error: unknown): string {
  * infrastructure), and at most INFRA_RERUNS_PER_CANDIDATE of them on the commit; any other earlier failure — a test,
  * a typecheck, or one nothing explains — fails the verdict, so a person decides. The failures it tolerated are returned.
  */
-export function prChecksVerdict(runs: readonly CheckRun[], head: string, required: readonly string[], options: { auto?: true } = {}):
+export function prChecksVerdict(runs: readonly CheckRun[], head: string, required: readonly string[], options: { auto?: true; workflow?: string } = {}):
   { state: "passed"; failures: CheckFailure[] } | { state: "pending"; waiting: string[] } | { state: "failed"; failed: string[] } {
   const failed: string[] = [], waiting: string[] = [], failures: CheckFailure[] = [];
   const valid: CheckRun[] = [];
@@ -1298,6 +1303,11 @@ export function prChecksVerdict(runs: readonly CheckRun[], head: string, require
     if (run.head !== head) { failed.push(`${run.name} (reported for ${run.head == null ? "no commit" : run.head.slice(0, 7)}, not ${head.slice(0, 7)})`); continue; }
     if (typeof run.id !== "number" || !Number.isSafeInteger(run.id) || run.id <= 0) { failed.push(`${run.name} (no check run id)`); continue; }
     if (required.includes(run.name) && run.app !== "github-actions") { failed.push(`${run.name} (reported by ${run.app ?? "an unknown app"}, not GitHub Actions)`); continue; }
+    // A required name counts only from the workflow that defines it: a job of the same name in another workflow (or
+    // one whose workflow GitHub doesn't name) fails the verdict rather than stand in for it.
+    if (options.workflow !== undefined && required.includes(run.name) && !workflowIs(run.workflowPath, options.workflow)) {
+      failed.push(`${run.name} (from ${run.workflowPath ?? "a workflow GitHub doesn't name"}, not ${options.workflow})`); continue;
+    }
     if (run.app === "github-actions" && (typeof run.suite !== "number" || !Number.isSafeInteger(run.suite))) { failed.push(`${run.name} (no workflow run)`); continue; }
     valid.push(run);
   }
@@ -1368,4 +1378,9 @@ export function checkFailedWords(input: { sha: string; run: number; class: Failu
     default:
       return `The Full release check of ${short} did not pass (run ${input.run}): ${input.why}. Fix the branch and release the new commit with ${again}.`;
   }
+}
+
+/** Whether GitHub's workflow-run `path` names exactly `file` (it may carry the ref it ran from, after an `@`). */
+export function workflowIs(path: string | null | undefined, file: string): boolean {
+  return typeof path === "string" && (path === file || path.startsWith(`${file}@`));
 }

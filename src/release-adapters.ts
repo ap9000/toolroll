@@ -242,7 +242,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   const ciGh = options.tools?.gh ?? releaseTools("").gh;
   const observeCi = async (sha: string): Promise<CiObservation> => {
     const observedAt = (options.now ?? (() => new Date()))().toISOString();
-    const runs = (await readCheckRuns(run, ciGh, releaseRepo().slug, sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, workflow: one.workflow ?? null,
+    const runs = (await readCheckRuns(run, ciGh, releaseRepo().slug, sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, workflow: one.workflow ?? null, workflowPath: one.workflowPath ?? null,
       ...(one.beforeTests === undefined ? {} : { beforeTests: one.beforeTests }) }));
     return { head: sha, observedAt, runs, complete: await readSuitesComplete(run, ciGh, releaseRepo().slug, sha) };
   };
@@ -789,21 +789,24 @@ export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: st
   // Which workflow each check suite is a run of (GitHub's workflow-run API): a newer run of a workflow supersedes its
   // older runs on this commit (release.ts prChecksVerdict).
   const flows = await must(run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${repo}/actions/runs?head_sha=${sha}&per_page=100`,
-    "--jq", ".workflow_runs[] | {suite: .check_suite_id, workflow: .workflow_id, head: .head_sha}"], { cwd: "/", env: ciEnv() }), "gh api actions/runs");
+    "--jq", ".workflow_runs[] | {suite: .check_suite_id, workflow: .workflow_id, path: .path, head: .head_sha}"], { cwd: "/", env: ciEnv() }), "gh api actions/runs");
   const workflowOf = new Map<number, number>();
+  // Each suite's workflow file: a required check counts only from the workflow that defines it (release.ts).
+  const pathOf = new Map<number, string>();
   for (const line of flows.split("\n").filter(Boolean)) {
     const one = object(JSON.parse(line));
-    if (!Number.isSafeInteger(one["suite"]) || !Number.isSafeInteger(one["workflow"]) || one["head"] !== sha) throw new Error("GitHub answered a workflow run this can't read");
+    if (!Number.isSafeInteger(one["suite"]) || !Number.isSafeInteger(one["workflow"]) || one["head"] !== sha || typeof one["path"] !== "string" || one["path"] === "") throw new Error("GitHub answered a workflow run this can't read");
     const known = workflowOf.get(Number(one["suite"]));
-    if (known !== undefined && known !== Number(one["workflow"])) throw new Error("GitHub named two workflows for one check suite");
+    if (known !== undefined && (known !== Number(one["workflow"]) || pathOf.get(Number(one["suite"])) !== one["path"])) throw new Error("GitHub named two workflows for one check suite");
     workflowOf.set(Number(one["suite"]), Number(one["workflow"]));
+    pathOf.set(Number(one["suite"]), String(one["path"]));
   }
   const runs = out.split("\n").filter(Boolean).map(line => {
     const one = object(JSON.parse(line));
     if (!Number.isSafeInteger(one["id"]) || typeof one["name"] !== "string" || typeof one["status"] !== "string") throw new Error("GitHub answered a check run this can't read");
     const suite = Number.isSafeInteger(one["suite"]) ? Number(one["suite"]) : null;
     return { id: Number(one["id"]), name: one["name"], status: one["status"], conclusion: textOr(one["conclusion"]), app: textOr(one["app"]),
-      suite, head: textOr(one["head"]), workflow: suite === null ? null : workflowOf.get(suite) ?? null } satisfies CheckRun;
+      suite, head: textOr(one["head"]), workflow: suite === null ? null : workflowOf.get(suite) ?? null, workflowPath: suite === null ? null : pathOf.get(suite) ?? null } satisfies CheckRun;
   });
   if (new Set(runs.map(one => one.id)).size !== runs.length) throw new Error("GitHub answered the same check run twice");
   // Each unsuccessful GitHub Actions attempt: whether GitHub's own job record (a check run's id is its job's) shows it

@@ -13,7 +13,8 @@ const OLD = "/state/staged-upgrades/browser-old/runtime/node_modules/toolroll/di
 const NEW = "/state/staged-upgrades/browser-new/runtime/node_modules/toolroll/dist";
 const DIGEST = "scope-digest-1", RECEIPT = "receipt-1";
 const T0 = Date.parse("2026-10-08T09:00:00.000Z");
-const passing = (names: readonly string[]): CheckRun[] => names.map(name => ({ name, status: "completed", conclusion: "success" }));
+// GitHub's workflow-run path of each job: a required check counts only from ci.yml (codex round 1, inherited CI limitation).
+const passing = (names: readonly string[]): CheckRun[] => names.map(name => ({ name, status: "completed", conclusion: "success", workflowPath: ".github/workflows/ci.yml" }));
 const MUTATIONS = ["fileGate", "complete", "deploy", "merge", "deleteBranch", "createTag", "propose", "brewMerge"] as const;
 type Mutation = typeof MUTATIONS[number];
 
@@ -128,7 +129,7 @@ function world(options: { crashAfter?: Mutation } = {}) {
       pullRequest: async () => ({ ...s.pr }),
       // As the real adapter answers: every attempt, with its id, app, check suite and commit (a test's own fields win).
       checks: async (repo, sha) => (!s.gateSeesChecks && repo !== "ap9000/homebrew-toolroll" && !(s.gate.exists && s.gate.candidate === sha) && sha !== MERGE ? passing(REQUIRED_PR_CHECKS)
-        : structuredClone(s.checks.get(`${repo === "ap9000/homebrew-toolroll" ? "brew:" : ""}${sha}`) ?? [])).map((run, i) => ({ id: i + 1, app: "github-actions", suite: 1, head: sha, ...run })),
+        : structuredClone(s.checks.get(`${repo === "ap9000/homebrew-toolroll" ? "brew:" : ""}${sha}`) ?? [])).map((run, i) => ({ id: i + 1, app: "github-actions", suite: 1, head: sha, workflowPath: ".github/workflows/ci.yml", ...run })),
       merge: async (_repo, _pr, head) => {
         if (head !== s.pr.head) throw new Error("Head branch was modified");
         s.pr = { ...s.pr, state: "merged", mergeCommit: MERGE };
@@ -1494,7 +1495,7 @@ describe("toolroll release: approve automatically when checks pass", () => {
     const { s, adapters } = autoWorld();
     const ci = adapters.github.checks;
     adapters.github.checks = async (repo, sha) => s.calls.includes("autoGreen") && sha === SHA
-      ? [...await ci(repo, sha), { id: 99, app: "github-actions", suite: 1, head: sha, name: REQUIRED_PR_CHECKS[0], status: "in_progress", conclusion: null }] : ci(repo, sha);
+      ? [...await ci(repo, sha), { id: 99, app: "github-actions", suite: 1, head: sha, name: REQUIRED_PR_CHECKS[0], status: "in_progress", conclusion: null, workflowPath: ".github/workflows/ci.yml" }] : ci(repo, sha);
     expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "deploy", reason: "ci-failed" });
     expect(s.calls).not.toContain("deploy");
   });
@@ -1524,7 +1525,7 @@ describe("toolroll release: approve automatically when checks pass", () => {
   });
 
   test("prChecksVerdict: jobs by app, suite and name, judged by the latest attempt; failure classes only for an automatic approval", () => {
-    const at = (id: number, conclusion: string | null, extra: Partial<CheckRun> = {}): CheckRun => ({ id, name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion, app: "github-actions", suite: 1, head: SHA, ...extra });
+    const at = (id: number, conclusion: string | null, extra: Partial<CheckRun> = {}): CheckRun => ({ id, name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion, app: "github-actions", suite: 1, head: SHA, workflowPath: ".github/workflows/ci.yml", ...extra });
     const rest = passing(REQUIRED_PR_CHECKS.slice(1)).map((run, i) => ({ ...run, id: 100 + i, app: "github-actions", suite: 1, head: SHA }));
     const flaky = [at(1, "failure"), at(2, "failure"), at(3, "failure"), at(4, "success"), ...rest];
     expect(prChecksVerdict(flaky, SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "passed" });
@@ -1567,7 +1568,7 @@ describe("toolroll release: approve automatically when checks pass", () => {
     const rest = passing(REQUIRED_PR_CHECKS).map((run, i) => ({ ...run, id: 100 + i, app: "github-actions", suite: 1, head: SHA, workflow: 1 }));
     // The Windows containment repeat: a failed "× 20" run, then an on-demand "× 1" dispatch of the same workflow passes.
     const repeat = (id: number, name: string, suite: number, conclusion: string, extra: Partial<CheckRun> = {}): CheckRun =>
-      ({ id, name, status: "completed", conclusion, app: "github-actions", suite, head: SHA, workflow: 7, ...extra });
+      ({ id, name, status: "completed", conclusion, app: "github-actions", suite, head: SHA, workflow: 7, workflowPath: ".github/workflows/ci.yml", ...extra });
     const renamed = [...rest, repeat(200, "repeat × 20", 20, "failure"), repeat(201, "repeat × 1", 21, "success")];
     expect(prChecksVerdict(renamed, SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "failed", failed: [expect.stringContaining("repeat × 20 (failed once on this commit")] });
     // Dropped: the newer run of the workflow doesn't have the job at all.
@@ -1634,7 +1635,7 @@ describe("toolroll release: approve automatically when checks pass", () => {
   });
 
   test("codex r2 #5: a required check must be green in its newest run; the classes count the superseded runs' failures", () => {
-    const run = (id: number, suite: number, conclusion: string, name: string = REQUIRED_PR_CHECKS[0]): CheckRun => ({ id, name, status: "completed", conclusion, app: "github-actions", suite, head: SHA, workflow: 1 });
+    const run = (id: number, suite: number, conclusion: string, name: string = REQUIRED_PR_CHECKS[0]): CheckRun => ({ id, name, status: "completed", conclusion, app: "github-actions", suite, head: SHA, workflow: 1, workflowPath: ".github/workflows/ci.yml" });
     const rest = REQUIRED_PR_CHECKS.slice(1).map((name, i) => run(100 + i, 3, "success", name));
     // Newest run red, older green: failed.
     expect(prChecksVerdict([run(1, 2, "success"), run(5, 3, "failure"), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
