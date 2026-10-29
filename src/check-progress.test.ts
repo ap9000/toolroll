@@ -289,6 +289,31 @@ describe("coalesced display writes", () => {
     expect(saved.map(one => one.line)).toEqual(["unit 1", "unit 2", "unit 3", "unit 4"]);
   });
 
+  test("a final snapshot whose write fails is kept until a flush saves it; nothing throws (Codex round 1, finding 6)", () => {
+    let clock = 0, failing = true;
+    const saved: CheckProgressSnapshot[] = [];
+    const writer = coalescedProgressWriter(snapshot => { if (failing) throw new Error("database is locked"); saved.push(snapshot); }, { intervalMs: 1_000, now: () => clock });
+    expect(() => writer.push(snap(1))).not.toThrow();
+    clock += 2_000;
+    expect(() => writer.push(snap(2, true))).not.toThrow();
+    expect(writer.flush()).toBe(false);
+    // A display snapshot after the final is never written, even when the store recovers.
+    writer.push(snap(3));
+    failing = false;
+    expect(writer.flush()).toBe(true);
+    expect(saved).toEqual([snap(2, true)]);
+    // Saved once: a later flush writes nothing again.
+    expect(writer.flush()).toBe(true);
+    expect(saved).toEqual([snap(2, true)]);
+    // A later final replaces one never saved, and is retried the same way.
+    const other = coalescedProgressWriter(snapshot => { if (failing) throw new Error("disk full"); saved.push(snapshot); });
+    failing = true;
+    other.push(snap(7, true));
+    failing = false;
+    other.push(snap(8, true));
+    expect(saved.at(-1)).toEqual(snap(8, true));
+  });
+
   test("through the store: the saved row ends as the exact final snapshot", () => {
     const store = openStore(":memory:");
     const run = fixture(store);

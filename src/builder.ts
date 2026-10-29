@@ -2897,8 +2897,10 @@ async function settleProof(
         }
       }
     }
-    checkProgress.finish();
-    progressWrites.flush();
+    // The display's final snapshot (Codex review round 1, finding 6): the writer keeps it until a write succeeds and
+    // never throws; a display failure of any kind never keeps the check's outcome below from being sealed.
+    try { checkProgress.finish(); } catch { /* display only */ }
+    if (!progressWrites.flush()) progressWrites.flush();
     // The check's own report (the last line carrying the nonce), sealed beside what was sealed before it ran.
     const last = verification.last;
     let sealedReport: CheckReport | null = null;
