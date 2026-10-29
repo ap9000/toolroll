@@ -124,6 +124,11 @@ export class RevisionCache {
     if (started === null) return undefined;
     let value: T;
     try { value = await compute(); } catch { return undefined; }
+    // A worker can finish after an approval changed or a lease expired. Its caller must not pin that old answer
+    // into a request even though the shared cache would reject it on the next lookup.
+    try {
+      if (this.#revision.current() !== started.revision || this.#clock().getTime() >= started.expiresAt) return undefined;
+    } catch { return undefined; }
     this.#store(key, started, value);
     return value;
   }

@@ -93,6 +93,20 @@ test("an entry read at one revision is never served after a commit from another 
   } finally { other.close(); }
 });
 
+test.each(["revision", "expiry", "unreadable"] as const)("an in-flight chrome read is discarded after %s changes", async change => {
+  let revision = "v1:1", time = NOW.getTime(), unreadable = false;
+  const cache = new RevisionCache({ current: () => { if (unreadable) throw new Error("unavailable"); return revision; }, expiresAt: () => NOW.getTime() + 1_000 }, () => new Date(time));
+  let answer!: (value: string) => void;
+  const pending = cache.fill("needs-you", () => new Promise<string>(resolve => { answer = resolve; }));
+  if (change === "revision") revision = "v1:2";
+  if (change === "expiry") time += 1_000;
+  if (change === "unreadable") unreadable = true;
+  answer("old approval");
+  expect(await pending).toBeUndefined();
+  unreadable = false;
+  expect(cache.peek("needs-you")).toBeUndefined();
+});
+
 test("on an owner-shaped database the chrome's reads, a cached read and /board stay under budget", async () => {
   const access = { principal: "operator" as const, repos: null, includeUnplaced: true, viewer: "alex" };
   const projects = repos.map(path => ({ path, name: path.split("/").pop()! }));

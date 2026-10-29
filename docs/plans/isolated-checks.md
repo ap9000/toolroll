@@ -153,7 +153,8 @@ each); a task page asked Git for its base line four times through a frozen `.git
    the revision's own clock boundary (lease, liveness, hold, mode expiry) or 30 s, whichever is first. Keys carry every
    authorization input the read depends on: the whole work access canonically (principal, admitted projects, unplaced
    work, viewer, dependency projects), the reader, and the sidebar's project list; a value read for one scope is never
-   another's. A request keeps what it read for its whole render. Receipt reconciliation, task and result reads
+   another's. Worker results are revalidated at render, after all prefetch jobs finish; a changed revision or expired
+   entry is read again. The cookie and route are rechecked after the worker wait. Receipt reconciliation, task and result reads
    (`request`/`task`/`result`) bypass it and read work afresh, as before.
 2. **Off the request thread.** Before a chromed page renders, its count and sidebar (and on /chat its three views and
    briefing) are read on the ReadExecutor's read-only worker connections (new jobs `work-counts`, `project-summary`),

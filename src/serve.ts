@@ -1754,8 +1754,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     try {
       const actor = requestContext.getStore()?.actor ?? "";
       const access = workAccess(), projects = sidebarProjects(), now = clock();
-      const held = (requestContext.getStore()!.chromeReads ??= new Map<string, unknown>());
-      const fill = async <T>(key: string, read: () => Promise<T>) => { const value = await chromeReads.fill(key, read); if (value !== undefined) held.set(key, value); };
+      // Populate only the revision cache. Each answer must still pass its revision/expiry check when rendering:
+      // another job can remain pending while an earlier answer's approval or Needs-you state changes.
+      const fill = async <T>(key: string, read: () => Promise<T>) => { await chromeReads.fill(key, read); };
       const jobs = [
         fill(countsKey(access), () => reads.workCounts(now, access)),
         fill(summaryKey(actor, access, projects), () => reads.projectSummary(now, access, actor, projects, evidenceRoot)),
