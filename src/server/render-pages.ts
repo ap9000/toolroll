@@ -1,3 +1,4 @@
+import { activityMetrics, activityScope, activityLimit } from '../project-activity.js';
 /** Everyday console pages: home, inbox, board, work, projects, fleet and the queue. */
 import { originNote, type TaskOrigin } from "../task-source.js";
 import { type Html, html, type HtmlValue, htmlString, joinHtml, postForm, replaceMarkup, reauth } from "../html.js";
@@ -1354,6 +1355,9 @@ export function projectsPage(
   checkLevelOf?: (path: string) => CheckLevel,
   activity?: BrowserProjectsView["activity"],
 ): Screen {
+  const activityHtml = activity === undefined ? null : html`<details><summary>Activity · ${activity.project}</summary>${activity.report === null
+    ? html`<p role="alert">Activity is unavailable.</p><a href="/projects">Reload</a>`
+    : html`<p>${activityScope(activity.report)}</p>${activity.report.truncated ? html`<p>${activityLimit(activity.report)}</p>` : null}${activityMetrics(activity.report).map(metric => html`<details><summary>${metric.label} · ${metric.value}</summary><p>${metric.detail}</p>${metric.rows.length === 0 ? html`<p>No tasks in this group.</p>` : html`<ul>${metric.rows.map(row => html`<li><a href="${row.href}">${row.title}</a> · Recorded checks: ${row.checks}</li>`)}</ul>`}</details>`)}`}</details>`;
   // The onboarding card (repo onboarding, findings 1-39): preview first,
   // then a password-confirmed clone into a configured root. Disabled
   // states explain themselves in words (finding 28/39).
@@ -1499,6 +1503,7 @@ export function projectsPage(
     recentItems.length === 0 && candidateItems.length === 0
       ? html`<div class="card"><p><strong>Nothing to open yet.</strong></p><p class="meta">Add one below — opening it registers it here for next time.</p></div>`
       : null,
+    choosing ? null : activityHtml,
     recentItems.length > 0 ? html`<h2>Recent</h2>${cards(recentItems)}` : null,
     candidateItems.length > 0 ? html`<h2>Available</h2>${cards(candidateItems)}` : null,
     addCard,
