@@ -929,10 +929,11 @@ export function parseOperateArgs(argv: readonly string[], ownValues: ReadonlySet
     const value = equals === -1 ? argv[++index] : argument.slice(equals + 1);
     // A following --flag is not a value — consuming it would swallow a real
     // flag and leave this one holding a name-shaped lie.
-    // A secret (a password, a token) is random base64url and may begin with two hyphens: it is always the next
-    // argument, whatever it looks like (a flag swallowed by mistake just fails to authenticate). Other flags never take
-    // a following --flag. Explicit --name=value carries arbitrary literal leading hyphens for every flag.
-    if (value === undefined || (equals === -1 && value.startsWith("--") && !SECRET_VALUE_FLAGS.has(name))) return { error: `--${name} needs a value` };
+    // A secret (a password, a token) is random base64url and may begin with two hyphens: it is the next argument
+    // unless that argument is exactly a flag this parser knows (a real flag is never swallowed, finding 22). Other flags
+    // never take a following --flag. Explicit --name=value carries arbitrary literal leading hyphens for every flag.
+    const namesFlag = (one: string) => { const flag = one.slice(2).split("=")[0]!; return booleans.has(flag) || wantsValue.has(flag); };
+    if (value === undefined || (equals === -1 && value.startsWith("--") && (!SECRET_VALUE_FLAGS.has(name) || namesFlag(value)))) return { error: `--${name} needs a value` };
     // `flows import --param a=1 --param b=2`: each value kept, one per line.
     flags.set(name, name === "param" && typeof flags.get(name) === "string" ? `${flags.get(name)}\n${value}` : value);
     if (name === "repo") {

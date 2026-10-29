@@ -54,10 +54,12 @@ describe("a secret that starts with \"--\"", () => {
     expect(autoPublishHeld(f.store, f.taskId)).toBeNull();
   });
 
-  test("a missing secret is still a usage error, never an empty password", async () => {
+  test("a missing secret is still a usage error, never an empty password, and a real flag is never swallowed", async () => {
     const f = (fixture = releaseFixture({ password: DASHED }));
     holdAutoPublish(f.store, { taskId: f.taskId, why: "held", now: LATER });
     expect(await runReleaseCommand(["publish-ok", f.taskId, "--as", "alex", "--token"], () => {}, { database: f.databaseFile, now: () => LATER })).toBe(2);
+    expect(await runReleaseCommand(["publish-ok", f.taskId, "--as", "alex", "--token", "--json"], () => {}, { database: f.databaseFile, now: () => LATER })).toBe(2);
+    expect(await runReleaseCommand(["publish-ok", f.taskId, "--token", "--as", "alex"], () => {}, { database: f.databaseFile, now: () => LATER })).toBe(2);
     expect(autoPublishHeld(f.store, f.taskId)).not.toBeNull();
   });
 });

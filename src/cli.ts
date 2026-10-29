@@ -617,7 +617,7 @@ async function runReposCommand(argv: readonly string[], write: Write, onboard?: 
   const tokenAt = argv.findIndex(argument => argument === "--token" || argument.startsWith("--token="));
   const tokenInline = tokenAt !== -1 && argv[tokenAt] !== "--token";
   const tokenFlag = tokenAt === -1 ? undefined : tokenInline ? argv[tokenAt]!.slice("--token=".length) : argv[tokenAt + 1];
-  const json = argv.some((argument, index) => argument === "--json" && (tokenAt === -1 || tokenInline || index !== tokenAt + 1));
+  const json = argv.includes("--json");
   const bare = argv.filter((argument, index) => argument !== "--json" && (tokenAt === -1 || (index !== tokenAt && (tokenInline || index !== tokenAt + 1))));
   const remoteAt = bare.indexOf("--remote");
   const remoteUrl = remoteAt === -1 ? undefined : bare[remoteAt + 1];
@@ -629,7 +629,8 @@ async function runReposCommand(argv: readonly string[], write: Write, onboard?: 
   }
   const databaseFile = databasePath(process.env, homedir());
   const file = registryBeside(databaseFile);
-  if (tokenAt !== -1 && (tokenFlag === undefined || tokenFlag === "")) {
+  // A dash-led token is the token, unless it is exactly one of this command's flags (never swallowed).
+  if (tokenAt !== -1 && (tokenFlag === undefined || tokenFlag === "" || (!tokenInline && ["--json", "--remote", "--token"].includes(tokenFlag)))) {
     const message = "--token needs the lead token";
     write(json ? envelopeJson({ ok: false, command: `repos ${action ?? ""}`.trim(), reason: "usage", message }) : message);
     return USAGE_EXIT;

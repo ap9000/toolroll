@@ -104,8 +104,8 @@ const BARE_FLAGS = new Set(["--new", "--json", "--help", "--yes", "--no-carry", 
 
 export async function runReleaseCommand(args: readonly string[], write: (line: string) => void, deps: ReleaseCliDeps = {}): Promise<number> {
   // The flag, not a secret's value that happens to read "--json".
-  // The bare flags as the loop below reads them: a secret's value that happens to read "--json" is never one.
-  const bare = new Set(args.filter((one, at) => BARE_FLAGS.has(one) && args[at - 1] !== "--token"));
+  // A secret is never exactly one of these names (the loop below refuses that as a missing value).
+  const bare = new Set(args.filter(one => BARE_FLAGS.has(one)));
   const json = bare.has("--json");
   const refuse = (reason: string, message: string, code: number) => {
     write(json ? checkedEnvelopeJson({ ok: false, command: "release", reason, message }) : message);
@@ -116,13 +116,15 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
   let repo: string | undefined, tap: string | undefined, gate: string | undefined, to: string | undefined, request: string | undefined, as: string | undefined, token: string | undefined, scheduleFlag: string | undefined;
   for (let i = 0; i < args.length; i += 1) {
     const raw = args[i]!;
-    if (BARE_FLAGS.has(raw) && args[i - 1] !== "--token") continue;
+    if (BARE_FLAGS.has(raw)) continue;
     // `--flag=value` for every value flag; a secret (--token) is also the next argument even when it starts with "--".
     const equals = raw.startsWith("--") ? raw.indexOf("=") : -1;
     const arg = equals === -1 ? raw : raw.slice(0, equals);
     if (VALUE_FLAGS.has(arg)) {
       const value = equals === -1 ? args[i + 1] : raw.slice(equals + 1);
-      if (value === undefined || (equals === -1 && value.startsWith("--") && arg !== "--token")) return refuse("usage", `${arg} takes a value.`, 2);
+      // A secret may start with "--"; it is the value unless it is exactly one of this command's flags (never swallowed).
+      const namesFlag = value !== undefined && (BARE_FLAGS.has(value) || VALUE_FLAGS.has(value.split("=")[0]!));
+      if (value === undefined || (equals === -1 && value.startsWith("--") && (arg !== "--token" || namesFlag))) return refuse("usage", `${arg} takes a value.`, 2);
       if (equals === -1) i += 1;
       if (arg === "--repo") repo = value;
       else if (arg === "--to") to = value;
