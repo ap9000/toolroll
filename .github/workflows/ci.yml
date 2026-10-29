@@ -171,7 +171,10 @@ jobs:
   git:
     name: git ${{ matrix.git }} · debian trixie
     runs-on: ubuntu-24.04
-    container: node:22-trixie
+    # --init: an init process reaps orphaned children, as a real machine's PID 1 does (the pool's orphaned-group test).
+    container:
+      image: node:22-trixie
+      options: --init
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     strategy:

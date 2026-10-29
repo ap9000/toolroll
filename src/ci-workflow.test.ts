@@ -138,7 +138,7 @@ describe("the CI workflows", () => {
 
   test("the git lanes run the git tests on the declared floor and on 2.47, unprivileged, and refuse a skip", () => {
     const job = workflows.find(one => one.file === "ci.yml")!.jobs["git"]!;
-    expect(job.container).toBe("node:22-trixie");
+    expect(job.container).toEqual({ image: "node:22-trixie", options: "--init" });
     expect(job.strategy?.matrix?.["git"]).toEqual([GIT_FLOOR_WORDS, "2.47"]);
     const runs = (job.steps ?? []).map(step => step.run ?? "");
     expect(runs).toContain("scripts/ci-git.sh ${{ matrix.git }}");
