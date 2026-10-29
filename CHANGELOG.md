@@ -30,6 +30,12 @@
   one that passed only on a retry is now reported (an automatic approval
   won't approve it). `toolroll release` says which of these happened and
   what to do next, instead of always asking for `--new`.
+- **A password that starts with "--" works on the command line.** About one
+  minted password in 4096 began with "--", and `toolroll release publish-ok`
+  (and other commands) read it as a missing value. A `--token` or
+  `--password` value is now always the next argument, `--token=<value>`
+  works everywhere, and new passwords, invites and tokens never start with
+  "-".
 
 ## 0.9.76 — 2026-10-28
 

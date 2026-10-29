@@ -142,7 +142,8 @@ function reinstallCommand(args: readonly string[]): string | null {
     const flag = equal < 0 ? arg : arg.slice(0, equal);
     const value = equal < 0 ? args[index + 1] : arg.slice(equal + 1);
     const known = freeform.has(flag) || numeric.has(flag) || Object.hasOwn(enums, flag);
-    if (equal < 0 && (known || CREDENTIAL_FLAG.test(flag)) && value !== undefined && !value.startsWith("-")) index += 1;
+    // A credential's value is the next argument even when it starts with "-" (random base64url can).
+    if (equal < 0 && value !== undefined && (CREDENTIAL_FLAG.test(flag) || (known && !value.startsWith("-")))) index += 1;
     if (flag === "--token") { kept.push("--token-file", "<set-again>"); continue; }
     if (!known) { rejected = true; continue; }
     const safe = value !== undefined && scanForSecrets(value).length === 0;

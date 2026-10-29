@@ -1,3 +1,4 @@
+import { mintSecret } from "./secret-mint.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
 import { inspectAcpAgent } from "./acp-inspect.js";
 import { runAcpChecks } from "./acp-check.js";
@@ -806,6 +807,9 @@ export const KEYS_ACTIONS = ["status", "set", "clear", "verify", "auth"] as cons
  * tests): every value-taking flag any verb reads, and every boolean.
  * A --flag in neither set is a typo, refused by name.
  */
+/** Flags whose value is a secret someone types or pastes: taken as the next argument even when it starts with "--". */
+export const SECRET_VALUE_FLAGS: ReadonlySet<string> = new Set(["token", "password"]);
+
 export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "key", "db", "runner", "ttl", "state", "on", "reason", "until", "id", "backend",
   "allow", "selector", "paths", "credentials", "repo", "token", "capacity",
@@ -925,11 +929,10 @@ export function parseOperateArgs(argv: readonly string[], ownValues: ReadonlySet
     const value = equals === -1 ? argv[++index] : argument.slice(equals + 1);
     // A following --flag is not a value — consuming it would swallow a real
     // flag and leave this one holding a name-shaped lie.
-    // Minted 32-byte base64url credentials may begin with two hyphens.
-    // Accept that exact token shape without swallowing a following flag.
-    // Explicit --name=value also carries arbitrary literal leading hyphens.
-    const mintedToken = name === "token" && value !== undefined && /^[A-Za-z0-9_-]{43}$/.test(value);
-    if (value === undefined || (equals === -1 && value.startsWith("--") && !mintedToken)) return { error: `--${name} needs a value` };
+    // A secret (a password, a token) is random base64url and may begin with two hyphens: it is always the next
+    // argument, whatever it looks like (a flag swallowed by mistake just fails to authenticate). Other flags never take
+    // a following --flag. Explicit --name=value carries arbitrary literal leading hyphens for every flag.
+    if (value === undefined || (equals === -1 && value.startsWith("--") && !SECRET_VALUE_FLAGS.has(name))) return { error: `--${name} needs a value` };
     // `flows import --param a=1 --param b=2`: each value kept, one per line.
     flags.set(name, name === "param" && typeof flags.get(name) === "string" ? `${flags.get(name)}\n${value}` : value);
     if (name === "repo") {
@@ -7240,7 +7243,7 @@ async function resolveUpApprover(
       // the insert (finding 27). A refused insert unlinks only when an
       // UNRELATED approver won (finding 32).
       const name = asFlag ?? process.env["USER"] ?? process.env["USERNAME"] ?? "operator";
-      const password = randomBytes(12).toString("base64url");
+      const password = mintSecret(12);
       try {
         writeLoginFileDurably(loginFile, name, password);
       } catch (error) {

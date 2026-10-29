@@ -1,5 +1,6 @@
 // The rubric's vocabulary loads before anything that reaches the plan contract (see contracts/acceptance-terms.ts).
 export { ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type EvidenceKind } from "./contracts/acceptance-terms.js";
+import { mintSecret } from "./secret-mint.js";
 import { passwordlessOn } from "./passwordless.js";
 import { currentPasswordSource, passwordGuardOf, provenPasswordAccount } from "./sign-in-guard.js";
 import { validateScopeText } from "./task-text.js";
@@ -68,7 +69,7 @@ import {
 
 /** Same shape as a runner's credential, for the same reasons. */
 function mintToken(): string {
-  return randomBytes(32).toString("base64url");
+  return mintSecret(32);
 }
 
 export function hashToken(token: string): string {

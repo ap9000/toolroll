@@ -42,13 +42,18 @@ export type ReleaseFixture = {
 export const FIXTURE_REMOTE = "https://example.invalid/r.git";
 
 /** A repository with an approved release of its head. `files` adds to the base tree. */
+/** alex's password in every release fixture: fixed, so a run never depends on what a random draw looks like. */
+export const FIXTURE_PASSWORD = "fixture-password-alex-8Kq2";
+
 export function releaseFixture(options: { files?: Record<string, string>; protectedPaths?: string[]; build?: string; beforeApproval?: (store: Store, repo: string) => void;
   /** Leave the release task filed and unapproved (an automatic approval's starting point). */
   approve?: boolean;
   /** A commit on top of the base, released as the candidate. */
   candidate?: Record<string, string | null>;
   /** A commit between the base and the candidate (a branch's earlier commit). */
-  intermediate?: Record<string, string | null> } = {}): ReleaseFixture {
+  intermediate?: Record<string, string | null>;
+  /** alex's password (default FIXTURE_PASSWORD). */
+  password?: string } = {}): ReleaseFixture {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-release-once-")));
   const repo = join(dir, "project");
   mkdirSync(repo);
@@ -88,7 +93,9 @@ export function releaseFixture(options: { files?: Record<string, string>; protec
   const store = openStore(databaseFile);
   // The project's recorded remote: the trusted reads of main (nightly-check.ts) are bound to it.
   store.upsertProject(repo, "project", RELEASE_NOW, { remoteUrl: FIXTURE_REMOTE });
-  const added = addApprover(store, "alex", RELEASE_NOW);
+  // A fixed password: randomness isn't what these tests are about, and a random one starts with "--" about 1 time in
+  // 4096 (0.9.76's CI: a CLI parser read such a password as a missing value).
+  const added = addApprover(store, "alex", RELEASE_NOW, undefined, () => options.password ?? FIXTURE_PASSWORD);
   if (!added.ok) throw new Error("approver");
   for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", RELEASE_NOW);
   store.setVerifyCommand({ repo, command: "node scripts/release-check.mjs --full", timeoutMs: 60_000, approvedBy: "alex" }, RELEASE_NOW);

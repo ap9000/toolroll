@@ -612,11 +612,13 @@ function renderMissingJson(roots: readonly string[], missingRoots: readonly stri
 async function runReposCommand(argv: readonly string[], write: Write, onboard?: MainOptions["onboard"]): Promise<number> {
   // `repos` honors the machine contract like everything else (audit TG-3):
   // --json answers with one envelope, whatever the outcome.
-  const json = argv.includes("--json");
-  // The lead adds with its token (--token or TOOLROLL_LEAD_TOKEN); the owner needs none.
-  const tokenAt = argv.indexOf("--token");
-  const tokenFlag = tokenAt === -1 ? undefined : argv[tokenAt + 1];
-  const bare = argv.filter((argument, index) => argument !== "--json" && (tokenAt === -1 || (index !== tokenAt && index !== tokenAt + 1)));
+  // The lead adds with its token (--token <t>, --token=<t> or TOOLROLL_LEAD_TOKEN); the owner needs none. A token is
+  // random base64url and may start with "--": it is the next argument, whatever it looks like.
+  const tokenAt = argv.findIndex(argument => argument === "--token" || argument.startsWith("--token="));
+  const tokenInline = tokenAt !== -1 && argv[tokenAt] !== "--token";
+  const tokenFlag = tokenAt === -1 ? undefined : tokenInline ? argv[tokenAt]!.slice("--token=".length) : argv[tokenAt + 1];
+  const json = argv.some((argument, index) => argument === "--json" && (tokenAt === -1 || tokenInline || index !== tokenAt + 1));
+  const bare = argv.filter((argument, index) => argument !== "--json" && (tokenAt === -1 || (index !== tokenAt && (tokenInline || index !== tokenAt + 1))));
   const remoteAt = bare.indexOf("--remote");
   const remoteUrl = remoteAt === -1 ? undefined : bare[remoteAt + 1];
   const [action, ...paths] = bare.filter((_, i) => remoteAt === -1 || (i !== remoteAt && i !== remoteAt + 1));
@@ -627,7 +629,7 @@ async function runReposCommand(argv: readonly string[], write: Write, onboard?: 
   }
   const databaseFile = databasePath(process.env, homedir());
   const file = registryBeside(databaseFile);
-  if (tokenAt !== -1 && (tokenFlag === undefined || tokenFlag.startsWith("-"))) {
+  if (tokenAt !== -1 && (tokenFlag === undefined || tokenFlag === "")) {
     const message = "--token needs the lead token";
     write(json ? envelopeJson({ ok: false, command: `repos ${action ?? ""}`.trim(), reason: "usage", message }) : message);
     return USAGE_EXIT;

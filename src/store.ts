@@ -1,3 +1,4 @@
+import { mintSecret } from "./secret-mint.js";
 import { WRITES_DEFAULT, type WritesMode } from "./writes-mode.js";
 import { checkAccessOf, widerThan, type CheckAccess } from "./check-access.js";
 import { PROJECT_SANDBOX_DEFAULT, sandboxOf, type ProjectSandbox } from "./project-sandbox.js";
@@ -9437,7 +9438,7 @@ export class Store {
   /** A single-use door into the instance (U2): 128-bit token, sha256
    * stored, role pinned at mint, 72 hours. Only the caller's own
    * authentication gates this — an approver mints; a viewer cannot. */
-  mintInvite(role: "approver" | "viewer", mintedBy: string, now: Date, token: () => string = () => randomBytes(16).toString("base64url"), projects: ProjectAccess = null): { token: string; id: number; expiresAt: string } {
+  mintInvite(role: "approver" | "viewer", mintedBy: string, now: Date, token: () => string = () => mintSecret(16), projects: ProjectAccess = null): { token: string; id: number; expiresAt: string } {
     const access = normalizeProjectAccess(projects);
     return this.transact(() => {
       if (!this.isInstanceOperator(mintedBy)) throw new Error("Only an instance operator can invite people.");
