@@ -19,12 +19,13 @@ import { runCheckLevel } from "./check-levels.js";
 import { readVerifiedCommit, verifiedBlobs, verifiedTreeDiff, verifiedTreeEntries } from "./commit-extract.js";
 import { mightName, testInfrastructure, type TestInfrastructure } from "./test-infra.js";
 import { chatControlHref } from "./chat-controls.js";
-import { INFRA_RERUNS_PER_CANDIDATE, REQUIRED_PR_CHECKS, prChecksVerdict, type CheckFailure } from "./release.js";
+import { INFRA_RERUNS_PER_CANDIDATE, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW, prChecksVerdict, type CheckFailure } from "./release.js";
 import { releaseCheckStanding } from "./check-failure.js";
 import { CARRY_RULES, rulePath } from "./release-carry.js";
 import { AUTO_EVIDENCE_ACTION, AUTO_WITHDRAWN_ACTION, LIVE_RELEASE_STATES, RELEASE_APPROVAL_ACTION, releaseAuthorityOfTask, releaseAutoApproves, type ReleaseApprovalSetting, releaseApprovalSetting } from "./release-authority.js";
 import { autoReleaseApprovalOf, personApprovalOf } from "./scope.js";
 import { releaseOperations, revokeRelease, type Store } from "./store.js";
+import { RELEASE_CI_HELD_ACTION, RELEASE_CI_PASSED_ACTION, RELEASE_CI_RUNNING_WORDS, releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
 import { verificationEvidence } from "./verification-evidence.js";
 
 export { RELEASE_APPROVAL_ACTION, releaseApprovalSetting, releaseAutoApproves, type ReleaseApprovalSetting };
@@ -36,6 +37,8 @@ export const CI_OBSERVATION_MS = 5 * 60_000;
 
 /** One check run on the candidate as the plane's own `gh` reported it (oldest first). */
 export type ObservedCheckRun = { id: number | null; name: string; status: string; conclusion: string | null; app: string | null; suite?: number | null; head?: string | null; workflow?: number | null;
+  /** The workflow's file (GitHub's workflow-run `path`): a required check counts only from ci.yml. */
+  workflowPath?: string | null;
   /** GitHub's job record shows this unsuccessful attempt ended before any workflow step ran (release-adapters.ts). */
   beforeTests?: boolean | null };
 /** The plane's own look at GitHub CI for one commit (release-adapters.ts makes it, right before the seal). */
@@ -231,7 +234,7 @@ export function ciVerdict(observation: CiObservation, candidate: string, now: Da
   if (observation.complete !== true) return no("GitHub's check history of this commit can't be read whole");
   const other = observation.runs.find(run => run.app !== "github-actions");
   if (other !== undefined) return no(`${other.name} was reported by ${other.app ?? "an unknown app"}, not GitHub Actions`);
-  const verdict = prChecksVerdict(observation.runs, candidate, REQUIRED_PR_CHECKS, { auto: true });
+  const verdict = prChecksVerdict(observation.runs, candidate, REQUIRED_PR_CHECKS, { auto: true, workflow: REQUIRED_PR_CHECKS_WORKFLOW });
   if (verdict.state === "failed") return no(verdict.failed.join(", "));
   if (verdict.state === "pending") return no(`not finished: ${verdict.waiting.join(", ")}`);
   return { ok: true, failures: verdict.failures };
@@ -297,6 +300,18 @@ function changeProblem(repo: string, base: string | null, candidate: string): st
     if (modes.includes("120000") || modes.includes("160000")) return `${change.path} is a symlink or submodule`;
     // Taking a test away is never automatic, wherever it lives.
     if (change.kind === "deleted" && TEST_FILE.test(rulePath(change.path))) return `${change.path} was deleted (removing a test needs a person)`;
+    if (change.before !== null && TEST_FILE.test(rulePath(change.path))) {
+      // Counts cannot prove that an assertion survived: replacing it, commenting it out, or skipping its case can
+      // leave the counts unchanged. Only append-only additions preserve the existing code without interpretation.
+      // Both copies come from verified trees; no report or candidate-provided file list decides this permission.
+      const was = verifiedBlobs(gitDir, before.value.tree, [change.path]);
+      const now = verifiedBlobs(gitDir, after.value.tree, [change.path]);
+      if (!was.ok || !now.ok) return `${change.path}'s existing test code couldn't be read (a person decides)`;
+      const original = was.value.get(change.path)?.bytes, revised = now.value.get(change.path)?.bytes;
+      if (original === undefined || revised === undefined || !revised.subarray(0, original.length).equals(original)) {
+        return `${change.path} changes existing test code (removing or rewriting tests needs a person)`;
+      }
+    }
     const why = autoPathProblem(change.path);
     if (why !== null) return `${change.path} changed (${why})`;
     if (infra.has(change.path)) return `${change.path} changed (tests import it and the product doesn't: it's test infrastructure)`;
@@ -427,9 +442,20 @@ export function giveUpAutoApproval(store: Store, input: { taskId: string; why: s
     unseal(store, input.taskId, input.now);
     const scope = store.getScope(input.taskId);
     const version = scope?.releaseTerms?.packageVersion ?? null;
+    // Still waiting for CI (round 1, finding 4): nobody is asked to approve yet; `liftCiHold` asks once CI passed.
+    const ciHold = releaseCiHoldOf(store, input.taskId);
+    if (ciHold !== null) {
+      store.enqueueNotification({ dedupeKey: `release-auto-stopped:${input.taskId}:${input.why.slice(0, 120)}`, kind: "release-auto",
+        subject: `Release${version === null ? "" : ` ${version}`} won't approve itself`,
+        body: `Not approved automatically: ${input.why}. GitHub CI is still running on ${ciHold.candidate?.slice(0, 7) ?? "its commit"}; you're asked to approve it once CI passes.`,
+        link: chatControlHref("task", input.taskId), source: { taskRef: ref.id } }, input.now);
+      return;
+    }
+    // Filed while CI runs (Alex, 2026-10-29): a person may approve now; nothing deploys until CI passes.
+    const running = releaseCiRunningOf(store, input.taskId) === null ? "" : ` ${RELEASE_CI_RUNNING_WORDS}`;
     store.enqueueNotification({ dedupeKey: `release-auto-stopped:${input.taskId}:${input.why.slice(0, 120)}`, kind: "release-auto", pushClass: "attention",
       subject: `Release${version === null ? "" : ` ${version}`} needs you`,
-      body: `Not approved automatically: ${input.why}. Approve it yourself, or fix the branch and release the new commit.`,
+      body: `Not approved automatically: ${input.why}. Approve it yourself, or fix the branch and release the new commit.${running}`,
       link: chatControlHref("task", input.taskId), source: { taskRef: ref.id } }, input.now);
   });
 }
@@ -482,4 +508,53 @@ export function allowAutoPublish(store: Store, input: { taskId: string; by: stri
   store.recordAction({ at: input.now.toISOString(), actor: input.by, repo: store.lookupRef(input.taskId)?.repo ?? null, taskId: input.taskId, runId: null,
     action: PUBLISH_ALLOWED_ACTION, outcome: "allowed", source: "request", detail: `${input.by} lets the release's tag, publication and Homebrew go on` });
   return { ok: true };
+}
+
+/**
+ * A release filed while its pull request's CI still ran (pipeline-speed.md D2): hold every approval but the automatic
+ * road's until the plane reads exact-head CI passing (Codex review round 1, finding 4). Recorded before the task is
+ * filed, so no moment exists where the filed task is approvable with CI pending. Idempotent.
+ */
+export function holdApprovalForCi(store: Store, input: { taskId: string; candidate: string; now: Date }): void {
+  if (!/^[0-9a-f]{40}$/.test(input.candidate)) throw new Error("a CI hold needs the exact candidate commit");
+  const held = releaseCiHoldOf(store, input.taskId);
+  if (held !== null && held.candidate === input.candidate) return;
+  store.recordAction({ at: input.now.toISOString(), actor: "toolroll", repo: store.lookupRef(input.taskId)?.repo ?? null, taskId: input.taskId, runId: null,
+    action: RELEASE_CI_HELD_ACTION, outcome: "held", source: "work", detail: input.candidate });
+}
+
+/**
+ * Lift a release's CI hold (an older coordinator's) or end its "CI still running" note on the plane's own reading of
+ * GitHub CI (never the coordinator's word): fresh, whole, every run GitHub Actions, on exactly the held candidate, and
+ * every required check passed (release.ts prChecksVerdict, as a person's road judges it: a person decides about earlier
+ * attempts). With `ask`, the owner of a held release is told it needs them now. Nothing held or noted is a pass.
+ */
+export function liftCiHold(store: Store, input: { taskId: string; candidate: string; ci: CiObservation; ask: boolean; now: Date }): { ok: true } | Refusal {
+  return store.transact(() => {
+    const held = releaseCiHoldOf(store, input.taskId);
+    const waiting = held ?? releaseCiRunningOf(store, input.taskId);
+    if (waiting === null) return { ok: true as const };
+    if (waiting.candidate !== input.candidate) return refuse(`the release waits for CI on ${waiting.candidate?.slice(0, 7) ?? "an unreadable commit"}, not ${input.candidate.slice(0, 7)}`);
+    const ci = input.ci;
+    if (ci.head !== input.candidate) return refuse(`CI was read for ${ci.head.slice(0, 7)}, not ${input.candidate.slice(0, 7)}`);
+    const at = Date.parse(ci.observedAt);
+    if (!Number.isFinite(at) || at > input.now.getTime() + 60_000 || input.now.getTime() - at > CI_OBSERVATION_MS) return refuse("the CI reading isn't fresh");
+    if (ci.complete !== true) return refuse("GitHub's check history of this commit can't be read whole");
+    const other = ci.runs.find(run => run.app !== "github-actions");
+    if (other !== undefined) return refuse(`${other.name} was reported by ${other.app ?? "an unknown app"}, not GitHub Actions`);
+    const verdict = prChecksVerdict(ci.runs, input.candidate, REQUIRED_PR_CHECKS, { workflow: REQUIRED_PR_CHECKS_WORKFLOW });
+    if (verdict.state === "failed") return refuse(`CI failed: ${verdict.failed.join(", ")}`);
+    if (verdict.state === "pending") return refuse(`CI hasn't finished: ${verdict.waiting.join(", ")}`);
+    const ref = store.lookupRef(input.taskId);
+    store.recordAction({ at: input.now.toISOString(), actor: "toolroll", repo: ref?.repo ?? null, taskId: input.taskId, runId: null,
+      action: RELEASE_CI_PASSED_ACTION, outcome: "passed", source: "work", detail: input.candidate });
+    if (input.ask && held !== null && ref !== null) {
+      const version = store.getScope(input.taskId)?.releaseTerms?.packageVersion ?? null;
+      store.enqueueNotification({ dedupeKey: `release-ci-passed:${input.taskId}:${input.candidate}`, kind: "release-auto", pushClass: "attention",
+        subject: `Release${version === null ? "" : ` ${version}`} needs you`,
+        body: `GitHub CI passed on ${input.candidate.slice(0, 7)}. Approve it yourself, or fix the branch and release the new commit.`,
+        link: chatControlHref("task", input.taskId), source: { taskRef: ref.id } }, input.now);
+    }
+    return { ok: true as const };
+  });
 }

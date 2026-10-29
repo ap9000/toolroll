@@ -103,7 +103,9 @@ describe("toolroll up", () => {
       proof = proveLiveConsole(db, store, packageVersion()).finally(() => store.close());
     });
     expect(code).toBe(0);
-    expect(await proof).toEqual({ ok: true, url: `http://127.0.0.1:${PORT + 21}`, port: PORT + 21, pid: process.pid, build: packageVersion() });
+    // The console is its own process (isolated-checks.md, stage 1): the record names it, not the `up` that started it.
+    expect(await proof).toEqual({ ok: true, url: `http://127.0.0.1:${PORT + 21}`, port: PORT + 21, pid: expect.any(Number), build: packageVersion() });
+    expect((await proof as { pid: number }).pid).not.toBe(process.pid);
     const store = openStore(db);
     try { expect(readInstance(store)).toBeNull(); } finally { store.close(); }
     // Its own socket went with it.

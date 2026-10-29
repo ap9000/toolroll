@@ -27,7 +27,8 @@ import {
 import { acquireDeploymentLock } from "./deploy-lock.js";
 import { autoReleaseApprovalOf, liveReleaseOf } from "./scope.js";
 import { recheckReleaseTask, releaseCheckStanding } from "./check-failure.js";
-import { autoPublishHeld, holdAutoPublish, authorizeAutoCheck, giveUpAutoApproval, noteAutoCheckFailed, noteAutoRelease, releaseAutoApproves, sealAutoGreen, type CiObservation } from "./release-auto.js";
+import { noteCiRunning, releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
+import { autoPublishHeld, holdAutoPublish, liftCiHold, authorizeAutoCheck, giveUpAutoApproval, noteAutoCheckFailed, noteAutoRelease, releaseAutoApproves, sealAutoGreen, type CiObservation } from "./release-auto.js";
 import { proveCarry, type BuildRunner } from "./release-carry.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { deploymentGate } from "./deploy-gate.js";
@@ -242,7 +243,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   const ciGh = options.tools?.gh ?? releaseTools("").gh;
   const observeCi = async (sha: string): Promise<CiObservation> => {
     const observedAt = (options.now ?? (() => new Date()))().toISOString();
-    const runs = (await readCheckRuns(run, ciGh, releaseRepo().slug, sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, workflow: one.workflow ?? null,
+    const runs = (await readCheckRuns(run, ciGh, releaseRepo().slug, sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, workflow: one.workflow ?? null, workflowPath: one.workflowPath ?? null,
       ...(one.beforeTests === undefined ? {} : { beforeTests: one.beforeTests }) }));
     return { head: sha, observedAt, runs, complete: await readSuitesComplete(run, ciGh, releaseRepo().slug, sha) };
   };
@@ -335,7 +336,10 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
 
   const release = storeReleaseAdapter(() => openStore(database), store => store.close(), options.now ?? (() => new Date()), undefined,
     { observe: sha => observeCi(sha), mergeBase: (base, sha) => readMergeBase(run, ciGh, releaseRepo().slug, base, sha),
-      upToDateRequired: () => readUpToDateRequired(run, ciGh, releaseRepo().slug), evidenceRoot: join(dirname(database), "evidence") });
+      upToDateRequired: () => readUpToDateRequired(run, ciGh, releaseRepo().slug), evidenceRoot: join(dirname(database), "evidence"),
+      // A successful Actions job authenticates the job, not the candidate-writable JSON it uploads. Until the
+      // executor protects that reporting channel, production releases must take the person's approval road.
+      reportsProtected: false });
 
   return {
     ...(existsSync(database) ? { release } : {}),
@@ -705,11 +709,15 @@ export function storeReleaseAdapter(open: () => Store, done: (store: Store) => v
 /** The plane's automatic release approval through a store (release-auto.ts): what `toolroll release` asks. It hands the
  * plane ids only; the plane reads CI itself (`observe`) right before it seals. */
 function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now: () => Date, auto: AutoObservers): NonNullable<NonNullable<ReleaseAdapters["release"]>["auto"]> {
+  const reportProblem = () => auto.reportsProtected === true ? null
+    : "CI test reports aren't protected from candidate writes, so a person must approve this release";
   return {
     async setting(taskId) {
       return withStore(store => { try { const ref = store.lookupRef(taskId); return ref?.repo != null && releaseAutoApproves(store, ref.repo); } catch { return false; } });
     },
     async authorizeCheck(input) {
+      const problem = reportProblem();
+      if (problem !== null) return { ok: false as const, why: problem };
       // The comparison base for what the release changes: GitHub's own merge base of the candidate with the release's
       // base branch (its signed terms), read by the plane — never a task branch or a build's recorded base.
       const branch = withStore(store => store.getScope(input.taskId)?.releaseTerms?.base ?? null);
@@ -720,9 +728,16 @@ function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now:
       return withStore(store => { const answer = authorizeAutoCheck(store, { ...input, base, now: now() }); return answer.ok ? { ok: true as const } : answer; });
     },
     async checking(taskId) {
+      const problem = reportProblem();
+      if (problem !== null) return { ok: false as const, why: problem };
       return withStore(store => { const answer = autoReleaseApprovalOf(store, taskId, "auto-check"); return answer.ok ? { ok: true as const } : { ok: false as const, why: answer.why }; });
     },
     async approve(input) {
+      const unprotected = reportProblem();
+      if (unprotected !== null) {
+        withStore(store => giveUpAutoApproval(store, { taskId: input.taskId, why: unprotected, now: now() }));
+        return { ok: false as const, why: unprotected };
+      }
       let ci: CiObservation | null = null, problem = "";
       // A short network failure is asked again a few times; GitHub not answering is never a pass.
       for (let attempt = 0; attempt < 3 && ci === null; attempt++) {
@@ -739,6 +754,19 @@ function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now:
       return withStore(store => sealAutoGreen(store, { ...input, ci: observed, mainUpToDate: upToDate, evidenceRoot: auto.evidenceRoot, now: now() }));
     },
     async giveUp(taskId, why) { withStore(store => giveUpAutoApproval(store, { taskId, why, now: now() })); },
+    async ciRunning(taskId, candidate) { withStore(store => noteCiRunning(store, { taskId, candidate, now: now() })); },
+    async ciPassed(taskId, candidate, ask) {
+      // Reconcile the plane's record, not journal flags; without a pending row there is nothing to lift.
+      if (!withStore(store => releaseCiHoldOf(store, taskId) !== null || releaseCiRunningOf(store, taskId) !== null)) return { ok: true as const };
+      // The plane reads CI itself; a short network failure is asked again a few times, and unreadable is never a pass.
+      let ci: CiObservation | null = null, problem = "";
+      for (let attempt = 0; attempt < 3 && ci === null; attempt++) {
+        try { ci = await auto.observe(candidate); } catch (error) { problem = String((error as Error)?.message ?? error).slice(0, 200); }
+      }
+      if (ci === null) return { ok: false as const, why: `GitHub CI on ${candidate.slice(0, 7)} couldn't be read (${problem})` };
+      const observed = ci;
+      return withStore(store => liftCiHold(store, { taskId, candidate, ci: observed, ask, now: now() }));
+    },
     async checkFailed(taskId, why) { withStore(store => noteAutoCheckFailed(store, { taskId, why, now: now() })); },
     async released(taskId, tag) { withStore(store => noteAutoRelease(store, { taskId, tag, now: now() })); },
     async holdPublish(taskId, why) { withStore(store => holdAutoPublish(store, { taskId, why, now: now() })); },
@@ -748,6 +776,9 @@ function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now:
 
 /** What the plane itself reads for an automatic release approval. */
 export type AutoObservers = {
+  /** The plane's executor policy, never a report field or project setting. Unknown refuses. Production currently
+   * cannot establish this; synthetic observers may supply protected execution to exercise the remaining gates. */
+  reportsProtected?: boolean;
   observe: (sha: string) => Promise<CiObservation>;
   /** GitHub's merge base of `sha` with the branch `base` of the recorded repository. */
   mergeBase: (base: string, sha: string) => Promise<string>;
@@ -774,21 +805,46 @@ export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: st
   // Which workflow each check suite is a run of (GitHub's workflow-run API): a newer run of a workflow supersedes its
   // older runs on this commit (release.ts prChecksVerdict).
   const flows = await must(run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${repo}/actions/runs?head_sha=${sha}&per_page=100`,
-    "--jq", ".workflow_runs[] | {suite: .check_suite_id, workflow: .workflow_id, head: .head_sha}"], { cwd: "/", env: ciEnv() }), "gh api actions/runs");
+    "--jq", ".workflow_runs[] | {suite: .check_suite_id, workflow: .workflow_id, path: .path, head: .head_sha, event: .event, branch: .head_branch, bases: [(.pull_requests // [])[] | .base.ref], prs: [(.pull_requests // [])[] | {number, repo: .base.repo.url}]}"], { cwd: "/", env: ciEnv() }), "gh api actions/runs");
+  // A pull request's base can be edited after its runs: a run counts only if no pull request it belongs to ever had its
+  // base changed (GitHub's timeline), so a run made against another base can't later read as a run into main.
+  const retargeted = new Map<number, boolean>();
+  const everRetargeted = async (pr: number): Promise<boolean> => {
+    const known = retargeted.get(pr);
+    if (known !== undefined) return known;
+    let changed = true;
+    try {
+      const events = await run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${repo}/issues/${pr}/timeline?per_page=100`, "--jq", ".[] | .event"], { cwd: "/", env: ciEnv() });
+      changed = events.code !== 0 || events.stdout.split("\n").some(line => line.trim() === "base_ref_changed");
+    } catch { changed = true; }
+    retargeted.set(pr, changed);
+    return changed;
+  };
   const workflowOf = new Map<number, number>();
+  // Each suite's workflow file: a required check counts only from the workflow that defines it (release.ts).
+  const pathOf = new Map<number, string>();
   for (const line of flows.split("\n").filter(Boolean)) {
     const one = object(JSON.parse(line));
-    if (!Number.isSafeInteger(one["suite"]) || !Number.isSafeInteger(one["workflow"]) || one["head"] !== sha) throw new Error("GitHub answered a workflow run this can't read");
+    if (!Number.isSafeInteger(one["suite"]) || !Number.isSafeInteger(one["workflow"]) || one["head"] !== sha || typeof one["path"] !== "string" || one["path"] === "") throw new Error("GitHub answered a workflow run this can't read");
     const known = workflowOf.get(Number(one["suite"]));
-    if (known !== undefined && known !== Number(one["workflow"])) throw new Error("GitHub named two workflows for one check suite");
+    if (known !== undefined && (known !== Number(one["workflow"]) || pathOf.get(Number(one["suite"])) !== one["path"])) throw new Error("GitHub named two workflows for one check suite");
     workflowOf.set(Number(one["suite"]), Number(one["workflow"]));
+    // Only a run on a pull request into main, or a push to main, binds its workflow file: a pull request into another
+    // branch reads that branch's workflow and join verifier, which the candidate may control (security scan of the
+    // join). Any other run keeps no path, so no required check counts from it.
+    // Each pull request the run belongs to must be this repository's own (a number from another repository names a
+    // different pull request here): any other refuses the run.
+    const prs = (Array.isArray(one["prs"]) ? one["prs"] : []).map(pr => (pr !== null && typeof pr === "object" ? pr as Record<string, unknown> : {}));
+    const ours = prs.length > 0 && prs.every(pr => Number.isSafeInteger(pr["number"]) && pr["repo"] === `https://api.github.com/repos/${repo}`);
+    const untouched = one["event"] !== "pull_request" || (ours && !(await Promise.all(prs.map(pr => everRetargeted(Number(pr["number"]))))).some(Boolean));
+    if (mainTriggered(one) && untouched) pathOf.set(Number(one["suite"]), String(one["path"]));
   }
   const runs = out.split("\n").filter(Boolean).map(line => {
     const one = object(JSON.parse(line));
     if (!Number.isSafeInteger(one["id"]) || typeof one["name"] !== "string" || typeof one["status"] !== "string") throw new Error("GitHub answered a check run this can't read");
     const suite = Number.isSafeInteger(one["suite"]) ? Number(one["suite"]) : null;
     return { id: Number(one["id"]), name: one["name"], status: one["status"], conclusion: textOr(one["conclusion"]), app: textOr(one["app"]),
-      suite, head: textOr(one["head"]), workflow: suite === null ? null : workflowOf.get(suite) ?? null } satisfies CheckRun;
+      suite, head: textOr(one["head"]), workflow: suite === null ? null : workflowOf.get(suite) ?? null, workflowPath: suite === null ? null : pathOf.get(suite) ?? null } satisfies CheckRun;
   });
   if (new Set(runs.map(one => one.id)).size !== runs.length) throw new Error("GitHub answered the same check run twice");
   // Each unsuccessful GitHub Actions attempt: whether GitHub's own job record (a check run's id is its job's) shows it
@@ -977,4 +1033,12 @@ export async function readMainProtection(run: Exec, gh: string, repo: string, br
 export async function readUpToDateRequired(run: Exec, gh: string, repo: string, branch = "main"): Promise<boolean | null> {
   const protection = await readMainProtection(run, gh, repo, branch);
   return protection === null ? null : protection.effective;
+}
+
+/** Whether a workflow run was triggered on main: a push to main, or a pull request whose every base is main. */
+function mainTriggered(run: Record<string, unknown>): boolean {
+  const bases = Array.isArray(run["bases"]) ? run["bases"] : [];
+  if (run["event"] === "push") return run["branch"] === "main";
+  if (run["event"] === "pull_request") return bases.length > 0 && bases.every(base => base === "main");
+  return false;
 }

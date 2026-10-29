@@ -106,7 +106,7 @@ import { homedir, hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import {
-  openStore, openStoreNoMigrate, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, RESULT_SCREENSHOTS, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
+  openStore, openStoreNoMigrate, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
@@ -130,6 +130,10 @@ import { admissionRecorded, admitProject, commandLineActor } from "./project-adm
 import { leadClaim, leadSay, noteLeadWork } from "./lead-voice.js";
 import { createServer as createNetServer } from "node:net";
 import { spawn as spawnChild } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { superviseController } from "./controller-supervisor.js";
+import { buildIdentity, memoryChannel, RoleGenerations, roleMessage, type ParentToRole, type RolePort, type RoleToParent, type UpConsoleConfig, type UpRoleName, type UpRoleStart, type UpWorkerConfig } from "./up-processes.js";
 // Every envelope is checked against its command's schema (logged, never refused), then serialized unchanged.
 import { checkedEnvelopeJson as envelopeJson } from "./contracts/cli.js";
 import { auditCommand } from "./audit-cli.js";
@@ -383,6 +387,8 @@ export type OperateOptions = {
   upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void };
   /** Injected by tests: the classifier that sizes filed tasks (none by default under test). */
   filingSizer?: Sizer;
+  /** Set only by up-role-child.ts: this process is one role of a `toolroll up` (the console or the worker). */
+  upRole?: UpRoleHost;
 };
 
 export type OnboardSeams = Partial<Pick<OnboardIo, "home" | "env" | "cwd" | "interactive" | "confirm" | "findRepo" | "checkConnection" | "pullRequests">>;
@@ -576,6 +582,8 @@ External trackers — build what a tracker nominates, under local approvals
                                         app; they start without a restart.
                                         --repo still adds an exact path;
                                         --no-open skips the browser;
+                                        the app and the builder run as two
+                                        processes (--single-process: one);
                                         --host 0.0.0.0 --allow-host name:port
                                         reaches a phone over a tailnet;
                                         --runner names the worker;
@@ -861,7 +869,7 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "no-carry",
   "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file",
   "clear", "follow", "ready", "all-tasks", "inbound-only", "help", "undo", "anyone", "allow-dispatch", "allow-merge", "merge-delete-branch",
-  "no-open", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
+  "no-open", "single-process", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
   "self-heal", "plan-auto", "chat-approve", "full-access", "repair-auto", "review-retry-auto", "no-local",
   "html", "csv", "alerts-only",
   // project network: what its builds may reach (--open | --allowlist).
@@ -1118,6 +1126,8 @@ async function dispatchOn(
       ...(options.installBin === undefined ? {} : { installBin: options.installBin }),
       ...(options.onboardSeams === undefined ? {} : { onboardSeams: options.onboardSeams }),
       ...(options.upSeams === undefined ? {} : { upSeams: options.upSeams }),
+      ...(options.upRole === undefined ? {} : { upRole: options.upRole }),
+      ...(upNeedsOneProcess(options) ? { upOneProcess: true } : {}),
       ...(activeRemote() === null ? {} : { principal: activeRemote()! }),
     });
     return await enter(run);
@@ -1291,6 +1301,10 @@ type Context = {
   installBin?: string;
   onboardSeams?: OnboardSeams;
   upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void };
+  /** This process is one role of a `toolroll up`, started by it (never from the command line). */
+  upRole?: UpRoleHost;
+  /** In-memory seams a child process can't receive: `up` runs its console and worker in this one process. */
+  upOneProcess?: boolean;
   /** Test seam: this computer's tailnet names (production asks `tailscale status`). */
   tailnetNames?: () => Promise<readonly string[]>;
 };
@@ -6541,6 +6555,10 @@ async function runWatchLoop(args: {
   passes?: ProjectPasses;
   /** The service sends and receives Telegram itself; this loop never touches the bot. */
   serviceBridge?: boolean;
+  /** A restarted worker waits this long for its crashed predecessor's lease to lapse, then takes it over with recovery. */
+  leaseWaitMs?: number;
+  /** What ends that wait early, when not isStopping: a removed project's drain still waits to recover its predecessor. */
+  leaseWaitStopping?: () => boolean;
 }): Promise<WatchLoopResult> {
   const { context, flags, runner, token, repo, progress } = args;
   const { store } = context;
@@ -6557,11 +6575,22 @@ async function runWatchLoop(args: {
 
   // The owner carries lifetime without changing the lease schema. Bounded watches cannot host automatic sweeps.
   const incarnation = `${runFor === null ? "toolroll-service:" : ""}${randomUUID()}`;
-  const lease = acquireWatchLeaseAuthed(
+  let lease = acquireWatchLeaseAuthed(
     store,
     { runner, token, repo, owner: incarnation, ttlMs: WATCH_LEASE_MS },
     new Date(),
   );
+  // Only expiry hands the lease over (store.acquireWatchLease): a predecessor still renewing keeps it, and the takeover
+  // recovers its incarnation in the same transaction, exactly as a fresh `up` after a crash would.
+  const waitUntil = Date.now() + (args.leaseWaitMs ?? 0);
+  let saidWaiting = false;
+  const waitStopping = args.leaseWaitStopping ?? args.isStopping;
+  while (!lease.ok && lease.reason === "watch-busy" && Date.now() < waitUntil && !waitStopping()) {
+    if (!saidWaiting) progress(`watch: ${repo} is still held by the previous worker until ${lease.until ?? "its lease lapses"}; taking it over then`);
+    saidWaiting = true;
+    await new Promise(resolve => setTimeout(resolve, 1_000));
+    lease = acquireWatchLeaseAuthed(store, { runner, token, repo, owner: incarnation, ttlMs: WATCH_LEASE_MS }, new Date());
+  }
   if (!lease.ok) {
     return {
       ok: false,
@@ -7164,8 +7193,9 @@ async function watchCommand(
  *
  * COMPOSITION ONLY: identities mint through the atomic doors (a first
  * approver only while none exists; a runner only while its name is idle),
- * then the extracted console and one watch loop per repository run in this
- * one process, under one supervisor, over one shared store. Nothing here
+ * then the console and the worker (one watch loop per repository) run as two
+ * supervised processes over one shared store (isolated-checks.md, stage 1;
+ * up-processes.ts says what each holds). Nothing here
  * loosens a ceremony: approval, budgets, publication, and every fence work
  * exactly as they do for the long-hand verbs.
  */
@@ -7475,6 +7505,8 @@ async function upCommand(
   context: Context,
 ): Promise<number> {
   const { store, write, json, clock } = context;
+  // A role of an `up` that is already running (up-role-child.ts): no validation, identity or port of its own.
+  if (context.upRole !== undefined) return upRoleCommand(context, context.upRole);
   const demoFence = refuseDemo(context, "up");
   if (demoFence !== null) return demoFence;
 
@@ -7653,280 +7685,122 @@ async function upCommand(
     await new Promise<void>(done => probe.close(() => done()));
   }
 
-  // 7. The console, on the just-released port. The tiny window between the
-  // probe closing and this bind can lose a race; that failure tears down
-  // cleanly below instead of leaving identities half-claimed silently.
+  // 7–8. The console and the worker (docs/plans/isolated-checks.md, stage 1): two processes, each started and
+  // restarted by controller-supervisor, so a long check in the worker never holds a console response. With seams
+  // that can't cross a process (tests, the desktop host) or --single-process, the same two roles run in this one.
   const pool = join(dirname(context.databaseFile), "worktrees");
-  // Mutated only by the registry supervisor below. The console reads this
-  // proved set on each request, so its project rail and unified chat move
-  // with the live builder instead of freezing at process start.
-  const activeRepos = new Set<string>(repos);
-  // Cockpit B1: this start's instance secret, minted once it is listening; the console answers its challenges with it.
-  let instanceSecret: string | null = null;
-  let console_: Awaited<ReturnType<typeof startConsole>>;
-  try {
-    console_ = await startConsole({
-      instanceSecret: () => instanceSecret,
-      context,
-      host: hostFlag,
-      port,
-      ...(allowFlag === undefined ? {} : { allowedHosts: allowFlag.split(",").map(one => one.trim()).filter(one => one !== "") }),
-      ...(publicUrlFlag === undefined ? {} : { publicUrl: publicUrlFlag }),
-      localRunner: runnerName,
-      poolRoot: pool,
-      repos,
-      currentRepos: () => [...activeRepos],
-      admittedRepos: () => [...activeRepos],
-      upConsole: true,
-      registryPath,
-      projectRoots,
-      ...(text(flags, "public-url") === undefined ? {} : { publicUrl: text(flags, "public-url") as string }),
-      ...(text(flags, "editor") === undefined ? {} : { editorLinks: "vscode" as const }),
-    });
-  } catch (error) {
-    retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
-    return fail(write, json, "up", "port-busy", `${describe(error)} — the port was taken while starting; try again`, EXIT.refused);
-  }
-
-  // 8. The project supervisor: one watch loop per proved repository, plus a
-  // tiny registry poll that can add more while this process stays up. The
-  // poll is deliberately plain filesystem I/O (portable across macOS,
-  // Linux, and Windows) and never invokes an agent while nothing changed.
+  const split = !flags.has("single-process") && context.upOneProcess !== true;
+  const build = upBuildIdentity();
+  const containmentFlag = text(flags, "containment") ?? null;
+  const stopGraceMs = Number(text(flags, "stop-grace") ?? 30_000);
   let stopping = false;
   let fatal: string | null = null;
-  let graceTimer: ReturnType<typeof setTimeout> | undefined;
   let runTimer: ReturnType<typeof setTimeout> | undefined;
-  const followControllers: AbortController[] = [];
   let resolveStopped: () => void = () => {};
   const stopped = new Promise<void>(resolveStop => (resolveStopped = resolveStop));
-  const stopGraceMs = Number(text(flags, "stop-grace") ?? 30_000);
-  const hardStop = () => {
-    const terminated = terminateLiveProviders();
-    if (terminated > 0) progress(`Stopped ${terminated} running build(s). Their work is saved, and each resumes when the builder starts again.`);
-  };
-  const stop = () => {
+  // What the worker serves now: relayed to the console (its project rail and chat), and a restarted worker's start.
+  let currentRepos: string[] = [...repos];
+  let consoleRole: UpRoleHandle | null = null;
+  let workerRole: UpRoleHandle | null = null;
+  const stop = (): void => {
     if (stopping) {
-      hardStop();
+      workerRole?.hardStop();
       return;
     }
     stopping = true;
     resolveStopped();
-    for (const controller of followControllers) controller.abort();
-    // The coding owner record is released first, whatever else is still
-    // finishing: launchd kills a service that outlasts its exit window, and a
-    // killed process cannot release it. Its outcome is read again at close.
-    console_.server.closeCoding().catch(() => {});
-    const building = store.liveClaimCount(runnerName, clock());
-    if (building > 0) {
-      progress(`Stopping: ${building} build(s) running. Waiting up to ${Math.round(stopGraceMs / 1000)}s for them to finish; any still running then is saved and resumes when the builder starts again.`);
-    }
-    graceTimer = setTimeout(hardStop, stopGraceMs);
-    graceTimer.unref?.();
+    // The coding owner record is released first, whatever else is still finishing: launchd kills a service that
+    // outlasts its exit window, and a killed process cannot release it. The console keeps serving until the end.
+    consoleRole?.send({ type: "stopping" });
+    workerRole?.stop();
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
-  if (forGiven !== undefined) {
-    runTimer = setTimeout(stop, Number(forGiven));
-    runTimer.unref?.();
+  // A log (a service, an agent, --json or --verbose) says whose each line is; a person at a terminal reads plain lines.
+  const labelled = split && (json || flags.has("verbose") || !(context.upSeams?.terminal ?? process.stdout.isTTY === true));
+  const roleLine = (role: UpRoleName) => (line: string): void => progress(labelled ? `[${role}] ${line}` : line);
+  const dropSignals = (): void => {
+    process.removeListener("SIGINT", stop);
+    process.removeListener("SIGTERM", stop);
+  };
+
+  const consoleConfig: UpConsoleConfig = {
+    host: hostFlag, port, allowedHosts: allowFlag === undefined ? null : allowFlag.split(",").map(one => one.trim()).filter(one => one !== ""),
+    publicUrl: publicUrlFlag ?? null, localRunner: runnerName, poolRoot: pool, repos: [...repos], projectRoots, registryPath, editor: editorGiven !== undefined,
+  };
+  const pendingLinks = new Map<number, (link: string | null) => void>();
+  let linkRequests = 0;
+  consoleRole = startUpRole({
+    role: "console", split, context, build, shutdownMs: 15_000,
+    start: () => ({ type: "start", role: "console", databaseFile: context.databaseFile, containment: containmentFlag, build, config: { ...consoleConfig, repos: [...currentRepos] } }),
+    onMessage: message => {
+      if (message.type === "log") roleLine("console")(message.line);
+      else if (message.type === "sign-in-link") { pendingLinks.get(message.id)?.(message.link); pendingLinks.delete(message.id); }
+    },
+    // A restarted console is told what the worker serves now.
+    onReady: (_, again) => { if (again) { roleLine("console")("started again"); consoleRole?.send({ type: "repos", repos: [...currentRepos] }); } },
+    onEnded: (detail, restarting) => {
+      if (restarting) roleLine("console")(`${detail}; starting it again`);
+      else if (!stopping) { fatal = detail; stop(); }
+    },
+  });
+  const consoleReady = await consoleRole.ready;
+  if (!consoleReady.ok) {
+    dropSignals();
+    retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
+    if (consoleReady.reason === "port-busy") return fail(write, json, "up", "port-busy", `${consoleReady.detail} — the port was taken while starting; try again`, EXIT.refused);
+    return fail(write, json, "up", "failed", `the console could not start (${consoleReady.detail}) — nothing was left running`, EXIT.failed);
   }
+  const url = consoleReady.url;
 
-  const loopFlagsFor = (repo: string): Map<string, string | true> => {
-    const copy = new Map<string, string | true>();
-    // A bounded `up` must not advertise its child watches as an unbounded sweep service either.
-    if (forGiven !== undefined) copy.set("for", forGiven);
-    copy.set("runner", runnerName);
-    copy.set("token", runnerToken);
-    copy.set("repo", repo);
-    copy.set("pool", pool);
-    // The co-hosted console's stated origin rides into each loop's follower:
-    // a phone link must name THIS console, or not exist.
-    const publicUrl = text(flags, "public-url");
-    if (publicUrl !== undefined) copy.set("public-url", publicUrl);
-    return copy;
-  };
-  const prefix = (repo: string): string => (activeRepos.size > 1 ? `[${projectName(repo)}] ` : "");
-  // Containment at start: one plain sentence, once, for a person at a
-  // terminal; the exact status line with --verbose, in a service log (no
-  // terminal), and always when a required policy will refuse spawns.
-  const containmentDetail = flags.has("verbose") || !(context.upSeams?.terminal ?? process.stdout.isTTY === true);
-  let containmentSaid = false;
-  const containmentLines = (effective: EffectiveContainment): string[] => {
-    const notice = containmentNotice(effective);
-    if (notice !== null && !containmentSaid) progress(notice);
-    containmentSaid = true;
-    return containmentDetail || effective.refusal !== null ? [`watch: ${describeContainment(effective)}`] : [];
-  };
-  const loopResults = new Map<string, Promise<{ repo: string; result: WatchLoopResult }>>();
-  // One record of project passes for the whole service: fair scheduling
-  // across its projects (project-concurrency.ts).
-  const projectPasses = new ProjectPasses();
-  // Projects removed while running: each one's watch stops admitting work, finishes what it holds, then lets go.
-  const releasedRepos = new Set<string>();
-
-  const launchRepo = async (repo: string, bind: boolean): Promise<void> => {
-    if (loopResults.has(repo) || stopping) return;
-    if (bind) {
-      const bound = addRunnerReposAuthed(store, { name: runnerName, token: runnerToken, repos: [repo] }, clock());
-      if (!bound.ok) {
-        fatal = `the builder identity changed while adding ${repo} (${bound.reason})`;
-        stop();
-        return;
-      }
-      activeRepos.add(repo);
-      if (!store.listProjects().some(one => one.path === repo)) {
-        store.upsertProject(repo, projectName(repo), clock());
-      }
-    }
-    let markReady: () => void = () => {};
-    const ready = new Promise<void>(resolveReady => (markReady = resolveReady));
-    const loop = runWatchLoop({
-      flags: loopFlagsFor(repo),
-      context,
-      runner: runnerName,
-      token: runnerToken,
-      repo,
-      progress: line => progress(`${prefix(repo)}${line}`),
-      isStopping: () => stopping || releasedRepos.has(repo),
-      onFollowController: controller => followControllers.push(controller),
-      containmentLines,
-      passes: projectPasses,
-      serviceBridge: true,
-      onReady: () => {
-        markReady();
-        if (bind) progress(`${prefix(repo)}builder connected — queued work can start`);
+  if (!stopping) {
+    workerRole = startUpRole({
+      role: "worker", split, context, build,
+      // The worker drains its builds for the stop grace, then stops them; past that it is stopped outright.
+      shutdownMs: Math.max(1, stopGraceMs) + 15_000,
+      start: generation => ({
+        type: "start", role: "worker", databaseFile: context.databaseFile, containment: containmentFlag, build,
+        config: {
+          runner: runnerName, token: runnerToken, repos: generation === 1 ? [...repos] : [...currentRepos], pinnedRepos: [...pinnedRepos], projectRoots, registryPath, pool,
+          forMs: forGiven === undefined ? null : Number(forGiven), publicUrl: publicUrlFlag ?? null, stopGraceMs, verbose: flags.has("verbose"),
+          terminal: context.upSeams?.terminal ?? process.stdout.isTTY === true,
+          // A restart waits out a crashed predecessor's lease (90 s), then recovers it: as a fresh `up` after a crash.
+          leaseWaitMs: split ? WATCH_LEASE_MS + 15_000 : 0,
+        },
+      }),
+      onMessage: message => {
+        if (message.type === "log") roleLine("worker")(message.line);
+        else if (message.type === "repos") {
+          // The console's admitted projects widen only to what the builder is bound to in the store (the worker binds
+          // through the authenticated door before it reports): a worker's word alone admits nothing.
+          const bound = new Set(store.getRunner(runnerName)?.runner.repos ?? []);
+          currentRepos = message.repos.filter(repo => bound.has(repo));
+          consoleRole?.send({ type: "repos", repos: [...currentRepos] });
+        }
       },
-    }).then(
-      result => ({ repo, result }),
-      error => ({ repo, result: { ok: false as const, reason: "loop-failed" as const, detail: describe(error), ticks: 0, built: 0, broke: 0 } }),
-    );
-    loopResults.set(repo, loop);
-    void loop.then(({ repo: endedRepo, result }) => {
-      if (releasedRepos.has(endedRepo) && !stopping) {
-        // A removed project's watch has stopped: only now does the builder let go of it.
-        const unbound = removeRunnerRepoAuthed(store, { name: runnerName, token: runnerToken, repo: endedRepo }, clock());
-        if (!unbound.ok) {
-          fatal = `the builder identity changed while removing ${endedRepo} (${unbound.reason})`;
+      onReady: (_, again) => { if (again) roleLine("worker")("started again: its builds and checks continue"); },
+      onEnded: (detail, restarting) => {
+        // A builder whose credential no longer proves can't come back by restarting: the whole `up` stops, and the
+        // service's next start registers it again, as before the split.
+        if (restarting && authenticate(store, runnerName, runnerToken).ok) {
+          roleLine("worker")(`${detail}; starting it again — its interrupted builds are recovered first`);
+          return;
+        }
+        if (!stopping) {
+          fatal = restarting ? `the builder identity changed (${detail})` : detail;
           stop();
         }
-        loopResults.delete(endedRepo);
-        releasedRepos.delete(endedRepo);
-        progress(`project removed — ${projectName(endedRepo)} is no longer built here`);
-        markReady();
-        return;
-      }
-      // A loop that dies while its siblings live must not leave a partial
-      // cockpit standing silently (finding 5).
-      if (!result.ok && !stopping) {
-        fatal = `${prefix(endedRepo)}${result.detail}`;
-        stop();
-      }
-      markReady(); // acquisition failures must not strand startup readiness
+      },
     });
-    await ready;
-  };
-
-  await Promise.all(repos.map(repo => launchRepo(repo, false)));
-
-  // Telegram: one follower for the whole service, never one per project
-  // loop. Replies and notifications go out from it, over the same transport
-  // in the same cycle (Oct 2: a reply sent by a project loop's own follower
-  // failed "fetch failed" while notifications went out). A token saved
-  // while the service runs connects within seconds; a follower that dies
-  // is started again.
-  const telegramController = new AbortController();
-  followControllers.push(telegramController);
-  const telegramSupervisor = (async (): Promise<void> => {
-    const pause = (ms: number) => new Promise<void>(resolvePause => {
-      const timer = setTimeout(done, ms);
-      function done(): void { clearTimeout(timer); telegramController.signal.removeEventListener("abort", done); resolvePause(); }
-      // An aborted signal never fires again: without this a stop waited the whole pause.
-      if (telegramController.signal.aborted) done();
-      else telegramController.signal.addEventListener("abort", done, { once: true });
-    });
-    while (!stopping && !telegramController.signal.aborted) {
-      const follower = startTelegramFollower({
-        context, publicUrl: text(flags, "public-url"), signal: telegramController.signal, progress, label: "telegram:",
-        died: { prefix: "", then: "starting it again" }, owner: `service-${randomUUID()}`,
-      });
-      if (follower !== null) await follower;
-      // Without a token (or on a fenced network) look again shortly; the fence line is said once.
-      if (follower === null && loadBotToken(process.env, context.telegramTokenFile) !== null) break;
-      await pause(follower === null ? 2_000 : 5_000);
+    const workerReady = await workerRole.ready;
+    if (!workerReady.ok && fatal === null) {
+      fatal = workerReady.detail;
+      stop();
     }
-  })();
+  }
 
-  const dynamicCeiling = resolveCeiling(repos, projectRoots).ceiling;
-  const rejected = new Set<string>();
-  const registrySupervisor = (async (): Promise<void> => {
-    const sleep = (ms: number) => new Promise(resolveSleep => setTimeout(resolveSleep, ms));
-    while (!stopping) {
-      const loaded = await loadProjectRegistry(registryPath);
-      if ("error" in loaded) {
-        fatal = loaded.error;
-        stop();
-        break;
-      }
-      // Removed from the saved list: stop building it and take it out of the console. A pinned start keeps its own.
-      const saved = new Set(loaded.repos.map(one => canonicalProject(one) ?? one));
-      for (const repo of [...activeRepos]) {
-        if (stopping || pinnedRepos.has(repo) || saved.has(repo)) continue;
-        activeRepos.delete(repo);
-        releasedRepos.add(repo);
-        if (!loopResults.has(repo)) releasedRepos.delete(repo);
-      }
-      for (const candidate of loaded.repos) {
-        if (stopping) break;
-        const canonical = canonicalProject(candidate);
-        // Still letting go of an earlier removal: it rejoins on the next pass after its watch has stopped.
-        if (canonical !== null && (activeRepos.has(canonical) || releasedRepos.has(canonical))) continue;
-        const approvedAdditions = context.additionalProjectRepos?.() ?? [];
-        const admittedCeiling = resolveCeiling([...dynamicCeiling.repos, ...approvedAdditions], dynamicCeiling.roots).ceiling;
-        // A project added after this start (`repos add`, the lead, the console) carries its recorded admission; a
-        // registry line alone is not authority. Either way the folder is proved to be that Git checkout again.
-        const allowed = canonical !== null &&
-          ((await authorizedProject(admittedCeiling, canonical)) || admissionRecorded(store, canonical)) &&
-          (await proveRepo(canonical)) === canonical;
-        if (!allowed) {
-          if (!rejected.has(candidate)) {
-            rejected.add(candidate);
-            progress(`project not connected — ${candidate} isn't a Git repository added with \`toolroll repos add\` or the console`);
-          }
-          continue;
-        }
-        rejected.delete(candidate);
-        await launchRepo(canonical, true);
-      }
-      if (!stopping) await sleep(500);
-    }
-  })().catch(error => {
-    fatal = `the project registry stopped (${describe(error)})`;
-    stop();
-  });
-
-  // A runner with no projects still stays visibly alive while the UI waits
-  // for the first addition. Watch loops heartbeat during their passes; this
-  // machine-level pulse also covers the intentionally empty state.
-  // Provider readiness (v47): this machine's non-spending observations,
-  // recorded under its own runner name ONCE at start — so every route
-  // projection can say ready / unavailable / unknown per provider, and
-  // the dispatch gate can halt a leg this machine cannot run. There is no
-  // periodic readiness daemon: startup, an explicit `providers --report`,
-  // and the narrow pre-dispatch observation are the roads. Production
-  // only: a test's injected agent runner is a fake, and its readiness
-  // would be a fiction.
-  const observeReadiness = (): void => {
-    if (context.agentRunner !== undefined) return;
-    void observeProviderReadiness((file, args, options) => run(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }), process.env, PROVIDER_IDS, provider => store.acpAttestationFor(provider, runnerName))
-      .then(observed => {
-        if (!stopping) reportProviderReadinessAuthed(store, { name: runnerName, token: runnerToken, observations: observed }, clock());
-      })
-      .catch(() => {
-        // A probe that cannot run leaves readiness unknown — never a fiction.
-      });
-  };
-  observeReadiness();
-  try { notifyVersionLive(context.store, dirname(context.databaseFile), PACKAGE_VERSION, clock()); } catch { /* A display fact; never blocks the worker. */ }
-  recordRunnerVersion(dirname(context.databaseFile), runnerName, PACKAGE_VERSION, clock());
+  // A runner with no projects still stays visibly alive while the UI waits for the first addition; the worker's
+  // loops also renew it with their leases. Across a worker restart this keeps the name held.
   const runnerHeartbeat = setInterval(() => {
     const beat = heartbeatRunner(store, runnerName, runnerToken, clock());
     if (!beat.ok && !stopping) {
@@ -7938,27 +7812,13 @@ async function upCommand(
 
   // 9. Readiness, then the ONE startup envelope / greeting (finding 11/20).
   const approverPlan2 = approver as UpApprover;
-  const url = console_.url;
   const terminal = !agentRunning && (context.upSeams?.terminal ?? process.stdout.isTTY === true);
   const upHandoff = buildHandoff({
     url,
     login: { account: approverPlan2.passwordFile === null ? approverPlan2.approver : loginAccount(approverPlan2.passwordFile) ?? approverPlan2.approver, file: approverPlan2.passwordFile },
   });
   recordUpConsoleUrl(dirname(context.databaseFile), url, clock());
-  // Cockpit B1: who this console is, for bare `toolroll` to prove before it attaches: a fresh secret in the database
-  // (behind the agent fence), and a discovery-only socket beside it. A socket that can't open only means attaching
-  // isn't offered; the console runs either way.
-  // The socket is taken FIRST: only the console that owns it publishes a record. A second console on the same database
-  // (another port) never replaces the first one's record; it runs, but isn't attached to.
-  let mintedSecret: string | null = null;
-  const instanceSocket = await openInstanceSocket(context.databaseFile,
-    { pid: process.pid, build: packageVersion(), database: context.databaseFile, port: console_.port }, () => mintedSecret);
-  if (instanceSocket.ok) {
-    mintedSecret = await claimInstance(store, context.databaseFile, { pid: process.pid, port: console_.port, build: packageVersion(), socket: instanceSocket.name }, clock());
-    instanceSecret = mintedSecret;
-    if (mintedSecret === null) progress("attach: another console is running on this database — `toolroll` in a repository opens that one");
-  } else progress(`attach: ${instanceSocket.problem} — \`toolroll\` in a repository won't find this console`);
-  if (fatal === null) {
+  if (fatal === null && !stopping) {
     if (json) {
       write(
         envelopeJson({
@@ -7985,7 +7845,13 @@ async function upCommand(
       // one-time sign-in link (single use, ten minutes, this computer only); it is never printed. The password stays
       // saved beside the database, for later and for other devices, and is never printed either.
       const account = approverPlan2.approver;
-      const link = account === null || flags.has("no-open") ? null : console_.server.mintSignInLink(account);
+      // The console mints it (its sign-in secrets stay there); it comes back only to be opened, never printed.
+      const link = account === null || flags.has("no-open") ? null : await new Promise<string | null>(resolveLink => {
+        const id = ++linkRequests;
+        const timer = setTimeout(() => { pendingLinks.delete(id); resolveLink(null); }, 10_000);
+        pendingLinks.set(id, value => { clearTimeout(timer); resolveLink(value); });
+        consoleRole?.send({ type: "sign-in-link", id, account });
+      });
       const home = homedir();
       const file = approverPlan2.passwordFile === null ? null : approverPlan2.passwordFile.startsWith(`${home}/`) ? `~${approverPlan2.passwordFile.slice(home.length)}` : approverPlan2.passwordFile;
       const signInWords = account === null
@@ -8003,31 +7869,24 @@ async function upCommand(
       }
     }
   }
+  // A bounded run (--for) counts from readiness, so a slow start never eats the window it asked for.
+  if (forGiven !== undefined && !stopping) {
+    runTimer = setTimeout(stop, Number(forGiven));
+    runTimer.unref?.();
+  }
 
-  // 10. Supervise to the end.
+  // 10. Supervise to the end: the worker drains first (its builds finish or are saved), the builder retires, and
+  // only then does the console stop serving.
   await stopped;
-  await registrySupervisor;
-  await Promise.all([...loopResults.values()]);
-  // The follower was aborted with the stop. A send or a chat turn it is still
-  // finishing keeps its own durable record; the service does not wait past
-  // this for it.
-  await new Promise<void>(done => {
-    const timer = setTimeout(done, TELEGRAM_STOP_WAIT_MS);
-    const finish = (): void => { clearTimeout(timer); done(); };
-    void telegramSupervisor.then(finish, finish);
-  });
+  if (workerRole !== null) await workerRole.done;
   clearInterval(runnerHeartbeat);
   if (runTimer !== undefined) clearTimeout(runTimer);
-  if (graceTimer !== undefined) clearTimeout(graceTimer);
-  process.removeListener("SIGINT", stop);
-  process.removeListener("SIGTERM", stop);
+  dropSignals();
   retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
-  if (instanceSocket.ok) instanceSocket.close();
-  if (mintedSecret !== null) clearInstance(store, mintedSecret);
-  let closeProblem: Error | null = null;
-  await new Promise<void>(done => console_.server.close(error => { closeProblem = error ?? null; done(); }));
+  consoleRole.stop();
+  const closed = await consoleRole.done;
   // A live terminal that couldn't be proved stopped (or any other close failure) is said, never "stopped".
-  if (closeProblem !== null && fatal === null) fatal = (closeProblem as Error).message;
+  if (closed.problem !== null && fatal === null) fatal = closed.problem;
 
   if (fatal !== null) {
     // The startup envelope (when json) already went out; the exit code is
@@ -12243,4 +12102,579 @@ async function projectSandboxCommand(positional: readonly string[], flags: Map<s
 function gitTooOld(command: string, context: Context): number | null {
   const problem = installedGitFloorProblem();
   return problem === null ? null : fail(context.write, context.json, command, "git-too-old", problem, EXIT.refused);
+}
+
+// ---- `up` as two processes: the console and the worker (isolated-checks.md, stage 1) ----
+
+/** What up-role-child.ts hands runOperate: the role's start, and its channel to the `up` that started it. */
+export type UpRoleHost = { start: UpRoleStart; port: RolePort };
+
+/** This build's identity, as each role reports it: the version and the code of this module. */
+function upBuildIdentity(): string {
+  return buildIdentity(PACKAGE_VERSION, fileURLToPath(import.meta.url));
+}
+
+/** Seams that live in this process's memory (a test's fake runner, a store wrapper, the desktop host's proof key): a
+ * child process can't receive them, so `up` keeps both of its roles in this process rather than drop them. */
+function upNeedsOneProcess(options: OperateOptions): boolean {
+  return options.openDatabase !== undefined || options.desktopIdentity !== undefined || options.additionalProjectRepos !== undefined ||
+    options.agentRunner !== undefined || options.gitRunner !== undefined || options.telegramTransport !== undefined || options.telegramEnv !== undefined ||
+    options.publishExec !== undefined || options.dispatchAdapter !== undefined || options.flowTriggerIo !== undefined || options.flowStepIo !== undefined ||
+    options.flowEveryMs !== undefined || options.platform !== undefined || options.fenceAvailable !== undefined || options.flowFetch !== undefined ||
+    options.integrationIo !== undefined || options.shouldStop !== undefined || options.leadSeams !== undefined || options.waitSleep !== undefined ||
+    options.releaseIo !== undefined || options.installBin !== undefined || options.tempRoots !== undefined || options.filingSizer !== undefined ||
+    options.now !== undefined;
+}
+
+/** The entry a role child runs: the built sibling when installed, the TypeScript source through tsx in a checkout. */
+function upRoleChildCommand(role: UpRoleName): { file: string; argv: string[] } {
+  const source = import.meta.url.endsWith(".ts");
+  const entry = fileURLToPath(new URL(source ? "./up-role-child.ts" : "./up-role-child.js", import.meta.url));
+  // tsx by its resolved address: the child keeps this process's working directory, which may hold no node_modules.
+  // The role's name is the one argument: a process listing tells the two apart, and carries nothing secret.
+  return { file: process.execPath, argv: [...(source ? ["--import", import.meta.resolve("tsx")] : []), entry, role] };
+}
+
+type UpRoleReady = { ok: true; url: string; port: number | null; pid: number } | { ok: false; reason: "port-busy" | "start"; detail: string };
+type UpRoleHandle = {
+  /** The first readiness, or why the role ended before it. */
+  ready: Promise<UpRoleReady>;
+  send: (message: ParentToRole) => void;
+  /** Drain and end; nothing restarts it after. */
+  stop: () => void;
+  /** The second signal: stop its builds now. */
+  hardStop: () => void;
+  /** The role ended for good: its own close problem, if it reported one. */
+  done: Promise<{ problem: string | null }>;
+  /** The live process's id (this process's when in-process). */
+  pid: () => number | null;
+};
+
+/**
+ * One role of `up`: a supervised child process (split), or the same role function in this process. Either way its
+ * messages pass the same checks (up-processes.ts), and its build must be this one's.
+ * - onReady fires on every readiness; `again` after a restart.
+ * - onEnded: the role ended while not stopping. `restarting` (split only) when the supervisor will start it again.
+ */
+function startUpRole(args: {
+  role: UpRoleName;
+  split: boolean;
+  context: Context;
+  build: string;
+  shutdownMs: number;
+  start: (generation: number) => UpRoleStart;
+  onMessage: (message: RoleToParent) => void;
+  onReady: (message: Extract<RoleToParent, { type: "ready" }>, again: boolean) => void;
+  onEnded: (detail: string, restarting: boolean) => void;
+}): UpRoleHandle {
+  const { role } = args;
+  let resolveReady: (value: UpRoleReady) => void = () => {};
+  const ready = new Promise<UpRoleReady>(resolve => (resolveReady = resolve));
+  // Readiness per generation (Codex review round 1, finding 5): a replacement's refusal is never hidden by an earlier
+  // generation having been ready.
+  const generations = new RoleGenerations();
+  let stopping = false;
+  // Reported once: the role ended for good (onEnded with restarting false), whichever path saw it first.
+  let endedForGood = false;
+  const endForGood = (detail: string): void => {
+    if (stopping || endedForGood) return;
+    endedForGood = true;
+    args.onEnded(detail, false);
+  };
+  let failed: { reason: "port-busy" | "start"; detail: string } | null = null;
+  let fatal: string | null = null;
+  let closedProblem: string | null = null;
+  let livePid: number | null = null;
+  // Shared by both transports: every message is checked against this role before anything acts on it.
+  const receive = (raw: unknown, abort: () => void): void => {
+    const message = roleMessage(raw, role);
+    if (message === null) return;
+    if (message.type === "ready") {
+      if (message.build !== args.build) {
+        // Never a console and a worker from different builds: stop rather than run a mixed pair.
+        fatal = `the ${role} is a different build (${message.build}) from this one (${args.build}) — restart Toolroll`;
+        failed = { reason: "start", detail: fatal };
+        generations.refused(fatal);
+        abort();
+        return;
+      }
+      livePid = message.pid;
+      const again = !generations.ready();
+      if (!again) resolveReady({ ok: true, url: message.url ?? "", port: message.port, pid: message.pid });
+      args.onReady(message, again);
+      return;
+    }
+    if (message.type === "failed") { failed = { reason: message.reason, detail: message.detail }; generations.refused(message.detail); return; }
+    if (message.type === "fatal") { fatal = message.detail; return; }
+    if (message.type === "closed") { closedProblem = message.problem; return; }
+    args.onMessage(message);
+  };
+
+  if (!args.split) {
+    const channel = memoryChannel(role);
+    channel.parent.onMessage(message => receive(message, () => channel.parent.stop(false)));
+    const running = upRoleCommand(args.context, { start: args.start(1), port: channel.port }).catch(error => {
+      fatal = describe(error);
+      return EXIT.failed as number;
+    });
+    const done = running.then(code => {
+      livePid = null;
+      if (!generations.wasReady()) resolveReady({ ok: false, ...(failed ?? { reason: "start" as const, detail: fatal ?? `the ${role} stopped while starting (exit ${code})` }) });
+      else endForGood(fatal ?? `the ${role} stopped (exit ${code})`);
+      return { problem: closedProblem };
+    });
+    return {
+      ready, done,
+      send: message => channel.parent.send(message),
+      stop: () => { stopping = true; channel.parent.stop(false); },
+      hardStop: () => { channel.parent.stop(true); },
+      pid: () => livePid,
+    };
+  }
+
+  const controller = new AbortController();
+  let child: ChildProcess | null = null;
+  const command = upRoleChildCommand(role);
+  const supervised = superviseController({
+    file: command.file, argv: command.argv, signal: controller.signal, ipc: true, shutdownMs: args.shutdownMs,
+    // Each role's own output carries its name; a JSON log stays one JSON object a line.
+    label: envValue(process.env, "LOG_FORMAT") === "json" ? "" : `[${role}]`,
+    onSpawn: (owned, generation) => {
+      child = owned;
+      fatal = null;
+      failed = null;
+      generations.spawned();
+      owned.on("message", raw => receive(raw, () => controller.abort()));
+      owned.on("error", () => {});
+      // The start, including the runner token for the worker, goes over the private channel only.
+      owned.send(args.start(generation), error => { if (error !== null && error !== undefined) owned.kill("SIGTERM"); });
+    },
+    onState: state => {
+      if (state.phase !== "backoff") return;
+      child = null;
+      livePid = null;
+      const exit = state.exit?.signal ?? state.exit?.code ?? "unknown";
+      if (stopping && generations.wasReady()) return;
+      const verdict = generations.ended();
+      if (verdict === "fail-start") {
+        // A role that never became ready is not retried: the start fails as one, as before the split.
+        controller.abort();
+        resolveReady({ ok: false, ...(failed ?? { reason: "start" as const, detail: fatal ?? `the ${role} stopped while starting (exit ${exit})` }) });
+        return;
+      }
+      if (verdict === "end") {
+        // A replacement that refused its start (another build or database), or kept ending before it was ready: a
+        // restart can't fix that, so the whole `up` stops instead of looping with the other role still running.
+        controller.abort();
+        endForGood(generations.refusedWith() ?? fatal ?? `the ${role} kept stopping before it was ready (exit ${exit})`);
+        return;
+      }
+      // A build mismatch already aborted: that is the end, not a restart.
+      if (controller.signal.aborted) { endForGood(fatal ?? `the ${role} stopped (exit ${exit})`); return; }
+      args.onEnded(`${fatal === null ? "" : `${fatal} — `}the ${role} stopped unexpectedly (exit ${exit})`, true);
+    },
+  }).catch(error => { if (!generations.wasReady()) resolveReady({ ok: false, reason: "start", detail: describe(error) }); });
+  const done = supervised.then(() => {
+    if (!generations.wasReady()) resolveReady({ ok: false, ...(failed ?? { reason: "start" as const, detail: fatal ?? `the ${role} did not start` }) });
+    // The supervisor ended without `up` stopping it (an abort on a refusal emits no backoff): `up` hears it either way.
+    else endForGood(generations.refusedWith() ?? fatal ?? `the ${role} stopped`);
+    return { problem: closedProblem };
+  });
+  return {
+    ready, done,
+    send: message => {
+      const owned = child as ChildProcess | null;
+      if (owned !== null && owned.connected) { try { owned.send(message, () => {}); } catch { /* it is ending; the supervisor sees it */ } }
+    },
+    // The supervisor's stop is SIGTERM, which a role takes as "drain"; past shutdownMs its whole tree is stopped.
+    stop: () => { stopping = true; controller.abort(); },
+    hardStop: () => {
+      const owned = child as ChildProcess | null;
+      if (owned !== null && owned.connected) { try { owned.send({ type: "hard-stop" } satisfies ParentToRole, () => {}); } catch { /* ending */ } }
+    },
+    pid: () => livePid,
+  };
+}
+
+/** A role child's whole run (up-role-child.ts): the ordinary command prelude (containment, secrets, limits), then the
+ * role itself. Only a process started by `up` gets here; no command line selects a role. */
+export async function runUpRole(start: UpRoleStart, port: RolePort): Promise<number> {
+  return runOperate("up", ["--db", start.databaseFile, ...(start.containment === null ? [] : ["--containment", start.containment])],
+    line => port.send({ type: "log", line }), { upRole: { start, port } });
+}
+
+async function upRoleCommand(context: Context, host: UpRoleHost): Promise<number> {
+  const { start, port } = host;
+  // A role runs exactly this build, on exactly this database: anything else ends it before it touches either.
+  if (start.build !== upBuildIdentity()) {
+    port.send({ type: "failed", reason: "start", detail: `this ${start.role} is a different build (${upBuildIdentity()}) from the \`up\` that started it (${start.build})` });
+    return EXIT.refused;
+  }
+  if (resolve(start.databaseFile) !== resolve(context.databaseFile)) {
+    port.send({ type: "failed", reason: "start", detail: `the ${start.role} opened a different database` });
+    return EXIT.refused;
+  }
+  return start.role === "console" ? runUpConsoleRole(context, start.config, port, start.build) : runUpWorkerRole(context, start.config, port, start.build);
+}
+
+/** The console role: HTTP only — serving, reading, and the person's ceremonies. It never holds the runner token. */
+async function runUpConsoleRole(context: Context, config: UpConsoleConfig, port: RolePort, build: string): Promise<number> {
+  const { store, clock } = context;
+  const progress = (line: string): void => port.send({ type: "log", line });
+  // Mutated only by the worker's word (relayed by `up`): the console's project rail and unified chat follow the live
+  // builder instead of freezing at process start.
+  const activeRepos = new Set<string>(config.repos);
+  // Cockpit B1: this start's instance secret, minted once it is listening; the console answers its challenges with it.
+  let instanceSecret: string | null = null;
+  let console_: Awaited<ReturnType<typeof startConsole>>;
+  try {
+    console_ = await startConsole({
+      instanceSecret: () => instanceSecret,
+      context,
+      host: config.host,
+      port: config.port,
+      ...(config.allowedHosts === null ? {} : { allowedHosts: config.allowedHosts }),
+      ...(config.publicUrl === null ? {} : { publicUrl: config.publicUrl }),
+      localRunner: config.localRunner,
+      poolRoot: config.poolRoot,
+      repos: config.repos,
+      currentRepos: () => [...activeRepos],
+      admittedRepos: () => [...activeRepos],
+      upConsole: true,
+      registryPath: config.registryPath,
+      projectRoots: config.projectRoots,
+      ...(config.editor ? { editorLinks: "vscode" as const } : {}),
+    });
+  } catch (error) {
+    port.send({ type: "failed", reason: "port-busy", detail: describe(error) });
+    return EXIT.refused;
+  }
+  let codingClosed = false;
+  const closeCoding = (): void => {
+    if (codingClosed) return;
+    codingClosed = true;
+    console_.server.closeCoding().catch(() => {});
+  };
+  let resolveStopped: () => void = () => {};
+  const stopped = new Promise<void>(resolveStop => (resolveStopped = resolveStop));
+  port.onStop(() => resolveStopped());
+  port.onMessage(message => {
+    if (message.type === "repos") {
+      activeRepos.clear();
+      for (const repo of message.repos) activeRepos.add(repo);
+    } else if (message.type === "stopping") closeCoding();
+    else if (message.type === "sign-in-link") {
+      let link: string | null = null;
+      try { link = console_.server.mintSignInLink(message.account); } catch { link = null; }
+      port.send({ type: "sign-in-link", id: message.id, link });
+    }
+  });
+
+  // Cockpit B1: who this console is, for bare `toolroll` to prove before it attaches: a fresh secret in the database
+  // (behind the agent fence), and a discovery-only socket beside it. A socket that can't open only means attaching
+  // isn't offered; the console runs either way. The socket is taken FIRST: only the console that owns it publishes a
+  // record. A second console on the same database (another port) never replaces the first one's record.
+  let mintedSecret: string | null = null;
+  const instanceSocket = await openInstanceSocket(context.databaseFile,
+    { pid: process.pid, build: packageVersion(), database: context.databaseFile, port: console_.port }, () => mintedSecret);
+  if (instanceSocket.ok) {
+    mintedSecret = await claimInstance(store, context.databaseFile, { pid: process.pid, port: console_.port, build: packageVersion(), socket: instanceSocket.name }, clock());
+    instanceSecret = mintedSecret;
+    if (mintedSecret === null) progress("attach: another console is running on this database — `toolroll` in a repository opens that one");
+  } else progress(`attach: ${instanceSocket.problem} — \`toolroll\` in a repository won't find this console`);
+
+  port.send({ type: "ready", role: "console", build, pid: process.pid, url: console_.url, port: console_.port });
+  await stopped;
+  closeCoding();
+  if (instanceSocket.ok) instanceSocket.close();
+  if (mintedSecret !== null) clearInstance(store, mintedSecret);
+  let closeProblem: string | null = null;
+  await new Promise<void>(done => console_.server.close(error => { closeProblem = error === undefined || error === null ? null : (error as Error).message; done(); }));
+  port.send({ type: "closed", problem: closeProblem });
+  return closeProblem === null ? EXIT.ok : EXIT.failed;
+}
+
+/** The worker role: one watch loop per proved repository (builds, checks, batch checks, follow-ups, reconcilers, the
+ * storage sweep and checkout sizing), the project registry, and the service's one Telegram follower. It opens no
+ * port and mints no console secret. */
+async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: RolePort, build: string): Promise<number> {
+  const { store, clock } = context;
+  const progress = (line: string): void => port.send({ type: "log", line });
+  const runnerName = config.runner;
+  const runnerToken = config.token;
+  const pool = config.pool;
+  const registryPath = config.registryPath;
+  const pinnedRepos = new Set(config.pinnedRepos);
+  const gitRun = context.gitRunner ?? ((file: string, args: readonly string[], opts?: { cwd?: string }) => run(file, [...args], { ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }), timeoutMs: 10_000 }));
+  const proveRepo = async (input: string): Promise<string | null> => {
+    const top = await gitRun("git", ["rev-parse", "--show-toplevel"], { cwd: resolve(input) });
+    if (top.code !== 0) return null;
+    try {
+      return realpathSync(top.stdout.trim());
+    } catch {
+      return null;
+    }
+  };
+  // The proved set this worker builds; `up` relays each change to the console.
+  const activeRepos = new Set<string>(config.repos);
+  const reportRepos = (): void => port.send({ type: "repos", repos: [...activeRepos] });
+
+  // The historical signal shell: the first stop ends admission and starts the grace clock; the second — or the
+  // clock — stops every live provider group (M6.12).
+  let stopping = false;
+  let fatal: string | null = null;
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
+  const followControllers: AbortController[] = [];
+  let resolveStopped: () => void = () => {};
+  const stopped = new Promise<void>(resolveStop => (resolveStopped = resolveStop));
+  const hardStop = (): void => {
+    const terminated = terminateLiveProviders();
+    if (terminated > 0) progress(`Stopped ${terminated} running build(s). Their work is saved, and each resumes when the builder starts again.`);
+  };
+  const stop = (): void => {
+    if (stopping) {
+      hardStop();
+      return;
+    }
+    stopping = true;
+    resolveStopped();
+    for (const controller of followControllers) controller.abort();
+    const building = store.liveClaimCount(runnerName, clock());
+    if (building > 0) {
+      progress(`Stopping: ${building} build(s) running. Waiting up to ${Math.round(config.stopGraceMs / 1000)}s for them to finish; any still running then is saved and resumes when the builder starts again.`);
+    }
+    graceTimer = setTimeout(hardStop, config.stopGraceMs);
+    graceTimer.unref?.();
+  };
+  port.onStop(hard => {
+    if (!stopping) stop();
+    if (hard) hardStop();
+  });
+
+  const loopFlagsFor = (repo: string): Map<string, string | true> => {
+    const copy = new Map<string, string | true>();
+    // A bounded `up` must not advertise its child watches as an unbounded sweep service either.
+    if (config.forMs !== null) copy.set("for", String(config.forMs));
+    copy.set("runner", runnerName);
+    copy.set("token", runnerToken);
+    copy.set("repo", repo);
+    copy.set("pool", pool);
+    // The co-hosted console's stated origin rides into each loop's follower: a phone link must name THIS console, or not exist.
+    if (config.publicUrl !== null) copy.set("public-url", config.publicUrl);
+    return copy;
+  };
+  const prefix = (repo: string): string => (activeRepos.size > 1 ? `[${projectName(repo)}] ` : "");
+  // Containment at start: one plain sentence, once, for a person at a terminal; the exact status line with --verbose,
+  // in a service log (no terminal), and always when a required policy will refuse spawns.
+  const containmentDetail = config.verbose || !config.terminal;
+  let containmentSaid = false;
+  const containmentLines = (effective: EffectiveContainment): string[] => {
+    const notice = containmentNotice(effective);
+    if (notice !== null && !containmentSaid) progress(notice);
+    containmentSaid = true;
+    return containmentDetail || effective.refusal !== null ? [`watch: ${describeContainment(effective)}`] : [];
+  };
+  const loopResults = new Map<string, Promise<{ repo: string; result: WatchLoopResult }>>();
+  // One record of project passes for the whole service: fair scheduling across its projects (project-concurrency.ts).
+  const projectPasses = new ProjectPasses();
+  // Projects removed while running: each one's watch stops admitting work, finishes what it holds, then lets go.
+  const releasedRepos = new Set<string>();
+
+  const launchRepo = async (repo: string, bind: boolean, drain = false): Promise<void> => {
+    if (loopResults.has(repo) || stopping) return;
+    // A predecessor's watch on a project this start doesn't name (it was being removed): take it over, recovering what
+    // the predecessor held, and let it go (round 1, finding 2).
+    if (drain) releasedRepos.add(repo);
+    if (bind) {
+      const bound = addRunnerReposAuthed(store, { name: runnerName, token: runnerToken, repos: [repo] }, clock());
+      if (!bound.ok) {
+        fatal = `the builder identity changed while adding ${repo} (${bound.reason})`;
+        stop();
+        return;
+      }
+      activeRepos.add(repo);
+      reportRepos();
+      if (!store.listProjects().some(one => one.path === repo)) {
+        store.upsertProject(repo, projectName(repo), clock());
+      }
+    }
+    let markReady: () => void = () => {};
+    const ready = new Promise<void>(resolveReady => (markReady = resolveReady));
+    const loop = runWatchLoop({
+      flags: loopFlagsFor(repo),
+      context,
+      runner: runnerName,
+      token: runnerToken,
+      repo,
+      progress: line => progress(`${prefix(repo)}${line}`),
+      isStopping: () => stopping || releasedRepos.has(repo),
+      onFollowController: controller => followControllers.push(controller),
+      containmentLines,
+      passes: projectPasses,
+      serviceBridge: true,
+      leaseWaitMs: config.leaseWaitMs,
+      ...(drain ? { leaseWaitStopping: () => stopping } : {}),
+      onReady: () => {
+        markReady();
+        if (bind) progress(`${prefix(repo)}builder connected — queued work can start`);
+      },
+    }).then(
+      result => ({ repo, result }),
+      error => ({ repo, result: { ok: false as const, reason: "loop-failed" as const, detail: describe(error), ticks: 0, built: 0, broke: 0 } }),
+    );
+    loopResults.set(repo, loop);
+    void loop.then(({ repo: endedRepo, result }) => {
+      if (releasedRepos.has(endedRepo) && !stopping && !result.ok) {
+        // A removed project's watch that never held its lease (or lost it) has recovered nothing: keep the project
+        // bound so the next worker recovers it, and stop rather than strand its work (round 1, finding 2).
+        fatal = `${prefix(endedRepo)}${result.detail}`;
+        stop();
+        markReady();
+        return;
+      }
+      if (releasedRepos.has(endedRepo) && !stopping) {
+        // A removed project's watch has stopped: only now does the builder let go of it.
+        const unbound = removeRunnerRepoAuthed(store, { name: runnerName, token: runnerToken, repo: endedRepo }, clock());
+        if (!unbound.ok) {
+          fatal = `the builder identity changed while removing ${endedRepo} (${unbound.reason})`;
+          stop();
+        }
+        loopResults.delete(endedRepo);
+        releasedRepos.delete(endedRepo);
+        progress(`project removed — ${projectName(endedRepo)} is no longer built here`);
+        markReady();
+        return;
+      }
+      // A loop that dies while its siblings live must not leave a partial cockpit standing silently (finding 5).
+      if (!result.ok && !stopping) {
+        fatal = `${prefix(endedRepo)}${result.detail}`;
+        stop();
+      }
+      markReady(); // acquisition failures must not strand startup readiness
+    });
+    await ready;
+  };
+
+  // Before any new work: every watch a predecessor left needing recovery on a project this start doesn't name — one
+  // being removed when it died — is taken over (its incarnation recovered in that step) and let go. Only projects the
+  // store still binds to this runner; the start's own projects recover in their own loops below (round 1, finding 2).
+  const named = new Set(config.repos);
+  const boundNow = new Set(store.getRunner(runnerName)?.runner.repos ?? []);
+  const draining = [...new Set(predecessorWatches(store, runnerName, clock()).map(one => one.repo))].filter(repo => !named.has(repo) && boundNow.has(repo));
+  for (const repo of draining) progress(`${projectName(repo)} was being removed when the previous worker stopped: recovering its work first`);
+  await Promise.all(draining.map(repo => launchRepo(repo, false, true)));
+  await Promise.all(config.repos.map(repo => launchRepo(repo, false)));
+
+  // Telegram: one follower for the whole service, never one per project loop. Replies and notifications go out from
+  // it, over the same transport in the same cycle. A token saved while the service runs connects within seconds; a
+  // follower that dies is started again.
+  const telegramController = new AbortController();
+  followControllers.push(telegramController);
+  if (stopping) telegramController.abort();
+  const telegramSupervisor = (async (): Promise<void> => {
+    const pause = (ms: number) => new Promise<void>(resolvePause => {
+      const timer = setTimeout(done, ms);
+      function done(): void { clearTimeout(timer); telegramController.signal.removeEventListener("abort", done); resolvePause(); }
+      // An aborted signal never fires again: without this a stop waited the whole pause.
+      if (telegramController.signal.aborted) done();
+      else telegramController.signal.addEventListener("abort", done, { once: true });
+    });
+    while (!stopping && !telegramController.signal.aborted) {
+      const follower = startTelegramFollower({
+        context, publicUrl: config.publicUrl ?? undefined, signal: telegramController.signal, progress, label: "telegram:",
+        died: { prefix: "", then: "starting it again" }, owner: `service-${randomUUID()}`,
+      });
+      if (follower !== null) await follower;
+      // Without a token (or on a fenced network) look again shortly; the fence line is said once.
+      if (follower === null && loadBotToken(process.env, context.telegramTokenFile) !== null) break;
+      await pause(follower === null ? 2_000 : 5_000);
+    }
+  })();
+
+  const dynamicCeiling = resolveCeiling(config.repos, config.projectRoots).ceiling;
+  const rejected = new Set<string>();
+  const registrySupervisor = (async (): Promise<void> => {
+    const sleep = (ms: number) => new Promise(resolveSleep => setTimeout(resolveSleep, ms));
+    while (!stopping) {
+      const loaded = await loadProjectRegistry(registryPath);
+      if ("error" in loaded) {
+        fatal = loaded.error;
+        stop();
+        break;
+      }
+      // Removed from the saved list: stop building it and take it out of the console. A pinned start keeps its own.
+      const saved = new Set(loaded.repos.map(one => canonicalProject(one) ?? one));
+      let removed = false;
+      for (const repo of [...activeRepos]) {
+        if (stopping || pinnedRepos.has(repo) || saved.has(repo)) continue;
+        activeRepos.delete(repo);
+        removed = true;
+        releasedRepos.add(repo);
+        if (!loopResults.has(repo)) releasedRepos.delete(repo);
+      }
+      if (removed) reportRepos();
+      for (const candidate of loaded.repos) {
+        if (stopping) break;
+        const canonical = canonicalProject(candidate);
+        // Still letting go of an earlier removal: it rejoins on the next pass after its watch has stopped.
+        if (canonical !== null && (activeRepos.has(canonical) || releasedRepos.has(canonical))) continue;
+        const approvedAdditions = context.additionalProjectRepos?.() ?? [];
+        const admittedCeiling = resolveCeiling([...dynamicCeiling.repos, ...approvedAdditions], dynamicCeiling.roots).ceiling;
+        // A project added after this start (`repos add`, the lead, the console) carries its recorded admission; a
+        // registry line alone is not authority. Either way the folder is proved to be that Git checkout again.
+        const allowed = canonical !== null &&
+          ((await authorizedProject(admittedCeiling, canonical)) || admissionRecorded(store, canonical)) &&
+          (await proveRepo(canonical)) === canonical;
+        if (!allowed) {
+          if (!rejected.has(candidate)) {
+            rejected.add(candidate);
+            progress(`project not connected — ${candidate} isn't a Git repository added with \`toolroll repos add\` or the console`);
+          }
+          continue;
+        }
+        rejected.delete(candidate);
+        await launchRepo(canonical, true);
+      }
+      if (!stopping) await sleep(500);
+    }
+  })().catch(error => {
+    fatal = `the project registry stopped (${describe(error)})`;
+    stop();
+  });
+
+  // Provider readiness (v47): this machine's non-spending observations, recorded under its own runner name ONCE at
+  // start — so every route projection can say ready / unavailable / unknown per provider, and the dispatch gate can
+  // halt a leg this machine cannot run. Production only: a test's injected agent runner is a fake, and its readiness
+  // would be a fiction.
+  if (context.agentRunner === undefined) {
+    void observeProviderReadiness((file, args, options) => run(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }), process.env, PROVIDER_IDS, provider => store.acpAttestationFor(provider, runnerName))
+      .then(observed => {
+        if (!stopping) reportProviderReadinessAuthed(store, { name: runnerName, token: runnerToken, observations: observed }, clock());
+      })
+      .catch(() => {
+        // A probe that cannot run leaves readiness unknown — never a fiction.
+      });
+  }
+  try { notifyVersionLive(context.store, dirname(context.databaseFile), PACKAGE_VERSION, clock()); } catch { /* A display fact; never blocks the worker. */ }
+  recordRunnerVersion(dirname(context.databaseFile), runnerName, PACKAGE_VERSION, clock());
+
+  // Ready once every project's loop holds its lease; a loop that failed to start ends this worker instead.
+  if (fatal === null && !stopping) port.send({ type: "ready", role: "worker", build, pid: process.pid, url: null, port: null });
+
+  await stopped;
+  await registrySupervisor;
+  await Promise.all([...loopResults.values()]);
+  // The follower was aborted with the stop. A send or a chat turn it is still finishing keeps its own durable record;
+  // the service does not wait past this for it.
+  await new Promise<void>(done => {
+    const timer = setTimeout(done, TELEGRAM_STOP_WAIT_MS);
+    const finish = (): void => { clearTimeout(timer); done(); };
+    void telegramSupervisor.then(finish, finish);
+  });
+  if (graceTimer !== undefined) clearTimeout(graceTimer);
+  if (fatal !== null) {
+    port.send({ type: "fatal", detail: fatal });
+    return EXIT.failed;
+  }
+  return EXIT.ok;
 }

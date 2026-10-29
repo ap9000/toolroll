@@ -2,6 +2,60 @@
 
 ## 0.9.77 — 2026-10-29
 
+- **CI finishes in about a third of the time.** The unit suite runs in four
+  shards per Node version instead of one 14–21 minute job. The required
+  checks keep their names ("node 22 · ubuntu-latest", "node 24 ·
+  ubuntu-latest") and pass only when every shard passed on the tested commit
+  and the shards together ran every test file once, so main's branch
+  protection needs no change. A flaky shard reruns in minutes, not twenty.
+- **The release check's real-model journeys start sooner.** They run in the
+  browser lanes as soon as the scripted journeys end, instead of also waiting
+  for the unit suite; the check's load budget is unchanged.
+- **An automatic release checks while CI runs.** With "Approve automatically
+  when checks pass" on, the release files its task and runs its check beside
+  CI instead of after it. Toolroll approves it only once every pull request
+  check passed on the commit.
+- **A release asks for your approval while CI runs.** `toolroll release` files
+  the release task and asks you right away instead of waiting for GitHub's
+  checks; after you approve, the release check runs beside CI. The approval
+  says "GitHub's checks are still running; nothing deploys until they pass."
+  Nothing is deployed, merged, tagged or published until every required check
+  passed on the exact commit, read again right before the deploy; if one
+  fails, the release stops before the deploy. A check that already failed
+  still stops the release before anyone is asked.
+- **The console stays responsive while builds and checks run.** `toolroll up`
+  now runs two processes: the console (pages, sign-in and approvals) and the
+  worker (builds, checks, follow-ups and housekeeping). On a copy of a real
+  database, the slowest console answer during a heavy check fell from about
+  5–6 seconds to under 0.3 seconds. A worker that crashes is started again
+  and recovers its interrupted work as a restarted `up` does; a stop still
+  lets running builds finish first. A running check's progress is saved at
+  most once a second, and its final result at once. `--single-process` keeps
+  the old one-process layout.
+- **Console pages open faster and stay quick while work runs.** The sidebar,
+  the Tasks count and the crew list are read once per database change for each
+  person instead of up to four times per page, and before a page is drawn they
+  are read on a background thread so the console keeps answering meanwhile.
+  The chat landing's lists are kept the same way, and the task page reuses its
+  "behind main" line for 15 seconds instead of asking Git twice per view. On a
+  copy of a real database: /board 348 → 26 ms, /agents 320 → 4 ms, /chat 905 →
+  19 ms, a task page 1.5 s → 0.2 s; with the database changing 40 times a
+  second, pages take 0.27–0.47 s and the console answers other requests in
+  about 1 ms (before: 0.35 s typical, up to 1.4 s). A page that re-reads after
+  a live update gets "unchanged" when nothing it shows changed.
+- **Fixes from the first review of the above.** CI's required checks now
+  judge the shards with the verifier from the base branch, run none of the
+  change's code, and fail when a shard executed no tests, its counts don't
+  add up, or it skips tests the base always ran; a required check counts only
+  from the CI workflow, never a same-named job elsewhere. A release filed
+  while CI runs can't be approved by anyone until Toolroll itself saw CI pass,
+  and you're asked only then. A worker that crashes while a removed project is
+  still finishing recovers that project's work before anything new starts. A
+  deploy waits until the console and the worker have both exited. A worker or
+  console that refuses to start again stops `toolroll up` instead of
+  restarting forever. A check's final progress is kept until it's saved.
+
+
 - **Sandboxed commands no longer hang on macOS 26.5.** The fence denies most
   macOS system services and, by default, asked macOS to report each denial; on
   macOS 26.5.2 about one denied lookup in 70 never returned while that report

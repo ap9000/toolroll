@@ -451,6 +451,24 @@ test('swap verifies the backups before the stop, proves the stop and custody bef
   } finally { d.close(); }
 });
 
+test('codex round 1 #3: the swap proves up\'s console and worker exited, and hands their pids to the stale-owner release', async () => {
+  const d = await deployment();
+  try {
+    const consolePid = fakePid(8), worker = fakePid(9), restarted = fakePid(10);
+    (d.services.old as Record<string, unknown>)['roles'] = [{ role: 'console', pid: consolePid }, { role: 'worker', pid: worker }];
+    await d.rehearsed();
+    // The worker restarted after preparation: the stop covers the role pids of both records.
+    (d.services.old as Record<string, unknown>)['roles'] = [{ role: 'console', pid: consolePid }, { role: 'worker', pid: restarted }];
+    let released: number[] = [];
+    d.hooks.stopped = pids => { released = pids; };
+    await d.phases.swap();
+    const all = [fakePid(1), fakePid(2), consolePid, worker, restarted];
+    expect(d.log).toContain(`proved stopped ${all.join(' ')}`);
+    expect(released).toEqual(all);
+    expect(d.journals.stopping.stoppingService.roles).toEqual([{ role: 'console', pid: consolePid }, { role: 'worker', pid: restarted }]);
+  } finally { d.close(); }
+});
+
 test('a coding catalog that first appears once the candidate runs is backed up after it starts, and journaled', async () => {
   const d = await deployment({ codingCatalog: false });
   try {

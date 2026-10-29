@@ -37,6 +37,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, re
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { personProof } from "./person-proof.js";
+import { RELEASE_CI_RUNNING_WORDS as CI_RUNNING_WORDS } from "./release-ci-hold.js";
 
 /** The pull-request checks a release waits for, by exact job name (.github/workflows/ci.yml). Every one must have
  * concluded `success` on the gated commit; src/ci-workflow.test.ts holds the workflow to this list. */
@@ -50,6 +51,9 @@ export const REQUIRED_PR_CHECKS = [
   "git 2.41 · debian trixie",
   "git 2.47 · debian trixie",
 ] as const;
+/** The workflow file every REQUIRED_PR_CHECKS job belongs to: a job of that name from any other workflow (a lookalike
+ * added beside it) never stands for it (Codex review round 1, inherited CI limitation). */
+export const REQUIRED_PR_CHECKS_WORKFLOW = ".github/workflows/ci.yml";
 /**
  * The pull-request checks main's GitHub protection is not yet required to name (eval-harness review 2, finding 1): the
  * git lanes join main's protection once they have run there, so a protection without them is reported, never refused.
@@ -81,6 +85,8 @@ const POLL_MS = 15_000;
 export type CheckRun = { name: string; status: string; conclusion: string | null; app?: string | null; id?: number | null; suite?: number | null; head?: string | null;
   /** The workflow (its id, from GitHub's workflow-run API) that this check's suite is a run of, when known. */
   workflow?: number | null;
+  /** That workflow's file in the repository (GitHub's workflow-run `path`), when known. */
+  workflowPath?: string | null;
   /** GitHub's own job record (its steps, read by the plane's gh) shows this unsuccessful attempt ended before any of the
    * workflow's own steps ran: the runner failed, not the tests. Absent or false: nothing shows that. */
   beforeTests?: boolean | null };
@@ -181,6 +187,12 @@ export type AutoReleaseAdapter = {
   approve(input: { taskId: string; digest: string; candidate: string; run: number; receipt: string }): Promise<{ ok: true; by: string; at: string; ci: { id: number; name: string }[] } | { ok: false; why: string }>;
   /** The automatic road ended without a release: the task asks a person, and the owner is told why. */
   giveUp(taskId: string, why: string): Promise<void>;
+  /** The task is filed while CI still runs on `candidate` (recorded in the plane before the task is filed): its approval
+   * card says so until the plane reads CI passing. It holds nothing (Alex, 2026-10-29: a person may approve during CI). */
+  ciRunning?(taskId: string, candidate: string): Promise<void>;
+  /** The plane reads CI on `candidate` itself and, when every required check passed, ends the "CI still running" note
+   * (and lifts a hold an older coordinator placed); `ask` tells the owner of a held release it needs them now. */
+  ciPassed?(taskId: string, candidate: string, ask: boolean): Promise<{ ok: true } | { ok: false; why: string }>;
   /** The release check failed while checking automatically: the owner is told; the commit may be checked again (a
    * regate of the same commit and digest, within the plane's cap on failed runs). */
   checkFailed(taskId: string, why: string): Promise<void>;
@@ -307,6 +319,13 @@ export type ReleaseJournal = {
   /** The automatic road (auto-approve-green.md): `checking` once the plane sealed `auto-check`, `approved` once it sealed
    * `auto-green`, `refused` (and why) when it wouldn't — then a person approves, as before. */
   auto?: { state: "checking" | "approved" | "refused"; why?: string; ci?: number[] } | null;
+  /** The gate filed the task while the pull request's checks still ran (pipeline-speed.md, D2 and "Decision: a person's
+   * release asks during CI"): the release check runs beside CI. A person may approve meanwhile; the plane's automatic
+   * approval waits for every check to pass, and nothing deploys, merges, tags or publishes before they do. */
+  ciAhead?: boolean;
+  /** Set with ciAhead and never cleared for this commit: a person's release reads CI again, fresh, right before the
+   * deploy, whatever was seen while asking (a green CI may have a newer attempt failing since). */
+  ciBeforeDeploy?: boolean;
   /** When each step was about to change something outside this machine: what a resume must look for before acting. */
   intents: Partial<Record<ReleaseStep, string>>;
   stopped: { step: ReleaseStep; reason: string; message: string; at: string } | null;
@@ -494,6 +513,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
     }
     else say(`Resuming the release of ${journal.tag} (${journal.candidate.sha.slice(0, 7)}) at ${journal.step}.`);
     const j = journal;
+    // A journal an older coordinator filed ahead of CI: its deploy reads CI fresh too.
+    if (j.ciAhead === true && j.ciBeforeDeploy !== true) j.ciBeforeDeploy = true;
     if (j.checkout !== options.checkout) throw new Stop("checkout", `This release runs in ${j.checkout}; rerun with --repo ${j.checkout}.`);
     save();
 
@@ -604,8 +625,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       if (j.auto?.state !== "approved") return;
       const read = await adapters.github.checks(j.github, j.candidate.sha);
       const whole = adapters.github.complete === undefined ? false : await adapters.github.complete(j.github, j.candidate.sha);
-      const verdict = whole ? prChecksVerdict(read, j.candidate.sha, REQUIRED_PR_CHECKS, { auto: true }) : { state: "failed" as const, failed: ["GitHub's check history of this commit can't be read whole"] };
-      if (verdict.state === "passed") return;
+      const verdict = whole ? prChecksVerdict(read, j.candidate.sha, REQUIRED_PR_CHECKS, { auto: true, workflow: REQUIRED_PR_CHECKS_WORKFLOW }) : { state: "failed" as const, failed: ["GitHub's check history of this commit can't be read whole"] };
+      if (verdict.state === "passed") { await liftCiHold(false, `The release cannot continue before ${before}`); return; }
       if (before === "the tag") {
         // Already merged: nothing to revoke. It isn't tagged or published, and a person decides — durably, in the plane.
         const why = `Pull request checks on ${j.candidate.sha.slice(0, 7)} stopped passing after the merge`;
@@ -655,6 +676,48 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       j.auto = { state: "refused", why }; j.check = null; j.step = "approval"; save();
       await rel?.auto?.giveUp(j.task.id, why);
       throw new Stop("approval", `Not approved automatically: ${why}. A person approves task ${j.task.id} (\`toolroll task approve ${j.task.id} --digest ${j.task.scopeDigest}\`, or the console), then rerun \`${resume}\`.`);
+    };
+    /**
+     * CI passed on the candidate as the coordinator read it: the plane reads it itself and lifts the approval hold it
+     * placed when the task was filed ahead of CI (round 1, finding 4). A refusal stops here; nobody was asked.
+     */
+    const liftCiHold = async (ask: boolean, nothing: string): Promise<void> => {
+      const lift = rel?.auto?.ciPassed;
+      if (lift === undefined) return;
+      const lifted = await lift(j.task.id, j.candidate.sha, ask);
+      if (!lifted.ok) throw new Stop("ci-failed", `The plane didn't confirm CI passed on ${j.candidate.sha.slice(0, 7)}: ${lifted.why}. ${nothing}. Rerun \`${resume}\` once every pull request check passes.`);
+    };
+    /**
+     * One look at the pull request's required checks on the exact commit while CI may still run: a failed check stops
+     * (`nothing` says what hasn't happened), passed ends the plane's "CI still running" note, pending (or GitHub not
+     * answering) answers false. Judged as the ci step judges a person's release (prChecksVerdict, ci.yml, exact head).
+     */
+    const ciWhileRunning = async (nothing: string, ask: boolean): Promise<boolean> => {
+      let runs: CheckRun[];
+      try { runs = await adapters.github.checks(j.github, j.candidate.sha); }
+      catch (error) { if (transientNetworkError(error)) return false; throw error; }
+      const verdict = prChecksVerdict(runs, j.candidate.sha, REQUIRED_PR_CHECKS, { workflow: REQUIRED_PR_CHECKS_WORKFLOW });
+      if (verdict.state === "failed") {
+        throw new Stop("ci-failed", `GitHub's checks failed on ${j.candidate.sha.slice(0, 7)}: ${verdict.failed.join(", ")}. ${nothing}. ${j.approval === null ? "" : `The approval covers ${j.candidate.sha.slice(0, 7)} only. `}Rerun the failed job on GitHub and run \`${resume}\` again, or fix the branch and release the new commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
+      }
+      if (verdict.state !== "passed") return false;
+      // The plane's note can survive a crash before the journal saved ciAhead. Clear it on the plane's own reading,
+      // even on an older/resumed journal whose flags say nothing about CI.
+      await liftCiHold(ask, nothing);
+      if (j.ciAhead === true) { j.ciAhead = false; save(); }
+      return true;
+    };
+    /** Every person's release reads exact-head CI at deployment, even if it was green at the gate or an older
+     * journal has no ciBeforeDeploy flag. An approval and the release check can outlive that earlier green reading. */
+    const personCiBeforeDeploy = async () => {
+      if (j.auto?.state === "approved") return;
+      let said = false;
+      await waitFor("ci", `the pull request checks on ${j.candidate.sha.slice(0, 7)} before the deploy`, async () => {
+        await watch("deploy");
+        if (await ciWhileRunning("Nothing was deployed, merged, tagged or published", false)) return true;
+        if (!said) { say(`  ${CI_RUNNING_WORDS}`); said = true; }
+        return null;
+      });
     };
     /**
      * The task is approved for `action`: a release task (a carried commit, or any task once the release has an
@@ -721,7 +784,16 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             if (existing.candidate !== j.candidate.sha) throw new Stop("conflict", `Task ${j.task.id} exists for a different commit (${existing.candidate?.slice(0, 7) ?? "none"}).`);
             j.task.scopeDigest = existing.scopeDigest;
           } else {
-            await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe));
+            // The gate only stops on a check that already failed: the task is filed and a person asked while CI runs, and
+            // the release check runs beside it (pipeline-speed.md, D2 and "Decision: a person's release asks during
+            // CI"). The automatic approval waits for CI (the check step); nothing deploys before it passes (the deploy).
+            const settled = await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { pendingIsEnough: true });
+            // Recorded before the task exists, so its approval card says CI still runs from the first moment.
+            if (!settled) await rel?.auto?.ciRunning?.(j.task.id, j.candidate.sha);
+            j.ciAhead = !settled;
+            if (!settled) j.ciBeforeDeploy = true;
+            save();
+            if (!settled) { say(`  Pull request checks on ${j.candidate.sha.slice(0, 7)} are still running: the release check runs beside them, and nothing deploys before they pass`); }
             intend("gate");
             await adapters.repo.sync(j.branch);
             const filed = await adapters.toolroll.fileGate({
@@ -757,9 +829,16 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
               say(`  Not approved automatically: ${authorized.why}. A person approves it.`);
             }
           }
+          // Filed while CI still runs: the person is asked now (Alex, 2026-10-29), and told nothing deploys until CI passes.
+          // A check that already failed asks nobody (as at the gate).
+          if (j.ciAhead === true) await ciWhileRunning("Nothing was deployed or merged", true);
           say(`  The release scope needs your approval: \`toolroll task approve ${j.task.id} --digest ${j.task.scopeDigest}\`, or open the task in the console.`);
+          if (j.ciAhead === true) say(`  ${CI_RUNNING_WORDS}`);
           const approved = await waitFor("approval", `a person to approve task ${j.task.id}`, async () => {
             await watch("dispatch");
+            // While asking: a check that failed stops here (nobody approves a red commit), and CI passing ends the card's
+            // "still running" note (and lifts a hold an older coordinator placed).
+            if (j.ciAhead === true) await ciWhileRunning("Nothing was deployed or merged", true);
             const gate = await adapters.toolroll.gate(j.task.id);
             if (gate.scopeDigest !== j.task.scopeDigest) throw new Stop("scope-changed", `The scope of ${j.task.id} changed after it was filed; the release only runs on the scope it filed.`);
             const owner = ownerApproval(gate, j.task.scopeDigest);
@@ -828,6 +907,16 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           j.check = result;
           say(`  run ${result.run} passed on ${j.candidate.sha.slice(0, 7)}`);
           if (j.auto?.state === "checking" && !j.authority) {
+            // The check ran beside CI (the gate didn't wait): it waits for every pull request check now. A failure ends the
+            // automatic road, and the person's road refuses it too (the approval step waits for CI first).
+            if (j.ciAhead === true) {
+              try { await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { nothing: "Nothing was approved" }); await liftCiHold(false, "Nothing was approved"); }
+              catch (error) {
+                if (error instanceof Stop && error.reason === "ci-failed") { j.auto = { state: "refused", why: error.message }; j.check = null; j.step = "approval"; save(); await rel?.auto?.giveUp(j.task.id, error.message.replace(/\.$/, "")); }
+                throw error;
+              }
+              j.ciAhead = false; save();
+            }
             // The release approval, sealed only now: the plane reads CI on the exact commit itself and proves the check.
             const sealed = rel?.auto === undefined ? { ok: false as const, why: "this plane can't approve releases automatically" }
               : await rel.auto.approve({ taskId: j.task.id, digest: j.task.scopeDigest!, candidate: j.candidate.sha, run: result.run, receipt: result.receipt });
@@ -881,6 +970,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           if (runtime !== null && rel !== undefined && j.authority && epoch !== null) {
             const authority = await rel.authority(j.task.id);
             if (authority !== null && authority.state === "open") {
+              await personCiBeforeDeploy();
               await watch("deploy");
               // Every deploy reservation, whatever the journal saved: CI must still be green on the exact commit.
               await autoCiHolds("the deploy");
@@ -892,6 +982,9 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           }
           if (runtime === null) {
             // The last moment a moved head restarts; then the deploy reservation freezes the candidate in the store.
+            // A person's release: every required check passed on the exact commit, read now (the approval may have come
+            // while CI ran). A check that failed stops here, before anything is deployed.
+            await personCiBeforeDeploy();
             await watch("deploy");
             await pinned();
             // Every deploy issued, whatever the journal saved (a retry after a rollback included): CI still green.
@@ -947,7 +1040,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
         case "ci": {
           await waitFor("ci", `the pull request checks on ${j.candidate.sha.slice(0, 7)}`, async () => {
             await pinned();
-            const verdict = prChecksVerdict(await adapters.github.checks(j.github, j.candidate.sha), j.candidate.sha, REQUIRED_PR_CHECKS, autoCap());
+            const verdict = prChecksVerdict(await adapters.github.checks(j.github, j.candidate.sha), j.candidate.sha, REQUIRED_PR_CHECKS, { ...autoCap(), workflow: REQUIRED_PR_CHECKS_WORKFLOW });
             if (verdict.state === "failed") await ciFailedAfterDeploy(`Pull request checks failed on ${j.candidate.sha.slice(0, 7)}: ${verdict.failed.join(", ")}`);
             return verdict.state === "passed" ? true : null;
           });
@@ -970,7 +1063,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             // Every release merges only where GitHub itself refuses a branch behind main.
             await mainProtection(adapters, j, j.auto?.state === "approved", "Nothing was merged");
             // The checks again, at the moment of merging: a rerun that failed since must not merge.
-            const verdict = prChecksVerdict(await adapters.github.checks(j.github, j.candidate.sha), j.candidate.sha, REQUIRED_PR_CHECKS, autoCap());
+            const verdict = prChecksVerdict(await adapters.github.checks(j.github, j.candidate.sha), j.candidate.sha, REQUIRED_PR_CHECKS, { ...autoCap(), workflow: REQUIRED_PR_CHECKS_WORKFLOW });
             if (verdict.state !== "passed") await ciFailedAfterDeploy(`Pull request checks are no longer all passing on ${j.candidate.sha.slice(0, 7)}`);
             // Main once more, from GitHub, the last thing before the merge is reserved: moved since the comparison, it
             // stops here (finding 4). GitHub's own up-to-date rule refuses the rest of the window.
@@ -1181,12 +1274,19 @@ async function mainProtection(adapters: ReleaseAdapters, j: ReleaseJournal, auto
   throw new Stop("base-unprotected", `${lacking}, so this release can't merge${auto ? " automatically" : ""}. ${nothing}. Restore effective main protection and try again.`);
 }
 
-async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal, wait: <T>(what: string, probe: () => Promise<T | null>) => Promise<T>): Promise<void> {
+/**
+ * Wait for every required pull request check on the candidate to pass; stop on one that failed. `pendingIsEnough` (the
+ * automatic road's gate, pipeline-speed.md D2): checks still running are no reason to wait — returns false then, true
+ * once they all passed. `nothing` says what hasn't happened yet when a check failed.
+ */
+async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal, wait: <T>(what: string, probe: () => Promise<T | null>) => Promise<T>,
+  options: { pendingIsEnough?: boolean; nothing?: string } = {}): Promise<boolean> {
+  const nothing = options.nothing ?? "Nothing was filed or sent for approval";
   const sha = j.candidate.sha.slice(0, 7);
   const required: readonly string[] = REQUIRED_PR_CHECKS;
   let named = "", unread = false;
   try {
-    await wait(`the pull request checks on ${sha}`, async () => {
+    return await wait(`the pull request checks on ${sha}`, async () => {
       let runs: CheckRun[];
       try { runs = await adapters.github.checks(j.github, j.candidate.sha); }
       catch (error) {
@@ -1194,18 +1294,19 @@ async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal, wait: <
         unread = true;
         return null;
       }
-      const verdict = prChecksVerdict(runs.filter(run => required.includes(run.name)), j.candidate.sha, required);
+      const verdict = prChecksVerdict(runs.filter(run => required.includes(run.name)), j.candidate.sha, required, { workflow: REQUIRED_PR_CHECKS_WORKFLOW });
       if (verdict.state === "failed") {
-        throw new Stop("ci-failed", `Pull request checks already failed on ${sha}: ${verdict.failed.join(", ")}. Nothing was filed or sent for approval. Fix the branch, then release the new commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\` (or rerun the failed job on GitHub and run this command again).`);
+        throw new Stop("ci-failed", `Pull request checks already failed on ${sha}: ${verdict.failed.join(", ")}. ${nothing}. Fix the branch, then release the new commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\` (or rerun the failed job on GitHub and run this command again).`);
       }
       if (verdict.state === "passed") return true;
+      if (options.pendingIsEnough === true) return false;
       const now = verdict.waiting.join(", ");
       if (now !== named) { adapters.say(`  Pull request checks on ${sha} not finished yet: ${now}.`); named = now; }
       return null;
     });
   } catch (error) {
     if (!(error instanceof Stop) || error.reason !== "timeout") throw error;
-    throw new Stop("ci-missing", `Pull request checks on ${sha} didn't all finish in time${named === "" ? (unread ? " (GitHub didn't answer)" : "") : `: ${named}`}. Nothing was filed or sent for approval. Start or rerun them on GitHub, then run this command again.`);
+    throw new Stop("ci-missing", `Pull request checks on ${sha} didn't all finish in time${named === "" ? (unread ? " (GitHub didn't answer)" : "") : `: ${named}`}. ${nothing}. Start or rerun them on GitHub, then run this command again.`);
   }
 }
 
@@ -1233,7 +1334,7 @@ function networkWords(error: unknown): string {
  * infrastructure), and at most INFRA_RERUNS_PER_CANDIDATE of them on the commit; any other earlier failure — a test,
  * a typecheck, or one nothing explains — fails the verdict, so a person decides. The failures it tolerated are returned.
  */
-export function prChecksVerdict(runs: readonly CheckRun[], head: string, required: readonly string[], options: { auto?: true } = {}):
+export function prChecksVerdict(runs: readonly CheckRun[], head: string, required: readonly string[], options: { auto?: true; workflow?: string } = {}):
   { state: "passed"; failures: CheckFailure[] } | { state: "pending"; waiting: string[] } | { state: "failed"; failed: string[] } {
   const failed: string[] = [], waiting: string[] = [], failures: CheckFailure[] = [];
   const valid: CheckRun[] = [];
@@ -1241,6 +1342,11 @@ export function prChecksVerdict(runs: readonly CheckRun[], head: string, require
     if (run.head !== head) { failed.push(`${run.name} (reported for ${run.head == null ? "no commit" : run.head.slice(0, 7)}, not ${head.slice(0, 7)})`); continue; }
     if (typeof run.id !== "number" || !Number.isSafeInteger(run.id) || run.id <= 0) { failed.push(`${run.name} (no check run id)`); continue; }
     if (required.includes(run.name) && run.app !== "github-actions") { failed.push(`${run.name} (reported by ${run.app ?? "an unknown app"}, not GitHub Actions)`); continue; }
+    // A required name counts only from the workflow that defines it: a job of the same name in another workflow (or
+    // one whose workflow GitHub doesn't name) fails the verdict rather than stand in for it.
+    if (options.workflow !== undefined && required.includes(run.name) && !workflowIs(run.workflowPath, options.workflow)) {
+      failed.push(`${run.name} (from ${run.workflowPath ?? "a workflow GitHub doesn't name"}, not ${options.workflow})`); continue;
+    }
     if (run.app === "github-actions" && (typeof run.suite !== "number" || !Number.isSafeInteger(run.suite))) { failed.push(`${run.name} (no workflow run)`); continue; }
     valid.push(run);
   }
@@ -1311,4 +1417,9 @@ export function checkFailedWords(input: { sha: string; run: number; class: Failu
     default:
       return `The Full release check of ${short} did not pass (run ${input.run}): ${input.why}. Fix the branch and release the new commit with ${again}.`;
   }
+}
+
+/** Whether GitHub's workflow-run `path` names exactly `file` (it may carry the ref it ran from, after an `@`). */
+export function workflowIs(path: string | null | undefined, file: string): boolean {
+  return typeof path === "string" && (path === file || path.startsWith(`${file}@`));
 }

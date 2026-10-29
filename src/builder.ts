@@ -81,7 +81,7 @@ import { closeSteerMailbox, openSteerMailbox, STEER_HANDLED, type SteerMailbox }
 import { LiveInput, type LiveCloseReason } from "./live-input.js";
 import { LIVE_TICK_MS, tickLiveSteer } from "./steer-live.js";
 import { withRunActivity } from "./task-activity.js";
-import { CheckProgressTracker } from "./check-progress.js";
+import { CheckProgressTracker, coalescedProgressWriter } from "./check-progress.js";
 import {
   captureParkEvidence,
   captureTerminalDiff,
@@ -2716,11 +2716,11 @@ async function settleProof(
       }
       if (checkAttempt !== null && decision.mode === "targeted") store.addRunNote(runId, "Toolroll", `Re-running only what failed at run #${decision.plan.base}: ${decision.plan.units.length} unit files, ${decision.plan.groups.reduce((n, one) => n + one.groups.length, 0)} journey groups, ${decision.plan.versions.length} upgrade versions${decision.plan.parts.length > 0 ? `, and in full: ${decision.plan.parts.join(", ")}` : ""}.`, now());
     } else checkAttempt = null;
-    // Live progress is advisory: a snapshot that can't be saved never stops the check's log, report and receipt from
-    // being sealed (release check 3264 lost all three to one refused progress snapshot).
-    const checkProgress = new CheckProgressTracker(snapshot => {
-      try { store.saveCheckProgress(runId, snapshot, now()); } catch { /* the next snapshot, or the sealed check, says it */ }
-    });
+    // Live progress is advisory (release check 3264 lost its log to one refused snapshot): display snapshots are
+    // coalesced (at most one write a second), the final one is kept until it is written, and a failing save never
+    // throws out of the writer, so the check's log, report and receipt are always sealed.
+    const progressWrites = coalescedProgressWriter(snapshot => { store.saveCheckProgress(runId, snapshot, now()); });
+    const checkProgress = new CheckProgressTracker(snapshot => progressWrites.push(snapshot));
     const runVerification = async (label: string, missing: string | null = null): Promise<ExecResult> => {
       const streamed = { stdout: false, stderr: false };
       // The check runs under the stop watch (v52), owned by this run.
@@ -2903,7 +2903,10 @@ async function settleProof(
         }
       }
     }
-    checkProgress.finish();
+    // The display's final snapshot (Codex review round 1, finding 6): the writer keeps it until a write succeeds and
+    // never throws; a display failure of any kind never keeps the check's outcome below from being sealed.
+    try { checkProgress.finish(); } catch { /* display only */ }
+    if (!progressWrites.flush()) progressWrites.flush();
     // The check's own report (the last line carrying the nonce), sealed beside what was sealed before it ran.
     const last = verification.last;
     let sealedReport: CheckReport | null = null;

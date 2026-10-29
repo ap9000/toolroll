@@ -9,6 +9,7 @@ import { assignmentOf } from "./assignment.js";
 import { liveReleaseOf, personApprovalOf, releaseApprovalOf } from "./scope.js";
 import { verificationEvidence } from "./verification-evidence.js";
 import type { Store } from "./store.js";
+import { releaseCiRunningOf } from "./release-ci-hold.js";
 
 export type DeploymentGate = { ok: true; taskId: string; head: string; repo: string; approvedBy: string } | { ok: false; message: string };
 
@@ -31,6 +32,9 @@ export function deploymentGate(store: Store, input: { runId: number; evidenceRoo
     (scope?.candidate === head || ((scope?.candidate ?? null) !== null && built.scopeDigest === run.scopeDigest));
   if (run.role !== "builder" || !(run.outcome === "built" || regated)) return refuse(`Run ${input.runId} is not a built candidate at ${head.slice(0, 7)}.`);
   if (scope === null || scope.approvedDigest !== scope.digest || scope.digest !== run.scopeDigest) return refuse("The run's signed scope is no longer the approved one.");
+  // A person may approve during CI, including a release without carry terms. Every deployment road must wait
+  // for the plane's exact-head observation, not only the release coordinator's polling loop.
+  if (releaseCiRunningOf(store, ref.externalId) !== null) return refuse("This release still waits for GitHub CI. Resume it with `toolroll release`.");
   // One approval per release (release-once.md): a release's task deploys only while its authority stands for it — the
   // live predicate proves the anchor's person approval (a carried commit's own seal is never a person's). Any other task
   // needs a person's approval of its own.

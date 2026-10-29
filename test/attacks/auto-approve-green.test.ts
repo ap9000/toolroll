@@ -7,7 +7,8 @@
  */
 import { afterEach, describe, expect, test } from "vitest";
 import { releaseFixture, builtRun, sealedCheck, reportOf, RELEASE_NOW, EVIDENCE, type ReleaseFixture } from "../release-fixture.js";
-import { authorizeAutoCheck, ciProblem, sealAutoGreen, setReleaseApproval, type CiObservation } from "../../src/release-auto.js";
+import { authorizeAutoCheck, ciProblem, giveUpAutoApproval, holdApprovalForCi, liftCiHold, sealAutoGreen, setReleaseApproval, type CiObservation } from "../../src/release-auto.js";
+import { noteCiRunning, releaseCiRunningOf, RELEASE_CI_RUNNING_WORDS } from "../../src/release-ci-hold.js";
 import { releaseAutoApproves } from "../../src/release-authority.js";
 import { approve, liveReleaseOf, personApprovalOf, propose, releaseApprovalOf } from "../../src/scope.js";
 import { releaseAuthorityOfTask } from "../../src/store.js";
@@ -43,7 +44,7 @@ function open(options: Parameters<typeof releaseFixture>[0] = {}) {
 const digestOf = (f: ReleaseFixture) => f.store.getScope(f.taskId)!.digest;
 const ref = (f: ReleaseFixture) => f.store.refFor("built-in", f.taskId).id;
 const green = (head: string, at = LATER): CiObservation => ({ head, observedAt: at.toISOString(),
-  runs: REQUIRED_PR_CHECKS.map((name, i) => ({ id: 1000 + i, name, status: "completed", conclusion: "success", app: "github-actions", suite: 7, head })), complete: true });
+  runs: REQUIRED_PR_CHECKS.map((name, i) => ({ id: 1000 + i, name, status: "completed", conclusion: "success", app: "github-actions", suite: 7, head, workflowPath: ".github/workflows/ci.yml" })), complete: true });
 /** The plane's auto-check, with the base GitHub names for the candidate (the main commit the branch left). */
 const authorize = (f: ReleaseFixture, base = f.base) => authorizeAutoCheck(f.store, { taskId: f.taskId, digest: digestOf(f), candidate: f.approved, base, now: LATER });
 /** The release check of the candidate, sealed as the builder seals it, on the build's real base. */
@@ -616,7 +617,7 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
   });
 
   test("a version bump of package.json and the lockfile, product code, its tests and docs ship", () => {
-    const f = open({ candidate: { "package.json": pkg("0.9.72"), "package-lock.json": lock("0.9.72"), "src/index.js": "export const answer = 44;\n", "src/index.test.ts": "test('more', () => {});\n", "docs/guide.md": "# Guide 3\n", "CHANGELOG.md": "## 0.9.72\n" } });
+    const f = open({ candidate: { "package.json": pkg("0.9.72"), "package-lock.json": lock("0.9.72"), "src/index.js": "export const answer = 44;\n", "src/index.test.ts": "test('answer', () => {});\ntest('more', () => {});\n", "docs/guide.md": "# Guide 3\n", "CHANGELOG.md": "## 0.9.72\n" } });
     authorize(f);
     const sealed = seal(f, check(f));
     expect(sealed.ok ? "" : sealed.why).toBe("");
@@ -627,7 +628,9 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
  * GitHub's check-runs endpoint as it behaves: `filter=latest` (its default) lists only the newest attempt of each job;
  * `filter=all` lists every attempt. Answers as gh does with --paginate --jq (one JSON object per line).
  */
-function fakeGitHub(attempts: { id: number; name: string; conclusion: string; suite?: number; app?: string; head?: string; steps?: { number: number; name: string; status: string; conclusion: string | null }[] }[], sha: string) {
+function fakeGitHub(attempts: { id: number; name: string; conclusion: string; suite?: number; app?: string; head?: string; steps?: { number: number; name: string; status: string; conclusion: string | null }[] }[], sha: string,
+  /** Each suite's workflow-run row (codex round 1, inherited CI limitation): ci.yml for the default suite 7. */
+  flows: { suite: number; workflow: number; path: string; event?: string; branch?: string; bases?: string[]; prs?: number[] }[] = [{ suite: 7, workflow: 3, path: ".github/workflows/ci.yml" }]) {
   const calls: string[][] = [];
   const run: Exec = async (_cmd, args) => {
     calls.push([...args]);
@@ -637,8 +640,15 @@ function fakeGitHub(attempts: { id: number; name: string; conclusion: string; su
       const one = attempts.find(attempt => job.endsWith(`/${attempt.id}`));
       return one === undefined ? { code: 1, stdout: "", stderr: "not found" } : { code: 0, stdout: JSON.stringify({ id: one.id, status: "completed", conclusion: one.conclusion, steps: one.steps ?? [] }), stderr: "" };
     }
-    // The workflow-run listing (which suite is a run of which workflow): none here.
-    if (args.some(arg => arg.includes("/actions/runs"))) return { code: 0, stdout: "", stderr: "" };
+    // The workflow-run listing: which suite is a run of which workflow, and that workflow's file.
+    if (args.some(arg => arg.includes("/actions/runs"))) return { code: 0, stdout: flows.map(one => `${JSON.stringify({ event: "pull_request", branch: "release-x", bases: ["main"], ...one, prs: (one.prs ?? [254]).map(number => ({ number, repo: number === 777 ? "https://api.github.com/repos/someone/fork" : "https://api.github.com/repos/ap9000/toolroll" })), head: sha })}\n`).join(""), stderr: "" };
+    // A pull request's timeline events (the retarget check): none by default; "retargeted-<n>" names one that was.
+    const timeline = args.find(arg => /\/issues\/\d+\/timeline/.test(arg));
+    if (timeline !== undefined) {
+      const pr = Number(/\/issues\/(\d+)\//.exec(timeline)![1]);
+      if (pr === 999) return { code: 1, stdout: "", stderr: "not found" };
+      return { code: 0, stdout: pr === 666 ? "labeled\nbase_ref_changed\n" : "labeled\n", stderr: "" };
+    }
     const url = args.find(arg => arg.includes("/check-runs")) ?? "";
     const all = /[?&]filter=all(&|$)/.test(url);
     const rows = attempts.map(one => ({ id: one.id, name: one.name, status: "completed", conclusion: one.conclusion, app: one.app ?? "github-actions", suite: one.suite ?? 7, head: one.head ?? sha }));
@@ -681,14 +691,34 @@ describe("codex r1 #3: the cap counts every attempt GitHub holds, read through t
     ];
     const gh = fakeGitHub(attempts, f.approved);
     const rel = storeReleaseAdapter(() => f.store, () => {}, () => LATER, undefined, {
-      observe: async sha => ({ head: sha, observedAt: LATER.toISOString(), complete: true, runs: (await readCheckRuns(gh.run, "/usr/bin/gh", "ap9000/toolroll", sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, beforeTests: one.beforeTests ?? null })) }),
-      mergeBase: async () => f.base, upToDateRequired: async () => true, evidenceRoot: EVIDENCE(f),
+      observe: async sha => ({ head: sha, observedAt: LATER.toISOString(), complete: true, runs: (await readCheckRuns(gh.run, "/usr/bin/gh", "ap9000/toolroll", sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, workflowPath: one.workflowPath ?? null, beforeTests: one.beforeTests ?? null })) }),
+      mergeBase: async () => f.base, upToDateRequired: async () => true, evidenceRoot: EVIDENCE(f), reportsProtected: true,
     });
     expect(await rel.auto!.authorizeCheck({ taskId: f.taskId, digest: digestOf(f), candidate: f.approved })).toEqual({ ok: true });
     const run = check(f);
     const answer = await rel.auto!.approve({ taskId: f.taskId, digest: digestOf(f), candidate: f.approved, run, receipt: receiptOf(f) });
     expect(answer.ok).toBe(approved);
     if (!approved) expect(answer).toMatchObject({ why: expect.stringMatching(/failed 3 times|doesn't show its runner failing/) });
+  });
+
+  test.each([false, undefined])("candidate-writable or unknown report provenance (%s) cannot authorize or approve automatically", async reportsProtected => {
+    const f = open();
+    const rel = storeReleaseAdapter(() => f.store, () => {}, () => LATER, undefined, {
+      observe: async () => green(f.approved), mergeBase: async () => f.base, upToDateRequired: async () => true,
+      evidenceRoot: EVIDENCE(f), ...(reportsProtected === undefined ? {} : { reportsProtected }),
+    });
+    const input = { taskId: f.taskId, digest: digestOf(f), candidate: f.approved };
+    expect(await rel.auto!.authorizeCheck(input)).toMatchObject({ ok: false, why: expect.stringContaining("reports") });
+    expect(basis(f)).toBeNull();
+    // A check authorized before this guard was installed cannot turn its passing report into a release seal.
+    authorize(f);
+    const run = check(f);
+    expect(await rel.auto!.approve({ ...input, run, receipt: receiptOf(f) })).toMatchObject({ ok: false, why: expect.stringContaining("reports") });
+    expect(basis(f)).toBeNull();
+    // The fallback still waits for exact-head CI, then lets a person decide.
+    holdApprovalForCi(f.store, { taskId: f.taskId, candidate: f.approved, now: LATER });
+    expect(await rel.auto!.ciPassed!(f.taskId, f.approved, true)).toEqual({ ok: true });
+    expect(approve(f.store, f.taskId, "alex", LATER, digestOf(f), f.password)).toMatchObject({ ok: true });
   });
 });
 
@@ -799,6 +829,26 @@ describe("coordinator: test files under test/ ship like src's tests", () => {
     const f = open({ candidate: { [path]: null } });
     authorize(f);
     expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining(`${path} was deleted`) });
+  });
+
+  test.each([
+    ["an assertion removed", "test('guard', () => {});\ntest('second', () => expect(false).toBe(false));\n"],
+    ["a case removed", "test('guard', () => expect(true).toBe(true));\n"],
+    ["an assertion replaced with a tautology", "test('guard', () => expect(1).toBe(1));\ntest('second', () => expect(false).toBe(false));\n"],
+    ["existing cases commented out", "/*\ntest('guard', () => expect(true).toBe(true));\ntest('second', () => expect(false).toBe(false));\n*/\ntest('green', () => {});\n"],
+    ["an existing case skipped", "test.skip('guard', () => expect(true).toBe(true));\ntest('second', () => expect(false).toBe(false));\n"],
+  ])("%s needs a person even with passing reports", (_name, candidate) => {
+    const path = "src/guard.test.ts";
+    const f = open({ files: { [path]: "test('guard', () => expect(true).toBe(true));\ntest('second', () => expect(false).toBe(false));\n" }, candidate: { [path]: candidate } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("existing test code") });
+    expect(basis(f)).toBeNull();
+  });
+
+  test("renaming an existing test needs a person even when its replacement passes", () => {
+    const f = open({ candidate: { "src/index.test.ts": null, "src/renamed.test.ts": "test('answer', () => {});\n" } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("src/index.test.ts was deleted") });
   });
 });
 
@@ -921,10 +971,58 @@ describe("codex r2 #6: GitHub's 1000-suite ceiling fails an automatic approval c
     const sha = "a".repeat(40);
     const run: Exec = async (_cmd, args) => {
       const url = args.find(arg => arg.startsWith("repos/")) ?? "";
-      if (url.includes("/actions/runs")) return { code: 0, stdout: `${JSON.stringify({ suite: 7, workflow: 3, head: sha })}\n`, stderr: "" };
+      if (url.includes("/actions/runs")) return { code: 0, stdout: `${JSON.stringify({ suite: 7, workflow: 3, path: ".github/workflows/ci.yml", head: sha, event: "pull_request", branch: "release-x", bases: ["main"], prs: [{ number: 254, repo: "https://api.github.com/repos/ap9000/toolroll" }] })}\n`, stderr: "" };
       return { code: 0, stdout: `${JSON.stringify({ id: 1, name: "x", status: "completed", conclusion: "success", app: "github-actions", suite: 7, head: sha })}\n`, stderr: "" };
     };
-    expect(await readCheckRuns(run, "/usr/bin/gh", "ap9000/toolroll", sha)).toEqual([{ id: 1, name: "x", status: "completed", conclusion: "success", app: "github-actions", suite: 7, head: sha, workflow: 3 }]);
+    expect(await readCheckRuns(run, "/usr/bin/gh", "ap9000/toolroll", sha)).toEqual([{ id: 1, name: "x", status: "completed", conclusion: "success", app: "github-actions", suite: 7, head: sha, workflow: 3, workflowPath: ".github/workflows/ci.yml" }]);
+    // A workflow run GitHub answers without its file can't be read: no required check stands on an unnamed workflow.
+    const pathless: Exec = async (_cmd, args) => (args.find(arg => arg.startsWith("repos/")) ?? "").includes("/actions/runs")
+      ? { code: 0, stdout: `${JSON.stringify({ suite: 7, workflow: 3, head: sha })}\n`, stderr: "" } : run(_cmd, args);
+    await expect(readCheckRuns(pathless, "/usr/bin/gh", "ap9000/toolroll", sha)).rejects.toThrow(/workflow run this can't read/);
+  });
+
+  test.each([
+    ["a pull request into another branch", { event: "pull_request", bases: ["release-base"] }],
+    ["a pull request with no base recorded", { event: "pull_request", bases: [] }],
+    ["a push to another branch", { event: "push", branch: "feature" }],
+    ["a manually dispatched run", { event: "workflow_dispatch", branch: "main" }],
+  ])("security scan of the join: ci.yml run from %s never stands for a required check", async (_why, trigger) => {
+    const f = open();
+    const attempts = REQUIRED_PR_CHECKS.map((name, at) => ({ id: 100 + at, name, conclusion: "success" }));
+    const gh = fakeGitHub(attempts, f.approved, [{ suite: 7, workflow: 3, path: ".github/workflows/ci.yml", ...trigger }]);
+    const runs = await readCheckRuns(gh.run, "/usr/bin/gh", "ap9000/toolroll", f.approved);
+    expect(runs.every(run => run.workflowPath === null)).toBe(true);
+  });
+  test.each([["was retargeted after it ran", 666], ["has a timeline GitHub won't show", 999], ["belongs to another repository", 777]])("security scan: a pull request into main that %s never stands for a required check", async (_why, pr) => {
+    const f = open();
+    const attempts = [{ id: 100, name: REQUIRED_PR_CHECKS[0]!, conclusion: "success" }];
+    const runs = await readCheckRuns(fakeGitHub(attempts, f.approved, [{ suite: 7, workflow: 3, path: ".github/workflows/ci.yml", event: "pull_request", bases: ["main"], prs: [pr] }]).run, "/usr/bin/gh", "ap9000/toolroll", f.approved);
+    expect(runs[0]!.workflowPath).toBeNull();
+  });
+  test("security scan of the join: a pull request into main and a push to main bind ci.yml", async () => {
+    const f = open();
+    const attempts = [{ id: 100, name: REQUIRED_PR_CHECKS[0]!, conclusion: "success" }];
+    for (const trigger of [{ event: "pull_request", bases: ["main"] }, { event: "push", branch: "main" }]) {
+      const runs = await readCheckRuns(fakeGitHub(attempts, f.approved, [{ suite: 7, workflow: 3, path: ".github/workflows/ci.yml", ...trigger }]).run, "/usr/bin/gh", "ap9000/toolroll", f.approved);
+      expect(runs[0]!.workflowPath).toBe(".github/workflows/ci.yml");
+    }
+  });
+  test("codex round 1 (inherited CI limitation): a lookalike job in another workflow never stands for a required check", async () => {
+    // Every required job passes in ci.yml except the first, which is missing there; another workflow has a job of
+    // exactly its name that passes. Read through the real request, the plane refuses it.
+    const f = open();
+    const attempts = REQUIRED_PR_CHECKS.map((name, i) => ({ id: 100 + i, name, conclusion: "success", suite: i === 0 ? 8 : 7 }));
+    const gh = fakeGitHub(attempts, f.approved, [{ suite: 7, workflow: 3, path: ".github/workflows/ci.yml" }, { suite: 8, workflow: 4, path: ".github/workflows/lookalike.yml" }]);
+    const runs = (await readCheckRuns(gh.run, "/usr/bin/gh", "ap9000/toolroll", f.approved)).map(one => ({ ...one, id: one.id ?? null, app: one.app ?? null }));
+    const ci: CiObservation = { head: f.approved, observedAt: LATER.toISOString(), complete: true, runs };
+    expect(ciProblem(ci, f.approved, LATER)).toMatch(new RegExp(`${REQUIRED_PR_CHECKS[0]} \\(from .github/workflows/lookalike.yml, not .github/workflows/ci.yml\\)`));
+    // A required job whose workflow GitHub doesn't name is refused the same way.
+    expect(ciProblem({ ...ci, runs: runs.map((one, i) => i === 0 ? { ...one, workflowPath: null } : one) }, f.approved, LATER)).toMatch(/a workflow GitHub doesn't name/);
+    // The person's road judges the same: the plane doesn't lift a CI hold on a lookalike.
+    holdApprovalForCi(f.store, { taskId: f.taskId, candidate: f.approved, now: RELEASE_NOW });
+    expect(liftCiHold(f.store, { taskId: f.taskId, candidate: f.approved, ci, ask: true, now: LATER })).toMatchObject({ ok: false, why: expect.stringContaining("lookalike.yml") });
+    // With the job in ci.yml it stands.
+    expect(ciProblem({ ...ci, runs: runs.map(one => ({ ...one, workflowPath: ".github/workflows/ci.yml" })) }, f.approved, LATER)).toBeNull();
   });
 });
 
@@ -1066,5 +1164,106 @@ describe("codex r2 #1: main's protection holds only when it is effective and nob
     expect(await read(P.exec({ classic: { code: 1, stdout: "", stderr: "HTTP 403" }, rules: { code: 1, stdout: "", stderr: "HTTP 500" } }))).toBeNull();
     expect((await read(P.exec({ classic: { code: 1, stdout: "", stderr: "HTTP 403" } })))?.missing).toEqual(["classic protection couldn't be read"]);
     expect((await read(P.exec({ classic: { code: 0, stdout: "not json" } })))?.effective).toBe(false);
+  });
+});
+
+// Since Alex's decision of 2026-10-29 the coordinator no longer places this hold (it notes CI running instead, below);
+// a hold an older coordinator placed still holds exactly as before.
+describe("codex round 1 #4: a release filed while CI runs is approvable by nobody until the plane reads CI passing", () => {
+  const notices = (f: ReleaseFixture) => f.store.handle.prepare("SELECT subject, body FROM notification WHERE kind = 'release-auto' ORDER BY id").all().map(row => `${String(row["subject"])}: ${String(row["body"])}`);
+  test("the automatic road refuses with CI pending: no 'approve it yourself', and a person's, a chat's or a mode's yes is refused in words", () => {
+    const f = open();
+    holdApprovalForCi(f.store, { taskId: f.taskId, candidate: f.approved, now: RELEASE_NOW });
+    // The automatic road refuses (as for unsandboxed checks without release terms): nobody is asked yet.
+    giveUpAutoApproval(f.store, { taskId: f.taskId, why: "its checks run unsandboxed", now: LATER });
+    expect(notices(f).join("\n")).not.toMatch(/Approve it yourself/);
+    expect(notices(f)).toEqual([expect.stringContaining("you're asked to approve it once CI passes")]);
+    // A person's typed password: refused, saying why, and nothing is sealed.
+    const person = approve(f.store, f.taskId, "alex", LATER, digestOf(f), f.password);
+    expect(person).toMatchObject({ ok: false, reason: "policy", message: expect.stringContaining(`GitHub CI is still running on ${f.approved.slice(0, 7)}`) });
+    expect(basis(f)).toBeNull();
+    expect(f.store.getScope(f.taskId)!.approvedBy ?? null).toBeNull();
+    // The seal primitive itself: a chat card, a mode or a grant never seals it either.
+    for (const kind of ["chat", "mode", "grant", "schedule"] as const) expect(f.store.sealScopeApproval(f.taskId, "alex", LATER, {}, { kind, modeDigest: "x" })).toBe(false);
+    // The automatic road's check may still run beside CI.
+    expect(authorize(f)).toMatchObject({ ok: true });
+  });
+
+  test("only the plane's reading of exact-head CI passing lifts it; then the person is asked and their yes seals", () => {
+    const f = open();
+    holdApprovalForCi(f.store, { taskId: f.taskId, candidate: f.approved, now: RELEASE_NOW });
+    const pending: CiObservation = { ...green(f.approved), runs: green(f.approved).runs.map((run, i) => i === 0 ? { ...run, status: "in_progress", conclusion: null } : run) };
+    for (const [ci, words] of [
+      [pending, /hasn't finished/],
+      [green("e".repeat(40)), /read for eeeeeee/],
+      [{ ...green(f.approved), complete: false }, /can't be read whole/],
+      [green(f.approved, new Date(LATER.getTime() - 3_600_000)), /isn't fresh/],
+      [{ ...green(f.approved), runs: green(f.approved).runs.slice(1) }, /hasn't finished/],
+    ] as const) {
+      expect(liftCiHold(f.store, { taskId: f.taskId, candidate: f.approved, ci, ask: true, now: LATER })).toMatchObject({ ok: false, why: expect.stringMatching(words) });
+      expect(approve(f.store, f.taskId, "alex", LATER, digestOf(f), f.password)).toMatchObject({ ok: false, reason: "policy" });
+    }
+    // A pass on another commit than the held one lifts nothing.
+    expect(liftCiHold(f.store, { taskId: f.taskId, candidate: "e".repeat(40), ci: green("e".repeat(40)), ask: true, now: LATER })).toMatchObject({ ok: false });
+    expect(notices(f).join("\n")).not.toMatch(/Approve it yourself/);
+    expect(liftCiHold(f.store, { taskId: f.taskId, candidate: f.approved, ci: green(f.approved), ask: true, now: LATER })).toEqual({ ok: true });
+    expect(notices(f).at(-1)).toMatch(/needs you: GitHub CI passed on .*Approve it yourself/);
+    expect(approve(f.store, f.taskId, "alex", LATER, digestOf(f), f.password)).toMatchObject({ ok: true });
+  });
+});
+
+describe("a person's release asks during CI (Alex, 2026-10-29): a person may approve, the plane never seals before CI", () => {
+  const notices = (f: ReleaseFixture) => f.store.handle.prepare("SELECT subject, body FROM notification WHERE kind = 'release-auto' ORDER BY id").all().map(row => `${String(row["subject"])}: ${String(row["body"])}`);
+  const pending = (head: string): CiObservation => ({ ...green(head), runs: green(head).runs.map((run, i) => i === 0 ? { ...run, status: "in_progress", conclusion: null } : run) });
+
+  test.each(["reserve", "issue"] as const)("a direct deploy cannot %s while the approved release still waits for CI", phase => {
+    const f = open();
+    expect(approve(f.store, f.taskId, "alex", LATER, digestOf(f), f.password)).toMatchObject({ ok: true });
+    const a = f.authority();
+    const reserve = () => reserveRelease(f.store, { authority: a.id, kind: "deploy", taskId: f.taskId, candidate: f.approved, epoch: null, operationId: "direct", now: LATER });
+    if (phase === "issue") expect(reserve()).toMatchObject({ ok: true });
+    noteCiRunning(f.store, { taskId: f.taskId, candidate: f.approved, now: LATER });
+    expect(personApprovalOf(f.store, f.taskId)).toMatchObject({ ok: true });
+    if (phase === "reserve") expect(reserve()).toMatchObject({ ok: false, why: expect.stringContaining("CI") });
+    else expect(runReleaseOperation(f.store, "direct", a.leaseEpoch, LATER)).toBe(false);
+    expect(liftCiHold(f.store, { taskId: f.taskId, candidate: f.approved, ci: green(f.approved), ask: false, now: LATER })).toEqual({ ok: true });
+    if (phase === "reserve") expect(reserve()).toMatchObject({ ok: true });
+    expect(runReleaseOperation(f.store, "direct", a.leaseEpoch, LATER)).toBe(true);
+  });
+
+  test("the note holds nothing: a person's typed yes seals while CI runs, and the automatic fallback asks them at once", () => {
+    const f = open();
+    noteCiRunning(f.store, { taskId: f.taskId, candidate: f.approved, now: RELEASE_NOW });
+    expect(releaseCiRunningOf(f.store, f.taskId)).toEqual({ candidate: f.approved });
+    giveUpAutoApproval(f.store, { taskId: f.taskId, why: "its checks run unsandboxed", now: LATER });
+    expect(notices(f)).toEqual([expect.stringMatching(/needs you: .*Approve it yourself.*GitHub's checks are still running; nothing deploys until they pass\.$/)]);
+    expect(approve(f.store, f.taskId, "alex", LATER, digestOf(f), f.password)).toMatchObject({ ok: true });
+    expect(personApprovalOf(f.store, f.taskId)).toMatchObject({ ok: true });
+  });
+
+  test("the plane's automatic approval never seals before CI passed on the exact commit, note or not", () => {
+    const f = open();
+    noteCiRunning(f.store, { taskId: f.taskId, candidate: f.approved, now: RELEASE_NOW });
+    expect(authorize(f)).toMatchObject({ ok: true });
+    const run = check(f);
+    for (const ci of [pending(f.approved), { ...green(f.approved), runs: green(f.approved).runs.slice(1) }, green("e".repeat(40))]) {
+      expect(seal(f, run, ci)).toMatchObject({ ok: false });
+      expect(releaseAuthorityOfTask(f.store, f.taskId)).toBeNull();
+    }
+    // Nor does ending the note on someone's word: only a passing reading ends it, and the seal reads CI again itself.
+    expect(liftCiHold(f.store, { taskId: f.taskId, candidate: f.approved, ci: pending(f.approved), ask: false, now: LATER })).toMatchObject({ ok: false, why: expect.stringContaining("hasn't finished") });
+    expect(releaseCiRunningOf(f.store, f.taskId)).not.toBeNull();
+  });
+
+  test("only the plane's reading of exact-head CI passing ends the note, quietly (the person was already asked)", () => {
+    const f = open();
+    noteCiRunning(f.store, { taskId: f.taskId, candidate: f.approved, now: RELEASE_NOW });
+    expect(liftCiHold(f.store, { taskId: f.taskId, candidate: "e".repeat(40), ci: green("e".repeat(40)), ask: true, now: LATER })).toMatchObject({ ok: false });
+    expect(liftCiHold(f.store, { taskId: f.taskId, candidate: f.approved, ci: { ...green(f.approved), complete: false }, ask: true, now: LATER })).toMatchObject({ ok: false });
+    expect(releaseCiRunningOf(f.store, f.taskId)).not.toBeNull();
+    expect(liftCiHold(f.store, { taskId: f.taskId, candidate: f.approved, ci: green(f.approved), ask: true, now: LATER })).toEqual({ ok: true });
+    expect(releaseCiRunningOf(f.store, f.taskId)).toBeNull();
+    expect(notices(f)).toEqual([]);
+    expect(RELEASE_CI_RUNNING_WORDS).toBe("GitHub's checks are still running; nothing deploys until they pass.");
   });
 });

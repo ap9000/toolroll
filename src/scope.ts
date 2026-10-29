@@ -50,6 +50,7 @@ import { type EvidenceKind } from "./contracts/acceptance-terms.js";
 import { parseContract } from "./contracts/contract.js";
 import { readAcceptance, readScopeTerms, storedRubricSchema, type AcceptanceCriterion, type AcceptanceProblem, type ScopeTerms } from "./contracts/scope.js";
 import type { Store, Mutation } from "./store.js";
+import { releaseCiHoldOf, releaseCiHoldWords } from "./release-ci-hold.js";
 import type { QualityMode } from "./quality.js";
 import type { AuthMode } from "./keys.js";
 import type { ProviderId } from "./provider.js";
@@ -1538,6 +1539,9 @@ export function approve(
     // A release scope's yes opens its authority record (release-once.md); say first why it can't.
     const releaseProblem = scope.releaseTerms == null ? null : releaseSealProblem(store, scope.releaseTerms);
     if (releaseProblem !== null) return { ok: false as const, reason: "policy" as const, message: releaseProblem };
+    // Filed while CI still ran: nobody approves it before the plane read exact-head CI passing (round 1, finding 4).
+    const ciHold = releaseCiHoldOf(store, taskId);
+    if (ciHold !== null) return { ok: false as const, reason: "policy" as const, message: releaseCiHoldWords(ciHold) };
     const gate = store.approvalGate(taskId, by, "person");
     if (gate.verdict === "refuse") return { ok: false as const, reason: gate.reason };
     // A remembered password (cockpit B2) approves only everyday work: one approver, standard permissions, terms a

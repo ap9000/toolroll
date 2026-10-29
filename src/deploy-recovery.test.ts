@@ -9,7 +9,8 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { recoverFailedDeployment, recoverOnExit, waitUntilHealthy } from '../scripts/deploy-recovery.mjs';
-import { codingBackupBeforeSwap, restoreDeploymentBackup, stopProved } from '../scripts/deploy-phases.mjs';
+import { codingBackupBeforeSwap, processTree, recordedServicePids, restoreDeploymentBackup, stopProved } from '../scripts/deploy-phases.mjs';
+import { releaseStaleCodingOwner } from './coding-update.js';
 import { fakePid } from '../test/fake-pid.js';
 import { deploymentChild } from '../test/deploy-process.js';
 import { openStore } from './store.js';
@@ -244,7 +245,7 @@ test('a migrated database is replaced by the verified backup, and what it held i
 
 /** deploy-browser's stop proof, with the processes still running and launchd's answer supplied. */
 const stopProof = (running: number[], launchdHasLabel: boolean) => (r: object) =>
-  stopProved(r, { alive: (pid: number) => running.includes(pid), loaded: () => launchdHasLabel }) as boolean;
+  stopProved(r, { alive: (pid: number) => running.includes(pid), loaded: () => launchdHasLabel, remaining: () => [] }) as boolean;
 
 test('a stop is proved from whichever service record the journal holds, never from none', () => {
   // Review of build #2234: a journal with only one record put undefined in the pid set and never proved the stop.
@@ -262,6 +263,51 @@ test('a stop is proved from whichever service record the journal holds, never fr
   // A recorded pid that is not a real process id still refuses.
   expect(stopProof([], false)({ oldService: { supervisor: 1, children: [] } })).toBe(false);
   expect(stopProof([], false)({ oldService: { supervisor: String(oldSupervisor), children: [] } })).toBe(false);
+});
+
+test.each([[['a replacement worker still draining']], [undefined], [null]])('recovery refuses an unrecorded or unreadable live process list: %j', remaining => {
+  const r = { oldService: { supervisor: fakePid(1), children: [fakePid(2)] } };
+  const e = effects();
+  const proof = () => stopProved(r, { alive: () => false, loaded: () => false, remaining: () => remaining });
+  expect(recoverFailedDeployment('stopping', { ...e, stopProved: proof })).toBeNull();
+  expect(e.done).toEqual([]);
+});
+
+test('codex round 1 #3: the stop proof covers up\'s console and worker, and a dead console releases its stale coding owner', async () => {
+  const supervisor = fakePid(11), up = fakePid(12), consolePid = fakePid(13), worker = fakePid(14), restartedWorker = fakePid(15);
+  const r = { oldService: { supervisor, children: [up], roles: [{ role: 'console', pid: consolePid }, { role: 'worker', pid: worker }] },
+    stoppingService: { supervisor, children: [up], roles: [{ role: 'console', pid: consolePid }, { role: 'worker', pid: restartedWorker }] } };
+  expect(recordedServicePids(r)).toEqual([supervisor, up, consolePid, worker, restartedWorker]);
+  // `up` and its supervisor gone is not a stop while a role still drains (a worker restarted after the first record too).
+  for (const role of [consolePid, worker, restartedWorker]) expect(stopProof([role], false)(r)).toBe(false);
+  expect(stopProof([], false)(r)).toBe(true);
+  // A role record that isn't a process id refuses the proof.
+  expect(stopProof([], false)({ oldService: { supervisor, children: [up], roles: [{ role: 'worker', pid: '14' }] } })).toBe(false);
+  expect(stopProof([], false)({ oldService: { supervisor, children: [up], roles: [{ role: 'worker' }] } })).toBe(false);
+  // The console role owns the coding workspace: killed before its close, its record names it. Proved gone with the
+  // service's other processes, the deploy releases it; with only the supervisor and `up` it never would.
+  const dir = mkdtempSync(join(tmpdir(), 'deploy-roles-'));
+  try {
+    const workspace = new CodingWorkspace({ database: join(dir, 'orders.db.coding.sqlite'), worktreeRoot: join(dir, 'worktrees'), permissions: () => ({ sandbox: 'workspace-write' }) });
+    await workspace.close();
+    const db = new DatabaseSync(join(dir, 'orders.db.coding.sqlite'));
+    db.prepare('UPDATE coding_owner SET token=?,pid=?,native_pid=NULL,clean=0').run('owner-token', consolePid);
+    db.close();
+    const orders = new DatabaseSync(join(dir, 'orders.db'));
+    const dead = () => false;
+    expect(() => releaseStaleCodingOwner(orders as never, [supervisor, up], dead)).toThrow(`process ${consolePid} is not one this update stopped`);
+    expect(releaseStaleCodingOwner(orders as never, recordedServicePids(r), dead)).toEqual({ pid: consolePid, nativePid: null });
+    orders.close();
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('codex round 1 #3: a failed new service is stopped as its whole tree, and an unreadable level refuses', () => {
+  const tree: Record<number, number[]> = { 100: [200], 200: [300, 301], 300: [400] };
+  const pgrep = (_: string, args: string[]) => { const kids = tree[Number(args[1])] ?? []; return { status: kids.length > 0 ? 0 : 1, stdout: kids.join('\n') }; };
+  expect(processTree(100, pgrep)).toEqual([100, 200, 300, 301, 400]);
+  expect(processTree(100, () => ({ status: 3, stdout: '' }))).toBeNull();
+  // A depth bound must refuse an incomplete tree, never claim it enumerated every descendant.
+  expect(processTree(100, (_: string, args: string[]) => ({ status: 0, stdout: String(Number(args[1]) + 1) }))).toBeNull();
 });
 
 test('the coding database goes back with orders.db, and what it held is kept aside with it', () => {

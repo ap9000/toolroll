@@ -316,3 +316,84 @@ type GroupRun = { passed: number; failed: number; skipped: number; total: number
 type ParallelRun = { suite: "flows" | "app" | null; total: number; groups: Map<string, GroupRun> };
 
 const emptyGroup = (): GroupRun => ({ passed: 0, failed: 0, skipped: 0, total: null, result: null });
+
+/** How often a running check's display snapshot may be written: the page and the phone read it, nobody needs more. */
+export const CHECK_PROGRESS_WRITE_MS = 1_000;
+
+export type ProgressWriter = {
+  /** A display snapshot: written now if the last write is old enough, else kept (the newest wins) for one later write.
+   * Never throws: a display write that fails is kept (a final one until it is saved) for the next write or flush. */
+  push: (snapshot: CheckProgressSnapshot) => void;
+  /** Write a kept snapshot now (the final one again, when its write failed); nothing waits after. Never throws: true
+   * when nothing is left unsaved. */
+  flush: () => boolean;
+};
+
+/**
+ * Coalesced display writes for a running check (isolated-checks.md, stage 1): a test runner can print thousands of
+ * lines a second, and every changed snapshot was its own write transaction. Display snapshots are now written at most
+ * once per interval, the latest one winning; the final snapshot is written at once, exactly, and nothing older is ever
+ * written after it. A final snapshot whose write fails is kept until a write of it succeeds (the next flush, or a later
+ * final push replacing it): Codex review round 1, finding 6. A failing display store never throws out of the writer,
+ * so it can't keep the check's outcome from being sealed. The check's evidence (its log, exit and report) never passes
+ * through here.
+ */
+export function coalescedProgressWriter(save: (snapshot: CheckProgressSnapshot) => void, options: {
+  intervalMs?: number;
+  now?: () => number;
+  setTimer?: (run: () => void, ms: number) => unknown;
+  clearTimer?: (timer: unknown) => void;
+} = {}): ProgressWriter {
+  const intervalMs = options.intervalMs ?? CHECK_PROGRESS_WRITE_MS;
+  const now = options.now ?? (() => Date.now());
+  const setTimer = options.setTimer ?? ((run, ms) => { const timer = setTimeout(run, ms); timer.unref?.(); return timer; });
+  const clearTimer = options.clearTimer ?? (timer => clearTimeout(timer as ReturnType<typeof setTimeout>));
+  let lastWrite = Number.NEGATIVE_INFINITY;
+  let pending: CheckProgressSnapshot | null = null;
+  let timer: unknown = null;
+  // Once a final snapshot arrives nothing older is written; `unsavedFinal` holds it until a write of it succeeds.
+  let finished = false;
+  let unsavedFinal: CheckProgressSnapshot | null = null;
+  const cancel = (): void => { if (timer !== null) clearTimer(timer); timer = null; };
+  /** One display write; false when the store refused it (display only: never thrown). */
+  const write = (snapshot: CheckProgressSnapshot): boolean => {
+    lastWrite = now();
+    try { save(snapshot); return true; } catch { return false; }
+  };
+  const writeFinal = (): boolean => {
+    if (unsavedFinal === null) return true;
+    if (write(unsavedFinal)) unsavedFinal = null;
+    return unsavedFinal === null;
+  };
+  const later = (): void => {
+    timer = null;
+    const snapshot = pending;
+    pending = null;
+    // A display write that fails here only leaves the page one snapshot behind; the next one (or the final) follows.
+    if (snapshot !== null && !finished) write(snapshot);
+  };
+  return {
+    push(snapshot) {
+      if (snapshot.final) {
+        finished = true;
+        cancel();
+        pending = null;
+        unsavedFinal = snapshot;
+        writeFinal();
+        return;
+      }
+      if (finished) return;
+      const wait = lastWrite + intervalMs - now();
+      if (wait <= 0 && timer === null) { pending = null; write(snapshot); return; }
+      pending = snapshot;
+      if (timer === null) timer = setTimer(later, Math.max(0, wait));
+    },
+    flush() {
+      cancel();
+      const snapshot = pending;
+      pending = null;
+      if (finished) return writeFinal();
+      return snapshot === null || write(snapshot);
+    },
+  };
+}

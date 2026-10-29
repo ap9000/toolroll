@@ -77,6 +77,7 @@ import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
 import { liveReleaseOf } from "./scope.js";
+import { releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
 import { APPROVAL_BASES, approvalOf, machineActing, personProof, proofDetailOf, quarantinedAuthor, sealOriginOf, type ScopeAuthor, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
 import { resolveScopeProfile, resolveRouteCandidates, exactPinOf, routeOfTask, agentChoicesFor } from "./agentconfig.js";
 import {
@@ -8361,6 +8362,9 @@ export class Store {
         // ceremony (scope.ts approve), so a machine — the lead's token, a remote API run — never mints one, whatever
         // road it came by.
         if (basis === undefined && machineActing()) return false;
+        // A RELEASE WAITING FOR CI (Codex review round 1, finding 4): filed while its pull request's checks still ran,
+        // only the automatic road (which proves CI itself) seals it until the plane read exact-head CI passing.
+        if (basis?.kind !== "auto-check" && basis?.kind !== "auto-green" && releaseCiHoldOf(this, taskId) !== null) return false;
         // `carried` is written by the carry transaction alone (carryReleaseApproval), never through a seal.
         if ((basis as { kind: string } | undefined)?.kind === "carried") return false;
         // THE COORDINATOR QUARANTINE, enforced in the primitive (MCP spec
@@ -24363,6 +24367,8 @@ export function reserveRelease(store: Store, input: { authority: number; kind: "
   return store.transact(() => {
     const a = releaseAuthority(store, input.authority);
     if (a === null) return { ok: false as const, why: `No release ${input.authority}.` };
+    // Early approval authorizes the check, never an irreversible operation before the plane confirms exact-head CI.
+    if (releaseCiRunningOf(store, input.taskId) !== null) return { ok: false as const, why: "This release still waits for GitHub CI. Resume it with `toolroll release`." };
     const at = input.now.toISOString();
     // Expiry stops every live state; an operation already reserved settles only through reconciliation.
     if (a.expiresAt <= at) return { ok: false as const, why: "The release approval expired." };
@@ -24398,6 +24404,7 @@ export function runReleaseOperation(store: Store, id: string, epoch: number, now
     const op = releaseOperation(store, id);
     const a = op === null ? null : releaseAuthority(store, op.authority);
     if (op === null || a === null || op.state !== "reserved" || op.epoch !== epoch || a.leaseEpoch !== epoch) return false;
+    if (releaseCiRunningOf(store, op.taskId) !== null) return false;
     // Past the expiry nothing new starts; the reserved operation is settled by reconciliation instead.
     if (a.expiresAt <= now.toISOString()) return false;
     // The lease that reserved it still holds (a person's direct deploy: still no coordinator holding the release), and
@@ -24692,3 +24699,20 @@ export function agentsLiveRuns(store: Store, endedSince: Date): AgentsLiveRun[] 
   }));
 }
 
+
+
+/**
+ * This runner's watches a predecessor left needing recovery (Codex review round 1, finding 2): a watch lease still
+ * live, or one whose holder left a claim open (or a run open under a claim a reaper already released). A replacement
+ * worker takes each over — recovering the holder's incarnation in the same transaction — before it admits new work,
+ * whichever projects its start names (a project being removed when the predecessor died is in none of them).
+ */
+export function predecessorWatches(store: Store, runner: string, now: Date): { repo: string; owner: string }[] {
+  return store.handle.prepare(
+    `SELECT w.repo AS repo, w.owner AS owner FROM watch_lease w
+      WHERE w.runner = ? AND (w.expires_at > ? OR EXISTS (
+        SELECT 1 FROM claim c WHERE c.runner = w.runner AND c.incarnation = w.owner
+          AND (c.released_at IS NULL OR EXISTS (SELECT 1 FROM run r WHERE r.lease_id = c.lease_id AND r.outcome IS NULL))))
+      ORDER BY w.repo`,
+  ).all(runner, now.toISOString()).map(row => ({ repo: String(row["repo"]), owner: String(row["owner"]) }));
+}

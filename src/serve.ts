@@ -15,19 +15,15 @@ import { LIVE_VIEW_CONSENT, liveCommandsShown, liveViewConsentDigest } from "./l
 import { html, htmlString, jsonScript, textHtml, type Html } from "./html.js";
 import type { RunActivity } from "./activity-line.js";
 import { browserAssetsAvailable,browserWorkspaceDocument } from './browser-shell.js';
-import { NO_COUNTS, projectStates, STATE_WORDS, type ProjectState } from './agent-state.js';
+import { accessKey, countsKey, indexKey, projectSummaryOf, RevisionCache, summaryKey } from './console-chrome.js';
 import { usageChipOf } from './limits-ui.js';
-/** Tasks the rail lists under a project; the rest are a count that links to the project's tasks. */
-const RAIL_TASKS = 6;
 /** Any header a proxy adds: a request carrying one is never "from this computer" (password freshness, one-time links). */
 const PROXY_HEADER = /^(forwarded|via|x-forwarded-.+|x-real-ip|x-client-ip|x-original-.+|x-cluster-client-ip|true-client-ip|cf-connecting-ip|fastly-client-ip|x-proxyuser-ip)$/i;
-/** Asks a project names for the chime (its count is complete beyond them). */
-const ASKS_PER_PROJECT = 100;
 /** How often the background checks look at what is due (docs/plans/get-side-effects.md), and how often this
  * computer's agent sign-ins are asked again. */
 const BACKGROUND_CHECKS_MS = 30_000;
 const LOCAL_AGENTS_EVERY_MS = 2 * 60_000;
-import { boundProjectSummary,browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserAsk,type BrowserProjectState,type BrowserRailTask,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
+import { browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserProjectState,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
 import { sharedActionPayload } from './chat-actions.js';
 import { prepareCodingContext } from './coding-context.js';
 import { CodingWorkspace } from './coding-workspace.js';
@@ -63,7 +59,8 @@ import { createTeamRuntime } from './team-runtime.js';
 import { createPersonalQueueRuntime } from './lead-queue-runtime.js';
 import type { LeadQueueRow } from './lead-queue.js';
 import { type ToolsView } from "./tools-ui.js";
-import { WORK_INDEX_MAX_LIMIT, workCountsByProject, workIndexPage } from "./work-index.js";
+import { WORK_INDEX_MAX_LIMIT, workCountsByProject, workIndexPage, type WorkIndexOptions, type WorkIndexPage } from "./work-index.js";
+import type { WorkSummaryAccess } from "./work-summary.js";
 import { WORKSPACE_MOTION_SCRIPT } from "./workspace-motion.js";
 import { prepareWorkspaceRevision,WorkspaceValidatorCache } from "./workspace-revision.js";
 /**
@@ -288,6 +285,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     };
   };
   const workspaceRevision = prepareWorkspaceRevision(store);
+  // The sidebar, the Tasks count and the crew: read at most once per workspace revision per reader's exact access
+  // (console-chrome.ts), and filled from a read worker before a page renders when one is attached.
+  const chromeReads = new RevisionCache(workspaceRevision, clock);
   const workspaceIncarnation = randomBytes(16).toString('hex');
   const workspaceValidators = new WorkspaceValidatorCache();
   const providerHome = options.connectionHome ?? homedir();
@@ -866,6 +866,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       refusal: (answer: ServerResponse, status: number, body: Html) => sendScreen(answer, status,
         screen(status === 404 ? "Not found" : "Request refused", body, { chrome: chromeFor(who.via === "cookie" ? who.session.project : null, "work") })),
       workspaceRead,
+      freshWork: ["request", "task", "result"].some(name => url.searchParams.has(name)),
+      ...(workspaceRead && typeof request.headers['if-none-match'] === 'string' ? { workspaceIfNoneMatch: request.headers['if-none-match'] } : {}),
       workspaceRequest: url.searchParams.get('request'),
     };
     if (method === "GET" || method === "POST") return freshFacts.run(fresh, () => provenPasswordAccount.run(passwordProof, () => requestContext.run(requestFacts, async () => {
@@ -915,6 +917,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
             // no database row changed (for example an expired worker lease).
             facts.workspaceValidator = { key, revision, expiresAt,
               etag: '"' + createHash('sha256').update(`${key}:${revision}:${expiresAt}`).digest('hex') + '"' };
+          }
+          await prefetchChrome(route, url, who);
+          // The worker wait lets a sign-out, credential/access change or console ceiling change land. Prove the
+          // cookie and route again before rendering protected content or answering with a content validator.
+          if (who.via === 'cookie') {
+            const current = identify(request, false);
+            if (current?.via !== 'cookie' || current.session !== who.session) return redirect(response, loginHref(url.pathname + url.search));
+            if (!projectRequestAllowed(route, route.project, url, who, request, response, null)) return;
           }
           return handleGet(route, url, who, request, response);
         }
@@ -1443,7 +1453,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         const project = s.chrome.active === 'chat' ? null : s.chrome.project;
         crew = extras.team?.tasks ? browserCrewFromIndex(extras.team.tasks, extras.team.selected?.id) : requestFacts.workCrew?.project === project ? browserCrewFromIndex(requestFacts.workCrew.page)
           // The reader's own lead's claims read "<name> is on it" here too.
-          : browserCrewOf(store, clock(), { principal: 'operator', repos: managedRepos(), includeUnplaced: false, viewer: requestFacts.actor ?? null }, { evidenceRoot, project });
+          : (() => {
+            const access = { principal: 'operator' as const, repos: managedRepos(), includeUnplaced: false, viewer: requestFacts.actor ?? null };
+            return chromeRead(`crew\u0000${accessKey(access)}\u0000${project ?? ''}`, () => browserCrewOf(store, clock(), access, { evidenceRoot, project }));
+          })();
       } catch { notices.push('Crew updates are unavailable. Open Tasks to inspect saved work.'); }
       // A running row says what its agent did last, and when (the task page's own line).
       try {
@@ -1524,7 +1537,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           workspaceValidators.set(validator.key, validator);
           response.setHeader('ETag', validator.etag);
         }
-        return respond(response, status, 'application/json; charset=utf-8', JSON.stringify(workspace));
+        const body = JSON.stringify(workspace);
+        // Every other page's re-read after a live `change` (chat keeps its own validator, and its receipt, task and
+        // result reads none): when what it renders now is exactly what the page holds, it hears 304 and keeps its view
+        // (no transfer, no re-render).
+        if (status === 200 && validator === undefined && path.pathname !== '/chat') {
+          const etag = '"w' + createHash('sha256').update(body).digest('base64url') + '"';
+          response.setHeader('ETag', etag);
+          if (requestFacts.workspaceIfNoneMatch === etag) return respond(response, 304, 'application/json; charset=utf-8', '');
+        }
+        return respond(response, status, 'application/json; charset=utf-8', body);
       }
       const nonce = randomBytes(16).toString('base64');
       // React owns the conversation and its refresh/draft lifecycle. Native
@@ -1561,8 +1583,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     return page(response, status, document, nonce, s.functional?.fetches === true || chromeLayer || sensitiveChrome !== "");
   }
   /** The needs-you count every surface wears, read from this request's own
-   * Work counts (one query per request, never a cached earlier one), so a
-   * live page's badge and its Needs you tab always agree. */
+   * Work counts (one read per request, kept only while the workspace revision
+   * it was read at stands), so a live page's badge and its Needs you tab
+   * always agree. */
   function needsYouBadge(project: string | null): { count: number; saturated: boolean } {
     return needsYouCount(project);
   }
@@ -1591,42 +1614,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   function projectSummary(): BrowserProjectState[] {
     const projects = sidebarProjects();
     const actor = requestContext.getStore()?.actor ?? '';
-    const states = new Map(projectStates(store, workAccess(), actor, clock(), evidenceRoot, projects.map(one => one.path)).map(one => [one.repo, one]));
-    // A row that needs a person or failed says what the Tasks list says it needs (its own next step); a row at work says
-    // what its agent did last; a finished one says Done.
-    const asking = [...states.values()].flatMap(one => one.families.slice(0, RAIL_TASKS)).filter(one => one.state === 'needs-you' || one.state === 'failed').map(one => one.rootId);
-    const needWords = new Map<string, string>();
-    if (asking.length > 0) {
-      try {
-        // Every row the rail may list, in pages the index allows.
-        for (let at = 0; at < asking.length; at += WORK_INDEX_MAX_LIMIT)
-          for (const item of workIndexPage(store, clock(), workAccess(), { roots: asking.slice(at, at + WORK_INDEX_MAX_LIMIT), limit: WORK_INDEX_MAX_LIMIT, root: evidenceRoot }).items)
-            needWords.set(item.rootId, item.status.detail !== '' ? item.status.detail : item.status.label);
-      } catch { /* the rows keep their state's words */ }
-    }
-    // The chime's subjects: an opaque key per obligation and version, scoped to this reader (no words, no ids in it).
-    const keyOf = (...parts: (string | number)[]) => createHash('sha256').update([actor, ...parts].join('\u0000')).digest('base64url').slice(0, 22);
-    // Newest first, so a new ask always has a key however many older ones wait (those were heard when they were new).
-    const asksOf = (state: ProjectState | undefined): BrowserAsk[] => [
-      ...(state?.families ?? []).flatMap(one => one.ask === undefined ? [] : [{ at: one.ask.at, ask: { key: keyOf('task', one.rootId, one.ask.version), task: one.rootId, run: one.ask.run, at: one.ask.at } }]),
-      ...(state?.flowAsks ?? []).map(one => ({ at: one.at, ask: { key: keyOf('flow', one.card, one.stage, one.entry), task: null, run: null, at: one.at } })),
-    ].sort((a, b) => b.at.localeCompare(a.at)).slice(0, ASKS_PER_PROJECT).map(one => one.ask);
-    const railOf = (state: ProjectState | undefined) => {
-      const families = state?.families ?? [];
-      const tasks = families.slice(0, RAIL_TASKS).flatMap((one): BrowserRailTask[] => {
-        const task = store.getTask(one.rootId);
-        const line = one.state === 'needs-you' || one.state === 'failed' ? needWords.get(one.rootId) ?? null : one.line;
-        return task === null ? [] : [{ id: one.rootId, title: task.title, href: `/t/${encodeURIComponent(one.rootId)}`, state: one.state, line: line ?? STATE_WORDS[one.state] }];
-      });
-      return { tasks, more: Math.max(0, families.length - RAIL_TASKS), asks: asksOf(state) };
-    };
-    const rows: BrowserProjectState[] = projects.map(one => {
-      const state = states.get(one.path);
-      return { path: one.path, name: one.name, href: `/work?project=${encodeURIComponent(one.path)}`, state: state?.state ?? 'idle', counts: state?.counts ?? { ...NO_COUNTS }, ...railOf(state) };
-    });
-    const unplaced = states.get(null);
-    if (unplaced !== undefined && unplaced.state !== 'idle') rows.push({ path: null, name: 'No project', href: '/work', state: unplaced.state, counts: unplaced.counts, ...railOf(unplaced) });
-    return boundProjectSummary(rows);
+    const access = workAccess();
+    return chromeRead(summaryKey(actor, access, projects), () => projectSummaryOf(store, clock(), access, actor, projects, evidenceRoot));
   }
   /** What one account may see now, as the summary room keys it: a narrowed ceiling or grant is a different key, so a
    * snapshot read for the wider scope never reaches it. Null: no such account. */
@@ -1718,12 +1707,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       ...(scope === undefined ? {} : { scope }),
     };
   }
-  // All project counts are read together. No task artifacts or processes are
-  // inspected to paint a badge or a project switcher.
+  // All project counts are read together, at most once per workspace revision
+  // for this reader's access. No task artifacts or processes are inspected to
+  // paint a badge or a project switcher.
   function projectCounts(now: Date) {
     const facts = requestContext.getStore();
     if (facts?.workCounts !== undefined) return facts.workCounts;
-    const counts = workCountsByProject(store, now, workAccess());
+    const access = workAccess();
+    const counts = chromeRead(countsKey(access), () => workCountsByProject(store, now, access));
     if (facts !== undefined) facts.workCounts = counts;
     return counts;
   }
@@ -1731,6 +1722,58 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const count = projectCounts(clock()).filter(one => project === null || one.repo === project)
       .reduce((sum, one) => sum + one.totals['needs-you'], 0);
     return { count, saturated: false };
+  }
+  /** One work index page for an already-admitted reader, through the chrome cache: a whole view the chat landing reads
+   * on every refresh. */
+  function sharedIndexPage(access: WorkSummaryAccess, options: WorkIndexOptions): WorkIndexPage {
+    // Receipt reconciliation, task and result reads always read work afresh (disk state included).
+    if (requestContext.getStore()?.freshWork === true) return workIndexPage(store, clock(), access, options);
+    return chromeRead(indexKey(access, options), () => workIndexPage(store, clock(), access, options));
+  }
+  /** A chrome read for this request: what it already read (its prefetch included) stands for the whole request, else
+   * the revision cache's value, else `compute()` now. */
+  function chromeRead<T>(key: string, compute: () => T): T {
+    const facts = requestContext.getStore();
+    const held = facts?.chromeReads?.get(key);
+    if (held !== undefined) return held as T;
+    const value = chromeReads.read(key, compute);
+    if (facts !== undefined) (facts.chromeReads ??= new Map()).set(key, value);
+    return value;
+  }
+  /** The chat landing's three whole views (chat.ts chatHomeOf), as it asks for them. */
+  const chatHomeViews = (): WorkIndexOptions[] => (["all", "needs-you", "completed"] as const)
+    .map(view => ({ view, limit: WORK_INDEX_MAX_LIMIT, ...(evidenceRoot === undefined ? {} : { root: evidenceRoot }) }));
+  /** Pages that wear the chrome (the sidebar's states and the Tasks count). */
+  const CHROME_PAGES = new Set(["home", "work", "board", "agents", "agents.live", "task.page", "run.page", "chat.page", "review", "tasks", "inbox",
+    "next", "done", "projects.page", "flows.page", "flow.page", "settings.page", "decision.page", "menu"]);
+  /** Before a chromed page renders: its chrome reads (and the chat landing's views) run on a read worker, so the
+   * request thread finds them cached instead of computing them. The reader is the one this request admitted; the keys
+   * carry its exact access (console-chrome.ts). Without a worker, or when one fails, the page computes them as before. */
+  async function prefetchChrome(route: RouteDeclaration, url: URL, who: Who): Promise<void> {
+    if (reads === null || who.via !== "cookie" || !CHROME_PAGES.has(route.id)) return;
+    try {
+      const actor = requestContext.getStore()?.actor ?? "";
+      const access = workAccess(), projects = sidebarProjects(), now = clock();
+      // Populate only the revision cache. Each answer must still pass its revision/expiry check when rendering:
+      // another job can remain pending while an earlier answer's approval or Needs-you state changes.
+      const fill = async <T>(key: string, read: () => Promise<T>) => { await chromeReads.fill(key, read); };
+      const jobs = [
+        fill(countsKey(access), () => reads.workCounts(now, access)),
+        fill(summaryKey(actor, access, projects), () => reads.projectSummary(now, access, actor, projects, evidenceRoot)),
+      ];
+      if (route.id === "chat.page") {
+        if (!["project", "room", "team"].some(name => url.searchParams.has(name)) && requestContext.getStore()?.freshWork !== true)
+          for (const options of chatHomeViews()) jobs.push(fill(indexKey(access, options), () => reads.workIndexPage(now, access, options)));
+        // The conversation's briefing (chat.ts: the fleet snapshot's states), read as chat reads it.
+        const repos = managedRepos();
+        if (repos.length > 0 && requestContext.getStore()?.freshWork !== true) {
+          const fleet = { principal: "operator" as const, repos, includeUnplaced: false, viewer: who.name };
+          const options: WorkIndexOptions = { limit: 100, ...(evidenceRoot === undefined ? {} : { root: evidenceRoot }) };
+          jobs.push(fill(indexKey(fleet, options), () => reads.workIndexPage(now, fleet, options)));
+        }
+      }
+      await Promise.all(jobs);
+    } catch { /* the page computes what is missing */ }
   }
   /** A live page's own beat without a docked chat: 10 s while any admitted task is building, else 30 s. */
   function liveRefreshSeconds(): number {
@@ -1998,6 +2041,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get projectFamilyPeek(): ServerRuntime['projectFamilyPeek'] { return projectFamilyPeek; },
     get needsYouBadge(): ServerRuntime['needsYouBadge'] { return needsYouBadge; },
     get liveRefreshSeconds(): ServerRuntime['liveRefreshSeconds'] { return liveRefreshSeconds; },
+    get sharedIndexPage(): ServerRuntime['sharedIndexPage'] { return sharedIndexPage; },
     get chatKeyFor(): ServerRuntime['chatKeyFor'] { return chatKeyFor; },
     get chatCatalog(): ServerRuntime['chatCatalog'] { return chatCatalog; },
     get chatCatalogKnown(): ServerRuntime['chatCatalogKnown'] { return chatCatalogKnown; },
