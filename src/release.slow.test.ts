@@ -1,3 +1,4 @@
+import { retriedInside } from "./check-failure.js";
 import { mkdtempSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1502,6 +1503,14 @@ describe("toolroll release: approve automatically when checks pass", () => {
     expect(prChecksVerdict([at(1, "success", { suite: null }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
     expect(prChecksVerdict([at(1, "success", { id: null }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
     expect(prChecksVerdict(rest, SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "pending" });
+  });
+
+  test("eval review 1 #3: a person's release says when its retry record can't be read, never that nothing was retried", async () => {
+    const { s, adapters } = autoWorld({ setting: false });
+    adapters.release!.standing = async () => ({ ok: true, retried: null });
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
+    expect(s.said).toContainEqual(expect.stringContaining("whether anything passed only on a retry is unknown"));
+    expect(retriedInside(null)).toBeNull();
   });
 
   test("eval review 1 #1: a newer workflow run that renames or drops a job never erases its earlier failure", () => {

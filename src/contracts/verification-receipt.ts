@@ -101,7 +101,10 @@ export const verificationReceiptSchema = versioned(RECEIPT_VERSION, {
   /** Version 3: the attempt sealed before the check ran, and its sealed report (null: it gave none). */
   check: z.strictObject({ attempt: z.enum(["full", "targeted"]), report: z.string().nullable(), inventory: z.string().nullable(),
     /** The command's own exit, kept here when `result` reads a failed attempt because the coverage fell short. */
-    exitCode: z.int().min(0).max(255).nullable().optional() }).optional(),
+    exitCode: z.int().min(0).max(255).nullable().optional(),
+    /** What passed only on a retry inside the check (check-failure.ts retriedInside), sealed here from its report: null
+     * when it gave no valid report, so nobody can tell (unknown, never "no retries"). Absent on older receipts. */
+    retried: z.array(z.string().min(1).max(800)).max(6000).nullable().optional() }).optional(),
   /** Version 3, composed: the full check A and every link the reader proves again. */
   composed: z.strictObject({
     base: z.int().min(1), baseReceipt: z.string(), baseReport: z.string(), authority: z.int().min(1), carries: z.array(z.int()),

@@ -142,8 +142,13 @@ export function changedPaths(facts: TreeFacts, base: TreeFacts): string[] {
  * can run is owed. The check is told these on its handshake and runs at least them.
  */
 export function fullObligationsOf(facts: TreeFacts, base: TreeFacts | null): CheckPart[] {
-  const has = (path: string) => facts.entries.some(one => one.path === path && (one.mode === "100644" || one.mode === "100755"));
-  const journeys = has("scripts/flows-e2e.mjs") && has("scripts/app-e2e.mjs");
+  // What the tree can run is read from the candidate AND the last release (security scan): a candidate that deletes a
+  // journey script, the upgrade path or its unit files doesn't take away what was owed at the base — the part stays
+  // owed, and a check that can't run it has no result. Any entry counts, a symlink included, never only a regular file.
+  const trees = [facts, ...(base === null ? [] : [base])];
+  const has = (path: string) => trees.some(tree => tree.entries.some(one => one.path === path));
+  const units = trees.some(tree => tree.units.length > 0 || tree.entries.some(one => isUnitFile(one.path)));
+  const journeys = has("scripts/flows-e2e.mjs") || has("scripts/app-e2e.mjs");
   const changed = base === null ? null : changedPaths(facts, base);
   const code = changed?.filter(path => !NOTHING_PATHS.some(re => re.test(path))) ?? null;
   const checks = code === null || code.length > 0;
@@ -151,7 +156,7 @@ export function fullObligationsOf(facts: TreeFacts, base: TreeFacts | null): Che
   const upgrade = has("scripts/upgrade-path.mjs") && (changed === null || changed.some(upgradeRelevant));
   return [
     "typecheck", "build",
-    ...(checks && facts.units.length > 0 ? ["unit" as const] : []),
+    ...(checks && units ? ["unit" as const] : []),
     ...(checks && journeys ? ["flows" as const, "app" as const] : []),
     ...(real && journeys ? ["flows-real" as const, "app-real" as const] : []),
     ...(upgrade ? ["upgrade" as const] : []),
@@ -161,9 +166,9 @@ export function fullObligationsOf(facts: TreeFacts, base: TreeFacts | null): Che
 /** What a check must account for, sealed before it runs: every unit file of the tree, whatever runs (a targeted
  * check accounts for the rest through its base), and the parts it owes (a full check's from fullObligationsOf), and
  * whether CI may stand in for its unit suite. */
-export function inventoryOf(facts: TreeFacts, plan: TargetedPlan | null, full: { owed: readonly CheckPart[]; ciSubstitute: boolean } = { owed: FULL_PARTS, ciSubstitute: false }): CheckInventory {
+export function inventoryOf(facts: TreeFacts, plan: TargetedPlan | null, full: { owed: readonly CheckPart[]; release: boolean } = { owed: FULL_PARTS, release: true }): CheckInventory {
   if (plan !== null) return { version: 1, units: facts.units, parts: ["typecheck", "build", ...plan.parts.filter(one => one !== "typecheck" && one !== "build")] };
-  return { version: 1, units: facts.units, parts: [...full.owed], ciSubstitute: full.ciSubstitute };
+  return { version: 1, units: facts.units, parts: [...full.owed], ciSubstitute: !full.release, release: full.release };
 }
 
 /** A check about to run: its handshake (written on stdin, then closed) and the facts sealed with it. */
@@ -188,7 +193,8 @@ export type PreparedAttempt = {
 export function prepareCheckAttempt(store: Store, root: string, input: {
   runId: number; repo: string; head: string; command: VerifyCommand; access: string;
   authority?: number | null; plan?: TargetedPlan | null; snapshot?: ObligationSnapshot | null; watch?: readonly string[];
-  /** A release's check (signed release terms or a release authority): CI never stands in for its unit suite. */
+  /** A release's check (signed release terms or a release authority): CI never stands in for its unit suite. Sealed in
+   * the inventory (whose digest the attempt row holds); only an explicit false lets CI stand in. */
   release?: boolean;
 }, now: Date): PreparedAttempt | null {
   if (checkAttemptOf(store, input.runId) !== null) return null;
@@ -201,8 +207,9 @@ export function prepareCheckAttempt(store: Store, root: string, input: {
   const baseline = plan === null ? releaseBaseline(store, input.repo) : null;
   const baseRead = baseline === null ? null : treeFactsOf(gitDir, baseline);
   const owed = fullObligationsOf(read.facts, baseRead !== null && baseRead.ok ? baseRead.facts : null);
-  const ciSubstitute = input.release !== true;
-  const inventory = inventoryOf(read.facts, plan, { owed, ciSubstitute });
+  const release = input.release !== false;
+  const ciSubstitute = !release;
+  const inventory = inventoryOf(read.facts, plan, { owed, release });
   const context = checkContextOf(read.facts, input.command, input.access);
   const nonce = randomBytes(32).toString("hex");
   const mode = plan === null ? "full" as const : "targeted" as const;
@@ -294,6 +301,9 @@ export function fullCheckProblem(input: { report: CheckReport | null; inventory:
   if (report.mode !== "full") return "the check reported a targeted run, not the full one it was asked for";
   if (report.exitCode !== exitCode) return `the check's report says exit ${report.exitCode}, but it exited ${exitCode}`;
   if (inventory === null) return "the check's sealed inventory can't be read";
+  // Sealed before it ran as a release's check, or it isn't one this can count (security scan: the decision is recorded
+  // with the attempt and a mismatch is no result).
+  if (inventory.sealed.release !== true) return "the check wasn't sealed as a release's check before it ran";
   if (exitCode !== 0) return null;
   const parts = new Map(report.parts.map(one => [one.part, one]));
   if (parts.size !== report.parts.length || CHECK_PARTS.some(part => !parts.has(part))) return "the report doesn't account for every part of the check exactly once";
@@ -312,7 +322,8 @@ export function fullCheckProblem(input: { report: CheckReport | null; inventory:
     if (!units.finished) return "the unit suite didn't reach its end";
     if (units.runErrors > 0) return `the unit suite had ${units.runErrors} errors no test owned`;
     if (units.files.some(one => one.state === "failed")) return "a unit file failed, yet the check exited 0";
-    if (units.reusedFromCI && inventory.sealed.ciSubstitute !== true) return "CI's run stood in for the unit suite, which this check's sealed plan doesn't allow";
+    // A release's check runs its own units, whatever was sealed (security scan): CI never stands in here.
+    if (units.reusedFromCI) return "CI's run stood in for the unit suite, which a release's check never allows";
     if (!units.reusedFromCI) {
       const reported = new Set(units.files.map(one => one.file));
       const missing = inventory.sealed.units.filter(file => !reported.has(file));

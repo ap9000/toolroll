@@ -68,10 +68,10 @@ describe("the check attempt, sealed before the check runs", () => {
     const prepared = prepareCheckAttempt(store, root, { runId, repo, head, command, access: "sandboxed" }, NOW)!;
     expect(prepared).not.toBeNull();
     const handshake = JSON.parse(prepared.stdin) as { nonce: string; mode: string; plan: unknown };
-    // No release recorded: everything the tree can run is owed (no journey scripts or upgrade path here); a check that
-    // isn't a release's may let CI stand in for its units.
-    expect(handshake).toEqual({ nonce: prepared.nonce, mode: "full", plan: null, watch: [], limitMs: 60_000, owed: ["typecheck", "build", "unit"], ciSubstitute: true });
-    expect(prepared.inventory).toMatchObject({ parts: ["typecheck", "build", "unit"], ciSubstitute: true });
+    // No release recorded: everything the tree can run is owed (no journey scripts or upgrade path here). Not said to be
+    // anything else, it is sealed as a release's check: CI never stands in (fail closed).
+    expect(handshake).toEqual({ nonce: prepared.nonce, mode: "full", plan: null, watch: [], limitMs: 60_000, owed: ["typecheck", "build", "unit"], ciSubstitute: false });
+    expect(prepared.inventory).toMatchObject({ parts: ["typecheck", "build", "unit"], ciSubstitute: false, release: true });
     const row = checkAttemptOf(store, runId)!;
     expect(row).toMatchObject({ mode: "full", baseRun: null, planDigest: null, inventoryDigest: payloadDigest(prepared.inventory), contextDigest: payloadDigest(prepared.context) });
     expect(row.nonceHash).toBe(createHash("sha256").update(prepared.nonce).digest("hex"));
@@ -82,12 +82,12 @@ describe("the check attempt, sealed before the check runs", () => {
     store.close();
   });
 
-  test("eval review 1 #2: a release's check is sealed with no CI stand-in, and told so on its handshake", () => {
+  test("eval review 1 #2: only a check explicitly not a release's may let CI stand in, and the decision is sealed", () => {
     const { repo, head, store, runId, root } = setup();
     const command = store.setVerifyCommand({ repo, command: "node scripts/release-check.mjs", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
-    const prepared = prepareCheckAttempt(store, root, { runId, repo, head, command, access: "sandboxed", release: true }, NOW)!;
-    expect(JSON.parse(prepared.stdin)).toMatchObject({ owed: ["typecheck", "build", "unit"], ciSubstitute: false });
-    expect(prepared.inventory.ciSubstitute).toBe(false);
+    const prepared = prepareCheckAttempt(store, root, { runId, repo, head, command, access: "sandboxed", release: false }, NOW)!;
+    expect(JSON.parse(prepared.stdin)).toMatchObject({ owed: ["typecheck", "build", "unit"], ciSubstitute: true });
+    expect(prepared.inventory).toMatchObject({ ciSubstitute: true, release: false });
     expect(checkAttemptOf(store, runId)!.inventoryDigest).toBe(payloadDigest(prepared.inventory));
     store.close();
   });
@@ -188,7 +188,7 @@ describe("the harness digest has no import parser to get around", () => {
 describe("a Full release check without a complete result has no result, never a pass", () => {
   const NONCE = "a".repeat(64);
   const UNIT_FILES = ["src/a.test.ts", "src/b.test.ts"];
-  const sealedWith = (parts: readonly string[], extra: Record<string, unknown> = {}) => ({ version: 1 as const, sealed: { version: 1 as const, units: UNIT_FILES, parts, ...extra }, declared: { groups: [], versions: [] } });
+  const sealedWith = (parts: readonly string[], extra: Record<string, unknown> = {}) => ({ version: 1 as const, sealed: { version: 1 as const, units: UNIT_FILES, parts, release: true, ...extra }, declared: { groups: [], versions: [] } });
   const inventory = sealedWith(["typecheck", "build", "unit", "flows", "upgrade"]);
   const part = (name: string, selected: boolean, extra: Record<string, unknown> = {}) => ({ part: name, selected, ran: selected, code: selected ? 0 : null, timedOut: false, ...extra });
   const passing = (over: Record<string, unknown> = {}) => ({
@@ -263,11 +263,13 @@ describe("a Full release check without a complete result has no result, never a 
     }
     // Nothing owed beyond the typecheck and build (the plane saw only docs change): that alone qualifies.
     expect(problem(out(passing({ parts: only, units: null, journeys: [], upgrades: null })), 0, sealedWith(["typecheck", "build"]))).toBeNull();
-    // CI standing in for the unit suite only when the sealed plan allows it.
+    // CI never stands in for a release's unit suite, whatever was sealed (security scan).
     const reused = { units: { reusedFromCI: true, finished: true, runErrors: 0, identities: [], files: [] } };
     expect(problem(out(passing(reused)), 0)).toMatch(/CI's run stood in/);
-    expect(problem(out(passing(reused)), 0, sealedWith(["typecheck", "build", "unit", "flows", "upgrade"], { ciSubstitute: false }))).toMatch(/CI's run stood in/);
-    expect(problem(out(passing(reused)), 0, sealedWith(["typecheck", "build", "unit", "flows", "upgrade"], { ciSubstitute: true }))).toBeNull();
+    expect(problem(out(passing(reused)), 0, sealedWith(["typecheck", "build", "unit", "flows", "upgrade"], { ciSubstitute: true }))).toMatch(/CI's run stood in/);
+    // Sealed as another kind of check (or before the decision was recorded): it can't count as a release's.
+    expect(problem(out(passing()), 0, sealedWith(["typecheck", "build", "unit", "flows", "upgrade"], { release: false }))).toMatch(/wasn't sealed as a release's check/);
+    expect(problem(out(passing()), 0, sealedWith(["typecheck", "build", "unit", "flows", "upgrade"], { release: undefined }))).toMatch(/wasn't sealed as a release's check/);
   });
 
   test.each([
@@ -304,6 +306,14 @@ describe("eval review 1 #2: what a Full check owes, decided by the plane from ve
     ["model-facing code", base, { "src/lead.ts": "2".repeat(40) }, ["typecheck", "build", "unit", "flows", "app", "flows-real", "app-real", "upgrade"]],
   ] as const)("%s", (_name, from, changes, owed) => {
     expect(fullObligationsOf(candidate(changes), from)).toEqual(owed);
+  });
+
+  test("security scan: a candidate that deletes or symlinks what the last release could run still owes it", () => {
+    const all = ["typecheck", "build", "unit", "flows", "app", "flows-real", "app-real", "upgrade"];
+    const gone = facts(tree.filter(one => !["scripts/flows-e2e.mjs", "scripts/app-e2e.mjs", "scripts/upgrade-path.mjs", "src/a.test.ts"].includes(one.path)).map(one => one.path === "src/lead.ts" ? entry(one.path, "2".repeat(40)) : one), []);
+    expect(fullObligationsOf(gone, base)).toEqual(all);
+    const linked = facts(tree.map(one => one.path.startsWith("scripts/") ? { ...one, mode: "120000" } : one.path === "src/lead.ts" ? entry(one.path, "2".repeat(40)) : one), []);
+    expect(fullObligationsOf(linked, null)).toEqual(all);
   });
 
   test("the plane's path rules are the check's own (scripts/release-check.mjs)", () => {

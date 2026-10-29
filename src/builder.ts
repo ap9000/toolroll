@@ -12,6 +12,8 @@ import { batchesFullCheck } from "./batch-policy.js";
 import { skillsContext } from "./project-skills.js";
 import { failedVerificationEvidence, sealVerificationReceipt, verificationEvidence, reuseObservationVerification } from "./verification-evidence.js";
 import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, prepareCheckAttempt, sealCheckOutcome, type PreparedAttempt } from "./check-report.js";
+import { retriedInside } from "./check-failure.js";
+import type { CheckReport } from "./contracts/release-check.js";
 import { planTargetedRecheck, settleCoverage } from "./release-recheck.js";
 import { effectiveCheckFacts, type ReleaseCheckFacts } from "./verification-evidence.js";
 import { learningContext } from "./project-learning.js";
@@ -2843,8 +2845,9 @@ async function settleProof(
     checkProgress.finish();
     // The check's own report (the last line carrying the nonce), sealed beside what was sealed before it ran.
     const last = verification.last;
+    let sealedReport: CheckReport | null = null;
     if (checkAttempt !== null && last !== null && !last.notFound) {
-      sealCheckOutcome(store, root, checkAttempt, { stdout: last.stdout, exitCode: last.timedOut ? null : last.code }, now());
+      sealedReport = sealCheckOutcome(store, root, checkAttempt, { stdout: last.stdout, exitCode: last.timedOut ? null : last.code }, now());
     }
     // What the check covered (receipt version 3): full, composed from the release's last full check, partial, or
     // identity-removed (which stops the release carrying).
@@ -2854,7 +2857,7 @@ async function settleProof(
       const sha = (capture: string) => { const found = store.artifactsFor(runId).filter(a => a.kind === "structured-output" && a.capture === capture); return found.length === 1 ? found[0]!.sha256 : null; };
       // The one place coverage meets the outcome: a partial or identity-removed check is a failed attempt for every
       // reader from here on (the verdict, the run's check, the receipt, reuse, the deploy gates).
-      const effective = effectiveCheckFacts(verifyCommand, { coverage: settled.coverage, check: { attempt: checkAttempt.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE) }, composed: settled.composed });
+      const effective = effectiveCheckFacts(verifyCommand, { coverage: settled.coverage, check: { attempt: checkAttempt.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE), retried: retriedInside(sealedReport) }, composed: settled.composed });
       verifyCommand = effective.result;
       releaseFacts = effective.facts;
     } else if (verifyCommand.configured && verifyCommand.ran && chosenCheck?.level === "full" && (store.getScope(request.taskId)?.releaseTerms ?? null) !== null) {

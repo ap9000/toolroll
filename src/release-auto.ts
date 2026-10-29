@@ -13,7 +13,8 @@
  * adapter. Any refusal unseals `auto-check`, so the task asks a person, its passing check kept.
  */
 import { assignmentOf } from "./assignment.js";
-import { projectGitDir } from "./check-report.js";
+import { fullCheckProblem, projectGitDir } from "./check-report.js";
+import { sealedRun } from "./release-recheck.js";
 import { runCheckLevel } from "./check-levels.js";
 import { readVerifiedCommit, verifiedBlobs, verifiedTreeDiff, verifiedTreeEntries } from "./commit-extract.js";
 import { mightName, testInfrastructure, type TestInfrastructure } from "./test-infra.js";
@@ -345,6 +346,8 @@ export function sealAutoGreen(store: Store, input: {
     if (failedRuns.some(one => Number(one["id"]) > run.id)) return refuse(`run ${input.run} isn't this task's newest build`);
     const standing = releaseCheckStanding(store, input.evidenceRoot, { taskId: input.taskId, run: run.id });
     if (!standing.ok) return refuse(standing.why);
+    // Unknown is never "no retries" (eval-harness review 1, finding 3).
+    if (standing.retried === null) return refuse("the release check's retry record can't be read (its report or receipt is missing or damaged), so whether anything passed only on a retry is unknown and a person decides");
     if (standing.retried.length > 0) return refuse(`the release check passed only on a retry (${standing.retried.slice(0, 3).join(", ")}${standing.retried.length > 3 ? ", …" : ""}), so a person decides`);
     if (failedRuns.length > INFRA_RERUNS_PER_CANDIDATE) return refuse(`the release check failed ${failedRuns.length} times before it passed, so a person decides`);
     const checkFailures = failedRuns.map(one => Number(one["id"]));
@@ -358,6 +361,16 @@ export function sealAutoGreen(store: Store, input: {
     const result = gate["result"] as { ran?: unknown; exitCode?: unknown } | undefined;
     const command = gate["command"] as { command?: unknown } | undefined;
     if (gate["coverage"] !== undefined && gate["coverage"] !== "full") return refuse(`the release check didn't cover everything (${String(gate["coverage"])})`);
+    // A readable, valid report and inventory of a Full attempt, the receipt's own, every obligation accounted for, and
+    // the retry summary sealed in the receipt: an automatic approval never stands on evidence it can't read.
+    const check = gate["check"] as { attempt?: unknown; report?: unknown; inventory?: unknown; retried?: unknown } | undefined;
+    const sealed = sealedRun(store, input.evidenceRoot, run.id);
+    if (check === undefined || sealed === null || sealed.attempt.mode !== "full" || check.attempt !== "full" || sealed.report === null || sealed.inventory === null || sealed.reportDigest !== check.report) {
+      return refuse("the release check's sealed report or inventory can't be read, so what it ran and retried is unknown");
+    }
+    const incomplete = fullCheckProblem({ report: sealed.report, inventory: sealed.inventory, exitCode: typeof result?.exitCode === "number" ? result.exitCode : null });
+    if (incomplete !== null) return refuse(`the release check has no complete result: ${incomplete}`);
+    if (!Array.isArray(check.retried)) return refuse("the release check's receipt has no sealed retry record, so a person decides");
     if (gate["run"] !== run.id || gate["head"] !== head || gate["scopeDigest"] !== input.digest || result?.ran !== true || result.exitCode !== 0 || live === null || command?.command !== live.command) {
       return refuse("the release check didn't pass this candidate under the approved command");
     }

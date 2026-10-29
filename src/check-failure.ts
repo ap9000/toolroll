@@ -88,9 +88,9 @@ export function classifyCheckFailure(facts: CheckFacts, report: CheckReport | nu
 }
 
 /** What passed only on a retry inside a passing check (a real-model journey group, a unit file): counted and reported,
- * never silently part of a pass. */
-export function retriedInside(report: CheckReport | null): string[] {
-  if (report === null) return [];
+ * never silently part of a pass. Null when there is no valid report to read it from: unknown, never "no retries". */
+export function retriedInside(report: CheckReport | null): string[] | null {
+  if (report === null) return null;
   return [
     ...report.journeys.flatMap(run => run.groups.filter(group => group.state === "passed" && group.retried).map(group => `${run.script}${run.kind === "real" ? " real-model" : ""} journey group ${group.group}`)),
     ...(report.units?.files ?? []).filter(file => file.flaky).map(file => `${file.file}`),
@@ -109,6 +109,26 @@ export function classifyRunCheck(store: Store, root: string, runId: number): Cla
   const sealed = readSealedJson(store, root, runId, CHECK_REPORT_CAPTURE);
   const parsed = sealed === null ? null : readCheckReport(sealed.value);
   return classifyCheckFailure({ result: receipt.result, coverage: receipt.coverage }, parsed?.ok === true ? parsed.value : null);
+}
+
+/**
+ * What passed only on a retry inside a run's check (eval-harness review 1, finding 3): the summary sealed into its
+ * protected receipt, which a damaged or lost report can't take away; for an older receipt without one, read from the
+ * sealed report. Null — unknown — when neither can be read, or when a readable report disagrees with the receipt.
+ */
+export function retriedOfRun(store: Store, root: string, runId: number): string[] | null {
+  const sealed = readSealedJson(store, root, runId, CHECK_REPORT_CAPTURE);
+  const parsed = sealed === null ? null : readCheckReport(sealed.value);
+  const fromReport = retriedInside(parsed?.ok === true ? parsed.value : null);
+  const gate = verificationEvidence(store, root, runId);
+  if (!gate.ok || gate.bytes === null) return null;
+  let check: { retried?: unknown } | undefined;
+  try { check = (JSON.parse(gate.bytes.toString()) as { check?: { retried?: unknown } }).check; } catch { return null; }
+  const receipt = check?.retried;
+  if (receipt === undefined) return fromReport;
+  if (receipt === null || !Array.isArray(receipt) || receipt.some(one => typeof one !== "string")) return null;
+  if (fromReport !== null && JSON.stringify([...fromReport].sort()) !== JSON.stringify([...receipt as string[]].sort())) return null;
+  return receipt as string[];
 }
 
 type BuilderRun = { id: number; outcome: string | null; scopeDigest: string | null; finishedAt: string | null; passed: boolean };
@@ -135,14 +155,12 @@ function reruns(store: Store, taskId: string): Map<number, string> {
  * one refuses on it).
  */
 export function releaseCheckStanding(store: Store, root: string, input: { taskId: string; run: number }):
-  { ok: true; earlier: { run: number; why: string }[]; retried: string[] } | { ok: false; why: string; retried: string[] } {
+  { ok: true; earlier: { run: number; why: string }[]; retried: string[] | null } | { ok: false; why: string; retried: string[] | null } {
   const ref = store.lookupRef(input.taskId);
   const scope = store.getScope(input.taskId);
   const run = store.getRun(input.run);
   if (ref === null || scope === null || run === null || run.taskRef !== ref.id) return { ok: false, why: `run ${input.run} isn't a build of ${input.taskId}`, retried: [] };
-  const sealed = readSealedJson(store, root, input.run, CHECK_REPORT_CAPTURE);
-  const parsed = sealed === null ? null : readCheckReport(sealed.value);
-  const retried = retriedInside(parsed?.ok === true ? parsed.value : null);
+  const retried = retriedOfRun(store, root, input.run);
   const digest = run.scopeDigest ?? null;
   if (digest === null) return { ok: false, why: `run ${input.run} recorded no scope`, retried };
   const asked = reruns(store, input.taskId);

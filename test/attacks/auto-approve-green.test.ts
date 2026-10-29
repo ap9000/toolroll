@@ -17,7 +17,11 @@ import { mergePullRequest } from "../../src/pull-request-flow.js";
 import { assignmentOf } from "../../src/assignment.js";
 import { runReleaseCommand } from "../../src/release-cli.js";
 import { REQUIRED_PR_CHECKS } from "../../src/release.js";
-import { RELEASE_RECHECK_ACTION } from "../../src/check-failure.js";
+import { RELEASE_RECHECK_ACTION, retriedOfRun } from "../../src/check-failure.js";
+import { CHECK_REPORT_CAPTURE } from "../../src/check-report.js";
+import { verificationEvidence } from "../../src/verification-evidence.js";
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 // @ts-expect-error plain ESM script without declarations
 import { deploymentCandidate } from "../../scripts/deploy-candidate.mjs";
 import * as installedScope from "../../src/scope.js";
@@ -259,6 +263,51 @@ describe("attack 3: a check that isn't of this commit, this scope, or the first 
     const retried = (units: readonly string[]) => reportOf(units.map(file => ({ file })), { journeys: [{ script: "app", kind: "real", finished: true,
       groups: [{ group: "lead", state: "passed", retried: true, unattributed: false, journeys: [{ name: "answers", state: "passed" }] }] }] });
     expect(seal(f, check(f, f.approved, retried))).toMatchObject({ ok: false, why: expect.stringContaining("passed only on a retry (app real-model journey group lead)") });
+  });
+
+  test("eval review 1 #3: a retry whose report is later lost or damaged is unknown, never \"no retries\"", () => {
+    const retried = (units: readonly string[]) => reportOf(units.map(file => ({ file })), { journeys: [{ script: "app", kind: "real", finished: true, inventoried: true,
+      groups: [{ group: "lead", state: "passed", retried: true, unattributed: false, journeys: [{ name: "answers", state: "passed" }] }] }] });
+    const reportFile = (f: ReleaseFixture, run: number) => join(EVIDENCE(f), f.store.artifactsFor(run).find(one => one.capture === CHECK_REPORT_CAPTURE)!.key);
+    // The retry summary is sealed in the protected receipt itself.
+    const kept = open();
+    authorize(kept);
+    const keptRun = check(kept, kept.approved, retried);
+    const receipt = JSON.parse(verificationEvidence(kept.store, EVIDENCE(kept), keptRun).ok ? (verificationEvidence(kept.store, EVIDENCE(kept), keptRun) as { bytes: string }).bytes : "{}") as { check?: { retried?: unknown } };
+    expect(receipt.check?.retried).toEqual(["app real-model journey group lead"]);
+    expect(retriedOfRun(kept.store, EVIDENCE(kept), keptRun)).toEqual(["app real-model journey group lead"]);
+    kept.close(); fixture = null;
+    // Lost: the receipt, log and artifact row stay; the report's file is gone.
+    for (const damage of ["lost", "damaged"] as const) {
+      const f = open();
+      authorize(f);
+      const run = check(f, f.approved, retried);
+      const file = reportFile(f, run);
+      if (damage === "lost") rmSync(file);
+      else { const bytes = readFileSync(file, "utf8"); writeFileSync(file, bytes.replace("\"retried\":true", "\"retried\":fals")); }
+      expect(retriedOfRun(f.store, EVIDENCE(f), run), damage).toBeNull();
+      expect(seal(f, run), damage).toMatchObject({ ok: false });
+      expect(basis(f), damage).toBeNull();
+      f.close(); fixture = null;
+    }
+  });
+
+  test("eval review 1 #3: a pass whose sealed report isn't a complete Full result never approves itself", () => {
+    const f = open();
+    authorize(f);
+    // A report that drops an owed part: the receipt reads no-result, so neither the check nor the approval stands.
+    const short = (units: readonly string[]) => reportOf(units.map(file => ({ file })), { upgrades: { finished: true, versions: [] } });
+    expect(seal(f, check(f, f.approved, short))).toMatchObject({ ok: false });
+    expect(basis(f)).toBeNull();
+  });
+
+  test("security scan: a release's check sealed as another kind of check before it ran has no result", () => {
+    const f = open();
+    authorize(f);
+    const run = sealedCheck(f, f.taskId, f.approved, (_plan, units) => passingReport(units), { base: f.base, release: false }).runId;
+    const gate = verificationEvidence(f.store, EVIDENCE(f), run);
+    expect(gate.ok && JSON.parse(String(gate.bytes)).coverage).toBe("no-result");
+    expect(seal(f, run)).toMatchObject({ ok: false });
   });
 
   test("an earlier failed check on different scope text needs a person", () => {

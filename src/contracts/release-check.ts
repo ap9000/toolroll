@@ -114,6 +114,8 @@ export const checkInventorySchema = versioned(1, {
   parts: z.array(z.enum(CHECK_PARTS)).max(CHECK_PARTS.length),
   /** Whether CI's run of the exact commit may stand in for the local unit suite. Absent is no. */
   ciSubstitute: z.boolean().optional(),
+  /** Whether the plane prepared it as a release's check (sealed with the attempt; absent on older inventories). */
+  release: z.boolean().optional(),
 });
 export type CheckInventory = z.infer<typeof checkInventorySchema>;
 

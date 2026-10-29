@@ -147,7 +147,7 @@ export type ReleaseAuthorityAdapter = {
   recheck?(taskId: string): Promise<RecheckView>;
   /** Whether a passing check stands given every earlier attempt on the same commit (an earlier failure that wasn't
    * confirmed infrastructure isn't erased by a pass), and what passed only on a retry. */
-  standing?(taskId: string, run: number): Promise<{ ok: true; retried: string[] } | { ok: false; why: string; retried: string[] }>;
+  standing?(taskId: string, run: number): Promise<{ ok: true; retried: string[] | null } | { ok: false; why: string; retried: string[] | null }>;
   /** Releases that approve themselves when green (docs/plans/auto-approve-green.md): the plane's own seals, each proven
    * again inside the plane. Absent: a plane that can't, and every release asks a person as before. */
   auto?: AutoReleaseAdapter;
@@ -791,7 +791,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             if (rel?.standing !== undefined) {
               const standing = await rel.standing(j.task.id, gate.result.run);
               if (!standing.ok) throw new Stop("check-failed", `Run ${gate.result.run} passed on ${j.candidate.sha.slice(0, 7)}, but ${standing.why}: approve this commit again with \`toolroll release ${j.branch} --repo ${j.checkout} --new\`, or fix the branch and release the new commit the same way.`);
-              if (standing.retried.length > 0) say(`  run ${gate.result.run} passed, but only on a retry: ${standing.retried.join(", ")}`);
+              if (standing.retried === null) say(`  run ${gate.result.run} passed, but its report can't be read, so whether anything passed only on a retry is unknown`);
+              else if (standing.retried.length > 0) say(`  run ${gate.result.run} passed, but only on a retry: ${standing.retried.join(", ")}`);
             }
             return { run: gate.result.run, receipt: gate.result.receipt, worktree: gate.result.worktree, head };
           };
