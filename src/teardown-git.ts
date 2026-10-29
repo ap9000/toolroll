@@ -882,8 +882,8 @@ export function checkoutGitSync(cwd: string, args: readonly string[], options: {
  * with `buffer`, for blobs read as bytes (their output is never rewritten).
  */
 export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number; binding?: GitBinding }): { status: number | null; stdout: string };
-export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number; binding?: GitBinding; buffer: true }): { status: number | null; stdout: Buffer };
-export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number; binding?: GitBinding; buffer?: true } = {}): { status: number | null; stdout: string | Buffer } {
+export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number; binding?: GitBinding; buffer: true; input?: Buffer; git?: string }): { status: number | null; stdout: Buffer };
+export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number; binding?: GitBinding; buffer?: true; input?: Buffer; git?: string } = {}): { status: number | null; stdout: string | Buffer } {
   if (checkoutIncludes(cwd)) throw new Error("the checkout's git config includes another file, or couldn't be read as a plain file");
   if (lfsExtensionIn(cwd)) throw new Error("the checkout's .lfsconfig sets a git-lfs key that can run a command");
   // Its config and info/attributes as read once, in a folder of the plane's own: neither can change before git runs.
@@ -891,7 +891,8 @@ export function viewedGitSync(cwd: string, args: readonly string[], options: { t
   try {
     const env: NodeJS.ProcessEnv = { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", LANG: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", ...view.env };
     const bounded = { cwd, env, encoding: "utf8" as const, timeout: options.timeoutMs ?? 60_000, maxBuffer: options.maxBuffer ?? 1_048_576, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
-    const own = spawnSync("git", ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], bounded);
+    const gitFile = options.git ?? "git";
+    const own = spawnSync(gitFile, ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], bounded);
     if (own.status !== 0) throw new Error("its config couldn't be read");
     const key = commandSetting(own.stdout, { lfsChecked: true });
     if (key !== null) throw new Error(`the checkout's git config sets ${key}, which can run a command`);
@@ -906,12 +907,13 @@ export function viewedGitSync(cwd: string, args: readonly string[], options: { t
     const carried = withoutFilters(carriedSettings(own.stdout));
     const argv = [...TEARDOWN_FLAGS, ...readFlags(), "-c", "diff.ignoreSubmodules=all", ...carried, ...safeArgs];
     if (options.buffer === true) {
-      const ran = spawnSync("git", argv, { ...bounded, encoding: "buffer" });
+      // stdin is the caller's own bytes when given (cat-file --batch), else closed.
+      const ran = spawnSync(gitFile, argv, { ...bounded, encoding: "buffer", ...(options.input === undefined ? {} : { input: options.input, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"] }) });
       const why = view.settle();
       if (why !== null) throw new Error(why);
       return { status: ran.error === undefined ? ran.status : null, stdout: ran.stdout };
     }
-    const ran = spawnSync("git", argv, bounded);
+    const ran = spawnSync(gitFile, argv, bounded);
     const why = view.settle();
     if (why !== null) throw new Error(why);
     return { status: ran.error === undefined ? ran.status : null, stdout: view.restore(ran.stdout ?? "", args) };

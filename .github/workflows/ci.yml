@@ -163,7 +163,8 @@ jobs:
   # Git's own behaviour, on the declared floor and on the last release before 2.48 (README, Requirements): the git attack
   # tests and the worktree/teardown tests, nothing else. 2.47 is Debian trixie's git and still has the pre-2.48
   # `worktree add` behaviour teardown-git.ts relinkAdded works around; 2.41 is the floor (the global `git --attr-source`,
-  # src/git-floor.ts), built from kernel.org's tarball by scripts/ci-git.sh. Below 2.45 git has no `--no-lazy-fetch`, so
+  # src/git-floor.ts), its oldest release exactly (2.41.0, which also ignores GIT_NO_LAZY_FETCH), built from kernel.org's
+  # tarball by scripts/ci-git.sh. Below 2.45 git has no `--no-lazy-fetch`, so
   # the floor lane also proves a partial clone is refused for protected reads. The tests run as the image's unprivileged user (root passes
   # permission checks an operator's git can't), and a skipped test fails the job: a skip is not evidence. The only
   # skips allowed are the "native …" OS-fence attacks, which need bubblewrap/Seatbelt and run in the linux fence job.

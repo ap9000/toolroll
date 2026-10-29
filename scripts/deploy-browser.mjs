@@ -30,7 +30,9 @@ import { browserDeployment, openDeploymentDatabase, sha, snapshot } from "./depl
 const args = process.argv.slice(2);
 // git inside the candidate's checkout (AGENTS.md trust boundary): no user global or system config, hooks or fsmonitor,
 // and no replacement objects or lazy fetch, so the bytes read under a SHA are that SHA's own (as evidence.ts reads them).
-const SAFE_GIT = ["--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+// Every transport is refused too: git older than 2.45 has no --no-lazy-fetch, and 2.41.0 ignores GIT_NO_LAZY_FETCH, so a
+// lazy fetch would otherwise reach a remote the repository names (eval-harness review 1, finding 5).
+const SAFE_GIT = ["--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "protocol.allow=never"];
 const SAFE_GIT_ENV = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1" };
 const flag = (name, fallback = undefined) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : fallback; };

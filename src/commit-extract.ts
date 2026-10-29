@@ -13,9 +13,9 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
-import { join, sep } from "node:path";
+import { basename, dirname, join, sep } from "node:path";
 import { checkoutGitEnv, HARDENED_GIT_ARGS } from "./agent-fence.js";
-import { commandSetting } from "./teardown-git.js";
+import { commandSetting, lazyFetchSupported, viewedGitSync } from "./teardown-git.js";
 
 export type Extraction = { ok: true; files: number } | { ok: false; message: string };
 
@@ -57,11 +57,10 @@ export function parseTree(bytes: Buffer, idBytes: number): TreeEntry[] | null {
  * corrupted or replaced object in a store a build could write to refuses the extraction. */
 export function extractCommit(gitDir: string, sha: string, dest: string, limits: ExtractionLimits = EXTRACTION_LIMITS): Extraction {
   const refuse = (message: string): Extraction => ({ ok: false, message });
-  const env = { ...checkoutGitEnv(), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_ATTR_NOSYSTEM: "1" };
-  const git = (args: readonly string[], input?: Buffer) =>
-    spawnSync("git", ["--git-dir", gitDir, "--no-replace-objects", ...HARDENED_GIT_ARGS, ...args], { env, input, maxBuffer: MAX_BYTES, timeout: 300_000 });
+  const git = protectedGit(gitDir, {}, []);
   // The repository's own config, read without includes, must name no command and include nothing.
   const config = git(["config", "--list", "--no-includes", "--show-scope", "-z"]);
+  if (config.refused !== null) return refuse(`The project's Git directory can't be read safely: ${config.refused}.`);
   if (config.status !== 0) return refuse("The project's Git config couldn't be read.");
   const listing = config.stdout.toString("utf8");
   const command = commandSetting(listing);
@@ -176,25 +175,57 @@ export type TreeChange = {
 };
 type VerifiedReader = { format: "sha1" | "sha256"; hexLength: number; read(ids: readonly string[]): Map<string, { type: string; bytes: Buffer }> | string;
   /** Git itself, hardened as above, for listings whose every id is then read through `read`. */
-  git(args: readonly string[]): ReturnType<typeof spawnSync> };
+  git(args: readonly string[]): GitAnswer };
 export type Verified<T> = { ok: true; value: T } | { ok: false; message: string };
 
 /** Which Git runs and with what environment: the release path's fixed absolute Git and its own environment, or by
  * default the checkout Git environment's. The hardening settings are added over either. */
 export type GitRunner = { git?: string; env?: NodeJS.ProcessEnv };
 
+/** One protected git run: its exit (null when it didn't end on its own), its output, and why it was refused before it
+ * ran (a frozen view's refusal), else null. */
+type GitAnswer = { status: number | null; stdout: Buffer; refused: string | null };
+
+/**
+ * How the protected readers run git on the project's Git directory (eval-harness review 1, finding 5): never a fetch.
+ * Every run denies every transport (`protocol.allow=never`, which outranks the repository's own protocol settings, and
+ * reaches a lazy fetch's child through git's own -c propagation). A git with `--no-lazy-fetch` (2.45+) takes it, so a
+ * missing object is never fetched. An older git — whose GIT_NO_LAZY_FETCH only some patch releases honor (2.41.0 doesn't)
+ * — runs every command through a frozen view of the repository (teardown-git.ts viewedGitSync): its config read once
+ * into a folder of the plane's own, includes refused, a partial clone refused from that same listing, which is the
+ * config git then runs with, so nothing can turn lazy fetching on between the check and the read.
+ */
+function protectedGit(gitDir: string, runner: GitRunner, extra: readonly string[]): (args: readonly string[], input?: Buffer) => GitAnswer {
+  const base = ["--no-replace-objects", "-c", "protocol.allow=never", ...extra];
+  if (lazyFetchSupported()) {
+    const env = { ...(runner.env ?? checkoutGitEnv()), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_ATTR_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" };
+    return (args, input) => {
+      const ran = spawnSync(runner.git ?? "git", ["--git-dir", gitDir, "--no-lazy-fetch", ...base, ...HARDENED_GIT_ARGS, ...args], { cwd: "/", env, input, maxBuffer: MAX_BYTES, timeout: 300_000 });
+      return { status: ran.error === undefined ? ran.status : null, stdout: ran.stdout ?? Buffer.alloc(0), refused: null };
+    };
+  }
+  // The view is of a checkout: the project's own `.git` folder, as Toolroll records it.
+  const checkout = basename(gitDir) === ".git" ? dirname(gitDir) : null;
+  return (args, input) => {
+    if (checkout === null) return { status: null, stdout: Buffer.alloc(0), refused: "it isn't a checkout's .git folder, which this git can only read through a view" };
+    try {
+      const ran = viewedGitSync(checkout, [...base, ...args], { buffer: true, timeoutMs: 300_000, maxBuffer: MAX_BYTES, ...(input === undefined ? {} : { input }), ...(runner.git === undefined ? {} : { git: runner.git }) });
+      return { status: ran.status, stdout: ran.stdout, refused: null };
+    } catch (error) { return { status: null, stdout: Buffer.alloc(0), refused: error instanceof Error ? error.message : "it couldn't be read" }; }
+  };
+}
+
 /** A reader over the project's object store that hashes every object it hands back, or why it can't be one. */
 function verifiedReader(gitDir: string, runner: GitRunner = {}): Verified<VerifiedReader> {
   const refuse = (message: string): Verified<VerifiedReader> => ({ ok: false, message });
-  const env = { ...(runner.env ?? checkoutGitEnv()), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_ATTR_NOSYSTEM: "1" };
   // The commit-graph file is a cache a build can write: parents come from the objects themselves, never from it.
-  const git = (args: readonly string[], input?: Buffer) =>
-    spawnSync(runner.git ?? "git", ["--git-dir", gitDir, "--no-replace-objects", ...HARDENED_GIT_ARGS, "-c", "core.commitGraph=false", ...args], { cwd: "/", env, input, maxBuffer: MAX_BYTES, timeout: 300_000 });
+  const git = protectedGit(gitDir, runner, ["-c", "core.commitGraph=false"]);
   // History a build could have rewritten around the objects: a shallow boundary, grafts, or replacement refs. Each is
   // refused outright, so no reader here ever has to decide whether to believe one.
   if (existsSync(join(gitDir, "shallow"))) return refuse("The project's history is shallow, so the commits between the approval and this one can't all be read.");
   if (existsSync(join(gitDir, "info", "grafts"))) return refuse("The project's Git directory has grafts, which rewrite history; they are refused.");
   const replaced = git(["for-each-ref", "--format=%(refname)", "refs/replace/"]);
+  if (replaced.refused !== null) return refuse(`The project's Git directory can't be read safely: ${replaced.refused}.`);
   if (replaced.status !== 0) return refuse("The project's refs couldn't be read.");
   if (replaced.stdout.toString("utf8").trim() !== "") return refuse("The project's Git directory has replacement refs, which swap objects; they are refused.");
   const config = git(["config", "--list", "--no-includes", "--show-scope", "-z"]);

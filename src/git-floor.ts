@@ -2,7 +2,9 @@
  * The oldest git Toolroll runs on (README, Requirements): the global `git --attr-source` option every hardened read
  * takes arrived in git 2.41 (others in use are older: `worktree list -z` 2.36, GIT_CONFIG_COUNT and `--path-format`
  * 2.31). On git older than 2.45, which lacks `--no-lazy-fetch`, partial clones are refused for protected reads
- * (teardown-git.ts lazyFetchSupported). The CI git lanes test this floor and 2.47 (.github/workflows/ci.yml).
+ * (teardown-git.ts lazyFetchSupported), every protected read runs through a frozen view and refuses every transport,
+ * and nothing leans on GIT_NO_LAZY_FETCH, which 2.41.0 ignores. The CI git lanes test this floor's oldest release
+ * exactly, 2.41.0, and 2.47 (.github/workflows/ci.yml, scripts/ci-git.sh).
  */
 import { spawnSync } from "node:child_process";
 

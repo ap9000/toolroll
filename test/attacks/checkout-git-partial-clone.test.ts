@@ -62,7 +62,7 @@ describe("the installed git", () => {
     expect(viaRunner.code).not.toBe(0);
     if (!lazyFetchSupported()) expect(refusal(viaRunner)).toBe(PARTIAL_CLONE_REFUSAL);
     // Still missing: nothing was fetched.
-    expect(() => execFileSync("git", ["-C", partial, "cat-file", "-e", missing], { env: { ...env, GIT_NO_LAZY_FETCH: "1" }, stdio: "pipe" })).toThrow();
+    expect(() => execFileSync("git", ["-C", partial, "-c", "protocol.allow=never", "cat-file", "-e", missing], { env: { ...env, GIT_NO_LAZY_FETCH: "1" }, stdio: "pipe" })).toThrow();
   });
   test("a plain repository reads", () => {
     expect(checkoutGitSync(plain, ["rev-parse", "--verify", "HEAD^{commit}"]).trim()).toMatch(/^[0-9a-f]{40}$/);
@@ -156,7 +156,7 @@ describe("a git without --no-lazy-fetch (forced, on every lane)", () => {
     expect(ranWith).not.toBeNull();
     expect(ranWith).not.toMatch(/promisor|partialclone/i);
     expect(read.code).not.toBe(0);
-    expect(() => execFileSync("git", ["-C", partial, "cat-file", "-e", missing], { env: { ...env, GIT_NO_LAZY_FETCH: "1" }, stdio: "pipe" })).toThrow();
+    expect(() => execFileSync("git", ["-C", partial, "-c", "protocol.allow=never", "cat-file", "-e", missing], { env: { ...env, GIT_NO_LAZY_FETCH: "1" }, stdio: "pipe" })).toThrow();
     // And the next read sees them, and refuses.
     expect(refusal(await checkoutGit(run, "read")("git", ["rev-parse", "HEAD"], { cwd: partial, timeoutMs: 30_000 }))).toBe(PARTIAL_CLONE_REFUSAL);
   });
