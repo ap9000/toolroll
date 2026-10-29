@@ -201,29 +201,31 @@ const SHELL_WORDS = new Set(["!", ".", ":", "[", "alias", "bg", "break", "case",
  */
 export function approvedProgramMissing(command: string, cwd: string, path: string | undefined, platform: NodeJS.Platform = process.platform): string | null {
   if (platform === "win32") return null;
+  // Only a single plain invocation: shell expansion or another command could execute before a missing first word.
+  if (!/^[ \t]*[A-Za-z0-9._+/@-]+(?:[ \t]+[A-Za-z0-9._+/@,:=%-]+)*[ \t]*$/.test(command)) return null;
   const first = /^\s*([A-Za-z0-9._+/@-]+)(?:\s|$)/.exec(command)?.[1];
   if (first === undefined || SHELL_WORDS.has(first)) return null;
   const runnable = (file: string) => { try { accessSync(file, fsConstants.X_OK); return statSync(file).isFile(); } catch { return false; } };
   if (first.includes("/")) return runnable(resolve(cwd, first)) ? null : first;
+  if (path === undefined || path.split(delimiter).some(dir => !isAbsolute(dir))) return null;
   for (const dir of (path ?? "").split(delimiter)) if (isAbsolute(dir) && runnable(join(dir, first))) return null;
   return first;
 }
 
+// Only the plane can issue this evidence, and only when it never spawns the command. A lookup followed by a shell
+// launch is racy: the build can install a program between them and forge the shell's entire diagnostic.
+const unstartedChecks = new WeakMap<ExecResult, string>();
+
 /**
  * Whether a check's first attempt failed at its launch, so the approved recovery setup may run and the check run again
- * (eval-harness review 1, finding 6; review 2, finding 5). Only trusted evidence counts: the plane itself found the
- * approved command's own program missing before it spawned the check (approvedProgramMissing), the shell then exited
- * 127 with nothing on stdout, and its whole stderr is the shell's one "not found" (or, for a path, "No such file or
- * directory") line for exactly that program. An
- * exit 127 after anything ran — test output, a report (with or without this run's nonce), a missing program further
- * down — is the check's own result, judged like any other failure; a person decides on it. A rerun that then passes
- * still counts as a retry (check-failure.ts retriedOfRun), which an automatic release approval refuses.
+ * (eval-harness review 1, finding 6; review 2, finding 5). Only a result the plane made without spawning qualifies.
+ * Any shell output, including a perfect "not found" line after a missing-program lookup, remains a check failure.
+ * A later passing check still counts as a retry (check-failure.ts), which an automatic release approval refuses.
  */
 export function launchFailedBeforeCheck(result: ExecResult, nonce: string | null, missing: string | null, platform: NodeJS.Platform = process.platform): boolean {
-  if (missing === null || platform === "win32" || result.code !== 127 || !verificationExecutableMissing(result, platform)) return false;
+  if (missing === null || unstartedChecks.get(result) !== missing || platform === "win32" || result.code !== 127 || !verificationExecutableMissing(result, platform)) return false;
   if (result.stdout.trim() !== "" || (nonce !== null && reportFromOutput(result.stdout, nonce).ok)) return false;
-  const program = missing.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^(?:/bin/)?(?:ba|da)?sh: (?:line \\d+: |\\d+: )?${program}: (?:(?:command )?not found|No such file or directory)$`).test(result.stderr.trim());
+  return true;
 }
 
 export type BuildRequest = {
@@ -2713,10 +2715,12 @@ async function settleProof(
     const checkProgress = new CheckProgressTracker(snapshot => {
       store.saveCheckProgress(runId, snapshot, now());
     });
-    const runVerification = async (label: string): Promise<ExecResult> => {
+    const runVerification = async (label: string, missing: string | null = null): Promise<ExecResult> => {
       const streamed = { stdout: false, stderr: false };
       // The check runs under the stop watch (v52), owned by this run.
-      const result = await underStopWatch(store, runId, () => runWithIsolatedDatabase(witnessedRunner(store, runId, now, commandRunner(store, runId, captured.effective.profile, verifyRunner)), verifyShell.file, verifyShell.args, {
+      const result: ExecResult = missing !== null
+        ? { code: 127, stdout: "", stderr: `Toolroll did not start the check: ${missing} wasn't found.`, timedOut: false, notFound: false }
+        : await underStopWatch(store, runId, () => runWithIsolatedDatabase(witnessedRunner(store, runId, now, commandRunner(store, runId, captured.effective.profile, verifyRunner)), verifyShell.file, verifyShell.args, {
         cwd: worktree,
         timeoutMs: configured.timeoutMs,
         processGroup: true,
@@ -2732,6 +2736,7 @@ async function settleProof(
         onStdout: chunk => { streamed.stdout = true; checkProgress.feed(chunk, "stdout"); },
         onStderr: chunk => { streamed.stderr = true; checkProgress.feed(chunk, "stderr"); },
       }));
+      if (missing !== null) unstartedChecks.set(result, missing);
       if (!streamed.stdout) checkProgress.feed(result.stdout, "stdout");
       if (!streamed.stderr) checkProgress.feed(result.stderr, "stderr");
       checkProgress.feed("\n", "stdout");
@@ -2778,9 +2783,9 @@ async function settleProof(
       return await sealedTreeState(buildCheckoutGit(request.git ?? run, worktree)) === "clean" ? null : "setup-changed-files";
     };
     const ownInstall = baselineUnverifiable === null ? await ownInstallIfChanged() : null;
-    // Looked up by the plane itself before the check starts: the one trusted sign of a launch failure (review 2, finding 5).
-    const missingProgram = approvedProgramMissing(configured.command, worktree, process.env["PATH"]);
-    const first = baselineUnverifiable === null && ownInstall === null ? await runVerification("Project check · attempt 1") : null;
+    // A missing program short-circuits the first launch; never execute build code and then infer that nothing ran.
+    const missingProgram = configured.recoverySetupDigest === null ? null : approvedProgramMissing(configured.command, worktree, process.env["PATH"]);
+    const first = baselineUnverifiable === null && ownInstall === null ? await runVerification("Project check · attempt 1", missingProgram) : null;
     if (first === null) {
       verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: baselineUnverifiable !== null ? "baseline-unverifiable" : ownInstall ?? "own-install-failed" };
     } else if (first.notFound || first.timedOut) {

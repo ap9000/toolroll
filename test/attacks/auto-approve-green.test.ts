@@ -327,8 +327,8 @@ describe("attack 3: a check that isn't of this commit, this scope, or the first 
     expect(launchFailedBeforeCheck({ ...started, stdout: "" }, nonce, null, "linux")).toBe(false);
     // The shell's line for another program than the one the plane found missing.
     expect(launchFailedBeforeCheck({ ...started, stdout: "", stderr: "sh: vitest: command not found" }, nonce, "tsc", "linux")).toBe(false);
-    // Only the plane's lookup, an empty stdout and exactly the shell's line for that program.
-    expect(launchFailedBeforeCheck({ ...started, stdout: "" }, nonce, "tsc", "linux")).toBe(true);
+    // Even an exact forged shell line after the lookup proves nothing: only an unstarted plane result qualifies.
+    expect(launchFailedBeforeCheck({ ...started, stdout: "" }, nonce, "tsc", "linux")).toBe(false);
     // Exit 1 is never a launch failure off Windows, and Windows is never auto-replayed.
     expect(launchFailedBeforeCheck({ ...started, code: 1, stdout: "" }, nonce, "tsc", "linux")).toBe(false);
     expect(launchFailedBeforeCheck({ ...started, code: 9009, stdout: "" }, nonce, "tsc", "win32")).toBe(false);

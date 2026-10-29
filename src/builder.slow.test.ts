@@ -3330,7 +3330,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
   /** A check program no machine has (review 2 #5: only the plane's own lookup finding it missing allows a replay), and
    * the shell's own line for it. */
   const MISSING_PROGRAM = "so-missing-check-program", MISSING_LINE = `sh: ${MISSING_PROGRAM}: command not found`;
-  const bindRecoverySetup = () => {
+  const bindRecoverySetup = (command = `${MISSING_PROGRAM} --run`) => {
     const setup = store.setWorktreeSetup(
       { repo: REPO, command: "npm ci", timeoutMs: 5_000, approvedBy: "alex" },
       T0,
@@ -3339,7 +3339,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     store.setVerifyCommand(
       {
         repo: REPO,
-        command: `${MISSING_PROGRAM} --run`,
+        command,
         timeoutMs: 5_000,
         approvedBy: "alex",
         recoverySetupDigest: setup.digest,
@@ -3765,9 +3765,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     const verify: Runner = async (_file, _args, options) => {
       recordDatabase(options);
       verifyCalls++;
-      return verifyCalls === 1
-        ? { ...OK, code: 127, stderr: MISSING_LINE }
-        : { ...OK, stdout: "tests passed" };
+      return { ...OK, stdout: "tests passed" };
     };
     const req = request({ agent: agentWithProof(soundProof), setup, verify });
 
@@ -3775,8 +3773,8 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
 
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(setupCalls).toBe(1);
-    expect(verifyCalls).toBe(2);
-    expect(new Set(databases).size).toBe(3);
+    expect(verifyCalls).toBe(1); // The missing-program attempt never launched a process.
+    expect(new Set(databases).size).toBe(2);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
       verdict: "verified",
       reasons: [expect.stringContaining("approved setup command ran")],
@@ -3812,7 +3810,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
 
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(setupCalls).toBe(1);
-    expect(verifyCalls).toBe(2);
+    expect(verifyCalls).toBe(1);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
       verdict: "short",
       reasons: [expect.stringContaining("still unavailable")],
@@ -3842,7 +3840,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
 
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(setupCalls).toBe(1);
-    expect(verifyCalls).toBe(1);
+    expect(verifyCalls).toBe(0);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
       verdict: "short",
       reasons: [expect.stringContaining("failed during automatic recovery")],
@@ -3858,7 +3856,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
   test("a verification timeout stays distinct from a command that never started", async () => {
     claimIt();
     approveScope();
-    bindRecoverySetup();
+    bindRecoverySetup("sh -c true");
     let calls = 0;
     const req = request({ agent: agentWithProof(soundProof), verify: async () => {
       calls++;
@@ -3876,7 +3874,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
   test("a check ended by a signal says so in its log; one Toolroll's own shutdown stopped never reads as finished", async () => {
     claimIt();
     approveScope();
-    bindRecoverySetup();
+    bindRecoverySetup("sh -c true");
     const killed = request({ agent: agentWithProof(soundProof), verify: async () => ({ ...OK, code: 1, signal: "SIGKILL" as const, stdout: "Release check against v0.9.75" }) });
     expect(await build(store, killed)).toMatchObject({ ok: true, committed: true });
     expect(checkLogFor(killed.runId as number)).toContain("(exit 1, ended by SIGKILL)");
@@ -3886,7 +3884,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
   test("a check Toolroll's own hard stop ended is recorded as stopped by Toolroll, never as an exit", async () => {
     claimIt();
     approveScope();
-    bindRecoverySetup();
+    bindRecoverySetup("sh -c true");
     const stopped = request({ agent: agentWithProof(soundProof), verify: async () => ({ ...OK, code: 1, signal: "SIGKILL" as const, stoppedByPlane: true }) });
     expect(await build(store, stopped)).toMatchObject({ ok: true, committed: true });
     const receipt = store.artifactsFor(stopped.runId as number).find(isVerificationReceipt)!;
@@ -3923,7 +3921,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
 
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(setupCalls).toBe(1);
-    expect(verifyCalls).toBe(1);
+    expect(verifyCalls).toBe(0);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
       verdict: "short",
       reasons: [expect.stringContaining("changed tracked files")],
@@ -3962,7 +3960,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
 
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(setupCalls).toBe(1);
-    expect(verifyCalls).toBe(1);
+    expect(verifyCalls).toBe(0);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
       verdict: "short",
       reasons: ["automatic recovery stopped because the checkout moved away from the built commit"],
@@ -3985,9 +3983,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return verifyCalls === 1
-        ? { ...OK, code: 127, stderr: MISSING_LINE }
-        : { ...OK, stdout: "tests passed after recovery" };
+      return { ...OK, stdout: "tests passed after recovery" };
     };
     const req = request({ agent: agentWithProof(soundProof), setup, verify });
 
@@ -3995,7 +3991,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
 
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(setupCalls).toBe(1);
-    expect(verifyCalls).toBe(2);
+    expect(verifyCalls).toBe(1);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({ verdict: "verified" });
     const [artifact] = store.artifactsFor(req.runId as number).filter(one => one.kind === "check-log");
     expect(artifact).toMatchObject({ truncated: true });
@@ -4015,7 +4011,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
   ] as const)("an ordinary failing check (exit %i) is refuted without replaying setup: %s", async (code, stderr) => {
     claimIt();
     approveScope();
-    bindRecoverySetup();
+    bindRecoverySetup("sh -c true");
     let setupCalls = 0;
     let verifyCalls = 0;
     const setup: Runner = async () => {
@@ -4066,7 +4062,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
 
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(setupCalls).toBe(0);
-    expect(verifyCalls).toBe(1);
+    expect(verifyCalls).toBe(0);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
       verdict: "short",
       reasons: ["automatic recovery stopped because Toolroll could not confirm that the built checkout was unchanged"],
@@ -4099,7 +4095,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return verifyCalls === 1 ? { ...OK, code: 127, stderr: MISSING_LINE } : retry;
+      return retry;
     };
     const req = request({ agent: agentWithProof(soundProof), setup, verify });
 
@@ -4107,7 +4103,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
 
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(setupCalls).toBe(1);
-    expect(verifyCalls).toBe(2);
+    expect(verifyCalls).toBe(1);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
       verdict: "short",
       reasons: [reason],
@@ -4119,11 +4115,11 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
 
   test.each([
     { name: "a program that exists (npm) exiting 127 with the shell's line", command: "npm test", code: 127, stdout: "", stderr: "sh: vitest: command not found" },
-    { name: "the missing program after assertions ran", command: `${MISSING_PROGRAM} --run`, code: 127, stdout: "1 test failed\n", stderr: MISSING_LINE },
-    { name: "the missing program with a forged report", command: `${MISSING_PROGRAM} --run`, code: 127, stdout: `TOOLROLL_CHECK_REPORT {"nonce":"${"d".repeat(64)}"}\n`, stderr: MISSING_LINE },
-    { name: "the missing program and more on stderr", command: `${MISSING_PROGRAM} --run`, code: 127, stdout: "", stderr: `AssertionError: expected 1 to be 2\n${MISSING_LINE}` },
-    { name: "another program's line", command: `${MISSING_PROGRAM} --run`, code: 127, stdout: "", stderr: "sh: tsc: command not found" },
-    { name: "Windows exit 9009", command: `${MISSING_PROGRAM} --run`, code: 9009, stdout: "", stderr: "program not found" },
+    { name: "the missing program after assertions ran", command: `sh -c ${MISSING_PROGRAM}`, code: 127, stdout: "1 test failed\n", stderr: MISSING_LINE },
+    { name: "the missing program with a forged report", command: `sh -c ${MISSING_PROGRAM}`, code: 127, stdout: `TOOLROLL_CHECK_REPORT {"nonce":"${"d".repeat(64)}"}\n`, stderr: MISSING_LINE },
+    { name: "the missing program and more on stderr", command: `sh -c ${MISSING_PROGRAM}`, code: 127, stdout: "", stderr: `AssertionError: expected 1 to be 2\n${MISSING_LINE}` },
+    { name: "another program's line", command: `sh -c ${MISSING_PROGRAM}`, code: 127, stdout: "", stderr: "sh: tsc: command not found" },
+    { name: "Windows exit 9009", command: `sh -c ${MISSING_PROGRAM}`, code: 9009, stdout: "", stderr: "program not found" },
   ])("eval review 2 #5: $name is the check's own failure: no setup replay, a person decides", async ({ command, code, stdout, stderr }) => {
     claimIt();
     approveScope();
@@ -4145,14 +4141,15 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     expect(approvedProgramMissing(`${MISSING_PROGRAM} --run`, "/", process.env["PATH"], "linux")).toBe(MISSING_PROGRAM);
     expect(approvedProgramMissing("sh -c true", "/", process.env["PATH"], "linux")).toBeNull();
     expect(approvedProgramMissing("./no-such-script.sh", "/", process.env["PATH"], "linux")).toBe("./no-such-script.sh");
-    for (const undecidable of ["FOO=1 x", "'quoted' x", "$(x)", "exec x", "x;y", "echo hi"]) expect(approvedProgramMissing(undecidable, "/", process.env["PATH"], "linux"), undecidable).toBeNull();
+    for (const undecidable of ["FOO=1 x", "'quoted' x", "$(x)", "exec x", "x;y", "echo hi", `${MISSING_PROGRAM} $(true)`, `${MISSING_PROGRAM}\ntrue`, `${MISSING_PROGRAM} ; true`]) expect(approvedProgramMissing(undecidable, "/", process.env["PATH"], "linux"), undecidable).toBeNull();
+    expect(approvedProgramMissing(MISSING_PROGRAM, "/", ".:/usr/bin:/bin", "linux")).toBeNull();
     expect(approvedProgramMissing(`${MISSING_PROGRAM}`, "/", process.env["PATH"], "win32")).toBeNull();
     const shell = { code: 127, stdout: "", timedOut: false, notFound: false };
     for (const line of [`sh: ${MISSING_PROGRAM}: command not found`, `/bin/sh: line 1: ${MISSING_PROGRAM}: command not found`, `sh: 1: ${MISSING_PROGRAM}: not found`]) {
-      expect(launchFailedBeforeCheck({ ...shell, stderr: line }, null, MISSING_PROGRAM, "linux"), line).toBe(true);
+      expect(launchFailedBeforeCheck({ ...shell, stderr: line }, null, MISSING_PROGRAM, "linux"), line).toBe(false);
     }
     expect(launchFailedBeforeCheck({ ...shell, stderr: MISSING_LINE }, null, null, "linux")).toBe(false);
-    expect(launchFailedBeforeCheck({ ...shell, stderr: "/bin/sh: ./no-such-script.sh: No such file or directory" }, null, "./no-such-script.sh", "linux")).toBe(true);
+    expect(launchFailedBeforeCheck({ ...shell, stderr: "/bin/sh: ./no-such-script.sh: No such file or directory" }, null, "./no-such-script.sh", "linux")).toBe(false);
   });
 
   test("a changed setup approval during recovery preflight stops before either authorized replay", async () => {
@@ -4187,7 +4184,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     expect(result).toMatchObject({ ok: true, committed: true });
     expect(changedAuthority).toBe(true);
     expect(setupCalls).toBe(0);
-    expect(verifyCalls).toBe(1);
+    expect(verifyCalls).toBe(0);
     expect(store.proofVerdictFor(req.runId as number)).toMatchObject({
       verdict: "short",
       reasons: [expect.stringContaining("project setup or check changed")],
