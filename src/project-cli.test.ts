@@ -26,4 +26,6 @@ test('CLI returns the shared report and refuses a missing or foreign saved crede
   writeFileSync(tokenFile, other.token);
   expect(await runProjectCommand(['activity'], new Map(), context)).toBe(3);
   expect(JSON.parse(lines.at(-1)!).reason).toBe('not-found');
+  expect(await runProjectCommand(['activity'], new Map([['token-file', join(dir, 'other-token')]]), context)).toBe(2);
+  expect(JSON.parse(lines.at(-1)!).reason).toBe('usage');
 });

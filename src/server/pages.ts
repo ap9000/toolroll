@@ -998,7 +998,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     for (const one of recent) peeks[one.path] = peekOf(one.path);
     for (const path of candidates) peeks[path] = peekOf(path);
     let activity: import('../browser-workspace.js').BrowserProjectsView['activity'];
-    if (open !== null && visible(open) && store.accountCanAccess(who.name, open)) {
+    if (open !== null && !returnTo.startsWith("/tasks/new") && visible(open) && store.accountCanAccess(who.name, open)) {
       try { activity = { project: projectName(open), report: projectOutcomes(store, open, now, { principal: 'operator', repos: [open] }) }; }
       catch { activity = { project: projectName(open), report: null }; }
     }

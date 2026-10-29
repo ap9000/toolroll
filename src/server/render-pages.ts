@@ -1503,7 +1503,7 @@ export function projectsPage(
     recentItems.length === 0 && candidateItems.length === 0
       ? html`<div class="card"><p><strong>Nothing to open yet.</strong></p><p class="meta">Add one below — opening it registers it here for next time.</p></div>`
       : null,
-    choosing ? null : activityHtml,
+    activityHtml,
     recentItems.length > 0 ? html`<h2>Recent</h2>${cards(recentItems)}` : null,
     candidateItems.length > 0 ? html`<h2>Available</h2>${cards(candidateItems)}` : null,
     addCard,
