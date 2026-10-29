@@ -1,55 +1,107 @@
 /**
  * The CI unit suite's shards (scripts/ci-shards.mjs, docs/plans/pipeline-speed.md part A): a required "node N ·
- * ubuntu-latest" check passes only when every shard passed on the tested commit and together they ran every listed
- * test file exactly once. Each way a shard set can fall short is one row.
+ * ubuntu-latest" check passes only when every shard's own Vitest report passed, its counts agree with its results, it
+ * executed tests, it skipped only what the trusted base allows, and together the shards ran every test file the include
+ * policy finds exactly once. Each way a shard set can fall short is one row (Codex review round 1, finding 1).
  */
-import { describe, expect, test } from "vitest";
-import { shardsProblem, summarize } from "../scripts/ci-shards.mjs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, test } from "vitest";
+import { INCLUDE, inventory, readReport, reportsIn, shardsProblem } from "../scripts/ci-shards.mjs";
 
-const sha = "a".repeat(40);
-type Summary = { version: number; sha: string; node: string; shard: number; of: number; files: string[]; tests: { total: number; passed: number; failed: number; skipped: number } };
-const listed = ["src/a.test.ts", "src/b.test.ts", "src/c.test.ts", "test/attacks/d.test.ts"];
-const shard = (at: number, files: string[], extra: Partial<Summary> = {}): Summary =>
-  ({ version: 1, sha, node: "22", shard: at, of: 2, files, tests: { total: files.length, passed: files.length, failed: 0, skipped: 0 }, ...extra });
-const good = () => [shard(1, ["src/a.test.ts", "src/c.test.ts"]), shard(2, ["src/b.test.ts", "test/attacks/d.test.ts"])];
-const problem = (summaries: unknown[], files = listed) => shardsProblem(summaries, files, { sha, node: "22", shards: 2 }) as string | null;
+const scratch = mkdtempSync(join(tmpdir(), "ci-shards-"));
+afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+const root = join(scratch, "candidate"), base = join(scratch, "base");
+const write = (at: string, file: string, text: string) => { mkdirSync(join(at, file, ".."), { recursive: true }); writeFileSync(join(at, file), text); };
+// The base revision: a file that may skip (it says so), and one that never does.
+write(base, "src/a.test.ts", "test('a', () => {});\n");
+write(base, "src/native.test.ts", "test.skipIf(process.platform !== 'linux')('native', () => {});\n");
+write(base, "test/attacks/d.test.ts", "test('d', () => {});\n");
+
+type Assertion = { status: string };
+type FileResult = { name: string; status: string; assertionResults: Assertion[] };
+const file = (name: string, passed = 2, skipped = 0, status = passed > 0 ? "passed" : "skipped"): FileResult =>
+  ({ name: join(root, name), status, assertionResults: [...Array(passed).fill({ status: "passed" }), ...Array(skipped).fill({ status: "skipped" })] });
+const report = (files: FileResult[], extra: Record<string, unknown> = {}) => {
+  const all = files.flatMap(one => one.assertionResults);
+  return { success: true, numFailedTests: 0, numFailedTestSuites: 0, numTotalTests: all.length, numPassedTests: all.filter(one => one.status === "passed").length,
+    numPendingTests: all.filter(one => one.status !== "passed").length, numTodoTests: 0, testResults: files, ...extra };
+};
+const listed = ["src/a.test.ts", "src/b.test.ts", "src/native.test.ts", "test/attacks/d.test.ts"];
+const good = () => new Map<number, unknown>([[1, report([file("src/a.test.ts"), file("src/native.test.ts", 1, 3)])], [2, report([file("src/b.test.ts"), file("test/attacks/d.test.ts")])]]);
+const problem = (reports: Map<number, unknown>, files = listed) => shardsProblem(reports, files, { shards: 2, root, base }) as string | null;
+const swap = (at: number, value: unknown) => { const reports = good(); reports.set(at, value); return reports; };
 
 describe("pipeline-speed A: the shards' join", () => {
-  test("every shard passed on the commit and every listed file ran once: the join passes", () => {
+  test("every shard's report stands and every file ran once: the join passes", () => {
     expect(problem(good())).toBeNull();
   });
 
   test.each([
-    ["a shard gave no summary", () => good().slice(0, 1), /shard 2\/2 gave no summary/],
-    ["a summary can't be read", () => [...good(), null], /can't be read/],
-    ["a shard reported twice", () => [...good(), good()[0]], /reported twice/],
-    ["a shard tested another commit", () => [good()[0], { ...good()[1], sha: "b".repeat(40) }], /tested bbbbbbb/],
-    ["a shard of another Node version", () => [good()[0], { ...good()[1], node: "24" }], /node 24/],
-    ["a shard of another split", () => [good()[0], { ...good()[1], of: 3 }], /one of 3/],
-    ["a shard with a failed test", () => [good()[0], { ...good()[1], tests: { total: 2, passed: 1, failed: 1, skipped: 0 } }], /didn't pass/],
-    ["a file ran in no shard", () => [shard(1, ["src/a.test.ts"]), good()[1]], /src\/c\.test\.ts/],
-    ["a file ran in two shards", () => [good()[0], shard(2, ["src/a.test.ts", "src/b.test.ts", "test/attacks/d.test.ts"])], /ran in shards 1 and 2/],
-    ["a shard ran a file Vitest doesn't list", () => [good()[0], shard(2, ["src/b.test.ts", "test/attacks/d.test.ts", "src/elsewhere.test.ts"])], /doesn't list/],
-    ["an unknown summary version", () => [good()[0], { ...good()[1], version: 2 }], /unknown version/],
+    // Codex's reproduction: reports whose every test was skipped passed with zero tests executed.
+    ["every shard skipped everything", () => new Map<number, unknown>([[1, report([file("src/a.test.ts", 0, 2), file("src/native.test.ts", 0, 1)])], [2, report([file("src/b.test.ts", 0, 1), file("test/attacks/d.test.ts", 0, 1)])]]), /never skips one|executed no tests/],
+    ["a shard executed nothing (its files' skips allowed)", () => swap(1, report([file("src/native.test.ts", 0, 3)])), /executed no tests/],
+    ["a report with every count zero and no results", () => swap(2, { success: true, numFailedTests: 0, numFailedTestSuites: 0, numTotalTests: 0, numPassedTests: 0, numPendingTests: 0, numTodoTests: 0, testResults: [] }), /executed no tests/],
+    ["a file with no tests", () => swap(2, report([file("src/b.test.ts", 0, 0, "passed"), file("test/attacks/d.test.ts")])), /reports no tests/],
+    ["a total that isn't its results", () => swap(2, report([file("src/b.test.ts"), file("test/attacks/d.test.ts")], { numTotalTests: 40 })), /says 40 tests/],
+    ["a passed count that isn't its results", () => swap(2, report([file("src/b.test.ts"), file("test/attacks/d.test.ts")], { numPassedTests: 9 })), /says 9 passed/],
+    ["a skipped count that isn't its results", () => swap(1, report([file("src/a.test.ts"), file("src/native.test.ts", 1, 3)], { numPendingTests: 0 })), /says 0 skipped/],
+    ["a test the base always ran, now skipped", () => swap(2, report([file("src/b.test.ts"), file("test/attacks/d.test.ts", 1, 1)])), /d\.test\.ts skipped 1 test, and the base revision's copy of it never skips one/],
+    ["a failed test", () => swap(2, report([file("src/b.test.ts"), { ...file("test/attacks/d.test.ts"), assertionResults: [{ status: "failed" }] }])), /has a test that failed/],
+    ["a report that didn't pass", () => swap(2, { ...report([file("src/b.test.ts"), file("test/attacks/d.test.ts")]), success: false }), /didn't pass/],
+    ["a failed suite", () => swap(2, { ...report([file("src/b.test.ts"), file("test/attacks/d.test.ts")]), numFailedTestSuites: 1 }), /numFailedTestSuites 1/],
+    ["a file outside the checkout", () => swap(2, report([file("src/b.test.ts"), { ...file("x"), name: "/elsewhere/test/attacks/d.test.ts" }])), /outside the checkout/],
+    ["a relative file name", () => swap(2, report([file("src/b.test.ts"), { ...file("x"), name: "test/attacks/d.test.ts" }])), /outside the checkout/],
+    ["an unreadable report", () => swap(2, null), /can't be read/],
+    ["not a Vitest report", () => swap(2, { files: [] }), /isn't a Vitest JSON report/],
+    ["a shard gave no report", () => { const reports = good(); reports.delete(2); return reports; }, /shard 2\/2 gave no report/],
+    ["a report for a shard that doesn't exist", () => { const reports = good(); reports.set(3, report([file("src/b.test.ts")])); return reports; }, /shard 3 of 2/],
+    ["a file ran in no shard", () => swap(1, report([file("src/a.test.ts")])), /src\/native\.test\.ts/],
+    ["a file ran in two shards", () => swap(2, report([file("src/b.test.ts"), file("test/attacks/d.test.ts"), file("src/a.test.ts")])), /ran in shards 1 and 2/],
+    ["a shard ran a file the policy doesn't find", () => swap(2, report([file("src/b.test.ts"), file("test/attacks/d.test.ts"), file("src/elsewhere.test.ts")])), /doesn't find here/],
   ])("%s: the join fails", (_, make, why) => {
     expect(problem(make())).toMatch(why);
   });
 
-  test("no tested commit, no shard count or no listed files: the join fails", () => {
-    expect(shardsProblem(good(), listed, { sha: "HEAD", node: "22", shards: 2 })).toMatch(/no tested commit/);
-    expect(shardsProblem(good(), listed, { sha, node: "22", shards: 0 })).toMatch(/no shard count/);
-    expect(problem(good(), [])).toMatch(/listed no test files/);
+  test("a new file may skip (it takes no coverage the base had); a file the base may skip may skip", () => {
+    expect(readReport(report([file("src/b.test.ts", 1, 2)]), { root, base })).toMatchObject({ ok: true, tests: { passed: 1, notRun: 2 } });
+    expect(readReport(report([file("src/native.test.ts", 1, 5)]), { root, base })).toMatchObject({ ok: true });
   });
 
-  test("a shard's summary is written only from a passing Vitest report", () => {
-    const report = { success: true, numFailedTests: 0, numFailedTestSuites: 0, numTotalTests: 3, numPassedTests: 2, numPendingTests: 1, numTodoTests: 0,
-      testResults: [{ name: "src/b.test.ts", status: "passed" }, { name: "src/a.test.ts", status: "passed" }] };
-    expect(summarize(report, { sha, node: "22", shard: 1, of: 2 })).toEqual({ version: 1, sha, node: "22", shard: 1, of: 2, files: ["src/a.test.ts", "src/b.test.ts"], tests: { total: 3, passed: 2, failed: 0, skipped: 1 } });
-    for (const bad of [
-      { ...report, success: false }, { ...report, numFailedTests: 1 }, { ...report, numFailedTestSuites: 1 }, { ...report, testResults: [] },
-      { ...report, testResults: [{ name: "src/a.test.ts", status: "failed" }] }, { ...report, numTotalTests: 0 }, null,
-    ]) expect(() => summarize(bad, { sha, node: "22", shard: 1, of: 2 })).toThrow();
-    expect(() => summarize(report, { sha: "", node: "22", shard: 1, of: 2 })).toThrow(/no tested commit/);
-    expect(() => summarize(report, { sha, node: "22", shard: 3, of: 2 })).toThrow(/no shard index/);
+  test("no shard count or an empty inventory: the join fails", () => {
+    expect(shardsProblem(good(), listed, { shards: 0, root, base })).toMatch(/no shard count/);
+    expect(problem(good(), [])).toMatch(/finds no test files/);
+  });
+
+  test("the include policy is vitest.config.ts's, and finds exactly its files without following a symlinked folder", () => {
+    const config = readFileSync(join(import.meta.dirname, "..", "vitest.config.ts"), "utf8");
+    expect(JSON.parse(/include:\s*(\[[^\]]*\])/.exec(config)![1]!.replace(/'/g, "\""))).toEqual(INCLUDE);
+    const tree = join(scratch, "tree");
+    for (const one of ["src/a.test.ts", "src/deep/b.test.ts", "src/helper.ts", "test/attacks/c.test.ts", "test/other.test.ts", "src/node_modules/x.test.ts"]) write(tree, one, "");
+    mkdirSync(join(scratch, "outside"), { recursive: true });
+    write(scratch, "outside/e.test.ts", "");
+    symlinkSync(join(scratch, "outside"), join(tree, "src", "linked"));
+    expect(inventory(tree)).toEqual(["src/a.test.ts", "src/deep/b.test.ts", "test/attacks/c.test.ts"]);
+  });
+
+  test("the reports' folder holds exactly one report per shard folder of this Node version, nothing else", () => {
+    const folder = (name: string) => { const at = join(scratch, name); mkdirSync(at, { recursive: true }); return at; };
+    const ok = folder("shards-ok");
+    write(ok, "shard-22-1/shard-report.json", JSON.stringify(report([file("src/a.test.ts")])));
+    write(ok, "shard-22-2/shard-report.json", "not json");
+    const read = reportsIn(ok, "22");
+    expect([...read.keys()].sort()).toEqual([1, 2]);
+    expect(read.get(2)).toBeNull();
+    const other = folder("shards-other");
+    write(other, "shard-24-1/shard-report.json", "{}");
+    expect(() => reportsIn(other, "22")).toThrow(/unexpected shard-24-1/);
+    const extra = folder("shards-extra");
+    write(extra, "shard-22-1/shard-report.json", "{}");
+    write(extra, "shard-22-1/summary.json", "{}");
+    expect(() => reportsIn(extra, "22")).toThrow(/exactly one shard-report.json/);
+    const loose = folder("shards-loose");
+    write(loose, "forged.json", "{}");
+    expect(() => reportsIn(loose, "22")).toThrow(/unexpected forged\.json/);
   });
 });

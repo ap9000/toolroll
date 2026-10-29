@@ -175,18 +175,26 @@ describe("the CI workflows", () => {
       for (const step of job.steps ?? []) { expect(step.if).toBeUndefined(); expect(step["continue-on-error"] ?? false).toBe(false); }
     }
     const runs = (job: Job) => (job.steps ?? []).map(step => step.run ?? "");
-    // Each shard runs the whole suite's command on its slice, then records what it ran on the tested commit.
-    expect(runs(shard)).toContain(`npm run test:all -- --shard=\${{ matrix.shard }}/${SHARDS} --reporter=default --reporter=json --outputFile.json=shard-report.json`);
-    expect(runs(shard)).toContain(`node scripts/ci-shards.mjs summarize shard-report.json shard-summary.json --sha "$TESTED_SHA" --node \${{ matrix.node }} --shard \${{ matrix.shard }}/${SHARDS}`);
+    // Each shard runs the whole suite's command on its slice, and uploads Vitest's own report, written outside the
+    // checkout: no candidate script summarizes it (Codex review round 1, finding 1).
+    expect(runs(shard)).toContain(`npm run test:all -- --shard=\${{ matrix.shard }}/${SHARDS} --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"`);
+    expect(runs(shard).filter(run => run.includes("ci-shards"))).toEqual([]);
+    expect(shard.steps?.find(step => step.uses?.startsWith("actions/upload-artifact@"))?.with?.["path"]).toBe("${{ runner.temp }}/shard-report.json");
     expect(runs(shard)).toEqual(expect.arrayContaining(["npm ci", "npm run typecheck", "npm run build"]));
-    // The join: the shards' own result first, then their summaries against Vitest's list of this commit's files.
+    // The join: the shards' own result first, then their reports against the include policy, by the trusted base
+    // revision's verifier. It installs and runs nothing of the candidate's.
     const steps = join.steps ?? [];
     const result = steps.findIndex(step => step.name === "Every shard passed");
     expect(result).toBeGreaterThan(steps.findIndex(step => step.name === "Tested commit"));
     expect((steps[result] as { env?: Record<string, string> }).env?.["SHARDS"]).toBe("${{ needs.test-shard.result }}");
     expect(steps[result]?.run).toMatch(/^test "\$SHARDS" = success \|\|/);
-    expect(runs(join)).toContain("npx vitest list --filesOnly --json=listed-files.json");
-    expect(runs(join).at(-1)).toBe(`node scripts/ci-shards.mjs verify shards listed-files.json --sha "$TESTED_SHA" --node \${{ matrix.node }} --shards ${SHARDS}`);
-    expect(steps.find(step => step.uses?.startsWith("actions/download-artifact@"))?.with?.["pattern"]).toBe("shard-${{ matrix.node }}-*");
+    expect(runs(join).filter(run => /\bnpm\b|\bnpx\b|vitest/.test(run))).toEqual([]);
+    expect(steps.find(step => step.uses?.startsWith("actions/setup-node@"))?.with?.["cache"]).toBeUndefined();
+    const trusted = steps.find(step => step.uses?.startsWith("actions/checkout@") && step.with?.["path"] === ".trusted-base");
+    expect(trusted?.with).toMatchObject({ ref: "${{ github.event.pull_request.base.sha || github.sha }}", "persist-credentials": false });
+    const verify = runs(join).at(-1)!;
+    expect(verify).toContain("verifier=.trusted-base/scripts/ci-shards.mjs");
+    expect(verify).toContain(`node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node \${{ matrix.node }} --shards ${SHARDS}`);
+    expect(steps.find(step => step.uses?.startsWith("actions/download-artifact@"))?.with).toMatchObject({ pattern: "shard-${{ matrix.node }}-*", path: "${{ runner.temp }}/shards" });
   });
 });

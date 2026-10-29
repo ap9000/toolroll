@@ -59,21 +59,26 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
-      - run: npm run test:all -- --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile.json=shard-report.json
+      # Vitest's own JSON report, written outside the checkout and uploaded as it is: no candidate script summarizes it.
+      - run: npm run test:all -- --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"
         env:
           CI: "true"
-      - run: node scripts/ci-shards.mjs summarize shard-report.json shard-summary.json --sha "$TESTED_SHA" --node ${{ matrix.node }} --shard ${{ matrix.shard }}/4
       - uses: actions/upload-artifact@v4
         with:
           name: shard-${{ matrix.node }}-${{ matrix.shard }}
-          path: shard-summary.json
+          path: ${{ runner.temp }}/shard-report.json
           if-no-files-found: error
           overwrite: true
           retention-days: 7
 
   # The required check for each Node version, under the name `toolroll release` and main's protection wait for. It
   # always runs (a job skipped because a shard failed would read as passing to a required check) and fails unless
-  # every shard passed and, together, the shards ran every test file Vitest lists for the tested commit, each once.
+  # every shard passed and, together, the shards ran every test file the include policy finds in the tested commit,
+  # each once, with consistent counts, tests executed and only the skips the base allows. It runs none of the
+  # candidate's code: no install, and the verifier (with its inventory and skip policy) is the trusted base revision's
+  # copy — the pull request's base, or main itself on a push (Codex review round 1, finding 1). Until the base has a
+  # verifier (the change that introduces it) the candidate's own is used and said; that change touches scripts/, which
+  # an automatic release never approves.
   test:
     name: node ${{ matrix.node }} · ubuntu-latest
     needs: test-shard
@@ -99,17 +104,24 @@ jobs:
         env:
           SHARDS: ${{ needs.test-shard.result }}
         run: test "$SHARDS" = success || { echo "the unit suite's shards ended $SHARDS" >&2; exit 1; }
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: .trusted-base
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm ci
       - uses: actions/download-artifact@v4
         with:
           pattern: shard-${{ matrix.node }}-*
-          path: shards
-      - run: npx vitest list --filesOnly --json=listed-files.json
-      - run: node scripts/ci-shards.mjs verify shards listed-files.json --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 4
+          path: ${{ runner.temp }}/shards
+      - name: Every shard ran the whole suite
+        shell: bash
+        run: |
+          verifier=.trusted-base/scripts/ci-shards.mjs
+          if [ ! -f "$verifier" ]; then echo "::warning::the base revision has no shard verifier yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
+          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 4
 
   # The native containment backend, EXECUTED: a cgroup v2 leaf is delegated
   # to the runner user (chown, as the kernel's delegation model prescribes)
