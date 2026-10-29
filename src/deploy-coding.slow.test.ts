@@ -227,6 +227,7 @@ async function deployment({ codingCatalog = true, wrap = (args: Record<string, a
       if (dist === nextDist && services.running === 'new') return services.new;
       return dist === priorDist && services.running === 'old' ? services.old : null;
     },
+    leftFrom: (dist: string) => (dist === priorDist && services.running === "old") || (dist === nextDist && services.running !== null && services.running !== "old") ? [999] : [],
     proveStaged: () => ({ distFiles: 1 }),
     verifyServiceStopped: async (pids: number[]) => { log.push(`proved stopped ${pids.join(' ')}`); hooks.stopped?.(pids); },
     load: async () => ({ SCHEMA_VERSION: schema, openStore: (file: string) => { log.push('migrate'); const db = new DatabaseSync(file); db.exec('CREATE TABLE candidate_only(value)'); return db; } }),
@@ -523,7 +524,7 @@ test('a failed start is stopped and its custody proved, then the backup and prev
     // The verified backup goes back, then the previous service starts and answers, all while admission stays paused.
     const recovering = d.log.length;
     expect(quietly(() => d.phases.recoverJournal())).toBe(true);
-    expect(d.log.slice(recovering)).toEqual(['bootout', 'bootstrap previous while paused', 'healthz while paused']);
+    expect(d.log.slice(recovering)).toEqual(['bootstrap previous while paused', 'healthz while paused']);
     expect(readFileSync(d.plist, 'utf8')).toBe(d.livePlist);
     const db = d.orders();
     try {
@@ -806,25 +807,19 @@ async function stuckDeployment() {
     } };
 }
 
-test('2026-10-29: an `up` that ignores SIGTERM after its supervisor exits is stopped by the deploy itself, and the deploy completes', async () => {
+test('a stuck service refuses the swap without signalling historical PIDs', async () => {
   const s = await stuckDeployment();
   try {
     await s.d.rehearsed();
-    await s.d.phases.swap();
-    // The supervisor exited on its SIGTERM; its `up` and worker ignored theirs and were stopped once proved its own.
-    expect([s.old.supervisor, s.old.up, s.old.role].some(isAlive)).toBe(false);
-    expect(s.d.log.slice(0, 5)).toEqual(['rehearsed', 'stopping', 'bootout', 'proving 3 processes stopped', 'stopping 2 process(es) the old service left running: ' + `${s.old.up} (up), ${s.old.role} (worker role)`]);
-    expect(s.d.log).toContain(`process ${s.old.up}, ${s.old.role} ignored SIGTERM; stopping it with SIGKILL`);
-    expect(s.d.journal()).toMatchObject({ phase: 'started' });
-    // Finish, as the new worker's lease comes up: deployed, admission open, no manual step.
-    const lease = () => { const db = s.d.orders(); try { const now = new Date().toISOString(); db.prepare("INSERT OR REPLACE INTO watch_lease VALUES('worker','/repo','owner',1,?,?,?)").run(now, new Date(Date.now() + 3_600_000).toISOString(), now); } finally { db.close(); } };
-    lease();
-    await s.d.phases.finish();
-    expect([s.d.journal().phase, s.d.gateOwned()]).toEqual(['deployed', false]);
+    await expect(s.d.phases.swap()).rejects.toThrow('Historical PIDs');
+    expect([s.old.up, s.old.role].every(isAlive)).toBe(true);
+    expect(s.d.journal().phase).toBe('stopping');
+    expect(s.d.gateOwned()).toBe(true);
+    expect(s.d.log).not.toContain('bootstrap candidate');
   } finally { s.close(); }
 }, 60_000);
 
-test('2026-10-29: recovery of a deploy stuck at stopping stops only the old service\'s proved leftovers, restarts the previous service and lifts the pause', async () => {
+test('recovery leaves live services untouched, then restores only after the owner stops the old processes', async () => {
   const s = await stuckDeployment();
   const sandbox: ChildProcess[] = [];
   try {
@@ -837,6 +832,11 @@ test('2026-10-29: recovery of a deploy stuck at stopping stops only the old serv
     // The same runtime serving a sandbox's database: never this deployment's, never touched.
     const other = await stuckService(s.priorDist, join(s.d.root, 'demo.db'), sandbox);
     s.d.reset();
+    expect(quietly(() => s.d.phases.recoverJournal())).toBe(false);
+    expect([s.old.up, s.old.role, other.supervisor, other.up, other.role].every(isAlive)).toBe(true);
+    expect(s.d.gateOwned()).toBe(true);
+    for (const pid of [s.old.up, s.old.role]) process.kill(pid, 'SIGKILL');
+    await waitFor('the owned processes to exit', () => ![s.old.up, s.old.role].some(isAlive));
     expect(quietly(() => s.d.phases.recoverJournal())).toBe(true);
     expect([isAlive(s.old.up), isAlive(s.old.role)]).toEqual([false, false]);
     expect([other.supervisor, other.up, other.role].every(isAlive)).toBe(true);
@@ -848,3 +848,19 @@ test('2026-10-29: recovery of a deploy stuck at stopping stops only the old serv
     for (const pid of [other.role, other.up, other.supervisor]) process.kill(pid, 'SIGKILL');
   } finally { for (const child of sandbox) { try { child.kill('SIGKILL'); } catch { /* gone */ } } s.close(); }
 }, 60_000);
+
+test.each(['stopped', 'migrated', 'backup-restored'])('recovery at %s leaves a healthy replacement and its database untouched', async phase => {
+  const d = await deployment();
+  try {
+    await d.rehearsed();
+    durableJson(join(d.stage, 'deployment.json'), { ...d.journal(), phase });
+    d.services.running = 'new';
+    const before = readFileSync(d.database);
+    d.reset();
+    expect(quietly(() => d.phases.recoverJournal())).toBe(false);
+    expect(d.services.running).toBe('new');
+    expect(d.log).not.toContain('bootout');
+    expect(readFileSync(d.database)).toEqual(before);
+    expect(d.gateOwned()).toBe(true);
+  } finally { d.close(); }
+});

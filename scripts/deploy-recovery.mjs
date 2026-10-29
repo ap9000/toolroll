@@ -16,8 +16,7 @@ export const PAUSED_BEFORE_SWAP = Object.freeze(["admission-paused", "frozen", "
 export const MIGRATION_STARTED = Object.freeze(["migrating", "migrated", "start-failed"]);
 const RESTARTABLE = Object.freeze(["stopped", "backup-restored", ...MIGRATION_STARTED]);
 
-/** effects: stopProved() says whether every old process is gone (asked only at "stopping"); forceStop(), when given,
- * stops what is left of the old service once each process is proved its own and says whether it did (or throws),
+/** effects: stopProved() says whether every old process is gone (asked only at "stopping");
  * restoreBackup() puts the verified backup in place of the live database and returns where the
  * live one was kept, restoreService() starts the previous definition and waits until it answers,
  * removeGate() lifts this deployment's own pause and says whether it held one, mark(phase) journals the outcome.
@@ -35,9 +34,8 @@ export function recoverFailedDeployment(phase, effects, { previousRuntimeCompati
     effects.mark("released");
     return "New work resumed: the deployment stopped before the swap and lifted its pause.";
   }
-  // Not proved stopped: what the stopped service left running is stopped once it is proved to be the service's own
-  // (effects.forceStop: launchd's definition booted out, then deploy-stop.mjs), and the stop is proved again.
-  if (phase === "stopping" && (effects.stopProved() || (typeof effects.forceStop === "function" && effects.forceStop() && effects.stopProved()))) phase = "stopped";
+  // A historical journal cannot authorize stopping a current service, even at the same runtime path.
+  if (phase === "stopping" && effects.stopProved()) phase = "stopped";
   let kept = null;
   if (MIGRATION_STARTED.includes(phase) && !previousRuntimeCompatible) {
     kept = effects.restoreBackup();
@@ -57,8 +55,8 @@ export function recoverFailedDeployment(phase, effects, { previousRuntimeCompati
 }
 
 /** How long a runner's heartbeat keeps its name held after its process died (src/runner.ts DEFAULT_LIVENESS_MS): a
- * service restarted within this window may refuse to start ("runner-alive") until it lapses. A worker that stopped
- * cleanly (retired) or whose reported drain ended doesn't hold it at all. */
+ * service restarted within this window may refuse to start ("runner-alive") until it lapses. A worker that signed
+ * off cleanly, or whose credential holders are proved gone, can be replaced sooner. */
 export const RUNNER_LIVENESS_MS = 60_000;
 /** How long a deployment waits for a service to answer: past the liveness window with a margin for launchd's restart
  * backoff (controller-service restarts within 30 s), and never under the 90 s it always waited. */

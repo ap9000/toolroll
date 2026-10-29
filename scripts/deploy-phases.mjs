@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { observeCodingDeployment, backupCodingDeployment, verifyCodingDeploymentBackup, assertCodingDeploymentStopped, releaseStaleCodingDeployment, ledgerStaleCodingRelease } from "./deploy-coding.mjs";
 import { HEALTH_WAIT_MS, RUNNER_LIVENESS_MS, recoverFailedDeployment, waitUntilHealthy } from "./deploy-recovery.mjs";
-import { classify, recordedStillRunning } from "./deploy-stop.mjs";
+import { recordedStillRunning } from "./deploy-stop.mjs";
 
 export const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 const quote = s => '"' + s.replaceAll('"', '""') + '"';
@@ -125,12 +125,11 @@ export function activeWorkRefusal(work) {
  * the plane's records (facts, quiet), the services (service, verifyServiceStopped, spawnSync for launchctl, ps,
  * pgrep and curl), the staged runtime (proveStaged, load, loadCodingDeploymentRuntime), fetch, sleep, say,
  * requireTrue (which ends the deployment) and pruneStaged. processes() lists every process (deploy-stop.mjs
- * listProcesses) and stopProcesses(scope) stops a service's proved leftovers (stopServiceProcesses); without them
- * recovery never signals a process. */
+ * listProcesses). Recovery observes exit but never signals processes from historical journal data. */
 export function browserDeployment({
   database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script, oldRt, deploymentLock, signal,
   facts, quiet, service, proveStaged, verifyServiceStopped, leftFrom, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
-  processes, stopProcesses,
+  processes,
 }) {
   const short = candidateHead.slice(0, 7);
   const assertLocked = () => deploymentLock.assertHeld(journalFile);
@@ -180,14 +179,17 @@ export function browserDeployment({
     try { r = readJournal(); } catch { return false; }
     try {
       const dists = [...new Set([priorDist, r.priorRuntime, r.nextRuntime].filter(one => typeof one === "string" && one !== ""))];
+      // Re-prove at every destructive recovery use, even if a historical journal already says "stopped".
+      const stopped = () => stopProved(r, { alive: pid => aliveAsService(pid, dists),
+        remaining: () => dists.flatMap(dist => leftFrom?.(dist) ?? ["unreadable runtime processes"]),
+        loaded: () => spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status !== 113 });
+      const requireStopped = () => { if (!stopped()) throw Error("The service is not proved stopped; its database and definition were left in place."); };
       const words = recoverFailedDeployment(r.phase, {
-        // A replacement can have started after the recorded snapshot. Recovery needs the same runtime scan as
-        // normal shutdown; absent or unreadable process evidence leaves the pause and the service untouched.
-        stopProved: () => stopProved(r, { alive: pid => aliveAsService(pid, dists), remaining: () => leftFrom?.(priorDist),
-          loaded: () => spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status === 0 }),
-        ...(typeof stopProcesses === "function" && typeof processes === "function" ? { forceStop: () => forceStop(r, dists) } : {}),
-        restoreBackup: () => restoreDeploymentBackup(r, { database, stageDir }),
-        restoreService: () => restorePriorService(r),
+        stopProved: stopped,
+        // A stale journal cannot authorize stopping a newly healthy service, even at the same runtime path.
+        // Recovery observes exit only; normal shutdown belongs to the current service owner.
+        restoreBackup: () => { requireStopped(); return restoreDeploymentBackup(r, { database, stageDir }); },
+        restoreService: () => { requireStopped(); restorePriorService(r); },
         removeGate: () => {
           const db = openDeploymentDatabase(database);
           try {
@@ -211,36 +213,12 @@ export function browserDeployment({
       return false;
     }
   }
-  // A recorded process is alive while its pid runs a command of this service (deploy-stop.mjs): one reused by an
-  // unrelated process means the recorded one is gone. Without a process list, any process with the pid counts.
+  // A journal has no process birth identity. A present PID is ambiguous, regardless of mutable argv.
   const aliveAsService = (pid, dists) => {
     const rows = typeof processes === "function" ? processes() : null;
     if (rows === null || rows === undefined) return spawnSync("/bin/ps", ["-p", String(pid), "-o", "pid="], { encoding: "utf8" }).status !== 1;
     return recordedStillRunning(rows, pid, { dists, database });
   };
-  /** The journal says the old service must be stopped and it isn't proved stopped: boot out the loaded definition, but
-   * only when it is this deployment's (its running supervisor, or with none its definition, names one of the two
-   * runtimes), then stop whatever is left of its processes once each is proved to be the service's own. */
-  function forceStop(r, dists) {
-    const rows = processes();
-    requireTrue(rows !== null && rows !== undefined, "The process list couldn't be read, so nothing was stopped.");
-    const launch = spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" });
-    if (launch.status === 0) {
-      const pid = Number(String(launch.stdout ?? "").match(/\n\s*pid = (\d+)/)?.[1]);
-      if (pid > 1) {
-        const row = rows.find(one => one.pid === pid);
-        requireTrue(row !== undefined && classify(row.command, { dists, database })?.kind === "supervisor",
-          `The loaded service (process ${pid}) runs neither runtime of this deployment, so it was left running.`);
-      } else {
-        const definition = existsSync(plist) ? readFileSync(plist, "utf8") : "";
-        requireTrue(dists.some(dist => definition.includes(`<string>${dist}/cli.js</string>`)), "The loaded service's definition names neither runtime of this deployment, so it was left as it is.");
-      }
-      say(`• booting out ${label}: the deployment journal says the old service must be stopped`);
-      spawnSync("/bin/launchctl", ["bootout", `gui/${uid}/${label}`], { encoding: "utf8" });
-    }
-    stopProcesses({ dists, database, recorded: recordedServicePids(r).filter(pid => Number.isInteger(pid) && pid > 1) });
-    return true;
-  }
   /** The previous definition, loaded again once its processes were proved gone, and only on the schema it runs.
    * Restored means it runs from its runtime and answers /healthz. */
   function restorePriorService(r) {
@@ -248,7 +226,8 @@ export function browserDeployment({
     let version;
     try { version = check.prepare("SELECT version FROM schema_version").get().version; } finally { check.close(); }
     if (version !== r.schema) throw Error(`the live database is at schema ${version} and the previous runtime runs schema ${r.schema}; it was not started on it`);
-    spawnSync("/bin/launchctl", ["bootout", `gui/${uid}/${label}`], { encoding: "utf8" });
+    // bootstrap refuses an existing label atomically; never boot out a replacement found during recovery.
+    if (spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status !== 113) throw Error("The service label is loaded or unreadable; recovery did not replace it.");
     writeFileSync(plist, livePlist);
     const booted = spawnSync("/bin/launchctl", ["bootstrap", `gui/${uid}`, plist], { encoding: "utf8" });
     if (booted.status !== 0) throw Error(`launchctl bootstrap failed: ${booted.stderr}`);

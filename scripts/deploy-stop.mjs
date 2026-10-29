@@ -1,17 +1,6 @@
-// Stopping the browser service's processes when a stop alone didn't end them (the 2026-10-29 deploy: the old
-// supervisor exited, its `up` stayed behind under launchd and ignored SIGTERM, and the deployment waited at
-// "stopping" until a person killed it by hand). Only processes proved to be this service's are ever signalled:
-//
-//   supervisor  <node> <dist>/controller-service.js <node> <dist>/cli.js up --db <database> ...
-//   up          <node> <dist>/cli.js up --db <database> ...
-//   role        <node> <dist>/up-role-child.js console|worker, whose parent is one of the `up`s above or whose pid
-//               the deployment journal recorded for this service
-//
-// where <dist> is the recorded prior or next runtime and <database> the live database, matched exactly (never a
-// substring of some other command). A process that names one of these runtimes' entries or the database's `up` but
-// can't be proved to be one of these refuses the whole stop: nothing is signalled. Every signal is sent only after the
-// process's id, start time and command are read again and still match. Synchronous throughout: a deployment's exit
-// recovery runs in its process's exit handler.
+// Observations used to refuse recovery while a service may still be running. Historical PIDs, argv and ps birth
+// times cannot authorize signals: argv is spoofable and lookup/kill races PID reuse. Normal launchd shutdown remains
+// with the current service owner. Recovery waits for that owner to stop any leftovers before proving exit.
 import { realpathSync } from "node:fs";
 import { sleepSync } from "./deploy-recovery.mjs";
 
@@ -60,8 +49,8 @@ export function classify(command, { dists: named, database }) {
 }
 
 /**
- * This service's processes among `rows`: `targets` are proved to be its supervisor, `up` or role children (a role only
- * when its parent is a proved `up` or the journal recorded its pid); `unproven` name its runtimes or database but are
+ * This service's processes among `rows`: `targets` resemble its supervisor, `up` or role children (a role only
+ * when its parent resembles an `up` or the journal recorded its pid); `unproven` name its runtimes or database but are
  * none of these provably. `self` (this process) is never either.
  */
 export function serviceProcesses(rows, { dists, database, recorded = [], self = process.pid }) {
@@ -79,59 +68,30 @@ export function serviceProcesses(rows, { dists, database, recorded = [], self = 
   return { targets, unproven };
 }
 
-const same = (a, b) => a.pid === b.pid && a.start === b.start && a.command === b.command;
-
 /**
- * Stop this service's leftover processes: SIGTERM each, wait `termMs`, then SIGKILL what remains, wait `killMs`.
- * Refuses (throws, signalling nothing) when the process list can't be read or a process can't be proved. Each signal
- * goes only to a process whose id, start time and command still match what was identified. Returns what it stopped.
- * world: list() → rows|null, kill(pid, signal), sleep(ms) (synchronous), say(line).
+ * Historical PIDs and argv are observations, never signalling authority. argv is writable by the process, ps birth
+ * times have only second precision, and even a fresh read races PID reuse before kill(2). Without an OS-held process
+ * handle this path must refuse. Normal launchd shutdown still runs; recovery resumes once exit is proved.
  */
-export function stopServiceProcesses({ dists, database, recorded = [], termMs = 10_000, killMs = 10_000 }, world) {
-  const { list, kill, sleep = sleepSync, say = () => {} } = world;
-  const read = () => { const rows = list(); if (rows === null) throw Error("The process list couldn't be read, so no process was stopped."); return rows; };
-  const found = serviceProcesses(read(), { dists, database, recorded });
-  if (found.unproven.length > 0) {
-    throw Error(`Process ${found.unproven.map(one => `${one.pid} (${one.command.slice(0, 160)}: ${one.why})`).join("; ")} can't be proved to be this service's, so nothing was stopped. Inspect it, then rerun.`);
-  }
-  const targets = found.targets;
-  if (targets.length === 0) return { stopped: [], killed: [] };
-  say(`• stopping ${targets.length} process(es) the old service left running: ${targets.map(one => `${one.pid} (${one.kind === "role" ? `${one.role} role` : one.kind})`).join(", ")}`);
-  const living = () => { const rows = read(); return targets.filter(target => rows.some(row => same(row, target))); };
-  const signal = (name) => {
-    const rows = read();
-    for (const target of targets) {
-      // Read again right before signalling: the same id, started at the same time, with the same command.
-      if (!rows.some(row => same(row, target))) continue;
-      try { kill(target.pid, name); } catch (error) { if (error?.code !== "ESRCH") throw error; }
-    }
-  };
-  const wait = ms => { for (let waited = 0; waited < ms; waited += 250) { if (living().length === 0) return true; sleep(250); } return living().length === 0; };
-  signal("SIGTERM");
-  let killed = [];
-  if (!wait(termMs)) {
-    killed = living();
-    say(`• process ${killed.map(one => one.pid).join(", ")} ignored SIGTERM; stopping it with SIGKILL`);
-    signal("SIGKILL");
-    if (!wait(killMs)) throw Error(`Service process has not exited even after SIGKILL: ${living().map(one => one.pid).join(", ")}`);
-  }
-  return { stopped: targets.map(one => one.pid), killed: killed.map(one => one.pid) };
+export function stopServiceProcesses({ dists, database, recorded = [] }, { list }) {
+  const rows = list();
+  if (rows === null) throw Error("The process list couldn't be read, so no process was stopped.");
+  const found = serviceProcesses(rows, { dists, database, recorded });
+  const left = [...found.targets, ...found.unproven];
+  if (left.length > 0) throw Error(`Service exit is not proved: process ${left.map(one => one.pid).join(", ")}. Historical PIDs and command lines cannot safely authorize signals; nothing was stopped. Stop the service through its owner, then rerun recovery.`);
+  return { stopped: [], killed: [] };
 }
 
-/** Whether a recorded pid is still this service's process: running, with a command proved to be the service's. A
- * recorded pid that now runs anything else was reused by an unrelated process: the recorded one is gone. */
-export function recordedStillRunning(rows, pid, { dists, database }) {
-  const row = rows.find(one => one.pid === pid);
-  if (row === undefined) return false;
-  const what = classify(row.command, { dists, database });
-  return what !== null && what.kind !== "foreign";
+/** A present recorded PID is ambiguous: argv may have changed, and the journal has no process birth identity. */
+export function recordedStillRunning(rows, pid, _scope) {
+  return rows.some(one => one.pid === pid);
 }
 
 /**
  * The deployment's stop proof over the real process list (deploy-browser.mjs), with its effects supplied so a test can
  * run it against real processes: spawnSync (ps), kill(pid, signal), sleep(ms) (a promise), signal (cancellation),
  * say, loaded() (whether launchd still has the service). `graceMs` is how long the service gets to end by itself
- * after its bootout (launchd's own ExitTimeOut is 60 s); `termMs`/`killMs` bound the escalation after it.
+ * after its bootout (launchd's own ExitTimeOut is 60 s); an elapsed grace period refuses without escalation.
  */
 export function serviceStopper({ database, spawnSync, kill, sleep, signal, say = () => {}, loaded, graceMs = 60_000, termMs = 10_000, killMs = 10_000, sleepSync: pause = sleepSync }) {
   const processes = () => listProcesses(spawnSync);
@@ -147,8 +107,7 @@ export function serviceStopper({ database, spawnSync, kill, sleep, signal, say =
   };
   const stopProcesses = scope => stopServiceProcesses({ termMs, killMs, ...scope }, { list: processes, kill, sleep: pause, say });
   /** Every recorded process of the stopped service, and anything else of its runtime on this database, has exited and
-   * launchd no longer has it. A process that outlives the stop by `graceMs` is stopped here once proved the service's
-   * own; anything unproven refuses and nothing is signalled. */
+   * launchd no longer has it. A process that outlives `graceMs` refuses; nothing is signalled here. */
   async function verifyServiceStopped(pids, dist) {
     const scope = { dists: [dist], database };
     // A recorded value that isn't a process id never proves anything (round 1, finding 3).

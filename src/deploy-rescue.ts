@@ -6,10 +6,9 @@
  * --phase recover, run from the recorded commit's pristine extraction exactly as `toolroll release` resumes one):
  *
  *   - the journal is verified (one unfinished deployment of this database, its run recorded) under the deployment lock
- *   - when the journal says the old service must be stopped and it isn't proved stopped: the service definition is
- *     booted out only if it runs this deployment's prior or next runtime; leftover processes are stopped only once
- *     each is proved, by exact runtime path and argv, to be that service's supervisor, `up` or role child (SIGTERM,
- *     then SIGKILL), and the stop is proved again; anything it can't prove refuses and nothing is signalled
+ *   - when the journal says the old service must be stopped, recovery requires proof it already exited; historical
+ *     PIDs and argv never authorize signals or booting out a currently loaded service. Remaining processes must be
+ *     stopped through their owner before recovery can resume.
  *   - the previous service is started again (the verified backup first when the database was migrated past it) and
  *     waited for past a stale worker heartbeat's window, then the deployment's update pause is lifted
  *
@@ -46,13 +45,12 @@ const real = (path: string): string => { try { return realpathSync(path); } catc
 
 /** What recovery will do from a phase, in a few words. */
 export function rescuePlan(phase: string, journal: Record<string, unknown>): string[] {
-  const id = String(journal["id"] ?? "?"), prior = String(journal["priorRuntime"] ?? "?"), next = String(journal["nextRuntime"] ?? "?");
+  const id = String(journal["id"] ?? "?"), prior = String(journal["priorRuntime"] ?? "?");
   if (BEFORE_SWAP.includes(phase)) return [`The service was never stopped. Lifts update pause ${id}, if this deployment holds it.`];
   if (phase === "restored") return [`The previous service is already running again. Lifts update pause ${id}.`];
   const words: string[] = [];
   if (phase === "stopping") {
-    words.push("The old service isn't proved stopped. If launchd's service runs this deployment's runtime, boots it out;",
-      `then stops leftover processes of ${prior} or ${next} on this database, each only once proved to be the service's supervisor, \`up\` or role child (SIGTERM, then SIGKILL), and proves the stop.`);
+    words.push("The old service must already be stopped. Recovery checks for remaining processes and refuses while any may still be running. Stop them through the service owner, then rerun recovery.");
   }
   if (["stopping", "stopped", "migrating", "migrated", "start-failed", "backup-restored"].includes(phase)) {
     if (["migrating", "migrated", "start-failed"].includes(phase)) words.push("Puts the verified backup back first when the previous runtime can't read the migrated database.");

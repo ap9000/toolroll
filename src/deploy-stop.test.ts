@@ -1,21 +1,32 @@
-/**
- * Stopping what an old service left running (scripts/deploy-stop.mjs, the 2026-10-29 deploy): only processes proved,
- * by exact runtime path and argv, to be that service's supervisor, `up` or role child are ever signalled, and anything
- * that names the service but can't be proved refuses the whole stop. Real processes: a stuck `up` that ignores
- * SIGTERM, orphaned by a supervisor that exited, as in the incident.
- */
+/** Historical process observations must never authorize signals, even when argv resembles a Toolroll runtime.
+ * Native fixtures cover real orphaned processes; their owner stops them before recovery can prove exit. */
 import { test, expect, afterEach } from "vitest";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { classify, listProcesses, serviceProcesses, serviceStopper, stopServiceProcesses } from "../scripts/deploy-stop.mjs";
+import { classify, recordedStillRunning, listProcesses, serviceProcesses, serviceStopper, stopServiceProcesses } from "../scripts/deploy-stop.mjs";
 
 type Row = { pid: number; ppid: number; start: string; command: string };
 const node = process.execPath;
 const dists = ["/state/staged-upgrades/a/runtime/node_modules/toolroll/dist", "/state/staged-upgrades/b/runtime/node_modules/toolroll/dist"];
 const [prior, next] = dists as [string, string];
 const database = "/state/orders.db";
+
+test.each(["spoofed argv", "reused recorded pid"])("historical process observations never authorize a signal: %s", scenario => {
+  const row: Row = { pid: 4242, ppid: 1, start: "Thu Oct 29 13:00:00 2026", command: `${node} ${prior}/cli.js up --db ${database}` };
+  const signals: number[] = [];
+  expect(() => stopServiceProcesses({ dists, database, recorded: scenario === "reused recorded pid" ? [row.pid] : [], termMs: 0, killMs: 0 }, {
+    list: () => [row], kill: (pid: number) => { signals.push(pid); }, sleep: () => {},
+  })).toThrow();
+  expect(signals).toEqual([]);
+});
+
+test("changed argv cannot prove a recorded process exited", () => {
+  const row: Row = { pid: 4242, ppid: 1, start: "Thu Oct 29 13:00:00 2026", command: "unrelated-looking-title" };
+  expect(recordedStillRunning([row], row.pid, { dists, database })).toBe(true);
+  expect(recordedStillRunning([], row.pid, { dists, database })).toBe(false);
+});
 
 test.each([
   [`${node} ${prior}/controller-service.js ${node} ${prior}/cli.js up --db ${database} --port 4180`, "supervisor"],
@@ -108,7 +119,7 @@ async function service(dist: string, db: string) {
 }
 const world = { list: () => listProcesses(spawnSync), kill: (pid: number, signal: NodeJS.Signals) => process.kill(pid, signal) };
 
-test("a stuck `up` orphaned by its supervisor is stopped with SIGKILL; another database's and unrelated processes are never touched", async () => {
+test("a stuck orphan and other services remain untouched until their owner stops them", async () => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "so-stop-")));
   const priorDist = runtime("prior"), nextDist = runtime("next"), db = join(root, "orders.db");
   const old = await service(priorDist, db);
@@ -120,13 +131,11 @@ test("a stuck `up` orphaned by its supervisor is stopped with SIGKILL; another d
   await until("the supervisor to exit", () => !alive(old.supervisor));
   await sleep(200);
   expect([alive(old.up), alive(old.role)]).toEqual([true, true]);
-  const said: string[] = [];
-  const result = stopServiceProcesses({ dists: [priorDist, nextDist], database: db, recorded: [old.supervisor, old.up, old.role], termMs: 500, killMs: 5_000 }, { ...world, say: line => said.push(line) });
-  expect(result.stopped.sort()).toEqual([old.up, old.role].sort());
-  expect(result.killed.sort()).toEqual([old.up, old.role].sort());
-  expect([alive(old.up), alive(old.role)]).toEqual([false, false]);
-  expect([alive(sandbox.supervisor), alive(sandbox.up), alive(sandbox.role), alive(unrelated.pid!)]).toEqual([true, true, true, true]);
-  expect(said.join("\n")).toMatch(/ignored SIGTERM; stopping it with SIGKILL/);
+  expect(() => stopServiceProcesses({ dists: [priorDist, nextDist], database: db, recorded: [old.supervisor, old.up, old.role] }, world)).toThrow("Historical PIDs");
+  expect([alive(old.up), alive(old.role), alive(sandbox.supervisor), alive(sandbox.up), alive(sandbox.role), alive(unrelated.pid!)]).toEqual([true, true, true, true, true, true]);
+  // Only the test owner cleans up the processes it spawned.
+  for (const pid of [old.up, old.role]) process.kill(pid, "SIGKILL");
+  await until("owned processes to exit", () => !alive(old.up) && !alive(old.role));
   // Idempotent: nothing of the service is left, so a second run stops nothing.
   expect(stopServiceProcesses({ dists: [priorDist, nextDist], database: db, termMs: 100, killMs: 100 }, world)).toEqual({ stopped: [], killed: [] });
 }, 30_000);
@@ -138,7 +147,7 @@ test("a process it can't prove refuses the whole stop: a healthy service of anot
   // A currently loaded, healthy service from a runtime this deployment never recorded, on the same database.
   const healthy = await service(otherDist, db);
   const scope = { dists: [priorDist], database: db, termMs: 200, killMs: 200 };
-  expect(() => stopServiceProcesses(scope, world)).toThrow(`Process ${healthy.supervisor}`);
+  expect(() => stopServiceProcesses(scope, world)).toThrow("nothing was stopped");
   // Nothing was signalled: SIGTERM is ignored by these, but SIGTERM to the supervisor would have ended it.
   expect([old.supervisor, old.up, old.role, healthy.supervisor, healthy.up, healthy.role].every(alive)).toBe(true);
   for (const pid of [healthy.role, healthy.up, healthy.supervisor]) process.kill(pid, "SIGKILL");
@@ -148,19 +157,23 @@ test("a process it can't prove refuses the whole stop: a healthy service of anot
   process.kill(old.supervisor, "SIGKILL");
   process.kill(old.up, "SIGKILL");
   await until("the orphaned role", () => listProcesses(spawnSync)?.find(row => row.pid === old.role && row.ppid !== old.up));
-  expect(() => stopServiceProcesses(scope, world)).toThrow("whose `up` can't be shown to be this service's");
+  expect(() => stopServiceProcesses(scope, world)).toThrow("nothing was stopped");
   expect(alive(old.role)).toBe(true);
-  // Recorded by the journal, it is: stopped.
-  expect(stopServiceProcesses({ ...scope, recorded: [old.role], killMs: 5_000 }, world).killed).toEqual([old.role]);
-  expect(alive(old.role)).toBe(false);
+  // A journaled PID is still not authority to signal it.
+  expect(() => stopServiceProcesses({ ...scope, recorded: [old.role] }, world)).toThrow("Historical PIDs");
+  expect(alive(old.role)).toBe(true);
 }, 30_000);
 
-test("the deployment's stop proof stops a stuck `up` after its grace instead of waiting for a person", async () => {
+test("the deployment refuses a stuck service, then resumes after the owner proves exit", async () => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "so-stop-")));
   const priorDist = runtime("prior"), db = join(root, "orders.db");
   const old = await service(priorDist, db);
   const stopper = serviceStopper({ database: db, spawnSync, kill: world.kill, sleep, loaded: () => false, graceMs: 300, termMs: 300, killMs: 5_000 });
   process.kill(old.supervisor, "SIGTERM");
+  await expect(stopper.verifyServiceStopped([old.supervisor, old.up, old.role], priorDist)).rejects.toThrow("Historical PIDs");
+  expect(alive(old.up)).toBe(true);
+  for (const pid of [old.up, old.role]) process.kill(pid, "SIGKILL");
+  await until("owned processes to exit", () => !alive(old.up) && !alive(old.role));
   await stopper.verifyServiceStopped([old.supervisor, old.up, old.role], priorDist);
   expect([old.supervisor, old.up, old.role].some(alive)).toBe(false);
   expect(stopper.leftFrom(priorDist)).toEqual([]);

@@ -91,25 +91,20 @@ test('a refusal before the swap only lifts the pause; an unproven stop or a star
   expect(proven.done).toEqual(['prove stop', 'restore service', 'mark restored', 'remove gate', 'mark released']);
 });
 
-test('2026-10-29: at stopping, what the old service left is stopped once proved its own, then the stop is proved again', () => {
-  // Proved only after the leftovers were stopped: the previous service is put back as from stopped.
-  let stopped = false;
-  const forced = { ...effects(), stopProved: () => stopped, forceStop: () => { stopped = true; return true; } };
-  expect(recoverFailedDeployment('stopping', forced)).toMatch(/running again/);
-  expect(forced.done).toEqual(['restore service', 'mark restored', 'remove gate', 'mark released']);
-  // A leftover it can't prove refuses: nothing restarts and the pause stays.
-  const refused = { ...effects(), forceStop: () => { throw Error("can't be proved to be this service's"); } };
-  expect(() => recoverFailedDeployment('stopping', refused)).toThrow("can't be proved");
-  expect(refused.done).toEqual(['prove stop']);
-  // Still not proved after stopping them: left for a person, as before.
-  const still = { ...effects(false), forceStop: () => true };
-  expect(recoverFailedDeployment('stopping', still)).toBeNull();
-  // Never at any other phase: a running service the journal doesn't say must stop is never touched.
-  for (const phase of ['rehearsed', 'restored', 'starting', 'started', 'released']) {
+test('recovery never stops a current service on the authority of a historical journal', () => {
+  for (const phase of ['stopping', 'rehearsed', 'restored', 'starting', 'started', 'released']) {
     let asked = false;
-    recoverFailedDeployment(phase, { ...effects(), forceStop: () => { asked = true; return true; } });
+    const e = { ...effects(false), forceStop: () => { asked = true; return true; } };
+    const result = recoverFailedDeployment(phase, e);
     expect(asked).toBe(false);
+    if (phase === 'stopping') {
+      expect(result).toBeNull();
+      expect(e.done).toEqual(['prove stop']);
+    }
   }
+  const proven = effects(true);
+  expect(recoverFailedDeployment('stopping', proven)).toMatch(/running again/);
+  expect(proven.done).toEqual(['prove stop', 'restore service', 'mark restored', 'remove gate', 'mark released']);
 });
 
 test('the health wait outlasts a stale worker heartbeat', () => {
