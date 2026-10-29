@@ -300,6 +300,18 @@ function changeProblem(repo: string, base: string | null, candidate: string): st
     if (modes.includes("120000") || modes.includes("160000")) return `${change.path} is a symlink or submodule`;
     // Taking a test away is never automatic, wherever it lives.
     if (change.kind === "deleted" && TEST_FILE.test(rulePath(change.path))) return `${change.path} was deleted (removing a test needs a person)`;
+    if (change.before !== null && TEST_FILE.test(rulePath(change.path))) {
+      // Counts cannot prove that an assertion survived: replacing it, commenting it out, or skipping its case can
+      // leave the counts unchanged. Only append-only additions preserve the existing code without interpretation.
+      // Both copies come from verified trees; no report or candidate-provided file list decides this permission.
+      const was = verifiedBlobs(gitDir, before.value.tree, [change.path]);
+      const now = verifiedBlobs(gitDir, after.value.tree, [change.path]);
+      if (!was.ok || !now.ok) return `${change.path}'s existing test code couldn't be read (a person decides)`;
+      const original = was.value.get(change.path)?.bytes, revised = now.value.get(change.path)?.bytes;
+      if (original === undefined || revised === undefined || !revised.subarray(0, original.length).equals(original)) {
+        return `${change.path} changes existing test code (removing or rewriting tests needs a person)`;
+      }
+    }
     const why = autoPathProblem(change.path);
     if (why !== null) return `${change.path} changed (${why})`;
     if (infra.has(change.path)) return `${change.path} changed (tests import it and the product doesn't: it's test infrastructure)`;

@@ -616,7 +616,7 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
   });
 
   test("a version bump of package.json and the lockfile, product code, its tests and docs ship", () => {
-    const f = open({ candidate: { "package.json": pkg("0.9.72"), "package-lock.json": lock("0.9.72"), "src/index.js": "export const answer = 44;\n", "src/index.test.ts": "test('more', () => {});\n", "docs/guide.md": "# Guide 3\n", "CHANGELOG.md": "## 0.9.72\n" } });
+    const f = open({ candidate: { "package.json": pkg("0.9.72"), "package-lock.json": lock("0.9.72"), "src/index.js": "export const answer = 44;\n", "src/index.test.ts": "test('answer', () => {});\ntest('more', () => {});\n", "docs/guide.md": "# Guide 3\n", "CHANGELOG.md": "## 0.9.72\n" } });
     authorize(f);
     const sealed = seal(f, check(f));
     expect(sealed.ok ? "" : sealed.why).toBe("");
@@ -801,6 +801,26 @@ describe("coordinator: test files under test/ ship like src's tests", () => {
     const f = open({ candidate: { [path]: null } });
     authorize(f);
     expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining(`${path} was deleted`) });
+  });
+
+  test.each([
+    ["an assertion removed", "test('guard', () => {});\ntest('second', () => expect(false).toBe(false));\n"],
+    ["a case removed", "test('guard', () => expect(true).toBe(true));\n"],
+    ["an assertion replaced with a tautology", "test('guard', () => expect(1).toBe(1));\ntest('second', () => expect(false).toBe(false));\n"],
+    ["existing cases commented out", "/*\ntest('guard', () => expect(true).toBe(true));\ntest('second', () => expect(false).toBe(false));\n*/\ntest('green', () => {});\n"],
+    ["an existing case skipped", "test.skip('guard', () => expect(true).toBe(true));\ntest('second', () => expect(false).toBe(false));\n"],
+  ])("%s needs a person even with passing reports", (_name, candidate) => {
+    const path = "src/guard.test.ts";
+    const f = open({ files: { [path]: "test('guard', () => expect(true).toBe(true));\ntest('second', () => expect(false).toBe(false));\n" }, candidate: { [path]: candidate } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("existing test code") });
+    expect(basis(f)).toBeNull();
+  });
+
+  test("renaming an existing test needs a person even when its replacement passes", () => {
+    const f = open({ candidate: { "src/index.test.ts": null, "src/renamed.test.ts": "test('answer', () => {});\n" } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("src/index.test.ts was deleted") });
   });
 });
 
