@@ -78,7 +78,6 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 @media (hover: hover) and (pointer: fine) { .so-new-task:hover { background: var(--so-accent-hover); } }
 .so-new-task svg { width: 15px; height: 15px; }
 .so-project-switch { padding: 0; margin-bottom: var(--so-space-lg); }
-.so-project-switch [data-slot="label"] { color: var(--so-muted); font-size: 11.5px; margin: 0 var(--so-space-sm) 5px; }
 .so-project-switch select { width: 100%; min-height: 32px; border: 0; border-radius: var(--so-radius-md); padding: 6px 23px 6px 9px; background: var(--so-paper); box-shadow: var(--so-pill-shadow); color: var(--so-ink); font-size: 12.5px; text-overflow: ellipsis; }
 .so-primary-navigation { display: flex; flex-direction: column; gap: 1px; }
 .so-primary-navigation a, .so-navigation-bottom > a { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 6px var(--so-space-sm); text-decoration: none; border-radius: var(--so-radius-md); color: var(--so-nav-ink); font-size: 13px; font-weight: 500; transition: background-color 120ms var(--so-ease-out), color 120ms var(--so-ease-out); }
@@ -333,7 +332,6 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-command-results span { overflow-wrap: anywhere; }
 .so-command-results small { color: var(--so-muted); flex-shrink: 0; font-size: 11px; }
 .so-command-empty { color: var(--so-muted); font-size: 13px; }
-.so-command-dialog [data-slot="input"]:focus-visible { outline: 0; border-color: var(--so-signal); box-shadow: 0 0 0 3px var(--so-signal-soft); }
 
 @media (max-width: 1150px) and (min-width: 901px) {
   .so-workspace { grid-template-columns: 184px minmax(0, 1fr) 286px; }
@@ -377,7 +375,6 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-phone-work-button { margin-left: auto; flex-shrink: 0; }
   .so-command-trigger { margin-left: auto; min-height: 44px; }
   .so-command-hint { display: none; }
-  .so-command-dialog [data-slot="input"] { font-size: 16px; }
   .so-workspace-header { min-height: 60px; padding: 10px var(--so-space-lg) 10px var(--so-space-sm); gap: 9px; }
   .so-workspace-header h1 { font-size: 16px; }
   .so-focus-label { display: none; }
@@ -868,7 +865,7 @@ details.result-request-open > summary::marker { content: ""; }
   .so-result-host[data-line-steer] .diff-line code { white-space: pre; overflow-wrap: normal; font-size: 12px; }
   .so-result-host[data-line-steer] .diff-hunk-head { overflow-x: auto; white-space: pre; overflow-wrap: normal; }
   /* The header's chips are quiet: a 1px line and 12px words, on the same 44px tap target. */
-  .so-needs-chip { border: 6px solid transparent; background: transparent; background-clip: padding-box; box-shadow: inset 0 0 0 1px var(--so-line); border-radius: var(--so-radius-full); color: var(--so-ink); font: 500 12px/1 var(--so-font-sans); padding: 0 var(--spacing-phone-card); }
+  .so-needs-chip { border: 6px solid transparent; background: transparent; background-clip: padding-box; box-shadow: inset 0 0 0 1px var(--so-line); border-radius: var(--so-radius-full); color: var(--so-ink); font: 500 12px/1 var(--so-font-sans); padding: 0 var(--so-phone-card); }
 }
 @media (max-width: 900px) {
   /* The Workbench on a phone: the result opens as a sheet over the chat, which stays in view (dimmed) above it. */

@@ -594,7 +594,7 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
     <a href="/chat" className="so-wordmark"><span className="so-brand-mark" aria-hidden="true"><i /><i /><i /></span>Toolroll</a>
     <a href="/tasks/new" className="so-new-task"><Icon name="plus" />New task</a>
     {workspace.projects.length > 0 && <div className="so-project-switch">
-      <Label htmlFor={projectId}>Project</Label>
+      <Label className="mx-2 mt-0 mb-1.25 block text-[11.5px] leading-[inherit] text-muted-foreground" htmlFor={projectId}>Project</Label>
       <select id={projectId} value={currentProject?.href ?? "/work"} onChange={event => { leaveFor(event.target.value); }}>
         <option value="/work">All projects</option>
         {workspace.projects.map(project => <option key={project.path} value={project.href}>{project.name}</option>)}
@@ -671,7 +671,7 @@ export function CommandMenu({ workspace }: { workspace: BrowserWorkspace }) {
       <div className="so-command-heading"><DialogTitle>Go to</DialogTitle><DialogClose asChild><ViewButton className="max-[901px]:size-11 max-[901px]:min-h-11" variant="ghost" size="icon" aria-label="Close search"><Icon name="close" /></ViewButton></DialogClose></div>
       <DialogDescription className="so-sr-only">Search pages, projects, and tasks. Use Tab or the arrow keys to choose a link.</DialogDescription>
       <Label htmlFor={searchId} className="so-sr-only">Search workspace</Label>
-      <Input ref={searchInput} id={searchId} type="search" placeholder="Search workspace…" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => {
+      <Input className="focus-visible:border-signal focus-visible:ring-[3px] focus-visible:ring-signal-soft max-[900px]:text-base" ref={searchInput} id={searchId} type="search" placeholder="Search workspace…" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => {
         if (event.key === "ArrowDown") { event.preventDefault(); results.current?.querySelector("a")?.focus(); }
       }} />
       <ul ref={results} className="so-command-results" onKeyDown={event => {
