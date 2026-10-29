@@ -8,15 +8,15 @@
  * loops wait for them. One process copies at a time (the live_backup lease).
  *
  * The folder is checked every time before use: a plain directory this user owns, not a link and reached through none,
- * not writable by others, and outside every project and build checkout (backup.ts checkBackupFolder): agents write
- * there. Restoring stays manual (`toolroll restore <file>` with Toolroll stopped). A deploy reuses the latest copy only
+ * not writable by others, and inside the permanent fenced `backups` namespace beside the actual database, outside
+ * every project and build checkout (backup.ts checkBackupFolder). Restoring stays manual (`toolroll restore <file>` with Toolroll stopped). A deploy reuses the latest copy only
  * when it is fresh, its schema matches and its content proves equal to the database it would otherwise copy
  * (scripts/deploy-phases.mjs liveCopyBackup).
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { hostname } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Worker } from "node:worker_threads";
 import { checkBackupFolder, databaseTag } from "./backup.js";
 import { holdLiveBackup, liveBackupState, recordLiveBackup, releaseLiveBackup, type LiveBackupCopy, type LiveBackupSettings, type Store } from "./store.js";
@@ -30,16 +30,22 @@ const LEASE_MS = 15 * 60_000;
 
 /** `backups/live` beside the database, through its real path (the folder check refuses a path through a link). */
 export function defaultLiveFolder(databaseFile: string): string {
-  let at = dirname(resolve(databaseFile));
+  let database = resolve(databaseFile);
+  try { database = realpathSync(database); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  let at = dirname(database);
   try { at = realpathSync(at); } catch { /* not there yet: as given */ }
   return join(at, "backups", "live");
 }
 export const liveFolderOf = (settings: LiveBackupSettings, databaseFile: string): string => settings.folder ?? defaultLiveFolder(databaseFile);
 
 /** Why a folder can't hold the copies, or null. Missing is fine (it is made on first use, then checked again). */
-export function liveFolderProblem(folder: string, forbidden: readonly string[]): string | null {
+export function liveFolderProblem(folder: string, forbidden: readonly string[], protectedRoot?: string): string | null {
   const said = checkBackupFolder(folder, forbidden);
   if (said !== null) return said;
+  if (protectedRoot !== undefined) {
+    const rel = relative(resolve(protectedRoot), resolve(folder));
+    if (rel === ".." || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel)) return `Choose a location inside the protected backup folder ${protectedRoot}.`;
+  }
   let stat;
   try { stat = lstatSync(folder); } catch { return null; }
   if (stat.isSymbolicLink() || !stat.isDirectory()) return `${folder} isn't a plain folder.`;
@@ -98,6 +104,8 @@ const fs = require("node:fs"), crypto = require("node:crypto"), path = require("
   try {
     const db = new DatabaseSync(source);
     db.exec("PRAGMA busy_timeout = 5000");
+    // SQLite inherits the private file: no world-readable partial exists even briefly.
+    fs.closeSync(fs.openSync(partial, "wx", 0o600));
     try { await backup(db, partial, { rate: 1000000 }); } finally { db.close(); }
     fs.chmodSync(partial, 0o600);
     const copy = new DatabaseSync(partial);
@@ -158,11 +166,11 @@ export async function liveBackupPass(store: Store, databaseFile: string, holder:
     const state = liveBackupState(store);
     const folder = liveFolderOf(state.settings, databaseFile);
     const fail = (problem: string) => { recordLiveBackup(store, { ok: false, problem }, clock()); return { ok: false as const, problem }; };
-    let problem = liveFolderProblem(folder, forbidden());
+    let problem = liveFolderProblem(folder, forbidden(), dirname(defaultLiveFolder(databaseFile)));
     if (problem !== null) return fail(problem);
     try { mkdirSync(folder, { recursive: true, mode: 0o700 }); } catch (error) { return fail(`${folder} couldn't be made (${(error as Error).message})`); }
     // Checked again now that it exists: what was made (or found) is what is used.
-    problem = liveFolderProblem(folder, forbidden());
+    problem = liveFolderProblem(folder, forbidden(), dirname(defaultLiveFolder(databaseFile)));
     if (problem !== null) return fail(problem);
     const made = await copyOffThread(databaseFile, folder, databaseTag(databaseFile), now);
     if (!made.ok) return fail(made.problem);

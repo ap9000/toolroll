@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { databaseTag } from "./backup.js";
-import { liveBackupPass, liveCopies, liveFolderProblem, pruneLiveCopies } from "./live-backup.js";
+import { defaultLiveFolder, liveBackupPass, liveCopies, liveFolderProblem, pruneLiveCopies } from "./live-backup.js";
 import { liveBackupState, openStore, SCHEMA_VERSION, setLiveBackupSettings, type Store } from "./store.js";
 import { register } from "./runner.js";
 import { liveCopyBackup } from "../scripts/deploy-phases.mjs";
@@ -59,8 +59,8 @@ test("the folder must be a plain, private folder of this user's, reached through
   const file = join(root, "orders.db");
   store = openStore(file);
   setLiveBackupSettings(store, { enabled: true, everyMinutes: 5, keep: 24, folder: link }, "alex", new Date());
-  expect(await liveBackupPass(store, file, "test-holder", () => [])).toMatchObject({ ok: false, problem: expect.stringMatching(/isn't a plain folder/) });
-  expect(liveBackupState(store)).toMatchObject({ latest: null, problem: expect.stringMatching(/isn't a plain folder/) });
+  expect(await liveBackupPass(store, file, "test-holder", () => [])).toMatchObject({ ok: false, problem: expect.stringMatching(/protected backup folder/) });
+  expect(liveBackupState(store)).toMatchObject({ latest: null, problem: expect.stringMatching(/protected backup folder/) });
 });
 
 test("retention keeps the newest K and the newest of each of the last seven days, and only this database's copies", () => {
@@ -117,4 +117,21 @@ test("a deploy uses the latest copy only when fresh, unchanged, on its schema an
   store.handle.exec("DELETE FROM task WHERE id = 't-2'");
   writeFileSync(made.copy.file, Buffer.concat([readFileSync(made.copy.file), Buffer.from("x")]));
   expect(attempt("changed", madeAt + 60_000).before).toBeNull();
+});
+
+test("a custom copy folder outside the permanent build fence is refused", async () => {
+  const root = fresh(), file = join(root, "orders.db"), folder = join(root, "agent-readable");
+  mkdirSync(folder, { mode: 0o700 });
+  store = openStore(file);
+  setLiveBackupSettings(store, { enabled: true, everyMinutes: 5, keep: 24, folder }, "alex", new Date());
+  expect(await liveBackupPass(store, file, "test-holder", () => [])).toMatchObject({ ok: false, problem: expect.stringMatching(/protected backup folder/) });
+  expect(liveCopies(folder, databaseTag(file))).toEqual([]);
+});
+
+test("a database alias keeps its copies under the actual database's fenced namespace", () => {
+  const root = fresh(), state = join(root, "actual");
+  mkdirSync(state);
+  const file = join(state, "orders.db"), alias = join(root, "alias.db");
+  store = openStore(file); symlinkSync(file, alias);
+  expect(defaultLiveFolder(alias)).toBe(defaultLiveFolder(file));
 });

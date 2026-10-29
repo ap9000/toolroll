@@ -24,7 +24,7 @@ describe("attack: writing the plane's frozen git views from a build that writes 
     const databaseFile = join(dir, "orders.db");
     const fence = agentFence({ databaseFile, worktree, home });
     // New private state appears after the build fence was fixed, in a shared database folder.
-    const records = [runnerProcessFile(databaseFile, "worker")];
+    const records = [runnerProcessFile(databaseFile, "worker"), join(dir, "backups", "copy.db")];
     for (const file of records) { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, "plane-owned"); }
     // A view made after the fence was fixed, as the plane makes one while a build's process may still run.
     const view = join(gitViewsRoot(home), "write-later");
