@@ -100,10 +100,12 @@ export async function flowForm(ctx: RemoteHookContext, request: IncomingMessage,
   catch { return page({ status: 500, html: "" }); }
 }
 
-export function healthz(store: Store, response: ServerResponse, head: boolean): void {
+export function healthz(store: Store, response: ServerResponse, head: boolean, draining = false): void {
   let healthy = true;
   try { store.handle.prepare("SELECT 1 FROM schema_version").get(); } catch { healthy = false; }
-  const body = JSON.stringify({ status: healthy ? "ok" : "unavailable" });
-  response.writeHead(healthy ? 200 : 503, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff" });
+  // A draining console (its `up` is stopping) still answers pages, but says so here at once: a probe moves on instead
+  // of waiting for it to disappear.
+  const body = JSON.stringify(draining && healthy ? { status: "draining", message: "Toolroll is restarting (draining)" } : { status: healthy ? "ok" : "unavailable" });
+  response.writeHead(healthy && !draining ? 200 : 503, { "content-type": "application/json", "cache-control": "no-store", "x-content-type-options": "nosniff" });
   response.end(head ? undefined : body);
 }

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Toolroll says when it is restarting.** The worker and console now record
+  when they start, keep a heartbeat every 15 seconds, and record when they
+  begin stopping and when they have stopped. While one is stopping it takes no
+  new work, `/healthz` answers "draining" at once, pages say "Toolroll is
+  restarting", and a new start waits only until the old one has finished
+  stopping instead of a fixed window. A worker that stopped cleanly never
+  holds its projects. A second live `up` is still refused.
+- **A crashed worker is noticed in a minute, not three.** Workers check in
+  every 15 seconds and are treated as gone after a minute of silence. A
+  project lease is never taken for longer than a minute.
 - **A deploy no longer gets stuck behind an `up` that won't stop.** When the
   old service's processes outlive their stop (a supervisor that exited while
   its `up` ignored SIGTERM), the deployment stops them itself, but only
@@ -18,7 +28,7 @@
   instead of waiting for launchd to kill it.
 - **Deployments wait long enough, and say why.** Restoring the previous
   service, starting the new one and waiting for its project leases now allow
-  four minutes (past a stale worker heartbeat's three) and name what they are
+  two minutes (past a stale worker heartbeat's one) and name what they are
   waiting for. "Current work must finish first" now says what is running and
   what to do.
 - **One command puts back a deployment that stopped half way.**

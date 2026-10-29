@@ -67,7 +67,7 @@ import { legOf, routeDigestOf, routeFromJson, type RouteStamp } from "./phase-ro
 import { execFileSync } from "node:child_process";
 import { currentClaim, heartbeat, SYNC_MAX_AGE_MS, finalize } from "./claim.js";
 import { missingCapability } from "./dispatch.js";
-import { heartbeat as runnerHeartbeat } from "./runner.js";
+import { heartbeat as runnerHeartbeat, RUNNER_HEARTBEAT_MS } from "./runner.js";
 import { MARKER as LEASE_MARKER } from "./worktree.js";
 import { parseDecision, parseHandoff, repairPrompt, HEADLESS_RULE, HANDOFF_CONCLUSION_CAP, HANDOFF_ITEM_CAP, HANDOFF_LIST_CAP, HANDOFF_PAYLOAD_CAP, type ParsedDecision, type Problem } from "./decision.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -407,10 +407,11 @@ export const REPAIR_MAX_TURNS = 4;
 export const REPAIR_TIMEOUT_MS = 5 * 60_000;
 /**
  * How often a running build says "still here" — extending its lease and its
- * runner's liveness in one beat. A minute against a three-minute liveness
- * window means two beats can be lost to load before anything looks dead.
+ * runner's liveness in one beat. Every 15 s against a one-minute liveness
+ * window (runner.ts) means three beats can be lost to load before anything
+ * looks dead.
  */
-export const DEFAULT_PULSE_MS = 60_000;
+export const DEFAULT_PULSE_MS = RUNNER_HEARTBEAT_MS;
 
 /** Branches an unattended agent may never commit to, whatever it was asked. */
 export const PROTECTED = new Set(["main", "master", "trunk", "develop", "release"]);

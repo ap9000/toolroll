@@ -5,11 +5,12 @@
  */
 
 import { describe, test, expect, beforeEach } from "vitest";
-import { openStore, type Store } from "./store.js";
+import { lifecycleOf, MAX_WATCH_LEASE_MS, openStore, type Store } from "./store.js";
 import {
   acquireWatchLeaseAuthed,
   authenticate,
   DEFAULT_LIVENESS_MS,
+  drainRunnerIfCurrent,
   heartbeat,
   heartbeatWatchLeaseAuthed,
   normalizeRunnerName,
@@ -293,5 +294,53 @@ describe("the shared runner-name rule", () => {
     expect(normalizeRunnerName("Alekseys-MacBook.Pro.local")).toBe("alekseys-macbook-pro-local");
     expect(normalizeRunnerName("!!!")).toBe("worker");
     expect(normalizeRunnerName("x".repeat(90)).length).toBe(RUNNER_NAME_MAX);
+  });
+});
+
+describe("lifecycle: draining and stopped never block the next start (docs/plans/actors-lessons.md)", () => {
+  test("a draining holder refuses at once with when its drain ends; past that end its successor takes over", () => {
+    const first = register(store, { name: "w-1", host: "here", repos: ["/repo"], now: T0 });
+    acquireWatchLeaseAuthed(store, { runner: "w-1", token: first.token, repo: "/repo", owner: "inc-a", ttlMs: 60_000 }, T0);
+    expect(drainRunnerIfCurrent(store, "w-1", first.token, later(1_000), later(30_000))).toBe(true);
+    expect(lifecycleOf(store, "worker:w-1")).toMatchObject({ state: "draining", drainUntil: later(30_000).toISOString() });
+    // Its heartbeat and lease are both fresh: still two live holders are impossible, and the answer says why at once.
+    const early = registerRunnerIfIdle(store, { name: "w-1", host: "here", now: later(10_000) });
+    expect(early).toMatchObject({ ok: false, reason: "runner-draining", until: later(30_000).toISOString() });
+    if (!early.ok) expect(early.detail).toContain("Toolroll is restarting (draining)");
+    // The drain's own bound passed: no heartbeat window to wait out, its leases lapse and the successor recovers it.
+    const taken = registerRunnerIfIdle(store, { name: "w-1", host: "here", now: later(31_000) });
+    expect(taken).toMatchObject({ ok: true, signedOff: `its drain ended at ${later(30_000).toISOString()}` });
+    expect(store.liveWatchLeaseOf("w-1", later(31_000))).toBeNull();
+    expect(lifecycleOf(store, "worker:w-1")).toMatchObject({ state: "started" });
+  });
+
+  test("a stopped (retired) holder's live lease no longer blocks: retiring lapses it", () => {
+    const first = register(store, { name: "w-1", host: "here", repos: ["/repo"], now: T0 });
+    acquireWatchLeaseAuthed(store, { runner: "w-1", token: first.token, repo: "/repo", owner: "inc-a", ttlMs: 60_000 }, T0);
+    expect(retireRunnerIfCurrent(store, "w-1", first.token, later(1_000))).toEqual({ ok: true });
+    expect(registerRunnerIfIdle(store, { name: "w-1", host: "here", now: later(2_000) })).toMatchObject({ ok: true });
+  });
+
+  test("a draining runner admits no new claim; a stale process can't mark its successor draining", () => {
+    const first = register(store, { name: "w-1", host: "here", repos: [REPO], now: T0 });
+    store.createTask({ id: "t-d", title: "queued during a restart" }, T0);
+    const ref = store.refFor("built-in", "t-d").id;
+    store.placeTask(ref, REPO);
+    expect(drainRunnerIfCurrent(store, "w-1", first.token, later(1_000), later(60_000))).toBe(true);
+    expect(acquire(store, ref, "w-1", { token: first.token, now: later(2_000), ...bareLegacy("build") })).toMatchObject({ ok: false, reason: "draining" });
+    const successor = registerRunnerIfIdle(store, { name: "w-1", host: "here", repos: [REPO], now: later(61_000) });
+    if (!successor.ok) throw new Error("takeover failed in setup");
+    expect(drainRunnerIfCurrent(store, "w-1", first.token, later(62_000), later(90_000))).toBe(false);
+    expect(lifecycleOf(store, "worker:w-1")).toMatchObject({ state: "started" });
+    expect(acquire(store, ref, "w-1", { token: successor.token, now: later(63_000), ...bareLegacy("build") })).toMatchObject({ ok: true });
+  });
+
+  test("a watch lease is never taken or renewed for longer than a minute", () => {
+    store.acquireWatchLease("w-1", "/repo", "inc-a", 10 * 60_000, T0);
+    expect(store.liveWatchLeaseOf("w-1", later(MAX_WATCH_LEASE_MS - 1))).not.toBeNull();
+    expect(store.liveWatchLeaseOf("w-1", later(MAX_WATCH_LEASE_MS))).toBeNull();
+    store.acquireWatchLease("w-1", "/repo", "inc-b", 60_000, later(MAX_WATCH_LEASE_MS));
+    expect(store.heartbeatWatchLease("w-1", "/repo", "inc-b", 10 * 60_000, later(MAX_WATCH_LEASE_MS + 1_000))).toBe(true);
+    expect(store.liveWatchLeaseOf("w-1", later(2 * MAX_WATCH_LEASE_MS + 1_000))).toBeNull();
   });
 });

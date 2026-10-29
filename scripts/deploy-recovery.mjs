@@ -57,8 +57,9 @@ export function recoverFailedDeployment(phase, effects, { previousRuntimeCompati
 }
 
 /** How long a runner's heartbeat keeps its name held after its process died (src/runner.ts DEFAULT_LIVENESS_MS): a
- * service restarted within this window may refuse to start ("runner-alive") until it lapses. */
-export const RUNNER_LIVENESS_MS = 3 * 60_000;
+ * service restarted within this window may refuse to start ("runner-alive") until it lapses. A worker that stopped
+ * cleanly (retired) or whose reported drain ended doesn't hold it at all. */
+export const RUNNER_LIVENESS_MS = 60_000;
 /** How long a deployment waits for a service to answer: past the liveness window with a margin for launchd's restart
  * backoff (controller-service restarts within 30 s), and never under the 90 s it always waited. */
 export const HEALTH_WAIT_MS = Math.max(RUNNER_LIVENESS_MS + 60_000, 90_000);

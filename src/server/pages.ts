@@ -1015,7 +1015,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
 
   async function healthzEdge(ctx: EdgeContext): Promise<void> {
     const { response, method } = ctx;
-    return healthz(store, response, method === 'HEAD');
+    return healthz(store, response, method === 'HEAD', options.draining?.() === true);
   }
 
   async function browserAsset(ctx: EdgeContext): Promise<void> {

@@ -1448,6 +1448,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const notices = [...(extras.notices ?? [])];
       if (s.chrome.modeBanner) notices.push(s.chrome.modeBanner.words);
       if (s.chrome.updateWaiting) notices.push(s.chrome.updateWaiting.words);
+      if (options.draining?.() === true) notices.push('Toolroll is restarting (draining). Saved work is kept; new builds start once it is back.');
       let crew: Pick<BrowserWorkspace, 'crew' | 'crewTruncated'> = { crew: [], crewTruncated: false };
       try {
         const project = s.chrome.active === 'chat' ? null : s.chrome.project;

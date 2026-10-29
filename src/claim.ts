@@ -29,7 +29,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { authenticate } from "./runner.js";
+import { authenticate, drainOf } from "./runner.js";
 import { pauseForAuth } from "./provider-auth.js";
 import {
   DEFAULT_MAX_OPEN_DECISIONS,
@@ -103,7 +103,9 @@ export type AcquireResult =
   | { ok: false; reason: "unauthorized-repo"; repo: string }
   /** A coordinator filed this and no password ceremony has sealed its
    * scope yet — nothing claims, plans, or runs it until one does. */
-  | { ok: false; reason: "coordinator-filed" };
+  | { ok: false; reason: "coordinator-filed" }
+  /** The runner reported draining (v137 lifecycle): its stop has begun, so it takes no new work. */
+  | { ok: false; reason: "draining"; until: string };
 
 /** `fenced` means the lease was superseded; `unknown` means it never existed. */
 export type FenceResult =
@@ -201,6 +203,9 @@ function acquireLocked(
       // repo never even holds a claim.
       const gate = authenticate(store, runner, options.token);
       if (!gate.ok) return { ok: false as const, reason: "unauthenticated" as const, detail: gate.reason };
+      // DRAINING (v137): a runner whose stop has begun admits nothing new, on every claim road.
+      const drain = drainOf(store, gate.runner, now);
+      if (drain !== null) return { ok: false as const, reason: "draining" as const, until: drain.until };
       const placedRef = store.refForId(taskRef);
       const placedRepo = placedRef?.repo ?? null;
       if (placedRepo === null) return { ok: false as const, reason: "unplaced" as const };

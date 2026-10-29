@@ -28,7 +28,7 @@ import { inspectAcpAgent, inspectionWords } from "./acp-inspect.js";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { resolve } from "node:path";
 import { canonicalProject } from "./project.js";
-import type { Store, Mutation } from "./store.js";
+import { lifecycleOf, reportLifecycle, type Store, type Mutation } from "./store.js";
 import { ALL_CREDENTIAL_ENV, PROVIDER_IDS, inspectionOf, type ProviderId } from "./provider.js";
 import { attestationOf, versionInRange } from "./attest.js";
 import type { ReadinessObservation } from "./phase-routing.js";
@@ -71,11 +71,18 @@ export const RUNNER_TOKEN_MS = 365 * 86_400_000;
 /**
  * How long a runner may go quiet before it is presumed gone.
  *
- * Comfortably more than any sensible heartbeat interval: declaring a busy
- * machine dead because one check-in was slow costs more than waiting another
- * minute for a machine that really is.
+ * Four heartbeats (RUNNER_HEARTBEAT_MS): one slow check-in never declares a busy
+ * machine dead, and a machine that really is gone holds its name for a minute,
+ * not three (docs/plans/actors-lessons.md). A clean stop doesn't wait even that
+ * long: a draining or stopped holder never blocks the next start
+ * (registerRunnerIfIdle).
  */
-export const DEFAULT_LIVENESS_MS = 3 * 60_000;
+export const DEFAULT_LIVENESS_MS = 60_000;
+/** How often a live runner says so: `up`'s runner heartbeat and every watch lease renewal. */
+export const RUNNER_HEARTBEAT_MS = 15_000;
+/** The longest a watch lease may be taken or renewed for (durable-actors' MAX_HOST_LEASE_DURATION_MS): a crashed
+ * holder's projects are free within a minute. The store clamps every ttl to it. */
+export { MAX_WATCH_LEASE_MS } from "./store.js";
 
 export type RegisterOptions = {
   name: string;
@@ -137,6 +144,9 @@ export function register(store: Store, options: RegisterOptions): Registration {
   // Doing it from the `previous` snapshot above is racy: two registrars can
   // read the same predecessor and otherwise mint the same generation.
   const runner = store.saveRunner(proposed, hashToken(token), mutation);
+  // v137: this registration is started; its lifecycle row is bound to it by registered_at, so an earlier holder's
+  // drain or stop never describes it.
+  reportLifecycle(store, workerComponent(name), "started", runner.registeredAt, now);
   return {
     runner,
     token,
@@ -284,14 +294,24 @@ export function registerRunnerIfIdle(
   },
 ):
   | (Registration & { ok: true; recoveredRuns: number; signedOff: string | null })
-  | { ok: false; reason: "runner-alive" | "watch-live"; detail: string } {
+  | { ok: false; reason: "runner-alive" | "watch-live"; detail: string }
+  | { ok: false; reason: "runner-draining"; detail: string; until: string } {
   const { name, now, previousGone, ...registration } = options;
   return store.transact(() => {
     let existing = store.getRunner(name);
-    // The protection against two live holders stands: only a holder whose every process is proved gone is signed off.
+    // The protection against two live holders stands: only a holder whose every process is proved gone, or whose own
+    // drain has ended (its stop bound passed, or it reported stopped), is signed off.
     let signedOff: string | null = null;
     const blocked = existing !== null && ((existing.runner.retiredAt === null && isAlive(existing.runner, now)) || store.liveWatchLeaseOf(name, now) !== null);
-    if (blocked && existing !== null && previousGone !== undefined) {
+    const drain = existing === null ? null : drainOf(store, existing.runner, now);
+    if (blocked && existing !== null && drain?.ended === true) {
+      store.retireRunner(name, now);
+      store.expireWatchLeasesOf(name, now);
+      store.recordAction({ at: now.toISOString(), actor: "toolroll up", repo: null, taskId: null, runId: null,
+        action: "worker signed off", outcome: "drain ended", source: "policy", detail: `${name} reported draining until ${drain.until}` });
+      signedOff = `its drain ended at ${drain.until}`;
+      existing = store.getRunner(name);
+    } else if (blocked && existing !== null && previousGone !== undefined) {
       const proof = previousGone(existing);
       if (proof.gone) {
         store.retireRunner(name, now);
@@ -301,6 +321,11 @@ export function registerRunnerIfIdle(
         signedOff = proof.detail;
         existing = store.getRunner(name);
       }
+    }
+    // A holder still draining: refused at once with when its drain ends, so the caller waits for that instead of a
+    // heartbeat window (two live holders stay impossible).
+    if (existing !== null && drain !== null && !drain.ended && (isAlive(existing.runner, now) || store.liveWatchLeaseOf(name, now) !== null)) {
+      return { ok: false as const, reason: "runner-draining" as const, until: drain.until, detail: `Toolroll is restarting (draining): ${name} finishes stopping by ${drain.until}` };
     }
     if (existing !== null && existing.runner.retiredAt === null && isAlive(existing.runner, now)) {
       return {
@@ -390,9 +415,14 @@ export function retireRunnerIfCurrent(
     const auth = authenticate(store, name, token);
     if (!auth.ok) return { ok: false as const, reason: auth.reason };
     store.retireRunner(name, now);
+    // Stopped is retired: its leases lapse now, so the next start or watch takes its projects over (recovering whatever
+    // this incarnation left) without waiting for them to run out.
+    store.expireWatchLeasesOf(name, now);
+    reportLifecycle(store, workerComponent(name), "stopped", auth.runner.registeredAt, now);
     return { ok: true as const };
   });
 }
+
 
 export function isAlive(runner: Runner, now: Date, livenessMs = DEFAULT_LIVENESS_MS): boolean {
   if (runner.retiredAt !== null) return false;
@@ -604,4 +634,31 @@ export function reportProviderReadinessAuthed(
     store.recordProviderReadiness(args.name, args.observations, now);
     return auth;
   });
+}
+
+// ---- v137 lifecycle (docs/plans/actors-lessons.md): last in the file, so the reviewed function positions stay ----
+
+/** A worker's lifecycle row (service_lifecycle). */
+export const workerComponent = (name: string): string => `worker:${name}`;
+
+/**
+ * The stop begins (durable-actors' draining report), fenced by this holder's credential: from now this runner takes
+ * no new work (claim.ts acquire refuses), and its drain ends by `until`, after which it never blocks a new start.
+ */
+export function drainRunnerIfCurrent(store: Store, name: string, token: string, now: Date, until: Date): boolean {
+  return store.transact(() => {
+    const auth = authenticate(store, name, token);
+    if (!auth.ok) return false;
+    return reportLifecycle(store, workerComponent(name), "draining", auth.runner.registeredAt, now, { drainUntil: until });
+  });
+}
+
+/** A runner's drain as its own lifecycle row reports it (only the current registration's row counts): null when it
+ * isn't draining; ended once its bound passed or it reported stopped. */
+export function drainOf(store: Store, runner: Runner, now: Date): { until: string; ended: boolean } | null {
+  const row = lifecycleOf(store, workerComponent(runner.name));
+  if (row === null || row.holder !== runner.registeredAt) return null;
+  if (row.state === "stopped") return { until: row.changedAt, ended: true };
+  if (row.state !== "draining" || row.drainUntil === null) return null;
+  return { until: row.drainUntil, ended: Date.parse(row.drainUntil) <= now.getTime() };
 }

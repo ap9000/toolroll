@@ -106,7 +106,7 @@ import { homedir, hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import {
-  openStore, openStoreNoMigrate, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
+  openStore, openStoreNoMigrate, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
@@ -256,6 +256,9 @@ import {
   removeRunnerRepoAuthed,
   registerRunnerIfIdle,
   retireRunnerIfCurrent,
+  drainRunnerIfCurrent,
+  RUNNER_HEARTBEAT_MS,
+  MAX_WATCH_LEASE_MS,
   normalizeRunnerName,
   validRunnerName,
   canonicalRepos,
@@ -1785,6 +1788,7 @@ function claimCommand(
     if (result.reason === "unauthorized-repo") return fail(write, json, "claim", "unauthorized-repo", `this runner is not bound to ${result.repo} — \`runner bind\` adds it`, EXIT.refused);
     if (result.reason === "coordinator-filed") return fail(write, json, "claim", "coordinator-filed", "a coordinator filed this — nothing runs until the operator signs its scope", EXIT.refused);
     if (result.reason === "sweep-limit") return fail(write, json, "claim", "sweep-limit", `its sweep already has ${result.limit} running at once — it starts when one finishes`, EXIT.refused, { sweep: result.sweep, limit: result.limit });
+    if (result.reason === "draining") return fail(write, json, "claim", "draining", `Toolroll is restarting (draining): ${runner} takes no new work until it is back (by ${result.until})`, EXIT.refused, { until: result.until });
     return fail(write, json, "claim", result.reason, `held by ${result.by} until ${result.until}`, EXIT.refused, { holder: result.by, until: result.until });
   }
 
@@ -4317,6 +4321,7 @@ async function startConsole(options: {
   upConsole?: boolean;
   editorLinks?: "vscode";
   instanceSecret?: () => string | null;
+  draining?: () => boolean;
 }): Promise<{ server: ReturnType<typeof createDecisionServer>; port: number; url: string }> {
   const { context } = options;
   // A git incident (teardown-git.ts) raises an attention notification in this console's outbox.
@@ -4348,6 +4353,7 @@ async function startConsole(options: {
     ...(options.upConsole === undefined ? {} : { upConsole: options.upConsole }),
     ...(options.editorLinks === undefined ? {} : { editorLinks: options.editorLinks }),
     ...(options.instanceSecret === undefined ? {} : { instanceSecret: options.instanceSecret }),
+    ...(options.draining === undefined ? {} : { draining: options.draining }),
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -6435,8 +6441,10 @@ async function daemonCommand(
 
 // ---- the watch loop --------------------------------------------------------
 
-const WATCH_LEASE_MS = 90_000;
-const WATCH_HEARTBEAT_MS = 30_000;
+// A watch lease lasts at most a minute and is renewed every 15 s (docs/plans/actors-lessons.md): a crashed worker's
+// projects are free within a minute, and a clean stop hands them back at once (retireRunnerIfCurrent).
+const WATCH_LEASE_MS = MAX_WATCH_LEASE_MS;
+const WATCH_HEARTBEAT_MS = RUNNER_HEARTBEAT_MS;
 
 /**
  * `toolroll watch` — the loop (§5, §6): the cron chain as one
@@ -7615,7 +7623,12 @@ async function upCommand(
     probe.once("error", () => resolveProbe(false));
     probe.listen(port, "127.0.0.1", () => resolveProbe(true));
   });
-  if (!reserved) return fail(write, json, "up", "port-busy", `port ${port} is taken — another \`up\` or \`serve\` may already be running; stop it, or pick a different --port`, EXIT.refused);
+  if (!reserved) {
+    // The console that holds it said it is stopping: a restart is under way, so say that instead of "another one runs".
+    const holder = lifecycleOf(store, `console:${port}`);
+    if (holder?.state === "draining") return fail(write, json, "up", "port-busy", `Toolroll is restarting (draining): the console on port ${port} is stopping — try again in a few seconds`, EXIT.refused);
+    return fail(write, json, "up", "port-busy", `port ${port} is taken — another \`up\` or \`serve\` may already be running; stop it, or pick a different --port`, EXIT.refused);
+  }
 
   // Under a coding agent nothing is asked and no secret is printed, even in a real terminal: what is shown lands in
   // its transcript.
@@ -7649,8 +7662,19 @@ async function upCommand(
       // unbound registration would deny-all its own dispatches.
       // A holder whose every process is proved gone (its record beside the database) no longer blocks the name: an
       // `up` killed outright can't leave a fresh heartbeat in the way of the next start (the 2026-10-29 deploy).
-      const answer = registerRunnerIfIdle(store, { name, host: hostname(), repos, now: clock(),
+      const tryRegister = () => registerRunnerIfIdle(store, { name, host: hostname(), repos, now: clock(),
         previousGone: holder => holderProvedGone(readRunnerProcessRecord(runnerProcessFile(context.databaseFile, name)), holder, hostname()) });
+      let answer = tryRegister();
+      // A holder still draining (a restart under way): it said when its drain ends, so this start waits for that and
+      // then takes the name over — never another name, and never a guess from a heartbeat window.
+      const drainWaitUntil = Date.now() + 2 * 60_000;
+      let saidDraining = false;
+      while (!answer.ok && answer.reason === "runner-draining" && Date.now() < drainWaitUntil) {
+        if (!saidDraining) progress(`${answer.detail}; this start takes over then`);
+        saidDraining = true;
+        await new Promise(resolveWait => setTimeout(resolveWait, 1_000));
+        answer = tryRegister();
+      }
       if (answer.ok) {
         runnerName = name;
         runnerToken = answer.token;
@@ -7664,9 +7688,11 @@ async function upCommand(
       }
       doorAnswer = answer;
       if (runnerFlag !== undefined) break; // an explicit name is never suffixed around
+      if (answer.reason === "runner-draining") break; // a restart under way keeps its name
     }
     if (runnerName === "") {
       const detail = doorAnswer !== null && !doorAnswer.ok ? doorAnswer.detail : "no worker name could be taken";
+      if (doorAnswer !== null && !doorAnswer.ok && doorAnswer.reason === "runner-draining") return fail(write, json, "up", "runner-alive", `${detail}, and it hasn't yet — try again shortly`, EXIT.refused);
       return fail(write, json, "up", "runner-alive", `${detail} — that worker looks alive; stop the other \`up\` or watch, or name a different worker with --runner`, EXIT.refused);
     }
 
@@ -7727,6 +7753,9 @@ async function upCommand(
     }
     stopping = true;
     resolveStopped();
+    // Draining, durably: no new work is admitted for this runner from now, and a restart waits for this drain's end
+    // (now + the forced-stop bound) instead of a heartbeat window.
+    try { if (runnerName !== "") drainRunnerIfCurrent(store, runnerName, runnerToken, clock(), new Date(clock().getTime() + stopDeadlineMs)); } catch { /* the heartbeat bound still holds */ }
     forceTimer = setTimeout(() => {
       fatal ??= `stopping took longer than ${Math.round(stopDeadlineMs / 1000)} s; its console and worker were stopped outright`;
       workerRole?.kill();
@@ -7808,7 +7837,7 @@ async function upCommand(
           runner: runnerName, token: runnerToken, repos: generation === 1 ? [...repos] : [...currentRepos], pinnedRepos: [...pinnedRepos], projectRoots, registryPath, pool,
           forMs: forGiven === undefined ? null : Number(forGiven), publicUrl: publicUrlFlag ?? null, stopGraceMs, verbose: flags.has("verbose"),
           terminal: context.upSeams?.terminal ?? process.stdout.isTTY === true,
-          // A restart waits out a crashed predecessor's lease (90 s), then recovers it: as a fresh `up` after a crash.
+          // A restart waits out a crashed predecessor's lease (at most a minute), then recovers it: as a fresh `up` after a crash.
           leaseWaitMs: split ? WATCH_LEASE_MS + 15_000 : 0,
         },
       }),
@@ -7851,7 +7880,7 @@ async function upCommand(
       fatal = `the builder identity changed (${beat.reason})`;
       stop();
     }
-  }, 60_000);
+  }, RUNNER_HEARTBEAT_MS);
   runnerHeartbeat.unref?.();
 
   // 9. Readiness, then the ONE startup envelope / greeting (finding 11/20).
@@ -12408,10 +12437,14 @@ async function runUpConsoleRole(context: Context, config: UpConsoleConfig, port:
   const activeRepos = new Set<string>(config.repos);
   // Cockpit B1: this start's instance secret, minted once it is listening; the console answers its challenges with it.
   let instanceSecret: string | null = null;
+  // v137: this console's lifecycle (service_lifecycle "console:<port>"): started, a short heartbeat, draining once
+  // its `up` stops, stopped at the end. While draining, /healthz and every page say Toolroll is restarting.
+  let draining = false;
   let console_: Awaited<ReturnType<typeof startConsole>>;
   try {
     console_ = await startConsole({
       instanceSecret: () => instanceSecret,
+      draining: () => draining,
       context,
       host: config.host,
       port: config.port,
@@ -12440,11 +12473,20 @@ async function runUpConsoleRole(context: Context, config: UpConsoleConfig, port:
   let resolveStopped: () => void = () => {};
   const stopped = new Promise<void>(resolveStop => (resolveStopped = resolveStop));
   port.onStop(() => resolveStopped());
+  const lifecycleComponent = `console:${console_.port}`;
+  const lifecycleHolder = `${process.pid}:${randomUUID().slice(0, 8)}`;
+  try { reportLifecycle(store, lifecycleComponent, "started", lifecycleHolder, clock(), { pid: process.pid }); } catch { /* reporting never stops the console */ }
+  const lifecycleBeat = setInterval(() => { try { beatLifecycle(store, lifecycleComponent, lifecycleHolder, clock()); } catch { /* the next beat tries again */ } }, RUNNER_HEARTBEAT_MS);
+  lifecycleBeat.unref?.();
   port.onMessage(message => {
     if (message.type === "repos") {
       activeRepos.clear();
       for (const repo of message.repos) activeRepos.add(repo);
-    } else if (message.type === "stopping") closeCoding();
+    } else if (message.type === "stopping") {
+      draining = true;
+      try { reportLifecycle(store, lifecycleComponent, "draining", lifecycleHolder, clock(), { drainUntil: new Date(clock().getTime() + 60_000) }); } catch { /* the flag above still answers */ }
+      closeCoding();
+    }
     else if (message.type === "sign-in-link") {
       let link: string | null = null;
       try { link = console_.server.mintSignInLink(message.account); } catch { link = null; }
@@ -12467,11 +12509,14 @@ async function runUpConsoleRole(context: Context, config: UpConsoleConfig, port:
 
   port.send({ type: "ready", role: "console", build, pid: process.pid, url: console_.url, port: console_.port });
   await stopped;
+  draining = true;
   closeCoding();
+  clearInterval(lifecycleBeat);
   if (instanceSocket.ok) instanceSocket.close();
   if (mintedSecret !== null) clearInstance(store, mintedSecret);
   let closeProblem: string | null = null;
   await new Promise<void>(done => console_.server.close(error => { closeProblem = error === undefined || error === null ? null : (error as Error).message; done(); }));
+  try { reportLifecycle(store, lifecycleComponent, "stopped", lifecycleHolder, clock()); } catch { /* a stale row lapses with its heartbeat */ }
   port.send({ type: "closed", problem: closeProblem });
   return closeProblem === null ? EXIT.ok : EXIT.failed;
 }
