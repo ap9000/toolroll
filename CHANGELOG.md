@@ -25,6 +25,17 @@
   lets running builds finish first. A running check's progress is saved at
   most once a second, and its final result at once. `--single-process` keeps
   the old one-process layout.
+- **Fixes from the first review of the above.** CI's required checks now
+  judge the shards with the verifier from the base branch, run none of the
+  change's code, and fail when a shard executed no tests, its counts don't
+  add up, or it skips tests the base always ran; a required check counts only
+  from the CI workflow, never a same-named job elsewhere. A release filed
+  while CI runs can't be approved by anyone until Toolroll itself saw CI pass,
+  and you're asked only then. A worker that crashes while a removed project is
+  still finishing recovers that project's work before anything new starts. A
+  deploy waits until the console and the worker have both exited. A worker or
+  console that refuses to start again stops `toolroll up` instead of
+  restarting forever. A check's final progress is kept until it's saved.
 
 ## 0.9.77 — 2026-10-29
 

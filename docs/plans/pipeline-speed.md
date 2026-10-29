@@ -62,16 +62,21 @@ min; app 2.7–5 min; flows-real 3.5–6.1 min; app-real 2.3–5.4 min; upgrade 
 
 - `test-shard` runs `npm run test:all -- --shard=i/4` as four jobs per Node version ("node N · shard i/4"). It uses
   the same runner, setup and environment as the old job, keeps `fetch-depth: 0` for the migration tests, and has
-  `fail-fast: false`. Each shard writes a summary of the files it ran and its counts on the tested commit
-  (`scripts/ci-shards.mjs summarize`, which refuses a report that didn't pass) and uploads it.
+  `fail-fast: false`. Each shard uploads Vitest's own JSON report, written by its step outside the checkout (no
+  candidate script summarizes it; Codex review round 1, finding 1).
 - The required checks keep their exact names. "node 22 · ubuntu-latest" and "node 24 · ubuntu-latest" are now the
   join job `test`. It `needs: test-shard` and runs `if: always()`, because a job skipped after a shard failure would
   read as a pass to a required check. It fails unless:
   - `needs.test-shard.result` is `success`;
-  - for its Node version there are exactly the shards 1..4, each once, each with `of = 4`, the tested SHA and no
-    failed test;
-  - together the shards ran exactly the files `vitest list --filesOnly` lists in the join's own checkout of that
-    commit, each once (`scripts/ci-shards.mjs verify`).
+  - for its Node version there are exactly the shards 1..4, each one report that passed, whose counts agree with its
+    own results, that executed tests, and that skipped only in files whose base copy can skip (or that are new);
+  - together the shards ran exactly the files the include policy finds in the tested commit, each once.
+  The join runs none of the candidate's code: it checks out the trusted base revision apart (the pull request's base,
+  or main on a push) and runs that copy of `scripts/ci-shards.mjs verify`, whose include policy is held equal to
+  vitest.config.ts. Until main has a verifier the change's own is used, and said. The candidate's test code still
+  writes the reports it is judged by (report provenance is not authenticated; AGENTS.md trusts test code).
+- A required check counts only from `.github/workflows/ci.yml` (GitHub's workflow-run path): a lookalike job of the
+  same name in another workflow never stands for one (Codex review round 1).
 - `REQUIRED_PR_CHECKS`, `PROTECTION_MINIMUM_CHECKS` and main's branch protection are unchanged. `prChecksVerdict`
   already judges every job group on the commit, so a failed or rerun shard fails a verdict or counts as history,
   exactly as a failed Node job did. `scripts/release-check-ci.mjs` reads the new job names from the workflow.

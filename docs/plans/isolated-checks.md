@@ -104,9 +104,30 @@ Idle (the first 8 s after start, reconcile running): before /board p95 147 ms, m
 database the same check: before /healthz max 6,892 ms and /board 7,537 ms; after 182 and 28. The multi-second stalls
 were the per-line progress writes on the shared event loop; the remaining task-page time is the console's own render.
 
-**Residual.** Heavy HTTP reads beyond the work index are not yet routed through ReadExecutor; a deploy's
-"service stopped" check watches `up` and its supervisor, and the role children end with `up` (same process group, and
-they drain when its channel closes) rather than being checked by pid.
+**Residual.** Heavy HTTP reads beyond the work index are not yet routed through ReadExecutor.
+
+### Codex review round 1 fixes (2026-10-29)
+
+Round 1 was NO-GO with six findings and one inherited limitation; each fix has a test that failed before it.
+1. **CI join.** Shards upload Vitest's own report; the join installs nothing and runs the trusted base revision's
+   `scripts/ci-shards.mjs` (inventory and skip policy on the trusted side), refusing reports that executed nothing,
+   whose counts disagree with their results, or that skip in a file the base always ran. Residual: the candidate's
+   test code still writes the report it's judged by.
+2. **Removal, then a worker crash.** A replacement worker takes over, from the store, every watch a predecessor left
+   live or holding open work on a project still bound to the runner (one being removed), recovering its incarnation
+   before any new work; the console's list is untouched. A removed project whose lease can't be taken over stays
+   bound and the worker stops.
+3. **Deploy process exit.** The service identity records `up`'s console and worker (verified by command); shutdown,
+   the recovery stop proof and the stale coding-owner release cover them, a failed new service stops as its whole
+   tree, and no `up` or role child of the runtime may be left whatever its pid.
+4. **Approval before CI.** A release filed while CI runs is held in the plane (recorded before filing); every seal but
+   the automatic road's is refused until the plane's own reading of exact-head CI passes lifts it, and only then is a
+   person asked.
+5. **Role restarts.** Readiness is per generation: a replacement's refusal (another build or database), or three
+   replacements ending before readiness, stops the whole `up`; a crash after readiness still restarts.
+6. **Final progress write.** The final snapshot is kept until saved, flush retries it, and a display failure never
+   keeps the outcome from being sealed.
+- **Inherited CI limitation.** A required check counts only from `.github/workflows/ci.yml`.
 
 ## Decisions for the owner
 | Decision | Recommendation |
