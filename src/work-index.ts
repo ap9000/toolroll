@@ -512,6 +512,28 @@ export function workStateRows(store: Store, now: Date, access: WorkSummaryAccess
       resultRun: row['result_id'] == null ? null : n(row, 'result_id'), waits: Number(row['rank']) === 2, version: String(row['version']), at: String(row['ask_at'] ?? ''), askRun: row['ask_run'] == null ? null : n(row, 'ask_run'), members: (JSON.parse(String(row['members'] ?? '[]')) as unknown[]).map(Number) }));
 }
 
+/** Activity uses the Tasks list's exact family admission and saved completion rules.
+ * Only the requested project enters the projection. The extra row signals truncation;
+ * attempts are aggregated in SQLite, never loaded as an unbounded history. */
+export function workOutcomeRows(store: Store, now: Date, access: WorkSummaryAccess, project: string, since: string, limit: number) {
+  return store.handle.prepare(`${registerValidators(store)}, selected AS MATERIALIZED (
+    SELECT * FROM ranked WHERE code='ready-to-check' OR code='history-problem'
+      OR (code='complete' AND checked_at >= $since AND checked_at <= $now)
+    ORDER BY sort_at DESC,root_ref DESC LIMIT $outcomeLimit
+  ), attempts AS (
+    SELECT m.root_ref,COUNT(*) runs,COUNT(CASE WHEN r.cost_usd>=0 THEN 1 END) known_runs,
+      SUM(CASE WHEN r.cost_usd>=0 THEN r.cost_usd END) recorded_usd
+    FROM selected f JOIN members m ON m.root_ref=f.root_ref JOIN run r ON r.task_ref=m.ref_id
+    GROUP BY m.root_ref
+  ) SELECT f.root_id,f.id task_id,f.root_title title,f.code,f.finished_at,f.result_id,f.result_role,
+    f.version_count,f.checked_at,f.checked_actor,f.checked_detail,
+    (SELECT lead FROM task_act WHERE task_ref=f.root_ref AND act='completed' AND at=f.checked_at ORDER BY id DESC LIMIT 1) completed_by_lead,
+    (SELECT status FROM run_check WHERE run=f.result_id) check_status,
+    COALESCE(a.runs,0) runs,COALESCE(a.known_runs,0) known_runs,a.recorded_usd
+    FROM selected f LEFT JOIN attempts a ON a.root_ref=f.root_ref ORDER BY f.sort_at DESC,f.root_ref DESC`)
+    .all({ ...parameters(now, access, { project }, custodyReadings(store)), $since: since, $outcomeLimit: limit + 1 });
+}
+
 /** Families whose headline is Ready for review, newest first: the Tasks
  * list's own rows, so a completed family (root or any revision), a failed
  * check and a superseded version never count. */
