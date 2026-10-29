@@ -1,7 +1,7 @@
 import { parseFeedbackImage, type FeedbackImage } from "./result-review.js";
 /** Shared membership-chat identity, proposal previews and result links. Transport adapters never grant authority. */
 import { FLOW_HREF } from "./flow-engine.js";
-import { closedQuestionWords } from "./decision.js";
+import { closedQuestionWords, LIMITS } from "./decision.js";
 import { createHash } from "node:crypto";
 import {
   sharedActionPayload,
@@ -199,7 +199,7 @@ export function replyContextFor(taskId: string, run: number | null, image?: Feed
     run === null
       ? `The operator is replying to a message about execution ${taskId}.`
       : `The operator is replying to result #${run} from execution ${taskId}. Use get_result for that exact execution and run when responding to feedback; do not substitute another result. If the operator asks for changes, use propose_review revise; use note only when they explicitly ask to save feedback without starting work.`,
-    ...(image === undefined ? [] : [`The reply targets screenshot ${image.artifact} on result #${image.run}. Retain image: ${image.artifact} in propose_review so the exact screenshot stays with the feedback. Read get_result_images for this result first.`]),
+    ...(image === undefined ? [] : [`The reply targets screenshot ${image.artifact} on result #${image.run}. Retain image: ${image.artifact} in propose_review so the exact screenshot stays with new feedback; pass image: null only when the feedback is not about it. Read get_result_images for this result first.`]),
   ].join(" ");
 }
 
@@ -210,6 +210,8 @@ export function focusContextFor(taskId: string): string {
 
 /** A step the phone cannot take itself: said once; the button (or its absence) says where. */
 const HANDOFF = "This step finishes in Toolroll.";
+/** Feedback a card cannot show in full is never confirmed from it; Telegram's 4,096-character message bounds every card. */
+const REVIEW_CARD_BODY_MAX = 3_000;
 /** No trusted https origin is configured: one honest line, no localhost, no promise. */
 export const NO_PHONE_LINK =
   "Phone access isn't configured. Open Toolroll on your computer.";
@@ -331,6 +333,12 @@ export function proposalLink(
       ? controlLink(control, task, payload["run"])
       : null;
   }
+  if (proposal.kind === "review")
+    return task !== "" &&
+      taskInCeiling(store, task, repos) &&
+      !proposalPreview(store, proposal, repos).buttons
+      ? controlLink("result", task, payload["run"])
+      : null;
   return null;
 }
 
@@ -594,18 +602,17 @@ export function proposalPreview(
       const saved = (snapshot?.notes ?? []).filter((one) =>
         selected.includes(one.id),
       );
-      const note = t("note", 2_000);
+      const note = t("note", LIMITS.note);
       const image = parseFeedbackImage(payload["image"]);
       const path = t("path", 300);
-      return card(
-        `${revise ? "Request changes to" : "Save feedback on"} result #${String(payload["run"] ?? "?")} of ${taskName}`,
-        [
+      const headline = `${revise ? "Request changes to" : "Save feedback on"} result #${String(payload["run"] ?? "?")} of ${taskName}`;
+      const body = [
           ...(note === ""
             ? []
             : [
                 `Your feedback${path === "" ? "" : ` (${path}${typeof payload["line"] === "number" ? `:${payload["line"]}` : ""})`}:`,
                 ...(image ? [`Screenshot ${image.artifact} · result #${image.run}`] : []),
-                ...lines(note, 2_000),
+                ...lines(note, LIMITS.note),
               ]),
           ...(saved.length === 0
             ? []
@@ -613,10 +620,17 @@ export function proposalPreview(
                 "Saved notes included:",
                 ...saved.map(
                   (one) =>
-                    `• ${one.image ? `Screenshot ${one.image.artifact} · result #${one.image.run}: ` : ""}${one.path === null ? "" : `${phoneText(one.path, 120)}${one.line === null ? "" : `:${one.line}`}: `}${phoneText(one.note, 2_000)}`,
+                    `• ${one.image ? `Screenshot ${one.image.artifact} · result #${one.image.run}: ` : ""}${one.path === null ? "" : `${phoneText(one.path, 120)}${one.line === null ? "" : `:${one.line}`}: `}${phoneText(one.note, LIMITS.note)}`,
                 ),
               ]),
-        ],
+      ];
+      if (body.join("\n").length > REVIEW_CARD_BODY_MAX)
+        return handoff(headline, [
+          "This feedback is too long to show in full here. Open the result to review and send it.",
+        ]);
+      return card(
+        headline,
+        body,
         revise
           ? "Creates a revision of the same task. Its approval follows your settings."
           : "Saves feedback; no work starts.",

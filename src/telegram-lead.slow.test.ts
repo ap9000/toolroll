@@ -1673,6 +1673,43 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(store.getTask("payout")?.state).toBe("done");
     });
 
+    test("a reply to a screenshot hands overlong feedback to the result, can leave the screenshot off, and revises with only saved notes", async () => {
+      origin = "https://console.example";
+      const { run } = seedSource("payout");
+      shot(run, "screenshot-home.png", PNG);
+      askForImages(run, "One screenshot follows.");
+      expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1, problems: [] } });
+      const imageMessage = script.documents()[0]!.messageId as number;
+      const reply = (text: string, args: Record<string, unknown>) => {
+        answers.push(
+          { text: "Reading.", calls: [{ id: "r1", name: "get_result", args: { task: "payout", run } }] },
+          { text: "Proposing.", calls: [{ id: "r2", name: "propose_review", args: { run, ...args } }] },
+          { text: "Confirm the card." },
+        );
+        script.updates.push([textUpdate(nextUpdate++, text, { reply_to_message: { message_id: imageMessage } })]);
+      };
+      const long = "Tighten the form spacing. ".repeat(140).trim();
+      reply("Revise it with my long notes.", { operation: "revise", note: long });
+      expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1, problems: [] } });
+      const handed = script.card();
+      expect(handed.rows.flat().some(button => /Confirm/.test(button.text))).toBe(false);
+      expect(urlButtons(script.sends().at(-1))).toEqual([["Open result", `https://console.example/chat?task=payout&result=${run}`]]);
+      expect(handed.text.length).toBeLessThan(4_096);
+      reply("Save that the footer is fine.", { operation: "note", note: "The footer is fine as is.", image: null });
+      expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1, problems: [] } });
+      const save = script.card();
+      expect(save.text).not.toContain("Screenshot");
+      expect(await tapPass(save.button(/^Confirm$/), save.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
+      expect(store.allDiffComments(run).map(one => [one.note, one.image ?? null, one.consumedBy])).toEqual([["The footer is fine as is.", null, null]]);
+      reply("Revise using my saved notes.", { operation: "revise", note: null, saved_notes: [store.allDiffComments(run)[0]!.id] });
+      expect(await pass()).toMatchObject({ ok: true, report: { chatAnswered: 1, problems: [] } });
+      expect(toolResult("propose_review")).toMatchObject({ kind: "review", operation: "revise", awaiting: "confirmation" });
+      const revise = script.card();
+      expect(await tapPass(revise.button(/^Confirm$/), revise.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
+      const child = (store.listLeadProposals(store.liveLeadThreadFor("alex")!.id, ["confirmed"]).find(one => one.payload["operation"] === "revise")!.outcome as { taskId: string }).taskId;
+      expect(store.allDiffComments(run).map(one => [one.note, one.image ?? null, one.consumedBy])).toEqual([["The footer is fine as is.", null, child]]);
+    });
+
     test("asked for a result's screenshots: the shared tool selects that exact result's verified images, Telegram sends each original as a document after the reply, a reply to an image revises that exact run, and a newer revision is said, never switched to", async () => {
       origin = "https://console.example";
       const { run } = seedSource("payout");

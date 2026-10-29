@@ -838,7 +838,7 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       if (new Set(notes).size !== notes.length || notes.some(id => !read.snapshot.notes.some(one => one.id === id))) return { ok: false, message: "Select only feedback ids from the result you read." };
       if ((operation === "note" && (note === null || notes.length > 0)) || (note === null && notes.length === 0)) return { ok: false, message: "Write feedback or select saved notes for a revision." };
       if (operation === "revise" && read.snapshot.task !== read.snapshot.execution) return { ok: false, message: "A newer revision is current. Read that version before requesting changes." };
-      const wanted = args["image"] ?? (ctx.replyImage?.run === read.snapshot.run ? ctx.replyImage.artifact : undefined);
+      const wanted = args["image"] === null ? undefined : args["image"] ?? (note !== null && ctx.replyImage?.run === read.snapshot.run ? ctx.replyImage.artifact : undefined);
       let image = null;
       if (wanted !== undefined) {
         image = read.snapshot.images?.find(one => one.artifact === wanted) ?? null;
