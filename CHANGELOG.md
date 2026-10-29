@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A release is published without waiting for Homebrew.** `toolroll release`
+  ends with "Published; Homebrew pending" once npm and the GitHub release are
+  verified, instead of waiting up to 45 minutes for the tap's checks. Homebrew
+  is its own state in the release journal (pending, failed or current), and
+  running the same command again finishes it: it waits for the tap change's
+  checks, then merges exactly that change, with the checksum still taken from
+  npm's tarball. A tap already on a newer version is never moved back, checked
+  again right before the merge.
 - **A release whose checks run outside the sandbox now reruns its own check
   after Toolroll's machine fails.** Such a release can't carry later commits,
   so it used to file without release terms, and a check stopped by Toolroll's

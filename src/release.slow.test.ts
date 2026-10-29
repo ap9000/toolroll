@@ -161,6 +161,17 @@ function world(options: { crashAfter?: Mutation } = {}) {
 }
 
 const stateDir = () => mkdtempSync(join(tmpdir(), "so-release-"));
+const state = <T>(s: T): T => s;
+
+/** Homebrew after publication (pipeline-speed.md, P1): the release run publishes and leaves Homebrew in `expected`;
+ * a later run that finishes it (waiting within the limit) leaves it there too, still published and never merged. */
+async function expectHomebrew(adapters: Parameters<typeof runRelease>[1], expected: "pending" | "failed", extra: Partial<Parameters<typeof runRelease>[0]> = {}) {
+  const dir = stateDir();
+  for (let run = 0; run < 2; run++) {
+    const outcome = await runRelease(options(dir, extra), adapters);
+    expect(outcome).toMatchObject({ ok: true, journal: { step: "homebrew", published: expect.anything(), homebrew: { state: expected, merged: false } } });
+  }
+}
 const options = (dir: string, extra: Partial<Parameters<typeof runRelease>[0]> = {}) => ({ branch: "toolroll/simplify-release", checkout: "/rv", stateDir: dir, pollMs: 15_000, ...extra });
 
 describe("toolroll release", () => {
@@ -643,14 +654,42 @@ describe("toolroll release", () => {
         ? [...passing(["lint"]), { name: "brew test", status: "in_progress", conclusion: null, app: "github-actions" }]
         : passing(["lint", "brew test"]).map(run => ({ ...run, app: "github-actions" })));
     });
-    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
+    // The release is published at once; Homebrew is left pending, and the next run finishes it, waiting for the checks.
+    const dir = stateDir();
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true, journal: { step: "homebrew", published: expect.anything(), homebrew: { state: "pending", merged: false } } });
+    expect(state(s).calls).not.toContain("brewMerge");
+    expect(waits).toBe(0);
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true, journal: { step: "done", homebrew: { state: "current", merged: true } } });
     expect(waits).toBe(2);
+  });
+
+  test("an older release never overwrites a newer formula: before proposing, and right before merging", async () => {
+    const before = world();
+    before.s.brew = { kind: "newer", version: "0.9.60" };
+    expect(await runRelease(options(stateDir()), before.adapters)).toMatchObject({ ok: true, journal: { step: "done", homebrew: { state: "superseded", merged: false } } });
+    expect(before.s.calls).not.toContain("propose");
+    expect(before.s.calls).not.toContain("brewMerge");
+    // A newer formula lands while the change's checks run: the change is never merged over it.
+    const during = world();
+    during.adapters.homebrew.statuses = async () => { if (during.s.brew.kind === "proposed") during.s.brew = { kind: "newer", version: "0.9.60" }; return []; };
+    expect(await runRelease(options(stateDir()), during.adapters)).toMatchObject({ ok: true, journal: { homebrew: { state: "superseded" } } });
+    expect(during.s.calls).toContain("propose");
+    expect(during.s.calls).not.toContain("brewMerge");
+  });
+
+  test("the CLI says the release is published and Homebrew pending, and how to finish it", async () => {
+    const { s, adapters } = world();
+    s.checks.set(`brew:${OTHER}`, []);
+    const lines: string[] = [];
+    const dir = stateDir();
+    expect(await runRelease(options(dir), { ...adapters, say: line => lines.push(line) })).toMatchObject({ ok: true });
+    expect(lines.at(-1)).toMatch(/^Published v0\.9\.52 .*; Homebrew pending: .*Finish it with `toolroll release toolroll\/simplify-release --repo \/rv`\.$/);
   });
 
   test("Homebrew with no registered checks times out without merging", async () => {
     const { s, adapters } = world();
     s.checks.set(`brew:${OTHER}`, []);
-    expect(await runRelease(options(stateDir(), { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "timeout" });
+    await expectHomebrew(adapters, "pending", { limits: { homebrew: 1 } });
     expect(s.calls).not.toContain("brewMerge");
   });
 
@@ -658,7 +697,9 @@ describe("toolroll release", () => {
     const { s, adapters } = world();
     s.brewChecked = false;
     s.checks.set(`brew:${OTHER}`, []);
-    expect(await runRelease(options(stateDir(), { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: true });
+    const dir = stateDir();
+    expect(await runRelease(options(dir, { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: true, journal: { step: "homebrew" } });
+    expect(await runRelease(options(dir, { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: true, journal: { step: "done" } });
     expect(s.calls).toContain("brewMerge");
   });
 
@@ -667,7 +708,7 @@ describe("toolroll release", () => {
     s.brewChecked = false;
     s.checks.set(`brew:${OTHER}`, []);
     s.brewStatuses = [{ name: "status: external", status: "completed", conclusion: "failure" }];
-    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "homebrew-failed" });
+    await expectHomebrew(adapters, "failed");
     expect(s.calls).not.toContain("brewMerge");
   });
 
@@ -675,14 +716,14 @@ describe("toolroll release", () => {
     const { s, adapters } = world();
     s.checks.set(`brew:${OTHER}`, []);
     s.brewStatuses = [{ name: "status: lint", status: "completed", conclusion: "success" }];
-    expect(await runRelease(options(stateDir(), { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "timeout" });
+    await expectHomebrew(adapters, "pending", { limits: { homebrew: 1 } });
     expect(s.calls).not.toContain("brewMerge");
   });
 
   test("another app's green check doesn't stand in for the tap's own workflow", async () => {
     const { s, adapters } = world();
     s.checks.set(`brew:${OTHER}`, [{ name: "Vercel", status: "completed", conclusion: "success", app: "vercel" }]);
-    expect(await runRelease(options(stateDir(), { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "timeout" });
+    await expectHomebrew(adapters, "pending", { limits: { homebrew: 1 } });
     expect(s.calls).not.toContain("brewMerge");
   });
 
@@ -692,7 +733,7 @@ describe("toolroll release", () => {
       { name: "brew test", status: "completed", conclusion: "failure", app: "github-actions" },
       { name: "brew test", status: "completed", conclusion: "success", app: "vercel" },
     ]);
-    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "homebrew-failed" });
+    await expectHomebrew(adapters, "failed");
     expect(s.calls).not.toContain("brewMerge");
   });
 
@@ -700,14 +741,14 @@ describe("toolroll release", () => {
     const { s, adapters } = world();
     s.checks.set(`brew:${OTHER}`, [{ name: "status: external", status: "completed", conclusion: "failure" }]);
     s.brewStatuses = [{ name: "status: external", status: "completed", conclusion: "success" }];
-    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "homebrew-failed" });
+    await expectHomebrew(adapters, "failed");
     expect(s.calls).not.toContain("brewMerge");
   });
 
   test("a pending status holds the merge even when the checks passed", async () => {
     const { s, adapters } = world();
     s.brewStatuses = [{ name: "status: external", status: "in_progress", conclusion: null }];
-    expect(await runRelease(options(stateDir(), { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "timeout" });
+    await expectHomebrew(adapters, "pending", { limits: { homebrew: 1 } });
     expect(s.calls).not.toContain("brewMerge");
   });
 
@@ -715,14 +756,14 @@ describe("toolroll release", () => {
     const { s, adapters } = world();
     s.brewChecked = false;
     s.checks.set(`brew:${OTHER}`, [{ name: "external CI", status: "completed", conclusion: "failure" }]);
-    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "homebrew-failed" });
+    await expectHomebrew(adapters, "failed");
     expect(s.calls).not.toContain("brewMerge");
   });
 
   test.each(["failure", "skipped", "cancelled", "timed_out"])("Homebrew refuses a %s check", async conclusion => {
     const { s, adapters } = world();
     s.checks.set(`brew:${OTHER}`, [...passing(["lint"]), { name: "brew test", status: "completed", conclusion }]);
-    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "homebrew-failed" });
+    await expectHomebrew(adapters, "failed");
     expect(s.calls).not.toContain("brewMerge");
   });
 

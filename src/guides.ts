@@ -502,9 +502,12 @@ with a time limit.
     macos.yml keeps the nightly matrix.
 12. **publish**: waits for npm, the GitHub release and the tag's macOS
     and publish checks.
-13. **homebrew**: updates the tap's formula, waits for checks to register
-    and every registered check to pass, then merges. No checks means waiting,
-    within the Homebrew time limit; a failed or skipped check stops the release.
+13. **homebrew**: the release is published once npm and the GitHub release
+    are verified. It proposes the tap's formula change (checksum from npm's
+    tarball) and looks at its checks once: \`Published; Homebrew pending\`
+    (or failed) ends the run, and the same command finishes it later, waiting
+    for checks to register and every one to pass, then merging exactly that
+    change. A tap already on a newer version is never moved back.
 
 ## When it stops
 
@@ -524,8 +527,10 @@ instead of making them twice.
   A stop at the gate comes before the task is filed, so nothing was filed
   either: a fix pushed as a new commit is released with \`--new\`; after
   rerunning the failed job on GitHub, run the same command again.
-- \`publish-failed\` / \`homebrew-failed\`: fix the failed workflow before
-  resuming. A failed tag check cannot finish publication or update Homebrew.
+- \`publish-failed\`: fix the failed workflow before resuming. A failed tag
+  check cannot finish publication or update Homebrew.
+- Homebrew failed: the release is still published. Fix or rerun the tap's
+  check, then run the same command to finish Homebrew.
 - \`base-moved\`: the branch is behind main (it doesn't contain main's
   head), so the merge wouldn't be the tree CI tested. Checked at the gate
   (nothing filed) and again right before merging (nothing merged): update

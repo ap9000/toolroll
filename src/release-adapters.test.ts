@@ -407,3 +407,15 @@ function projectAt(stage: string): { project: string; head: string } {
   git("commit", "-q", "-m", "approved");
   return { project, head: git("rev-parse", "HEAD") };
 }
+
+describe("the tap's formula version (pipeline-speed.md, P1: an older release never overwrites a newer formula)", () => {
+  test("reads the version the formula's tarball names, and orders versions numerically", async () => {
+    const { formulaVersion, versionAfter } = await import("./release-adapters.js");
+    expect(formulaVersion('class Toolroll < Formula\n  url "https://registry.npmjs.org/toolroll/-/toolroll-0.9.78.tgz"\n  sha256 "' + "a".repeat(64) + '"\n')).toBe("0.9.78");
+    expect(formulaVersion("no url here")).toBeNull();
+    expect(versionAfter("0.9.10", "0.9.9")).toBe(true);
+    expect(versionAfter("0.9.9", "0.9.10")).toBe(false);
+    expect(versionAfter("0.9.77", "0.9.77")).toBe(false);
+    expect(versionAfter("1.0.0", "0.99.99")).toBe(true);
+  });
+});

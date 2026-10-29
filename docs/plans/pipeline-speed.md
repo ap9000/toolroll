@@ -171,6 +171,21 @@ terms are refused while the release projects' checks run unsandboxed. So neither
   test/attacks/release-failure-class.test.ts tries each: another commit, a changed scope, a replaced grant, changed
   check access, a seal that no longer stands, a deterministic failure, a purpose approved for another commit, a mode seal.
 
+## P1. Homebrew after publication (branch `ship-velocity-build`)
+
+- **Published means npm and the GitHub release.** The publish step is unchanged; the homebrew step then makes one
+  pass (release.ts `homebrewPass`): propose the formula change when missing (checksum from npm's tarball, unchanged),
+  read its checks once, and merge exactly the proposed head when every check passed. Pending or failed, the journal
+  keeps `homebrew.state` and the run ends `ok` with "Published …; Homebrew pending/failed … Finish it with
+  `toolroll release <branch> --repo <checkout>`". That command resumes at the homebrew step and waits within the
+  Homebrew limit (a timeout leaves it pending, never a stop of a published release).
+- **Ordering.** The adapter's `state` reports `newer` when the tap's default branch names a later version; the pass
+  never proposes or merges over it (`superseded`), and reads the state again right before merging.
+- **Saved:** the whole Homebrew wait (up to 45 minutes) from the release's end; npm availability was never behind it.
+- **Not built:** the background worker doesn't finish Homebrew by itself; a person (or the lead) reruns the command.
+  The worker has none of the release coordinator's adapters (gh, the tap, the journal), and running them unattended
+  is a separate decision.
+
 ## Not built, and why
 
 ### B. More CI reuse inside the release check

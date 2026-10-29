@@ -561,6 +561,9 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         const branch = await defaultBranch();
         const current = await formulaAt(branch);
         if (current.text.includes(`-${version}.tgz`)) return { kind: "current" };
+        // Ordering (pipeline-speed.md, P1): a tap already on a later version is never moved back by an older release.
+        const named = formulaVersion(current.text);
+        if (named !== null && versionAfter(named, version)) return { kind: "newer", version: named };
         const open = (await ghJson("gh pr list", "pr", "list", "--repo", tap, "--head", brewBranch(version), "--state", "open", "--json", "number,headRefOid")) as Json[];
         const pr = open[0];
         return pr === undefined ? { kind: "missing" } : { kind: "proposed", pr: Number(pr["number"]), head: String(pr["headRefOid"]) };
@@ -604,6 +607,19 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
 }
 
 const brewBranch = (version: string) => `toolroll-${version}`;
+
+/** The version a formula's tarball url names (`…/toolroll-<x.y.z>.tgz`), or null. */
+export function formulaVersion(text: string): string | null {
+  const found = /^\s*url "[^"]*-(\d+\.\d+\.\d+)\.tgz"/m.exec(text);
+  return found === null ? null : found[1]!;
+}
+
+/** Whether version `a` comes after `b` (both x.y.z). */
+export function versionAfter(a: string, b: string): boolean {
+  const pa = a.split(".").map(Number), pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) > (pb[i] ?? 0);
+  return false;
+}
 
 /** The events that put checks on a change. */
 const CHANGE_EVENTS = new Set(["pull_request", "pull_request_target", "push", "merge_group"]);

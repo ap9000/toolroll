@@ -179,7 +179,10 @@ gate the exact commit with Full checks, wait for an active approver's approval
 The service and both CLI names must record that commit; a matching version
 is insufficient. After PR checks pass, squash merge, delete the matching
 remote branch, verify the merged tree and tag. Both macOS legs gate npm and
-GitHub publication; Homebrew waits for checks to register and all pass.
+GitHub publication. The release is published once npm and the GitHub release
+are verified; Homebrew is finished apart (pending, failed or current in the
+journal): the same command later waits for the tap change's checks to register
+and all pass, then merges it, and never moves a newer formula back.
 
 Stops retain their step. Rerunning reconciles any completed merge, tag or
 publication. Interrupted deployments recover the saved staging directory
