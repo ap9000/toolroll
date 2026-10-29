@@ -147,7 +147,7 @@ export const CONSOLE_FORMS = {
   storage: formContract("POST /settings/storage, /settings/storage/clean, /settings/storage/discard", ["password", "cleanup", "preview", "path"]),
   pullRequests: formContract("POST /settings/pull-requests", ["repo", "act", "password", "github", "base", "method", "when-green"]),
   checks: formContract("POST /settings/checks", ["repo", "password", "act", "on", "level", "command", "timeout"]),
-  backups: formContract("POST /settings/backups", ["password", "every", "keep", "folder"]),
+  backups: formContract("POST /settings/backups", ["password", "every", "keep", "folder", "live_every", "live_folder"]),
   data: formContract("POST /settings/data", ["password"]),
   flowsOn: formContract("POST /settings/flows/on", ["repo", "starter"]),
   integrationsTest: formContract("POST /settings/integrations/test", ["key"]),

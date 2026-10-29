@@ -2,7 +2,7 @@
 // tests run the same ordered steps against temporary journals and databases with recorded effects. The
 // command line passes the real ones: launchd, the installed and staged runtimes, and the plane's records.
 import { DatabaseSync, backup } from "node:sqlite";
-import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { observeCodingDeployment, backupCodingDeployment, verifyCodingDeploymentBackup, assertCodingDeploymentStopped, releaseStaleCodingDeployment, ledgerStaleCodingRelease } from "./deploy-coding.mjs";
@@ -353,12 +353,17 @@ export function browserDeployment({
       quiet(db); observeCodingDeployment(oldRt.coding, database, r); save(r, "frozen");
       // Gate installation/freezing above commits its short write transaction.
       // Do not hold a writer reservation while scanning, copying or hashing.
-      const original = openDeploymentDatabase(database, { readOnly: true });
-      let before;
-      try { before = await settle(snapshotBackup(original, r.backup, view => verifyPreparedDatabase(view, r))); } finally { original.close(); }
-      chmodSync(r.backup, 0o600);
-      const copied = openDeploymentDatabase(r.backup, { readOnly: true });
-      try { assertPreserved(copied, before); } finally { copied.close(); }
+      // The worker's latest verified continuous copy (src/live-backup.ts) stands in for a new one only when it is fresh,
+      // its schema matches and its content proves equal to this frozen database, liveness rows aside; else as before.
+      let before = liveCopyBackup(database, r, view => verifyPreparedDatabase(view, r));
+      if (before !== null) say(`• using the continuous copy made ${r.liveCopy.madeAt}: it matches the paused database`);
+      else {
+        const original = openDeploymentDatabase(database, { readOnly: true });
+        try { before = await settle(snapshotBackup(original, r.backup, view => verifyPreparedDatabase(view, r))); } finally { original.close(); }
+        chmodSync(r.backup, 0o600);
+        const copied = openDeploymentDatabase(r.backup, { readOnly: true });
+        try { assertPreserved(copied, before); } finally { copied.close(); }
+      }
       await ensureCodingBackup(oldRt.coding, r);
       const fd = openSync(r.backup, "r"); try { fsyncSync(fd); } finally { closeSync(fd); }
       r.backupSha256 = sha(readFileSync(r.backup)); r.snapshotSha256 = sha(JSON.stringify(before));
@@ -548,4 +553,81 @@ export function keepDeployTimeline(database, r) {
       db.prepare("DELETE FROM latency_timeline WHERE kind = 'deploy' AND id <= (SELECT id FROM latency_timeline WHERE kind = 'deploy' ORDER BY id DESC LIMIT 1 OFFSET 200)").run();
     } finally { db.close(); }
   } catch { /* display only */ }
+}
+
+/** Rows a running service rewrites by the second (liveness and display records): their listed columns (null: the
+ * whole table) may differ between the continuous copy and the paused database. Every other table and column must be
+ * equal, row for row, or the copy isn't used. Restoring such a copy only puts back older heartbeats and sign-in times. */
+export const LIVENESS_ROWS = Object.freeze({ runner: ["heartbeat_at"], watch_lease: ["heartbeat_at", "expires_at"], backup_lease: ["holder", "held_until"],
+  web_session: ["last_seen"], service_lifecycle: null, latency_timeline: null, live_backup: null });
+/** Rows of a table that are a cache's counter, not state: the console's workspace revision (src/workspace-revision.ts). */
+const LIVENESS_KEYS = Object.freeze({ service_cursor: ["workspace-content:v1"] });
+
+/** Each table's digest with its liveness columns left out (sqlite_sequence without the liveness tables' counters). */
+function comparable(db) {
+  return db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND (name NOT LIKE 'sqlite_%' OR name='sqlite_sequence') ORDER BY name").all().flatMap(({ name }) => {
+    const skip = Object.hasOwn(LIVENESS_ROWS, name) ? LIVENESS_ROWS[name] : [];
+    if (skip === null) return [];
+    if (name === "sqlite_sequence") {
+      const rows = db.prepare("SELECT name, seq FROM sqlite_sequence ORDER BY name").all().filter(row => !(Object.hasOwn(LIVENESS_ROWS, row.name) && LIVENESS_ROWS[row.name] === null));
+      return [{ name, rows: sha(JSON.stringify(rows)) }];
+    }
+    const columns = db.prepare("PRAGMA table_info(" + quote(name) + ")").all().map(r => r.name).filter(column => !skip.includes(column));
+    if (Object.hasOwn(LIVENESS_KEYS, name)) {
+      const keys = new Set(LIVENESS_KEYS[name]);
+      const rows = db.prepare("SELECT " + columns.map(quote).join(",") + " FROM " + quote(name)).all().filter(row => !keys.has(row.key)).map(r => JSON.stringify(r)).sort();
+      return [{ name, columns, count: rows.length, hash: sha(rows.join("\n")) }];
+    }
+    return [{ name, columns, ...digest(db, name, columns) }];
+  });
+}
+
+/**
+ * The deployment's backup from the worker's latest verified continuous copy, instead of a new one: only when the plane
+ * records one (live_backup), made within its own schedule (≤ every_minutes old), on this schema, a plain file whose
+ * bytes still hash to what was verified, and — read in one view with the paused database, after `verify` — equal to it
+ * table by table (LIVENESS_ROWS aside) once the database's own triggers (the update pause) are added. Returns the
+ * copy's snapshot, or null (nothing left behind) so the caller copies as it always did.
+ */
+export function liveCopyBackup(database, r, verify, now = Date.now()) {
+  let placed = false;
+  try {
+    let latest;
+    const live = openDeploymentDatabase(database, { readOnly: true });
+    try {
+      if (!live.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_backup'").get()) return null;
+      latest = live.prepare("SELECT enabled, every_minutes, latest_file, latest_sha256, latest_at, latest_schema FROM live_backup WHERE id = 1").get();
+    } finally { live.close(); }
+    if (!latest || Number(latest.enabled) !== 1 || typeof latest.latest_file !== "string" || !/^[a-f0-9]{64}$/.test(String(latest.latest_sha256))) return null;
+    const age = now - Date.parse(String(latest.latest_at));
+    if (!(age >= 0 && age <= Number(latest.every_minutes) * 60_000) || Number(latest.latest_schema) !== r.schema) return null;
+    if (!lstatSync(latest.latest_file).isFile()) return null;
+    copyFileSync(latest.latest_file, r.backup, constants.COPYFILE_EXCL);
+    placed = true;
+    chmodSync(r.backup, 0o600);
+    if (sha(readFileSync(r.backup)) !== latest.latest_sha256) throw Error("the copy changed since it was verified");
+    const copy = openDeploymentDatabase(r.backup), original = openDeploymentDatabase(database, { readOnly: true });
+    let before;
+    try {
+      original.exec("BEGIN");
+      try {
+        verify(original);
+        for (const trigger of original.prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND sql IS NOT NULL ORDER BY name").all()) {
+          if (!copy.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?").get(trigger.name)) copy.exec(trigger.sql);
+        }
+        const shape = db => JSON.stringify(db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all());
+        if (shape(original) !== shape(copy)) throw Error("its schema differs");
+        const mine = comparable(copy), theirs = comparable(original);
+        if (JSON.stringify(theirs) !== JSON.stringify(mine)) throw Error(`its rows differ (${theirs.filter((one, at) => JSON.stringify(one) !== JSON.stringify(mine[at])).map(one => one.name).slice(0, 5).join(", ")})`);
+      } finally { original.exec("ROLLBACK"); }
+      before = snapshot(copy, true);
+    } finally { original.close(); copy.close(); }
+    const fd = openSync(r.backup, "r"); try { fsyncSync(fd); } finally { closeSync(fd); }
+    r.liveCopy = { file: latest.latest_file, sha256: latest.latest_sha256, madeAt: String(latest.latest_at) };
+    return before;
+  } catch {
+    if (placed) for (const suffix of ["", "-wal", "-shm", "-journal"]) rmSync(r.backup + suffix, { force: true });
+    delete r.liveCopy;
+    return null;
+  }
 }

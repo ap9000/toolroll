@@ -44,6 +44,7 @@ import { createConnectionChecker } from "./provider-connection.js";
 import { checkIntegrations, integrationsBrokenLine, integrationsNow, renderIntegrations, type Integration, type IntegrationIo } from "./integrations.js";
 import { buildHandoff, handoffLines, loginAccount, runOnboard, type HandoffLogin, type OnboardIo } from "./agent-onboard.js";
 import { backupFiles, backupFolderOf, backupOwner, backupNow, restoreDatabase, startBackups } from "./backup.js";
+import { startLiveBackups } from "./live-backup.js";
 import { pushLimitSink } from "./provider-limits.js";
 import { heuristicSizing, installFilingSizer, ownerSizer, refineFiledSizing, settleSizings, type Sizer } from "./task-sizing.js";
 import { tierLines, tierReport } from "./tier-report.js";
@@ -12784,6 +12785,11 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
   }
   try { notifyVersionLive(context.store, dirname(context.databaseFile), PACKAGE_VERSION, clock()); } catch { /* A display fact; never blocks the worker. */ }
   recordRunnerVersion(dirname(context.databaseFile), runnerName, PACKAGE_VERSION, clock());
+  // v137: the continuous database copy, off the hot path (live-backup.ts: a worker thread copies, checks and hashes).
+  // Never inside a project or a build checkout. A test's injected agent runner means a test: no background copies.
+  const stopLiveBackups = context.agentRunner === undefined
+    ? startLiveBackups(store, context.databaseFile, () => [...new Set([...activeRepos, ...store.knownRepos(), pool])])
+    : null;
 
   // Ready once every project's loop holds its lease; a loop that failed to start ends this worker instead.
   if (fatal === null && !stopping) port.send({ type: "ready", role: "worker", build, pid: process.pid, url: null, port: null });
@@ -12791,6 +12797,7 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
   await stopped;
   await registrySupervisor;
   await Promise.all([...loopResults.values()]);
+  await stopLiveBackups?.();
   // The follower was aborted with the stop. A send or a chat turn it is still finishing keeps its own durable record;
   // the service does not wait past this for it.
   await new Promise<void>(done => {

@@ -9,6 +9,13 @@
   restarting", and a new start waits only until the old one has finished
   stopping instead of a fixed window. A worker that stopped cleanly never
   holds its projects. A second live `up` is still refused.
+- **The database is copied every few minutes.** Besides scheduled backups,
+  the worker copies the database online every 5 minutes (change it, or the
+  folder, in Settings → Backups), checks each copy and keeps the newest 24
+  and one a day for a week. It never holds up the console or the worker. A
+  deploy uses the latest copy when it is recent and matches the database
+  exactly, instead of making a new one. Restoring stays a manual
+  `toolroll restore`.
 - **See where the time went.** A task's page has a "Where the time went"
   section under Details: when each part of its release check started and
   ended, and each step of its deploys, including what a deploy waited for.
