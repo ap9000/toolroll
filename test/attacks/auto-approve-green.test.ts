@@ -684,13 +684,33 @@ describe("codex r1 #3: the cap counts every attempt GitHub holds, read through t
     const gh = fakeGitHub(attempts, f.approved);
     const rel = storeReleaseAdapter(() => f.store, () => {}, () => LATER, undefined, {
       observe: async sha => ({ head: sha, observedAt: LATER.toISOString(), complete: true, runs: (await readCheckRuns(gh.run, "/usr/bin/gh", "ap9000/toolroll", sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, workflowPath: one.workflowPath ?? null, beforeTests: one.beforeTests ?? null })) }),
-      mergeBase: async () => f.base, upToDateRequired: async () => true, evidenceRoot: EVIDENCE(f),
+      mergeBase: async () => f.base, upToDateRequired: async () => true, evidenceRoot: EVIDENCE(f), reportsProtected: true,
     });
     expect(await rel.auto!.authorizeCheck({ taskId: f.taskId, digest: digestOf(f), candidate: f.approved })).toEqual({ ok: true });
     const run = check(f);
     const answer = await rel.auto!.approve({ taskId: f.taskId, digest: digestOf(f), candidate: f.approved, run, receipt: receiptOf(f) });
     expect(answer.ok).toBe(approved);
     if (!approved) expect(answer).toMatchObject({ why: expect.stringMatching(/failed 3 times|doesn't show its runner failing/) });
+  });
+
+  test.each([false, undefined])("candidate-writable or unknown report provenance (%s) cannot authorize or approve automatically", async reportsProtected => {
+    const f = open();
+    const rel = storeReleaseAdapter(() => f.store, () => {}, () => LATER, undefined, {
+      observe: async () => green(f.approved), mergeBase: async () => f.base, upToDateRequired: async () => true,
+      evidenceRoot: EVIDENCE(f), ...(reportsProtected === undefined ? {} : { reportsProtected }),
+    });
+    const input = { taskId: f.taskId, digest: digestOf(f), candidate: f.approved };
+    expect(await rel.auto!.authorizeCheck(input)).toMatchObject({ ok: false, why: expect.stringContaining("reports") });
+    expect(basis(f)).toBeNull();
+    // A check authorized before this guard was installed cannot turn its passing report into a release seal.
+    authorize(f);
+    const run = check(f);
+    expect(await rel.auto!.approve({ ...input, run, receipt: receiptOf(f) })).toMatchObject({ ok: false, why: expect.stringContaining("reports") });
+    expect(basis(f)).toBeNull();
+    // The fallback still waits for exact-head CI, then lets a person decide.
+    holdApprovalForCi(f.store, { taskId: f.taskId, candidate: f.approved, now: LATER });
+    expect(await rel.auto!.ciPassed!(f.taskId, f.approved, true)).toEqual({ ok: true });
+    expect(approve(f.store, f.taskId, "alex", LATER, digestOf(f), f.password)).toMatchObject({ ok: true });
   });
 });
 

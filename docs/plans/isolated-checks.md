@@ -129,6 +129,15 @@ Round 1 was NO-GO with six findings and one inherited limitation; each fix has a
    keeps the outcome from being sealed.
 - **Inherited CI limitation.** A required check counts only from `.github/workflows/ci.yml`.
 
+### Final review: CI report provenance remains unverified (2026-10-29)
+
+A consistent forged shard report still passes the join without executing tests. Production automatic check
+authorization and release approval now refuse this reporting mode and require a person, including when resuming an
+already authorized automatic check. The fallback still waits for exact-head CI before asking for approval. The
+executor policy is fixed by the plane, never supplied by a candidate report or project setting; unknown also refuses.
+This contains the automatic approval risk. It does not authenticate CI execution: an isolated reporting channel is
+still required before automatic approval can be enabled for this executor.
+
 ## Decisions for the owner
 | Decision | Recommendation |
 |---|---|

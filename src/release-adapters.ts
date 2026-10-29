@@ -335,7 +335,10 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
 
   const release = storeReleaseAdapter(() => openStore(database), store => store.close(), options.now ?? (() => new Date()), undefined,
     { observe: sha => observeCi(sha), mergeBase: (base, sha) => readMergeBase(run, ciGh, releaseRepo().slug, base, sha),
-      upToDateRequired: () => readUpToDateRequired(run, ciGh, releaseRepo().slug), evidenceRoot: join(dirname(database), "evidence") });
+      upToDateRequired: () => readUpToDateRequired(run, ciGh, releaseRepo().slug), evidenceRoot: join(dirname(database), "evidence"),
+      // A successful Actions job authenticates the job, not the candidate-writable JSON it uploads. Until the
+      // executor protects that reporting channel, production releases must take the person's approval road.
+      reportsProtected: false });
 
   return {
     ...(existsSync(database) ? { release } : {}),
@@ -705,6 +708,8 @@ export function storeReleaseAdapter(open: () => Store, done: (store: Store) => v
 /** The plane's automatic release approval through a store (release-auto.ts): what `toolroll release` asks. It hands the
  * plane ids only; the plane reads CI itself (`observe`) right before it seals. */
 function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now: () => Date, auto: AutoObservers): NonNullable<NonNullable<ReleaseAdapters["release"]>["auto"]> {
+  const reportProblem = () => auto.reportsProtected === true ? null
+    : "CI test reports aren't protected from candidate writes, so a person must approve this release";
   return {
     async setting(taskId) {
       return withStore(store => { try { const ref = store.lookupRef(taskId); return ref?.repo != null && releaseAutoApproves(store, ref.repo); } catch { return false; } });
@@ -714,6 +719,8 @@ function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now:
       return withStore(store => { try { return releaseAutoApproves(store, resolve(checkout)); } catch { return false; } });
     },
     async authorizeCheck(input) {
+      const problem = reportProblem();
+      if (problem !== null) return { ok: false as const, why: problem };
       // The comparison base for what the release changes: GitHub's own merge base of the candidate with the release's
       // base branch (its signed terms), read by the plane — never a task branch or a build's recorded base.
       const branch = withStore(store => store.getScope(input.taskId)?.releaseTerms?.base ?? null);
@@ -724,9 +731,16 @@ function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now:
       return withStore(store => { const answer = authorizeAutoCheck(store, { ...input, base, now: now() }); return answer.ok ? { ok: true as const } : answer; });
     },
     async checking(taskId) {
+      const problem = reportProblem();
+      if (problem !== null) return { ok: false as const, why: problem };
       return withStore(store => { const answer = autoReleaseApprovalOf(store, taskId, "auto-check"); return answer.ok ? { ok: true as const } : { ok: false as const, why: answer.why }; });
     },
     async approve(input) {
+      const unprotected = reportProblem();
+      if (unprotected !== null) {
+        withStore(store => giveUpAutoApproval(store, { taskId: input.taskId, why: unprotected, now: now() }));
+        return { ok: false as const, why: unprotected };
+      }
       let ci: CiObservation | null = null, problem = "";
       // A short network failure is asked again a few times; GitHub not answering is never a pass.
       for (let attempt = 0; attempt < 3 && ci === null; attempt++) {
@@ -763,6 +777,9 @@ function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now:
 
 /** What the plane itself reads for an automatic release approval. */
 export type AutoObservers = {
+  /** The plane's executor policy, never a report field or project setting. Unknown refuses. Production currently
+   * cannot establish this; synthetic observers may supply protected execution to exercise the remaining gates. */
+  reportsProtected?: boolean;
   observe: (sha: string) => Promise<CiObservation>;
   /** GitHub's merge base of `sha` with the branch `base` of the recorded repository. */
   mergeBase: (base: string, sha: string) => Promise<string>;
