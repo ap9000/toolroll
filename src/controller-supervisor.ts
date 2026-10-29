@@ -29,6 +29,13 @@ export async function superviseController(args: {
   maxRetryMs?: number;
   stableMs?: number;
   shutdownMs?: number;
+  /** An IPC channel to each controller (fd 3), for a parent that speaks to it (`toolroll up`'s console and worker). */
+  ipc?: boolean;
+  /** Prefix every line the controller writes, sent to this process's stderr: two controllers' logs stay apart. An
+   * empty label sends its lines there unprefixed (a JSON log keeps one object a line). */
+  label?: string;
+  /** Each spawned controller's handle, before it runs: the caller listens to its messages and may signal it. */
+  onSpawn?: (child: ChildProcess, generation: number) => void;
 }): Promise<void> {
   const retryMs = args.retryMs ?? 1_000;
   const maxRetryMs = args.maxRetryMs ?? 30_000;
@@ -66,13 +73,17 @@ export async function superviseController(args: {
       // The callback above can synchronously cancel before the OS spawn.
       if (args.signal.aborted) break;
       const exited = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(done => {
+        const output = args.label === undefined ? "inherit" : "pipe";
         const owned = spawn(args.file, [...args.argv], {
           ...(args.cwd === undefined ? {} : { cwd: args.cwd }),
           ...(args.env === undefined ? {} : { env: args.env }),
-          stdio: "inherit",
+          stdio: args.ipc === true ? ["ignore", output, output, "ipc"] : args.label === undefined ? "inherit" : ["ignore", "pipe", "pipe"],
           windowsHide: true,
         });
         child = owned;
+        if (args.label !== undefined) for (const stream of [owned.stdout, owned.stderr]) labelLines(stream, args.label);
+        try { args.onSpawn?.(owned, generation); }
+        catch { process.stderr.write("Controller supervisor could not attach to its controller.\n"); }
         owned.once("spawn", () => {
           emit({ phase: "running", generation, controllerPid: owned.pid ?? null });
           if (args.signal.aborted) stop();
@@ -102,4 +113,21 @@ export async function superviseController(args: {
     if (escalation !== null) clearTimeout(escalation);
     emit({ phase: "stopped", generation, controllerPid: null });
   }
+}
+
+/** Each whole line of a controller's output, prefixed with its label, on this process's stderr. */
+function labelLines(stream: NodeJS.ReadableStream | null, label: string): void {
+  if (stream === null) return;
+  const prefix = label === "" ? "" : `${label} `;
+  let pending = "";
+  stream.setEncoding("utf8");
+  stream.on("data", (chunk: string) => {
+    const lines = (pending + chunk).split("\n");
+    pending = lines.pop() ?? "";
+    // Bounded: a controller that never ends a line still reaches the log.
+    if (pending.length > 64 * 1024) { lines.push(pending); pending = ""; }
+    for (const line of lines) process.stderr.write(`${prefix}${line}\n`);
+  });
+  stream.on("end", () => { if (pending !== "") process.stderr.write(`${prefix}${pending}\n`); pending = ""; });
+  stream.on("error", () => {});
 }

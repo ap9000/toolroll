@@ -14,6 +14,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { run } from "../../src/exec.js";
+import { withGitIdentity } from "../git-identity.js";
 import { gitViewsRoot } from "../../src/git-views.js";
 import { onGitIncident, type GitIncident } from "../../src/git-incident.js";
 import { checkoutGit, hardenedGit, refusal, teardownGit } from "../../src/teardown-git.js";
@@ -21,12 +22,14 @@ import type { Runner } from "../../src/worktree.js";
 
 let root: string, a: string, aLinked: string, b: string, bLinked: string;
 const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
-/** The operator's identity, where a real one keeps it (~/.gitconfig): the plane's git carries it (carriedSettings). This
- * file's home is a fresh empty one (test/setup-state.ts), and git off macOS can't guess an identity from the host. */
-writeFileSync(join(homedir(), ".gitconfig"), "[user]\n\tname = t\n\temail = t@t\n");
+/** The operator's identity, where a real one keeps it (~/.gitconfig): the plane's git carries it (carriedSettings). */
+withGitIdentity();
 const git = (at: string, ...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-C", at, ...args], { env, stdio: "pipe", encoding: "utf8" });
+/** Whether this git knows the reftable format (2.45 and newer). */
+const reftableKnown = () => { try { execFileSync("git", ["init", "-q", "--ref-format=reftable", join(root, "rt-probe")], { env, stdio: "pipe" }); return true; } catch { return false; } };
 const repository = (path: string, format: "files" | "reftable" = "files") => {
-  execFileSync("git", ["init", "-q", "-b", "main", `--ref-format=${format}`, path], { env });
+  // `--ref-format` arrived with reftable in git 2.45: the default (files) needs no flag on the floor's git.
+  execFileSync("git", ["init", "-q", "-b", "main", ...(format === "files" ? [] : [`--ref-format=${format}`]), path], { env });
   writeFileSync(join(path, "a.txt"), "one\n");
   git(path, "add", "a.txt");
   git(path, "commit", "-qm", "one");
@@ -251,6 +254,11 @@ describe("removal without --force", () => {
 
 describe("writes through a view, as documented", () => {
   test("reftable: a commit and a branch deletion land in the repository", async () => {
+    // Before git 2.45 there is no reftable: such a repository can't be made, so the case can't arise on that git.
+    if (!reftableKnown()) {
+      expect(() => execFileSync("git", ["init", "-q", "--ref-format=reftable", join(root, "rt")], { env, stdio: "pipe" })).toThrow();
+      return;
+    }
     const r = repository(join(root, "rt"), "reftable");
     const rLinked = join(root, "rt-task");
     git(r, "worktree", "add", "-q", "-b", "task", rLinked);

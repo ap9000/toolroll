@@ -16,7 +16,7 @@ import { releaseTermsFor, setUnsandboxedCarry } from "./release-carry.js";
 import { setChatApproval } from "./chat-approval.js";
 import { verifyApproverStanding } from "./principal.js";
 import { applyDecideTap, decideOffer, mintDecideButtons, permissionPlainWords, planInChat, privateReleaseChat, type DecideSeat } from "./chat-decide.js";
-import { approvalTermsOf, cardDigestOf, RELEASE_TERM_LABELS, releaseBaseline, releaseCardOf, SCOPE_TERM_LABELS, schemaLeaves, termsText } from "./release-card.js";
+import { approvalTermsOf, cardDigestOf, RELEASE_TERM_LABELS, releaseBaselineRecord, releaseCardOf, SCOPE_TERM_LABELS, schemaLeaves, termsText } from "./release-card.js";
 import { routeFromJson } from "./phase-routing.js";
 import { releaseTermsSchema, type ReleaseTerms } from "./contracts/release-terms.js";
 import { scopeTermsSchema } from "./contracts/scope.js";
@@ -164,7 +164,19 @@ describe("the release card", () => {
     expect(after.changes.commits?.map(one => one.subject)).toEqual(["Add the release card", "Fix the queue"]);
     // The baseline is bound into the digest.
     expect(cardDigestOf("s", "f", { baseline, digest: "x" })).not.toBe(cardDigestOf("s", "f", { baseline: candidate, digest: "x" }));
-    expect(releaseBaseline(store, repo)).toBe(baseline);
+    expect(releaseBaselineRecord(store, repo)).toEqual({ recorded: true, sha: baseline });
+  });
+
+  test.each([["a merge commit that isn't a full id", "not-a-sha"], ["no merge commit", null], ["a missing merge operation", undefined]] as const)("eval review 2 #4: a recorded last release with %s: the list couldn't be read, never the pull request's commits", (_name, ref) => {
+    const taskId = fileGate();
+    recordMergedRelease("e".repeat(40), "0.9.73");
+    if (ref === undefined) store.handle.prepare("DELETE FROM release_operation WHERE external_ref = ?").run("e".repeat(40));
+    else store.handle.prepare("UPDATE release_operation SET external_ref = ? WHERE external_ref = ?").run(ref, "e".repeat(40));
+    expect(releaseBaselineRecord(store, repo)).toEqual({ recorded: true, sha: null });
+    const card = releaseCardOf(store, store.getScope(taskId)!, "form", { profile: () => null });
+    expect(card.changes).toMatchObject({ baseline: null, commits: null, source: "unread" });
+    expect(card.short).toContain("The change list couldn't be read.");
+    expect(decideOffer(store, { kind: "plan", taskId }, who(), NOW, "telegram", root)?.rows.flat().some(one => "act" in one && one.act === "approve") ?? false).toBe(false);
   });
 
   test.each(["shallow", "grafts", "replace"] as const)("history rewritten around the objects (%s) refuses the list and the card, never shortens it (0.9.73 review, finding 4)", how => {

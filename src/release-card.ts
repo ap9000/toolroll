@@ -25,6 +25,7 @@ import { verifiedRange } from "./commit-extract.js";
 import { releaseTermsSchema, type ReleaseTerms } from "./contracts/release-terms.js";
 import { routeFromJson } from "./phase-routing.js";
 import { projectName } from "./project.js";
+import { RELEASE_CI_RUNNING_WORDS, releaseCiRunningOf } from "./release-ci-hold.js";
 import { RELEASE_PATH, releaseConfigProblem, releaseGitEnv, releaseRemote, releaseTools } from "./release-git.js";
 import type { Scope } from "./scope.js";
 import type { Store } from "./store.js";
@@ -162,18 +163,27 @@ export type ChangeList = {
   commits: { sha: string; subject: string }[] | null;
   source: "recorded" | "pull-request" | "unread";
   digest: string;
+  /** A release is on the record but its merge commit can't be read (eval-harness review 2, finding 4). */
+  baselineUnreadable?: true;
 };
 
 const SHA = /^[0-9a-f]{40}$/;
 const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
 
-/** The plane's own record of the last verified release of `repo`: the merge commit GitHub answered with, recorded once
- * the release verified the merged tree (the newest merged authority whose merge operation succeeded). Never a tag. */
-export function releaseBaseline(store: Store, repo: string): string | null {
-  const row = store.handle.prepare(`SELECT o.external_ref FROM release_authority a JOIN release_operation o ON o.authority = a.id
-    WHERE a.repo = ? AND a.state = 'merged' AND o.kind = 'merge' AND o.state = 'succeeded' AND o.external_ref IS NOT NULL ORDER BY a.id DESC, o.finished_at DESC LIMIT 1`).get(repo);
-  const ref = row === undefined ? null : String(row["external_ref"]);
-  return ref !== null && SHA.test(ref) ? ref : null;
+/**
+ * The plane's own record of the last verified release of `repo`: the merge commit GitHub answered with, recorded once
+ * the release verified the merged tree (the newest merged authority whose merge operation succeeded). Never a tag.
+ * Whether the plane recorded one, and its merge commit (eval-harness review 2, finding 4):
+ * `recorded: false` only when no merged release is on the record at all; a recorded one whose commit isn't a full id is
+ * `recorded: true` with `sha: null` — something to refuse on, never "no previous release".
+ */
+export function releaseBaselineRecord(store: Store, repo: string): { recorded: false } | { recorded: true; sha: string | null } {
+  const row = store.handle.prepare(`SELECT o.external_ref FROM release_authority a LEFT JOIN release_operation o
+    ON o.authority = a.id AND o.kind = 'merge' AND o.state = 'succeeded'
+    WHERE a.repo = ? AND a.state = 'merged' ORDER BY a.id DESC, o.finished_at DESC LIMIT 1`).get(repo);
+  if (row === undefined) return { recorded: false };
+  const ref = row["external_ref"];
+  return { recorded: true, sha: typeof ref === "string" && SHA.test(ref) ? ref : null };
 }
 
 /** The commits after `from` up to `to`, as verified Git objects only, from the project's recorded Git directory: the
@@ -209,7 +219,11 @@ function pullRequestCommits(slug: string, pr: number): { sha: string; subject: s
 
 /** What changed since the last verified release, for a release's terms, from Toolroll's records only. */
 export function releaseChangeList(store: Store, terms: ReleaseTerms): ChangeList {
-  const baseline = releaseBaseline(store, terms.repo);
+  const record = releaseBaselineRecord(store, terms.repo);
+  // A release recorded with a merge commit that can't be read: the list couldn't be read (eval-harness review 2,
+  // finding 4) — never the pull request's commits, as if there were no previous release.
+  if (record.recorded && record.sha === null) return { baseline: null, commits: null, source: "unread", baselineUnreadable: true, digest: sha256(`release-changes:${JSON.stringify({ baseline: null, source: "unread", commits: null, recorded: true })}`) };
+  const baseline = record.recorded ? record.sha : null;
   let commits: ChangeList["commits"];
   let source: ChangeList["source"];
   if (baseline !== null) {
@@ -243,7 +257,7 @@ export function cardDigestOf(scopeDigest: string, formDigest: string, changes: P
 function changeWords(changes: ChangeList, terms: ReleaseTerms | null, cap: number): string[] {
   const head = changes.baseline === null ? `No earlier verified release is recorded. ${changes.source === "pull-request" ? `Pull request #${terms?.pr ?? "?"}'s commits:` : ""}`.trim()
     : `Changes since the last verified release (${changes.baseline.slice(0, 7)}):`;
-  if (changes.commits === null) return [head, changes.baseline === null ? `The pull request's commits couldn't be read; see #${terms?.pr ?? "?"} on GitHub.` : "The change list couldn't be read."];
+  if (changes.commits === null) return [head, changes.baseline === null && changes.baselineUnreadable !== true ? `The pull request's commits couldn't be read; see #${terms?.pr ?? "?"} on GitHub.` : "The change list couldn't be read."];
   if (changes.commits.length === 0) return [head, "No commits."];
   return [head, ...changes.commits.slice(0, cap).map(one => `• ${one.sha.slice(0, 7)} ${one.subject.slice(0, 100)}`), ...(changes.commits.length > cap ? [`• and ${changes.commits.length - cap} more`] : [])];
 }
@@ -264,6 +278,8 @@ export function releaseCardOf(store: Store, scope: Scope, formDigest: string, wo
     terms === null ? `Checks: ${value("checks")} · check access: ${value("checkAccess")}` : `Carry later commits: ${terms.policy.carry ? "yes" : "no"} · checks: ${value("checks")} · expires ${terms.expiresAt}`,
     // Option A's disclosure, on the card as on the approval sheet: never approved from chat without it.
     ...(terms !== null && terms.policy.carry && terms.access !== "sandboxed" ? ["This project's checks don't run in the sandbox: later test-only commits will run outside the sandbox without being shown to you first."] : []),
+    // Filed while CI runs (Alex, 2026-10-29): a person may approve now, and is told plainly what still waits.
+    ...(releaseCiRunningOf(store, scope.taskId) === null ? [] : [RELEASE_CI_RUNNING_WORDS]),
     "",
     ...changeWords(changes, terms, 5),
     "",

@@ -103,7 +103,10 @@ const VALUE_FLAGS = new Set(["--repo", "--limit", "--tap", "--release-gate", "--
 const BARE_FLAGS = new Set(["--new", "--json", "--help", "--yes", "--no-carry", "--start"]);
 
 export async function runReleaseCommand(args: readonly string[], write: (line: string) => void, deps: ReleaseCliDeps = {}): Promise<number> {
-  const json = args.includes("--json");
+  // The flag, not a secret's value that happens to read "--json".
+  // A secret is never exactly one of these names (the loop below refuses that as a missing value).
+  const bare = new Set(args.filter(one => BARE_FLAGS.has(one)));
+  const json = bare.has("--json");
   const refuse = (reason: string, message: string, code: number) => {
     write(json ? checkedEnvelopeJson({ ok: false, command: "release", reason, message }) : message);
     return code;
@@ -112,12 +115,17 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
   const limits: Record<string, number> = {};
   let repo: string | undefined, tap: string | undefined, gate: string | undefined, to: string | undefined, request: string | undefined, as: string | undefined, token: string | undefined, scheduleFlag: string | undefined;
   for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i]!;
-    if (BARE_FLAGS.has(arg)) continue;
+    const raw = args[i]!;
+    if (BARE_FLAGS.has(raw)) continue;
+    // `--flag=value` for every value flag; a secret (--token) is also the next argument even when it starts with "--".
+    const equals = raw.startsWith("--") ? raw.indexOf("=") : -1;
+    const arg = equals === -1 ? raw : raw.slice(0, equals);
     if (VALUE_FLAGS.has(arg)) {
-      const value = args[i + 1];
-      if (value === undefined || value.startsWith("--")) return refuse("usage", `${arg} takes a value.`, 2);
-      i += 1;
+      const value = equals === -1 ? args[i + 1] : raw.slice(equals + 1);
+      // A secret may start with "--"; it is the value unless it is exactly one of this command's flags (never swallowed).
+      const namesFlag = value !== undefined && (BARE_FLAGS.has(value) || VALUE_FLAGS.has(value.split("=")[0]!));
+      if (value === undefined || (equals === -1 && value.startsWith("--") && (arg !== "--token" || namesFlag))) return refuse("usage", `${arg} takes a value.`, 2);
+      if (equals === -1) i += 1;
       if (arg === "--repo") repo = value;
       else if (arg === "--to") to = value;
       else if (arg === "--request") request = value;
@@ -133,16 +141,16 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
       }
       continue;
     }
-    if (arg.startsWith("--")) return refuse("usage", `Unknown option ${arg}.\n${RELEASE_HELP}`, 2);
+    if (raw.startsWith("--")) return refuse("usage", `Unknown option ${arg}.\n${RELEASE_HELP}`, 2);
     positional.push(arg);
   }
-  if (args.includes("--help")) { write(RELEASE_HELP); return 0; }
+  if (bare.has("--help")) { write(RELEASE_HELP); return 0; }
   if (gate !== undefined) {
     if (positional.length > 0 || args.some(arg => ["--repo", "--limit", "--tap", "--new"].includes(arg))) return refuse("usage", "--release-gate <id> takes no branch or release options.", 2);
-    return runGateRelease(gate, args.includes("--yes"), write, json, deps.gateWorld ?? installedGateWorld());
+    return runGateRelease(gate, bare.has("--yes"), write, json, deps.gateWorld ?? installedGateWorld());
   }
-  if (args.includes("--yes")) return refuse("usage", "--yes goes with --release-gate <id>; a release needs no confirmation beyond the owner's approval.", 2);
-  if (positional[0] === "nightly" && positional.length === 1) return runNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, schedule: scheduleFlag, start: args.includes("--start") }, write, json, deps);
+  if (bare.has("--yes")) return refuse("usage", "--yes goes with --release-gate <id>; a release needs no confirmation beyond the owner's approval.", 2);
+  if (positional[0] === "nightly" && positional.length === 1) return runNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, schedule: scheduleFlag, start: bare.has("--start") }, write, json, deps);
   if (["carry", "revoke", "ask-every-commit", "unsandboxed-carry", "auto-approve", "publish-ok"].includes(positional[0] ?? "") && positional.length === 2) {
     return runAuthorityCommand(positional[0] as "carry" | "revoke" | "ask-every-commit" | "unsandboxed-carry" | "auto-approve" | "publish-ok", positional[1]!, { to, request, as, token, repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo) }, write, json, deps);
   }
@@ -165,7 +173,7 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
   const adapters = deps.adapters === undefined
     ? releaseAdapters({ checkout, say, ...(tap === undefined ? {} : { tap }), ...(limits["deploy"] === undefined ? {} : { deployMinutes: limits["deploy"] }) })
     : { ...deps.adapters, say };
-  const outcome = await runRelease({ branch, checkout, stateDir, limits, fresh: args.includes("--new"), noCarry: args.includes("--no-carry") }, adapters);
+  const outcome = await runRelease({ branch, checkout, stateDir, limits, fresh: bare.has("--new"), noCarry: bare.has("--no-carry") }, adapters);
   return report(outcome, write, json, lines);
 }
 

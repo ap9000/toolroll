@@ -52,14 +52,20 @@ person exactly as today, and `ownerApproval` still refuses every basis that isn'
   filed, the scope is sealed `auto-check` on it with its evidence row, and the candidate is unchanged;
 - the release check: the run is the task's builder run on that digest, its result receipt is the one the coordinator
   read, the native receipt says it ran the live approved command on that head with exit 0 and full coverage, the run's
-  level is Full, and at most **two** earlier builds of the task were unsuccessful — any build that didn't finish built
-  with a passed check (a failed check, no check, a failed or interrupted build) — each on this same digest (a flake
-  rerun through `task regate`; the candidate and digest are pinned, so only nondeterminism differs);
+  level is Full, and any earlier unsuccessful build of the task (one that didn't finish built with a passed check: a
+  failed check, no check, a failed or interrupted build) stands only as **confirmed infrastructure** the release itself
+  reran on this same digest under the same approval (`task regate`; check-failure.ts classes: the check never started,
+  the worker lost the build, Toolroll's shutdown stopped it), at most once per incident and **two** per commit; a
+  deterministic failure (typecheck, build, attack/containment test, assertion, migration), an unknown one (exit 1 with
+  no failing test, an unexplained timeout, no complete result) or a real-model journey before the pass means a person
+  decides, and so does a check that passed only on a retry;
 - GitHub CI, read by the plane's own `gh` (system folders only, `--hostname github.com`, no caller PATH, host or config
   override) with **every attempt** (`filter=all`, all pages): every run filed under exactly the candidate, every run
   GitHub Actions, attempts grouped by job (app, check suite — one workflow run, whose re-runs stay in it — and name),
   each job judged by its **latest attempt**, which must be a completed `success` (skipped is not success, as today),
-  every required check present, earlier attempts finished and at most **two** failed per job; under five minutes old;
+  every required check present, earlier attempts finished, and every earlier failed attempt confirmed infrastructure
+  (GitHub's own job record shows it ending before any workflow step ran), at most **two** on the commit — any other
+  earlier failure means a person decides; under five minutes old;
 - the change from the comparison base, read from verified objects in the project's own Git directory
   (commit-extract.ts), is confined to an **allowlist**: `src/**` (its tests included; never its test helpers or
   fixtures — `src/fixtures/`, `test-*`, `*-test-support*`, `*fixture*` — nor build or type configuration), test files
@@ -96,17 +102,17 @@ belt and the JS reader require the row to match the seal's task, kind, digest an
 
 Workflow identity comes from GitHub's workflow-run API (`actions/runs?head_sha=`): a newer run (check suite) of the same
 workflow supersedes its older runs on the commit, so a hand-run workflow that failed once and passed on a second run
-doesn't veto a release; required checks must be green in their newest run, and the automatic flake cap counts failures
-across the superseded runs too. GitHub lists check runs from at most the latest 1000 check suites of a commit: when the
+doesn't veto a release; required checks must be green in their newest run, and an automatic approval's failure classes
+count failures across the superseded runs too. GitHub lists check runs from at most the latest 1000 check suites of a commit: when the
 commit has that many (`check-suites` `total_count`), or the count can't be read, an automatic approval fails closed;
 a person's release is unaffected.
 
 Every release (a person's too) judges pull-request CI with the same verdict (release.ts `prChecksVerdict`): every attempt,
 exact head, required checks only from GitHub Actions, jobs by app, suite and name, each by its latest attempt — so
-another app's same-name success can't hide an Actions failure. An automatically approved release also applies the flake
-cap, and re-reads complete current CI immediately before the deploy, before the CLI names move, before the merge and
+another app's same-name success can't hide an Actions failure. An automatically approved release also applies the
+failure classes (only confirmed infrastructure tolerated, at most two per commit), and re-reads complete current CI immediately before the deploy, before the CLI names move, before the merge and
 before the tag — on every deploy reservation, whatever the journal saved (a retry after a rollback included): anything
-not green (failed, a re-run pending, past the cap, history not whole) stops it, revokes its approval and tells the owner;
+not green (failed, a re-run pending, a failure outside the classes, history not whole) stops it, revokes its approval and tells the owner;
 the commit then needs a person. After the merge, a red CI holds the release durably in the plane (`release publish
 held`): no tag, publication or Homebrew until a person runs `toolroll release publish-ok <task>` with their password
 (never the lead or a token).
@@ -143,9 +149,11 @@ unchanged carry rules (release-once.md), and only while the setting stays on.
 1. A lead token (or a remembered login, an API token, an empty password) turns the setting on: refused.
 2. A forged or stale CI observation: another head, a missing required check, a check named alike by another app, a
    pending, skipped or failed latest attempt, a third failed attempt, an observation over five minutes old: refused.
-   One or two failed attempts before a green latest one: approved, and recorded.
+   One or two failed attempts before a green latest one, each shown by GitHub's job record as the runner failing before
+   any step ran: approved, and recorded; a failed attempt GitHub doesn't show that way: refused.
 3. A check on a different sha, another task's run, an earlier failed run on a different digest, or a third failed run:
-   refused. One or two failed runs before a pass on the same digest: approved, and recorded.
+   refused. One or two failed runs before a pass on the same digest, each confirmed infrastructure the release reran:
+   approved, and recorded; a failing test, an unexplained failure or a pass only on a retry: refused.
 4. The scope digest changes after the check: refused.
 5. The setting is lowered mid-flight: the `auto-check` seal stops standing at dispatch, `auto-green` refuses, and an
    already approved release stops at its next step.

@@ -1,6 +1,6 @@
 {
   "name": "toolroll",
-  "version": "0.9.76",
+  "version": "0.9.77",
   "description": "A control plane for unattended coding agents — queue tasks, walk away, come back to pull requests. Agents build in leased worktrees, never touch your default branch, and interrupt you only for decisions that need a human.",
   "directories": {
     "doc": "docs"
@@ -11,6 +11,7 @@
     "test:slow": "vitest run .slow.test",
     "test:all": "vitest run",
     "test:attacks": "vitest run --config test/attacks/vitest.config.ts",
+    "test:git": "vitest run test/attacks/checkout-git- test/attacks/fence-git-views test/attacks/repository-context-git test/attacks/discover-dirty src/teardown-git.test.ts src/worktree.slow.test.ts",
     "check:quick": "node scripts/quick-check.mjs",
     "dev": "tsx src/cli.ts",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.browser.json",

@@ -11,14 +11,16 @@ import { queueBatchCheck } from "./batch-checks.js";
 import { batchesFullCheck } from "./batch-policy.js";
 import { skillsContext } from "./project-skills.js";
 import { failedVerificationEvidence, sealVerificationReceipt, verificationEvidence, reuseObservationVerification } from "./verification-evidence.js";
-import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, prepareCheckAttempt, sealCheckOutcome, type PreparedAttempt } from "./check-report.js";
+import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, CheckBaselineUnverifiable, prepareCheckAttempt, reportFromOutput, sealCheckOutcome, type PreparedAttempt } from "./check-report.js";
+import { retriedInside } from "./check-failure.js";
+import type { CheckReport } from "./contracts/release-check.js";
 import { planTargetedRecheck, settleCoverage } from "./release-recheck.js";
 import { effectiveCheckFacts, type ReleaseCheckFacts } from "./verification-evidence.js";
 import { learningContext } from "./project-learning.js";
 import { knowledgeContext } from "./project-knowledge.js";
 import { flowGoalCuts } from "./flow-engine.js";
 import { readCodingHandoff, verifyCodingHandoffBase } from "./coding-handoff.js";
-import { PREPARED_EVIDENCE_FILE, PREPARED_EVIDENCE_GIT, preparedScreenshotMatches, readPreparedEvidence, writePreparedEvidence, type PreparedEvidence } from "./prepared-evidence.js";
+import { PREPARED_EVIDENCE_FILE, preparedEvidenceGit, preparedScreenshotMatches, readPreparedEvidence, writePreparedEvidence, type PreparedEvidence } from "./prepared-evidence.js";
 /**
  * The first thing here that runs an agent.
  *
@@ -50,9 +52,9 @@ import { PREPARED_EVIDENCE_FILE, PREPARED_EVIDENCE_GIT, preparedScreenshotMatche
  * repair remains narrowly time-bounded because its job is narrowly scoped.
  */
 
-import { existsSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { run, runClaudeStreamJsonl, runOwnerTag, streamsInput, type ExecResult, type RunOptions } from "./exec.js";
 import { stopRequestedFor, stopWords, underStopWatch } from "./task-control.js";
 import { witnessedRunner } from "./process-custody.js";
@@ -79,7 +81,7 @@ import { closeSteerMailbox, openSteerMailbox, STEER_HANDLED, type SteerMailbox }
 import { LiveInput, type LiveCloseReason } from "./live-input.js";
 import { LIVE_TICK_MS, tickLiveSteer } from "./steer-live.js";
 import { withRunActivity } from "./task-activity.js";
-import { CheckProgressTracker } from "./check-progress.js";
+import { CheckProgressTracker, coalescedProgressWriter } from "./check-progress.js";
 import {
   captureParkEvidence,
   captureTerminalDiff,
@@ -184,6 +186,46 @@ export function verificationExecutableMissing(
   return /^'[^'\r\n]+' is not recognized as an internal or external command,\s+operable program or batch file\.\s*$/i.test(
     result.stderr.trim(),
   );
+}
+
+/** Shell words that are never a program on PATH: a command starting with one has no program the plane can look up. */
+const SHELL_WORDS = new Set(["!", ".", ":", "[", "alias", "bg", "break", "case", "cd", "command", "continue", "eval", "exec", "exit", "export", "false", "fg", "for",
+  "function", "getopts", "hash", "if", "jobs", "kill", "local", "pwd", "read", "readonly", "return", "set", "shift", "source", "test", "times", "trap", "true", "type",
+  "ulimit", "umask", "unalias", "unset", "until", "wait", "while", "{", "time", "echo", "printf"]);
+
+/**
+ * The approved command's own program — its first word — when the plane, looking it up itself before the check starts,
+ * finds no such executable; null when it exists or can't be told (eval-harness review 2, finding 5): a first word with
+ * any quoting, expansion, assignment or redirection, a shell builtin, or Windows (cmd.exe's lookup isn't modelled).
+ * A path is looked up from the checkout; a bare name on `path`'s absolute folders.
+ */
+export function approvedProgramMissing(command: string, cwd: string, path: string | undefined, platform: NodeJS.Platform = process.platform): string | null {
+  if (platform === "win32") return null;
+  // Only a single plain invocation: shell expansion or another command could execute before a missing first word.
+  if (!/^[ \t]*[A-Za-z0-9._+/@-]+(?:[ \t]+[A-Za-z0-9._+/@,:=%-]+)*[ \t]*$/.test(command)) return null;
+  const first = /^\s*([A-Za-z0-9._+/@-]+)(?:\s|$)/.exec(command)?.[1];
+  if (first === undefined || SHELL_WORDS.has(first)) return null;
+  const runnable = (file: string) => { try { accessSync(file, fsConstants.X_OK); return statSync(file).isFile(); } catch { return false; } };
+  if (first.includes("/")) return runnable(resolve(cwd, first)) ? null : first;
+  if (path === undefined || path.split(delimiter).some(dir => !isAbsolute(dir))) return null;
+  for (const dir of (path ?? "").split(delimiter)) if (isAbsolute(dir) && runnable(join(dir, first))) return null;
+  return first;
+}
+
+// Only the plane can issue this evidence, and only when it never spawns the command. A lookup followed by a shell
+// launch is racy: the build can install a program between them and forge the shell's entire diagnostic.
+const unstartedChecks = new WeakMap<ExecResult, string>();
+
+/**
+ * Whether a check's first attempt failed at its launch, so the approved recovery setup may run and the check run again
+ * (eval-harness review 1, finding 6; review 2, finding 5). Only a result the plane made without spawning qualifies.
+ * Any shell output, including a perfect "not found" line after a missing-program lookup, remains a check failure.
+ * A later passing check still counts as a retry (check-failure.ts), which an automatic release approval refuses.
+ */
+export function launchFailedBeforeCheck(result: ExecResult, nonce: string | null, missing: string | null, platform: NodeJS.Platform = process.platform): boolean {
+  if (missing === null || unstartedChecks.get(result) !== missing || platform === "win32" || result.code !== 127 || !verificationExecutableMissing(result, platform)) return false;
+  if (result.stdout.trim() !== "" || (nonce !== null && reportFromOutput(result.stdout, nonce).ok)) return false;
+  return true;
 }
 
 export type BuildRequest = {
@@ -914,7 +956,7 @@ export async function build(store: Store, request: BuildRequest): Promise<BuildR
     const refusal = await proveCandidate(git, worktree, preparedCandidate, store.firstBuilderBase(taskRef, branch));
     if (refusal !== null) return { ok: false, reason: "no-op", message: refusal };
     // Check the exact candidate before setup or the full gate spends anything.
-    const listed = await git(GIT, [...PREPARED_EVIDENCE_GIT, "ls-tree", "-z", preparedCandidate, "--", PREPARED_EVIDENCE_FILE], { cwd: worktree, maxBuffer: 2048 });
+    const listed = await git(GIT, [...preparedEvidenceGit(), "ls-tree", "-z", preparedCandidate, "--", PREPARED_EVIDENCE_FILE], { cwd: worktree, maxBuffer: 2048 });
     if (listed.code !== 0) return { ok: false, reason: "no-op", message: "The committed screenshot inventory could not be inspected. Restore the saved candidate before review." };
     const required = scope?.acceptance.some(criterion => criterion.evidence.includes("screenshot")) ?? false;
     try { if (required || listed.stdout.length > 0) preparedEvidence = readPreparedEvidence(worktree, preparedCandidate, required); }
@@ -2251,11 +2293,15 @@ export async function settleProviderOutcome(captured: CapturedBuild, result: Age
       try {
         store.setRunPhase(request.runId, "verifying-proof");
         await settleProof(captured, diffEvidence.statId, head);
-      } catch {
+      } catch (error) {
         // Adjudication itself must never fail the attempt — if even the
         // catch-all inside settleProof somehow throws, the build still
         // stands; the run simply has no verdict, which every surface
-        // treats the same as "no proof was written".
+        // treats the same as "no proof was written". It is said, though:
+        // release check 3264 ended with no log and no word why.
+        try {
+          store.addRunNote(request.runId, "Toolroll", `The check's result could not be saved: ${error instanceof Error ? error.message : String(error)}`.slice(0, 500), clock());
+        } catch { /* the missing verdict still says enough */ }
       }
     }
   }
@@ -2573,10 +2619,14 @@ async function settleProof(
     const safe = hits.length > 0 ? redactSecretLines(value, hits) : value;
     return boundStreamHeadTail(safe, cap);
   };
+  // How the command ended, each fact apart: a signal or the plane's own hard stop is never read as a plain exit
+  // (release check 3261 was recorded as "exit 1" when a signal had ended it).
+  const endedBy = (result: ExecResult, sep: string): string =>
+    `${result.signal ? `${sep}ended by ${result.signal}` : ""}${result.stoppedByPlane === true ? `${sep}stopped by Toolroll's own shutdown` : ""}`;
   const attemptOutcome = (label: string, result: ExecResult): string =>
-    `${label}: (exit ${result.code}${result.notFound ? " · could not start" : ""}${result.timedOut ? " · timed out" : ""})`;
+    `${label}: (exit ${result.code}${result.notFound ? " · could not start" : ""}${result.timedOut ? " · timed out" : ""}${endedBy(result, " · ")})`;
   const attemptLog = (label: string, command: string, result: ExecResult): string => {
-    const prefix = `=== ${label} ===\n$ ${command}\n(exit ${result.code}${result.notFound ? ", could not start" : ""}${result.timedOut ? ", timed out" : ""})\n\n--- stdout ---\n`;
+    const prefix = `=== ${label} ===\n$ ${command}\n(exit ${result.code}${result.notFound ? ", could not start" : ""}${result.timedOut ? ", timed out" : ""}${endedBy(result, ", ")})\n\n--- stdout ---\n`;
     const between = "\n\n--- stderr ---\n";
     checkLogSourceBodyBytes += Buffer.byteLength(prefix) + Buffer.byteLength(result.stdout) + Buffer.byteLength(between) + Buffer.byteLength(result.stderr);
     return `${prefix}${boundedAttemptStream(result.stdout)}${between}${boundedAttemptStream(result.stderr)}`;
@@ -2644,6 +2694,7 @@ async function settleProof(
   } else {
     const verifyRunner = request.verify ?? run;
     const verifyShell = approvedCommandShell(configured.command);
+    let baselineUnverifiable: string | null = null;
     // A Full check of a prepared candidate (a release gate, the nightly check): its attempt is sealed before the command
     // runs — intended mode, nonce, inventory, context — and the handshake goes on its stdin (check-report.ts).
     // A release task's check is targeted when the release's last full check allows it (release-recheck.ts): its plan and
@@ -2651,17 +2702,31 @@ async function settleProof(
     if (repo !== null && chosenCheck?.level === "full" && (store.getScope(request.taskId)?.candidate ?? null) !== null) {
       const access = checkLaunchOf(store, runId, captured.effective.profile).access;
       const decision = planTargetedRecheck(store, root, { runId, taskId: request.taskId, repo, head: sealedHead, command: configured, access, now: now() });
-      checkAttempt = prepareCheckAttempt(store, root, { runId, repo, head: sealedHead, command: configured, access, authority: decision.authority,
-        ...(decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch }, now());
+      // A release's check (signed terms or an open authority): CI never stands in for its unit suite.
+      const release = decision.authority !== null || (store.getScope(request.taskId)?.releaseTerms ?? null) !== null;
+      try {
+        checkAttempt = prepareCheckAttempt(store, root, { runId, repo, head: sealedHead, command: configured, access, authority: decision.authority,
+          ...(decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch, release }, now());
+      } catch (error) {
+        // A recorded last release that can't be verified (eval-harness review 2, finding 4): nothing runs.
+        if (!(error instanceof CheckBaselineUnverifiable)) throw error;
+        checkAttempt = null;
+        baselineUnverifiable = error.message;
+        recordCheckNote(error.message);
+      }
       if (checkAttempt !== null && decision.mode === "targeted") store.addRunNote(runId, "Toolroll", `Re-running only what failed at run #${decision.plan.base}: ${decision.plan.units.length} unit files, ${decision.plan.groups.reduce((n, one) => n + one.groups.length, 0)} journey groups, ${decision.plan.versions.length} upgrade versions${decision.plan.parts.length > 0 ? `, and in full: ${decision.plan.parts.join(", ")}` : ""}.`, now());
     } else checkAttempt = null;
-    const checkProgress = new CheckProgressTracker(snapshot => {
-      store.saveCheckProgress(runId, snapshot, now());
-    });
-    const runVerification = async (label: string): Promise<ExecResult> => {
+    // Live progress is advisory (release check 3264 lost its log to one refused snapshot): display snapshots are
+    // coalesced (at most one write a second), the final one is kept until it is written, and a failing save never
+    // throws out of the writer, so the check's log, report and receipt are always sealed.
+    const progressWrites = coalescedProgressWriter(snapshot => { store.saveCheckProgress(runId, snapshot, now()); });
+    const checkProgress = new CheckProgressTracker(snapshot => progressWrites.push(snapshot));
+    const runVerification = async (label: string, missing: string | null = null): Promise<ExecResult> => {
       const streamed = { stdout: false, stderr: false };
       // The check runs under the stop watch (v52), owned by this run.
-      const result = await underStopWatch(store, runId, () => runWithIsolatedDatabase(witnessedRunner(store, runId, now, commandRunner(store, runId, captured.effective.profile, verifyRunner)), verifyShell.file, verifyShell.args, {
+      const result: ExecResult = missing !== null
+        ? { code: 127, stdout: "", stderr: `Toolroll did not start the check: ${missing} wasn't found.`, timedOut: false, notFound: false }
+        : await underStopWatch(store, runId, () => runWithIsolatedDatabase(witnessedRunner(store, runId, now, commandRunner(store, runId, captured.effective.profile, verifyRunner)), verifyShell.file, verifyShell.args, {
         cwd: worktree,
         timeoutMs: configured.timeoutMs,
         processGroup: true,
@@ -2677,6 +2742,7 @@ async function settleProof(
         onStdout: chunk => { streamed.stdout = true; checkProgress.feed(chunk, "stdout"); },
         onStderr: chunk => { streamed.stderr = true; checkProgress.feed(chunk, "stderr"); },
       }));
+      if (missing !== null) unstartedChecks.set(result, missing);
       if (!streamed.stdout) checkProgress.feed(result.stdout, "stdout");
       if (!streamed.stderr) checkProgress.feed(result.stderr, "stderr");
       checkProgress.feed("\n", "stdout");
@@ -2722,13 +2788,18 @@ async function settleProof(
       if (installed.notFound || installed.timedOut || installed.code !== 0) return "own-install-failed";
       return await sealedTreeState(buildCheckoutGit(request.git ?? run, worktree)) === "clean" ? null : "setup-changed-files";
     };
-    const ownInstall = await ownInstallIfChanged();
-    const first = ownInstall === null ? await runVerification("Project check · attempt 1") : null;
+    const ownInstall = baselineUnverifiable === null ? await ownInstallIfChanged() : null;
+    // A missing program short-circuits the first launch; never execute build code and then infer that nothing ran.
+    const missingProgram = configured.recoverySetupDigest === null ? null : approvedProgramMissing(configured.command, worktree, process.env["PATH"]);
+    const first = baselineUnverifiable === null && ownInstall === null ? await runVerification("Project check · attempt 1", missingProgram) : null;
     if (first === null) {
-      verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: ownInstall ?? "own-install-failed" };
+      verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: baselineUnverifiable !== null ? "baseline-unverifiable" : ownInstall ?? "own-install-failed" };
     } else if (first.notFound || first.timedOut) {
       verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: first.timedOut ? "timed-out" : "spawn-failed" };
-    } else if (!verificationExecutableMissing(first)) {
+    } else if (first.stoppedByPlane === true) {
+      // This worker's own hard stop ended it (a shutdown): it never finished, and its exit says nothing about the code.
+      verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "stopped-by-toolroll" };
+    } else if (!launchFailedBeforeCheck(first, checkAttempt?.nonce ?? null, missingProgram)) {
       verifyCommand = { configured: true, ran: true, exitCode: first.code };
     } else {
       const recoveryDigest = configured.recoverySetupDigest;
@@ -2823,7 +2894,8 @@ async function settleProof(
                 } else if (verificationExecutableMissing(retried)) {
                   verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "dependency-still-missing" };
                 } else {
-                  verifyCommand = { configured: true, ran: true, exitCode: retried.code, setupReplayed: true };
+                  // The first attempt, classified on its own: it never started (its program was missing).
+                  verifyCommand = { configured: true, ran: true, exitCode: retried.code, setupReplayed: true, firstAttempt: { class: "launch", program: missingProgram!, exitCode: first.code } };
                 }
               }
             }
@@ -2831,11 +2903,15 @@ async function settleProof(
         }
       }
     }
-    checkProgress.finish();
+    // The display's final snapshot (Codex review round 1, finding 6): the writer keeps it until a write succeeds and
+    // never throws; a display failure of any kind never keeps the check's outcome below from being sealed.
+    try { checkProgress.finish(); } catch { /* display only */ }
+    if (!progressWrites.flush()) progressWrites.flush();
     // The check's own report (the last line carrying the nonce), sealed beside what was sealed before it ran.
     const last = verification.last;
+    let sealedReport: CheckReport | null = null;
     if (checkAttempt !== null && last !== null && !last.notFound) {
-      sealCheckOutcome(store, root, checkAttempt, { stdout: last.stdout, exitCode: last.timedOut ? null : last.code }, now());
+      sealedReport = sealCheckOutcome(store, root, checkAttempt, { stdout: last.stdout, exitCode: last.timedOut ? null : last.code }, now());
     }
     // What the check covered (receipt version 3): full, composed from the release's last full check, partial, or
     // identity-removed (which stops the release carrying).
@@ -2845,9 +2921,13 @@ async function settleProof(
       const sha = (capture: string) => { const found = store.artifactsFor(runId).filter(a => a.kind === "structured-output" && a.capture === capture); return found.length === 1 ? found[0]!.sha256 : null; };
       // The one place coverage meets the outcome: a partial or identity-removed check is a failed attempt for every
       // reader from here on (the verdict, the run's check, the receipt, reuse, the deploy gates).
-      const effective = effectiveCheckFacts(verifyCommand, { coverage: settled.coverage, check: { attempt: checkAttempt.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE) }, composed: settled.composed });
+      const effective = effectiveCheckFacts(verifyCommand, { coverage: settled.coverage, check: { attempt: checkAttempt.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE), retried: retriedInside(sealedReport) }, composed: settled.composed });
       verifyCommand = effective.result;
       releaseFacts = effective.facts;
+    } else if (verifyCommand.configured && verifyCommand.ran && chosenCheck?.level === "full" && (store.getScope(request.taskId)?.releaseTerms ?? null) !== null) {
+      // A release's Full check that couldn't be sealed before it ran (no nonce, no inventory) has no result it can count.
+      verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "no-result" };
+      recordCheckNote("The release check ran without a sealed attempt (its commit couldn't be read before it ran), so it has no result that can count.");
     }
   }
   if (configured !== null && checkLog.length > 0) {

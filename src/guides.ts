@@ -526,9 +526,10 @@ instead of making them twice.
   rerunning the failed job on GitHub, run the same command again.
 - \`publish-failed\` / \`homebrew-failed\`: fix the failed workflow before
   resuming. A failed tag check cannot finish publication or update Homebrew.
-- \`base-moved\`: main gained a commit the branch doesn't have, so the
-  merge wouldn't be the checked tree. Nothing was merged: update the
-  branch and release it with \`--new\`.
+- \`base-moved\`: the branch is behind main (it doesn't contain main's
+  head), so the merge wouldn't be the tree CI tested. Checked at the gate
+  (nothing filed) and again right before merging (nothing merged): update
+  the branch, push, and release it with \`--new\`.
 - \`tree-mismatch\`: main changed what was checked. Nothing was tagged;
   the deployed build stays.
 - \`timeout\`: rerun to keep waiting; \`--limit <step>=<minutes>\`

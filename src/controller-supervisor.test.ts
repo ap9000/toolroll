@@ -57,3 +57,20 @@ test("cancellation at the final pre-spawn boundary starts nothing", async () => 
   });
   expect(states.map(state => state.phase)).toEqual(["starting", "stopped"]);
 });
+
+test("with ipc and a label, the caller hears the controller and its lines say whose they are", async () => {
+  const controller = new AbortController();
+  const heard: unknown[] = [];
+  const written: string[] = [];
+  const write = process.stderr.write.bind(process.stderr);
+  process.stderr.write = ((chunk: string | Uint8Array) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write;
+  try {
+    await superviseController({
+      file: process.execPath, argv: ["-e", "process.on('message', m => { console.log('got ' + m.hello); console.error('half'); process.send({ back: m.hello }, () => process.exit(0)); });"],
+      signal: controller.signal, ipc: true, label: "[worker]", retryMs: 10,
+      onSpawn: child => { child.on("message", message => { heard.push(message); controller.abort(); }); child.send({ hello: "there" }); },
+    });
+  } finally { process.stderr.write = write; controller.abort(); }
+  expect(heard).toEqual([{ back: "there" }]);
+  expect(written).toEqual(expect.arrayContaining(["[worker] got there\n", "[worker] half\n"]));
+});

@@ -1,13 +1,18 @@
 name: CI
 
 # Every pull request and every push to main: the full suite on Ubuntu with
-# Node 22 (the engines floor) and 24, plus the Linux and Windows containment
-# jobs. macOS runs nightly (macos.yml) and before tag publication (publish.yml): the
+# Node 22 (the engines floor) and 24, in four shards each joined by one required
+# job per Node version, plus the Linux and Windows containment jobs. macOS runs nightly (macos.yml) and before tag publication (publish.yml): the
 # release check already ran the suite on macOS for the exact gated commit.
 #
-# No job here is conditional. A job skipped by `if:` reports as passing to a
-# required check, so a job that should not run on an event lives in another
-# workflow rather than behind a condition. `toolroll release` waits for these
+# Every job tests the candidate itself: the pull request's head commit (the pushed commit on main), never the merge
+# commit GitHub would synthesize, because that head is what `toolroll release` and auto-approve trust. A step proves
+# the checkout is that commit and prints it. That the head also contains main's head (so the tested tree is the tree
+# that merges) is the release gate's check, not CI's (docs/plans/eval-harness.md, phase 1 D).
+#
+# No job here is conditional, except that the shards' join always runs. A job
+# skipped by `if:` reports as passing to a required check, so a job that should
+# not run on an event lives in another workflow rather than behind a condition. `toolroll release` waits for these
 # job names by exact name (src/release.ts REQUIRED_PR_CHECKS), and
 # src/ci-workflow.test.ts holds this file to that list.
 
@@ -17,21 +22,32 @@ on:
   pull_request:
 
 jobs:
-  test:
-    name: node ${{ matrix.node }} · ubuntu-latest
+  # The unit suite (`npm run test:all`) in shards: four per Node version, run side by side (docs/plans/pipeline-speed.md:
+  # one job ran it in 14–21 minutes; a shard runs a quarter). Each shard records the files it ran on the tested commit.
+  test-shard:
+    name: node ${{ matrix.node }} · shard ${{ matrix.shard }}/4
     # Pinned: ubuntu-latest moved to 26.04 (2026-10-21), where bubblewrap runs
     # unprivileged, so the agent-fence and ACP tests take the Linux fence road
-    # they were never written for. The job name stays (release.ts waits for it).
+    # they were never written for.
     runs-on: ubuntu-24.04
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     strategy:
       fail-fast: false
       matrix:
         node: ["22", "24"]
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.TESTED_SHA }}
           # Migration tests build old releases from git history (git archive <old commit>).
           fetch-depth: 0
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
@@ -43,9 +59,69 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build
-      - run: npm run test:all
+      # Vitest's own JSON report, written outside the checkout and uploaded as it is: no candidate script summarizes it.
+      - run: npm run test:all -- --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"
         env:
           CI: "true"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.node }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/shard-report.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  # The required check for each Node version, under the name `toolroll release` and main's protection wait for. It
+  # always runs (a job skipped because a shard failed would read as passing to a required check) and fails unless
+  # every shard passed and, together, the shards ran every test file the include policy finds in the tested commit,
+  # each once, with consistent counts, tests executed and only the skips the base allows. It runs none of the
+  # candidate's code: no install, and the verifier (with its inventory and skip policy) is the trusted base revision's
+  # copy — the pull request's base, or main itself on a push (Codex review round 1, finding 1). Until the base has a
+  # verifier (the change that introduces it) the candidate's own is used and said; that change touches scripts/, which
+  # an automatic release never approves.
+  test:
+    name: node ${{ matrix.node }} · ubuntu-latest
+    needs: test-shard
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Every shard passed
+        shell: bash
+        env:
+          SHARDS: ${{ needs.test-shard.result }}
+        run: test "$SHARDS" = success || { echo "the unit suite's shards ended $SHARDS" >&2; exit 1; }
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: .trusted-base
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shard-${{ matrix.node }}-*
+          path: ${{ runner.temp }}/shards
+      - name: Every shard ran the whole suite
+        shell: bash
+        run: |
+          verifier=.trusted-base/scripts/ci-shards.mjs
+          if [ ! -f "$verifier" ]; then echo "::warning::the base revision has no shard verifier yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
+          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 4
 
   # The native containment backend, EXECUTED: a cgroup v2 leaf is delegated
   # to the runner user (chown, as the kernel's delegation model prescribes)
@@ -56,8 +132,17 @@ jobs:
   linux-native-containment:
     name: linux native containment · delegated cgroup v2
     runs-on: ubuntu-latest
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -89,8 +174,17 @@ jobs:
   linux-fence:
     name: linux fence · sandbox-runtime
     runs-on: ubuntu-24.04
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -107,8 +201,17 @@ jobs:
   native-windows:
     name: Windows Job Object containment
     runs-on: windows-latest
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -119,3 +222,49 @@ jobs:
         env:
           CI: "true"
           SO_EXPECT_NATIVE_CONTAINMENT: "1"
+
+  # Git's own behaviour, on the declared floor and on the last release before 2.48 (README, Requirements): the git attack
+  # tests and the worktree/teardown tests, nothing else. 2.47 is Debian trixie's git and still has the pre-2.48
+  # `worktree add` behaviour teardown-git.ts relinkAdded works around; 2.41 is the floor (the global `git --attr-source`,
+  # src/git-floor.ts), its oldest release exactly (2.41.0, which also ignores GIT_NO_LAZY_FETCH), built from kernel.org's
+  # tarball by scripts/ci-git.sh. Below 2.45 git has no `--no-lazy-fetch`, so
+  # the floor lane also proves a partial clone is refused for protected reads. The tests run as the image's unprivileged user (root passes
+  # permission checks an operator's git can't), and a skipped test fails the job: a skip is not evidence. The only
+  # skips allowed are the "native …" OS-fence attacks, which need bubblewrap/Seatbelt and run in the linux fence job.
+  git:
+    name: git ${{ matrix.git }} · debian trixie
+    runs-on: ubuntu-24.04
+    # --init: an init process reaps orphaned children, as a real machine's PID 1 does (the pool's orphaned-group test).
+    container:
+      image: node:22-trixie
+      options: --init
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        git: ["2.41", "2.47"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+      - run: chown -R node:node "$GITHUB_WORKSPACE"
+      - name: Tested commit
+        run: |
+          head="$(runuser -u node -- git rev-parse HEAD)"
+          test "$head" = "$TESTED_SHA" || { echo "checked out $head, expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: scripts/ci-git.sh ${{ matrix.git }}
+      - name: The tests' git is git ${{ matrix.git }}
+        run: runuser -u node -- git --version | tee /dev/stderr | grep -qF "git version ${{ matrix.git }}."
+      - run: runuser -u node -- npm ci
+      - run: runuser -u node -- npm run test:git -- --reporter=default --reporter=json --outputFile.json=git-lane.json
+        env:
+          CI: "true"
+      - name: Every git test ran
+        run: runuser -u node -- node scripts/ci-no-skips.mjs git-lane.json
+      - name: Partial clones are refused on the floor's git
+        if: matrix.git == '2.41'
+        run: runuser -u node -- npx vitest run test/attacks/checkout-git-partial-clone.test.ts --reporter=default --reporter=json --outputFile.json=partial-clone.json && runuser -u node -- node scripts/ci-no-skips.mjs partial-clone.json
+        env:
+          CI: "true"

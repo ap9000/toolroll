@@ -186,6 +186,8 @@ function buildChecks(store: Store, root: string | undefined, runId: number): Ass
     // A release check whose coverage fell short (release-once.md) failed, whatever its command exited with.
     if (receipt.result.failure === "coverage-incomplete") return { status: "failed", exitCode: null, command: receipt.command.command, logArtifactId: receipt.log.artifactId, level,
       detail: "Checks didn't cover everything this release owed, or a required test went missing." };
+    if (receipt.result.failure === "no-result") return { status: "failed", exitCode: null, command: receipt.command.command, logArtifactId: receipt.log.artifactId, level,
+      detail: "Checks gave no complete result, so they can't count as a pass." };
     // The sealed receipt names the grant that ran: the quick one, or the full one.
     const sealedLevel: CheckLevel = typeof receipt.command?.repo === "string" && receipt.command.repo.startsWith("quick:") ? "quick" : "full";
     const words = sealedLevel === "quick" ? "Quick checks" : "Checks";

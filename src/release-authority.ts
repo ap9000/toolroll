@@ -177,10 +177,15 @@ export const AUTO_WITHDRAWN_ACTION = "release auto-approval withdrawn";
 
 export type ReleaseApprovalSetting = { auto: boolean; setBy: string | null; at: string | null };
 
+/** The setting rows (no task; this action) through the ledger's (task_id, action, …) index: a seek to the few rows every
+ * project has written, never a walk down the project's whole ledger. The approval predicate reads this once per task row
+ * (SQLite evaluates every operand of an OR in a result column), so a walk made each Needs you count ~10x slower (0.9.76). */
+const SETTING_INDEX = "INDEXED BY work_completion";
+
 /** Read live at every use. Fail closed: a missing, unreadable or unknown row is `ask`. */
 export function releaseApprovalSetting(store: Store, repo: string): ReleaseApprovalSetting {
   let row: Record<string, unknown> | undefined;
-  try { row = store.handle.prepare("SELECT actor, at, outcome FROM action_ledger WHERE repo = ? AND task_id IS NULL AND action = ? ORDER BY id DESC LIMIT 1").get(repo, RELEASE_APPROVAL_ACTION); }
+  try { row = store.handle.prepare(`SELECT actor, at, outcome FROM action_ledger ${SETTING_INDEX} WHERE task_id IS NULL AND action = ? AND repo = ? ORDER BY id DESC LIMIT 1`).get(RELEASE_APPROVAL_ACTION, repo); }
   catch { return { auto: false, setBy: null, at: null }; }
   if (row === undefined || (row["outcome"] !== "auto" && row["outcome"] !== "ask")) return { auto: false, setBy: null, at: null };
   return { auto: row["outcome"] === "auto", setBy: String(row["actor"]), at: String(row["at"]) };
@@ -190,7 +195,7 @@ export const releaseAutoApproves = (store: Store, repo: string): boolean => rele
 
 /** SQL: the newest setting row for `repo` (an SQL expression) says `auto`. */
 export const releaseAutoSql = (repo: string): string =>
-  `COALESCE((SELECT ra_set.outcome = 'auto' FROM action_ledger ra_set WHERE ra_set.repo = ${repo} AND ra_set.task_id IS NULL
+  `COALESCE((SELECT ra_set.outcome = 'auto' FROM action_ledger ra_set ${SETTING_INDEX} WHERE ra_set.repo = ${repo} AND ra_set.task_id IS NULL
       AND ra_set.action = '${RELEASE_APPROVAL_ACTION}' ORDER BY ra_set.id DESC LIMIT 1), 0)`;
 
 /**

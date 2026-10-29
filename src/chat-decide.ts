@@ -33,6 +33,7 @@ import type { Scope } from "./scope.js";
 import { APPROVAL_PROOF, approvalOf, approvalProofDetail, deployGateScope, quarantinedAuthor } from "./scope.js";
 import { releaseCardOf, type ReleaseCard } from "./release-card.js";
 import type { Store } from "./store.js";
+import { releaseCiHoldOf, releaseCiHoldWords } from "./release-ci-hold.js";
 import { phoneText } from "./telegram-status.js";
 
 /** The tokens live in chat_decide_action and the open "What should change?" in chat_decide_prompt (store.ts). */
@@ -664,6 +665,8 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
     }
     case "approve": {
       if (row.digest.startsWith(RELEASE_DIGEST)) {
+        const ciHold = releaseCiHoldOf(store, row.taskId);
+        if (ciHold !== null) return notDone(releaseCiHoldWords(ciHold));
         const release = releaseInChat(store, row.taskId, who.name, now, seat.channel, seat, input.root);
         if (!release.ok) return notDone(release.why);
         const cardDigest = release.card.digest;

@@ -25,7 +25,7 @@ import { INSTANCE_DIR } from "./console-instance.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS } from "./acp-agents.js";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "node:os";
@@ -58,6 +58,15 @@ function inside(child: string, parent: string): boolean {
 /** Only the plane's recorded repository may supply an own-Git exemption. */
 export type WorktreeBinding = { main: string; gitdir: string };
 export class CheckoutBindingError extends Error {}
+/** One small file read only as the regular file it is: never through a link, never blocking on a FIFO; null otherwise. */
+function regularText(path: string): string | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    const held = fstatSync(fd);
+    return held.isFile() && held.size <= 64 * 1024 ? readFileSync(fd, "utf8") : null;
+  } catch { return null; } finally { if (fd !== null) closeSync(fd); }
+}
 export const HARDENED_GIT_ARGS = ["--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"] as const;
 const GIT_ENV_NAMES = ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "SystemRoot", "LANG", "LC_ALL", "CODEX_HOME"];
 export function checkoutGitEnv(base: Readonly<NodeJS.ProcessEnv> = process.env): Record<string, string> {
@@ -86,16 +95,18 @@ export function trustedWorktreeBinding(repository: string, worktree: string, poo
       }
     }
     if (!lstatSync(join(main, ".git")).isDirectory() || !lstatSync(registry).isDirectory()) throw fail();
-    // Query the trusted checkout, never the candidate's configurable Git pointer.
-    const listed = spawnSync("git", [...HARDENED_GIT_ARGS, "worktree", "list", "--porcelain", "-z"],
-      { cwd: main, env: checkoutGitEnv(), encoding: "utf8" });
-    if (listed.status !== 0 || !listed.stdout.split("\0").includes(`worktree ${checkout}`)) throw fail();
+    // The trusted checkout's own worktree registry, never the candidate's configurable Git pointer — read as files, with
+    // no git at all (eval-harness review 2, finding 6): the repository's config is shared with every build, so an
+    // include naming a FIFO could hold a git read (and dispatch) up; a FIFO or link planted as a registry file is never
+    // opened as one (regularText).
     for (const entry of readdirSync(registry)) {
       const path = join(registry, entry);
       if (!lstatSync(path).isDirectory() || !inside(real(path), real(registry))) continue;
-      if (real(readFileSync(join(path, "gitdir"), "utf8").trim()) !== join(checkout, ".git")) continue;
+      const pointer = regularText(join(path, "gitdir"));
+      if (pointer === null || real(pointer.trim()) !== join(checkout, ".git")) continue;
       const gitdir = real(path);
-      if (worktreeGitDir(checkout) !== gitdir || real(join(gitdir, readFileSync(join(gitdir, "commondir"), "utf8").trim())) !== real(join(main, ".git"))) throw fail();
+      const common = regularText(join(gitdir, "commondir"));
+      if (common === null || worktreeGitDir(checkout) !== gitdir || real(join(gitdir, common.trim())) !== real(join(main, ".git"))) throw fail();
       return { main, gitdir };
     }
   } catch { throw fail(); }
@@ -624,7 +635,9 @@ export function fencedGitEnv(base: Readonly<Record<string, string | undefined>> 
 /** The repository a git worktree belongs to (its `.git` file names the main repository's git folder). */
 function worktreeGitDir(worktree: string): string | null {
   try {
-    const pointer = /^gitdir:\s*(.+)$/m.exec(readFileSync(join(worktree, ".git"), "utf8"))?.[1]?.trim();
+    // The candidate's own pointer file: a FIFO or link there is never opened (review 2, finding 6).
+    const text = regularText(join(worktree, ".git"));
+    const pointer = text === null ? undefined : /^gitdir:\s*(.+)$/m.exec(text)?.[1]?.trim();
     return pointer === undefined ? null : real(isAbsolute(pointer) ? pointer : join(worktree, pointer));
   } catch {
     return null;

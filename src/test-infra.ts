@@ -24,7 +24,7 @@ const EXTENSIONS = ["ts", "tsx", "mts", "cts", "js", "mjs", "cjs", "jsx"];
 
 /** The product's entry points: the CLI binary, the processes it starts by file name, and the browser bundles. */
 export const PRODUCT_ENTRIES: readonly string[] = Object.freeze([
-  "src/bin.ts", "src/cli.ts", "src/controller-service.ts", "src/desktop-host.ts", "src/sandbox-launch.ts", "src/tool-launcher.ts",
+  "src/bin.ts", "src/cli.ts", "src/controller-service.ts", "src/up-role-child.ts", "src/desktop-host.ts", "src/sandbox-launch.ts", "src/tool-launcher.ts",
   "src/browser/app.tsx", "src/browser/terminal-app.tsx",
 ]);
 

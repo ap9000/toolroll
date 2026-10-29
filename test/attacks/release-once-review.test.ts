@@ -141,7 +141,9 @@ describe("finding 6: an owed whole part must run whole, and finish, before a che
     const owed = requiredSet({ report: a, inventory });
     expect(owed.parts).toEqual(["app", "upgrade"]);
     const plan = { version: 1 as const, base: 1, units: [], sanity: [], groups: [], versions: [], parts: owed.parts, required: owed.required };
-    const b = { ...reportOf(UNITS.map(file => ({ file }))), nonce: "b".repeat(64), mode: "targeted" as const, planDigest: (require("node:crypto") as typeof import("node:crypto")).createHash("sha256").update(JSON.stringify(plan)).digest("hex") } as CheckReport;
+    // B runs the units again but never the owed app and upgrade parts.
+    const notRun = reportOf([]).parts.map(one => one.part === "app" || one.part === "upgrade" ? { ...one, selected: false, ran: false, code: null } : one);
+    const b = { ...reportOf(UNITS.map(file => ({ file })), { parts: notRun }), nonce: "b".repeat(64), mode: "targeted" as const, planDigest: (require("node:crypto") as typeof import("node:crypto")).createHash("sha256").update(JSON.stringify(plan)).digest("hex") } as CheckReport;
     expect(coverageOf({ a: { report: a, inventory }, b: { report: b, inventory, exitCode: 0 }, plan, snapshot: { version: 1, authority: 1, base: 1, earlier: [] } })).toBe("partial");
   });
 

@@ -119,6 +119,8 @@ export interface ServerRuntime {
   projectFamilyPeek: (repo: string, now: Date) => ProjectPeek;
   needsYouBadge: (project: string | null) => { count: number; saturated: boolean; };
   liveRefreshSeconds: () => number;
+  /** One work index page for an already-admitted reader, read at most once per workspace revision (console-chrome.ts). */
+  sharedIndexPage: (access: import("../work-summary.js").WorkSummaryAccess, options: import("../work-index.js").WorkIndexOptions) => import("../work-index.js").WorkIndexPage;
   chatKeyFor: (provider: DirectChatProviderId) => { key: string; source: "environment" | "stored"; } | null;
   chatCatalog: () => Promise<import("../converse.js").CatalogModel[] | null>;
   /** The catalog as last fetched: what a page shows. A page never fetches. */

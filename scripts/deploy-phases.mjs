@@ -45,10 +45,20 @@ export function snapshot(db, includeVersion = false) {
 /** Interrupted while the old service was stopping: every process recorded for it is gone and launchd no longer has it.
  * A journal may hold only one of the two service records; the absent one adds no pid.
  * alive(pid) says whether a process runs; loaded() whether launchd still has the service. */
-export function stopProved(r, { alive, loaded }) {
-  const pids = [...new Set([r.oldService?.supervisor, ...(r.oldService?.children ?? []), r.stoppingService?.supervisor, ...(r.stoppingService?.children ?? [])])]
-    .filter(pid => pid !== undefined && pid !== null);
-  return pids.length > 0 && pids.every(pid => Number.isInteger(pid) && pid > 1 && !alive(pid)) && !loaded();
+export function stopProved(r, { alive, loaded, remaining }) {
+  const pids = recordedServicePids(r);
+  const left = remaining?.();
+  return Array.isArray(left) && left.length === 0 && pids.length > 0
+    && pids.every(pid => Number.isInteger(pid) && pid > 1 && !alive(pid)) && !loaded();
+}
+/**
+ * Every process a journal recorded for the service it stops: the supervisor, its `up`, and `up`'s console and worker
+ * (Codex review round 1, finding 3: `up`'s exit doesn't prove its roles drained). A record holding a role that isn't a
+ * process id keeps that value, so the stop proof refuses it.
+ */
+export function recordedServicePids(r) {
+  const of = one => one === undefined || one === null ? [] : [one.supervisor, ...(one.children ?? []), ...(one.roles ?? []).map(role => role?.pid ?? "unrecorded")];
+  return [...new Set([...of(r.oldService), ...of(r.stoppingService)])].filter(pid => pid !== undefined && pid !== null);
 }
 /** The verified backups, taken before the swap, in place of a live database the candidate migrated and its coding
  * database. Both backups are checked before either is touched. The live files are copied aside first (nothing is running
@@ -97,7 +107,7 @@ export function codingBackupBeforeSwap(r, database) {
  * requireTrue (which ends the deployment) and pruneStaged. */
 export function browserDeployment({
   database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script, oldRt, deploymentLock, signal,
-  facts, quiet, service, proveStaged, verifyServiceStopped, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
+  facts, quiet, service, proveStaged, verifyServiceStopped, leftFrom, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
 }) {
   const short = candidateHead.slice(0, 7);
   const assertLocked = () => deploymentLock.assertHeld(journalFile);
@@ -147,7 +157,10 @@ export function browserDeployment({
     try { r = readJournal(); } catch { return false; }
     try {
       const words = recoverFailedDeployment(r.phase, {
-        stopProved: () => stopProved(r, { alive, loaded: () => spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status === 0 }),
+        // A replacement can have started after the recorded snapshot. Recovery needs the same runtime scan as
+        // normal shutdown; absent or unreadable process evidence leaves the pause and the service untouched.
+        stopProved: () => stopProved(r, { alive, remaining: () => leftFrom?.(priorDist),
+          loaded: () => spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status === 0 }),
         restoreBackup: () => restoreDeploymentBackup(r, { database, stageDir }),
         restoreService: () => restorePriorService(r),
         removeGate: () => {
@@ -289,8 +302,10 @@ export function browserDeployment({
     requireTrue(r.stoppingService, "The current service identity could not be verified before shutdown. No runtime was replaced.");
     save(r, "stopping");
     spawnSync("/bin/launchctl", ["bootout", `gui/${uid}/${label}`], { encoding: "utf8" });
-    const oldPids = [...new Set([r.oldService.supervisor, ...r.oldService.children, r.stoppingService.supervisor, ...r.stoppingService.children])];
-    await settle(verifyServiceStopped(oldPids));
+    // The supervisor, `up`, and `up`'s console and worker roles: each must have exited before the runtime or the
+    // database is touched, and the console's pid may then release its stale coding owner record (round 1, finding 3).
+    const oldPids = recordedServicePids(r);
+    await settle(verifyServiceStopped(oldPids, priorDist));
     await ensureCodingBackup(oldRt.coding, r);
     // The coding database as the stopped service left it; a failed deployment puts this back with orders.db.
     r.codingBackupBeforeSwap = codingBackupBeforeSwap(r, database);
@@ -320,7 +335,7 @@ export function browserDeployment({
     writeFileSync(join(stageDir, "service.log"), "", { mode: 0o600, flag: "a" });
     // Migration loads asynchronously; backup, service and native custody must still hold.
     await ensureCodingBackup(oldRt.coding, r);
-    await settle(verifyServiceStopped(oldPids));
+    await settle(verifyServiceStopped(oldPids, priorDist));
     verifyCodingBackup(oldRt.coding, r);
     const beforeReplace = openDeploymentDatabase(database, { readOnly: true });
     try { assertCodingDeploymentStopped(oldRt.coding, database, beforeReplace, r); } finally { beforeReplace.close(); }
@@ -337,14 +352,15 @@ export function browserDeployment({
       const launch = spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" });
       const failedPid = Number(launch.stdout.match(/\n\s*pid = (\d+)/)?.[1]);
       requireTrue(launch.status !== 0 || failedPid > 1, "The failed service's process identity is unknown. The previous runtime was not restored.");
-      const failedChildren = failedPid > 1 ? spawnSync("/usr/bin/pgrep", ["-P", String(failedPid)], { encoding: "utf8" }) : null;
-      requireTrue(!failedChildren || failedChildren.status === 0 || failedChildren.status === 1, "The failed service's child processes could not be checked. The previous runtime was not restored.");
-      const failedPids = failedPid > 1 ? [failedPid, ...failedChildren.stdout.trim().split(/\s+/).filter(Boolean).map(Number)] : [];
+      // Its whole tree: the supervisor, its `up`, and `up`'s roles (round 1, finding 3).
+      const failedTree = failedPid > 1 ? processTree(failedPid, spawnSync) : [];
+      requireTrue(failedTree !== null, "The failed service's child processes could not be checked. The previous runtime was not restored.");
+      const failedPids = failedTree;
       spawnSync("/bin/launchctl", ["bootout", `gui/${uid}/${label}`], { encoding: "utf8" });
-      await settle(verifyServiceStopped(failedPids));
+      await settle(verifyServiceStopped(failedPids, nextDist));
       const coding = await settle(loadCodingDeploymentRuntime(nextDist));
       await ensureCodingBackup(coding, r);
-      await settle(verifyServiceStopped(failedPids));
+      await settle(verifyServiceStopped(failedPids, nextDist));
       verifyCodingBackup(coding, r);
       const stopped = openDeploymentDatabase(database, { readOnly: true });
       try { assertCodingDeploymentStopped(coding, database, stopped, r); } finally { stopped.close(); }
@@ -400,4 +416,21 @@ export function browserDeployment({
   }
 
   return { readJournal, save, loadPhase, assertPreserved, assertMigrated, ensureCodingBackup, verifyPreparedDatabase, prepare, swap, finish, recoverJournal };
+}
+
+/** A process and every descendant (pgrep -P, level by level, at most four deep: supervisor, `up`, its roles and
+ * theirs), or null when a level can't be read. */
+export function processTree(root, spawnSync) {
+  const all = [root];
+  let level = [root];
+  for (let depth = 0; depth < 4 && level.length > 0; depth++) {
+    const next = [];
+    for (const pid of level) {
+      const found = spawnSync("/usr/bin/pgrep", ["-P", String(pid)], { encoding: "utf8" });
+      if (found.status !== 0 && found.status !== 1) return null;
+      for (const child of String(found.stdout ?? "").trim().split(/\s+/).filter(Boolean).map(Number)) if (!all.includes(child)) { all.push(child); next.push(child); }
+    }
+    level = next;
+  }
+  return level.length === 0 ? all : null;
 }

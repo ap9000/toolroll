@@ -20,6 +20,7 @@
  * it was holding — claims and worktrees alike — needs recovering together.
  */
 
+import { mintSecret } from "./secret-mint.js";
 import { isAcpProvider, type AcpProviderId } from "./acp-agents.js";
 import { verifyLaunch } from "./acp-attest.js";
 import type { AcpAttestation } from "./store.js";
@@ -466,7 +467,7 @@ export function recoverDead(
 
 /** 32 bytes of randomness, urlsafe, so it survives being pasted anywhere. */
 function mintToken(): string {
-  return randomBytes(32).toString("base64url");
+  return mintSecret(32);
 }
 
 export function hashToken(token: string): string {

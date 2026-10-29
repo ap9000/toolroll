@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { daemonStatus, installedServiceDefinition, planDaemon, type ServiceDefinition, type SupervisorRunner } from "./daemon.js";
 import { scanForSecrets } from "./evidence.js";
 import { envelopeJson } from "./envelope.js";
+import { GIT_FLOOR_WORDS, installedGitFloorProblem } from "./git-floor.js";
 import { run as runCommand } from "./exec.js";
 import { OWN_KEY_ENV } from "./keys.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
@@ -33,7 +34,9 @@ export type DoctorUnreadable = { where: string; problem: string; steps: string[]
 export type DoctorReport = { ok: boolean; checked: string[]; findings: DoctorFinding[]; unreadable: DoctorUnreadable[]; notes: string[];
   /** The sandbox every build runs in (sandbox-runtime.ts): Anthropic's sandbox-runtime, its version, and why it can't
    * sandbox here (null when it can). */
-  sandbox?: { engine: string; version: string; problem: string | null } };
+  sandbox?: { engine: string; version: string; problem: string | null };
+  /** The installed git against Toolroll's floor (git-floor.ts): null when it is new enough (or unreadable). */
+  git?: { floor: string; problem: string | null } };
 
 export type DoctorDeps = {
   platform?: NodeJS.Platform;
@@ -45,6 +48,8 @@ export type DoctorDeps = {
   procRoot?: string;
   /** The doctor's own environment: the terminal a `toolroll up` would start from. */
   env?: NodeJS.ProcessEnv;
+  /** The installed git's floor problem (a test's stand-in for git-floor.ts installedGitFloorProblem). */
+  gitFloorProblem?: string | null;
 };
 
 /** Names that say they hold a credential. */
@@ -142,7 +147,8 @@ function reinstallCommand(args: readonly string[]): string | null {
     const flag = equal < 0 ? arg : arg.slice(0, equal);
     const value = equal < 0 ? args[index + 1] : arg.slice(equal + 1);
     const known = freeform.has(flag) || numeric.has(flag) || Object.hasOwn(enums, flag);
-    if (equal < 0 && (known || CREDENTIAL_FLAG.test(flag)) && value !== undefined && !value.startsWith("-")) index += 1;
+    // A credential's value is the next argument even when it starts with "-" (random base64url can).
+    if (equal < 0 && value !== undefined && (CREDENTIAL_FLAG.test(flag) || (known && !value.startsWith("-")))) index += 1;
     if (flag === "--token") { kept.push("--token-file", "<set-again>"); continue; }
     if (!known) { rejected = true; continue; }
     const safe = value !== undefined && scanForSecrets(value).length === 0;
@@ -374,7 +380,8 @@ export async function auditServiceEnvironment(deps: DoctorDeps = {}): Promise<Do
 /** The report as the owner reads it: one state, then each finding with its steps; detail after. */
 export function doctorLines(report: DoctorReport): string[] {
   const lines: string[] = [];
-  if (report.ok) lines.push("No secrets found in Toolroll's service. A build can't read a key from it.");
+  if (report.git?.problem != null) lines.push(`Git: ${report.git.problem}`, "");
+  if (report.findings.length === 0 && report.unreadable.length === 0) lines.push("No secrets found in Toolroll's service. A build can't read a key from it.");
   else if (report.findings.length > 0) lines.push(`Toolroll's service holds ${report.findings.length === 1 ? "a secret" : "secrets"} a build could read. Nothing was changed; follow these steps.`);
   else lines.push("Toolroll couldn't check everything, so it can't say the service is clean. Nothing was changed.");
   for (const finding of report.findings) {
@@ -403,6 +410,9 @@ export async function runDoctorCommand(argv: readonly string[], write: (line: st
   }
   const report = await auditServiceEnvironment(deps);
   report.sandbox = { engine: SANDBOX_RUNTIME.name, version: SANDBOX_RUNTIME.version, problem: sandboxRuntimeProblem() };
+  // A git older than the floor: named here too, and the console and worker won't start on it.
+  report.git = { floor: GIT_FLOOR_WORDS, problem: deps.gitFloorProblem === undefined ? installedGitFloorProblem() : deps.gitFloorProblem };
+  if (report.git.problem !== null) report.ok = false;
   if (json) write(envelopeJson({ command: "doctor", ...report }));
   else for (const line of doctorLines(report)) write(line);
   return report.ok ? 0 : 1;

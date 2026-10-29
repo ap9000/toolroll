@@ -15,7 +15,8 @@ import { parse as parseYaml } from "yaml";
 import { sleep } from "./sleep.js";
 // Loaded on first use, like the store: a static import prints Node's SQLite warning before the CLI can quiet it.
 const sqlite = (): typeof import("node:sqlite") => createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
-import type { CheckRun, DeployStop, GateState, HomebrewState, Installed, PullRequest, ReleaseAdapters } from "./release.js";
+import type { CheckRun, DeployStop, GateState, HomebrewState, Installed, MainProtection, PullRequest, ReleaseAdapters } from "./release.js";
+import { PROTECTION_MINIMUM_CHECKS, PROTECTION_REPORT_ONLY_CHECKS } from "./release.js";
 import { activeUpdateWork } from "./desktop-update-gate.js";
 import { BEFORE_SWAP, gateOwner } from "./release-gate.js";
 import { findCliLinks, switchCliLinks } from "./release-links.js";
@@ -25,7 +26,9 @@ import {
 } from "./store.js";
 import { acquireDeploymentLock } from "./deploy-lock.js";
 import { autoReleaseApprovalOf, liveReleaseOf } from "./scope.js";
-import { autoPublishHeld, holdAutoPublish, authorizeAutoCheck, giveUpAutoApproval, noteAutoCheckFailed, noteAutoRelease, releaseAutoApproves, sealAutoGreen, type CiObservation } from "./release-auto.js";
+import { recheckReleaseTask, releaseCheckStanding } from "./check-failure.js";
+import { noteCiRunning, releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
+import { autoPublishHeld, holdAutoPublish, liftCiHold, authorizeAutoCheck, giveUpAutoApproval, noteAutoCheckFailed, noteAutoRelease, releaseAutoApproves, sealAutoGreen, type CiObservation } from "./release-auto.js";
 import { proveCarry, type BuildRunner } from "./release-carry.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { deploymentGate } from "./deploy-gate.js";
@@ -240,7 +243,8 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   const ciGh = options.tools?.gh ?? releaseTools("").gh;
   const observeCi = async (sha: string): Promise<CiObservation> => {
     const observedAt = (options.now ?? (() => new Date()))().toISOString();
-    const runs = (await readCheckRuns(run, ciGh, releaseRepo().slug, sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, workflow: one.workflow ?? null }));
+    const runs = (await readCheckRuns(run, ciGh, releaseRepo().slug, sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, workflow: one.workflow ?? null, workflowPath: one.workflowPath ?? null,
+      ...(one.beforeTests === undefined ? {} : { beforeTests: one.beforeTests }) }));
     return { head: sha, observedAt, runs, complete: await readSuitesComplete(run, ciGh, releaseRepo().slug, sha) };
   };
   const database = options.database ?? databasePath(process.env, homedir());
@@ -331,7 +335,11 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   };
 
   const release = storeReleaseAdapter(() => openStore(database), store => store.close(), options.now ?? (() => new Date()), undefined,
-    { observe: sha => observeCi(sha), mergeBase: (base, sha) => readMergeBase(run, ciGh, releaseRepo().slug, base, sha), evidenceRoot: join(dirname(database), "evidence") });
+    { observe: sha => observeCi(sha), mergeBase: (base, sha) => readMergeBase(run, ciGh, releaseRepo().slug, base, sha),
+      upToDateRequired: () => readUpToDateRequired(run, ciGh, releaseRepo().slug), evidenceRoot: join(dirname(database), "evidence"),
+      // A successful Actions job authenticates the job, not the candidate-writable JSON it uploads. Until the
+      // executor protects that reporting channel, production releases must take the person's approval road.
+      reportsProtected: false });
 
   return {
     ...(existsSync(database) ? { release } : {}),
@@ -377,8 +385,6 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         const result = await git("show", `${sha}:${path}`);
         return result.code === 0 ? result.stdout : null;
       },
-      async mainHead() { return (await must(git("rev-parse", "refs/remotes/origin/main"), "git rev-parse origin/main")).trim(); },
-      async contains(sha, ancestor) { return (await git("merge-base", "--is-ancestor", ancestor, sha)).code === 0; },
     },
     toolroll: {
       async installed() { return { services: serviceRuntimes(), clis: cliRuntimes() }; },
@@ -488,6 +494,9 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
       // Every attempt (filter=all), with its app, check suite and commit: the release judges each job by its latest attempt.
       async checks(repo, sha) { return readCheckRuns(run, ciGh, repo, sha); },
       async complete(repo, sha) { return readSuitesComplete(run, ciGh, repo, sha); },
+      async mainHead(repo) { return readMainHead(run, ciGh, repo); },
+      async contains(repo, sha, ancestor) { return readContains(run, ciGh, repo, sha, ancestor); },
+      async upToDateRequired(repo) { return readMainProtection(run, ciGh, repo); },
       async merge(repo, pr, head, message) {
         // The squash commit's message lists every commit that landed after the approval (release-once.md).
         const merged = object(await ghJson("gh api pulls merge", "api", "-X", "PUT", `repos/${repo}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`,
@@ -644,6 +653,21 @@ export function storeReleaseAdapter(open: () => Store, done: (store: Store) => v
   const withStore = <T>(body: (store: Store) => T): T => { const store = open(); try { return body(store); } finally { done(store); } };
   return {
     ...(auto === undefined ? {} : { auto: autoReleaseAdapter(withStore, now, auto) }),
+    // After a failed release check, and before a pass is taken: the plane's own classification (check-failure.ts).
+    ...(auto === undefined ? {} : {
+      async recheck(taskId: string) {
+        return withStore(store => {
+          const answer = recheckReleaseTask(store, auto.evidenceRoot, taskId, now());
+          return answer.action === "rerun" ? { action: "rerun" as const, why: answer.why } : answer.action === "pending" ? { action: "pending" as const } : { action: "stop" as const, class: answer.class, why: answer.why };
+        });
+      },
+      async standing(taskId: string, run: number) {
+        return withStore(store => {
+          const standing = releaseCheckStanding(store, auto.evidenceRoot, { taskId, run });
+          return standing.ok ? { ok: true as const, retried: standing.retried } : { ok: false as const, why: standing.why, retried: standing.retried };
+        });
+      },
+    }),
     async authority(taskId) {
       return withStore(store => {
         const found = releaseAuthorityOfTask(store, taskId);
@@ -685,11 +709,15 @@ export function storeReleaseAdapter(open: () => Store, done: (store: Store) => v
 /** The plane's automatic release approval through a store (release-auto.ts): what `toolroll release` asks. It hands the
  * plane ids only; the plane reads CI itself (`observe`) right before it seals. */
 function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now: () => Date, auto: AutoObservers): NonNullable<NonNullable<ReleaseAdapters["release"]>["auto"]> {
+  const reportProblem = () => auto.reportsProtected === true ? null
+    : "CI test reports aren't protected from candidate writes, so a person must approve this release";
   return {
     async setting(taskId) {
       return withStore(store => { try { const ref = store.lookupRef(taskId); return ref?.repo != null && releaseAutoApproves(store, ref.repo); } catch { return false; } });
     },
     async authorizeCheck(input) {
+      const problem = reportProblem();
+      if (problem !== null) return { ok: false as const, why: problem };
       // The comparison base for what the release changes: GitHub's own merge base of the candidate with the release's
       // base branch (its signed terms), read by the plane — never a task branch or a build's recorded base.
       const branch = withStore(store => store.getScope(input.taskId)?.releaseTerms?.base ?? null);
@@ -700,9 +728,16 @@ function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now:
       return withStore(store => { const answer = authorizeAutoCheck(store, { ...input, base, now: now() }); return answer.ok ? { ok: true as const } : answer; });
     },
     async checking(taskId) {
+      const problem = reportProblem();
+      if (problem !== null) return { ok: false as const, why: problem };
       return withStore(store => { const answer = autoReleaseApprovalOf(store, taskId, "auto-check"); return answer.ok ? { ok: true as const } : { ok: false as const, why: answer.why }; });
     },
     async approve(input) {
+      const unprotected = reportProblem();
+      if (unprotected !== null) {
+        withStore(store => giveUpAutoApproval(store, { taskId: input.taskId, why: unprotected, now: now() }));
+        return { ok: false as const, why: unprotected };
+      }
       let ci: CiObservation | null = null, problem = "";
       // A short network failure is asked again a few times; GitHub not answering is never a pass.
       for (let attempt = 0; attempt < 3 && ci === null; attempt++) {
@@ -714,9 +749,24 @@ function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now:
         return { ok: false as const, why };
       }
       const observed = ci;
-      return withStore(store => sealAutoGreen(store, { ...input, ci: observed, evidenceRoot: auto.evidenceRoot, now: now() }));
+      let upToDate: boolean | null;
+      try { upToDate = await auto.upToDateRequired(); } catch { upToDate = null; }
+      return withStore(store => sealAutoGreen(store, { ...input, ci: observed, mainUpToDate: upToDate, evidenceRoot: auto.evidenceRoot, now: now() }));
     },
     async giveUp(taskId, why) { withStore(store => giveUpAutoApproval(store, { taskId, why, now: now() })); },
+    async ciRunning(taskId, candidate) { withStore(store => noteCiRunning(store, { taskId, candidate, now: now() })); },
+    async ciPassed(taskId, candidate, ask) {
+      // Reconcile the plane's record, not journal flags; without a pending row there is nothing to lift.
+      if (!withStore(store => releaseCiHoldOf(store, taskId) !== null || releaseCiRunningOf(store, taskId) !== null)) return { ok: true as const };
+      // The plane reads CI itself; a short network failure is asked again a few times, and unreadable is never a pass.
+      let ci: CiObservation | null = null, problem = "";
+      for (let attempt = 0; attempt < 3 && ci === null; attempt++) {
+        try { ci = await auto.observe(candidate); } catch (error) { problem = String((error as Error)?.message ?? error).slice(0, 200); }
+      }
+      if (ci === null) return { ok: false as const, why: `GitHub CI on ${candidate.slice(0, 7)} couldn't be read (${problem})` };
+      const observed = ci;
+      return withStore(store => liftCiHold(store, { taskId, candidate, ci: observed, ask, now: now() }));
+    },
     async checkFailed(taskId, why) { withStore(store => noteAutoCheckFailed(store, { taskId, why, now: now() })); },
     async released(taskId, tag) { withStore(store => noteAutoRelease(store, { taskId, tag, now: now() })); },
     async holdPublish(taskId, why) { withStore(store => holdAutoPublish(store, { taskId, why, now: now() })); },
@@ -726,9 +776,14 @@ function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now:
 
 /** What the plane itself reads for an automatic release approval. */
 export type AutoObservers = {
+  /** The plane's executor policy, never a report field or project setting. Unknown refuses. Production currently
+   * cannot establish this; synthetic observers may supply protected execution to exercise the remaining gates. */
+  reportsProtected?: boolean;
   observe: (sha: string) => Promise<CiObservation>;
   /** GitHub's merge base of `sha` with the branch `base` of the recorded repository. */
   mergeBase: (base: string, sha: string) => Promise<string>;
+  /** Whether main's protection holds for the account that merges (readMainProtection); null when unreadable. */
+  upToDateRequired: () => Promise<boolean | null>;
   evidenceRoot: string;
 };
 
@@ -750,24 +805,90 @@ export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: st
   // Which workflow each check suite is a run of (GitHub's workflow-run API): a newer run of a workflow supersedes its
   // older runs on this commit (release.ts prChecksVerdict).
   const flows = await must(run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${repo}/actions/runs?head_sha=${sha}&per_page=100`,
-    "--jq", ".workflow_runs[] | {suite: .check_suite_id, workflow: .workflow_id, head: .head_sha}"], { cwd: "/", env: ciEnv() }), "gh api actions/runs");
+    "--jq", ".workflow_runs[] | {suite: .check_suite_id, workflow: .workflow_id, path: .path, head: .head_sha, event: .event, branch: .head_branch, bases: [(.pull_requests // [])[] | .base.ref], prs: [(.pull_requests // [])[] | {number, repo: .base.repo.url}]}"], { cwd: "/", env: ciEnv() }), "gh api actions/runs");
+  // A pull request's base can be edited after its runs: a run counts only if no pull request it belongs to ever had its
+  // base changed (GitHub's timeline), so a run made against another base can't later read as a run into main.
+  const retargeted = new Map<number, boolean>();
+  const everRetargeted = async (pr: number): Promise<boolean> => {
+    const known = retargeted.get(pr);
+    if (known !== undefined) return known;
+    let changed = true;
+    try {
+      const events = await run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${repo}/issues/${pr}/timeline?per_page=100`, "--jq", ".[] | .event"], { cwd: "/", env: ciEnv() });
+      changed = events.code !== 0 || events.stdout.split("\n").some(line => line.trim() === "base_ref_changed");
+    } catch { changed = true; }
+    retargeted.set(pr, changed);
+    return changed;
+  };
   const workflowOf = new Map<number, number>();
+  // Each suite's workflow file: a required check counts only from the workflow that defines it (release.ts).
+  const pathOf = new Map<number, string>();
   for (const line of flows.split("\n").filter(Boolean)) {
     const one = object(JSON.parse(line));
-    if (!Number.isSafeInteger(one["suite"]) || !Number.isSafeInteger(one["workflow"]) || one["head"] !== sha) throw new Error("GitHub answered a workflow run this can't read");
+    if (!Number.isSafeInteger(one["suite"]) || !Number.isSafeInteger(one["workflow"]) || one["head"] !== sha || typeof one["path"] !== "string" || one["path"] === "") throw new Error("GitHub answered a workflow run this can't read");
     const known = workflowOf.get(Number(one["suite"]));
-    if (known !== undefined && known !== Number(one["workflow"])) throw new Error("GitHub named two workflows for one check suite");
+    if (known !== undefined && (known !== Number(one["workflow"]) || pathOf.get(Number(one["suite"])) !== one["path"])) throw new Error("GitHub named two workflows for one check suite");
     workflowOf.set(Number(one["suite"]), Number(one["workflow"]));
+    // Only a run on a pull request into main, or a push to main, binds its workflow file: a pull request into another
+    // branch reads that branch's workflow and join verifier, which the candidate may control (security scan of the
+    // join). Any other run keeps no path, so no required check counts from it.
+    // Each pull request the run belongs to must be this repository's own (a number from another repository names a
+    // different pull request here): any other refuses the run.
+    const prs = (Array.isArray(one["prs"]) ? one["prs"] : []).map(pr => (pr !== null && typeof pr === "object" ? pr as Record<string, unknown> : {}));
+    const ours = prs.length > 0 && prs.every(pr => Number.isSafeInteger(pr["number"]) && pr["repo"] === `https://api.github.com/repos/${repo}`);
+    const untouched = one["event"] !== "pull_request" || (ours && !(await Promise.all(prs.map(pr => everRetargeted(Number(pr["number"]))))).some(Boolean));
+    if (mainTriggered(one) && untouched) pathOf.set(Number(one["suite"]), String(one["path"]));
   }
   const runs = out.split("\n").filter(Boolean).map(line => {
     const one = object(JSON.parse(line));
     if (!Number.isSafeInteger(one["id"]) || typeof one["name"] !== "string" || typeof one["status"] !== "string") throw new Error("GitHub answered a check run this can't read");
     const suite = Number.isSafeInteger(one["suite"]) ? Number(one["suite"]) : null;
     return { id: Number(one["id"]), name: one["name"], status: one["status"], conclusion: textOr(one["conclusion"]), app: textOr(one["app"]),
-      suite, head: textOr(one["head"]), workflow: suite === null ? null : workflowOf.get(suite) ?? null } satisfies CheckRun;
+      suite, head: textOr(one["head"]), workflow: suite === null ? null : workflowOf.get(suite) ?? null, workflowPath: suite === null ? null : pathOf.get(suite) ?? null } satisfies CheckRun;
   });
   if (new Set(runs.map(one => one.id)).size !== runs.length) throw new Error("GitHub answered the same check run twice");
+  // Each unsuccessful GitHub Actions attempt: whether GitHub's own job record (a check run's id is its job's) shows it
+  // ending before any of the workflow's own steps ran. Only that ever counts as the runner's failure; unreadable is no.
+  for (const one of runs as CheckRun[]) {
+    if (one.app !== "github-actions" || one.status !== "completed" || one.conclusion === "success" || one.conclusion === "skipped" || one.conclusion === "neutral") continue;
+    one.beforeTests = await readJobBeforeTests(run, gh, repo, one.id!);
+  }
   return runs.sort((a, b) => a.id - b.id);
+}
+
+/** One job's step outcomes as GitHub's Actions API reports them. */
+export type JobRecord = { id: number; status: string; conclusion: string | null; steps: { number: number; name: string; status: string; conclusion: string | null }[] };
+
+/**
+ * Whether a finished, unsuccessful job ended before any of the workflow's own steps ran: every step after GitHub's own
+ * first one ("Set up job", always number 1) never ran (no conclusion, or skipped) — leaving out only GitHub's own
+ * closing "Complete job" when it is the last step. Step numbers and outcomes are the runner's records; nothing the
+ * candidate prints is read. A job with no steps never reached one. Anything else (a step that ran, even the checkout)
+ * is not confirmed infrastructure.
+ */
+export function failedBeforeTests(job: JobRecord): boolean {
+  if (job.status !== "completed" || job.conclusion === "success" || job.conclusion === null) return false;
+  const steps = [...job.steps].sort((a, b) => a.number - b.number);
+  if (new Set(steps.map(one => one.number)).size !== steps.length) return false;
+  const last = steps.at(-1);
+  const own = steps.filter(one => one.number > 1 && !(one === last && one.name === "Complete job" && steps.length > 1));
+  return own.every(one => one.status !== "in_progress" && (one.conclusion === null || one.conclusion === "skipped"));
+}
+
+/** GitHub's job record for one check run (its job), read strictly: null when it can't be read whole. */
+export async function readJobBeforeTests(run: Exec, gh: string, repo: string, id: number): Promise<boolean | null> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !Number.isSafeInteger(id) || id <= 0) return null;
+  let out: { code: number; stdout: string };
+  try { out = await run(gh, ["api", "--hostname", "github.com", `repos/${repo}/actions/jobs/${id}`, "--jq", "{id, status, conclusion, steps: [(.steps // [])[] | {number, name, status, conclusion}]}"], { cwd: "/", env: ciEnv() }); }
+  catch { return null; }
+  if (out.code !== 0) return null;
+  let job: Json;
+  try { job = object(JSON.parse(out.stdout)); } catch { return null; }
+  const steps = Array.isArray(job["steps"]) ? job["steps"].map(object) : null;
+  if (job["id"] !== id || typeof job["status"] !== "string" || steps === null) return null;
+  if (steps.some(one => !Number.isSafeInteger(one["number"]) || typeof one["status"] !== "string" || typeof one["name"] !== "string")) return null;
+  return failedBeforeTests({ id, status: String(job["status"]), conclusion: textOr(job["conclusion"]),
+    steps: steps.map(one => ({ number: Number(one["number"]), name: String(one["name"]), status: String(one["status"]), conclusion: textOr(one["conclusion"]) })) });
 }
 
 /** GitHub lists check runs from at most the latest 1000 check suites of a commit: the history is whole only below that. */
@@ -785,4 +906,139 @@ export async function readMergeBase(run: Exec, gh: string, repo: string, base: s
   const out = (await must(run(gh, ["api", "--hostname", "github.com", `repos/${repo}/compare/${base}...${sha}`, "--jq", ".merge_base_commit.sha"], { cwd: "/", env: ciEnv() }), "gh api compare")).trim();
   if (!/^[0-9a-f]{40}$/.test(out)) throw new Error("GitHub named no merge base");
   return out;
+}
+
+/**
+ * Main's head as GitHub has it now (eval-harness review 1, finding 4): read by the plane's own gh from GitHub's API,
+ * never from a ref in a checkout a build can write.
+ */
+export async function readMainHead(run: Exec, gh: string, repo: string, branch = "main"): Promise<string> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^[A-Za-z0-9._/-]+$/.test(branch) || branch.includes("..")) throw new Error("not a repository and branch GitHub can be asked about");
+  const out = (await must(run(gh, ["api", "--hostname", "github.com", `repos/${repo}/git/ref/heads/${branch}`, "--jq", ".object.type + \" \" + .object.sha"], { cwd: "/", env: ciEnv() }), "gh api git/ref")).trim();
+  const match = /^commit ([0-9a-f]{40})$/.exec(out);
+  if (match === null) throw new Error(`GitHub named no commit for ${branch}`);
+  return match[1]!;
+}
+
+/** Whether `sha` already holds `ancestor` (GitHub's compare: `sha` is not behind it), as GitHub answers now. */
+export async function readContains(run: Exec, gh: string, repo: string, sha: string, ancestor: string): Promise<boolean> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^[0-9a-f]{40}$/.test(sha) || !/^[0-9a-f]{40}$/.test(ancestor)) throw new Error("not a repository and commits GitHub can be asked about");
+  const out = (await must(run(gh, ["api", "--hostname", "github.com", `repos/${repo}/compare/${ancestor}...${sha}`, "--jq", "[.status, .behind_by] | @json"], { cwd: "/", env: ciEnv() }), "gh api compare")).trim();
+  let answer: unknown;
+  try { answer = JSON.parse(out); } catch { throw new Error("GitHub's comparison couldn't be read"); }
+  if (!Array.isArray(answer) || typeof answer[0] !== "string" || !Number.isSafeInteger(answer[1])) throw new Error("GitHub's comparison couldn't be read");
+  return answer[1] === 0 && (answer[0] === "ahead" || answer[0] === "identical");
+}
+
+/**
+ * Main's protection, judged for the principal that merges (eval-harness review 2, finding 1; review 1, finding 4): the
+ * plane's own gh, which merges as the same account. A layer holds only when it requires branches to be up to date, names
+ * a non-empty set of required checks covering PROTECTION_MINIMUM_CHECKS, bound to GitHub Actions (app 15368), and
+ * can't be bypassed by that account:
+ * classic protection with "Do not allow bypassing the above settings" (`enforce_admins`); an active ruleset whose
+ * bypass list reads whole, names no role, team or organization admin, and says this account never bypasses it. Read
+ * only — Toolroll never changes a repository's settings. A layer that can't be read never holds; null only when nothing
+ * could be read at all.
+ */
+export async function readMainProtection(run: Exec, gh: string, repo: string, branch = "main"): Promise<MainProtection | null> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^[A-Za-z0-9._/-]+$/.test(branch) || branch.includes("..")) return null;
+  const missing: string[] = [];
+  const held: string[][] = [];
+  let read = 0;
+  const judge = (where: string, strict: boolean, checks: string[], bound: string[], bypass: string[]): void => {
+    const own: string[] = [];
+    if (!strict) own.push(`${where}: "Require branches to be up to date before merging" is off`);
+    if (checks.length === 0) own.push(`${where}: no required status checks`);
+    else {
+      const lacking = PROTECTION_MINIMUM_CHECKS.filter(name => !checks.includes(name));
+      if (lacking.length > 0) own.push(`${where}: required checks lack ${lacking.join(", ")}`);
+      const unbound = PROTECTION_MINIMUM_CHECKS.filter(name => checks.includes(name) && !bound.includes(name));
+      if (unbound.length > 0) own.push(`${where}: required checks must require GitHub Actions (app 15368) as their source: ${unbound.join(", ")}`);
+    }
+    own.push(...bypass.map(why => `${where}: ${why}`));
+    if (own.length === 0) held.push(bound); else missing.push(...own);
+  };
+  const notProtected = (out: { stdout: string; stderr: string }) => /HTTP 404|Not Found|not protected|not enabled/i.test(`${out.stderr}\n${out.stdout}`);
+  const names = (list: unknown, key: string): string[] | null => {
+    if (!Array.isArray(list)) return null;
+    const out: string[] = [];
+    for (const one of list) {
+      const name = key === "" ? one : object(one)[key];
+      if (typeof name !== "string" || name === "") return null;
+      out.push(name);
+    }
+    return out;
+  };
+  const actionsChecks = (list: unknown, appKey: string): string[] => Array.isArray(list)
+    ? list.flatMap(one => { const check = object(one); return check[appKey] === 15368 && typeof check["context"] === "string" ? [check["context"]] : []; }) : [];
+  // Classic branch protection, read whole. Context names alone allow an arbitrary writer to supply their status.
+  const classic = await run(gh, ["api", "--hostname", "github.com", `repos/${repo}/branches/${branch}/protection`], { cwd: "/", env: ciEnv() });
+  if (classic.code === 0) {
+    let answer: unknown = null;
+    try { answer = JSON.parse(classic.stdout); } catch { /* unreadable below */ }
+    const p = object(answer), checks = p["required_status_checks"];
+    if (answer === null || typeof answer !== "object" || Array.isArray(answer)) missing.push("classic protection couldn't be read");
+    else if (checks === undefined || checks === null) { read++; missing.push("classic protection: \"Require status checks to pass before merging\" is off"); }
+    else {
+      const rsc = object(checks), contexts = names(rsc["contexts"] ?? [], ""), apps = names(rsc["checks"] ?? [], "context");
+      const admins = p["enforce_admins"];
+      if (contexts === null || apps === null || typeof rsc["strict"] !== "boolean" || admins === undefined || admins === null || typeof object(admins)["enabled"] !== "boolean") missing.push("classic protection couldn't be read");
+      else {
+        read++;
+        judge("classic protection", rsc["strict"] === true, [...new Set([...contexts, ...apps])], actionsChecks(rsc["checks"], "app_id"),
+          object(admins)["enabled"] === true ? [] : ["\"Do not allow bypassing the above settings\" is off, so administrators can merge past it"]);
+      }
+    }
+  } else if (notProtected(classic)) read++;
+  else missing.push("classic protection couldn't be read");
+  // Rulesets: every active rule requiring status checks on the branch, then its ruleset's enforcement and bypass list.
+  const rules = await run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${repo}/rules/branches/${branch}`,
+    "--jq", ".[] | select(.type == \"required_status_checks\") | @json"], { cwd: "/", env: ciEnv() });
+  if (rules.code !== 0) missing.push("main's rulesets couldn't be read");
+  else {
+    read++;
+    for (const line of rules.stdout.split("\n").filter(one => one.trim() !== "")) {
+      let rule: Json;
+      try { rule = object(JSON.parse(line)); } catch { missing.push("a ruleset rule couldn't be read"); continue; }
+      const id = rule["ruleset_id"], params = object(rule["parameters"]);
+      const checks = names(params["required_status_checks"], "context");
+      if (!Number.isSafeInteger(id) || Number(id) <= 0 || checks === null) { missing.push("a ruleset rule couldn't be read"); continue; }
+      const where = `ruleset ${id}`;
+      const got = await run(gh, ["api", "--hostname", "github.com", `repos/${repo}/rulesets/${id}`, "--jq", "{enforcement, target, current_user_can_bypass, bypass_actors} | @json"], { cwd: "/", env: ciEnv() });
+      let set: Json | null = null;
+      try { if (got.code === 0) set = object(JSON.parse(got.stdout)); } catch { set = null; }
+      if (set === null) { missing.push(`${where}: its settings couldn't be read`); continue; }
+      const bypass: string[] = [];
+      if (set["enforcement"] !== "active") bypass.push("it isn't active");
+      if (set["target"] !== "branch") bypass.push("it doesn't target branches");
+      if (set["current_user_can_bypass"] !== "never") bypass.push(typeof set["current_user_can_bypass"] === "string"
+        ? `the account that merges can bypass it (${set["current_user_can_bypass"]})` : "whether the account that merges can bypass it couldn't be read");
+      const actors = set["bypass_actors"];
+      if (!Array.isArray(actors)) bypass.push("its bypass list couldn't be read");
+      // Only a deploy key never merges as this account; a role, team, app or organization admin might.
+      else if (actors.some(one => object(one)["actor_type"] !== "DeployKey")) bypass.push("its bypass list names a role, team, app or organization admin");
+      judge(where, params["strict_required_status_checks_policy"] === true, checks, actionsChecks(params["required_status_checks"], "integration_id"), bypass);
+    }
+  }
+  if (held.length > 0) {
+    const required = new Set(held.flat());
+    return { effective: true, missing: [], notYetRequired: PROTECTION_REPORT_ONLY_CHECKS.filter(name => !required.has(name)) };
+  }
+  if (read === 0) return null;
+  if (missing.length === 0) missing.push("main has no branch protection or ruleset requiring status checks");
+  return { effective: false, missing, notYetRequired: [] };
+}
+
+/** Whether main's protection holds, as a yes/no (release-auto.ts sealAutoGreen): null when it can't be read. */
+export async function readUpToDateRequired(run: Exec, gh: string, repo: string, branch = "main"): Promise<boolean | null> {
+  const protection = await readMainProtection(run, gh, repo, branch);
+  return protection === null ? null : protection.effective;
+}
+
+/** Whether a workflow run was triggered on main: a push to main, or a pull request whose every base is main. */
+function mainTriggered(run: Record<string, unknown>): boolean {
+  const bases = Array.isArray(run["bases"]) ? run["bases"] : [];
+  if (run["event"] === "push") return run["branch"] === "main";
+  if (run["event"] === "pull_request") return bases.length > 0 && bases.every(base => base === "main");
+  return false;
 }

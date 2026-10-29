@@ -2,7 +2,6 @@
 import { inReadOnlyRequest } from "./read-only-request.js";
 import { checkoutGitSync } from './teardown-git.js';
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { Store } from './store.js';
@@ -59,7 +58,8 @@ const git = (repo: string, args: string[], seen?: Map<string, string>): string =
   if (known !== undefined) return known;
   // Bounded, and no hook or fsmonitor program: it also runs from the console's background pass.
   // No lazy fetch either: a partial clone's fetch runs whatever transport command the shared config names.
-  const out = execFileSync('git', ['--no-optional-locks', '--no-lazy-fetch', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null', '-C', repo, ...args], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, timeout: 10_000, stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
+  // Every git version through a frozen read view, bounded (eval-harness review 1, finding 7).
+  const out = checkoutGitSync(repo, args, { timeoutMs: 10_000, maxBuffer: 2 * 1024 * 1024 }).trimEnd();
   seen?.set(key, out);
   return out;
 };

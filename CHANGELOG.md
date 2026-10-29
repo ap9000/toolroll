@@ -1,5 +1,197 @@
 # Changelog
 
+## 0.9.77 — 2026-10-29
+
+- **CI finishes in about a third of the time.** The unit suite runs in four
+  shards per Node version instead of one 14–21 minute job. The required
+  checks keep their names ("node 22 · ubuntu-latest", "node 24 ·
+  ubuntu-latest") and pass only when every shard passed on the tested commit
+  and the shards together ran every test file once, so main's branch
+  protection needs no change. A flaky shard reruns in minutes, not twenty.
+- **The release check's real-model journeys start sooner.** They run in the
+  browser lanes as soon as the scripted journeys end, instead of also waiting
+  for the unit suite; the check's load budget is unchanged.
+- **An automatic release checks while CI runs.** With "Approve automatically
+  when checks pass" on, the release files its task and runs its check beside
+  CI instead of after it. Toolroll approves it only once every pull request
+  check passed on the commit.
+- **A release asks for your approval while CI runs.** `toolroll release` files
+  the release task and asks you right away instead of waiting for GitHub's
+  checks; after you approve, the release check runs beside CI. The approval
+  says "GitHub's checks are still running; nothing deploys until they pass."
+  Nothing is deployed, merged, tagged or published until every required check
+  passed on the exact commit, read again right before the deploy; if one
+  fails, the release stops before the deploy. A check that already failed
+  still stops the release before anyone is asked.
+- **The console stays responsive while builds and checks run.** `toolroll up`
+  now runs two processes: the console (pages, sign-in and approvals) and the
+  worker (builds, checks, follow-ups and housekeeping). On a copy of a real
+  database, the slowest console answer during a heavy check fell from about
+  5–6 seconds to under 0.3 seconds. A worker that crashes is started again
+  and recovers its interrupted work as a restarted `up` does; a stop still
+  lets running builds finish first. A running check's progress is saved at
+  most once a second, and its final result at once. `--single-process` keeps
+  the old one-process layout.
+- **Console pages open faster and stay quick while work runs.** The sidebar,
+  the Tasks count and the crew list are read once per database change for each
+  person instead of up to four times per page, and before a page is drawn they
+  are read on a background thread so the console keeps answering meanwhile.
+  The chat landing's lists are kept the same way, and the task page reuses its
+  "behind main" line for 15 seconds instead of asking Git twice per view. On a
+  copy of a real database: /board 348 → 26 ms, /agents 320 → 4 ms, /chat 905 →
+  19 ms, a task page 1.5 s → 0.2 s; with the database changing 40 times a
+  second, pages take 0.27–0.47 s and the console answers other requests in
+  about 1 ms (before: 0.35 s typical, up to 1.4 s). A page that re-reads after
+  a live update gets "unchanged" when nothing it shows changed.
+- **Fixes from the first review of the above.** CI's required checks now
+  judge the shards with the verifier from the base branch, run none of the
+  change's code, and fail when a shard executed no tests, its counts don't
+  add up, or it skips tests the base always ran; a required check counts only
+  from the CI workflow, never a same-named job elsewhere. A release filed
+  while CI runs can't be approved by anyone until Toolroll itself saw CI pass,
+  and you're asked only then. A worker that crashes while a removed project is
+  still finishing recovers that project's work before anything new starts. A
+  deploy waits until the console and the worker have both exited. A worker or
+  console that refuses to start again stops `toolroll up` instead of
+  restarting forever. A check's final progress is kept until it's saved.
+
+
+- **Sandboxed commands no longer hang on macOS 26.5.** The fence denies most
+  macOS system services and, by default, asked macOS to report each denial; on
+  macOS 26.5.2 about one denied lookup in 70 never returned while that report
+  was made, so a sandboxed `npm ci`, `npm pack` or any Node program setting up
+  DNS could hang forever (a release carry until its 20-minute timeout). Denials
+  are now made without the report; nothing the fence allows or denies changed.
+- **The console is fast again.** 0.9.76's release-approval setting was read by
+  walking a project's whole action ledger once per task row, and every page's
+  sidebar runs that list four times, so each page blocked the console for about
+  3 seconds (more with tabs open while anything builds). It now reads the
+  setting rows through an existing index: pages went from about 2 s to about
+  0.4 s on a real database. Sizing build checkouts every half hour no longer
+  freezes the console either.
+- **A release check's result is always saved.** The release check's streamed
+  part lines now carry a tag no Toolroll version misreads as a journey's own
+  line; an older console counted them twice, built a progress snapshot it then
+  refused, and the refusal stopped the check's log and result from being saved
+  (the check read as "unavailable"). A progress update that fails to save can
+  no longer stop sealing, and a result that can't be saved says so on the run.
+- **A renamed or dropped CI job no longer hides its failure.** Every failed
+  attempt on a commit is judged before newer runs replace older ones, so a
+  job a newer run renamed or dropped can't erase a test failure from an
+  automatic approval. The Windows containment repeat job keeps one name
+  whatever its count.
+- **Toolroll decides what a Full release check owes.** Before the check runs,
+  Toolroll works out from its own record of the last release which parts it
+  owes (units, scripted and real-model journeys, upgrades), seals that, and
+  tells the check, which runs at least those. Every owed part needs a result,
+  whatever the check's report says it selected. CI never stands in for a
+  release's unit suite, and a journey or upgrade run that listed nothing it
+  ran is no result.
+- **Missing evidence is unknown, not clean.** What passed only on a retry is
+  sealed in the check's receipt. If a check's report is lost or damaged, its
+  retries are unknown and nothing approves itself; the receipt's report and
+  inventory files are checked byte for byte. A check that passed only when
+  rerun after the approved setup counts as a retry, and the setup rerun only
+  happens when the check never started.
+- **Merging checks main on GitHub itself.** A release reads main's head and
+  compares the branch through GitHub's API, never a local ref, and reads
+  main again right before merging. Releases approve themselves only while
+  main's branch protection requires branches to be up to date before
+  merging; without it, a person's release says which setting to turn on.
+  Toolroll only reads that setting.
+- **No lazy fetch on any supported git.** Protected Git reads (the release's
+  object reader and extraction, project knowledge and learning, the task
+  base, release coverage, review screenshots, grants) run through a frozen
+  copy of the repository's config on every git version, refuse every
+  network transport and are time-bounded, so an include, a partial clone or
+  a planted filter can't fetch, run or hang anything. The deployment script
+  reads a commit's files with no filter or attribute applied. CI's oldest-git
+  lane now tests git 2.41.0 exactly.
+- **Main's protection must actually hold.** A release now reads main's whole
+  branch protection and rulesets and counts them only when they require
+  branches to be up to date, require the release's CI checks, and can't be
+  bypassed by the account that merges ("Do not allow bypassing the above
+  settings"; no ruleset bypass for a role, team, app or organization admin).
+  A person's release names exactly what is missing, and says which new CI
+  checks main's protection doesn't require yet.
+- **Deployment reads only verified objects, with none of the repository's
+  config.** The deployment script hashes the commit and every tree as well
+  as every file against their ids, and runs git on a copy of the
+  repository's layout with a config of its own, so a corrupted tree, a
+  config change mid-read or a custom transport helper can't substitute files
+  or fetch anything.
+- **An unreadable last release never shrinks a check.** When the last
+  release Toolroll recorded can't be verified, the release check doesn't
+  run and says so, and the release card's change list reads "couldn't be
+  read", instead of acting as if there were no previous release.
+- **Setup recovery needs proof the check never started.** The approved setup
+  reruns a check only when Toolroll itself found the check's program missing
+  before starting it and the shell said exactly that and nothing else. Any
+  other failure is the check's own result for a person to judge, and a
+  release after a setup rerun says why the first attempt failed.
+- **Dispatch and coding handoffs can't be held up by a project's Git
+  config.** The worktree binding reads Git's registry as plain files, and the
+  handoff's branch read is bounded and runs outside its database
+  transactions.
+- **A release check that's cut short still leaves its evidence.** Every
+  part of the release check (typecheck, build, units, journeys, upgrades)
+  now prints its output as it runs, each line tagged with its part (and
+  upgrade version), instead of only at the very end. Each part's end is
+  recorded with its start time, exit code, signal, timeout and whether it
+  was stopped, and a failing upgrade version's own log is printed the moment
+  it fails. Release check 3261 was stored as "exit 1" with nothing but its
+  header: a signal had ended it, the plane recorded the signal as a plain
+  exit 1, and the parts' output was still waiting to be printed. A command
+  ended by a signal, or by Toolroll's own shutdown, now says so.
+- **No complete result, no pass.** A release's Full check counts only with
+  its valid report (carrying that run's secret), a result for every part,
+  unit file, journey group and upgrade version it owed, and a successful
+  exit. A missing, malformed, cut-short or incomplete report is an error
+  ("no result"), never a pass.
+- **Failures are classed, and only Toolroll's own infrastructure is rerun.**
+  The flat "two flakes" allowance is gone. A failing test, typecheck, build,
+  attack test or upgrade is never rerun to pass: fix the branch. A failure
+  Toolroll itself confirms as infrastructure (the check never started, the
+  worker lost the build, Toolroll's shutdown stopped it, or a GitHub job
+  whose runner failed before any of its steps ran) is checked again on the
+  same commit under the same approval, at most once per incident and twice
+  per commit, with no new approval. An unexplained failure blocks: a
+  diagnostic rerun may run, but its pass doesn't erase the failure, so you
+  decide. Real-model journeys are counted, never rerun until they pass, and
+  one that passed only on a retry is now reported (an automatic approval
+  won't approve it). `toolroll release` says which of these happened and
+  what to do next, instead of always asking for `--new`.
+- **A password that starts with "--" works on the command line.** About one
+  minted password in 4096 began with "--", and `toolroll release publish-ok`
+  (and other commands) read it as a missing value. A `--token` or
+  `--password` value is now always the next argument, `--token=<value>`
+  works everywhere, and new passwords, invites and tokens never start with
+  "-".
+- **CI tests the commit a release trusts.** Every pull-request job now checks
+  out the pull request's own head commit, not the merge commit GitHub makes,
+  and proves it before building.
+- **Git 2.41 or newer is required, and tested.** Toolroll's hardened git reads
+  need `git --attr-source`, which arrived in git 2.41. `toolroll up`, `serve`
+  and `watch` won't start on an older git, and `toolroll doctor` names it,
+  each with the installed and the required version. Git 2.41 to 2.44 has no
+  `--no-lazy-fetch`: there Toolroll leaves it out and instead refuses a
+  project that is a partial clone for protected reads ("this project is a
+  partial clone; protected reads need git 2.45 or newer"), judged from the
+  frozen copy of the config git then runs with (never checked, then run),
+  and every read still refuses all network protocols.
+  Two CI jobs run the git attack and worktree tests on git 2.41 and 2.47, as
+  an unprivileged user, fail if any test is skipped, and are now required
+  for a release.
+- **A release branch must contain main.** CI tests the pull request's own
+  commit, so `toolroll release` refuses a branch that doesn't contain main's
+  head ("the branch is behind main; update it and push"), at the gate before
+  anything is filed and again right before the merge.
+- **Tests can't lean on a guessed git identity.** Each test's home tells git
+  never to guess a name and email from the host, so a test that commits
+  without setting one fails on a Mac just as it would on Linux CI.
+- **Two timing-sensitive tests now wait for events.** The read-worker test and
+  the watch recovery test no longer fail when a busy machine runs slowly.
+
 ## 0.9.76 — 2026-10-28
 
 - **Releases can approve themselves when they're green.** A new per-project
