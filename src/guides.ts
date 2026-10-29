@@ -537,6 +537,10 @@ instead of making them twice.
 - An interrupted deployment resumes with \`deploy-browser.mjs --stage <saved
   path> --phase recover\` before any new attempt, including \`--new\`.
   Failed recovery stops there; the original deployment journal remains available.
+  \`toolroll release --recover-deploy\` shows what that recovery will do for
+  the one unfinished deployment, and \`--yes\` runs it: when the old service
+  isn't proved stopped it stops only processes proved to be that service's
+  own, restarts the previous service and lifts the pause. Safe to rerun.
 - \`link\`: a CLI name didn't answer as the new build, so both were put
   back. The service already runs the new build; fix the name and rerun.
 - \`gate-held\`: the deployment stopped before its swap but left new work

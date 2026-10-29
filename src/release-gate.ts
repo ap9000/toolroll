@@ -59,7 +59,7 @@ export function gateOwner(db: Database): string | null {
 }
 
 /** Every deployment journal under staged-upgrades/: the stage it is in and what it holds, or why it can't be read. */
-function journals(stateDir: string): { stage: string; journal: Record<string, unknown> | null }[] {
+export function journals(stateDir: string): { stage: string; journal: Record<string, unknown> | null }[] {
   const root = join(stateDir, "staged-upgrades");
   let stages: string[] = [];
   try { stages = readdirSync(root, { withFileTypes: true }).filter(one => one.isDirectory()).map(one => join(root, one.name)); } catch { return []; }

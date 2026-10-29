@@ -6,7 +6,8 @@ import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, o
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { observeCodingDeployment, backupCodingDeployment, verifyCodingDeploymentBackup, assertCodingDeploymentStopped, releaseStaleCodingDeployment, ledgerStaleCodingRelease } from "./deploy-coding.mjs";
-import { recoverFailedDeployment, waitUntilHealthy } from "./deploy-recovery.mjs";
+import { HEALTH_WAIT_MS, RUNNER_LIVENESS_MS, recoverFailedDeployment, waitUntilHealthy } from "./deploy-recovery.mjs";
+import { classify, recordedStillRunning } from "./deploy-stop.mjs";
 
 export const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 const quote = s => '"' + s.replaceAll('"', '""') + '"';
@@ -101,13 +102,35 @@ export function codingBackupBeforeSwap(r, database) {
   return existsSync(`${database}.coding.sqlite`) ? undefined : null;
 }
 
+/** What is still running that a deployment must wait for, in words a person can act on (desktop-update-gate.ts
+ * activeUpdateWork's counts). */
+export function activeWorkWords(work) {
+  const words = {
+    runs: n => `${n} task run${n === 1 ? "" : "s"} still running`,
+    claims: n => `${n} claimed task${n === 1 ? "" : "s"}`,
+    conversations: n => `${n} chat or helper conversation${n === 1 ? "" : "s"} still answering`,
+    stopping: n => `${n} task stop${n === 1 ? "" : "s"} still settling`,
+    coding: n => `${n} coding session${n === 1 ? "" : "s"} open`,
+    codingDeliveries: n => `${n} coding submission${n === 1 ? "" : "s"} being delivered`,
+    terminals: n => `${n} live terminal${n === 1 ? "" : "s"} open`,
+  };
+  return Object.entries(work).filter(([, n]) => n > 0).map(([key, n]) => words[key]?.(n) ?? `${key} ${n}`).join(", ");
+}
+/** The refusal when work is still running: what it is, that the deployment doesn't wait, and what to do. */
+export function activeWorkRefusal(work) {
+  return `Current work must finish first: ${activeWorkWords(work)}. The deployment checks once and doesn't wait: let it finish, or stop or close it in the console, then run the deployment again (\`toolroll release\` waits for running work within its quiet limit).`;
+}
+
 /** The journaled phases of one deployment. The paths, runtimes and records are the command line's; the effects are
  * the plane's records (facts, quiet), the services (service, verifyServiceStopped, spawnSync for launchctl, ps,
  * pgrep and curl), the staged runtime (proveStaged, load, loadCodingDeploymentRuntime), fetch, sleep, say,
- * requireTrue (which ends the deployment) and pruneStaged. */
+ * requireTrue (which ends the deployment) and pruneStaged. processes() lists every process (deploy-stop.mjs
+ * listProcesses) and stopProcesses(scope) stops a service's proved leftovers (stopServiceProcesses); without them
+ * recovery never signals a process. */
 export function browserDeployment({
   database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script, oldRt, deploymentLock, signal,
   facts, quiet, service, proveStaged, verifyServiceStopped, leftFrom, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
+  processes, stopProcesses,
 }) {
   const short = candidateHead.slice(0, 7);
   const assertLocked = () => deploymentLock.assertHeld(journalFile);
@@ -156,11 +179,13 @@ export function browserDeployment({
     let r;
     try { r = readJournal(); } catch { return false; }
     try {
+      const dists = [...new Set([priorDist, r.priorRuntime, r.nextRuntime].filter(one => typeof one === "string" && one !== ""))];
       const words = recoverFailedDeployment(r.phase, {
         // A replacement can have started after the recorded snapshot. Recovery needs the same runtime scan as
         // normal shutdown; absent or unreadable process evidence leaves the pause and the service untouched.
-        stopProved: () => stopProved(r, { alive, remaining: () => leftFrom?.(priorDist),
+        stopProved: () => stopProved(r, { alive: pid => aliveAsService(pid, dists), remaining: () => leftFrom?.(priorDist),
           loaded: () => spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status === 0 }),
+        ...(typeof stopProcesses === "function" && typeof processes === "function" ? { forceStop: () => forceStop(r, dists) } : {}),
         restoreBackup: () => restoreDeploymentBackup(r, { database, stageDir }),
         restoreService: () => restorePriorService(r),
         removeGate: () => {
@@ -177,15 +202,44 @@ export function browserDeployment({
       }, { previousRuntimeCompatible: r.schema === r.nextSchema && r.rehearsal?.previousRuntimeCompatible === true });
       if (words) console.error(words);
       else if (r.phase === "preparing") console.error(`The deployment stopped while preparing, before it paused new work (update ${r.id}); nothing was paused. Rerun --phase prepare with --stage ${stageDir} to resume it.`);
-      else if (!["released", "deployed"].includes(r.phase)) console.error(`The deployment stopped at ${r.phase}, where the old service is not proved stopped or the new one may be running. New work stays paused (update ${r.id}); inspect ${journalFile}.`);
+      else if (!["released", "deployed"].includes(r.phase)) console.error(`The deployment stopped at ${r.phase}, where the old service is not proved stopped or the new one may be running. New work stays paused (update ${r.id}); inspect ${journalFile}. \`toolroll release --recover-deploy\` shows what recovery can still do.`);
       return words !== null || ["preparing", "released", "deployed"].includes(r.phase);
     } catch (error) {
       console.error(`✗ The previous service was not started again (update ${r.id}, at ${r.phase}): ${error.message}`);
-      console.error(`  The previous service is not confirmed running and new work stays paused. Once the cause is fixed, run: node ${script} --run ${runId} --stage ${stageDir} --phase recover`);
+      console.error(`  The previous service is not confirmed running and new work stays paused. Once the cause is fixed, run \`toolroll release --recover-deploy --yes\` (or: node ${script} --run ${runId} --stage ${stageDir} --phase recover).`);
       return false;
     }
   }
-  const alive = pid => spawnSync("/bin/ps", ["-p", String(pid), "-o", "pid="], { encoding: "utf8" }).status !== 1;
+  // A recorded process is alive while its pid runs a command of this service (deploy-stop.mjs): one reused by an
+  // unrelated process means the recorded one is gone. Without a process list, any process with the pid counts.
+  const aliveAsService = (pid, dists) => {
+    const rows = typeof processes === "function" ? processes() : null;
+    if (rows === null || rows === undefined) return spawnSync("/bin/ps", ["-p", String(pid), "-o", "pid="], { encoding: "utf8" }).status !== 1;
+    return recordedStillRunning(rows, pid, { dists, database });
+  };
+  /** The journal says the old service must be stopped and it isn't proved stopped: boot out the loaded definition, but
+   * only when it is this deployment's (its running supervisor, or with none its definition, names one of the two
+   * runtimes), then stop whatever is left of its processes once each is proved to be the service's own. */
+  function forceStop(r, dists) {
+    const rows = processes();
+    requireTrue(rows !== null && rows !== undefined, "The process list couldn't be read, so nothing was stopped.");
+    const launch = spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" });
+    if (launch.status === 0) {
+      const pid = Number(String(launch.stdout ?? "").match(/\n\s*pid = (\d+)/)?.[1]);
+      if (pid > 1) {
+        const row = rows.find(one => one.pid === pid);
+        requireTrue(row !== undefined && classify(row.command, { dists, database })?.kind === "supervisor",
+          `The loaded service (process ${pid}) runs neither runtime of this deployment, so it was left running.`);
+      } else {
+        const definition = existsSync(plist) ? readFileSync(plist, "utf8") : "";
+        requireTrue(dists.some(dist => definition.includes(`<string>${dist}/cli.js</string>`)), "The loaded service's definition names neither runtime of this deployment, so it was left as it is.");
+      }
+      say(`• booting out ${label}: the deployment journal says the old service must be stopped`);
+      spawnSync("/bin/launchctl", ["bootout", `gui/${uid}/${label}`], { encoding: "utf8" });
+    }
+    stopProcesses({ dists, database, recorded: recordedServicePids(r).filter(pid => Number.isInteger(pid) && pid > 1) });
+    return true;
+  }
   /** The previous definition, loaded again once its processes were proved gone, and only on the schema it runs.
    * Restored means it runs from its runtime and answers /healthz. */
   function restorePriorService(r) {
@@ -197,14 +251,34 @@ export function browserDeployment({
     writeFileSync(plist, livePlist);
     const booted = spawnSync("/bin/launchctl", ["bootstrap", `gui/${uid}`, plist], { encoding: "utf8" });
     if (booted.status !== 0) throw Error(`launchctl bootstrap failed: ${booted.stderr}`);
+    let why = "it has not started yet";
     const answers = () => {
       try {
-        if (service(priorDist) === null) return false;
+        if (service(priorDist) === null) { why = "its processes are not all running yet"; return false; }
         const health = spawnSync("/usr/bin/curl", ["-fsS", "-m", "2", `http://127.0.0.1:${servicePort}/healthz`], { encoding: "utf8" });
-        return health.status === 0 && JSON.parse(health.stdout).status === "ok";
-      } catch { return false; }
+        if (health.status === 0 && JSON.parse(health.stdout).status === "ok") return true;
+        why = "its console is not answering yet";
+        return false;
+      } catch { why = "its console is not answering yet"; return false; }
     };
-    if (!waitUntilHealthy(answers)) throw Error(`the previous service was loaded but did not answer http://127.0.0.1:${servicePort}/healthz within 90 seconds`);
+    const seconds = Math.round(HEALTH_WAIT_MS / 1000);
+    if (!waitUntilHealthy(answers, { onWait: (waited, attempts) => console.error(`  waiting for the previous service (${waited} s of up to ${attempts} s): ${why}${heldWorkers()}`) })) {
+      throw Error(`the previous service was loaded but did not answer http://127.0.0.1:${servicePort}/healthz within ${seconds} seconds (${why}${heldWorkers()})`);
+    }
+  }
+
+  /** Why a restarted service may not be up yet, from the plane's records: a worker whose last heartbeat still holds its
+   * name refuses a fresh start until it lapses (src/runner.ts DEFAULT_LIVENESS_MS), unless its processes were recorded
+   * and proved gone. Empty when none is held or the records can't be read. */
+  function heldWorkers() {
+    try {
+      const db = openDeploymentDatabase(database, { readOnly: true });
+      try {
+        const since = new Date(Date.now() - RUNNER_LIVENESS_MS).toISOString();
+        const held = db.prepare("SELECT name, heartbeat_at FROM runner WHERE retired_at IS NULL AND heartbeat_at > ? ORDER BY name").all(since);
+        return held.map(one => `; worker ${one.name} is held by its last heartbeat until ${new Date(Date.parse(String(one.heartbeat_at)) + RUNNER_LIVENESS_MS).toISOString()}, then a fresh start takes it over`).join("");
+      } finally { db.close(); }
+    } catch { return ""; }
   }
 
   // Persist newly observed custody before the async SQLite snapshot. Every final
@@ -344,7 +418,9 @@ export function browserDeployment({
     requireTrue(booted.status === 0, `launchctl bootstrap failed: ${booted.stderr}`);
     save(r, "starting");
     let live = null;
-    for (let i = 0; i < 90 && live === null; i++) { await settle(sleep(1000)); live = service(nextDist); }
+    // As long as the restore would wait: a start refused while a stale worker heartbeat lapses is restarted by its
+    // supervisor within the window (deploy-recovery.mjs HEALTH_WAIT_MS).
+    for (let i = 0; i < HEALTH_WAIT_MS / 1000 && live === null; i++) { await settle(sleep(1000)); live = service(nextDist); }
     if (live === null) {
       // A failed health check does not establish process exit. Capture the
       // service's remaining processes before stopping it, and check native
@@ -398,9 +474,11 @@ export function browserDeployment({
     try {
       requireTrue(db.prepare("SELECT version FROM schema_version").get().version === r.nextSchema && oldRt.gate.updateGateOwned(db, r.id), "Unexpected live schema or update owner.");
       let leases = [];
-      for (let i = 0; i < 90; i++) {
+      for (let i = 0; i < HEALTH_WAIT_MS / 1000; i++) {
         leases = repos.map(repo => db.prepare("SELECT repo,heartbeat_at,expires_at FROM watch_lease WHERE runner=? AND repo=?").get(runner, repo));
         if (leases.every(l => l && Date.parse(l.expires_at) > Date.now() && Date.parse(l.heartbeat_at) > Date.now() - 60_000)) break;
+        // Said every 30 s: what the new worker is waiting for (a lapsing heartbeat or lease of the stopped one).
+        if (i % 30 === 15) say(`  waiting for the new worker's project leases (${i} s of up to ${HEALTH_WAIT_MS / 1000} s)${heldWorkers()}`);
         await settle(sleep(1000));
       }
       requireTrue(leases.every(l => l && Date.parse(l.expires_at) > Date.now()), "Project worker leases did not come up fresh.");

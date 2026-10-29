@@ -1,10 +1,10 @@
 import { test, expect, vi } from 'vitest';
-import { copyFileSync, mkdtempSync, mkdirSync, existsSync, readFileSync, writeFileSync, rmSync, statSync, renameSync, symlinkSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, mkdirSync, existsSync, readFileSync, realpathSync, writeFileSync, rmSync, statSync, renameSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { DatabaseSync, backup } from 'node:sqlite';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync as realSpawnSync, type ChildProcess } from 'node:child_process';
 import { openStore } from './store.js';
 import { CodingWorkspace } from './coding-workspace.js';
 import * as gate from './desktop-update-gate.js';
@@ -12,6 +12,7 @@ import { installUpdateGate, freezeUpdateGate, removeUpdateGate, updateGateOwned 
 import { durableJson } from './desktop-update.js';
 import { loadCodingDeploymentRuntime, observeCodingDeployment, backupCodingDeployment, verifyCodingDeploymentBackup, assertCodingDeploymentStopped, releaseStaleCodingDeployment } from '../scripts/deploy-coding.mjs';
 import { browserDeployment, openDeploymentDatabase, snapshotBackup } from '../scripts/deploy-phases.mjs';
+import { listProcesses, serviceStopper } from '../scripts/deploy-stop.mjs';
 import { acquireDeploymentLock } from './deploy-lock.js';
 import { deploymentChild } from '../test/deploy-process.js';
 import { fakePid } from '../test/fake-pid.js';
@@ -170,7 +171,7 @@ test('a broken installed coding module is not silently treated as a legacy runti
  * coding catalog, journal and backups in a scratch folder. launchd, ps, pgrep, curl, the installed and staged
  * runtimes and the plane's records are recorded fakes. `log` holds what happened, in order: each journaled phase
  * once, and every service, custody, backup, migration and network effect. */
-async function deployment({ codingCatalog = true } = {}) {
+async function deployment({ codingCatalog = true, wrap = (args: Record<string, any>) => args }: { codingCatalog?: boolean; wrap?: (args: Record<string, any>) => Record<string, any> } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'so-browser-phases-'));
   const database = join(root, 'orders.db'), stage = join(root, 'stage'), plist = join(root, 'browser.plist');
   const priorDist = join(root, 'installed', 'dist'), nextDist = join(stage, 'runtime', 'node_modules', 'toolroll', 'dist');
@@ -215,7 +216,7 @@ async function deployment({ codingCatalog = true } = {}) {
   let lastPhase = '';
   const deploymentLock = acquireDeploymentLock(journalFile);
   const cancellation = new AbortController();
-  const phases = browserDeployment({
+  const phases = browserDeployment(wrap({
     deploymentLock, signal: cancellation.signal,
     database, stageDir: stage, stateDir: root, journalFile, plist, livePlist, priorDist, nextDist, uid: 501, label: 'com.toolroll.browser', servicePort: '4180',
     runId: 7, candidateHead: 'c'.repeat(40), publicUrl: null, script: 'scripts/deploy-browser.mjs --phase',
@@ -255,7 +256,7 @@ async function deployment({ codingCatalog = true } = {}) {
     },
     requireTrue: (okay: unknown, message: string) => { if (!okay) throw Error(message); },
     pruneStaged: async () => [],
-  });
+  }));
   const journal = () => JSON.parse(readFileSync(journalFile, 'utf8')) as Record<string, any>;
   const orders = () => new DatabaseSync(database);
   const gateOwned = () => { const db = orders(); try { return gate.updateGateOwned(db, journal().id); } finally { db.close(); } };
@@ -737,3 +738,113 @@ test('a stale owner whose agent or session still lives is never released by a de
     } finally { db.close(); }
   } finally { agent.kill(); f.close(); }
 });
+
+// ---- 2026-10-29: a stuck `up` left behind by its supervisor -----------------------------------------------------
+
+/** The installed runtime's entries, behaving as in the incident: the supervisor forwards SIGTERM and exits at once;
+ * `up` and its worker ignore SIGTERM and keep running without it. */
+function stuckRuntime(dist: string): void {
+  mkdirSync(dist, { recursive: true });
+  writeFileSync(join(dist, 'controller-service.js'), `
+    const { spawn } = require('node:child_process');
+    const child = spawn(process.argv[2], process.argv.slice(3), { stdio: 'ignore' });
+    process.on('SIGTERM', () => { child.kill('SIGTERM'); process.exit(0); });
+    setInterval(() => {}, 1000);`);
+  writeFileSync(join(dist, 'cli.js'), `
+    const { spawn } = require('node:child_process');
+    process.on('SIGTERM', () => {});
+    spawn(process.execPath, [__dirname + '/up-role-child.js', 'worker'], { stdio: 'ignore' });
+    setInterval(() => {}, 1000);`);
+  writeFileSync(join(dist, 'up-role-child.js'), "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000);");
+}
+const pause = (ms: number) => new Promise(done => setTimeout(done, ms));
+const isAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+async function waitFor<T>(what: string, probe: () => T | null | undefined | false, ms = 10_000): Promise<T> {
+  for (const deadline = Date.now() + ms; ;) {
+    const value = probe();
+    if (value) return value;
+    if (Date.now() > deadline) throw Error(`timed out waiting for ${what}`);
+    await pause(50);
+  }
+}
+/** A real service tree of the installed runtime on `db`: supervisor → `up` → worker. */
+async function stuckService(dist: string, db: string, spawned: ChildProcess[]) {
+  const supervisor = spawn(process.execPath, [join(dist, 'controller-service.js'), process.execPath, join(dist, 'cli.js'), 'up', '--db', db, '--port', '4180'], { stdio: 'ignore' });
+  spawned.push(supervisor);
+  const up = await waitFor('its up', () => listProcesses(realSpawnSync)?.find(row => row.ppid === supervisor.pid && row.command.includes('cli.js up')));
+  const role = await waitFor('its worker', () => listProcesses(realSpawnSync)?.find(row => row.ppid === up.pid && row.command.endsWith('up-role-child.js worker')));
+  return { supervisor: supervisor.pid!, up: up.pid, role: role.pid };
+}
+/** The fixture with the real stop proof and escalation over real processes; launchd's bootout sends the supervisor
+ * its SIGTERM, as launchd does. */
+async function stuckDeployment() {
+  const spawned: ChildProcess[] = [];
+  const tree: { supervisor: number; up: number; role: number }[] = [];
+  let stopper: ReturnType<typeof serviceStopper> | null = null;
+  const d = await deployment({ wrap: args => {
+    stopper = serviceStopper({ database: args['database'], spawnSync: realSpawnSync, kill: (pid: number, signal: NodeJS.Signals) => process.kill(pid, signal), sleep: pause, say: args['say'],
+      loaded: () => false, graceMs: 500, termMs: 500, killMs: 5_000 });
+    const fake = args['spawnSync'];
+    return { ...args, leftFrom: stopper.leftFrom, processes: stopper.processes, stopProcesses: stopper.stopProcesses,
+      verifyServiceStopped: async (pids: number[], dist: string) => { args['say']?.(`• proving ${pids.length} processes stopped`); await stopper!.verifyServiceStopped(pids, dist); },
+      spawnSync: (command: string, argv: string[], options: unknown) => {
+        if (basename(command) === 'launchctl' && argv[0] === 'bootout') for (const one of tree) { try { process.kill(one.supervisor, 'SIGTERM'); } catch { /* gone */ } }
+        return fake(command, argv, options);
+      } };
+  } });
+  const priorDist = join(d.root, 'installed', 'dist');
+  stuckRuntime(priorDist);
+  const old = await stuckService(priorDist, d.database, spawned);
+  tree.push(old);
+  d.services.old = { supervisor: old.supervisor, children: [old.up], commands: [], roles: [{ role: 'worker', pid: old.role }] } as typeof d.services.old;
+  return { d, old, priorDist, spawned, stopper: () => stopper!,
+    close: () => {
+      // Everything this test started, whatever happened: every process running from its folder.
+      for (const row of listProcesses(realSpawnSync) ?? []) if (row.command.includes(d.root) || row.command.includes(realpathSync(d.root))) { try { process.kill(row.pid, 'SIGKILL'); } catch { /* gone */ } }
+      for (const child of spawned) { try { child.kill('SIGKILL'); } catch { /* gone */ } }
+      d.close();
+    } };
+}
+
+test('2026-10-29: an `up` that ignores SIGTERM after its supervisor exits is stopped by the deploy itself, and the deploy completes', async () => {
+  const s = await stuckDeployment();
+  try {
+    await s.d.rehearsed();
+    await s.d.phases.swap();
+    // The supervisor exited on its SIGTERM; its `up` and worker ignored theirs and were stopped once proved its own.
+    expect([s.old.supervisor, s.old.up, s.old.role].some(isAlive)).toBe(false);
+    expect(s.d.log.slice(0, 5)).toEqual(['rehearsed', 'stopping', 'bootout', 'proving 3 processes stopped', 'stopping 2 process(es) the old service left running: ' + `${s.old.up} (up), ${s.old.role} (worker role)`]);
+    expect(s.d.log).toContain(`process ${s.old.up}, ${s.old.role} ignored SIGTERM; stopping it with SIGKILL`);
+    expect(s.d.journal()).toMatchObject({ phase: 'started' });
+    // Finish, as the new worker's lease comes up: deployed, admission open, no manual step.
+    const lease = () => { const db = s.d.orders(); try { const now = new Date().toISOString(); db.prepare("INSERT OR REPLACE INTO watch_lease VALUES('worker','/repo','owner',1,?,?,?)").run(now, new Date(Date.now() + 3_600_000).toISOString(), now); } finally { db.close(); } };
+    lease();
+    await s.d.phases.finish();
+    expect([s.d.journal().phase, s.d.gateOwned()]).toEqual(['deployed', false]);
+  } finally { s.close(); }
+}, 60_000);
+
+test('2026-10-29: recovery of a deploy stuck at stopping stops only the old service\'s proved leftovers, restarts the previous service and lifts the pause', async () => {
+  const s = await stuckDeployment();
+  const sandbox: ChildProcess[] = [];
+  try {
+    await s.d.rehearsed();
+    // The old deployment's stop: waited, never escalated, and left the journal at stopping with the orphan running.
+    const r = s.d.journal();
+    s.d.phases.save({ ...r, stoppingService: s.d.services.old }, 'stopping');
+    process.kill(s.old.supervisor, 'SIGTERM');
+    await waitFor('the supervisor to exit', () => !isAlive(s.old.supervisor));
+    // The same runtime serving a sandbox's database: never this deployment's, never touched.
+    const other = await stuckService(s.priorDist, join(s.d.root, 'demo.db'), sandbox);
+    s.d.reset();
+    expect(quietly(() => s.d.phases.recoverJournal())).toBe(true);
+    expect([isAlive(s.old.up), isAlive(s.old.role)]).toEqual([false, false]);
+    expect([other.supervisor, other.up, other.role].every(isAlive)).toBe(true);
+    expect(s.d.log).toEqual(expect.arrayContaining(['bootstrap previous while paused', 'healthz while paused']));
+    expect([s.d.journal().phase, s.d.gateOwned()]).toEqual(['released', false]);
+    // Idempotent: run again, nothing left to do.
+    s.d.reset();
+    expect(quietly(() => s.d.phases.recoverJournal())).toBe(true);
+    for (const pid of [other.role, other.up, other.supervisor]) process.kill(pid, 'SIGKILL');
+  } finally { for (const child of sandbox) { try { child.kill('SIGKILL'); } catch { /* gone */ } } s.close(); }
+}, 60_000);
