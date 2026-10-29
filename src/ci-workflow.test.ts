@@ -47,6 +47,11 @@ function checks(job: Job, id: string): { name: string; runner: string }[] {
 }
 
 const prChecks = () => [...REQUIRED_PR_CHECKS].sort();
+/** The unit suite's shards (pipeline-speed.md, part A): they run beside the required checks; each Node version's join
+ * job carries the required name. */
+const SHARDS = 4;
+const shardChecks = () => ["22", "24"].flatMap(node => Array.from({ length: SHARDS }, (_, at) => `node ${node} · shard ${at + 1}/${SHARDS}`)).sort();
+const ciChecks = () => [...prChecks(), ...shardChecks()].sort();
 
 const running = (event: Event) => workflows.filter(one => triggered(one, event)).flatMap(one => Object.entries(one.jobs).flatMap(([id, job]) => checks(job, id)));
 const names = (event: Event) => running(event).map(one => one.name).sort();
@@ -63,15 +68,15 @@ describe("the CI workflows", () => {
     // No branch or path filter may omit required checks on a PR (including documentation-only changes).
     expect(workflows.find(one => one.file === "ci.yml")?.on["pull_request"]).toBeNull();
     const pr: Event = { kind: "pull_request", paths: ["src/release.ts"] };
-    expect(names(pr)).toEqual(prChecks());
+    expect(names(pr)).toEqual(ciChecks());
     expect(running(pr).filter(one => /macos/.test(one.runner))).toEqual([]);
-    expect(running(pr).filter(one => /ubuntu/.test(one.runner) && /^node /.test(one.name)).map(one => one.name).sort()).toEqual(["node 22 · ubuntu-latest", "node 24 · ubuntu-latest"]);
-    expect(names({ kind: "pull_request", paths: ["README.md"] })).toEqual(prChecks());
+    expect(running(pr).filter(one => /ubuntu/.test(one.runner) && /^node \d+ · ubuntu-latest$/.test(one.name)).map(one => one.name).sort()).toEqual(["node 22 · ubuntu-latest", "node 24 · ubuntu-latest"]);
+    expect(names({ kind: "pull_request", paths: ["README.md"] })).toEqual(ciChecks());
     expect(running(pr).find(one => one.name === "Windows Job Object containment")?.runner).toBe("windows-latest");
     expect(running(pr).find(one => one.name === "linux native containment · delegated cgroup v2")?.runner).toBe("ubuntu-latest");
     // The Windows repeat job only joins pull requests that touch Windows containment; it is never a required check.
     const windows = names({ kind: "pull_request", paths: ["src/containment.ts"] });
-    expect(windows.filter(name => !prChecks().includes(name))).toEqual(["Windows Job Object containment · c2 repeat"]);
+    expect(windows.filter(name => !ciChecks().includes(name))).toEqual(["Windows Job Object containment · c2 repeat"]);
   });
 
   test("a failed or skipped macOS leg prevents npm publication through the tag workflow dependency", () => {
@@ -114,7 +119,7 @@ describe("the CI workflows", () => {
   });
 
   test("a push to main runs the pull-request jobs again", () => {
-    expect(names({ kind: "push", branch: "main" })).toEqual(prChecks());
+    expect(names({ kind: "push", branch: "main" })).toEqual(ciChecks());
     expect(names({ kind: "push", branch: "toolroll/simplify-release" })).toEqual([]);
   });
 
@@ -132,8 +137,8 @@ describe("the CI workflows", () => {
       expect(steps[proof]?.run, id).toContain("$TESTED_SHA");
       expect(steps.slice(checkout + 1, proof).filter(step => step.uses !== undefined || /\bnpm\b|vitest|scripts\//.test(step.run ?? "")), id).toEqual([]);
     }
-    // The test job's migration tests read old releases from history.
-    expect(ci.jobs["test"]?.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with?.["fetch-depth"]).toBe(0);
+    // The shards' migration tests read old releases from history.
+    expect(ci.jobs["test-shard"]?.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with?.["fetch-depth"]).toBe(0);
   });
 
   test("the git lanes run the git tests on the declared floor and on 2.47, unprivileged, and refuse a skip", () => {
@@ -152,7 +157,36 @@ describe("the CI workflows", () => {
   });
 
   test("no job runs behind a condition, so a skipped job can't stand in for a passing required check", () => {
-    const conditional = workflows.flatMap(one => Object.entries(one.jobs).filter(([, job]) => job.if !== undefined).map(([id]) => `${one.file}: ${id}`));
-    expect(conditional).toEqual([]);
+    // The one exception always runs: the shards' join, which a failed shard would otherwise skip into a pass.
+    const conditional = workflows.flatMap(one => Object.entries(one.jobs).filter(([, job]) => job.if !== undefined).map(([id, job]) => `${one.file}: ${id} ${String(job.if)}`));
+    expect(conditional).toEqual(["ci.yml: test ${{ always() }}"]);
+  });
+
+  test("pipeline-speed A: each required Node check joins every shard of the unit suite and fails unless all of them passed on the tested commit", () => {
+    const ci = workflows.find(one => one.file === "ci.yml")!;
+    const shard = ci.jobs["test-shard"]!, join = ci.jobs["test"]!;
+    // Every shard of every Node version, never failing fast (a cancelled shard proves nothing), nothing tolerated.
+    expect(shard.strategy?.matrix).toEqual({ node: ["22", "24"], shard: Array.from({ length: SHARDS }, (_, at) => at + 1) });
+    expect((shard.strategy as { "fail-fast"?: unknown })["fail-fast"]).toBe(false);
+    expect(join.strategy?.matrix).toEqual({ node: ["22", "24"] });
+    expect(join.needs).toBe("test-shard");
+    for (const job of [shard, join]) {
+      expect(job["continue-on-error"] ?? false).toBe(false);
+      for (const step of job.steps ?? []) { expect(step.if).toBeUndefined(); expect(step["continue-on-error"] ?? false).toBe(false); }
+    }
+    const runs = (job: Job) => (job.steps ?? []).map(step => step.run ?? "");
+    // Each shard runs the whole suite's command on its slice, then records what it ran on the tested commit.
+    expect(runs(shard)).toContain(`npm run test:all -- --shard=\${{ matrix.shard }}/${SHARDS} --reporter=default --reporter=json --outputFile.json=shard-report.json`);
+    expect(runs(shard)).toContain(`node scripts/ci-shards.mjs summarize shard-report.json shard-summary.json --sha "$TESTED_SHA" --node \${{ matrix.node }} --shard \${{ matrix.shard }}/${SHARDS}`);
+    expect(runs(shard)).toEqual(expect.arrayContaining(["npm ci", "npm run typecheck", "npm run build"]));
+    // The join: the shards' own result first, then their summaries against Vitest's list of this commit's files.
+    const steps = join.steps ?? [];
+    const result = steps.findIndex(step => step.name === "Every shard passed");
+    expect(result).toBeGreaterThan(steps.findIndex(step => step.name === "Tested commit"));
+    expect((steps[result] as { env?: Record<string, string> }).env?.["SHARDS"]).toBe("${{ needs.test-shard.result }}");
+    expect(steps[result]?.run).toMatch(/^test "\$SHARDS" = success \|\|/);
+    expect(runs(join)).toContain("npx vitest list --filesOnly --json=listed-files.json");
+    expect(runs(join).at(-1)).toBe(`node scripts/ci-shards.mjs verify shards listed-files.json --sha "$TESTED_SHA" --node \${{ matrix.node }} --shards ${SHARDS}`);
+    expect(steps.find(step => step.uses?.startsWith("actions/download-artifact@"))?.with?.["pattern"]).toBe("shard-${{ matrix.node }}-*");
   });
 });
