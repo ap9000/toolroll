@@ -136,7 +136,42 @@ F. Process: delta review of post-review security changes (diff + affected invari
    files open with O_NOFOLLOW|O_NONBLOCK. Attack: test/attacks/checkout-git-direct-reads.test.ts (an include naming a
    FIFO).
 
-## Phase 2 (after phase 1 ships)
+### Codex review round 2 fixes
+1. Main's protection: release-adapters.ts readMainProtection replaces the `strict`-only read. A layer holds only when it
+   requires up-to-date branches, names a non-empty set of required checks covering PROTECTION_MINIMUM_CHECKS, and the
+   merging account (the plane's gh) can't bypass it: classic `enforce_admins.enabled`; a ruleset `active`, targeting
+   branches, `current_user_can_bypass: "never"` and a readable bypass list naming only deploy keys. Unreadable layers
+   never hold. release.ts PROTECTION_REPORT_ONLY_CHECKS (the two git lanes, not yet in main's protection) are printed,
+   not refused, until a later release empties it. A person's release prints each missing property. Live settings of
+   ap9000/toolroll (read 2026-10-28): classic, strict, the five existing checks, enforce_admins on, no rulesets — holds.
+2. Deployment script object reads: scripts/deploy-git.mjs hashes the commit and every tree (a port of
+   commit-extract.ts's walk; held equal by test/attacks/checkout-git-deploy-reads.test.ts). Scripts can't load dist:
+   none in the release's extraction, and the trusted installed runtime predates this change. Attack: a subtree
+   rewritten to name another stored blob, which `git ls-tree -r` believes.
+3. Deployment script config: git never reads the repository's config. Each read runs on a Git directory of the
+   script's own (config it writes: object format and ref storage only; HEAD copied; objects and refs linked) with
+   `protocol.allow=never` and no system/global config — chosen over the frozen view because the scripts can't import it
+   (above), and with no repository config at all there is no check to race. Attack: an emulated 2.41.0 whose config
+   gains a promisor remote on a custom helper with `protocol.custom.allow=always` just before `cat-file`.
+4. Baselines: release-card.ts releaseBaselineRecord tells "none recorded" from "recorded, merge commit unreadable";
+   prepareCheckAttempt throws CheckBaselineUnverifiable (nothing sealed) and the builder runs nothing
+   (`baseline-unverifiable`); the release card's change list reads "couldn't be read" (`baselineUnreadable`), never the
+   pull request's commits. The lossy releaseBaseline wrapper is gone.
+5. Setup recovery: builder.ts approvedProgramMissing (the plane's own lookup of the approved command's first word
+   before the check starts; undecidable words, builtins and Windows never qualify) and launchFailedBeforeCheck (that
+   lookup, exit 127, empty stdout, stderr exactly the shell's "not found" line for that program). The receipt keeps the
+   first attempt (`firstAttempt: launch, program, exit`); check-failure.ts setupReplayWords says it in a release.
+   Consequence: `npm test` with a missing tool deeper down is no longer replayed; a person decides.
+6. Direct reads: agent-fence.ts trustedWorktreeBinding reads the worktree registry and the candidate's pointer as
+   regular files (no git; the frozen view refuses links planted in the shared registry, which would let one build deny
+   every later dispatch); coding-handoff.ts branchHead goes through viewedGitSync (30 s) and runs before, never inside,
+   its transactions; demo.ts fixture git is bounded. Remaining direct sync git, by design: teardown-git/git-floor
+   probes (bounded, `config --file` or version only), desktop-access.ts's permission probe (4 s, in a bounded child),
+   and scripts that are the candidate's own check code or make their own fixtures (release-check, quick-check,
+   upgrade-path, e2e, canaries, postbuild, nul-scan, workspace-proof).
+7. teardown-git.ts lazyFetchSupported(gitFile) probes and caches per real executable path.
+
+## Phase 2 (after phase 1 ships)## Phase 2 (after phase 1 ships)
 Results ledger across commits; a 20–30 case versioned eval set from real failures and representative successes, run
 3× with fixed / regressed / newly flaky / still failing vs a pinned baseline; tool trajectories, tokens, cost per
 successful task, latency; reviewer evals (recall and clean-diff specificity per reviewer, pinned model); delta-review

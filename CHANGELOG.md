@@ -34,6 +34,32 @@
   a planted filter can't fetch, run or hang anything. The deployment script
   reads a commit's files with no filter or attribute applied. CI's oldest-git
   lane now tests git 2.41.0 exactly.
+- **Main's protection must actually hold.** A release now reads main's whole
+  branch protection and rulesets and counts them only when they require
+  branches to be up to date, require the release's CI checks, and can't be
+  bypassed by the account that merges ("Do not allow bypassing the above
+  settings"; no ruleset bypass for a role, team, app or organization admin).
+  A person's release names exactly what is missing, and says which new CI
+  checks main's protection doesn't require yet.
+- **Deployment reads only verified objects, with none of the repository's
+  config.** The deployment script hashes the commit and every tree as well
+  as every file against their ids, and runs git on a copy of the
+  repository's layout with a config of its own, so a corrupted tree, a
+  config change mid-read or a custom transport helper can't substitute files
+  or fetch anything.
+- **An unreadable last release never shrinks a check.** When the last
+  release Toolroll recorded can't be verified, the release check doesn't
+  run and says so, and the release card's change list reads "couldn't be
+  read", instead of acting as if there were no previous release.
+- **Setup recovery needs proof the check never started.** The approved setup
+  reruns a check only when Toolroll itself found the check's program missing
+  before starting it and the shell said exactly that and nothing else. Any
+  other failure is the check's own result for a person to judge, and a
+  release after a setup rerun says why the first attempt failed.
+- **Dispatch and coding handoffs can't be held up by a project's Git
+  config.** The worktree binding reads Git's registry as plain files, and the
+  handoff's branch read is bounded and runs outside its database
+  transactions.
 - **A release check that's cut short still leaves its evidence.** Every
   part of the release check (typecheck, build, units, journeys, upgrades)
   now prints its output as it runs, each line tagged with its part (and
