@@ -23,6 +23,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { deployStateDir, loadNames, stagedRuntimePaths } from "./deploy-paths.mjs";
+import { safeGitArgs } from "./deploy-git.mjs";
 import { loadCodingDeploymentRuntime } from "./deploy-coding.mjs";
 import { recoverOnExit } from "./deploy-recovery.mjs";
 import { browserDeployment, openDeploymentDatabase, sha, snapshot } from "./deploy-phases.mjs";
@@ -30,9 +31,8 @@ import { browserDeployment, openDeploymentDatabase, sha, snapshot } from "./depl
 const args = process.argv.slice(2);
 // git inside the candidate's checkout (AGENTS.md trust boundary): no user global or system config, hooks or fsmonitor,
 // and no replacement objects or lazy fetch, so the bytes read under a SHA are that SHA's own (as evidence.ts reads them).
-// Every transport is refused too: git older than 2.45 has no --no-lazy-fetch, and 2.41.0 ignores GIT_NO_LAZY_FETCH, so a
-// lazy fetch would otherwise reach a remote the repository names (eval-harness review 1, finding 5).
-const SAFE_GIT = ["--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "protocol.allow=never"];
+// Every transport is refused too, and on git older than 2.45 (no --no-lazy-fetch; 2.41.0 also ignores GIT_NO_LAZY_FETCH)
+// a repository whose config could make a lazy fetch possible is refused before each command (deploy-git.mjs).
 const SAFE_GIT_ENV = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1" };
 const flag = (name, fallback = undefined) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : fallback; };
@@ -88,7 +88,7 @@ const gitDirGiven = flag("git-dir");
 const REPO_GIT = gitDirGiven === undefined ? ["-C", source] : ["--git-dir", gitDirGiven];
 const headGiven = flag("head");
 if (headGiven !== undefined) requireTrue(/^[0-9a-f]{40}$/.test(headGiven), "--head takes the full approved commit SHA.");
-const candidateHead = headGiven ?? execFileSync("git", [...SAFE_GIT, ...REPO_GIT, "rev-parse", "HEAD"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim();
+const candidateHead = headGiven ?? execFileSync("git", [...safeGitArgs(REPO_GIT, SAFE_GIT_ENV), "rev-parse", "HEAD"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim();
 const short = candidateHead.slice(0, 7);
 const stageDir = flag("stage") ?? join(stateDir, "staged-upgrades", `browser-${short}-${randomUUID().slice(0, 6)}`);
 const journalFile = join(stageDir, "deployment.json");
@@ -124,7 +124,7 @@ function facts(db) {
   const result = deploymentCandidate(store, { runId, head: candidateHead, evidenceRoot, now: new Date(), releaseFlow: flag("operation") !== undefined }, {
     assignmentOf: oldRt.assignment.assignmentOf, verificationEvidence: oldRt.evidence.verificationEvidence, installedScope: oldRt.scope,
   });
-  requireTrue(resolve(result.worktree) === source || execFileSync("git", [...SAFE_GIT, "-C", result.worktree, "rev-parse", "HEAD"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim() === candidateHead, "Run this from the builder's worktree for this run.");
+  requireTrue(resolve(result.worktree) === source || execFileSync("git", [...safeGitArgs(["-C", result.worktree], SAFE_GIT_ENV), "rev-parse", "HEAD"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim() === candidateHead, "Run this from the builder's worktree for this run.");
   return result;
 }
 function quiet(db) {
@@ -158,7 +158,7 @@ const list = (root, prefix = "") => readdirSync(join(root, prefix), { withFileTy
 // ---- phases ------------------------------------------------------------------
 function stage() {
   // Run by hand, the checkout must be clean; under the release every packed byte is proven against the commit itself.
-  if (gitDirGiven === undefined) requireTrue(!execFileSync("git", [...SAFE_GIT, "-C", source, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim(), "The candidate checkout has tracked changes.");
+  if (gitDirGiven === undefined) requireTrue(!execFileSync("git", [...safeGitArgs(["-C", source], SAFE_GIT_ENV), "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim(), "The candidate checkout has tracked changes.");
   if (!releaseMode) requireTrue(existsSync(join(source, "dist")), "The candidate has no dist; the native gate builds it.");
   mkdirSync(stageDir, { recursive: true, mode: 0o700 });
   // Spotlight leaves staged runtimes alone (src/never-index.ts).
@@ -210,7 +210,7 @@ function cleanBuildOf(commit) {
     requireTrue(commit === candidateHead, "The extraction is of the approved commit only.");
     cpSync(approvedRoot, scratch, { recursive: true, verbatimSymlinks: true });
   } else {
-    const archive = execFileSync("git", [...SAFE_GIT, ...REPO_GIT, "archive", "--format=tar", commit], { env: SAFE_GIT_ENV, maxBuffer: 1024 * 1024 * 1024 });
+    const archive = execFileSync("git", [...safeGitArgs(REPO_GIT, SAFE_GIT_ENV), "archive", "--format=tar", commit], { env: SAFE_GIT_ENV, maxBuffer: 1024 * 1024 * 1024 });
     execFileSync("tar", ["-x", "-C", scratch], { input: archive });
   }
   const env = NPM_ENV;
@@ -254,7 +254,7 @@ function proveStaged() {
   for (const f of list(self).filter(f => !f.startsWith("dist/"))) {
     const expected = releaseMode
       ? (existsSync(join(approvedRoot, f)) ? readFileSync(join(approvedRoot, f)) : null)
-      : (() => { const blob = spawnSync("git", [...SAFE_GIT, ...REPO_GIT, "show", `${candidateHead}:${f}`], { maxBuffer: 64 * 1024 * 1024, env: SAFE_GIT_ENV }); return blob.status === 0 ? blob.stdout : null; })();
+      : (() => { const blob = spawnSync("git", [...safeGitArgs(REPO_GIT, SAFE_GIT_ENV), "show", `${candidateHead}:${f}`], { maxBuffer: 64 * 1024 * 1024, env: SAFE_GIT_ENV }); return blob.status === 0 ? blob.stdout : null; })();
     requireTrue(expected !== null && expected.equals(readFileSync(join(self, f))), `Packed file differs from the candidate commit: ${f}`);
   }
   const staged = stagedPackages(join(runtime, "node_modules"), "node_modules").filter(dep => dep !== `node_modules/${stagedName}`).sort();

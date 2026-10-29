@@ -103,8 +103,8 @@ describe("attack: the candidate's own scope.js approves its deployment", () => {
     // replacement objects and lazy fetch, and no shell pipes an archive.
     const calls = [...browser.matchAll(/(?:execFileSync|spawnSync)\("git", \[([^\]]*)/g)].map(one => one[1]!);
     expect(calls.length).toBeGreaterThanOrEqual(5);
-    for (const args of calls) expect(args.startsWith("...SAFE_GIT,"), args).toBe(true);
-    expect(browser).toMatch(/const SAFE_GIT = \["--no-replace-objects",/);
+    for (const args of calls) expect(args.startsWith("...safeGitArgs("), args).toBe(true);
+    expect(browser).toContain('import { safeGitArgs } from "./deploy-git.mjs";');
     expect(browser).toMatch(/GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1"/);
     expect(browser).not.toMatch(/git -C .*archive/);
   });
