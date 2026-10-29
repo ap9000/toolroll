@@ -704,11 +704,10 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       if (j.ciAhead === true) { await liftCiHold(ask, nothing); j.ciAhead = false; save(); }
       return true;
     };
-    /** Right before a person's release that was filed while CI ran deploys: wait until every required check passed on
-     * the exact commit, read now. (One filed after CI passed was read at the gate, as before; the automatic road reads
-     * it in autoCiHolds.) */
+    /** Every person's release reads exact-head CI at deployment, even if it was green at the gate or an older
+     * journal has no ciBeforeDeploy flag. An approval and the release check can outlive that earlier green reading. */
     const personCiBeforeDeploy = async () => {
-      if (j.auto?.state === "approved" || j.ciBeforeDeploy !== true) return;
+      if (j.auto?.state === "approved") return;
       let said = false;
       await waitFor("ci", `the pull request checks on ${j.candidate.sha.slice(0, 7)} before the deploy`, async () => {
         await watch("deploy");
@@ -968,6 +967,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           if (runtime !== null && rel !== undefined && j.authority && epoch !== null) {
             const authority = await rel.authority(j.task.id);
             if (authority !== null && authority.state === "open") {
+              await personCiBeforeDeploy();
               await watch("deploy");
               // Every deploy reservation, whatever the journal saved: CI must still be green on the exact commit.
               await autoCiHolds("the deploy");

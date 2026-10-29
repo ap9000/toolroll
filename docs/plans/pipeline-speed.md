@@ -126,8 +126,8 @@ right away, while the pull request's checks still run. Built on branch `approve-
   check). While asking, the coordinator looks at CI on each poll: a check that failed stops the release before anyone
   approves a red commit.
 - **After the approval** the release check runs at once, beside CI.
-- **Nothing irreversible before CI is green on the exact head.** A release filed while CI ran (`ciBeforeDeploy`, kept
-  for the commit even after CI was seen green) reads the required checks again, fresh, right before the deploy
+- **Nothing irreversible before CI is green on the exact head.** Every person-approved release, including one that saw
+  green CI at the gate or resumes an older journal without `ciBeforeDeploy`, reads the required checks again right before the deploy
   reservation, and waits for them within the ci step's limit: the person's verdict (`prChecksVerdict`: exact head,
   GitHub Actions only, required names from ci.yml, each job by its latest attempt in the newest run of its workflow).
   A check that failed, including a newer attempt of one that was green when the person approved, stops the release

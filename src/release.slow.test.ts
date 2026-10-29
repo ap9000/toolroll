@@ -23,6 +23,7 @@ function world(options: { crashAfter?: Mutation } = {}) {
   let crash = options.crashAfter;
   const s = {
     now: T0,
+    step: "",
     branchHead: SHA as string | null,
     main: "e".repeat(40),
     mainReads: 0,
@@ -40,8 +41,8 @@ function world(options: { crashAfter?: Mutation } = {}) {
     gateId: null as string | null,
     /** What a person or the worker does while the release waits: applied on each sleep. */
     onSleep: [] as ((state: typeof s) => void)[],
-    /** Whether the gate's look (before anything is filed) sees `checks` as set. Off: it sees them all passing, so a test
-     * about a later step can start with failing or pending checks. */
+    /** Whether pre-deploy CI reads see `checks` as set. Off: the gate and deploy see green, so tests of failures
+     * after deployment keep that timing. Automatic seals always see the stored checks. */
     gateSeesChecks: false,
     checks: new Map<string, CheckRun[]>([[SHA, passing(REQUIRED_PR_CHECKS)], [`brew:${OTHER}`, passing(["brew test"]).map(run => ({ ...run, app: "github-actions" }))]]),
     installed: { services: [OLD], clis: [{ name: "toolroll", runtime: OLD as string | null }, { name: "standing-orders", runtime: OLD as string | null }] },
@@ -74,7 +75,7 @@ function world(options: { crashAfter?: Mutation } = {}) {
   const adapters: ReleaseAdapters = {
     now: () => new Date(s.now),
     sleep: async ms => { s.now += ms; for (const step of s.onSleep) step(s); },
-    say: line => { s.said.push(line); },
+    say: line => { s.said.push(line); if (line.startsWith("• ")) s.step = line.slice(2); },
     repo: {
       github: async () => "ap9000/toolroll",
       sync: async () => {},
@@ -128,7 +129,7 @@ function world(options: { crashAfter?: Mutation } = {}) {
       complete: async () => s.ciComplete,
       pullRequest: async () => ({ ...s.pr }),
       // As the real adapter answers: every attempt, with its id, app, check suite and commit (a test's own fields win).
-      checks: async (repo, sha) => (!s.gateSeesChecks && repo !== "ap9000/homebrew-toolroll" && !(s.gate.exists && s.gate.candidate === sha) && sha !== MERGE ? passing(REQUIRED_PR_CHECKS)
+      checks: async (repo, sha) => (!s.gateSeesChecks && repo !== "ap9000/homebrew-toolroll" && (s.step === "gate" || (s.step === "deploy" && s.gate.approval?.basis !== "auto-green")) && sha !== MERGE ? passing(REQUIRED_PR_CHECKS)
         : structuredClone(s.checks.get(`${repo === "ap9000/homebrew-toolroll" ? "brew:" : ""}${sha}`) ?? [])).map((run, i) => ({ id: i + 1, app: "github-actions", suite: 1, head: sha, workflowPath: ".github/workflows/ci.yml", ...run })),
       merge: async (_repo, _pr, head) => {
         if (head !== s.pr.head) throw new Error("Head branch was modified");
@@ -495,17 +496,18 @@ describe("toolroll release", () => {
       expect(s.calls.filter(one => one === "fileGate")).toHaveLength(1);
     });
 
-    test("a release resumed past the gate doesn't look again before ci", async () => {
+    test("a release resumed past the gate checks CI again before deployment", async () => {
       const dir = stateDir();
       const { s, adapters } = world();
       const person = s.onSleep[0]!;
       s.onSleep = [];
       expect(await runRelease(options(dir, { limits: { approval: 1 } }), adapters)).toMatchObject({ ok: false, step: "approval" });
-      // Failed now: only the ci step may see it.
+      // Failed now: the pre-deploy read must see it, even on an old journal.
+      s.gateSeesChecks = true;
       s.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "failure" }]);
       s.onSleep = [person];
-      expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "ci", reason: "ci-failed" });
-      expect(s.calls).toEqual(["fileGate", "complete", "deploy", "switchLinks"]);
+      expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "deploy", reason: "ci-failed" });
+      expect(s.calls).toEqual(["fileGate", "complete"]);
     });
 
     // Which statuses block is the table above; here one waiting and one failed status prove the re-read before merge.
@@ -516,11 +518,11 @@ describe("toolroll release", () => {
       adapters.github.checks = async (repo, sha) => {
         if (sha !== SHA) return checks(repo, sha);
         reads += 1;
-        return [...passing(REQUIRED_PR_CHECKS), ...(reads <= 2 ? passing([repeat]) : [{ name: repeat, status, conclusion }])].map((run, i) => ({ id: i + 1, app: "github-actions", suite: 1, head: sha, ...run }));
+        return [...passing(REQUIRED_PR_CHECKS), ...(reads <= 3 ? passing([repeat]) : [{ name: repeat, status, conclusion }])].map((run, i) => ({ id: i + 1, app: "github-actions", suite: 1, head: sha, ...run }));
       };
       expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "merge", reason: "ci-failed" });
-      // The gate's early look, the ci step, and the re-read at merge.
-      expect(reads).toBe(3);
+      // The gate, pre-deploy check, ci step, and re-read at merge.
+      expect(reads).toBe(4);
       expect(s.calls).toEqual(["fileGate", "complete", "deploy", "switchLinks"]);
       expect(s.pr.state).toBe("open");
     });
@@ -1768,6 +1770,18 @@ describe("toolroll release: approve automatically when checks pass", () => {
       s.checks.set(SHA, [...redCi(), ...passing([REQUIRED_PR_CHECKS[0]])]);
       expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
       expect(s.calls.filter(one => one === "deploy")).toHaveLength(1);
+    });
+
+    test.each([false, true])("CI green at the gate still blocks deploy after a failed rerun (resumed: %s)", async resumed => {
+      const dir = stateDir();
+      const { s, adapters } = world(resumed ? { crashAfter: "fileGate" } : {});
+      s.gateSeesChecks = true;
+      s.onSleep.push(state => {
+        if (state.gate.result !== null) state.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS), { name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "failure" }]);
+      });
+      if (resumed) expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "gate" });
+      expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "deploy", reason: "ci-failed" });
+      for (const call of IRREVERSIBLE) expect(s.calls).not.toContain(call);
     });
 
     test("CI that was green while asking but whose newer attempt fails before the deploy stops the release", async () => {
