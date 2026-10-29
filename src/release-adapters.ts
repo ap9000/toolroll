@@ -806,7 +806,7 @@ export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: st
   // Which workflow each check suite is a run of (GitHub's workflow-run API): a newer run of a workflow supersedes its
   // older runs on this commit (release.ts prChecksVerdict).
   const flows = await must(run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${repo}/actions/runs?head_sha=${sha}&per_page=100`,
-    "--jq", ".workflow_runs[] | {suite: .check_suite_id, workflow: .workflow_id, path: .path, head: .head_sha}"], { cwd: "/", env: ciEnv() }), "gh api actions/runs");
+    "--jq", ".workflow_runs[] | {suite: .check_suite_id, workflow: .workflow_id, path: .path, head: .head_sha, event: .event, branch: .head_branch, bases: [(.pull_requests // [])[] | .base.ref]}"], { cwd: "/", env: ciEnv() }), "gh api actions/runs");
   const workflowOf = new Map<number, number>();
   // Each suite's workflow file: a required check counts only from the workflow that defines it (release.ts).
   const pathOf = new Map<number, string>();
@@ -816,7 +816,10 @@ export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: st
     const known = workflowOf.get(Number(one["suite"]));
     if (known !== undefined && (known !== Number(one["workflow"]) || pathOf.get(Number(one["suite"])) !== one["path"])) throw new Error("GitHub named two workflows for one check suite");
     workflowOf.set(Number(one["suite"]), Number(one["workflow"]));
-    pathOf.set(Number(one["suite"]), String(one["path"]));
+    // Only a run on a pull request into main, or a push to main, binds its workflow file: a pull request into another
+    // branch reads that branch's workflow and join verifier, which the candidate may control (security scan of the
+    // join). Any other run keeps no path, so no required check counts from it.
+    if (mainTriggered(one)) pathOf.set(Number(one["suite"]), String(one["path"]));
   }
   const runs = out.split("\n").filter(Boolean).map(line => {
     const one = object(JSON.parse(line));
@@ -1012,4 +1015,12 @@ export async function readMainProtection(run: Exec, gh: string, repo: string, br
 export async function readUpToDateRequired(run: Exec, gh: string, repo: string, branch = "main"): Promise<boolean | null> {
   const protection = await readMainProtection(run, gh, repo, branch);
   return protection === null ? null : protection.effective;
+}
+
+/** Whether a workflow run was triggered on main: a push to main, or a pull request whose every base is main. */
+function mainTriggered(run: Record<string, unknown>): boolean {
+  const bases = Array.isArray(run["bases"]) ? run["bases"] : [];
+  if (run["event"] === "push") return run["branch"] === "main";
+  if (run["event"] === "pull_request") return bases.length > 0 && bases.every(base => base === "main");
+  return false;
 }
