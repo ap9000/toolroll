@@ -584,6 +584,8 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         // A branch left by an earlier attempt is reused.
         const made = await gh("api", "-X", "POST", `repos/${tap}/git/refs`, "-f", `ref=refs/heads/${branch}`, "-f", `sha=${baseSha}`);
         if (made.code !== 0 && !/Reference already exists/.test(made.stderr + made.stdout)) throw new Error(`creating ${tap} ${branch}: ${made.stderr.trim()}`);
+        // A branch left by an earlier attempt starts again from the base (security scan): none of its history is kept.
+        if (made.code !== 0) await must(gh("api", "-X", "PATCH", `repos/${tap}/git/refs/heads/${branch}`, "-f", `sha=${baseSha}`, "-F", "force=true"), `resetting ${tap} ${branch}`);
         const onBranch = await formulaAt(branch);
         if (onBranch.text !== next) {
           await must(gh("api", "-X", "PUT", `repos/${tap}/contents/${formula}`, "-f", `message=toolroll ${version}`, "-f", `branch=${branch}`, "-f", `sha=${onBranch.sha}`,
@@ -596,18 +598,18 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
       async verified(pr, head, version) {
         // The change at exactly `head` is the tap's own, and its formula is exactly today's formula with npm's published
         // tarball and that tarball's own sha256: nothing else is ever merged.
-        const view = object(await ghJson("gh pr view", "pr", "view", String(pr), "--repo", tap, "--json", "number,headRefOid,headRefName,headRepository,headRepositoryOwner,isCrossRepository,state"));
-        if (Number(view["number"]) !== pr || view["headRefOid"] !== head || view["headRefName"] !== brewBranch(version) || view["state"] !== "OPEN" || !tapOwnHead(view, tap)) {
-          return { ok: false, why: `${tap} #${pr} isn't the tap's own open change at ${head.slice(0, 7)}` };
-        }
+        const view = object(await ghJson("gh pr view", "pr", "view", String(pr), "--repo", tap, "--json", "number,headRefOid,headRefName,baseRefName,headRepository,headRepositoryOwner,isCrossRepository,state"));
+        const base = await defaultBranch();
+        const baseHead = String(object(object(await ghJson("gh api git/ref", "api", `repos/${tap}/git/ref/heads/${base}`))["object"])["sha"]);
+        // The whole change against the tap's default branch head: its merge base, its commits and every file it touches.
+        const compare = object(await ghJson("gh api compare", "api", `repos/${tap}/compare/${encodeURIComponent(baseHead)}...${encodeURIComponent(head)}`));
         const tarball = `https://registry.npmjs.org/toolroll/-/toolroll-${version}.tgz`;
         const response = await get(tarball, { signal: AbortSignal.timeout(60_000) });
         if (!response.ok) return { ok: false, why: `downloading ${tarball} answered ${response.status}` };
         const sha256 = createHash("sha256").update(Buffer.from(await response.arrayBuffer())).digest("hex");
-        const expected = bumpFormula((await formulaAt(await defaultBranch())).text, tarball, sha256);
-        const atHead = await formulaAt(head);
-        if (atHead.text !== expected) return { ok: false, why: `${tap} #${pr}'s formula isn't npm's ${version} tarball with its sha256 ${sha256.slice(0, 12)}` };
-        return { ok: true };
+        const expected = bumpFormula((await formulaAt(baseHead)).text, tarball, sha256);
+        const problem = tapChangeProblem({ tap, pr, head, version, formula, defaultBranch: base, baseHead, view, compare, expected, atHead: (await formulaAt(head)).text, sha256 });
+        return problem === null ? { ok: true } : { ok: false, why: problem };
       },
       async merge(pr, head) {
         const merged = object(await ghJson(`merging ${tap} #${pr}`, "api", "-X", "PUT", `repos/${tap}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`));
@@ -626,6 +628,28 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
 }
 
 const brewBranch = (version: string) => `toolroll-${version}`;
+
+/**
+ * Why a tap change isn't exactly the formula bump this release proposed (security scan), or null when it is: the tap's
+ * own open pull request number `pr` at exactly `head`, from its version branch into the default branch; compared with
+ * the default branch's head it is one commit on top of exactly that head, changing exactly one file, the formula; and
+ * the formula there is exactly today's with npm's published tarball and that tarball's own sha256.
+ */
+export function tapChangeProblem(input: { tap: string; pr: number; head: string; version: string; formula: string; defaultBranch: string; baseHead: string;
+  view: Json; compare: Json; expected: string; atHead: string; sha256: string }): string | null {
+  const { tap, pr, head, version, view, compare } = input;
+  if (Number(view["number"]) !== pr || view["headRefOid"] !== head || view["headRefName"] !== brewBranch(version) || view["state"] !== "OPEN" || !tapOwnHead(view, tap)) {
+    return `${tap} #${pr} isn't the tap's own open change at ${head.slice(0, 7)}`;
+  }
+  if (view["baseRefName"] !== input.defaultBranch) return `${tap} #${pr} merges into ${String(view["baseRefName"])}, not ${input.defaultBranch}`;
+  const mergeBase = compare["merge_base_commit"] !== null && typeof compare["merge_base_commit"] === "object" ? (compare["merge_base_commit"] as Json)["sha"] : undefined;
+  if (mergeBase !== input.baseHead) return `${tap} #${pr} isn't on ${input.defaultBranch}'s head ${input.baseHead.slice(0, 7)}`;
+  if (compare["status"] !== "ahead" || compare["ahead_by"] !== 1 || compare["behind_by"] !== 0) return `${tap} #${pr} isn't exactly one commit on ${input.defaultBranch}'s head`;
+  const files = Array.isArray(compare["files"]) ? compare["files"] as Json[] : null;
+  if (files === null || files.length !== 1 || files[0]!["filename"] !== input.formula || files[0]!["status"] !== "modified") return `${tap} #${pr} changes more than ${input.formula}`;
+  if (input.atHead !== input.expected) return `${tap} #${pr}'s formula isn't npm's ${version} tarball with its sha256 ${input.sha256.slice(0, 12)}`;
+  return null;
+}
 
 /** Whether a pull request's head is a branch of the tap itself (never a fork's). */
 export function tapOwnHead(pr: Json, tap: string): boolean {
