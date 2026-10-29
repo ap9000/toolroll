@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **A release's version bump alone no longer owes the upgrade path.** Toolroll
+  now decides from both commits' verified files that package.json and
+  package-lock.json changed only in the project's own version (the check's
+  own rule); any other change to them still owes it.
 - **The macOS suite runs on the candidate before it merges.** Pull requests
   and main pushes now run the unit suite on hosted macOS with Node 22 and 24,
   in four shards each, joined into `node 22 · macos-latest` and
