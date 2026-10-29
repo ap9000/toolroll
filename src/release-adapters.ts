@@ -577,10 +577,12 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         if (!response.ok) throw new Error(`downloading ${tarball} answered ${response.status}`);
         const sha256 = createHash("sha256").update(Buffer.from(await response.arrayBuffer())).digest("hex");
         const base = await defaultBranch();
-        const current = await formulaAt(base);
+        const baseSha = String(object(object(await ghJson("gh api git/ref", "api", `repos/${tap}/git/ref/heads/${base}`))["object"])["sha"]);
+        const current = await formulaAt(baseSha);
+        const baseVersion = formulaVersion(current.text);
+        if (baseVersion === null || versionAfter(baseVersion, version)) throw new Error("The tap current version is unreadable or newer; no downgrade was proposed.");
         const next = bumpFormula(current.text, tarball, sha256);
         const branch = brewBranch(version);
-        const baseSha = String(object(object(await ghJson("gh api git/ref", "api", `repos/${tap}/git/ref/heads/${base}`))["object"])["sha"]);
         // A branch left by an earlier attempt is reused.
         const made = await gh("api", "-X", "POST", `repos/${tap}/git/refs`, "-f", `ref=refs/heads/${branch}`, "-f", `sha=${baseSha}`);
         if (made.code !== 0 && !/Reference already exists/.test(made.stderr + made.stdout)) throw new Error(`creating ${tap} ${branch}: ${made.stderr.trim()}`);
@@ -607,8 +609,9 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         const response = await get(tarball, { signal: AbortSignal.timeout(60_000) });
         if (!response.ok) return { ok: false, why: `downloading ${tarball} answered ${response.status}` };
         const sha256 = createHash("sha256").update(Buffer.from(await response.arrayBuffer())).digest("hex");
-        const expected = bumpFormula((await formulaAt(baseHead)).text, tarball, sha256);
-        const problem = tapChangeProblem({ tap, pr, head, version, formula, defaultBranch: base, baseHead, view, compare, expected, atHead: (await formulaAt(head)).text, sha256 });
+        const current = (await formulaAt(baseHead)).text;
+        const expected = bumpFormula(current, tarball, sha256);
+        const problem = tapChangeProblem({ tap, pr, head, version, formula, defaultBranch: base, baseHead, baseVersion: formulaVersion(current), view, compare, expected, atHead: (await formulaAt(head)).text, sha256 });
         return problem === null ? { ok: true } : { ok: false, why: problem };
       },
       async merge(pr, head) {
@@ -635,9 +638,12 @@ const brewBranch = (version: string) => `toolroll-${version}`;
  * the default branch's head it is one commit on top of exactly that head, changing exactly one file, the formula; and
  * the formula there is exactly today's with npm's published tarball and that tarball's own sha256.
  */
-export function tapChangeProblem(input: { tap: string; pr: number; head: string; version: string; formula: string; defaultBranch: string; baseHead: string;
+export function tapChangeProblem(input: { tap: string; pr: number; head: string; version: string; formula: string; defaultBranch: string; baseHead: string; baseVersion: string | null;
   view: Json; compare: Json; expected: string; atHead: string; sha256: string }): string | null {
   const { tap, pr, head, version, view, compare } = input;
+  // State may have changed since the coordinator checked it. Judge the immutable base used for this comparison.
+  if (input.baseVersion === null) return `${tap} current version cannot be read`;
+  if (versionAfter(input.baseVersion, version)) return `${tap} already names newer ${input.baseVersion}; refusing ${version}`;
   if (Number(view["number"]) !== pr || view["headRefOid"] !== head || view["headRefName"] !== brewBranch(version) || view["state"] !== "OPEN" || !tapOwnHead(view, tap)) {
     return `${tap} #${pr} isn't the tap's own open change at ${head.slice(0, 7)}`;
   }

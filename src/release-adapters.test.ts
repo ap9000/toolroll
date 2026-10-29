@@ -438,10 +438,12 @@ describe("security scan: only exactly the formula bump is ever merged into the t
   const expected = `url "https://registry.npmjs.org/toolroll/-/toolroll-0.9.78.tgz"\nsha256 "${sha256}"\n`;
   const view = { number: 12, headRefOid: head, headRefName: "toolroll-0.9.78", baseRefName: "main", state: "OPEN", isCrossRepository: false, headRepository: { name: "homebrew-toolroll" }, headRepositoryOwner: { login: "ap9000" } };
   const compare = { status: "ahead", ahead_by: 1, behind_by: 0, merge_base_commit: { sha: base }, files: [{ filename: formula, status: "modified" }] };
-  const input = { tap: "ap9000/homebrew-toolroll", pr: 12, head, version: "0.9.78", formula, defaultBranch: "main", baseHead: base, view, compare, expected, atHead: expected, sha256 };
+  const input = { tap: "ap9000/homebrew-toolroll", pr: 12, head, version: "0.9.78", formula, defaultBranch: "main", baseHead: base, baseVersion: "0.9.77", view, compare, expected, atHead: expected, sha256 };
 
   test.each([
     ["exactly the bump", {}, null],
+    ["a newer version landed since the state check", { baseVersion: "0.9.79" }, /already names newer/],
+    ["an unreadable current formula version", { baseVersion: null }, /current version/],
     ["a change that also touches another file", { compare: { ...compare, files: [...compare.files, { filename: ".github/workflows/x.yml", status: "added" }] } }, /changes more than/],
     ["a branch with an extra commit", { compare: { ...compare, ahead_by: 2 } }, /exactly one commit/],
     ["a branch not on the default branch's head", { compare: { ...compare, merge_base_commit: { sha: "e".repeat(40) } } }, /isn't on main's head/],
