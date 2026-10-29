@@ -167,10 +167,11 @@ describe("the release card", () => {
     expect(releaseBaselineRecord(store, repo)).toEqual({ recorded: true, sha: baseline });
   });
 
-  test.each([["a merge commit that isn't a full id", "not-a-sha"], ["no merge commit", null]] as const)("eval review 2 #4: a recorded last release with %s: the list couldn't be read, never the pull request's commits", (_name, ref) => {
+  test.each([["a merge commit that isn't a full id", "not-a-sha"], ["no merge commit", null], ["a missing merge operation", undefined]] as const)("eval review 2 #4: a recorded last release with %s: the list couldn't be read, never the pull request's commits", (_name, ref) => {
     const taskId = fileGate();
     recordMergedRelease("e".repeat(40), "0.9.73");
-    store.handle.prepare("UPDATE release_operation SET external_ref = ? WHERE external_ref = ?").run(ref, "e".repeat(40));
+    if (ref === undefined) store.handle.prepare("DELETE FROM release_operation WHERE external_ref = ?").run("e".repeat(40));
+    else store.handle.prepare("UPDATE release_operation SET external_ref = ? WHERE external_ref = ?").run(ref, "e".repeat(40));
     expect(releaseBaselineRecord(store, repo)).toEqual({ recorded: true, sha: null });
     const card = releaseCardOf(store, store.getScope(taskId)!, "form", { profile: () => null });
     expect(card.changes).toMatchObject({ baseline: null, commits: null, source: "unread" });

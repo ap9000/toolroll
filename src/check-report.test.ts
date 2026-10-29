@@ -113,11 +113,11 @@ describe("eval review 2 #4: a recorded last release that can't be verified refus
     return { ...made, baseline, head: git(made.repo, "rev-parse", "HEAD"), command };
   };
   /** A merged release on the plane's record (release-card.test.ts recordMergedRelease). */
-  const record = (store: Store, repo: string, mergeCommit: string | null) => {
+  const record = (store: Store, repo: string, mergeCommit: string | null, operation = true) => {
     const id = Number(store.handle.prepare(`INSERT INTO release_authority (repo, generation, version, pr, branch, base, anchor_task, anchor_digest, approved_sha, approved_tree, tip_sha, tip_task,
       policy_json, policy_digest, verify_command, verify_digest, access_digest, state, expires_at, created_at) VALUES (?,1,'0.9.72',1,'b','main','t','d',?,?,?,'t','{}','p',1,'v','a','merged',?,?)`)
       .run(repo, "a".repeat(40), "a".repeat(40), "a".repeat(40), NOW.toISOString(), NOW.toISOString()).lastInsertRowid);
-    store.handle.prepare("INSERT INTO release_operation (id, authority, kind, task_id, candidate, epoch, state, external_ref, reserved_at, finished_at) VALUES (?,?, 'merge', 't', ?, 1, 'succeeded', ?, ?, ?)")
+    if (operation) store.handle.prepare("INSERT INTO release_operation (id, authority, kind, task_id, candidate, epoch, state, external_ref, reserved_at, finished_at) VALUES (?,?, 'merge', 't', ?, 1, 'succeeded', ?, ?, ?)")
       .run(`op-${id}`, id, "a".repeat(40), mergeCommit, NOW.toISOString(), NOW.toISOString());
   };
 
@@ -130,12 +130,13 @@ describe("eval review 2 #4: a recorded last release that can't be verified refus
   });
 
   test.each([
-    ["a commit the project doesn't hold", "f".repeat(40)],
-    ["a merge commit that isn't a full id", "not-a-sha"],
-    ["no merge commit at all", null],
-  ])("attack: %s is refused, nothing sealed — never read as \"no previous release\"", (_name, ref) => {
+    ["a commit the project doesn't hold", "f".repeat(40), true],
+    ["a merge commit that isn't a full id", "not-a-sha", true],
+    ["no merge commit at all", null, true],
+    ["a merged release whose operation is missing", null, false],
+  ] as const)("attack: %s is refused, nothing sealed — never read as \"no previous release\"", (_name, ref, operation) => {
     const { repo, head, store, runId, root, command } = released();
-    record(store, repo, ref);
+    record(store, repo, ref, operation);
     expect(() => prepareCheckAttempt(store, root, { runId, repo, head, command, access: "sandboxed" }, NOW)).toThrow(CheckBaselineUnverifiable);
     expect(checkAttemptOf(store, runId)).toBeNull();
     store.close();

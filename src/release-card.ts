@@ -177,8 +177,9 @@ const sha256 = (text: string): string => createHash("sha256").update(text).diges
  * `recorded: true` with `sha: null` — something to refuse on, never "no previous release".
  */
 export function releaseBaselineRecord(store: Store, repo: string): { recorded: false } | { recorded: true; sha: string | null } {
-  const row = store.handle.prepare(`SELECT o.external_ref FROM release_authority a JOIN release_operation o ON o.authority = a.id
-    WHERE a.repo = ? AND a.state = 'merged' AND o.kind = 'merge' AND o.state = 'succeeded' ORDER BY a.id DESC, o.finished_at DESC LIMIT 1`).get(repo);
+  const row = store.handle.prepare(`SELECT o.external_ref FROM release_authority a LEFT JOIN release_operation o
+    ON o.authority = a.id AND o.kind = 'merge' AND o.state = 'succeeded'
+    WHERE a.repo = ? AND a.state = 'merged' ORDER BY a.id DESC, o.finished_at DESC LIMIT 1`).get(repo);
   if (row === undefined) return { recorded: false };
   const ref = row["external_ref"];
   return { recorded: true, sha: typeof ref === "string" && SHA.test(ref) ? ref : null };

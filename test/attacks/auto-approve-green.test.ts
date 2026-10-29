@@ -19,7 +19,7 @@ import { runReleaseCommand } from "../../src/release-cli.js";
 import { REQUIRED_PR_CHECKS } from "../../src/release.js";
 import { RELEASE_RECHECK_ACTION, retriedOfRun, SETUP_REPLAY_RETRY, setupReplayWords } from "../../src/check-failure.js";
 import { launchFailedBeforeCheck } from "../../src/builder.js";
-import { CHECK_REPORT_CAPTURE } from "../../src/check-report.js";
+import { CHECK_REPORT_CAPTURE, CheckBaselineUnverifiable } from "../../src/check-report.js";
 import { verificationEvidence } from "../../src/verification-evidence.js";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -341,6 +341,13 @@ describe("attack 3: a check that isn't of this commit, this scope, or the first 
     const gate = verificationEvidence(f.store, EVIDENCE(f), run);
     expect(gate.ok && JSON.parse(String(gate.bytes)).coverage).toBe("no-result");
     expect(seal(f, run)).toMatchObject({ ok: false });
+  });
+
+  test("eval review 2 #4: a merged authority with no merge operation never becomes an absent baseline", () => {
+    const f = (fixture = releaseFixture());
+    f.store.handle.prepare("UPDATE release_authority SET state = 'merged' WHERE id = ?").run(f.authority().id);
+    expect(() => sealedCheck(f, f.taskId, f.approved, (_plan, units) => passingReport(units), { forceFull: true })).toThrow(CheckBaselineUnverifiable);
+    expect(f.store.handle.prepare("SELECT COUNT(*) AS n FROM release_check_attempt").get()?.["n"]).toBe(0);
   });
 
   test("an earlier failed check on different scope text needs a person", () => {
