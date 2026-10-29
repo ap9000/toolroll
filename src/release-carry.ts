@@ -28,7 +28,7 @@ import { checkLaunchRoot, fenceFor, linuxFenceAvailable, macosFenceAvailable, ru
 import { touchesProtected } from "./approval-policy.js";
 import { extractCommit, readVerifiedCommit, verifiedFirstParentWalk, verifiedTreeDiff, type TreeChange, type VerifiedCommit } from "./commit-extract.js";
 import { projectGitDir } from "./check-report.js";
-import { CARRY_RULES_VERSION, readReleasePolicy, releasePolicyDigest, type ReleasePolicy, type ReleaseTerms } from "./contracts/release-terms.js";
+import { CARRY_RULES_VERSION, readReleasePolicy, releasePolicyDigest, type ReleaseCheckPurpose, type ReleasePolicy, type ReleaseTerms } from "./contracts/release-terms.js";
 import { run, type ExecResult } from "./exec.js";
 import { proxyEnv, startEgressProxy } from "./egress.js";
 import { liveReleaseOf } from "./scope.js";
@@ -166,6 +166,27 @@ export function releaseTermsFor(store: Store, input: { repo: string; version: st
     approvedSha: input.candidate, approvedTree: commit.value.tree, policy,
     grant: { id: grant.id, digest: grant.digest }, access,
     expiresAt: new Date(input.now.getTime() + 3 * 24 * 60 * 60_000).toISOString(),
+  } };
+}
+
+/**
+ * A release check's purpose (docs/plans/pipeline-speed.md, P0), for a release whose terms can't be made (its checks run
+ * outside the sandbox, or carrying is off): from the plane's own records — the project's repository, the approved commit
+ * and its verified tree, the live release check grant and the check access. It never carries a later commit; it marks
+ * this exact candidate as a release's check (strict report rules, no CI stand-in, the plane's own rerun after confirmed
+ * infrastructure on the same candidate under the same approval). Null with why when even that can't be read.
+ */
+export function releaseCheckPurposeFor(store: Store, input: { repo: string; version: string; branch: string; pr: number; candidate: string }):
+  { ok: true; purpose: ReleaseCheckPurpose } | { ok: false; why: string } {
+  const gitDir = projectGitDir(input.repo);
+  if (gitDir === null) return { ok: false, why: "the project's Git directory can't be read" };
+  const commit = readVerifiedCommit(gitDir, input.candidate);
+  if (!commit.ok) return { ok: false, why: commit.message };
+  const grant = store.liveVerifyCommand(input.repo);
+  if (grant === null) return { ok: false, why: "the project has no approved release check" };
+  return { ok: true, purpose: {
+    version: 1, purpose: "release-check", repo: input.repo, packageVersion: input.version, branch: input.branch, pr: input.pr, base: "main",
+    approvedSha: input.candidate, approvedTree: commit.value.tree, grant: { id: grant.id, digest: grant.digest }, access: store.projectCheckAccess(input.repo),
   } };
 }
 

@@ -146,6 +146,31 @@ right away, while the pull request's checks still run. Built on branch `approve-
   proves CI itself), so nothing the automatic road proves changes. A hold an older coordinator placed still holds every
   approval but the automatic road's until the plane reads CI passing, exactly as before.
 
+## P0. A release check purpose, apart from carrying (branch `ship-velocity-build`)
+
+Codex's velocity review (P0): 0.9.77's same-candidate recheck after confirmed infrastructure (check-failure.ts
+`recheckReleaseTask`) and the strict report rules (check-report.ts `fullCheckProblem`) were keyed on release terms, and
+terms are refused while the release projects' checks run unsandboxed. So neither applied to the owner's releases.
+
+- **What a release check purpose is.** `task scope --release` files terms when it can (release-carry.ts
+  `releaseTermsFor`); when it can't, it files a release check purpose (`releaseCheckPurposeFor`, contract
+  `releaseCheckPurposeSchema`, column `task_scope.release_check_json`, schema v137): the project, version, pull
+  request, branch, the approved commit and its verified tree, the live release check grant and the check access, all
+  from the plane's own records. It is in the scope digest, so the person's yes covers it; it seals only on a person's
+  yes (the ceremony or the release card in chat), never a mode, grant or automatic seal. A scope carries terms or a
+  purpose, never both.
+- **What it changes.** `releaseCheckScope` (scope.ts) is the one predicate: the builder seals the check's attempt as a
+  release's (`release: true`, so CI never stands in for its units), `settleCoverage` holds a Full check to
+  `fullCheckProblem`, and `recheckReleaseTask` / `regateTask` (kind `release`) may rerun the check after a failure the
+  plane confirmed as infrastructure.
+- **What it never authorizes.** The rerun is of the identical approved candidate: inside the rerun's transaction the
+  purpose's commit must equal the scope's candidate, its project the task's, the project's live grant the sealed grant
+  and the check access the sealed access; `regateTask` still requires the approved digest to equal the scope's and the
+  last attempt's, and the approval to stand. The limits are the same (one rerun per incident, two per candidate), and
+  any other class stops. It opens no release authority, so nothing carries, and `release-auto.ts` still requires terms.
+  test/attacks/release-failure-class.test.ts tries each: another commit, a changed scope, a replaced grant, changed
+  check access, a seal that no longer stands, a deterministic failure, a purpose approved for another commit, a mode seal.
+
 ## Not built, and why
 
 ### B. More CI reuse inside the release check

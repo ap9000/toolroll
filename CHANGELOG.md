@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A release whose checks run outside the sandbox now reruns its own check
+  after Toolroll's machine fails.** Such a release can't carry later commits,
+  so it used to file without release terms, and a check stopped by Toolroll's
+  own shutdown, a lost build or a command that never started waited for a
+  person. Its approval now seals a release check purpose instead: the check
+  is held to the release's rules (a complete report, no CI standing in for
+  its units), and only a failure Toolroll itself confirmed as its own
+  infrastructure reruns, on the same commit under the same approval, at most
+  twice. Another commit, a changed scope, release check or check access, or
+  an approval that no longer stands never reruns. It never carries a later
+  commit. (Schema v137 adds the column; saved scopes are unchanged.)
 - **A deploy no longer gets stuck behind an `up` that won't stop.** When the
   old service's processes outlive their stop (a supervisor that exited while
   its `up` ignored SIGTERM), the deployment stops them itself, but only

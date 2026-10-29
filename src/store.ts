@@ -99,7 +99,7 @@ import type { ProgressSnapshot } from "./plan.js";
 import { parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-progress.js";
 
 import { authorityStandsSql } from "./approval-authority.js";
-import { releasePolicyDigest, storedReleaseTerms, readReleaseTerms, readReleasePolicy, type ReleaseTerms, type ReleasePolicy } from "./contracts/release-terms.js";
+import { releasePolicyDigest, serializeReleaseCheckPurpose, storedReleaseCheckPurpose, storedReleaseTerms, readReleaseTerms, readReleasePolicy, type ReleaseCheckPurpose, type ReleaseTerms, type ReleasePolicy } from "./contracts/release-terms.js";
 import { accountReachesSql, normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
 import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
 import { PLAN_AUTO_SCHEMA } from "./plan-auto.js";
@@ -807,7 +807,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v136 adds, and changes no saved row: each run's own "Show commands in the live view" answer, captured once before its
 // live file opens (run_live_detail; docs/plans/agents-view.md §2.4). Saved runs have none, which every reader takes as
 // commands off: permission is never recovered from a transcript or the project's current setting.
-export const SCHEMA_VERSION = 136;
+// v137 adds, and changes no saved row: a release check's purpose (task_scope.release_check_json; docs/plans/
+// pipeline-speed.md, P0) — this exact candidate is a release's check, for a release that can't carry. Saved rows read
+// NULL: no purpose (a termsless release task stays exactly as it was approved).
+export const SCHEMA_VERSION = 137;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -945,7 +948,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1074,6 +1077,11 @@ export const V134_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 /** v135 (docs/plans/release-once.md): a scope's release terms, part of its digest when present. Saved rows read NULL. */
 export const V135_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
   task_scope: { release_terms_json: { definition: "TEXT", saved: "NULL" } },
+});
+/** v137 (docs/plans/pipeline-speed.md, P0): a scope's release check purpose, part of its digest when present. Saved
+ * rows read NULL. */
+export const V137_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  task_scope: { release_check_json: { definition: "TEXT", saved: "NULL" } },
 });
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
@@ -5340,6 +5348,10 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   }
   // v136: each run's own live-view answer (a new table only; saved runs have none: commands off).
   db.exec(RUN_LIVE_DETAIL_SCHEMA);
+  // v137: a scope's release check purpose (V137_ADDED_COLUMNS: saved rows NULL, no purpose).
+  for (const [table, columns] of Object.entries(V137_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -8064,11 +8076,13 @@ export class Store {
       proposedVia?: ScopeAuthor | null;
       /** v135: release terms (release-once.md); undefined keeps the ones the scope carries, null removes them. */
       releaseTerms?: ReleaseTerms | null;
+      /** v137: a release check's purpose; undefined keeps the scope's, null removes it. Never beside terms. */
+      releaseCheck?: ReleaseCheckPurpose | null;
     } = {},
   ): void {
     this.once(mutation, "saveScope", () => this.transact(() => {
       // The text's current author mark, read before this write (approval policy §1.4).
-      const prior = this.db.prepare("SELECT proposed_via, release_terms_json FROM task_scope WHERE task_id = ?").get(scope.taskId);
+      const prior = this.db.prepare("SELECT proposed_via, release_terms_json, release_check_json FROM task_scope WHERE task_id = ?").get(scope.taskId);
       // THE filing invariant (foundations findings 5/13/19): every scope
       // row leaves this method either RESOLVED (working profile stamped,
       // digest recomputed to bind it, version 2) or UNRESOLVED with its
@@ -8230,6 +8244,11 @@ export class Store {
       // v135: release terms the caller names, else the ones this scope already carries (a refile keeps them bound).
       const priorTerms = storedReleaseTerms(prior?.["release_terms_json"]);
       const releaseTerms = options.releaseTerms !== undefined ? options.releaseTerms : priorTerms.ok ? priorTerms.terms : null;
+      // v137: the release check purpose likewise; terms named now replace a kept purpose (a scope carries one or the other).
+      const priorPurpose = storedReleaseCheckPurpose(prior?.["release_check_json"]);
+      const releaseCheck = options.releaseCheck !== undefined ? options.releaseCheck
+        : options.releaseTerms != null ? null : priorPurpose.ok ? priorPurpose.purpose : null;
+      if (releaseTerms !== null && releaseCheck !== null) throw new Error("A scope carries release terms or a release check purpose, never both.");
       const digestInput = {
         goal: scope.goal,
         outOfScope: scope.outOfScope,
@@ -8239,6 +8258,7 @@ export class Store {
         qualityMode,
         candidate: scope.candidate ?? null,
         releaseTerms,
+        releaseCheck,
       };
       // EVERY route filed since v47 binds into the digest — routine-shaped
       // ones included — so approval freezes exactly which agent runs each
@@ -8270,8 +8290,8 @@ export class Store {
           `INSERT INTO task_scope
              (task_id, goal, out_of_scope, touches, budget_microusd, proposed_at, digest, approved_at, approved_by, approved_digest,
               profile_json, profile_state, unresolved_reason, digest_version, profile_provenance, proposed_chain_json, acceptance_json, quality_mode,
-              risk_level, proposed_route_json, route_era, candidate, release_terms_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              risk_level, proposed_route_json, route_era, candidate, release_terms_json, release_check_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (task_id) DO UPDATE SET
              goal = excluded.goal, out_of_scope = excluded.out_of_scope,
              touches = excluded.touches, budget_microusd = excluded.budget_microusd,
@@ -8283,7 +8303,7 @@ export class Store {
              profile_provenance = excluded.profile_provenance, proposed_chain_json = excluded.proposed_chain_json,
              acceptance_json = excluded.acceptance_json, quality_mode = excluded.quality_mode,
              risk_level = excluded.risk_level, proposed_route_json = excluded.proposed_route_json, route_era = excluded.route_era,
-             candidate = excluded.candidate, release_terms_json = excluded.release_terms_json`,
+             candidate = excluded.candidate, release_terms_json = excluded.release_terms_json, release_check_json = excluded.release_check_json`,
         )
         .run(
           scope.taskId,
@@ -8313,6 +8333,7 @@ export class Store {
           ROUTE_ERA,
           scope.candidate ?? null,
           releaseTerms === null ? null : serializeReleaseTerms(releaseTerms),
+          releaseCheck === null ? null : serializeReleaseCheckPurpose(releaseCheck),
         );
       // Who wrote THIS text (mate arc, ruling 2): set per write, so a human
       // rewrite clears the lead's mark and a mate rewrite sets it — but only a
@@ -8431,7 +8452,12 @@ export class Store {
         // A DEPLOY GATE FROM CHAT (chat-management.md §0a.5): a signed candidate or release terms seal from chat only
         // with the release card's evidence (its act and card digest), never through the plain plan card or a generic
         // one. Read from the raw row, so a terms column that doesn't parse is a deploy gate too.
-        const deployGate = (typeof working["candidate"] === "string" && working["candidate"] !== "") || working["release_terms_json"] != null;
+        const deployGate = (typeof working["candidate"] === "string" && working["candidate"] !== "") || working["release_terms_json"] != null || working["release_check_json"] != null;
+        // A RELEASE CHECK PURPOSE (v137) seals, like terms, only on a person's own yes: the ceremony or a paired-chat tap
+        // through the release card — never a mode, a grant, a carry or an automatic seal (those need terms).
+        const purpose = storedReleaseCheckPurpose(working["release_check_json"]);
+        if (!purpose.ok) return false;
+        if (purpose.purpose !== null && basis !== undefined && basis.kind !== "chat") return false;
         if (deployGate && basis?.kind === "chat" && !(basis.card === "release" && typeof basis.cardDigest === "string" && /^[0-9a-f]{64}$/.test(basis.cardDigest))) return false;
         // AUTOMATIC RELEASE SEALS (auto-approve-green.md): only on a release task (a candidate and release terms signed
         // in), only naming the evidence row the plane wrote for exactly this task, kind, digest and candidate.
@@ -13675,7 +13701,7 @@ export class Store {
     if (route === null) {
       return { ok: false, reason: "unreadable", detail: scope.approvedRouteJson == null ? "the approval sealed no agent route — re-file the scope and approve it again" : "the approval's sealed agent route cannot be read — re-file the scope and approve it again" };
     }
-    const fields = { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default", releaseTerms: scope.releaseTerms ?? null };
+    const fields = { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default", releaseTerms: scope.releaseTerms ?? null, releaseCheck: scope.releaseCheck ?? null };
     const chain = scope.approvalKind === "chain" ? chainFromJson(scope.approvedChainJson ?? null) : null;
     const target = chain !== null ? { chain } : (scope.approvedProfile ?? null);
     if (target === null) return { ok: false, reason: "unreadable", detail: "the approval sealed no agent profile — re-file the scope and approve it again" };
@@ -23968,6 +23994,12 @@ export function scopeTermsProblem(row: Record<string, unknown>): string | null {
     const terms = storedReleaseTerms(row["release_terms_json"]);
     if (!terms.ok) return terms.problem;
   }
+  // v137: likewise the release check purpose, and never beside terms.
+  if ("release_check_json" in row) {
+    const purpose = storedReleaseCheckPurpose(row["release_check_json"]);
+    if (!purpose.ok) return purpose.problem;
+    if (purpose.purpose !== null && row["release_terms_json"] != null) return "the scope carries both release terms and a release check purpose";
+  }
   for (const column of ["approved_at", "approved_by", "approved_digest", "profile_json", "approved_profile_json", "proposed_chain_json", "approved_chain_json", "proposed_route_json", "approved_route_json", "unresolved_reason"]) {
     if (row[column] !== null && row[column] !== undefined && typeof row[column] !== "string") return `${column.replace(/_/g, " ")} is not stored as text`;
   }
@@ -24020,6 +24052,7 @@ function readScope(row: Record<string, unknown>): Scope {
     routeEra: row["route_era"] === null || row["route_era"] === undefined ? null : Number(row["route_era"]),
     candidate: typeof row["candidate"] === "string" && row["candidate"] !== "" ? row["candidate"] : null,
     releaseTerms: (() => { const read = storedReleaseTerms(row["release_terms_json"]); return read.ok ? read.terms : null; })(),
+    releaseCheck: (() => { const read = storedReleaseCheckPurpose(row["release_check_json"]); return read.ok ? read.purpose : null; })(),
     proposedVia: row["proposed_via"] === "mate" || row["proposed_via"] === "coordinator" || row["proposed_via"] === "scout" || row["proposed_via"] === "lead" ? row["proposed_via"] : null,
   };
 }

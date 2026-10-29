@@ -31,7 +31,7 @@ import { nightlyTaskRef, releaseTaskRef } from "./store.js";
 import { type ProofVerdict, type VerifyCommandFacts } from "./proof.js";
 import { verificationEvidence, failedVerificationEvidence } from "./verification-evidence.js";
 import { classifyGateFailure, describeGateFailure, gateFailureSummary, type GateFailureClass } from "./gate-failure.js";
-import { propose, approve, liveReleaseOf } from "./scope.js";
+import { propose, approve, liveReleaseOf, releaseCheckScope } from "./scope.js";
 import { headWithin } from "./names.js";
 
 /**
@@ -565,14 +565,15 @@ export function regateTask(
   if (scope === null) return { ok: false, reason: "no-attempt", message: `${taskId} has no scope` };
   const head = last.headRevision;
   const actor = approval.kind === "operator" ? approval.name : approval.kind === "release" ? approval.name : `mode ${approval.name}`;
-  if (approval.kind === "release" && ((scope.candidate ?? null) === null || (scope.releaseTerms ?? null) === null)) {
+  // A release task: signed terms or a release check purpose (pipeline-speed.md, P0), each sealed with the approval.
+  if (approval.kind === "release" && ((scope.candidate ?? null) === null || !releaseCheckScope(scope))) {
     return { ok: false, reason: "not-approved", message: `${taskId} isn't a release candidate; only a release reruns under its own approval` };
   }
   // A prepared candidate (a release gate, the nightly check) already names the approved commit, and the builder loads
   // exactly its tree on every attempt. The rerun keeps that scope and its approval as they are: nothing is proposed or
   // sealed again, so a regate can never swap the approved commit, its release terms or the person's yes for others
   // (2026-10-27: a regate rewrote release-0.9.73's candidate to its own build commit and the release refused it).
-  if ((scope.candidate ?? null) !== null || (scope.releaseTerms ?? null) !== null) {
+  if ((scope.candidate ?? null) !== null || releaseCheckScope(scope)) {
     const candidate = scope.candidate ?? null;
     if (candidate === null || scope.approvedDigest !== scope.digest || last.scopeDigest !== scope.digest) {
       return { ok: false, reason: "not-approved", message: `${taskId}'s approved commit or scope changed since attempt #${last.id}, or its approval no longer stands; approve its scope again instead` };
