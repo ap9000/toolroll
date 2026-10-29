@@ -43,7 +43,7 @@ export type { HandoffArtifact } from "./contracts/handoff.js";
 import type { Artifact, Store } from "./store.js";
 import type { ExecResult } from "./exec.js";
 import { encodeBaseTreeSnapshot, parseBaseTreeSnapshot, type BaseTreeEntry } from "./peek.js";
-import { noLazyFetch, partialCloneRefusal } from "./teardown-git.js";
+import { noLazyFetch } from "./teardown-git.js";
 
 /** The park mailbox pattern. Each run's actual name carries a nonce; see `mailboxName`. */
 export const MAILBOX_PREFIX = "STANDING-ORDERS-PARK-";
@@ -1071,9 +1071,9 @@ async function captureBaseTreeInner(
   now: Date,
 ): Promise<{ ok: boolean }> {
   const args = [...noLazyFetch(), "-c", "protocol.allow=never", "--no-replace-objects", "--no-optional-locks", "ls-tree", "-r", "-l", "-z", base];
-  // A git without --no-lazy-fetch refuses a partial clone instead (teardown-git.ts partialCloneRefusal).
-  const listed = partialCloneRefusal(repoRoot) === null ? await git("git", args, { cwd: repoRoot, envAllowlist: ["PATH", "HOME"] })
-    : { code: 128, stdout: "", stderr: "", timedOut: false, notFound: false };
+  // `git` is the builder's hardened checkout git (a frozen view): on a git without --no-lazy-fetch it refuses a partial
+  // clone from the same config it runs with (teardown-git.ts lazyFetchSetting).
+  const listed = await git("git", args, { cwd: repoRoot, envAllowlist: ["PATH", "HOME"] });
   const command = `git ls-tree -r -l -z ${base} (exit ${listed.code})`;
   const refuse = (): { ok: false } => {
     storeEvidence(store, root, runId, "base-tree", "base-tree.json", Buffer.alloc(0), command, now, {

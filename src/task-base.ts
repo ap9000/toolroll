@@ -6,7 +6,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { noLazyFetch, partialCloneRefusal } from "./teardown-git.js";
+import { lazyFetchSupported, noLazyFetch, viewedGitSync } from "./teardown-git.js";
 import type { Store } from "./store.js";
 
 export type TaskBaseView = {
@@ -25,9 +25,12 @@ export type TaskBaseView = {
 export type GitRead = (cwd: string, args: readonly string[]) => string | null;
 
 export const readGit: GitRead = (cwd, args) => {
-  // A git without --no-lazy-fetch reads nothing from a partial clone (teardown-git.ts partialCloneRefusal).
-  if (partialCloneRefusal(cwd) !== null) return null;
   try {
+    // No --no-lazy-fetch: through a frozen read view, which refuses a partial clone from the config git runs with.
+    if (!lazyFetchSupported()) {
+      const ran = viewedGitSync(cwd, args, { timeoutMs: 5_000, maxBuffer: 65_536 });
+      return ran.status === 0 ? ran.stdout.trim() : null;
+    }
     return execFileSync("git", ["--no-optional-locks", ...noLazyFetch(), "-c", "protocol.allow=never", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000, maxBuffer: 65_536 }).trim();
   } catch {
     return null;

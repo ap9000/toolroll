@@ -46,7 +46,8 @@
   `--no-lazy-fetch`: there Toolroll leaves it out and instead refuses a
   project that is a partial clone for protected reads ("this project is a
   partial clone; protected reads need git 2.45 or newer"), judged from the
-  config it inspected, and every read still refuses all network protocols.
+  frozen copy of the config git then runs with (never checked, then run),
+  and every read still refuses all network protocols.
   Two CI jobs run the git attack and worktree tests on git 2.41 and 2.47, as
   an unprivileged user, fail if any test is skipped, and are now required
   for a release.

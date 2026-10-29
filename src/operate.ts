@@ -296,7 +296,7 @@ import { scout as scoutTask } from "./scout.js";
 import { profileDigestOf } from "./scope.js";
 import { PROVIDER_KEY_ENV, clearProviderKey, keyStatus, readAuthMode, readAuthModeStrict, readProviderKey, saveProviderKey, setAuthMode, verifyProviderKey, verdictWords } from "./keys.js";
 import { run, terminateLiveProviders, run as execRun } from "./exec.js";
-import { hardenedGit, noLazyFetch, partialCloneRefusal } from "./teardown-git.js";
+import { hardenedGit, lazyFetchSafeGit, noLazyFetch, PARTIAL_CLONE_REFUSAL } from "./teardown-git.js";
 import { installedGitFloorProblem } from "./git-floor.js";
 import { noticeGitIncidents } from "./git-incident.js";
 import { containmentNotice, containmentStatus, currentContainment, describeContainment, resolveContainment, type EffectiveContainment } from "./containment.js";
@@ -3395,10 +3395,9 @@ async function tickCommand(
         if (exists.code !== 0 && text(flags, "base") === undefined) buildBase = source.head;
         else {
           const descendant = exists.code === 0 ? branch : base;
-          const partial = partialCloneRefusal(repo);
-          const ancestry = partial !== null ? null : await git("git", [...noLazyFetch(), "-c", "protocol.allow=never", "--no-replace-objects", "merge-base", "--is-ancestor", source.head, descendant], { cwd: repo });
-          if (partial !== null) problem = partial;
-          else if (ancestry!.code !== 0) problem = "the requested revision base does not contain its source head";
+          // On a git without --no-lazy-fetch, through a frozen read view that refuses a partial clone (lazyFetchSafeGit).
+          const ancestry = await lazyFetchSafeGit(git)("git", [...noLazyFetch(), "-c", "protocol.allow=never", "--no-replace-objects", "merge-base", "--is-ancestor", source.head, descendant], { cwd: repo });
+          if (ancestry.code !== 0) problem = ancestry.stderr.includes(PARTIAL_CLONE_REFUSAL) ? PARTIAL_CLONE_REFUSAL : "the requested revision base does not contain its source head";
         }
       }
       if (problem !== null) {

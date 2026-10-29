@@ -81,9 +81,14 @@ F. Process: delta review of post-review security changes (diff + affected invari
   made on older git, so its test proves that instead. `git --no-lazy-fetch` arrived in 2.45 (2.44.4 and 2.43.7 refuse
   it): teardown-git.ts asks once per process (`git --no-lazy-fetch version`, plain env) and on older git leaves the flag
   out of every hardened read and instead refuses any repository whose config makes lazy fetching possible
-  (`extensions.partialClone`, `remote.<name>.promisor` not plainly false, `remote.<name>.partialCloneFilter`): from the
-  view's frozen config listing in checkoutGit/checkoutGitSync, and for the direct reads outside a view
-  (partialCloneRefusal) from the config read just before, backstopped by `protocol.allow=never` on every read and write.
+  (`extensions.partialClone`, `remote.<name>.promisor` not plainly false, `remote.<name>.partialCloneFilter`,
+  `remote.<name>.vcs`), always from the frozen view's own config listing, the config git then runs with: checkoutGit /
+  checkoutGitSync / viewedGitSync. The reads that ran git directly on a repository (project knowledge and learning,
+  task base, release coverage, prepared evidence, grant's check-ignore, the revision-base merge-base) go through such a
+  view on old git (lazyFetchSafeGit, viewedGitSync), never check-then-run; the builder's base-tree and review-context
+  reads already use the builder's hardened view. The view also refuses includes and, by the deny-by-default classifier,
+  every `protocol.*` key and `remote.<name>.vcs` on any git version, so a repository's `protocol.ext.allow=always` can't
+  outrank `-c protocol.allow=never`. A security scan of the first version (a `--no-includes` check-then-run) led here.
   Words: "this project is a partial clone; protected reads need git 2.45 or newer". `toolroll up`/`serve`/`watch` refuse
   to start below the floor (reason `git-too-old`) and `toolroll doctor` names it; other commands aren't held. Stock
   Ubuntu 24.04 (2.43) is above the floor; Debian 12 (2.39) is below it.

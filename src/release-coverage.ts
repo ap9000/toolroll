@@ -5,7 +5,7 @@
  * scope digest or schema changes. Fails closed: a receipt that can't be read,
  * a missing commit or any Git error leaves the result uncovered. */
 import { execFileSync } from "node:child_process";
-import { noLazyFetch, partialCloneRefusal } from "./teardown-git.js";
+import { lazyFetchSupported, noLazyFetch, viewedGitSync } from "./teardown-git.js";
 import type { Store } from "./store.js";
 import { verificationEvidence } from "./verification-evidence.js";
 import { runCheckLevel } from "./check-levels.js";
@@ -30,10 +30,12 @@ export const gitIsAncestor: IsAncestor = (repo, ancestor, descendant) => {
   const known = ancestry.get(key);
   if (known !== undefined) return known;
   let answer: boolean | null;
-  // A git without --no-lazy-fetch can't answer for a partial clone (teardown-git.ts partialCloneRefusal).
-  if (partialCloneRefusal(repo) !== null) return null;
   try {
-    execFileSync("git", ["-C", repo, ...noLazyFetch(), "--no-optional-locks", "-c", "protocol.allow=never", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor", ancestor, descendant], { stdio: "ignore", timeout: 5_000 });
+    // No --no-lazy-fetch: through a frozen read view, which refuses a partial clone from the config git runs with.
+    if (!lazyFetchSupported()) {
+      const status = viewedGitSync(repo, ["merge-base", "--is-ancestor", ancestor, descendant], { timeoutMs: 5_000 }).status;
+      if (status !== 0) throw Object.assign(new Error("git merge-base"), { status });
+    } else execFileSync("git", ["-C", repo, ...noLazyFetch(), "--no-optional-locks", "-c", "protocol.allow=never", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor", ancestor, descendant], { stdio: "ignore", timeout: 5_000 });
     answer = true;
   } catch (error) {
     // Exit 1 is Git's "no"; anything else (a missing object, no repository, a timeout) is no answer.

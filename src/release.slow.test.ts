@@ -1310,7 +1310,7 @@ describe("toolroll release: approve automatically when checks pass", () => {
     expect(s.calls).toEqual(["fileGate", "autoGreen", "complete", "deploy", "switchLinks", "merge", "deleteBranch", "createTag", "propose", "brewMerge"]);
     expect(s.gate.approval).toMatchObject({ basis: "auto-green" });
     expect(plane).toMatchObject({ authorizations: 1, approvals: 1, gaveUp: [], released: ["v0.9.52"] });
-    expect(readJournal(journalFile(dir, "toolroll/simplify-release"))).toMatchObject({ step: "done", auto: { state: "approved", ci: [100, 101, 102, 103, 104] }, approval: { by: "alex (automatic)" } });
+    expect(readJournal(journalFile(dir, "toolroll/simplify-release"))).toMatchObject({ step: "done", auto: { state: "approved", ci: REQUIRED_PR_CHECKS.map((_, i) => 100 + i) }, approval: { by: "alex (automatic)" } });
     expect(s.said).toContain(`  Approved automatically: CI and the release check passed on ${SHA.slice(0, 7)}`);
   });
 

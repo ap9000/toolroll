@@ -1,6 +1,6 @@
 /** Committed image inventory, never claimed checks, completion, or approval. */
 import { execFileSync } from 'node:child_process';
-import { noLazyFetch, partialCloneRefusal } from './teardown-git.js';
+import { lazyFetchSupported, noLazyFetch, viewedGitSync } from './teardown-git.js';
 import { createHash } from 'node:crypto';
 import { lstatSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -18,11 +18,14 @@ export type PreparedEvidence = { proof: ParsedProof; files: { path: string; sha2
 /** Reads immutable Git objects; local/untracked files cannot fill a missing entry. */
 export function readPreparedEvidence(repo: string, candidate: string, required = false): PreparedEvidence | null {
   if (!/^[a-f0-9]{40}$/.test(candidate)) fail('The saved commit is invalid.');
-  const partial = partialCloneRefusal(repo);
-  if (partial !== null) fail(`The committed screenshot inventory could not be read: ${partial}.`);
   const git = (args: string[], cap: number): Buffer => {
-    try { return execFileSync('git', [...preparedEvidenceGit(), '-C', repo, ...args], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000, maxBuffer: cap }); }
-    catch { return fail('The committed screenshot inventory could not be read.'); }
+    try {
+      if (lazyFetchSupported()) return execFileSync('git', [...preparedEvidenceGit(), '-C', repo, ...args], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000, maxBuffer: cap });
+      // No --no-lazy-fetch: through a frozen read view, which refuses a partial clone from the config git runs with.
+      const ran = viewedGitSync(repo, [...preparedEvidenceGit(), ...args], { timeoutMs: 10_000, maxBuffer: cap, buffer: true });
+      if (ran.status !== 0) throw new Error('git failed');
+      return ran.stdout;
+    } catch { return fail('The committed screenshot inventory could not be read.'); }
   };
   const blob = (path: string, cap: number): Buffer | null => {
     const entries = git(['ls-tree', '-z', '-l', candidate, '--', path], 2048).toString('utf8').split('\0').filter(Boolean);

@@ -871,6 +871,19 @@ export function readFlags(): readonly string[] {
  * or info/attributes change after they were read), submodules skipped, bounded. A refusal throws.
  */
 export function checkoutGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number; binding?: GitBinding } = {}): string {
+  const ran = viewedGitSync(cwd, args, options);
+  if (ran.status !== 0) throw new Error(`git ${args[0] ?? ""} failed`);
+  return ran.stdout;
+}
+
+/**
+ * checkoutGitSync's run, answering git's exit status instead of throwing on a non-zero one (a refusal, or a repository
+ * that changed while git ran, still throws): for reads whose "no" is an exit code (`merge-base --is-ancestor`), and,
+ * with `buffer`, for blobs read as bytes (their output is never rewritten).
+ */
+export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number; binding?: GitBinding }): { status: number | null; stdout: string };
+export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number; binding?: GitBinding; buffer: true }): { status: number | null; stdout: Buffer };
+export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number; binding?: GitBinding; buffer?: true } = {}): { status: number | null; stdout: string | Buffer } {
   if (checkoutIncludes(cwd)) throw new Error("the checkout's git config includes another file, or couldn't be read as a plain file");
   if (lfsExtensionIn(cwd)) throw new Error("the checkout's .lfsconfig sets a git-lfs key that can run a command");
   // Its config and info/attributes as read once, in a folder of the plane's own: neither can change before git runs.
@@ -891,11 +904,17 @@ export function checkoutGitSync(cwd: string, args: readonly string[], options: {
     if (command >= 0 && safeArgs[command] === "diff") safeArgs.splice(command + 1, 0, "--no-ext-diff", "--no-textconv");
     // The operator's own values, but no filter: PAGE_READ_FLAGS reads attributes from the empty tree anyway.
     const carried = withoutFilters(carriedSettings(own.stdout));
-    const ran = spawnSync("git", [...TEARDOWN_FLAGS, ...readFlags(), "-c", "diff.ignoreSubmodules=all", ...carried, ...safeArgs], bounded);
-    if (ran.status !== 0) throw new Error(`git ${args[0] ?? ""} failed`);
+    const argv = [...TEARDOWN_FLAGS, ...readFlags(), "-c", "diff.ignoreSubmodules=all", ...carried, ...safeArgs];
+    if (options.buffer === true) {
+      const ran = spawnSync("git", argv, { ...bounded, encoding: "buffer" });
+      const why = view.settle();
+      if (why !== null) throw new Error(why);
+      return { status: ran.error === undefined ? ran.status : null, stdout: ran.stdout };
+    }
+    const ran = spawnSync("git", argv, bounded);
     const why = view.settle();
     if (why !== null) throw new Error(why);
-    return view.restore(ran.stdout, args);
+    return { status: ran.error === undefined ? ran.status : null, stdout: view.restore(ran.stdout ?? "", args) };
   } finally { view.dispose(); }
 }
 
@@ -949,7 +968,8 @@ function withoutUnsupportedFlags(args: readonly string[]): string[] {
  * The repository setting (local or worktree scope of a `git config --list --show-scope -z` listing) that makes lazy
  * fetching possible, or null: `extensions.partialClone` set at all, any `remote.<name>.promisor` not plainly false, or
  * any `remote.<name>.partialCloneFilter` set (git makes that remote a promisor). Fails closed: a listing that can't be
- * read names a setting.
+ * read names a setting. `remote.<name>.vcs` (a foreign-VCS helper) is named too, though the classifier already refuses
+ * it (commandSetting: not in the remote allowlist), as it does every `protocol.*` key and every include.
  */
 export function lazyFetchSetting(listing: string): string | null {
   try {
@@ -963,7 +983,7 @@ export function lazyFetchSetting(listing: string): string | null {
       const value = newline < 0 ? null : entry.slice(newline + 1);
       const { section, subsection, variable } = keyParts(key);
       if (section === "extensions" && variable === "partialclone") return key.toLowerCase();
-      if (section === "remote" && subsection !== null && variable === "partialclonefilter") return key.toLowerCase();
+      if (section === "remote" && subsection !== null && (variable === "partialclonefilter" || variable === "vcs")) return key.toLowerCase();
       if (section === "remote" && subsection !== null && variable === "promisor" && !/^(false|no|off|0)$/i.test((value ?? "true").trim())) return key.toLowerCase();
     }
     return null;
@@ -971,17 +991,12 @@ export function lazyFetchSetting(listing: string): string | null {
 }
 
 /**
- * For a hardened read that runs git directly on a repository rather than through a view (gitView): on a git without
- * `--no-lazy-fetch`, the refusal words when the repository's own config (read now, with includes off and no system or
- * global config) makes lazy fetching possible; null otherwise, and always null on a git that has the flag. Not frozen
- * like a view's config: such reads also carry `protocol.allow=never`, so a setting added after this check still finds
- * no transport.
+ * For the reads that run git directly on a repository rather than through a view: with `--no-lazy-fetch` they run as
+ * they always have (the flag stops any fetch). Without it, they must not check a repository's config and then run git
+ * on it (the config could change in between, or an include could set what the check never saw): `inner`, wrapped so
+ * every git command runs through a frozen read view (checkoutGit "read"), whose own config listing (includes refused,
+ * command and protocol settings refused, a partial clone refused) is the config git then runs with.
  */
-export function partialCloneRefusal(repo: string): string | null {
-  if (lazyFetchSupported()) return null;
-  const listed = spawnSync("git", ["--no-optional-locks", "-C", repo, "config", "--list", "--no-includes", "--show-scope", "-z"],
-    { cwd: "/", encoding: "utf8", timeout: 5_000, maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
-      env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
-  if (listed.status !== 0) return PARTIAL_CLONE_REFUSAL;
-  return lazyFetchSetting(listed.stdout) === null ? null : PARTIAL_CLONE_REFUSAL;
+export function lazyFetchSafeGit(inner: Runner = run): Runner {
+  return lazyFetchSupported() ? inner : checkoutGit(inner, "read");
 }
