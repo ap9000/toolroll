@@ -9,7 +9,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { parse as parseYaml } from "yaml";
 import { sleep } from "./sleep.js";
@@ -27,7 +27,8 @@ import {
 import { acquireDeploymentLock } from "./deploy-lock.js";
 import { autoReleaseApprovalOf, liveReleaseOf } from "./scope.js";
 import { recheckReleaseTask, releaseCheckStanding } from "./check-failure.js";
-import { autoPublishHeld, holdAutoPublish, holdApprovalForCi, liftCiHold, authorizeAutoCheck, giveUpAutoApproval, noteAutoCheckFailed, noteAutoRelease, releaseAutoApproves, sealAutoGreen, type CiObservation } from "./release-auto.js";
+import { noteCiRunning } from "./release-ci-hold.js";
+import { autoPublishHeld, holdAutoPublish, liftCiHold, authorizeAutoCheck, giveUpAutoApproval, noteAutoCheckFailed, noteAutoRelease, releaseAutoApproves, sealAutoGreen, type CiObservation } from "./release-auto.js";
 import { proveCarry, type BuildRunner } from "./release-carry.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { deploymentGate } from "./deploy-gate.js";
@@ -714,10 +715,6 @@ function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now:
     async setting(taskId) {
       return withStore(store => { try { const ref = store.lookupRef(taskId); return ref?.repo != null && releaseAutoApproves(store, ref.repo); } catch { return false; } });
     },
-    async settingFor(checkout) {
-      // The task the gate files is the project at this checkout (`task add --repo`, resolved the same way).
-      return withStore(store => { try { return releaseAutoApproves(store, resolve(checkout)); } catch { return false; } });
-    },
     async authorizeCheck(input) {
       const problem = reportProblem();
       if (problem !== null) return { ok: false as const, why: problem };
@@ -757,7 +754,7 @@ function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now:
       return withStore(store => sealAutoGreen(store, { ...input, ci: observed, mainUpToDate: upToDate, evidenceRoot: auto.evidenceRoot, now: now() }));
     },
     async giveUp(taskId, why) { withStore(store => giveUpAutoApproval(store, { taskId, why, now: now() })); },
-    async holdForCi(taskId, candidate) { withStore(store => holdApprovalForCi(store, { taskId, candidate, now: now() })); },
+    async ciRunning(taskId, candidate) { withStore(store => noteCiRunning(store, { taskId, candidate, now: now() })); },
     async ciPassed(taskId, candidate, ask) {
       // The plane reads CI itself; a short network failure is asked again a few times, and unreadable is never a pass.
       let ci: CiObservation | null = null, problem = "";

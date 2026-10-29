@@ -37,6 +37,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, re
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { personProof } from "./person-proof.js";
+import { RELEASE_CI_RUNNING_WORDS as CI_RUNNING_WORDS } from "./release-ci-hold.js";
 
 /** The pull-request checks a release waits for, by exact job name (.github/workflows/ci.yml). Every one must have
  * concluded `success` on the gated commit; src/ci-workflow.test.ts holds the workflow to this list. */
@@ -178,10 +179,6 @@ export type ReleaseAuthorityAdapter = {
 export type AutoReleaseAdapter = {
   /** The project's "Approve automatically when checks pass", read now (off when unreadable). */
   setting(taskId: string): Promise<boolean>;
-  /** The same setting for the project at a checkout, before its release task exists (off when unreadable). Only a
-   * timing hint: on, the gate files the task without waiting for CI, and every approval still waits for CI to pass.
-   * Absent: the gate waits for CI as before. */
-  settingFor?(checkout: string): Promise<boolean>;
   /** Seal `auto-check` so the release check runs before anyone approves. */
   authorizeCheck(input: { taskId: string; digest: string; candidate: string }): Promise<{ ok: true } | { ok: false; why: string }>;
   /** Whether the `auto-check` seal still stands (the setting on, its evidence, the digest). */
@@ -190,11 +187,11 @@ export type AutoReleaseAdapter = {
   approve(input: { taskId: string; digest: string; candidate: string; run: number; receipt: string }): Promise<{ ok: true; by: string; at: string; ci: { id: number; name: string }[] } | { ok: false; why: string }>;
   /** The automatic road ended without a release: the task asks a person, and the owner is told why. */
   giveUp(taskId: string, why: string): Promise<void>;
-  /** Hold every approval but the automatic road's until the plane reads CI passing on `candidate` (recorded in the
-   * plane before the task is filed). The gate files ahead of CI only when this and ciPassed exist. */
-  holdForCi?(taskId: string, candidate: string): Promise<void>;
-  /** The plane reads CI on `candidate` itself and, when every required check passed, lifts the hold; `ask` tells the
-   * owner the release needs them now. */
+  /** The task is filed while CI still runs on `candidate` (recorded in the plane before the task is filed): its approval
+   * card says so until the plane reads CI passing. It holds nothing (Alex, 2026-10-29: a person may approve during CI). */
+  ciRunning?(taskId: string, candidate: string): Promise<void>;
+  /** The plane reads CI on `candidate` itself and, when every required check passed, ends the "CI still running" note
+   * (and lifts a hold an older coordinator placed); `ask` tells the owner of a held release it needs them now. */
   ciPassed?(taskId: string, candidate: string, ask: boolean): Promise<{ ok: true } | { ok: false; why: string }>;
   /** The release check failed while checking automatically: the owner is told; the commit may be checked again (a
    * regate of the same commit and digest, within the plane's cap on failed runs). */
@@ -322,9 +319,13 @@ export type ReleaseJournal = {
   /** The automatic road (auto-approve-green.md): `checking` once the plane sealed `auto-check`, `approved` once it sealed
    * `auto-green`, `refused` (and why) when it wouldn't — then a person approves, as before. */
   auto?: { state: "checking" | "approved" | "refused"; why?: string; ci?: number[] } | null;
-  /** The gate filed the task while the pull request's checks still ran (pipeline-speed.md, D2: only on the automatic
-   * road, so the release check runs beside CI). Nothing is approved, by the plane or a person, before they all pass. */
+  /** The gate filed the task while the pull request's checks still ran (pipeline-speed.md, D2 and "Decision: a person's
+   * release asks during CI"): the release check runs beside CI. A person may approve meanwhile; the plane's automatic
+   * approval waits for every check to pass, and nothing deploys, merges, tags or publishes before they do. */
   ciAhead?: boolean;
+  /** Set with ciAhead and never cleared for this commit: a person's release reads CI again, fresh, right before the
+   * deploy, whatever was seen while asking (a green CI may have a newer attempt failing since). */
+  ciBeforeDeploy?: boolean;
   /** When each step was about to change something outside this machine: what a resume must look for before acting. */
   intents: Partial<Record<ReleaseStep, string>>;
   stopped: { step: ReleaseStep; reason: string; message: string; at: string } | null;
@@ -512,6 +513,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
     }
     else say(`Resuming the release of ${journal.tag} (${journal.candidate.sha.slice(0, 7)}) at ${journal.step}.`);
     const j = journal;
+    // A journal an older coordinator filed ahead of CI: its deploy reads CI fresh too.
+    if (j.ciAhead === true && j.ciBeforeDeploy !== true) j.ciBeforeDeploy = true;
     if (j.checkout !== options.checkout) throw new Stop("checkout", `This release runs in ${j.checkout}; rerun with --repo ${j.checkout}.`);
     save();
 
@@ -685,6 +688,36 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       if (!lifted.ok) throw new Stop("ci-failed", `The plane didn't confirm CI passed on ${j.candidate.sha.slice(0, 7)}: ${lifted.why}. ${nothing}. Rerun \`${resume}\` once every pull request check passes.`);
     };
     /**
+     * One look at the pull request's required checks on the exact commit while CI may still run: a failed check stops
+     * (`nothing` says what hasn't happened), passed ends the plane's "CI still running" note, pending (or GitHub not
+     * answering) answers false. Judged as the ci step judges a person's release (prChecksVerdict, ci.yml, exact head).
+     */
+    const ciWhileRunning = async (nothing: string, ask: boolean): Promise<boolean> => {
+      let runs: CheckRun[];
+      try { runs = await adapters.github.checks(j.github, j.candidate.sha); }
+      catch (error) { if (transientNetworkError(error)) return false; throw error; }
+      const verdict = prChecksVerdict(runs, j.candidate.sha, REQUIRED_PR_CHECKS, { workflow: REQUIRED_PR_CHECKS_WORKFLOW });
+      if (verdict.state === "failed") {
+        throw new Stop("ci-failed", `GitHub's checks failed on ${j.candidate.sha.slice(0, 7)}: ${verdict.failed.join(", ")}. ${nothing}. ${j.approval === null ? "" : `The approval covers ${j.candidate.sha.slice(0, 7)} only. `}Rerun the failed job on GitHub and run \`${resume}\` again, or fix the branch and release the new commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
+      }
+      if (verdict.state !== "passed") return false;
+      if (j.ciAhead === true) { await liftCiHold(ask, nothing); j.ciAhead = false; save(); }
+      return true;
+    };
+    /** Right before a person's release that was filed while CI ran deploys: wait until every required check passed on
+     * the exact commit, read now. (One filed after CI passed was read at the gate, as before; the automatic road reads
+     * it in autoCiHolds.) */
+    const personCiBeforeDeploy = async () => {
+      if (j.auto?.state === "approved" || j.ciBeforeDeploy !== true) return;
+      let said = false;
+      await waitFor("ci", `the pull request checks on ${j.candidate.sha.slice(0, 7)} before the deploy`, async () => {
+        await watch("deploy");
+        if (await ciWhileRunning("Nothing was deployed, merged, tagged or published", false)) return true;
+        if (!said) { say(`  ${CI_RUNNING_WORDS}`); said = true; }
+        return null;
+      });
+    };
+    /**
      * The task is approved for `action`: a release task (a carried commit, or any task once the release has an
      * authority) only when the live-release predicate applies to it AND accepts it — fail closed, whatever its own seal
      * says. Anything else needs the owner's own approval of these exact words (which a carried seal never is).
@@ -749,16 +782,16 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             if (existing.candidate !== j.candidate.sha) throw new Stop("conflict", `Task ${j.task.id} exists for a different commit (${existing.candidate?.slice(0, 7) ?? "none"}).`);
             j.task.scopeDigest = existing.scopeDigest;
           } else {
-            // On the automatic road the gate only stops on a check that already failed: the release check then runs
-            // beside CI (pipeline-speed.md, D2), and nothing is approved before CI passes (the approval and check steps).
-            const auto = rel?.auto;
-            const ahead = auto?.settingFor !== undefined && auto.holdForCi !== undefined && auto.ciPassed !== undefined && j.freshTask !== true && j.auto?.state !== "refused" && await auto.settingFor(j.checkout);
-            const settled = await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { pendingIsEnough: ahead });
-            // Filed ahead of CI: the plane holds every approval but the automatic road's until it reads CI passing —
-            // recorded before the task exists, so it is never approvable with CI pending (round 1, finding 4).
-            if (!settled) await auto!.holdForCi!(j.task.id, j.candidate.sha);
-            j.ciAhead = !settled; save();
-            if (!settled) { say(`  Pull request checks on ${j.candidate.sha.slice(0, 7)} are still running: the release check runs beside them, and nothing is approved before they pass`); }
+            // The gate only stops on a check that already failed: the task is filed and a person asked while CI runs, and
+            // the release check runs beside it (pipeline-speed.md, D2 and "Decision: a person's release asks during
+            // CI"). The automatic approval waits for CI (the check step); nothing deploys before it passes (the deploy).
+            const settled = await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { pendingIsEnough: true });
+            // Recorded before the task exists, so its approval card says CI still runs from the first moment.
+            if (!settled) await rel?.auto?.ciRunning?.(j.task.id, j.candidate.sha);
+            j.ciAhead = !settled;
+            if (!settled) j.ciBeforeDeploy = true;
+            save();
+            if (!settled) { say(`  Pull request checks on ${j.candidate.sha.slice(0, 7)} are still running: the release check runs beside them, and nothing deploys before they pass`); }
             intend("gate");
             await adapters.repo.sync(j.branch);
             const filed = await adapters.toolroll.fileGate({
@@ -794,16 +827,16 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
               say(`  Not approved automatically: ${authorized.why}. A person approves it.`);
             }
           }
-          // Filed while CI still ran (the automatic road, which a person's approval replaced): a person is asked only once
-          // every pull request check passed, as when the gate waits.
-          if (j.ciAhead === true) {
-            await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { nothing: "Nothing was sent for approval" });
-            await liftCiHold(true, "Nothing was sent for approval");
-            j.ciAhead = false; save();
-          }
+          // Filed while CI still runs: the person is asked now (Alex, 2026-10-29), and told nothing deploys until CI passes.
+          // A check that already failed asks nobody (as at the gate).
+          if (j.ciAhead === true) await ciWhileRunning("Nothing was deployed or merged", true);
           say(`  The release scope needs your approval: \`toolroll task approve ${j.task.id} --digest ${j.task.scopeDigest}\`, or open the task in the console.`);
+          if (j.ciAhead === true) say(`  ${CI_RUNNING_WORDS}`);
           const approved = await waitFor("approval", `a person to approve task ${j.task.id}`, async () => {
             await watch("dispatch");
+            // While asking: a check that failed stops here (nobody approves a red commit), and CI passing ends the card's
+            // "still running" note (and lifts a hold an older coordinator placed).
+            if (j.ciAhead === true) await ciWhileRunning("Nothing was deployed or merged", true);
             const gate = await adapters.toolroll.gate(j.task.id);
             if (gate.scopeDigest !== j.task.scopeDigest) throw new Stop("scope-changed", `The scope of ${j.task.id} changed after it was filed; the release only runs on the scope it filed.`);
             const owner = ownerApproval(gate, j.task.scopeDigest);
@@ -946,6 +979,9 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           }
           if (runtime === null) {
             // The last moment a moved head restarts; then the deploy reservation freezes the candidate in the store.
+            // A person's release: every required check passed on the exact commit, read now (the approval may have come
+            // while CI ran). A check that failed stops here, before anything is deployed.
+            await personCiBeforeDeploy();
             await watch("deploy");
             await pinned();
             // Every deploy issued, whatever the journal saved (a retry after a rollback included): CI still green.
