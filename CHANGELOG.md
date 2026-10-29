@@ -2,6 +2,19 @@
 
 ## 0.9.77 — 2026-10-29
 
+- **The console is fast again.** 0.9.76's release-approval setting was read by
+  walking a project's whole action ledger once per task row, and every page's
+  sidebar runs that list four times, so each page blocked the console for about
+  3 seconds (more with tabs open while anything builds). It now reads the
+  setting rows through an existing index: pages went from about 2 s to about
+  0.4 s on a real database. Sizing build checkouts every half hour no longer
+  freezes the console either.
+- **A release check's result is always saved.** The release check's streamed
+  part lines now carry a tag no Toolroll version misreads as a journey's own
+  line; an older console counted them twice, built a progress snapshot it then
+  refused, and the refusal stopped the check's log and result from being saved
+  (the check read as "unavailable"). A progress update that fails to save can
+  no longer stop sealing, and a result that can't be saved says so on the run.
 - **A renamed or dropped CI job no longer hides its failure.** Every failed
   attempt on a commit is judged before newer runs replace older ones, so a
   job a newer run renamed or dropped can't erase a test failure from an
