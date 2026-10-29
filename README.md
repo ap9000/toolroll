@@ -973,9 +973,12 @@ shows the selected thumbnail and caption beside your note before **Request chang
 **Save for later** keeps the note for a future batch. The result, chat confirmation,
 and revision retain the exact screenshot; a changed or unavailable image refuses
 submission and keeps the browser draft. Remove the image to submit general feedback.
-In chat, `propose_review` accepts an image id from the result, and replies to a
-Telegram screenshot retain that image automatically. Optional missing images never
-prevent marking a task Complete or change its recorded checks.
+In chat, `propose_review` accepts an image id from the result. A typed note replying
+to a Telegram screenshot keeps that image unless `image: null` drops it; a newer
+result or a saved-notes-only revision does not attach it. A confirmation card too long
+for one Telegram message is not shortened: it links to your Toolroll chat, where
+the pending card waits in full. Optional missing images never prevent marking a
+task Complete or change its recorded checks.
 
 The chat setup screen defaults to **Codex membership · default model**.
 Run `codex login` once on the machine serving Toolroll, choose that
