@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { buildIdentity, memoryChannel, parentMessage, RoleGenerations, ROLE_NOT_READY_REPLACEMENTS, roleMessage, startMessage, type RoleToParent } from "./up-processes.js";
+import { fakePid } from "../test/fake-pid.js";
 
 const consoleConfig = { host: "127.0.0.1", port: 4180, allowedHosts: null, publicUrl: null, localRunner: "mac", poolRoot: "/s/worktrees", repos: ["/r"], projectRoots: [], registryPath: "/s/repos.json", editor: false };
 const workerConfig = { runner: "mac", token: "runner-token", repos: ["/r"], pinnedRepos: [], projectRoots: [], registryPath: "/s/repos.json", pool: "/s/worktrees",
@@ -25,10 +26,10 @@ describe("the messages between up and its two roles", () => {
   });
 
   test("a role speaks only its own part: the worker names no address and no sign-in link, the console no projects", () => {
-    expect(roleMessage({ type: "ready", role: "worker", build: "b", pid: 9, url: null, port: null }, "worker")).not.toBeNull();
-    expect(roleMessage({ type: "ready", role: "worker", build: "b", pid: 9, url: "http://x/", port: 1 }, "worker")).toBeNull();
-    expect(roleMessage({ type: "ready", role: "console", build: "b", pid: 9, url: null, port: null }, "console")).toBeNull();
-    expect(roleMessage({ type: "ready", role: "console", build: "b", pid: 9, url: "http://x/", port: 1 }, "worker")).toBeNull();
+    expect(roleMessage({ type: "ready", role: "worker", build: "b", pid: fakePid(9), url: null, port: null }, "worker")).not.toBeNull();
+    expect(roleMessage({ type: "ready", role: "worker", build: "b", pid: fakePid(9), url: "http://x/", port: 1 }, "worker")).toBeNull();
+    expect(roleMessage({ type: "ready", role: "console", build: "b", pid: fakePid(9), url: null, port: null }, "console")).toBeNull();
+    expect(roleMessage({ type: "ready", role: "console", build: "b", pid: fakePid(9), url: "http://x/", port: 1 }, "worker")).toBeNull();
     expect(roleMessage({ type: "sign-in-link", id: 1, link: "/login/once/x" }, "worker")).toBeNull();
     expect(roleMessage({ type: "repos", repos: ["/r"] }, "console")).toBeNull();
     expect(roleMessage({ type: "log", line: "x".repeat(20_000) }, "worker")).toBeNull();

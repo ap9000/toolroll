@@ -143,12 +143,14 @@ test("on an owner-shaped database the chrome's reads, a cached read and /board s
 
   const measured = { counts, needsYou, summary, cached, board, boardChanged };
   console.info(`console budgets (ms): ${JSON.stringify(Object.fromEntries(Object.entries(measured).map(([k, v]) => [k, Math.round(v * 10) / 10])))}`);
-  expect(counts, "work index counts").toBeLessThan(150);
-  expect(needsYou, "work index page (Needs you)").toBeLessThan(150);
-  expect(summary, "sidebar project states").toBeLessThan(1_500);
-  expect(cached, "cached chrome").toBeLessThan(30);
-  expect(board, "/board render (chrome cached)").toBeLessThan(300);
-  expect(boardChanged, "/board render after a database change").toBeLessThan(2_500);
+  // Budgets catch an order-of-magnitude regression (0.9.76's work index was ~10x slower), not a few milliseconds on a
+  // busy CI machine: this Mac measures counts ~35 ms, Needs-you ~65, sidebar ~450, /board ~13 / ~750 after a change.
+  expect(counts, "work index counts").toBeLessThan(500);
+  expect(needsYou, "work index page (Needs you)").toBeLessThan(500);
+  expect(summary, "sidebar project states").toBeLessThan(4_000);
+  expect(cached, "cached chrome").toBeLessThan(100);
+  expect(board, "/board render (chrome cached)").toBeLessThan(1_000);
+  expect(boardChanged, "/board render after a database change").toBeLessThan(6_000);
 });
 
 test("the work index never scans the whole action ledger", () => {
