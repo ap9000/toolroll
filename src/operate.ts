@@ -59,9 +59,9 @@ import { readHooksBase, scheduleFromWords, type TriggerIo } from "./flow-trigger
 import { sendSubagentSummaries } from "./subagent-admin.js";
 import { runRequestedUndos, sendSubagentWeeklies } from "./subagent-week.js";
 import { refreshConnections } from "./mcp-connect.js";
-import { releaseTermsFor } from "./release-carry.js";
+import { releaseCheckPurposeFor, releaseTermsFor } from "./release-carry.js";
 import { refreshTrustedMains, settleReleaseChecks } from "./nightly-check.js";
-import type { ReleaseTerms } from "./contracts/release-terms.js";
+import type { ReleaseCheckPurpose, ReleaseTerms } from "./contracts/release-terms.js";
 import { SECRETS_FIRST, startToolSecrets, toolSecretStorage } from "./project-tools.js";
 import type { StepIo } from "./flow-steps.js";
 import {followDiscord} from "./discord.js";
@@ -10272,6 +10272,7 @@ async function scopeTask(
   // sandbox, say) file the scope without them: every later commit then asks again, as before.
   const releaseGiven = text(flags, "release");
   let releaseTerms: ReleaseTerms | undefined;
+  let releaseCheck: ReleaseCheckPurpose | undefined;
   let releaseNote: string | null = null;
   if (releaseGiven !== undefined) {
     const spec = /^(\d+\.\d+\.\d+):([1-9][0-9]*):([A-Za-z0-9._/-]+)$/.exec(releaseGiven);
@@ -10280,7 +10281,14 @@ async function scopeTask(
     if (repo === null) return fail(write, json, "task scope", "usage", "a release scope's task has to be placed in its project first", EXIT.usage);
     const made = releaseTermsFor(store, { repo, version: spec[1]!, pr: Number(spec[2]), branch: spec[3]!, candidate: candidateGiven, now, noCarry: flags.get("no-carry") === true });
     if (made.ok) releaseTerms = made.terms;
-    else releaseNote = `Later commits on this release will each ask for approval: ${made.why}.`;
+    else {
+      releaseNote = `Later commits on this release will each ask for approval: ${made.why}.`;
+      // Without terms the candidate is still a release's check (pipeline-speed.md, P0): its purpose is sealed with the
+      // scope, from the plane's own records, so the check runs under the release's rules and the plane may rerun it on
+      // this same candidate after confirmed infrastructure. It never carries a later commit.
+      const purpose = releaseCheckPurposeFor(store, { repo, version: spec[1]!, pr: Number(spec[2]), branch: spec[3]!, candidate: candidateGiven });
+      if (purpose.ok) releaseCheck = purpose.purpose;
+    }
   }
   if (acceptanceParse.criteria.length === 0) return fail(write, json, "task scope", "acceptance-required", "--acceptance named no valid criteria", EXIT.usage);
 
@@ -10357,7 +10365,8 @@ async function scopeTask(
         : null;
     const proposed = propose(store, {
       ...(candidateGiven === undefined ? {} : { candidate: candidateGiven }),
-      ...(releaseTerms === undefined ? {} : { releaseTerms }),
+      ...(releaseTerms === undefined ? {} : { releaseTerms, releaseCheck: null }),
+      ...(releaseCheck === undefined ? {} : { releaseCheck, releaseTerms: null }),
       taskId: id,
       goal,
       outOfScope: text(flags, "not") ?? null,

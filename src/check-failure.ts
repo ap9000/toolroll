@@ -22,6 +22,7 @@ import { CHECK_REPORT_CAPTURE, readSealedJson } from "./check-report.js";
 import { readCheckReport, type CheckReport } from "./contracts/release-check.js";
 import { regateTask } from "./dispose.js";
 import { INFRA_RERUNS_PER_CANDIDATE, INFRA_RERUNS_PER_INCIDENT, type FailureClassName } from "./release.js";
+import { releaseCheckScope, type Scope } from "./scope.js";
 import type { Store } from "./store.js";
 import { verificationEvidence } from "./verification-evidence.js";
 
@@ -218,9 +219,31 @@ export type RecheckAnswer =
 export function recheckReleaseTask(store: Store, root: string, taskId: string, now: Date): RecheckAnswer {
   const ref = store.lookupRef(taskId);
   const scope = store.getScope(taskId);
-  if (ref === null || scope === null || (scope.releaseTerms ?? null) === null || (scope.candidate ?? null) === null) return { action: "stop", class: null, why: `${taskId} isn't a release task`, source: null };
-  // One transaction: the rerun and its ledger row land together, or neither does.
-  return store.transact(() => recheckInside(store, root, taskId, ref.repo, String(scope.candidate), now));
+  if (ref === null || scope === null || !releaseCheckScope(scope) || (scope.candidate ?? null) === null) return { action: "stop", class: null, why: `${taskId} isn't a release task`, source: null };
+  // One transaction: the binding, the rerun and its ledger row are read and land together, or nothing does.
+  return store.transact(() => {
+    const bound = releasePurposeBinding(store, store.getScope(taskId) ?? scope, ref.repo);
+    if (bound !== null) return { action: "stop" as const, class: null, why: bound, source: null };
+    return recheckInside(store, root, taskId, ref.repo, String(scope.candidate), now);
+  });
+}
+
+/**
+ * Why the release's sealed purpose no longer names this exact check, or null when it does (pipeline-speed.md, P0). A
+ * release check purpose (a release that can't carry) authorizes a rerun only of the identical approved candidate: its
+ * sealed commit is the scope's candidate, its project is the task's, the project's live release check grant is the one
+ * sealed and its check access is the one sealed. Signed terms keep their own rules (a carried commit's candidate is
+ * not the terms' first commit) and are held to the same project and grant.
+ */
+function releasePurposeBinding(store: Store, scope: Scope, repo: string | null): string | null {
+  const sealed = scope.releaseTerms ?? scope.releaseCheck ?? null;
+  if (sealed === null) return "it carries no release terms or release check purpose";
+  if (repo === null || sealed.repo !== repo) return "its sealed release names another project";
+  if (scope.releaseTerms == null && scope.releaseCheck!.approvedSha !== scope.candidate) return "its sealed release check names another commit";
+  const grant = store.liveVerifyCommand(repo);
+  if (grant === null || grant.id !== sealed.grant.id || grant.digest !== sealed.grant.digest) return "the project's release check changed since the approval";
+  if (scope.releaseTerms == null && store.projectCheckAccess(repo) !== scope.releaseCheck!.access) return "the project's check access changed since the approval";
+  return null;
 }
 
 function recheckInside(store: Store, root: string, taskId: string, repo: string | null, candidate: string, now: Date): RecheckAnswer {

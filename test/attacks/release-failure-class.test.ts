@@ -10,6 +10,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { releaseFixture, sealedCheck, reportOf, RELEASE_NOW, EVIDENCE, type ReleaseFixture } from "../release-fixture.js";
 import { classifyCheckFailure, classifyRunCheck, recheckReleaseTask, releaseCheckStanding, RELEASE_RECHECK_ACTION, retriedInside } from "../../src/check-failure.js";
 import { regateTask } from "../../src/dispose.js";
+import { approve, propose } from "../../src/scope.js";
 import type { CheckReport } from "../../src/contracts/release-check.js";
 
 let fixture: ReleaseFixture | null = null;
@@ -140,5 +141,98 @@ describe("the same-candidate recheck under the existing approval", () => {
     const f = (fixture = releaseFixture());
     f.store.createTask({ id: "ordinary", title: "Ordinary" }, LATER);
     expect(recheckReleaseTask(f.store, EVIDENCE(f), "ordinary", LATER)).toMatchObject({ action: "stop", class: null, why: expect.stringContaining("isn't a release task") });
+  });
+});
+
+/**
+ * A termsless release (docs/plans/pipeline-speed.md, P0): the project's checks run outside the sandbox, so the release
+ * can't carry and files without terms; its scope carries a sealed release check purpose instead. The purpose holds the
+ * check to the release's rules and lets the plane rerun the identical candidate after confirmed infrastructure — and
+ * nothing else: no other commit, no changed scope or grant, no approval that no longer stands, no other class.
+ */
+describe("a release check purpose without terms: the same-candidate rerun, and only that", () => {
+  test("it is filed in place of terms, sealed by the person, and never opens a release authority (no carry)", async () => {
+    const f = (fixture = releaseFixture({ termsless: true }));
+    const scope = f.store.getScope(f.taskId)!;
+    expect(scope.releaseTerms ?? null).toBeNull();
+    expect(scope.releaseCheck).toMatchObject({ purpose: "release-check", approvedSha: f.approved, repo: f.repo, access: "unsandboxed" });
+    expect(scope.approvedDigest).toBe(scope.digest);
+    const { releaseCheckScope } = await import("../../src/scope.js");
+    const { releaseAuthorityOfTask } = await import("../../src/release-authority.js");
+    expect(releaseCheckScope(scope)).toBe(true);
+    expect(releaseAuthorityOfTask(f.store, f.taskId)).toBeNull();
+  });
+
+  test("its Full check is held to the release's rules: an incomplete report is no result, never a pass", () => {
+    const f = (fixture = releaseFixture({ termsless: true }));
+    const { coverage, prepared } = sealedCheck(f, f.taskId, f.approved, (_plan, units) => reportOf(units.slice(1).map(file => ({ file }))), { forceFull: true });
+    expect(prepared.inventory).toMatchObject({ release: true, ciSubstitute: false });
+    expect(coverage).toBe("no-result");
+  }, 120_000);
+
+  test("confirmed infrastructure reruns the identical candidate under the same approval, within the same limits", () => {
+    const f = (fixture = releaseFixture({ termsless: true }));
+    const before = f.store.getScope(f.taskId)!;
+    const first = attempt(f, { failure: "stopped-by-toolroll" });
+    expect(recheckReleaseTask(f.store, EVIDENCE(f), f.taskId, LATER)).toMatchObject({ action: "rerun", class: "infrastructure", source: first });
+    expect(f.store.getScope(f.taskId)).toMatchObject({ candidate: f.approved, digest: before.digest, approvedDigest: before.digest, approvedBy: before.approvedBy, releaseCheck: before.releaseCheck });
+    expect(f.store.getTask(f.taskId)?.state).toBe("queued");
+    const second = attempt(f, { failure: "custody-lost" });
+    expect(recheckReleaseTask(f.store, EVIDENCE(f), f.taskId, LATER)).toMatchObject({ action: "rerun", source: second });
+    attempt(f, { failure: "spawn-failed" });
+    expect(recheckReleaseTask(f.store, EVIDENCE(f), f.taskId, LATER)).toMatchObject({ action: "stop", class: "infrastructure", why: expect.stringContaining("already rerun 2 times") });
+    expect(reruns(f)).toEqual([[first, "infrastructure"], [second, "infrastructure"]]);
+  }, 120_000);
+
+  test("a failure that isn't confirmed infrastructure is never rerun", () => {
+    const f = (fixture = releaseFixture({ termsless: true }));
+    const run = attempt(f, failing);
+    expect(recheckReleaseTask(f.store, EVIDENCE(f), f.taskId, LATER)).toMatchObject({ action: "stop", class: "deterministic", source: run });
+    expect(reruns(f)).toEqual([]);
+  }, 120_000);
+
+  test.each([
+    ["the scope was changed after the approval", (f: ReleaseFixture) => {
+      propose(f.store, { taskId: f.taskId, goal: "Verify something else", candidate: f.approved, acceptance: [{ id: "c1", statement: "The release check passes", how: null, evidence: ["check"] }], now: LATER });
+    }, /approve its scope again|approved commit or scope changed/],
+    ["the scope now names a different commit", (f: ReleaseFixture) => {
+      const other = f.commit({ "src/index.js": "export const answer = 43;\n" }, "other");
+      propose(f.store, { taskId: f.taskId, goal: `Verify ${f.approved}`, candidate: other, acceptance: [{ id: "c1", statement: "The release check passes", how: null, evidence: ["check"] }], now: LATER });
+    }, /approve its scope again|approved commit or scope changed|names another commit/],
+    ["the project's release check was replaced", (f: ReleaseFixture) => {
+      f.store.setVerifyCommand({ repo: f.repo, command: "node scripts/release-check.mjs --full --other", timeoutMs: 60_000, approvedBy: "alex" }, LATER);
+    }, /release check changed since the approval/],
+    ["the project's check access changed", (f: ReleaseFixture) => {
+      f.store.setProjectCheckAccess(f.repo, "sign-ins", "alex", LATER, { may: "narrow" });
+    }, /check access changed since the approval/],
+    ["the approval no longer stands (its seal names an authority that doesn't)", (f: ReleaseFixture) => {
+      f.store.handle.prepare("UPDATE task_scope SET approval_basis = 'mode', mode_digest = 'gone' WHERE task_id = ?").run(f.taskId);
+    }, /approval no longer stands|can't run again/],
+  ] as const)("no rerun when %s", (_name, change, why) => {
+    const f = (fixture = releaseFixture({ termsless: true }));
+    attempt(f, { failure: "stopped-by-toolroll" });
+    change(f);
+    expect(recheckReleaseTask(f.store, EVIDENCE(f), f.taskId, LATER)).toMatchObject({ action: "stop", why: expect.stringMatching(why) });
+    expect(f.store.getTask(f.taskId)?.state).toBe("done");
+    expect(reruns(f)).toEqual([]);
+  }, 120_000);
+
+  test("a purpose approved for another commit than its candidate never reruns (the binding is checked, not assumed)", () => {
+    const f = (fixture = releaseFixture({ termsless: true }));
+    const other = f.commit({ "src/index.js": "export const answer = 44;\n" }, "other");
+    const purpose = f.store.getScope(f.taskId)!.releaseCheck!;
+    const scope = propose(f.store, { taskId: f.taskId, goal: `Verify ${f.approved}`, candidate: other, acceptance: [{ id: "c1", statement: "The release check passes", how: null, evidence: ["check"] }], releaseCheck: purpose, now: LATER });
+    expect(approve(f.store, f.taskId, "alex", LATER, scope.digest, f.password).ok).toBe(true);
+    const { runId } = sealedCheck(f, f.taskId, other, () => null, { forceFull: true, plane: { configured: true, ran: false, attemptFailed: true, failure: "stopped-by-toolroll" } });
+    f.store.saveProofVerdict(runId, "refuted", ["the approved release check failed"], RELEASE_NOW, []);
+    f.store.setTaskState(f.taskId, "done", RELEASE_NOW);
+    expect(recheckReleaseTask(f.store, EVIDENCE(f), f.taskId, LATER)).toMatchObject({ action: "stop", why: expect.stringContaining("names another commit") });
+    expect(reruns(f)).toEqual([]);
+  }, 120_000);
+
+  test("a mode can't seal a release check purpose; only a person's yes does", () => {
+    const f = (fixture = releaseFixture({ termsless: true, approve: false }));
+    expect(f.store.sealScopeApproval(f.taskId, "alex", LATER, {}, { kind: "mode", modeDigest: "m".repeat(64) })).toBe(false);
+    expect(f.store.getScope(f.taskId)?.approvedDigest ?? null).toBeNull();
   });
 });

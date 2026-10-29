@@ -20,7 +20,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { readVerifiedCommit, verifiedTreeEntries, type VerifiedEntry } from "./commit-extract.js";
+import { readVerifiedCommit, verifiedBlobs, verifiedTreeEntries, type VerifiedEntry } from "./commit-extract.js";
 import {
   CHECK_PARTS, CHECK_REPORT_MAX_BYTES, CHECK_REPORT_PREFIX, readCheckReport,
   type CheckContext, type CheckPart, type CheckInventory, type CheckReport, type ObligationSnapshot, type SealedInventory, type TargetedPlan,
@@ -116,8 +116,8 @@ export const MODEL_PATHS: readonly RegExp[] = Object.freeze([
   /^src\/(provider|provider-[a-z-]+|invoke|exec|attest|coding-provider|assignment-adapters|subscription-[a-z-]+)\.ts$/,
 ]);
 
-/** Whether a changed path can affect an upgrade: the plane's copy of scripts/release-check.mjs needsUpgrade, without its
- * version-only exception (the plane counts a version bump as a change, so it owes more, never less). */
+/** Whether a changed path can affect an upgrade: the plane's copy of scripts/release-check.mjs needsUpgrade. Its
+ * version-only exception is decided apart, from verified blobs (versionOnlyChange), never from the path alone. */
 export function upgradeRelevant(file: string): boolean {
   if (/^(docs|evidence|design|output)\//.test(file) || /\.md$/.test(file) || file === "LICENSE") return false;
   if (/\.test\.[cm]?[jt]sx?$/.test(file) || /^test\//.test(file)) return false;
@@ -141,7 +141,10 @@ export function changedPaths(facts: TreeFacts, base: TreeFacts): string[] {
  * changed; the upgrade path when a change can affect an upgrade and the tree has it. With no base every one the tree
  * can run is owed. The check is told these on its handshake and runs at least them.
  */
-export function fullObligationsOf(facts: TreeFacts, base: TreeFacts | null): CheckPart[] {
+export function fullObligationsOf(facts: TreeFacts, base: TreeFacts | null,
+  /** package.json / package-lock.json paths whose change since `base` is only the project's own version, proved by the
+   * plane from both verified blobs (versionBumpsOf): such a change alone doesn't owe the upgrade path. */
+  versionBumps: readonly string[] = []): CheckPart[] {
   // What the tree can run is read from the candidate AND the last release (security scan): a candidate that deletes a
   // journey script, the upgrade path or its unit files doesn't take away what was owed at the base — the part stays
   // owed, and a check that can't run it has no result. Any entry counts, a symlink included, never only a regular file.
@@ -153,7 +156,8 @@ export function fullObligationsOf(facts: TreeFacts, base: TreeFacts | null): Che
   const code = changed?.filter(path => !NOTHING_PATHS.some(re => re.test(path))) ?? null;
   const checks = code === null || code.length > 0;
   const real = code === null || code.some(path => !/\.test\.[cm]?[jt]s$/.test(path) && MODEL_PATHS.some(re => re.test(path)));
-  const upgrade = has("scripts/upgrade-path.mjs") && (changed === null || changed.some(upgradeRelevant));
+  const bumped = (path: string) => VERSIONED_PATHS.includes(path) && versionBumps.includes(path);
+  const upgrade = has("scripts/upgrade-path.mjs") && (changed === null || changed.some(path => !bumped(path) && upgradeRelevant(path)));
   return [
     "typecheck", "build",
     ...(checks && units ? ["unit" as const] : []),
@@ -220,7 +224,7 @@ export function prepareCheckAttempt(store: Store, root: string, input: {
     }
     baseFacts = baseRead.facts;
   }
-  const owed = fullObligationsOf(read.facts, baseFacts);
+  const owed = fullObligationsOf(read.facts, baseFacts, baseFacts === null ? [] : versionBumpsOf(gitDir, baseFacts, read.facts));
   const release = input.release !== false;
   const ciSubstitute = !release;
   const inventory = inventoryOf(read.facts, plan, { owed, release });
@@ -366,4 +370,42 @@ export function fullCheckProblem(input: { report: CheckReport | null; inventory:
     if (open.length > 0) return `the upgrade from ${open[0]!.version} ${open[0]!.state === "not-run" ? "never ran" : "failed"}, yet the check exited 0`;
   }
   return null;
+}
+
+/** Where a release bumps the project's own version: the plane's copy of scripts/release-check.mjs VERSIONED. */
+export const VERSIONED_PATHS: readonly string[] = Object.freeze(["package.json", "package-lock.json"]);
+
+/**
+ * Whether `path` changed from `before` to `after` only in the project's own version (pipeline-speed.md, item 4): the
+ * plane's copy of scripts/release-check.mjs versionOnly — the top-level "version", and in the lockfile the root
+ * package's. Anything else (a dependency, a script, a reordering, a duplicate key, a file added or removed, bytes that
+ * aren't one JSON object) is a real change.
+ */
+export function versionOnlyChange(path: string, before: Buffer | null, after: Buffer | null): boolean {
+  if (!VERSIONED_PATHS.includes(path) || before === null || after === null) return false;
+  const rest = (bytes: Buffer): string => {
+    const json = JSON.parse(bytes.toString("utf8")) as unknown;
+    if (json === null || typeof json !== "object" || Array.isArray(json)) throw new Error("not an object");
+    const object = json as Record<string, unknown>;
+    delete object["version"];
+    const packages = object["packages"];
+    if (path === "package-lock.json" && packages !== null && typeof packages === "object" && !Array.isArray(packages)) {
+      const root = (packages as Record<string, unknown>)[""];
+      if (root !== null && typeof root === "object" && !Array.isArray(root)) delete (root as Record<string, unknown>)["version"];
+    }
+    return JSON.stringify(object);
+  };
+  try { return rest(before) === rest(after); } catch { return false; }
+}
+
+/** The versioned files whose change from `base` to `facts` is only the version, read from verified blobs in the
+ * project's own Git directory. Anything unreadable is a real change (owes more, never less). */
+export function versionBumpsOf(gitDir: string, base: TreeFacts, facts: TreeFacts): string[] {
+  const before = verifiedBlobs(gitDir, base.tree, VERSIONED_PATHS);
+  const after = verifiedBlobs(gitDir, facts.tree, VERSIONED_PATHS);
+  if (!before.ok || !after.ok) return [];
+  return VERSIONED_PATHS.filter(path => {
+    const a = before.value.get(path), b = after.value.get(path);
+    return a !== undefined && b !== undefined && a.id !== b.id && versionOnlyChange(path, a.bytes, b.bytes);
+  });
 }

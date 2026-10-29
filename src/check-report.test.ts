@@ -14,7 +14,7 @@ import {
   CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, CheckBaselineUnverifiable, payloadDigest, prepareCheckAttempt, readSealedJson,
   fullCheckProblem, fullObligationsOf, reportFromOutput, sealCheckOutcome, treeFactsOf, projectGitDir, MODEL_PATHS, NOTHING_PATHS,
 } from "./check-report.js";
-import { MODEL, NOTHING, owedSelection, parseHandshake } from "../scripts/release-check.mjs";
+import { MODEL, NOTHING, owedSelection, parseHandshake, versionOnly } from "../scripts/release-check.mjs";
 
 const NOW = new Date("2026-10-25T10:00:00.000Z");
 const git = (dir: string, ...argv: string[]) => execFileSync("git", ["-C", dir, "-c", "user.name=T", "-c", "user.email=t@example.invalid", ...argv], { encoding: "utf8" }).trim();
@@ -362,6 +362,51 @@ describe("eval review 1 #2: what a Full check owes, decided by the plane from ve
     expect(fullObligationsOf(gone, base)).toEqual(all);
     const linked = facts(tree.map(one => one.path.startsWith("scripts/") ? { ...one, mode: "120000" } : one.path === "src/lead.ts" ? entry(one.path, "2".repeat(40)) : one), []);
     expect(fullObligationsOf(linked, null)).toEqual(all);
+  });
+
+  test("pipeline-speed item 4: a release's version bump alone doesn't owe the upgrade path; the plane decides it, not the path", async () => {
+    const { VERSIONED_PATHS } = await import("./check-report.js");
+    const bumped = facts([...tree, entry("package.json", "2".repeat(40)), entry("package-lock.json", "3".repeat(40))], ["src/a.test.ts"]);
+    const from = facts([...tree, entry("package.json"), entry("package-lock.json")], ["src/a.test.ts"]);
+    expect(fullObligationsOf(bumped, from)).toContain("upgrade");
+    expect(fullObligationsOf(bumped, from, [...VERSIONED_PATHS])).not.toContain("upgrade");
+    // Proved for one file only: the other still owes it. A claim for any other path is never an exception.
+    expect(fullObligationsOf(bumped, from, ["package.json"])).toContain("upgrade");
+    const store = facts([...tree.map(one => one.path === "src/store.ts" ? entry(one.path, "2".repeat(40)) : one), entry("package.json", "2".repeat(40))], ["src/a.test.ts"]);
+    expect(fullObligationsOf(store, from, ["package.json", "src/store.ts"])).toContain("upgrade");
+  });
+
+  test.each([
+    ["the version only", "package.json", { name: "t", version: "0.9.77", dependencies: { a: "1" } }, { name: "t", version: "0.9.78", dependencies: { a: "1" } }, true],
+    ["a dependency too", "package.json", { name: "t", version: "0.9.77", dependencies: { a: "1" } }, { name: "t", version: "0.9.78", dependencies: { a: "2" } }, false],
+    ["a script too", "package.json", { version: "0.9.77", scripts: { x: "a" } }, { version: "0.9.78", scripts: { x: "b" } }, false],
+    ["keys reordered", "package.json", { name: "t", version: "0.9.77", main: "a" }, { main: "a", name: "t", version: "0.9.78" }, false],
+    ["the lockfile's root version", "package-lock.json", { version: "0.9.77", packages: { "": { version: "0.9.77" }, "node_modules/a": { version: "1" } } }, { version: "0.9.78", packages: { "": { version: "0.9.78" }, "node_modules/a": { version: "1" } } }, true],
+    ["the lockfile's dependency version", "package-lock.json", { version: "0.9.77", packages: { "": { version: "0.9.77" }, "node_modules/a": { version: "1" } } }, { version: "0.9.78", packages: { "": { version: "0.9.78" }, "node_modules/a": { version: "2" } } }, false],
+    ["another file", "src/store.ts", { version: "1" }, { version: "2" }, false],
+  ] as const)("item 4: version-only (%s) is exactly the check's own rule", async (_name, path, before, after, only) => {
+    const { versionOnlyChange } = await import("./check-report.js");
+    const a = JSON.stringify(before), b = JSON.stringify(after);
+    expect(versionOnlyChange(path, Buffer.from(a), Buffer.from(b))).toBe(only);
+    expect(versionOnly(path, a, b)).toBe(only);
+  });
+
+  test("item 4: the plane reads the bump from verified blobs of both commits", async () => {
+    const { treeFactsOf, versionBumpsOf } = await import("./check-report.js");
+    const dir = mkdtempSync(join(tmpdir(), "so-version-bump-"));
+    try {
+      const git = (...args: string[]) => execFileSync("git", ["-C", dir, "-c", "user.name=T", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" }).trim();
+      git("init", "-q", "-b", "main");
+      const write = (version: string, dep: string) => {
+        writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "t", version, dependencies: { a: dep } }, null, 2));
+        writeFileSync(join(dir, "package-lock.json"), JSON.stringify({ name: "t", version, packages: { "": { version }, "node_modules/a": { version: dep } } }, null, 2));
+        git("add", "-A"); git("commit", "-q", "-m", version); return git("rev-parse", "HEAD");
+      };
+      const first = write("0.9.77", "1"), bump = write("0.9.78", "1"), dep = write("0.9.79", "2");
+      const read = (sha: string) => { const one = treeFactsOf(join(dir, ".git"), sha); if (!one.ok) throw new Error(one.problem); return one.facts; };
+      expect(versionBumpsOf(join(dir, ".git"), read(first), read(bump))).toEqual(["package.json", "package-lock.json"]);
+      expect(versionBumpsOf(join(dir, ".git"), read(bump), read(dep))).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   test("the plane's path rules are the check's own (scripts/release-check.mjs)", () => {

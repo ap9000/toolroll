@@ -153,11 +153,15 @@ The summary reports observed concurrency and waits.
 ## CI
 
 Every pull request and push to main runs `.github/workflows/ci.yml`: the full
-suite on Ubuntu with Node 22 and 24, the Linux cgroup containment job and the
-Windows Job Object containment job. macOS Node 22 and 24 run nightly in
-`macos.yml` and on release tags in `publish.yml`. The publish job uses
-`needs: macos`, so both tag legs must pass before npm publication.
-No job runs behind an `if:`, because GitHub reports a
+suite on Ubuntu and on macOS with Node 22 and 24 (four shards each, joined by
+the required `node N · ubuntu-latest` and `node N · macos-latest` checks), the
+Linux cgroup containment job and the Windows Job Object containment job. The
+macOS checks are report-only in main's protection until the owner requires
+them; `toolroll release` waits for them. macOS also runs nightly in
+`macos.yml` and on release tags in `publish.yml`, whose publish job uses
+`needs: macos`, so both tag legs must pass before npm publication; the release
+waits for that publish job only, not main's own CI on the merge commit.
+No job runs behind an `if:` (except the shard joins, which always run), because GitHub reports a
 skipped job as passing a required check; `src/ci-workflow.test.ts` holds the
 workflows to the check names `toolroll release` waits for.
 
@@ -179,7 +183,10 @@ gate the exact commit with Full checks, wait for an active approver's approval
 The service and both CLI names must record that commit; a matching version
 is insufficient. After PR checks pass, squash merge, delete the matching
 remote branch, verify the merged tree and tag. Both macOS legs gate npm and
-GitHub publication; Homebrew waits for checks to register and all pass.
+GitHub publication. The release is published once npm and the GitHub release
+are verified; Homebrew is finished apart (pending, failed or current in the
+journal): the same command later waits for the tap change's checks to register
+and all pass, then merges it, and never moves a newer formula back.
 
 Stops retain their step. Rerunning reconciles any completed merge, tag or
 publication. Interrupted deployments recover the saved staging directory

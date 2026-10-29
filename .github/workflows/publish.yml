@@ -7,8 +7,9 @@
 #
 # To release: `toolroll release <branch>` (src/release.ts). It pushes the
 # matching tag on the squash-merged commit once main's tree equals the gated
-# tree. Both macOS legs must pass before publishing; the coordinator waits
-# for all three check names before Homebrew.
+# tree. Both macOS legs must pass before publishing (the candidate's own
+# macOS checks already passed in ci.yml before the merge); the coordinator
+# waits for the publish job only, which needs them.
 name: Publish
 
 on:
@@ -25,7 +26,7 @@ concurrency:
 
 jobs:
   macos:
-    name: node ${{ matrix.node }} · macos-latest
+    name: tag macOS · node ${{ matrix.node }}
     runs-on: macos-latest
     permissions:
       contents: read

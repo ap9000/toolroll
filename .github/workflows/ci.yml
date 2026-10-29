@@ -1,16 +1,16 @@
 name: CI
 
-# Every pull request and every push to main: the full suite on Ubuntu with
+# Every pull request and every push to main: the full suite on Ubuntu and on macOS with
 # Node 22 (the engines floor) and 24, in four shards each joined by one required
-# job per Node version, plus the Linux and Windows containment jobs. macOS runs nightly (macos.yml) and before tag publication (publish.yml): the
-# release check already ran the suite on macOS for the exact gated commit.
+# job per Node version and OS, plus the Linux and Windows containment jobs. macOS also runs nightly (macos.yml) and
+# before tag publication (publish.yml).
 #
 # Every job tests the candidate itself: the pull request's head commit (the pushed commit on main), never the merge
 # commit GitHub would synthesize, because that head is what `toolroll release` and auto-approve trust. A step proves
 # the checkout is that commit and prints it. That the head also contains main's head (so the tested tree is the tree
 # that merges) is the release gate's check, not CI's (docs/plans/eval-harness.md, phase 1 D).
 #
-# No job here is conditional, except that the shards' join always runs. A job
+# No job here is conditional, except that the shards' joins always run. A job
 # skipped by `if:` reports as passing to a required check, so a job that should
 # not run on an event lives in another workflow rather than behind a condition. `toolroll release` waits for these
 # job names by exact name (src/release.ts REQUIRED_PR_CHECKS), and
@@ -116,6 +116,106 @@ jobs:
         with:
           pattern: shard-${{ matrix.node }}-*
           path: ${{ runner.temp }}/shards
+      - name: Every shard ran the whole suite
+        shell: bash
+        run: |
+          verifier=.trusted-base/scripts/ci-shards.mjs
+          if [ ! -f "$verifier" ]; then echo "::warning::the base revision has no shard verifier yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
+          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 4
+
+  # The unit suite on macOS (docs/plans/pipeline-speed.md, item 3a): the hosted macOS Node 22/24 matrix used to run only
+  # after the merge, on the release tag (publish.yml). It runs here on the candidate itself, before anything merges,
+  # sharded like the Linux suite, beside it. Each shard records the files it ran on the tested commit.
+  macos-shard:
+    name: node ${{ matrix.node }} · macos shard ${{ matrix.shard }}/4
+    runs-on: macos-latest
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+          # Migration tests build old releases from git history (git archive <old commit>).
+          fetch-depth: 0
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      # Vitest's own JSON report, written outside the checkout and uploaded as it is: no candidate script summarizes it.
+      - run: npm run test:all -- --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"
+        env:
+          CI: "true"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-shard-${{ matrix.node }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/shard-report.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  # The macOS check for each Node version, joined exactly as the Linux one: it always runs, and fails unless every
+  # macOS shard passed and together they ran every test file of the tested commit once, judged by the trusted base
+  # revision's verifier. Report-only in main's protection until the owner requires it (src/release.ts
+  # PROTECTION_REPORT_ONLY_CHECKS); `toolroll release` waits for it from now on (REQUIRED_PR_CHECKS).
+  macos:
+    name: node ${{ matrix.node }} · macos-latest
+    needs: macos-shard
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Every shard passed
+        shell: bash
+        env:
+          SHARDS: ${{ needs.macos-shard.result }}
+        run: test "$SHARDS" = success || { echo "the macOS unit suite's shards ended $SHARDS" >&2; exit 1; }
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: .trusted-base
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-shard-${{ matrix.node }}-*
+          path: ${{ runner.temp }}/macos-downloads
+      # The verifier reads shard-<node>-<i> folders; macOS artifacts carry a prefix so their names differ from Linux's.
+      - name: The macOS shards' reports, under the verifier's names
+        shell: bash
+        run: |
+          mkdir "$RUNNER_TEMP/shards"
+          for folder in "$RUNNER_TEMP"/macos-downloads/*; do
+            name="$(basename "$folder")"
+            case "$name" in macos-shard-*) mv "$folder" "$RUNNER_TEMP/shards/${name#macos-}" ;; *) echo "unexpected $name among the macOS shards' reports" >&2; exit 1 ;; esac
+          done
       - name: Every shard ran the whole suite
         shell: bash
         run: |

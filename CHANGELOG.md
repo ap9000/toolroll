@@ -25,6 +25,37 @@
 - **A crashed worker is noticed in a minute, not three.** Workers check in
   every 15 seconds and are treated as gone after a minute of silence. A
   project lease is never taken for longer than a minute.
+- **A release's version bump alone no longer owes the upgrade path.** Toolroll
+  now decides from both commits' verified files that package.json and
+  package-lock.json changed only in the project's own version (the check's
+  own rule); any other change to them still owes it.
+- **The macOS suite runs on the candidate before it merges.** Pull requests
+  and main pushes now run the unit suite on hosted macOS with Node 22 and 24,
+  in four shards each, joined into `node 22 · macos-latest` and
+  `node 24 · macos-latest` exactly like the Linux checks. `toolroll release`
+  waits for them; main's protection not requiring them yet is reported, not
+  refused. After the merge, publication waits only for the tag's publish job,
+  no longer for main's own CI run on the merge commit. The nightly and tag
+  macOS jobs are renamed so no other workflow shares a required name.
+- **A release is published without waiting for Homebrew.** `toolroll release`
+  ends with "Published; Homebrew pending" once npm and the GitHub release are
+  verified, instead of waiting up to 45 minutes for the tap's checks. Homebrew
+  is its own state in the release journal (pending, failed or current), and
+  running the same command again finishes it: it waits for the tap change's
+  checks, then merges exactly that change, with the checksum still taken from
+  npm's tarball. A tap already on a newer version is never moved back, checked
+  again right before the merge.
+- **A release whose checks run outside the sandbox now reruns its own check
+  after Toolroll's machine fails.** Such a release can't carry later commits,
+  so it used to file without release terms, and a check stopped by Toolroll's
+  own shutdown, a lost build or a command that never started waited for a
+  person. Its approval now seals a release check purpose instead: the check
+  is held to the release's rules (a complete report, no CI standing in for
+  its units), and only a failure Toolroll itself confirmed as its own
+  infrastructure reruns, on the same commit under the same approval, at most
+  twice. Another commit, a changed scope, release check or check access, or
+  an approval that no longer stands never reruns. It never carries a later
+  commit. (Schema v138 adds the column; saved scopes are unchanged.)
 - **A deploy no longer gets stuck behind an `up` that won't stop.** When the
   old service's processes outlive their stop (a supervisor that exited while
   its `up` ignored SIGTERM), the deployment stops them itself, but only

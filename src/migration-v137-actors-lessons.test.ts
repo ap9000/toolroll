@@ -24,16 +24,18 @@ test.each([136, -136])("v%s: lifecycle, latency timelines and the continuous cop
   // The v136 shape: none of the three tables.
   const db = new DatabaseSync(file);
   for (const table of ["service_lifecycle", "latency_timeline", "live_backup"]) db.exec(`DROP TABLE ${table}`);
+  db.exec("ALTER TABLE task_scope DROP COLUMN release_check_json"); // v138's column, so v136 climbs through both
   db.prepare("UPDATE schema_version SET version = ?").run(version);
   const before = historySnapshot(db);
   db.close();
 
   expect(updateSafeSchema(136)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(137);
-  expect(SCHEMA_VERSION).toBe(137);
+  expect(SCHEMA_VERSION).toBe(138);
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(137);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(138);
   for (const table of ["service_lifecycle", "latency_timeline", "live_backup"]) expect(store.handle.prepare(`SELECT count(*) AS n FROM ${table}`).get()?.["n"]).toBe(0);
+  expect(store.handle.prepare("SELECT count(*) AS n FROM pragma_table_info('task_scope') WHERE name = 'release_check_json'").get()?.["n"]).toBe(1);
   // Absent settings read as the defaults: every 5 minutes, keep 24, beside the database.
   expect(liveBackupState(store)).toEqual({ settings: { enabled: true, everyMinutes: 5, keep: 24, folder: null }, latest: null, triedAt: null, problem: null });
   expect(store.handle.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
