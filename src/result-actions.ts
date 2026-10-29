@@ -58,12 +58,16 @@ export function requestResultChanges(store: Store, evidenceRoot: string, input: 
       const artifact = store.artifactsFor(run.id).find(one => one.kind === "terminal-diff");
       if (!artifact || !readVerifiedArtifact(evidenceRoot, artifact).ok) return fail(409, "The saved changes could not be verified. Restore the result before requesting changes.");
       const sourceKey = commentSourceKey(input.actor, input.request)!;
-      let noteId = store.addDiffComment({ artifactId: artifact.id, runId: run.id, path, line, note: valid.note, author: input.actor, sourceKey, image: input.image ?? null }, now);
-      if (noteId === null) {
-        const earlier = store.diffCommentBySourceKey(sourceKey);
-        if (!earlier || earlier.run !== run.id || earlier.path !== path || earlier.line !== line || earlier.note !== valid.note || !sameFeedbackImage(earlier.image, input.image)) return fail(409, "This submission already saved different feedback. Reopen the result and try again.");
-        noteId = earlier.id;
+      const earlier = store.diffCommentBySourceKey(sourceKey);
+      if (earlier && (earlier.run !== run.id || earlier.path !== path || earlier.line !== line || earlier.note !== valid.note || !sameFeedbackImage(earlier.image, input.image))) return fail(409, "This submission already saved different feedback. Reopen the result and try again.");
+      // An exact consumed replay only returns its existing revision. Every new
+      // use proves the image before insertion, so malformed targets refuse cleanly.
+      if (earlier?.consumedBy == null) {
+        const problem = feedbackImageProblem(store, evidenceRoot, run.id, input.image);
+        if (problem !== null) return fail(409, problem);
       }
+      const noteId = earlier?.id ?? store.addDiffComment({ artifactId: artifact.id, runId: run.id, path, line, note: valid.note, author: input.actor, sourceKey, image: input.image ?? null }, now);
+      if (noteId === null) return fail(409, "This feedback changed while saving. Your draft is unchanged; reopen the result.");
       const result = createResultRevision(store, evidenceRoot, { ...input, batch: [...new Set([...batch, noteId])].sort((a, b) => a - b).join(",") }, now);
       if (!result.ok) return fail(result.status, result.message);
       return result;

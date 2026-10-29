@@ -2753,7 +2753,7 @@ export function runPage(
           noted,
           requestToken: result.requestToken,
           hrefFor: one => (one === "summary" ? `/r/${run.id}` : `/r/${run.id}?tab=${one}`),
-          returnTo: `/r/${run.id}`,
+          returnTo: `/r/${run.id}?record=1`,
           back: null,
         });
   return screen(`build #${run.id}`, joinHtml([

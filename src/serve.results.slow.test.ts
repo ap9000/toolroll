@@ -2012,6 +2012,13 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     const revised = await post(cookie, `/r/${run}/revise`, { csrf, ...revisionFormOf(page) });
     expect(revised.status, await revised.text()).toBe(303);
     expect(store.allDiffComments(run)[0]?.image).toEqual(image);
+    const stale = await post(cookie, `/r/${run}/comment`, { ...fields, intent: "revise", request: "c".repeat(32), batch: "", source: read.snapshot.source });
+    expect(stale.status).toBe(409);
+    expect(await stale.text()).toContain(`/r/${run}?record=1&amp;conflict=`);
+    const recovery = await fetch(url(`/r/${run}?record=1`), { headers: { cookie } });
+    expect(recovery.status).toBe(200);
+    expect(await recovery.text()).toContain('id="comment-form"');
+    expect(store.allDiffComments(run)).toHaveLength(1);
   });
 
   test("package 3 c4: a refused note sends the reader back to the view they came from; a result id that is not this task's is refused for the lens; the browser script rides every result surface", async () => {

@@ -1437,7 +1437,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       }, now);
       if (!result.ok) {
         const request = body.get("request") ?? "";
-        const retryBack = /^[a-f0-9]{32}$/.test(request) ? `${back}${back.includes("?") ? "&" : "?"}conflict=${request}#request-changes` : back;
+        // The queue's link can stop resolving when a newer attempt finishes. The exact
+        // run record still hosts this account/run's recoverable feedback draft.
+        const retryBase = image === null ? back : `/r/${id}?record=1`;
+        const retryBack = /^[a-f0-9]{32}$/.test(request) ? `${retryBase}${retryBase.includes("?") ? "&" : "?"}conflict=${request}#request-changes` : retryBase;
         return refuse(response, who, result.status, result.message, retryBack);
       }
       return redirect(response, revisionDestination(result.id, returnTo));
@@ -1472,7 +1475,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const sourceKey = commentSourceKey(who.name, request);
     const path = rawPath === "" ? null : rawPath;
     const imageProblem = feedbackImageProblem(store, evidenceRoot, id, image);
-    if (imageProblem !== null) return refuse(response, who, 409, imageProblem, `${back}#request-changes`);
+    if (imageProblem !== null) return refuse(response, who, 409, imageProblem, `/r/${id}?record=1#request-changes`);
     const inserted = store.addDiffComment(
       { artifactId: terminal.id, runId: id, path, line, note: note.note, author: who.name, image, ...(sourceKey === undefined ? {} : { sourceKey }) },
       now,

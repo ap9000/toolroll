@@ -123,6 +123,7 @@ describe("shared result image selection", () => {
     if (cause === "changed-after-proposal") writeFileSync(join(evidenceRoot, `${run}/one.png`), JPEG);
     const result = applyChatReview(store, who([repos.a]), evidenceRoot, { snapshot: read.snapshot, operation: "revise", note: "Keep this feedback.", path: null, line: null, notes: [], image }, T0, false);
     expect(result.ok).toBe(false);
+    expect(requestResultChanges(store, evidenceRoot, { run, batch: "", source: read.snapshot.source, actor: "alex", repos: [repos.a], note: "Keep this feedback.", path: "", line: "", request: "b".repeat(32), image }, T0)).toMatchObject({ ok: false, status: 409 });
     expect(store.allDiffComments(run)).toEqual([]);
     expect(store.revisionsFromRun(run)).toEqual([]);
   });
