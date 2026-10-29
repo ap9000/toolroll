@@ -138,6 +138,67 @@ executor policy is fixed by the plane, never supplied by a candidate report or p
 This contains the automatic approval risk. It does not authenticate CI execution: an isolated reporting channel is
 still required before automatic approval can be enabled for this executor.
 
+## Console responsiveness (0.9.78)
+
+Branch `console-arch` (2026-10-29), on stage 1 plus the `console-perf` read fix (cherry-picked: it was on the 0.9.77
+release branch, not on this base). Every chromed page read the work index about four times for its chrome alone
+(Tasks count `workCountsByProject` ~60 ms, sidebar `workStateRows` ~60 ms + the rail's `workIndexPage` ~85 ms + each
+waiting result's checks, crew ~10 ms), all on the request thread; the chat landing read three whole views (~150 ms
+each); a task page asked Git for its base line four times through a frozen `.git` view (~0.2 s each).
+
+**What changed** (smallest changes, no rewrites):
+1. **Chrome once per change** (`src/console-chrome.ts`). `RevisionCache` keeps the Tasks count, the sidebar's project
+   states, the crew and the chat landing's views per *workspace revision* (workspace-revision.ts: every meaningful
+   commit from any process moves it; Toolroll's own `service_cursor` row, read through `PRAGMA data_version`), never past
+   the revision's own clock boundary (lease, liveness, hold, mode expiry) or 30 s, whichever is first. Keys carry every
+   authorization input the read depends on: the whole work access canonically (principal, admitted projects, unplaced
+   work, viewer, dependency projects), the reader, and the sidebar's project list; a value read for one scope is never
+   another's. A request keeps what it read for its whole render. Receipt reconciliation, task and result reads
+   (`request`/`task`/`result`) bypass it and read work afresh, as before.
+2. **Off the request thread.** Before a chromed page renders, its count and sidebar (and on /chat its three views and
+   briefing) are read on the ReadExecutor's read-only worker connections (new jobs `work-counts`, `project-summary`),
+   for the reader the route table already admitted; the request thread finds them cached. No worker (tests, demo) or a
+   failed worker read: the page computes them in process exactly as before.
+3. **Push.** Pages already follow the `workspace` live room (SSE) and re-read on `change`; nothing polls on a timer
+   while the stream is up, and a lost stream reads once and retries every 30 s (browser/live.ts). New: a page's
+   re-read now carries a content validator, so a `change` that altered nothing the page shows is a 304 (no transfer,
+   no re-render). Chat keeps its own revision validator.
+4. **Task page base line**: Git's two answers (main's name, commits behind) are reused for 15 s (display only; each
+   read still goes through the frozen view).
+5. **Budgets** (`src/console-chrome.test.ts`, synthetic owner-shaped database, `test/owner-shaped-store.ts`: 760
+   tasks, 600 families, 1,300 runs, 10k ledger rows): work index counts < 150 ms (34 measured), Needs-you page < 150
+   (63), sidebar < 1.5 s (450: every family waits, heavier than the owner's), cached chrome < 30 (0), /board with
+   cached chrome < 300 (13), /board after a change < 2.5 s (744, no worker in tests). A bytecode pin fails if the work
+   index opens a loop over the whole `action_ledger` table or any of its indexes (verified: dropping the ledger's
+   indexes fails it).
+
+**Measured** (`scripts/console-responsiveness.mjs`: `toolroll serve` on a settled copy of the owner's database under a
+temporary HOME inside sandbox-exec, four pages read in turn for 30 s with /healthz probed beside them every 25 ms; then
+the same while a second process commits 40 small transactions a second, each moving the workspace revision as
+Toolroll's own writes do; milliseconds, p50 / p95 / max):
+
+| | before (b4bf1c46 + console-perf) | after |
+|---|---|---|
+| idle /board | 348 / 1,201 / 1,201 | 26 / 28 / 789 |
+| idle /agents | 320 / 337 / 337 | 4 / 5 / 196 |
+| idle task page | 1,491 / 2,001 / 2,001 | 208 / 225 / 1,600 |
+| idle /chat | 905 / 978 / 978 | 19 / 24 / 1,570 |
+| idle /healthz beside | 345 / 1,525 / 1,985 | 1 / 192 / 1,589 |
+| load /board | 349 / 719 / 719 | 290 / 308 / 333 |
+| load /agents | 330 / 492 / 492 | 266 / 289 / 289 |
+| load task page | 1,231 / 1,342 / 1,342 | 466 / 792 / 886 |
+| load /chat | 912 / 1,053 / 1,053 | 359 / 416 / 720 |
+| load /healthz beside | 349 / 1,284 / 1,370 | 1 / 19 / 606 |
+
+The maxima are each page's first, cold view. Without the console-perf fix (b4bf1c46 as branched) the same pages took
+2.0–4.3 s each. Under constant writes every view misses the cache, so a page waits for its chrome on a worker
+(~0.25 s), but the request thread stays free (/healthz p95 19 ms).
+
+**Residuals.** The task page's own body (`taskViewData`: assignment, review cockpit and its checkout Git view, ~0.2 s)
+still renders on the request thread; `ownedRunsOf` builds an automatic index per call (no `run(parent_run)` index). The
+cache can show a time-only transition (an agent going quiet, a file-only change to saved evidence) up to 30 s late; any
+database change shows at once. Under very heavy writes (tens of commits a second) pages cost a worker read each.
+
 ## Decisions for the owner
 | Decision | Recommendation |
 |---|---|

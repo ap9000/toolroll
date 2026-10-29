@@ -25,6 +25,17 @@
   lets running builds finish first. A running check's progress is saved at
   most once a second, and its final result at once. `--single-process` keeps
   the old one-process layout.
+- **Console pages open faster and stay quick while work runs.** The sidebar,
+  the Tasks count and the crew list are read once per database change for each
+  person instead of up to four times per page, and before a page is drawn they
+  are read on a background thread so the console keeps answering meanwhile.
+  The chat landing's lists are kept the same way, and the task page reuses its
+  "behind main" line for 15 seconds instead of asking Git twice per view. On a
+  copy of a real database: /board 348 → 26 ms, /agents 320 → 4 ms, /chat 905 →
+  19 ms, a task page 1.5 s → 0.2 s; with the database changing 40 times a
+  second, pages take 0.27–0.47 s and the console answers other requests in
+  about 1 ms (before: 0.35 s typical, up to 1.4 s). A page that re-reads after
+  a live update gets "unchanged" when nothing it shows changed.
 - **Fixes from the first review of the above.** CI's required checks now
   judge the shards with the verifier from the base branch, run none of the
   change's code, and fail when a shard executed no tests, its counts don't
