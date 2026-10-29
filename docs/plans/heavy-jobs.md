@@ -17,8 +17,9 @@ times locally on a quieter machine.
 - **One concurrency budget** (`checkBudget`): three quarters of the cores, less the load already on the machine, at
   least 2; half to the unit suite's workers (`--maxWorkers`), the rest to browser lanes (app ≤ 4, flows ≤ 2) and
   upgrade workers (≤ 4). On the 2026-10-20 machine (load 21 of 24) that is one of each: slower, never stacked.
-- **Two waves**: scripted journeys beside the units first; the real-model journeys after both, since they wait mostly on
-  the provider. Fail-fast is unchanged: the first hard failure stops the rest.
+- **Two waves**: scripted journeys beside the units first; the real-model journeys in the same browser lanes once the
+  scripted ones end (since 2026-10-29 no longer also after the units: pipeline-speed.md D1 — the lanes are the
+  budget's either way). Fail-fast is unchanged: the first hard failure stops the rest.
 - **A busy machine gets up to five minutes to quieten** before the check starts (load past 85% of the cores), said in
   the log; then it starts anyway with the smaller budget.
 - **The load it ran under is in the summary** (start, peak, mean, the budget chosen) so a failure on a busy machine can

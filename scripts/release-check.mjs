@@ -597,10 +597,11 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     if (held) return [];
     const journey = each => run(each.label, process.execPath, ["scripts/e2e-parallel.mjs", ...each.argv, "--output", join("evidence", `release-${process.pid}`, each.label)],
       journeyEnv(each.kind, gate, process.env, releaseRun), line => journeyLines.get(each.label).push(line));
-    // Two waves: the scripted journeys (and the units beside them) first, then the real-model ones, which wait mostly on
-    // the provider and need the least of the machine.
+    // Two waves in the browser lanes: the scripted journeys first, then the real-model ones in the same lanes, as soon as
+    // the scripted ones end — not after the units too (docs/plans/pipeline-speed.md, D1: that wait put a 3–6 minute
+    // real-model wave after an 8–12 minute unit part). The lanes are the budget's either way, so the check's load never
+    // goes past what the first wave already ran under.
     return Promise.all(journeyRuns.filter(each => each.kind === "scripted").map(journey)).then(async scripted => {
-      await Promise.all(units);
       if (parts.signal.aborted) return scripted;
       return [...scripted, ...await Promise.all(journeyRuns.filter(each => each.kind === "real").map(journey))];
     });
