@@ -17,7 +17,8 @@ import { mergePullRequest } from "../../src/pull-request-flow.js";
 import { assignmentOf } from "../../src/assignment.js";
 import { runReleaseCommand } from "../../src/release-cli.js";
 import { REQUIRED_PR_CHECKS } from "../../src/release.js";
-import { RELEASE_RECHECK_ACTION, retriedOfRun } from "../../src/check-failure.js";
+import { RELEASE_RECHECK_ACTION, retriedOfRun, SETUP_REPLAY_RETRY } from "../../src/check-failure.js";
+import { launchFailedBeforeCheck } from "../../src/builder.js";
 import { CHECK_REPORT_CAPTURE } from "../../src/check-report.js";
 import { verificationEvidence } from "../../src/verification-evidence.js";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -300,6 +301,27 @@ describe("attack 3: a check that isn't of this commit, this scope, or the first 
     const short = (units: readonly string[]) => reportOf(units.map(file => ({ file })), { upgrades: { finished: true, versions: [] } });
     expect(seal(f, check(f, f.approved, short))).toMatchObject({ ok: false });
     expect(basis(f)).toBeNull();
+  });
+
+  test("eval review 1 #6: a check that passed only when rerun after the recovery setup is a retry: no automatic approval", () => {
+    const f = open();
+    authorize(f);
+    const run = sealedCheck(f, f.taskId, f.approved, (_plan, units) => passingReport(units), { base: f.base, setupReplayed: true }).runId;
+    expect(retriedOfRun(f.store, EVIDENCE(f), run)).toEqual([SETUP_REPLAY_RETRY]);
+    expect(seal(f, run)).toMatchObject({ ok: false, why: expect.stringContaining("passed only on a retry") });
+    expect(basis(f)).toBeNull();
+  });
+
+  test("eval review 1 #6: setup recovery runs only for a launch failure, never for a check that started", () => {
+    const nonce = "c".repeat(64);
+    const started = { code: 127, stdout: `tests ran\nTOOLROLL_CHECK_REPORT ${JSON.stringify({ ...passingReport(), nonce, mode: "full", planDigest: null, exitCode: 127 })}\n`, stderr: "x: command not found", timedOut: false, notFound: false };
+    // A check that printed its report with this run's nonce ran: exiting 127 after its assertions doesn't make it a launch failure.
+    expect(launchFailedBeforeCheck(started, nonce, "linux")).toBe(false);
+    // A look-alike report without the nonce is no evidence either way: the missing program stands, recovery may run.
+    expect(launchFailedBeforeCheck({ ...started, stdout: started.stdout.replaceAll(nonce, "d".repeat(64)) }, nonce, "linux")).toBe(true);
+    expect(launchFailedBeforeCheck({ ...started, stdout: "" }, nonce, "linux")).toBe(true);
+    // Exit 1 is never a launch failure off Windows.
+    expect(launchFailedBeforeCheck({ ...started, code: 1, stdout: "" }, nonce, "linux")).toBe(false);
   });
 
   test("security scan: a release's check sealed as another kind of check before it ran has no result", () => {

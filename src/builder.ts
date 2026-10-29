@@ -11,7 +11,7 @@ import { queueBatchCheck } from "./batch-checks.js";
 import { batchesFullCheck } from "./batch-policy.js";
 import { skillsContext } from "./project-skills.js";
 import { failedVerificationEvidence, sealVerificationReceipt, verificationEvidence, reuseObservationVerification } from "./verification-evidence.js";
-import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, prepareCheckAttempt, sealCheckOutcome, type PreparedAttempt } from "./check-report.js";
+import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, prepareCheckAttempt, reportFromOutput, sealCheckOutcome, type PreparedAttempt } from "./check-report.js";
 import { retriedInside } from "./check-failure.js";
 import type { CheckReport } from "./contracts/release-check.js";
 import { planTargetedRecheck, settleCoverage } from "./release-recheck.js";
@@ -186,6 +186,18 @@ export function verificationExecutableMissing(
   return /^'[^'\r\n]+' is not recognized as an internal or external command,\s+operable program or batch file\.\s*$/i.test(
     result.stderr.trim(),
   );
+}
+
+/**
+ * Whether a check's first attempt failed at its launch, so the approved recovery setup may run and the check run again
+ * (eval-harness review 1, finding 6): a missing executable (verificationExecutableMissing) and nothing that says the
+ * check started — a check that printed its report with this run's nonce, a secret only the started check was handed on
+ * its stdin, ran, whatever it exited with, so its exit is its result. A rerun that then passes still counts as a retry
+ * (check-failure.ts retriedOfRun), which an automatic release approval refuses.
+ */
+export function launchFailedBeforeCheck(result: ExecResult, nonce: string | null, platform: NodeJS.Platform = process.platform): boolean {
+  if (!verificationExecutableMissing(result, platform)) return false;
+  return nonce === null || !reportFromOutput(result.stdout, nonce).ok;
 }
 
 export type BuildRequest = {
@@ -2739,7 +2751,7 @@ async function settleProof(
     } else if (first.stoppedByPlane === true) {
       // This worker's own hard stop ended it (a shutdown): it never finished, and its exit says nothing about the code.
       verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "stopped-by-toolroll" };
-    } else if (!verificationExecutableMissing(first)) {
+    } else if (!launchFailedBeforeCheck(first, checkAttempt?.nonce ?? null)) {
       verifyCommand = { configured: true, ran: true, exitCode: first.code };
     } else {
       const recoveryDigest = configured.recoverySetupDigest;

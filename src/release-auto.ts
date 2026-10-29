@@ -378,6 +378,9 @@ export function sealAutoGreen(store: Store, input: {
     const incomplete = fullCheckProblem({ report: sealed.report, inventory: sealed.inventory, exitCode: typeof result?.exitCode === "number" ? result.exitCode : null });
     if (incomplete !== null) return refuse(`the release check has no complete result: ${incomplete}`);
     if (!Array.isArray(check.retried)) return refuse("the release check's receipt has no sealed retry record, so a person decides");
+    // Belt to the retry record (finding 6): a check that passed only on a rerun after the recovery setup never approves
+    // itself — its first failure isn't confirmed infrastructure.
+    if ((result as { setupReplayed?: unknown } | undefined)?.setupReplayed === true) return refuse("the release check passed only when it was run again after the approved setup, so a person decides");
     if (gate["run"] !== run.id || gate["head"] !== head || gate["scopeDigest"] !== input.digest || result?.ran !== true || result.exitCode !== 0 || live === null || command?.command !== live.command) {
       return refuse("the release check didn't pass this candidate under the approved command");
     }

@@ -187,7 +187,7 @@ export function reportOf(units: UnitOutcome[], extra: Partial<CheckReport> & { e
  * planTargetedRecheck allows it), the report on the check's output with the nonce, its coverage, its log and its
  * version 3 receipt. `report` gets the attempt's plan so a targeted report can answer it.
  */
-export function sealedCheck(f: ReleaseFixture, taskId: string, head: string, report: (plan: import("../src/contracts/release-check.js").TargetedPlan | null, units: readonly string[]) => Omit<CheckReport, "nonce" | "mode" | "planDigest"> | null, options: { forceFull?: boolean; base?: string; release?: boolean;
+export function sealedCheck(f: ReleaseFixture, taskId: string, head: string, report: (plan: import("../src/contracts/release-check.js").TargetedPlan | null, units: readonly string[]) => Omit<CheckReport, "nonce" | "mode" | "planDigest"> | null, options: { forceFull?: boolean; base?: string; release?: boolean; setupReplayed?: true;
   /** What the plane saw of the command instead of an exit (it never started, Toolroll's own shutdown stopped it, it
    * timed out): the builder's own result, sealed in the receipt. */
   plane?: { configured: true; ran: false; attemptFailed: true; failure: import("../src/contracts/verification-receipt.js").VerifyCommandFacts extends infer F ? F extends { failure?: infer X } ? X : never : never } } = {}) {
@@ -208,7 +208,7 @@ export function sealedCheck(f: ReleaseFixture, taskId: string, head: string, rep
   storeEvidence(store, root, runId, "check-log", "check-log.txt", Buffer.from(`exit ${exitCode}\n`), command.command, RELEASE_NOW, { captureStatus: "ok" });
   const sha = (capture: string) => { const found = store.artifactsFor(runId).filter(a => a.kind === "structured-output" && a.capture === capture); return found.length === 1 ? found[0]!.sha256 : null; };
   // As the builder does: coverage meets the outcome in one place.
-  const effective = effectiveCheckFacts(options.plane ?? { configured: true, ran: true, exitCode: exitCode ?? 1 }, { coverage: settled.coverage, check: { attempt: prepared.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE), retried: retriedInside(sealedReport) }, composed: settled.composed });
+  const effective = effectiveCheckFacts(options.plane ?? { configured: true, ran: true, exitCode: exitCode ?? 1, ...(options.setupReplayed === true ? { setupReplayed: true as const } : {}) }, { coverage: settled.coverage, check: { attempt: prepared.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE), retried: retriedInside(sealedReport) }, composed: settled.composed });
   sealVerificationReceipt(store, root, runId, head, command, effective.result, RELEASE_NOW, undefined, effective.facts ?? undefined);
   const passed = effective.result.configured && effective.result.ran && effective.result.exitCode === 0;
   store.recordRunCheck(runId, { status: passed ? "passed" : "failed", exitCode: effective.result.configured && effective.result.ran ? effective.result.exitCode : null, suites: [] }, RELEASE_NOW);

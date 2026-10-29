@@ -122,14 +122,21 @@ export function retriedOfRun(store: Store, root: string, runId: number): string[
   const fromReport = retriedInside(parsed?.ok === true ? parsed.value : null);
   const gate = verificationEvidence(store, root, runId);
   if (!gate.ok || gate.bytes === null) return null;
-  let check: { retried?: unknown } | undefined;
-  try { check = (JSON.parse(gate.bytes.toString()) as { check?: { retried?: unknown } }).check; } catch { return null; }
-  const receipt = check?.retried;
-  if (receipt === undefined) return fromReport;
+  let body: { check?: { retried?: unknown }; result?: { setupReplayed?: unknown } };
+  try { body = JSON.parse(gate.bytes.toString()) as typeof body; } catch { return null; }
+  // The whole check rerun after the approved recovery setup (finding 6): its first attempt failed, and a missing
+  // executable is never confirmed infrastructure, so it counts as a retry like any other — reported, and an automatic
+  // approval refuses it.
+  const replayed = body.result?.setupReplayed === true ? [SETUP_REPLAY_RETRY] : [];
+  const receipt = body.check?.retried;
+  if (receipt === undefined) return fromReport === null ? null : [...replayed, ...fromReport];
   if (receipt === null || !Array.isArray(receipt) || receipt.some(one => typeof one !== "string")) return null;
   if (fromReport !== null && JSON.stringify([...fromReport].sort()) !== JSON.stringify([...receipt as string[]].sort())) return null;
-  return receipt as string[];
+  return [...replayed, ...receipt as string[]];
 }
+
+/** How a check rerun after the approved recovery setup reads among the retries. */
+export const SETUP_REPLAY_RETRY = "the whole check, rerun after the approved setup (its first attempt exited as if a program were missing)";
 
 type BuilderRun = { id: number; outcome: string | null; scopeDigest: string | null; finishedAt: string | null; passed: boolean };
 
