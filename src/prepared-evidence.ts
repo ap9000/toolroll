@@ -1,6 +1,5 @@
 /** Committed image inventory, never claimed checks, completion, or approval. */
-import { execFileSync } from 'node:child_process';
-import { lazyFetchSupported, noLazyFetch, viewedGitSync } from './teardown-git.js';
+import { noLazyFetch, viewedGitSync } from './teardown-git.js';
 import { createHash } from 'node:crypto';
 import { lstatSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -20,8 +19,7 @@ export function readPreparedEvidence(repo: string, candidate: string, required =
   if (!/^[a-f0-9]{40}$/.test(candidate)) fail('The saved commit is invalid.');
   const git = (args: string[], cap: number): Buffer => {
     try {
-      if (lazyFetchSupported()) return execFileSync('git', [...preparedEvidenceGit(), '-C', repo, ...args], { stdio: ['ignore', 'pipe', 'pipe'], timeout: 10_000, maxBuffer: cap });
-      // No --no-lazy-fetch: through a frozen read view, which refuses a partial clone from the config git runs with.
+      // Every git version through a frozen read view, bounded (eval-harness review 1, finding 7).
       const ran = viewedGitSync(repo, [...preparedEvidenceGit(), ...args], { timeoutMs: 10_000, maxBuffer: cap, buffer: true });
       if (ran.status !== 0) throw new Error('git failed');
       return ran.stdout;

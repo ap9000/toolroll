@@ -5,8 +5,7 @@
  * read from Git now. Reads only.
  */
 
-import { execFileSync } from "node:child_process";
-import { lazyFetchSupported, noLazyFetch, viewedGitSync } from "./teardown-git.js";
+import { viewedGitSync } from "./teardown-git.js";
 import type { Store } from "./store.js";
 
 export type TaskBaseView = {
@@ -26,12 +25,10 @@ export type GitRead = (cwd: string, args: readonly string[]) => string | null;
 
 export const readGit: GitRead = (cwd, args) => {
   try {
-    // No --no-lazy-fetch: through a frozen read view, which refuses a partial clone from the config git runs with.
-    if (!lazyFetchSupported()) {
-      const ran = viewedGitSync(cwd, args, { timeoutMs: 5_000, maxBuffer: 65_536 });
-      return ran.status === 0 ? ran.stdout.trim() : null;
-    }
-    return execFileSync("git", ["--no-optional-locks", ...noLazyFetch(), "-c", "protocol.allow=never", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", ...args], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5_000, maxBuffer: 65_536 }).trim();
+    // Every git version through a frozen read view, bounded (eval-harness review 1, finding 7): a partial clone, an
+    // include or a command-naming key is refused from the config git then runs with.
+    const ran = viewedGitSync(cwd, args, { timeoutMs: 5_000, maxBuffer: 65_536 });
+    return ran.status === 0 ? ran.stdout.trim() : null;
   } catch {
     return null;
   }

@@ -11,7 +11,7 @@
  * nothing is removed.
  */
 import { spawnSync } from "node:child_process";
-import { closeSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { ensureGitViewsRoot, withCheckoutLock } from "./git-views.js";
@@ -287,23 +287,27 @@ export function teardownGit(runner: Runner = run, binding: GitBinding = {}): Git
  * git at any file, a pipe that never ends among them. Each file is read only as the regular file it is, bounded; one
  * that can't be read so counts as including.
  */
-export function checkoutIncludes(checkout: string): boolean {
+export function checkoutIncludes(checkout: string, gitFile = "git"): boolean {
   const dirs = gitDirsOf(checkout);
   if (dirs === null) return true;
   for (const path of [join(dirs.common, "config"), join(dirs.gitdir, "config.worktree")]) {
     if (!existsSync(path) && path.endsWith("config.worktree")) continue;
-    if (configIncludes(path)) return true;
+    if (includeIn(path, gitFile) !== null) return true;
   }
   return false;
 }
 
 /** One config file, read only as the regular file it is (bounded), or null. */
 function regularFile(path: string): string | null {
+  // Opened without following a link and without blocking, then judged by what was opened: a FIFO swapped in after a
+  // look never hangs the read (eval-harness review 1, finding 7).
+  let fd: number | null = null;
   try {
-    const held = lstatSync(path);
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    const held = fstatSync(fd);
     if (!held.isFile() || held.size > 1024 * 1024) return null;
-    return readFileSync(path, "utf8");
-  } catch { return null; }
+    return readFileSync(fd, "utf8");
+  } catch { return null; } finally { if (fd !== null) closeSync(fd); }
 }
 
 /** A checkout's git directory and common directory, as git finds them from its `.git` (a folder, or a one-line
@@ -324,18 +328,13 @@ function gitDirsOf(checkout: string): { gitdir: string; common: string } | null 
   return { gitdir, common: named === undefined || named === "" ? gitdir : resolve(gitdir, named) };
 }
 
-/** Whether one config file includes another (or can't be read as a plain file): by a plain reading, and as git itself
- * parses it, includes not followed (only this one regular file, from a neutral folder, with no other config read). */
-function configIncludes(path: string): boolean {
-  return includeIn(path) !== null;
-}
 
 /** The include key one config file sets (lowercased, as git names it), "include" when only a plain reading finds one,
  * or "an unreadable file" when it can't be read as a plain file or parsed; null when it includes nothing. */
-function includeIn(path: string): string | null {
+function includeIn(path: string, gitFile = "git"): string | null {
   const text = regularFile(path);
   if (text === null) return "an unreadable file";
-  const parsed = spawnSync("git", ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
+  const parsed = spawnSync(gitFile, ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
     { cwd: "/", encoding: "utf8", timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
   if (parsed.status !== 0) return "an unreadable file";
   const named = parsed.stdout.split("\0").find(name => /^(include\.path|includeif\..*\.path)$/i.test(name));
@@ -435,7 +434,7 @@ type GitView = { env: Record<string, string>; restore: (output: string, args: re
 const ADMIN_LINKED = ["index", "logs", "refs", "reftable"];
 /** What git keeps in a common directory (its path.c common_list, and reftable), linked whether or not it exists yet. */
 const COMMON_NAMES = ["branches", "gc.pid", "logs", "lost-found", "modules", "objects", "packed-refs", "reftable", "refs", "remotes", "rr-cache", "shallow", "svn", "worktrees"];
-function gitView(checkout: string, kind: "read" | "write", binding: GitBinding = {}): GitView {
+function gitView(checkout: string, kind: "read" | "write", binding: GitBinding = {}, gitFile = "git"): GitView {
   const dirs = boundDirs(checkout, binding);
   const root = ensureGitViewsRoot(realpathSync(homedir()));
   const view = realpathSync(mkdtempSync(join(root, `${kind}-`)));
@@ -450,7 +449,7 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
     writeFileSync(configPath, config, { mode: 0o600 });
     const plain = { cwd: "/", encoding: "utf8" as const, timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } };
     if (/worktreeconfig/i.test(config)) {
-      const flag = spawnSync("git", ["config", "--file", configPath, "--no-includes", "--type=bool", "--get", "extensions.worktreeConfig"], plain);
+      const flag = spawnSync(gitFile, ["config", "--file", configPath, "--no-includes", "--type=bool", "--get", "extensions.worktreeConfig"], plain);
       if (flag.status !== 0 && flag.status !== 1) throw new Error("the checkout's git config couldn't be read");
       if (flag.stdout.trim() === "true") {
         // Git would also read the worktree's config.worktree, which the agent can still change: folded in as it is now.
@@ -460,10 +459,10 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
         config = `${config}\n${own}`;
         writeFileSync(configPath, config, { mode: 0o600 });
       }
-      const unset = spawnSync("git", ["config", "--file", configPath, "--unset-all", "extensions.worktreeConfig"], plain);
+      const unset = spawnSync(gitFile, ["config", "--file", configPath, "--unset-all", "extensions.worktreeConfig"], plain);
       if (unset.status !== 0 && unset.status !== 5) throw new Error("the checkout's git config couldn't be read");
     }
-    const include = includeIn(configPath);
+    const include = includeIn(configPath, gitFile);
     if (include !== null) throw new Error(`the checkout's git config includes another file (${include})`);
     mkdirSync(join(view, "info"));
     // A main checkout's sparse-checkout patterns are in its own (common) info folder; a linked one's in its admin's.
@@ -788,10 +787,10 @@ export const WRITE_VIEW_FLAGS: readonly string[] = ["-c", "worktree.useRelativeP
 /** Whether the checkout's .lfsconfig (read as git parses it, that file only) sets any git-lfs key that could name a
  * program (anything but INERT_LFS). A file that
  * isn't a plain one, or doesn't parse, counts as naming one. */
-export function lfsExtensionIn(checkout: string): boolean {
+export function lfsExtensionIn(checkout: string, gitFile = "git"): boolean {
   const path = join(checkout, ".lfsconfig");
   try { if (!lstatSync(path).isFile()) return true; } catch { return false; }
-  const parsed = spawnSync("git", ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
+  const parsed = spawnSync(gitFile, ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
     { cwd: "/", encoding: "utf8", timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
   return parsed.status !== 0 || parsed.stdout.split("\0").filter(Boolean).some(name => lfsCommand(name) || ["include", "includeif"].includes(keyParts(name).section));
 }
@@ -884,14 +883,14 @@ export function checkoutGitSync(cwd: string, args: readonly string[], options: {
 export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number; binding?: GitBinding }): { status: number | null; stdout: string };
 export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number; binding?: GitBinding; buffer: true; input?: Buffer; git?: string }): { status: number | null; stdout: Buffer };
 export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number; binding?: GitBinding; buffer?: true; input?: Buffer; git?: string } = {}): { status: number | null; stdout: string | Buffer } {
-  if (checkoutIncludes(cwd)) throw new Error("the checkout's git config includes another file, or couldn't be read as a plain file");
-  if (lfsExtensionIn(cwd)) throw new Error("the checkout's .lfsconfig sets a git-lfs key that can run a command");
+  const gitFile = options.git ?? "git";
+  if (checkoutIncludes(cwd, gitFile)) throw new Error("the checkout's git config includes another file, or couldn't be read as a plain file");
+  if (lfsExtensionIn(cwd, gitFile)) throw new Error("the checkout's .lfsconfig sets a git-lfs key that can run a command");
   // Its config and info/attributes as read once, in a folder of the plane's own: neither can change before git runs.
-  const view = gitView(cwd, "read", options.binding);
+  const view = gitView(cwd, "read", options.binding, gitFile);
   try {
     const env: NodeJS.ProcessEnv = { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", LANG: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", ...view.env };
     const bounded = { cwd, env, encoding: "utf8" as const, timeout: options.timeoutMs ?? 60_000, maxBuffer: options.maxBuffer ?? 1_048_576, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
-    const gitFile = options.git ?? "git";
     const own = spawnSync(gitFile, ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], bounded);
     if (own.status !== 0) throw new Error("its config couldn't be read");
     const key = commandSetting(own.stdout, { lfsChecked: true });
@@ -1000,5 +999,7 @@ export function lazyFetchSetting(listing: string): string | null {
  * command and protocol settings refused, a partial clone refused) is the config git then runs with.
  */
 export function lazyFetchSafeGit(inner: Runner = run): Runner {
-  return lazyFetchSupported() ? inner : checkoutGit(inner, "read");
+  // On every git version (eval-harness review 1, finding 7): with --no-lazy-fetch the direct read still took the
+  // repository's config and its includes as git found them, and an include naming a FIFO could hang the plane.
+  return checkoutGit(inner, "read");
 }

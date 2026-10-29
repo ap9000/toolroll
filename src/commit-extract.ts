@@ -10,12 +10,10 @@
  * files are written (mode 644, or 755 when the tree says executable), each at a normalized path inside the folder;
  * symlinks, submodules and any other entry refuse the whole extraction.
  */
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, sep } from "node:path";
-import { checkoutGitEnv, HARDENED_GIT_ARGS } from "./agent-fence.js";
-import { commandSetting, lazyFetchSupported, viewedGitSync } from "./teardown-git.js";
+import { commandSetting, viewedGitSync } from "./teardown-git.js";
 
 export type Extraction = { ok: true; files: number } | { ok: false; message: string };
 
@@ -188,22 +186,14 @@ type GitAnswer = { status: number | null; stdout: Buffer; refused: string | null
 
 /**
  * How the protected readers run git on the project's Git directory (eval-harness review 1, finding 5): never a fetch.
- * Every run denies every transport (`protocol.allow=never`, which outranks the repository's own protocol settings, and
- * reaches a lazy fetch's child through git's own -c propagation). A git with `--no-lazy-fetch` (2.45+) takes it, so a
- * missing object is never fetched. An older git — whose GIT_NO_LAZY_FETCH only some patch releases honor (2.41.0 doesn't)
- * — runs every command through a frozen view of the repository (teardown-git.ts viewedGitSync): its config read once
- * into a folder of the plane's own, includes refused, a partial clone refused from that same listing, which is the
- * config git then runs with, so nothing can turn lazy fetching on between the check and the read.
+ * Every command, on every git version, runs through a frozen view of the repository (teardown-git.ts viewedGitSync,
+ * findings 5 and 7): its config read once into a folder of the plane's own and inspected there — an include, a key that
+ * names a command, every `protocol.*` key and (on a git without `--no-lazy-fetch`) a partial clone refused — which is
+ * the config git then runs with, bounded in time. Every run also denies every transport (`protocol.allow=never`) and,
+ * on git 2.45+, takes `--no-lazy-fetch`; nothing leans on GIT_NO_LAZY_FETCH, which 2.41.0 ignores.
  */
 function protectedGit(gitDir: string, runner: GitRunner, extra: readonly string[]): (args: readonly string[], input?: Buffer) => GitAnswer {
   const base = ["--no-replace-objects", "-c", "protocol.allow=never", ...extra];
-  if (lazyFetchSupported()) {
-    const env = { ...(runner.env ?? checkoutGitEnv()), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_ATTR_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" };
-    return (args, input) => {
-      const ran = spawnSync(runner.git ?? "git", ["--git-dir", gitDir, "--no-lazy-fetch", ...base, ...HARDENED_GIT_ARGS, ...args], { cwd: "/", env, input, maxBuffer: MAX_BYTES, timeout: 300_000 });
-      return { status: ran.error === undefined ? ran.status : null, stdout: ran.stdout ?? Buffer.alloc(0), refused: null };
-    };
-  }
   // The view is of a checkout: the project's own `.git` folder, as Toolroll records it.
   const checkout = basename(gitDir) === ".git" ? dirname(gitDir) : null;
   return (args, input) => {
