@@ -1656,4 +1656,57 @@ describe("toolroll release: approve automatically when checks pass", () => {
     person.s.ciComplete = false;
     expect(await runRelease(options(stateDir()), person.adapters)).toMatchObject({ ok: true });
   });
+
+  // pipeline-speed.md D2: on the automatic road the release check runs beside CI instead of after it; nothing is
+  // approved — by the plane or a person — before every pull request check passed on the candidate.
+  const running = (names: readonly string[]): CheckRun[] => names.map(name => ({ name, status: "in_progress", conclusion: null }));
+  const ciAheadWorld = (setting: boolean) => {
+    const w = autoWorld({ setting });
+    w.adapters.release!.auto!.settingFor = async () => w.plane.setting;
+    w.s.gateSeesChecks = true;
+    w.s.checks.set(SHA, running(REQUIRED_PR_CHECKS));
+    const seen = { filedWhileRunning: false, checkedWhileRunning: false };
+    const fileGate = w.adapters.toolroll.fileGate;
+    w.adapters.toolroll.fileGate = async input => { seen.filedWhileRunning = w.s.checks.get(SHA)![0]!.status !== "completed"; return fileGate(input); };
+    return { ...w, seen };
+  };
+
+  test("pipeline-speed D2: the automatic road files and checks while CI runs, and approves only once CI passed", async () => {
+    const { s, adapters, plane, seen } = ciAheadWorld(true);
+    let after = 0;
+    s.onSleep.push(state => {
+      if (state.gate.result === null) return;
+      if (state.checks.get(SHA)![0]!.status !== "completed") seen.checkedWhileRunning = true;
+      if (++after === 3) state.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
+    });
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
+    expect(seen).toEqual({ filedWhileRunning: true, checkedWhileRunning: true });
+    expect(plane).toMatchObject({ approvals: 1, gaveUp: [] });
+    expect(s.said).toContain(`  Pull request checks on ${SHA.slice(0, 7)} are still running: the release check runs beside them, and nothing is approved before they pass`);
+    expect(s.calls.slice(0, 2)).toEqual(["fileGate", "autoGreen"]);
+  });
+
+  test("pipeline-speed D2: CI failing beside the check ends the automatic road, and the person's road refuses it too", async () => {
+    const dir = stateDir();
+    const { s, adapters, plane } = ciAheadWorld(true);
+    s.onSleep.push(state => { if (state.gate.result !== null) state.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "failure" }]); });
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, reason: "ci-failed", message: expect.stringContaining("Nothing was approved") });
+    expect(plane.approvals).toBe(0);
+    expect(plane.gaveUp).toEqual([expect.stringContaining("Pull request checks already failed")]);
+    expect(readJournal(journalFile(dir, "toolroll/simplify-release"))).toMatchObject({ step: "approval", auto: { state: "refused" }, ciAhead: true });
+    // Run again: the person's road waits for CI before asking anyone, and CI still fails.
+    s.gate.approval = null;
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, reason: "ci-failed", message: expect.stringContaining("Nothing was sent for approval") });
+    expect(s.said.some(line => line.includes("needs your approval"))).toBe(false);
+    expect(s.calls).not.toContain("deploy");
+  });
+
+  test("pipeline-speed D2: without automatic approval the gate still waits for CI before filing anything", async () => {
+    const { s, adapters, seen } = ciAheadWorld(false);
+    let sleeps = 0;
+    s.onSleep.unshift(state => { if (++sleeps === 2) state.checks.set(SHA, passing(REQUIRED_PR_CHECKS)); });
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
+    expect(seen.filedWhileRunning).toBe(false);
+    expect(s.said.some(line => line.includes("still running"))).toBe(false);
+  });
 });

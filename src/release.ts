@@ -173,6 +173,10 @@ export type ReleaseAuthorityAdapter = {
 export type AutoReleaseAdapter = {
   /** The project's "Approve automatically when checks pass", read now (off when unreadable). */
   setting(taskId: string): Promise<boolean>;
+  /** The same setting for the project at a checkout, before its release task exists (off when unreadable). Only a
+   * timing hint: on, the gate files the task without waiting for CI, and every approval still waits for CI to pass.
+   * Absent: the gate waits for CI as before. */
+  settingFor?(checkout: string): Promise<boolean>;
   /** Seal `auto-check` so the release check runs before anyone approves. */
   authorizeCheck(input: { taskId: string; digest: string; candidate: string }): Promise<{ ok: true } | { ok: false; why: string }>;
   /** Whether the `auto-check` seal still stands (the setting on, its evidence, the digest). */
@@ -307,6 +311,9 @@ export type ReleaseJournal = {
   /** The automatic road (auto-approve-green.md): `checking` once the plane sealed `auto-check`, `approved` once it sealed
    * `auto-green`, `refused` (and why) when it wouldn't — then a person approves, as before. */
   auto?: { state: "checking" | "approved" | "refused"; why?: string; ci?: number[] } | null;
+  /** The gate filed the task while the pull request's checks still ran (pipeline-speed.md, D2: only on the automatic
+   * road, so the release check runs beside CI). Nothing is approved, by the plane or a person, before they all pass. */
+  ciAhead?: boolean;
   /** When each step was about to change something outside this machine: what a resume must look for before acting. */
   intents: Partial<Record<ReleaseStep, string>>;
   stopped: { step: ReleaseStep; reason: string; message: string; at: string } | null;
@@ -721,7 +728,13 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             if (existing.candidate !== j.candidate.sha) throw new Stop("conflict", `Task ${j.task.id} exists for a different commit (${existing.candidate?.slice(0, 7) ?? "none"}).`);
             j.task.scopeDigest = existing.scopeDigest;
           } else {
-            await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe));
+            // On the automatic road the gate only stops on a check that already failed: the release check then runs
+            // beside CI (pipeline-speed.md, D2), and nothing is approved before CI passes (the approval and check steps).
+            const auto = rel?.auto;
+            const ahead = auto?.settingFor !== undefined && j.freshTask !== true && j.auto?.state !== "refused" && await auto.settingFor(j.checkout);
+            const settled = await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { pendingIsEnough: ahead });
+            j.ciAhead = !settled; save();
+            if (!settled) { say(`  Pull request checks on ${j.candidate.sha.slice(0, 7)} are still running: the release check runs beside them, and nothing is approved before they pass`); }
             intend("gate");
             await adapters.repo.sync(j.branch);
             const filed = await adapters.toolroll.fileGate({
@@ -757,6 +770,9 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
               say(`  Not approved automatically: ${authorized.why}. A person approves it.`);
             }
           }
+          // Filed while CI still ran (the automatic road, which a person's approval replaced): a person is asked only once
+          // every pull request check passed, as when the gate waits.
+          if (j.ciAhead === true) { await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { nothing: "Nothing was sent for approval" }); j.ciAhead = false; save(); }
           say(`  The release scope needs your approval: \`toolroll task approve ${j.task.id} --digest ${j.task.scopeDigest}\`, or open the task in the console.`);
           const approved = await waitFor("approval", `a person to approve task ${j.task.id}`, async () => {
             await watch("dispatch");
@@ -828,6 +844,16 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           j.check = result;
           say(`  run ${result.run} passed on ${j.candidate.sha.slice(0, 7)}`);
           if (j.auto?.state === "checking" && !j.authority) {
+            // The check ran beside CI (the gate didn't wait): it waits for every pull request check now. A failure ends the
+            // automatic road, and the person's road refuses it too (the approval step waits for CI first).
+            if (j.ciAhead === true) {
+              try { await earlyChecks(adapters, j, (what, probe) => waitFor("gate", what, probe), { nothing: "Nothing was approved" }); }
+              catch (error) {
+                if (error instanceof Stop && error.reason === "ci-failed") { j.auto = { state: "refused", why: error.message }; j.check = null; j.step = "approval"; save(); await rel?.auto?.giveUp(j.task.id, error.message.replace(/\.$/, "")); }
+                throw error;
+              }
+              j.ciAhead = false; save();
+            }
             // The release approval, sealed only now: the plane reads CI on the exact commit itself and proves the check.
             const sealed = rel?.auto === undefined ? { ok: false as const, why: "this plane can't approve releases automatically" }
               : await rel.auto.approve({ taskId: j.task.id, digest: j.task.scopeDigest!, candidate: j.candidate.sha, run: result.run, receipt: result.receipt });
@@ -1181,12 +1207,19 @@ async function mainProtection(adapters: ReleaseAdapters, j: ReleaseJournal, auto
   throw new Stop("base-unprotected", `${lacking}, so this release can't merge${auto ? " automatically" : ""}. ${nothing}. Restore effective main protection and try again.`);
 }
 
-async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal, wait: <T>(what: string, probe: () => Promise<T | null>) => Promise<T>): Promise<void> {
+/**
+ * Wait for every required pull request check on the candidate to pass; stop on one that failed. `pendingIsEnough` (the
+ * automatic road's gate, pipeline-speed.md D2): checks still running are no reason to wait — returns false then, true
+ * once they all passed. `nothing` says what hasn't happened yet when a check failed.
+ */
+async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal, wait: <T>(what: string, probe: () => Promise<T | null>) => Promise<T>,
+  options: { pendingIsEnough?: boolean; nothing?: string } = {}): Promise<boolean> {
+  const nothing = options.nothing ?? "Nothing was filed or sent for approval";
   const sha = j.candidate.sha.slice(0, 7);
   const required: readonly string[] = REQUIRED_PR_CHECKS;
   let named = "", unread = false;
   try {
-    await wait(`the pull request checks on ${sha}`, async () => {
+    return await wait(`the pull request checks on ${sha}`, async () => {
       let runs: CheckRun[];
       try { runs = await adapters.github.checks(j.github, j.candidate.sha); }
       catch (error) {
@@ -1196,16 +1229,17 @@ async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal, wait: <
       }
       const verdict = prChecksVerdict(runs.filter(run => required.includes(run.name)), j.candidate.sha, required);
       if (verdict.state === "failed") {
-        throw new Stop("ci-failed", `Pull request checks already failed on ${sha}: ${verdict.failed.join(", ")}. Nothing was filed or sent for approval. Fix the branch, then release the new commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\` (or rerun the failed job on GitHub and run this command again).`);
+        throw new Stop("ci-failed", `Pull request checks already failed on ${sha}: ${verdict.failed.join(", ")}. ${nothing}. Fix the branch, then release the new commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\` (or rerun the failed job on GitHub and run this command again).`);
       }
       if (verdict.state === "passed") return true;
+      if (options.pendingIsEnough === true) return false;
       const now = verdict.waiting.join(", ");
       if (now !== named) { adapters.say(`  Pull request checks on ${sha} not finished yet: ${now}.`); named = now; }
       return null;
     });
   } catch (error) {
     if (!(error instanceof Stop) || error.reason !== "timeout") throw error;
-    throw new Stop("ci-missing", `Pull request checks on ${sha} didn't all finish in time${named === "" ? (unread ? " (GitHub didn't answer)" : "") : `: ${named}`}. Nothing was filed or sent for approval. Start or rerun them on GitHub, then run this command again.`);
+    throw new Stop("ci-missing", `Pull request checks on ${sha} didn't all finish in time${named === "" ? (unread ? " (GitHub didn't answer)" : "") : `: ${named}`}. ${nothing}. Start or rerun them on GitHub, then run this command again.`);
   }
 }
 

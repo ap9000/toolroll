@@ -9,7 +9,7 @@ import { execFile, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { basename, delimiter, dirname, join } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { parse as parseYaml } from "yaml";
 import { sleep } from "./sleep.js";
@@ -708,6 +708,10 @@ function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now:
   return {
     async setting(taskId) {
       return withStore(store => { try { const ref = store.lookupRef(taskId); return ref?.repo != null && releaseAutoApproves(store, ref.repo); } catch { return false; } });
+    },
+    async settingFor(checkout) {
+      // The task the gate files is the project at this checkout (`task add --repo`, resolved the same way).
+      return withStore(store => { try { return releaseAutoApproves(store, resolve(checkout)); } catch { return false; } });
     },
     async authorizeCheck(input) {
       // The comparison base for what the release changes: GitHub's own merge base of the candidate with the release's
