@@ -75,8 +75,8 @@ const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 export const NO_ATTRIBUTES = [`--attr-source=${EMPTY_TREE}`, "-c", "core.attributesFile=/dev/null", "-c", "core.pager=cat", "-c", "diff.external=", "-c", "core.alternateRefsCommand="];
 
 import { createHash } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, sep } from "node:path";
+import { closeSync, constants as fsConstants, lstatSync, mkdirSync, openSync, readFileSync, readlinkSync, realpathSync, writeSync } from "node:fs";
+import { join, sep } from "node:path";
 
 const objectId = (format, type, bytes) => createHash(format).update(`${type} ${bytes.length}\0`).update(bytes).digest("hex");
 const run = (args, env, input) => {
@@ -119,20 +119,58 @@ export function objectsOf(repo, ids, env) {
   return found;
 }
 
-/** Write `commit`'s files into `dest` (an empty folder), stored bytes only: regular files and symlinks; a submodule is
- * left out as `git archive` leaves it. */
+/**
+ * Why a commit's file paths can't all be written as separate regular files, or null (the same rules as
+ * src/commit-extract.ts writtenPathsProblem, kept equal by test): a `.git` part, a path twice, two paths that are one
+ * on a case-insensitive or Unicode-normalizing file system (macOS), or a path that is both a file and a folder.
+ */
+export function writtenPathsProblem(paths) {
+  const folded = new Map();
+  for (const path of paths) {
+    if (!plainPath(path)) return `${JSON.stringify(path)} isn't a plain relative path`;
+    if (path.split("/").some(part => part.toLowerCase() === ".git")) return `${path} names a .git folder`;
+    const key = path.normalize("NFC").toLowerCase();
+    if (folded.has(key)) return folded.get(key) === path ? `${path} is listed twice` : `${path} and ${folded.get(key)} are the same file on this computer`;
+    folded.set(key, path);
+  }
+  for (const key of folded.keys()) {
+    const parts = key.split("/");
+    for (let at = 1; at < parts.length; at++) {
+      const folder = parts.slice(0, at).join("/");
+      if (folded.has(folder)) return `${folded.get(folder)} is both a file and a folder`;
+    }
+  }
+  return null;
+}
+
+/**
+ * Write `commit`'s files into `dest` (an empty folder this process made), stored bytes only, as commit-extract.ts
+ * extractCommit writes a release's: regular files only — a symlink or submodule refuses the whole extraction, so nothing
+ * is ever written through a link — every path checked first (writtenPathsProblem), every parent folder under `dest`
+ * proved a real folder before each write, and each file created new (O_CREAT|O_EXCL|O_NOFOLLOW).
+ */
 export function extractTree(repo, commit, dest, env) {
   const entries = treeOf(repo, commit, env);
-  const blobs = objectsOf(repo, entries.filter(one => one.type === "blob").map(one => one.id), env);
   for (const one of entries) {
-    if (one.type === "commit") continue;
-    const target = join(dest, ...one.path.split("/"));
-    if (!target.startsWith(dest + sep)) throw Error(`${one.path} leaves the folder.`);
-    mkdirSync(dirname(target), { recursive: true });
-    const bytes = blobs.get(one.id).bytes;
-    if (one.mode === "120000") symlinkSync(bytes.toString("utf8"), target);
-    else if (one.mode === "100644" || one.mode === "100755") writeFileSync(target, bytes, { flag: "wx", mode: one.mode === "100755" ? 0o755 : 0o644 });
-    else throw Error(`${one.path} has mode ${one.mode}, which isn't a file.`);
+    if (one.mode === "120000") throw Error(`The commit holds a symlink (${one.path}); a deployment never writes one.`);
+    if (one.mode === "160000" || one.type !== "blob" || (one.mode !== "100644" && one.mode !== "100755")) throw Error(`The commit holds an entry that isn't a plain file (${one.path}).`);
+  }
+  const problem = writtenPathsProblem(entries.map(one => one.path));
+  if (problem !== null) throw Error(`The commit's files can't be written: ${problem}.`);
+  const blobs = objectsOf(repo, entries.map(one => one.id), env);
+  const root = realpathSync(dest);
+  for (const one of entries) {
+    const parts = one.path.split("/");
+    let at = root;
+    for (const part of parts.slice(0, -1)) {
+      at = join(at, part);
+      try { mkdirSync(at, { mode: 0o755 }); } catch (error) { if (error?.code !== "EEXIST") throw error; }
+      if (!lstatSync(at).isDirectory()) throw Error(`${one.path}: ${at} isn't a real folder.`);
+    }
+    const target = join(at, parts.at(-1));
+    if (!target.startsWith(root + sep)) throw Error(`${one.path} leaves the folder.`);
+    const fd = openSync(target, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, one.mode === "100755" ? 0o755 : 0o644);
+    try { writeSync(fd, blobs.get(one.id).bytes); } finally { closeSync(fd); }
   }
   return entries.length;
 }

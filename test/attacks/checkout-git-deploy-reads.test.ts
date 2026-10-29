@@ -95,3 +95,72 @@ describe("security scan: the deployment script reads a commit with no filter, at
     expect(existsSync(marker)).toBe(false);
   });
 });
+
+// @ts-expect-error plain ESM script without declarations
+import { writtenPathsProblem as scriptPaths } from "../../scripts/deploy-git.mjs";
+import { extractCommit, writtenPathsProblem } from "../../src/commit-extract.js";
+
+describe("security scan: a hostile tree never writes outside, through a link, or over itself", () => {
+  /** A commit whose tree is exactly `entries` (mode, path, content), made from the index, never a checkout. */
+  const crafted = (entries: [string, string, string][]): { repo: string; head: string } => {
+    const repo = join(root, `crafted-${Math.random().toString(36).slice(2)}`);
+    execFileSync("git", ["init", "-q", "-b", "main", repo], { env });
+    for (const [mode, path, content] of entries) {
+      const id = execFileSync("git", ["-C", repo, "hash-object", "-w", "--stdin"], { env, input: content, encoding: "utf8" }).trim();
+      git(repo, "update-index", "--add", "--cacheinfo", `${mode},${id},${path}`);
+    }
+    const tree = git(repo, "write-tree").trim();
+    return { repo, head: execFileSync("git", ["-C", repo, "commit-tree", tree, "-m", "crafted"], { env, encoding: "utf8" }).trim() };
+  };
+
+  test.each([
+    ["a symlink, then a file through it", [["120000", "a", root], ["100644", "b/x", "x\n"]]],
+    ["a symlink to outside on its own", [["120000", "link", "/etc/passwd"], ["100644", "ok.txt", "x\n"]]],
+    ["two paths one file on macOS (case)", [["100644", "Readme.txt", "1\n"], ["100644", "readme.txt", "2\n"]]],
+    ["two paths one file (Unicode normalization)", [["100644", "café.txt", "1\n"], ["100644", "café.txt", "2\n"]]],
+    ["a .git folder", [["100644", "sub/.git/config", "[core]\n"], ["100644", "ok.txt", "x\n"]]],
+    ["a submodule", [["160000", "mod", ""], ["100644", "ok.txt", "x\n"]]],
+  ] as [string, [string, string, string][]][])("attack: %s is refused, nothing written outside", (_name, entries) => {
+    let made: { repo: string; head: string };
+    try {
+      // A submodule entry needs a commit id, not a blob: point it at any commit.
+      made = crafted(entries.filter(one => one[0] !== "160000"));
+      if (entries.some(one => one[0] === "160000")) {
+        git(made.repo, "update-index", "--add", "--cacheinfo", `160000,${made.head},mod`);
+        made = { repo: made.repo, head: execFileSync("git", ["-C", made.repo, "commit-tree", git(made.repo, "write-tree").trim(), "-m", "sub"], { env, encoding: "utf8" }).trim() };
+      }
+    } catch { return; } // git itself wouldn't build it on this file system: nothing to extract
+    // git folded two names into one (macOS precomposes Unicode): no hostile tree to extract; the path rules below cover it.
+    if (git(made.repo, "ls-tree", "-r", "--name-only", made.head).trim().split("\n").length < entries.length) return;
+    const dest = realpathSync(mkdtempSync(join(root, "out-")));
+    expect(() => extractTree(["-C", made.repo], made.head, dest, plain)).toThrow();
+    const release = realpathSync(mkdtempSync(join(root, "rel-")));
+    expect(extractCommit(join(made.repo, ".git"), made.head, release)).toMatchObject({ ok: false });
+    expect(existsSync(join(root, "x"))).toBe(false);
+  });
+
+  test.each([
+    [["a", "a/b"], "both a file and a folder"], [["A/b", "a"], "both a file and a folder"], [["x", "x"], "twice"], [["X.txt", "x.txt"], "same file"],
+    [["a/.GIT/x"], ".git"], [["../x"], "plain"], [["/x"], "plain"], [["a//b"], "plain"], [["ok/fine.txt", "other.txt"], null],
+  ] as [string[], string | null][])("the path rules, the same in the deployment script and the release's extraction: %j", (paths, problem) => {
+    const ours = writtenPathsProblem(paths), script = scriptPaths(paths);
+    if (problem === null) { expect(ours).toBeNull(); expect(script).toBeNull(); }
+    else { expect(ours).toContain(problem); expect(script).toBe(ours); }
+  });
+});
+
+test("security scan: attack: a tree with a link `a` and a folder `a` never writes through the link", () => {
+  const repo = join(root, "linked");
+  execFileSync("git", ["init", "-q", "-b", "main", repo], { env });
+  const outside = realpathSync(mkdtempSync(join(root, "outside-")));
+  const blob = (text: string) => execFileSync("git", ["-C", repo, "hash-object", "-w", "--stdin"], { env, input: text, encoding: "utf8" }).trim();
+  const mktree = (lines: string) => execFileSync("git", ["-C", repo, "mktree", "--missing"], { env, input: lines, encoding: "utf8" }).trim();
+  const sub = mktree(`100644 blob ${blob("planted\n")}\tx\n`);
+  let top: string;
+  try { top = mktree(`120000 blob ${blob(outside)}\ta\n040000 tree ${sub}\ta\n`); } catch { return; }
+  const head = execFileSync("git", ["-C", repo, "commit-tree", top, "-m", "hostile"], { env, encoding: "utf8" }).trim();
+  const dest = realpathSync(mkdtempSync(join(root, "out-")));
+  expect(() => extractTree(["-C", repo], head, dest, plain)).toThrow();
+  expect(extractCommit(join(repo, ".git"), head, realpathSync(mkdtempSync(join(root, "rel-"))))).toMatchObject({ ok: false });
+  expect(existsSync(join(outside, "x"))).toBe(false);
+});

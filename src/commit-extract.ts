@@ -49,6 +49,31 @@ export function parseTree(bytes: Buffer, idBytes: number): TreeEntry[] | null {
   return entries;
 }
 
+/**
+ * Why a commit's file paths can't all be written as separate regular files, or null: a `.git` part, a path twice, two
+ * paths that are one on a case-insensitive or Unicode-normalizing file system (macOS), or a path that is both a file
+ * and a folder. scripts/deploy-git.mjs writtenPathsProblem keeps the same rules (held equal by test).
+ */
+export function writtenPathsProblem(paths: readonly string[]): string | null {
+  const folded = new Map<string, string>();
+  for (const path of paths) {
+    if (!normalizedTreePath(path)) return `${JSON.stringify(path)} isn't a plain relative path`;
+    if (path.split("/").some(part => part.toLowerCase() === ".git")) return `${path} names a .git folder`;
+    const key = path.normalize("NFC").toLowerCase();
+    const known = folded.get(key);
+    if (known !== undefined) return known === path ? `${path} is listed twice` : `${path} and ${known} are the same file on this computer`;
+    folded.set(key, path);
+  }
+  for (const key of folded.keys()) {
+    const parts = key.split("/");
+    for (let at = 1; at < parts.length; at++) {
+      const folder = parts.slice(0, at).join("/");
+      if (folded.has(folder)) return `${folded.get(folder)} is both a file and a folder`;
+    }
+  }
+  return null;
+}
+
 /** Write commit `sha` of the repository whose Git directory is `gitDir` (a realpath Toolroll took from its own
  * records) into `dest`, an empty folder this process made. Every object on the way — the commit, each tree, each
  * blob — is hashed here and must be the id that names it: Git's own answer about an id is never taken on trust, so a
@@ -127,6 +152,8 @@ export function extractCommit(gitDir: string, sha: string, dest: string, limits:
     level = next;
   }
   if (files.length === 0) return refuse(`The commit ${sha.slice(0, 7)} holds no files.`);
+  const clash = writtenPathsProblem(files.map(one => one.path));
+  if (clash !== null) return refuse(`The commit's files can't be written: ${clash}.`);
 
   const blobs = read([...new Set(files.map(one => one.id))]);
   if (typeof blobs === "string") return refuse(`The approved commit couldn't be verified: ${blobs}.`);
