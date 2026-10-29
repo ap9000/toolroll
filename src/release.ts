@@ -688,6 +688,9 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
               if (!live.applies || live.ok) { if (j.task.id !== id) { j.task = { id, scopeDigest: null }; save(); } break; }
             }
           }
+          // The tree CI tested (the pull request's head, not GitHub's merge commit) is the tree that merges only when the
+          // branch already contains main's head: refused here, before anything is filed, and again right before merging.
+          await containsMain(adapters, j, "Nothing was filed or sent for approval");
           const existing = await adapters.toolroll.gate(j.task.id);
           // A fresh task this journal never filed has appeared under its id: it isn't ours, and isn't a fresh approval.
           if (existing.exists && j.freshTask === true && j.intents.gate === undefined) throw new Stop("approval", `Task ${j.task.id} appeared before this release filed it; rerun with --new.`);
@@ -939,10 +942,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             // After the deploy reservation a moved head, a changed pull request or a stopped release stops it here.
             if (rel !== undefined && j.authority) await identity("merge", false);
             await pinned();
-            // A squash merge only reproduces the gated tree when main hasn't moved past the branch's base.
-            await adapters.repo.sync(j.branch);
-            const main = await adapters.repo.mainHead();
-            if (!await adapters.repo.contains(j.candidate.sha, main)) throw new Stop("base-moved", `main moved to ${main.slice(0, 7)}, which ${j.branch} doesn't contain, so the merge wouldn't be the gated tree. Nothing was merged: update the branch and release the new commit with --new.`);
+            // A squash merge only reproduces the gated (and CI-tested) tree when main hasn't moved past the branch's base.
+            await containsMain(adapters, j, "Nothing was merged");
             // The checks again, at the moment of merging: a rerun that failed since must not merge.
             const verdict = prChecksVerdict(await adapters.github.checks(j.github, j.candidate.sha), j.candidate.sha, REQUIRED_PR_CHECKS, autoCap());
             if (verdict.state !== "passed") await ciFailedAfterDeploy(`Pull request checks are no longer all passing on ${j.candidate.sha.slice(0, 7)}`);
@@ -1122,6 +1123,17 @@ async function deployed(adapters: ReleaseAdapters, candidate: string): Promise<s
  * running are named, and the gate waits for them; ones that never finish within the gate's limit stop here too. GitHub
  * not answering is waited out the same way, never taken for a pass. The ci step still checks again before merging.
  */
+/**
+ * The branch must contain main's head as GitHub has it now (fetched by sync): CI tests the pull request's head commit,
+ * so only a branch that already holds main merges into exactly the tested tree. Refused in plain words otherwise.
+ */
+async function containsMain(adapters: ReleaseAdapters, j: ReleaseJournal, nothing: string): Promise<void> {
+  await adapters.repo.sync(j.branch);
+  const main = await adapters.repo.mainHead();
+  if (await adapters.repo.contains(j.candidate.sha, main)) return;
+  throw new Stop("base-moved", `The branch is behind main; update it and push. ${j.branch} at ${j.candidate.sha.slice(0, 7)} doesn't contain main's head ${main.slice(0, 7)}, so what merges wouldn't be the tree CI tested. ${nothing}: release the updated commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
+}
+
 async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal, wait: <T>(what: string, probe: () => Promise<T | null>) => Promise<T>): Promise<void> {
   const sha = j.candidate.sha.slice(0, 7);
   const required: readonly string[] = REQUIRED_PR_CHECKS;

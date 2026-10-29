@@ -523,11 +523,23 @@ describe("toolroll release", () => {
     });
   });
 
-  test("main moving past the branch's base stops the release before it merges", async () => {
+  // CI tests the pull request's head, not GitHub's merge commit: the merged tree is the tested tree only when the branch
+  // already holds main's head, so a branch behind main is refused at the gate and again right before the merge.
+  test("attack: a branch behind main is refused at the gate, before anything is filed", async () => {
     const { s, adapters } = world();
     s.mainMoved = true;
-    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "merge", reason: "base-moved", message: expect.stringContaining("Nothing was merged") });
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "gate", reason: "base-moved", message: expect.stringMatching(/^The branch is behind main; update it and push\..*Nothing was filed/) });
+    expect(s.calls).toEqual([]);
+  });
+
+  test("attack: main moving after the gate is refused right before the merge", async () => {
+    const { s, adapters } = world();
+    // main gains a commit the branch lacks once the gate is filed and approved, while the release waits for its check.
+    s.onSleep.push(state => { if (state.gate.approval !== null) state.mainMoved = true; });
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "merge", reason: "base-moved", message: expect.stringMatching(/^The branch is behind main; update it and push\..*Nothing was merged/) });
+    expect(s.calls).toContain("fileGate");
     expect(s.calls).not.toContain("merge");
+    expect(s.pr.state).toBe("open");
   });
 
   test("a merge commit whose tree is not the gated tree is never tagged", async () => {
