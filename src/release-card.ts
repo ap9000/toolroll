@@ -162,20 +162,17 @@ export type ChangeList = {
   commits: { sha: string; subject: string }[] | null;
   source: "recorded" | "pull-request" | "unread";
   digest: string;
+  /** A release is on the record but its merge commit can't be read (eval-harness review 2, finding 4). */
+  baselineUnreadable?: true;
 };
 
 const SHA = /^[0-9a-f]{40}$/;
 const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
 
-/** The plane's own record of the last verified release of `repo`: the merge commit GitHub answered with, recorded once
- * the release verified the merged tree (the newest merged authority whose merge operation succeeded). Never a tag. */
-export function releaseBaseline(store: Store, repo: string): string | null {
-  const record = releaseBaselineRecord(store, repo);
-  return record.recorded ? record.sha : null;
-}
-
 /**
- * Whether the plane recorded a verified release of `repo`, and its merge commit (eval-harness review 2, finding 4):
+ * The plane's own record of the last verified release of `repo`: the merge commit GitHub answered with, recorded once
+ * the release verified the merged tree (the newest merged authority whose merge operation succeeded). Never a tag.
+ * Whether the plane recorded one, and its merge commit (eval-harness review 2, finding 4):
  * `recorded: false` only when no merged release is on the record at all; a recorded one whose commit isn't a full id is
  * `recorded: true` with `sha: null` — something to refuse on, never "no previous release".
  */
@@ -220,7 +217,11 @@ function pullRequestCommits(slug: string, pr: number): { sha: string; subject: s
 
 /** What changed since the last verified release, for a release's terms, from Toolroll's records only. */
 export function releaseChangeList(store: Store, terms: ReleaseTerms): ChangeList {
-  const baseline = releaseBaseline(store, terms.repo);
+  const record = releaseBaselineRecord(store, terms.repo);
+  // A release recorded with a merge commit that can't be read: the list couldn't be read (eval-harness review 2,
+  // finding 4) — never the pull request's commits, as if there were no previous release.
+  if (record.recorded && record.sha === null) return { baseline: null, commits: null, source: "unread", baselineUnreadable: true, digest: sha256(`release-changes:${JSON.stringify({ baseline: null, source: "unread", commits: null, recorded: true })}`) };
+  const baseline = record.recorded ? record.sha : null;
   let commits: ChangeList["commits"];
   let source: ChangeList["source"];
   if (baseline !== null) {
@@ -254,7 +255,7 @@ export function cardDigestOf(scopeDigest: string, formDigest: string, changes: P
 function changeWords(changes: ChangeList, terms: ReleaseTerms | null, cap: number): string[] {
   const head = changes.baseline === null ? `No earlier verified release is recorded. ${changes.source === "pull-request" ? `Pull request #${terms?.pr ?? "?"}'s commits:` : ""}`.trim()
     : `Changes since the last verified release (${changes.baseline.slice(0, 7)}):`;
-  if (changes.commits === null) return [head, changes.baseline === null ? `The pull request's commits couldn't be read; see #${terms?.pr ?? "?"} on GitHub.` : "The change list couldn't be read."];
+  if (changes.commits === null) return [head, changes.baseline === null && changes.baselineUnreadable !== true ? `The pull request's commits couldn't be read; see #${terms?.pr ?? "?"} on GitHub.` : "The change list couldn't be read."];
   if (changes.commits.length === 0) return [head, "No commits."];
   return [head, ...changes.commits.slice(0, cap).map(one => `• ${one.sha.slice(0, 7)} ${one.subject.slice(0, 100)}`), ...(changes.commits.length > cap ? [`• and ${changes.commits.length - cap} more`] : [])];
 }
