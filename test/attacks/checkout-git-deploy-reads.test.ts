@@ -1,24 +1,55 @@
 /**
- * Attack (eval-harness review 1, finding 5, security scan): the deployment script's git reads of the project's Git
- * directory or the build's checkout (scripts/deploy-git.mjs) fetch a missing object through a transport the repository
- * re-allows. Every run pins every transport off on the command line (which outranks the repository's own
- * `protocol.<name>.allow`); git 2.45+ also takes --no-lazy-fetch; an older git refuses a repository whose config could
- * make a lazy fetch possible. Runs on the installed git (the CI floor lane is 2.41.0 exactly) and with the old road forced.
+ * Attack (eval-harness review 1, finding 5; review 2, findings 2 and 3): the deployment script's git reads of the
+ * project's Git directory or the build's checkout (scripts/deploy-git.mjs) fetch a missing object through a transport
+ * the repository re-allows, or trust git's listing of a tree a build corrupted. Git never reads the repository's own
+ * config there (a view with a config the script writes), so nothing it says — or starts saying mid-read — can reach a
+ * transport; and every object, the commit and each tree included, is hashed against its id. Runs on the installed git
+ * (the CI floor lane is 2.41.0 exactly) and on an emulated 2.41.0 (no --no-lazy-fetch, GIT_NO_LAZY_FETCH ignored).
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { deflateSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 // @ts-expect-error plain ESM script without declarations
-import { lazyFetchKey, safeGitArgs, PINNED_PROTOCOLS, TRANSPORTS } from "../../scripts/deploy-git.mjs";
+import { gitExecutable, lazyFetchFlagSupported, normalizedTreePath as scriptNormalized, objectsOf, parseTree as scriptParseTree, PINNED_PROTOCOLS, TRANSPORTS } from "../../scripts/deploy-git.mjs";
+import { normalizedTreePath, parseTree } from "../../src/commit-extract.js";
 
 let root: string, source: string, partial: string, missing: string;
 const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
 const plain = { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: process.env["HOME"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1" };
 const git = (at: string, ...args: string[]) => execFileSync("git", ["-c", "core.hooksPath=/dev/null", "-C", at, ...args], { env, stdio: "pipe", encoding: "utf8" });
 const holds = (id: string) => spawnSync("git", ["-C", partial, ...PINNED_PROTOCOLS, "cat-file", "-e", id], { env: plain, stdio: "pipe" }).status === 0;
-const installedHasFlag = () => spawnSync("git", ["--no-lazy-fetch", "version"], { env: plain, stdio: "pipe" }).status === 0;
+
+/**
+ * A folder holding a `git` that acts as git 2.41.0 does on this road (no --no-lazy-fetch; GIT_NO_LAZY_FETCH ignored),
+ * a `git-remote-custom` transport helper that only leaves a mark, and — the race — just before any `cat-file` runs,
+ * the repository's config gains a promisor remote on that helper with `protocol.custom.allow=always`.
+ */
+function oldGitRacing(repoConfig: string, marker: string): string {
+  const bin = join(root, "old-git-bin");
+  mkdirSync(bin, { recursive: true });
+  const real = gitExecutable(plain);
+  writeFileSync(join(bin, "git"), `#!/bin/sh
+[ "$1" = "--no-lazy-fetch" ] && { echo "unknown option: --no-lazy-fetch" >&2; exit 129; }
+unset GIT_NO_LAZY_FETCH
+case " $* " in *" cat-file "*)
+  ${real} config --file '${repoConfig}' core.repositoryformatversion 1
+  ${real} config --file '${repoConfig}' extensions.partialClone origin
+  ${real} config --file '${repoConfig}' remote.origin.promisor true
+  ${real} config --file '${repoConfig}' remote.origin.url custom::anything
+  ${real} config --file '${repoConfig}' protocol.custom.allow always ;;
+esac
+exec ${real} "$@"
+`);
+  writeFileSync(join(bin, "git-remote-custom"), `#!/bin/sh
+touch '${marker}'
+exit 1
+`);
+  chmodSync(join(bin, "git"), 0o755); chmodSync(join(bin, "git-remote-custom"), 0o755);
+  return bin;
+}
 
 beforeEach(() => {
   root = realpathSync(mkdtempSync(join(tmpdir(), "so-deploy-git-")));
@@ -35,33 +66,48 @@ beforeEach(() => {
 afterEach(() => { rmSync(root, { recursive: true, force: true }); });
 
 describe("the deployment script's git reads", () => {
-  for (const road of ["installed", "forced old"] as const) {
-    test(`attack (${road} git): a read of a blob the partial clone lacks never fetches it, whatever the repository allows`, () => {
-      const supported = road === "installed" ? installedHasFlag() : false;
-      let args: string[] | null = null;
-      try { args = safeGitArgs(["-C", partial], plain, supported); } catch (error) { expect(String(error)).toMatch(/protocol\.file\.allow|partialclone|promisor/); }
-      if (road === "forced old") expect(args).toBeNull();
-      if (args !== null) expect(spawnSync("git", [...args, "cat-file", "-p", missing], { env: plain, stdio: "pipe" }).status).not.toBe(0);
-      expect(holds(missing)).toBe(false);
-    });
-  }
+  test("attack (installed git): a read of a blob the partial clone lacks never fetches it, whatever the repository allows", () => {
+    expect(() => objectsOf(["-C", partial], [missing], plain)).toThrow(/missing or unreadable|failed/);
+    expect(holds(missing)).toBe(false);
+  });
+
+  test("attack (review 2 #3, emulated 2.41.0): config that turns lazy fetching on through any transport helper mid-read never reaches git", () => {
+    // A plain repository by the time anything could look; the race adds the promisor remote and the custom helper.
+    for (const key of ["extensions.partialClone", "remote.origin.promisor", "remote.origin.partialclonefilter", "protocol.file.allow"]) spawnSync("git", ["-C", partial, "config", "--unset-all", key], { env });
+    const marker = join(root, "helper-ran");
+    const bin = oldGitRacing(join(partial, ".git", "config"), marker);
+    const old = { ...plain, PATH: `${bin}:${plain.PATH}` };
+    expect(lazyFetchFlagSupported(gitExecutable(old))).toBe(false);
+    expect(() => objectsOf(["-C", partial], [missing], old)).toThrow();
+    // The race happened (the repository now names the helper), and the helper still never ran.
+    expect(readFileSync(join(partial, ".git", "config"), "utf8")).toContain("custom::anything");
+    expect(spawnSync("ls", [marker]).status).not.toBe(0);
+    expect(holds(missing)).toBe(false);
+  });
 
   test("every transport is pinned off by name on the command line", () => {
     for (const name of TRANSPORTS) expect(PINNED_PROTOCOLS).toContain(`protocol.${name}.allow=never`);
     expect(PINNED_PROTOCOLS).toContain("protocol.allow=never");
   });
 
-  test.each([
-    ["include.path", "x"], ["includeif.gitdir:/x.path", "y"], ["protocol.file.allow", "always"], ["protocol.allow", "always"], ["extensions.partialclone", "origin"],
-    ["remote.origin.promisor", "true"], ["remote.origin.partialclonefilter", "blob:none"], ["remote.origin.vcs", "x"],
-  ])("an old git refuses a repository whose config sets %s", (key, value) => {
-    expect(lazyFetchKey(`local\0${key}\n${value}\0`)).toBe(key);
+  test("review 2 follow-up: --no-lazy-fetch is asked of each git executable, never PATH's first one for all", () => {
+    const bin = oldGitRacing(join(partial, ".git", "config"), join(root, "unused"));
+    const installed = gitExecutable(plain);
+    expect(gitExecutable({ PATH: `${bin}:${plain.PATH}` })).toBe(realpathSync(join(bin, "git")));
+    expect(lazyFetchFlagSupported(realpathSync(join(bin, "git")))).toBe(false);
+    expect(lazyFetchFlagSupported(installed)).toBe(spawnSync(installed, ["--no-lazy-fetch", "version"], { stdio: "pipe" }).status === 0);
   });
+});
 
-  test("a plain repository's config passes, and a promisor set plainly false is none", () => {
-    expect(lazyFetchKey("local\0core.bare\nfalse\0local\0remote.origin.url\nhttps://x\0local\0remote.origin.promisor\nfalse\0")).toBeNull();
-    expect(lazyFetchKey(undefined)).not.toBeNull();
-    expect(safeGitArgs(["-C", source], plain, false)).toEqual(expect.arrayContaining(PINNED_PROTOCOLS));
+describe("review 2 #2: the deployment script's reader is commit-extract.ts's, held equal", () => {
+  test.each([
+    ["a/b.txt"], ["../x"], ["/x"], ["a//b"], ["."], ["a\\b"], ["ok"], ["x\u0001"], [""],
+  ])("normalizedTreePath %j", path => { expect(scriptNormalized(path)).toBe(normalizedTreePath(path)); });
+
+  test("parseTree, well-formed and malformed", () => {
+    const id = Buffer.alloc(20, 7);
+    const good = Buffer.concat([Buffer.from("100644 a.txt\0"), id, Buffer.from("40000 dir\0"), id]);
+    for (const bytes of [good, good.subarray(0, good.length - 1), Buffer.from("100644 a.txt"), Buffer.alloc(0)]) expect(scriptParseTree(bytes, 20)).toEqual(parseTree(bytes, 20));
   });
 });
 
@@ -164,3 +210,64 @@ test("security scan: attack: a tree with a link `a` and a folder `a` never write
   expect(extractCommit(join(repo, ".git"), head, realpathSync(mkdtempSync(join(root, "rel-"))))).toMatchObject({ ok: false });
   expect(existsSync(join(outside, "x"))).toBe(false);
 });
+
+describe("review 2 #2: a tree a build corrupted never substitutes files under the approved commit's id", () => {
+  /** A repository whose commit names a.txt = "good", and a stored blob "evil" no tree names. */
+  const made = () => {
+    const repo = join(root, "corrupt");
+    execFileSync("git", ["init", "-q", "-b", "main", repo], { env });
+    mkdirSync(join(repo, "dir"));
+    writeFileSync(join(repo, "a.txt"), "good\n");
+    writeFileSync(join(repo, "dir", "run.sh"), "#!/bin/sh\necho ok\n", { mode: 0o755 });
+    git(repo, "add", "-A"); git(repo, "commit", "-qm", "one");
+    const head = git(repo, "rev-parse", "HEAD").trim(), tree = git(repo, "rev-parse", "HEAD^{tree}").trim();
+    const evil = execFileSync("git", ["-C", repo, "hash-object", "-w", "--stdin"], { env, input: "evil\n", encoding: "utf8" }).trim();
+    return { repo, head, tree, evil };
+  };
+  /** Replace loose object `id` with other contents under the same name: what a build that writes .git can do. */
+  const overwrite = (repo: string, id: string, type: string, body: Buffer) => {
+    const path = join(repo, ".git", "objects", id.slice(0, 2), id.slice(2));
+    unlinkSync(path);
+    writeFileSync(path, deflateSync(Buffer.concat([Buffer.from(`${type} ${body.length}\0`), body])));
+  };
+
+  test("the unchanged commit extracts the same files, bytes and modes as the release's own extraction", () => {
+    const { repo, head } = made();
+    const ours = realpathSync(mkdtempSync(join(root, "script-"))), release = realpathSync(mkdtempSync(join(root, "release-")));
+    expect(extractTree(["-C", repo], head, ours, plain)).toBe(2);
+    expect(extractCommit(join(repo, ".git"), head, release)).toEqual({ ok: true, files: 2 });
+    for (const path of ["a.txt", "dir/run.sh"]) {
+      expect(readFileSync(join(ours, path))).toEqual(readFileSync(join(release, path)));
+      expect(statOf(join(ours, path))).toBe(statOf(join(release, path)));
+    }
+    expect(extractTree(["--git-dir", join(repo, ".git")], head, realpathSync(mkdtempSync(join(root, "gd-"))), plain)).toBe(2);
+  });
+
+  test("attack: a folder's tree rewritten to name another stored blob refuses, as the release's extraction does", () => {
+    const { repo, head, evil } = made();
+    const sub = git(repo, "rev-parse", "HEAD:dir").trim();
+    // The substituted tree: dir/run.sh now names "evil" (a real, valid blob). git checks the hash of the root tree it is
+    // asked about, but not of the trees under it: its own listing believes the substitution.
+    overwrite(repo, sub, "tree", Buffer.concat([Buffer.from("100755 run.sh\0"), Buffer.from(evil, "hex")]));
+    expect(git(repo, "ls-tree", "-r", head)).toContain(`${evil}\tdir/run.sh`);
+    const dest = realpathSync(mkdtempSync(join(root, "out-")));
+    expect(() => extractTree(["-C", repo], head, dest, plain)).toThrow(/doesn't hash to its id/);
+    expect(() => blobAt(["-C", repo], head, "dir/run.sh", plain)).toThrow(/doesn't hash to its id/);
+    expect(() => trackedChanges(repo, head, plain)).toThrow(/doesn't hash to its id/);
+    expect(spawnSync("ls", [join(dest, "dir")]).status).not.toBe(0);
+    expect(extractCommit(join(repo, ".git"), head, realpathSync(mkdtempSync(join(root, "rel-"))))).toMatchObject({ ok: false, message: expect.stringContaining("doesn't hash to its id") });
+  });
+
+  test("attack: the commit rewritten to name another tree refuses", () => {
+    const { repo, head, evil } = made();
+    const other = execFileSync("git", ["-C", repo, "mktree"], { env, input: `100644 blob ${evil}\ta.txt\n`, encoding: "utf8" }).trim();
+    const body = readFileSync(join(repo, ".git", "objects", head.slice(0, 2), head.slice(2)));
+    const text = git(repo, "cat-file", "commit", head).replace(/^tree [0-9a-f]{40}/, `tree ${other}`);
+    expect(body.length).toBeGreaterThan(0);
+    overwrite(repo, head, "commit", Buffer.from(text));
+    expect(() => extractTree(["-C", repo], head, realpathSync(mkdtempSync(join(root, "out-"))), plain)).toThrow(/doesn't hash to its id/);
+  });
+});
+
+import { statSync } from "node:fs";
+const statOf = (path: string) => statSync(path).mode & 0o777;

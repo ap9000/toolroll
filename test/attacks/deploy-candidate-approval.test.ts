@@ -99,16 +99,16 @@ describe("attack: the candidate's own scope.js approves its deployment", () => {
     expect(browser.slice(0, early)).not.toMatch(/candidateAssignment|loadNames\(join\(source/);
     expect(browser).toContain('assignment: await load(priorDist, "assignment.js")');
     expect(browser).toContain("assignmentOf: oldRt.assignment.assignmentOf");
-    // Every git read of the candidate (HEAD, status, the archive it builds from, the blobs it compares) ignores
-    // replacement objects and lazy fetch, and no shell pipes an archive.
-    const calls = [...browser.matchAll(/(?:execFileSync|spawnSync)\("git", \[([^\]]*)/g)].map(one => one[1]!);
-    expect(calls.length).toBeGreaterThanOrEqual(2);
-    for (const args of calls) expect(args.startsWith("...safeGitArgs("), args).toBe(true);
+    // Every git read of the candidate (HEAD, cleanliness, the files it builds from, the blobs it compares) goes through
+    // deploy-git.mjs's own view (review 2, findings 2 and 3): the script never spawns git itself.
+    expect(browser).not.toMatch(/(?:execFileSync|spawnSync|execFile|spawn)\(\s*"git"/);
+    expect(browser).toContain("headOf(REPO_GIT, SAFE_GIT_ENV)");
+    expect(browser).toContain('headOf(["-C", result.worktree], SAFE_GIT_ENV)');
     // The commit's files and the checkout's cleanliness are read with no attribute applied (deploy-git.mjs): never
     // archive, show or status, which run the filters and textconv a repository names.
     expect(browser).not.toMatch(/"(archive|show|status)"/);
     expect(browser).toContain("extractTree(REPO_GIT, commit, scratch, SAFE_GIT_ENV)");
-    expect(browser).toMatch(/import \{[^}]*safeGitArgs[^}]*\} from "\.\/deploy-git\.mjs";/);
+    expect(browser).toMatch(/import \{[^}]*headOf[^}]*\} from "\.\/deploy-git\.mjs";/);
     expect(browser).toMatch(/GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1"/);
     expect(browser).not.toMatch(/git -C .*archive/);
   });

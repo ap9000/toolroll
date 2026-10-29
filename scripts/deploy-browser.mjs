@@ -23,16 +23,16 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { deployStateDir, loadNames, stagedRuntimePaths } from "./deploy-paths.mjs";
-import { blobAt, extractTree, NO_ATTRIBUTES, safeGitArgs, trackedChanges } from "./deploy-git.mjs";
+import { blobAt, extractTree, headOf, trackedChanges } from "./deploy-git.mjs";
 import { loadCodingDeploymentRuntime } from "./deploy-coding.mjs";
 import { recoverOnExit } from "./deploy-recovery.mjs";
 import { browserDeployment, openDeploymentDatabase, sha, snapshot } from "./deploy-phases.mjs";
 
 const args = process.argv.slice(2);
-// git inside the candidate's checkout (AGENTS.md trust boundary): no user global or system config, hooks or fsmonitor,
-// and no replacement objects or lazy fetch, so the bytes read under a SHA are that SHA's own (as evidence.ts reads them).
-// Every transport is refused too, and on git older than 2.45 (no --no-lazy-fetch; 2.41.0 also ignores GIT_NO_LAZY_FETCH)
-// a repository whose config could make a lazy fetch possible is refused before each command (deploy-git.mjs).
+// git on the candidate's repository (AGENTS.md trust boundary) runs only through deploy-git.mjs: a Git directory of the
+// script's own over the repository's objects and refs, with a config it writes itself (the repository's never applies),
+// no user global or system config, hooks, fsmonitor, replacement objects, transport or lazy fetch, and every object
+// hashed against its id, so the bytes read under a SHA are that SHA's own (eval-harness review 2, findings 2 and 3).
 const SAFE_GIT_ENV = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1" };
 const flag = (name, fallback = undefined) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : fallback; };
@@ -88,7 +88,7 @@ const gitDirGiven = flag("git-dir");
 const REPO_GIT = gitDirGiven === undefined ? ["-C", source] : ["--git-dir", gitDirGiven];
 const headGiven = flag("head");
 if (headGiven !== undefined) requireTrue(/^[0-9a-f]{40}$/.test(headGiven), "--head takes the full approved commit SHA.");
-const candidateHead = headGiven ?? execFileSync("git", [...safeGitArgs(REPO_GIT, SAFE_GIT_ENV), ...NO_ATTRIBUTES, "rev-parse", "HEAD"], { encoding: "utf8", env: SAFE_GIT_ENV, timeout: 60_000 }).trim();
+const candidateHead = headGiven ?? headOf(REPO_GIT, SAFE_GIT_ENV);
 const short = candidateHead.slice(0, 7);
 const stageDir = flag("stage") ?? join(stateDir, "staged-upgrades", `browser-${short}-${randomUUID().slice(0, 6)}`);
 const journalFile = join(stageDir, "deployment.json");
@@ -124,7 +124,7 @@ function facts(db) {
   const result = deploymentCandidate(store, { runId, head: candidateHead, evidenceRoot, now: new Date(), releaseFlow: flag("operation") !== undefined }, {
     assignmentOf: oldRt.assignment.assignmentOf, verificationEvidence: oldRt.evidence.verificationEvidence, installedScope: oldRt.scope,
   });
-  requireTrue(resolve(result.worktree) === source || execFileSync("git", [...safeGitArgs(["-C", result.worktree], SAFE_GIT_ENV), ...NO_ATTRIBUTES, "rev-parse", "HEAD"], { encoding: "utf8", env: SAFE_GIT_ENV, timeout: 60_000 }).trim() === candidateHead, "Run this from the builder's worktree for this run.");
+  requireTrue(resolve(result.worktree) === source || headOf(["-C", result.worktree], SAFE_GIT_ENV) === candidateHead, "Run this from the builder's worktree for this run.");
   return result;
 }
 function quiet(db) {
