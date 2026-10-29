@@ -468,6 +468,7 @@ function Details({ selected }: { selected: Selected }) {
       body: <p className="text-body text-muted-foreground">{panel.reviewHistory}</p> }]),
     ...(selected.efficiency == null ? [] : [{ id: "how-it-ran", title: "How it ran", hint: efficiencyLine(selected.efficiency), body: <EfficiencyBody one={selected.efficiency} /> }]),
     ...(selected.network == null ? [] : [{ id: "network", title: "Network", hint: networkLine(selected.network), body: <NetworkBody one={selected.network} /> }]),
+    ...(selected.timing == null || selected.timing.length === 0 ? [] : [{ id: "timing", title: "Where the time went", hint: selected.timing.map(one => `${one.title} ${one.total}`).join(" · "), body: <TimingBody groups={selected.timing} /> }]),
     ...(record === null ? [] : [{ id: "run-record", title: "Run record", hint: `Build #${record.build}`,
       body: <div className="flex flex-col gap-3 text-body">
         <dl className="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-3 gap-y-1.5">
@@ -570,5 +571,18 @@ export function ResultView({ view, csrf }: { view: BrowserResultView; csrf: stri
             </li>)}</ul>
           </Card>
       : <SelectedResult key={`${selected.taskId}:${selected.build ?? ""}`} selected={selected} csrf={csrf} />}
+  </div>;
+}
+
+/** Where the time went (latency-timeline.ts): each kept timeline's milestones, offset from its start. */
+function TimingBody({ groups }: { groups: NonNullable<Selected["timing"]> }) {
+  return <div className="flex flex-col gap-4 text-body" data-timing>
+    {groups.map((group, index) => <section key={index} className="flex flex-col gap-1.5">
+      <h3 className="text-sm font-medium">{group.title} <span className="text-muted-foreground">· {group.total}</span></h3>
+      <dl className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-x-3 gap-y-1">
+        {group.rows.map((row, at) => <div key={at} className="contents"><dt className="font-mono text-muted-foreground tabular-nums">{row.at}</dt>
+          <dd className="min-w-0 [overflow-wrap:anywhere]">{row.label}{row.detail !== null && <span className="text-muted-foreground"> · {row.detail}</span>}</dd></div>)}
+      </dl>
+    </section>)}
   </div>;
 }

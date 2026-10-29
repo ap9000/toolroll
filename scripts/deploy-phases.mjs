@@ -138,7 +138,7 @@ export function browserDeployment({
   // Await settlement, never race an open SQLite backup against cancellation.
   const settle = async promise => { const result = await promise; checkpoint(); return result; };
   const readJournal = () => { assertLocked(); return JSON.parse(readFileSync(journalFile, "utf8")); };
-  const save = (r, phase) => { assertLocked(); r.phase = phase; r.updatedAt = new Date().toISOString(); oldRt.update.durableJson(journalFile, r); say(`• ${phase}`); };
+  const save = (r, phase) => { assertLocked(); r.phase = phase; r.updatedAt = new Date().toISOString(); noteMilestone(r, phase); oldRt.update.durableJson(journalFile, r); say(`• ${phase}`); };
   const loadPhase = phase => {
     checkpoint();
     // The plane's records are re-read before every phase, not only at entry:
@@ -198,8 +198,9 @@ export function browserDeployment({
             return true;
           } finally { db.close(); }
         },
-        mark: phase => { r.phase = phase; r.updatedAt = new Date().toISOString(); oldRt.update.durableJson(journalFile, r); },
+        mark: phase => { r.phase = phase; r.updatedAt = new Date().toISOString(); noteMilestone(r, phase); oldRt.update.durableJson(journalFile, r); },
       }, { previousRuntimeCompatible: r.schema === r.nextSchema && r.rehearsal?.previousRuntimeCompatible === true });
+      keepDeployTimeline(database, r);
       if (words) console.error(words);
       else if (r.phase === "preparing") console.error(`The deployment stopped while preparing, before it paused new work (update ${r.id}); nothing was paused. Rerun --phase prepare with --stage ${stageDir} to resume it.`);
       else if (!["released", "deployed"].includes(r.phase)) console.error(`The deployment stopped at ${r.phase}, where the old service is not proved stopped or the new one may be running. New work stays paused (update ${r.id}); inspect ${journalFile}. \`toolroll release --recover-deploy\` shows what recovery can still do.`);
@@ -262,7 +263,7 @@ export function browserDeployment({
       } catch { why = "its console is not answering yet"; return false; }
     };
     const seconds = Math.round(HEALTH_WAIT_MS / 1000);
-    if (!waitUntilHealthy(answers, { onWait: (waited, attempts) => console.error(`  waiting for the previous service (${waited} s of up to ${attempts} s): ${why}${heldWorkers()}`) })) {
+    if (!waitUntilHealthy(answers, { onWait: (waited, attempts) => { noteMilestone(r, "waiting for the previous service", why); console.error(`  waiting for the previous service (${waited} s of up to ${attempts} s): ${why}${heldWorkers()}`); } })) {
       throw Error(`the previous service was loaded but did not answer http://127.0.0.1:${servicePort}/healthz within ${seconds} seconds (${why}${heldWorkers()})`);
     }
   }
@@ -420,7 +421,10 @@ export function browserDeployment({
     let live = null;
     // As long as the restore would wait: a start refused while a stale worker heartbeat lapses is restarted by its
     // supervisor within the window (deploy-recovery.mjs HEALTH_WAIT_MS).
-    for (let i = 0; i < HEALTH_WAIT_MS / 1000 && live === null; i++) { await settle(sleep(1000)); live = service(nextDist); }
+    for (let i = 0; i < HEALTH_WAIT_MS / 1000 && live === null; i++) {
+      if (i === 5) noteMilestone(r, "waiting for the new service to start", heldWorkers().replace(/^; /, "") || "its processes are not all running yet");
+      await settle(sleep(1000)); live = service(nextDist);
+    }
     if (live === null) {
       // A failed health check does not establish process exit. Capture the
       // service's remaining processes before stopping it, and check native
@@ -478,7 +482,7 @@ export function browserDeployment({
         leases = repos.map(repo => db.prepare("SELECT repo,heartbeat_at,expires_at FROM watch_lease WHERE runner=? AND repo=?").get(runner, repo));
         if (leases.every(l => l && Date.parse(l.expires_at) > Date.now() && Date.parse(l.heartbeat_at) > Date.now() - 60_000)) break;
         // Said every 30 s: what the new worker is waiting for (a lapsing heartbeat or lease of the stopped one).
-        if (i % 30 === 15) say(`  waiting for the new worker's project leases (${i} s of up to ${HEALTH_WAIT_MS / 1000} s)${heldWorkers()}`);
+        if (i % 30 === 15) { noteMilestone(r, "waiting for the new worker's project leases", heldWorkers().replace(/^; /, "") || "not all fresh yet"); say(`  waiting for the new worker's project leases (${i} s of up to ${HEALTH_WAIT_MS / 1000} s)${heldWorkers()}`); }
         await settle(sleep(1000));
       }
       requireTrue(leases.every(l => l && Date.parse(l.expires_at) > Date.now()), "Project worker leases did not come up fresh.");
@@ -489,6 +493,7 @@ export function browserDeployment({
       verifyCodingBackup(coding, r);
       save(r, "healthy"); oldRt.gate.removeUpdateGate(db, r.id); r.deployedAt = new Date().toISOString(); save(r, "deployed");
     } finally { db.close(); }
+    keepDeployTimeline(database, r);
     const stagedRemoved = await pruneStaged([nextDist, priorDist, r.priorRuntime]);
     say({ deployed: candidateHead, runtime: nextDist, at: r.deployedAt, projects: r.leases.length, remote, stagedRemoved: stagedRemoved.length });
   }
@@ -511,4 +516,36 @@ export function processTree(root, spawnSync) {
     level = next;
   }
   return level.length === 0 ? all : null;
+}
+
+/** A deployment's milestones (its latency timeline, docs/plans/actors-lessons.md): each phase the first time it is
+ * reached and each health wait with its reason, kept in the journal as wall-clock times (phases run in separate
+ * processes). Bounded: at most 40, a repeated wait reason is noted once. Phase names and reasons only, never a secret. */
+export function noteMilestone(r, name, detail) {
+  const marks = Array.isArray(r.timeline) ? r.timeline : (r.timeline = []);
+  const last = marks[marks.length - 1];
+  if (detail === undefined ? last?.name === name : marks.some(one => one.name === name && one.detail === String(detail).slice(0, 160))) return;
+  if (marks.length >= 40) return;
+  marks.push({ name, at: new Date().toISOString(), ...(detail === undefined ? {} : { detail: String(detail).slice(0, 160) }) });
+}
+
+/** The journal's milestones into the plane's latency_timeline (kind deploy, by task), when its schema has one: the task
+ * page's "Where the time went". Best effort: a deployment never fails over its own timeline. */
+export function keepDeployTimeline(database, r) {
+  try {
+    const marks = Array.isArray(r.timeline) ? r.timeline : [];
+    const start = Date.parse(r.createdAt);
+    if (marks.length === 0 || !Number.isFinite(start) || typeof r.task !== "string") return;
+    const milestones = marks.map(one => ({ name: String(one.name).slice(0, 80), ms: Math.max(0, Date.parse(one.at) - start), ...(one.detail === undefined ? {} : { detail: String(one.detail).slice(0, 160) }) }))
+      .filter(one => Number.isFinite(one.ms));
+    const db = openDeploymentDatabase(database);
+    try {
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='latency_timeline'").get()) return;
+      const total = Math.max(0, ...milestones.map(one => one.ms));
+      db.prepare("DELETE FROM latency_timeline WHERE kind = 'deploy' AND subject = ? AND task_id = ? AND started_at = ?").run(String(r.candidate).slice(0, 7), r.task, new Date(start).toISOString());
+      db.prepare("INSERT INTO latency_timeline (kind, subject, task_id, run_id, started_at, total_ms, milestones_json) VALUES ('deploy', ?, ?, NULL, ?, ?, ?)")
+        .run(String(r.candidate).slice(0, 7), r.task, new Date(start).toISOString(), Math.round(total), JSON.stringify(milestones));
+      db.prepare("DELETE FROM latency_timeline WHERE kind = 'deploy' AND id <= (SELECT id FROM latency_timeline WHERE kind = 'deploy' ORDER BY id DESC LIMIT 1 OFFSET 200)").run();
+    } finally { db.close(); }
+  } catch { /* display only */ }
 }

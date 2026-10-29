@@ -68,6 +68,7 @@ import { execFileSync } from "node:child_process";
 import { currentClaim, heartbeat, SYNC_MAX_AGE_MS, finalize } from "./claim.js";
 import { missingCapability } from "./dispatch.js";
 import { heartbeat as runnerHeartbeat, RUNNER_HEARTBEAT_MS } from "./runner.js";
+import { keepCheckTimeline } from "./latency-timeline.js";
 import { MARKER as LEASE_MARKER } from "./worktree.js";
 import { parseDecision, parseHandoff, repairPrompt, HEADLESS_RULE, HANDOFF_CONCLUSION_CAP, HANDOFF_ITEM_CAP, HANDOFF_LIST_CAP, HANDOFF_PAYLOAD_CAP, type ParsedDecision, type Problem } from "./decision.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -2913,6 +2914,8 @@ async function settleProof(
     let sealedReport: CheckReport | null = null;
     if (checkAttempt !== null && last !== null && !last.notFound) {
       sealedReport = sealCheckOutcome(store, root, checkAttempt, { stdout: last.stdout, exitCode: last.timedOut ? null : last.code }, now());
+      // Where the check's time went (latency-timeline.ts): each part's start and end, display only.
+      keepCheckTimeline(store, { runId, taskId: request.taskId, report: sealedReport, stdout: last.stdout, now: now() });
     }
     // What the check covered (receipt version 3): full, composed from the release's last full check, partial, or
     // identity-removed (which stops the release carrying).

@@ -9,6 +9,12 @@
   restarting", and a new start waits only until the old one has finished
   stopping instead of a fixed window. A worker that stopped cleanly never
   holds its projects. A second live `up` is still refused.
+- **See where the time went.** A task's page has a "Where the time went"
+  section under Details: when each part of its release check started and
+  ended, and each step of its deploys, including what a deploy waited for.
+  Console pages that take over a second keep a short record of where the
+  time went, which an instance operator reads on `/health`. Only page names,
+  step names and reasons are kept, never addresses or form contents.
 - **A crashed worker is noticed in a minute, not three.** Workers check in
   every 15 seconds and are treated as gone after a minute of silence. A
   project lease is never taken for longer than a minute.

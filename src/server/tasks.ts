@@ -94,6 +94,7 @@ import { boardTickScript,oneLineOf,QUEUE_VIEW,refuse,regionScript,screen,transcr
 import { chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
 import { type TaskComposerPrefill,boardBody,boardWorkers,donePage,inboxFingerprints,inboxPage,newTaskPage,nextPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
 import { runEfficiencyOf } from "../run-efficiency.js";
+import { timingFor } from "../latency-timeline.js";
 import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQueue,RESULT_REFUSALS,REVIEW_QUEUE_CAP,reviewCockpitDetailParts,reviewCockpitPage,reviewPriorityOf,runFactsFragment,runOutcomeBadge,runPage,RUNS_PAGE,runsPage,withRefusal,type CompletedWorkRow,type RankedReviewRow,type ReviewCockpitView } from "./render-results.js";
 import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,decisionPage,nonceHashOf,PermissionsWouldChange,requirementsFromEditor,resumeDigestOf,taskOf } from "./render-tasks.js";
 import { type Who } from "./session.js";
@@ -2838,7 +2839,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       ...(store.isDemo() ? { demo: true } : {}),
     };
     if (run === null) {
-      return { ...base, run: null, detail: null, reviewRetry: null, review: null, notes: [] };
+      return { ...base, run: null, detail: null, reviewRetry: null, review: null, notes: [], timing: timingFor(store, null, row.taskId) };
     }
     const detail = resultDetailOf(run, who, now);
     return {
@@ -2862,6 +2863,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       efficiency: (() => { try { return runEfficiencyOf(store, evidenceRoot, run.id, now); } catch { return null; } })(),
       // What its network was and what its proxy saw (egress.ts), display only.
       network: store.runNetwork(run.id),
+      // Where the time went: its release check's parts and the task's deploys (latency-timeline.ts), display only.
+      timing: timingFor(store, run.id, row.taskId),
       // How far its checks reached (check-access.ts), display only.
       checkAccess: store.runCheckAccess(run.id),
       reviewRetry: store.reviewRetryStateOf(run.id),
