@@ -86,6 +86,8 @@ test("every GET and HEAD row only reads: no writes beyond bookkeeping, no proces
       // only: its config inspected, then git with no network, no attributes, hooks or fsmonitor (and, once per process,
       // whether git has --no-lazy-fetch: teardown-git.ts lazyFetchSupported).
       const kept = (one: string) => path.startsWith("/settings/knowledge?") && (/^spawn spawnSync git (config --file \S+ --no-includes|--no-optional-locks config --list|--no-lazy-fetch version$)/.test(one)
+        // The probe asks the very executable a view runs, by its real path (eval-harness review 2, follow-up).
+        || /^spawn spawnSync \/\S+\/git --no-lazy-fetch version$/.test(one)
         || /^spawn spawnSync git .*(--no-lazy-fetch )?--attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904 -c protocol\.allow=never /.test(one));
       const acted = effects.list.filter(one => !kept(one));
       if (acted.length > 0) found.push(`${label}: ${[...new Set(acted)].join("; ")}`);

@@ -213,7 +213,8 @@ export function approvedProgramMissing(command: string, cwd: string, path: strin
  * Whether a check's first attempt failed at its launch, so the approved recovery setup may run and the check run again
  * (eval-harness review 1, finding 6; review 2, finding 5). Only trusted evidence counts: the plane itself found the
  * approved command's own program missing before it spawned the check (approvedProgramMissing), the shell then exited
- * 127 with nothing on stdout, and its whole stderr is the shell's one "not found" line for exactly that program. An
+ * 127 with nothing on stdout, and its whole stderr is the shell's one "not found" (or, for a path, "No such file or
+ * directory") line for exactly that program. An
  * exit 127 after anything ran — test output, a report (with or without this run's nonce), a missing program further
  * down — is the check's own result, judged like any other failure; a person decides on it. A rerun that then passes
  * still counts as a retry (check-failure.ts retriedOfRun), which an automatic release approval refuses.
@@ -222,7 +223,7 @@ export function launchFailedBeforeCheck(result: ExecResult, nonce: string | null
   if (missing === null || platform === "win32" || result.code !== 127 || !verificationExecutableMissing(result, platform)) return false;
   if (result.stdout.trim() !== "" || (nonce !== null && reportFromOutput(result.stdout, nonce).ok)) return false;
   const program = missing.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^(?:/bin/)?(?:ba|da)?sh: (?:line \\d+: |\\d+: )?${program}: (?:command )?not found$`).test(result.stderr.trim());
+  return new RegExp(`^(?:/bin/)?(?:ba|da)?sh: (?:line \\d+: |\\d+: )?${program}: (?:(?:command )?not found|No such file or directory)$`).test(result.stderr.trim());
 }
 
 export type BuildRequest = {

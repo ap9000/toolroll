@@ -658,7 +658,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/release-cli.ts#runReleaseCommand@3": 1,
     "src/release-gate.ts#releaseGate@5": 11,
     "src/release.ts#<module>": 1,
-    "src/release.ts#runRelease@12": 1,
+    "src/release.ts#runRelease@13": 1,
     "src/restart-certification.ts#verifyRestartRecovery@6": 4,
     "src/run-closeout.ts#closeOutCheckouts@11": 4,
     "src/runner.ts#recoverDead@17>recovery:store.transact(_)@1": 3,

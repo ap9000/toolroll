@@ -4152,6 +4152,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
       expect(launchFailedBeforeCheck({ ...shell, stderr: line }, null, MISSING_PROGRAM, "linux"), line).toBe(true);
     }
     expect(launchFailedBeforeCheck({ ...shell, stderr: MISSING_LINE }, null, null, "linux")).toBe(false);
+    expect(launchFailedBeforeCheck({ ...shell, stderr: "/bin/sh: ./no-such-script.sh: No such file or directory" }, null, "./no-such-script.sh", "linux")).toBe(true);
   });
 
   test("a changed setup approval during recovery preflight stops before either authorized replay", async () => {
