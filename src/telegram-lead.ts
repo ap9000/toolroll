@@ -778,11 +778,13 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
     react: () => transport("setMessageReaction", { chat_id: chatId, message_id: Number(row.messageId), reaction: [{ type: "emoji", emoji: WARM_EMOJI }] }),
     typing: () => transport("sendChatAction", { chat_id: chatId, action: "typing" }),
   });
+  const replyImage = row.replyTo === null ? undefined : store.telegramMessageBindings(binding, row.replyTo).find(one => one.taskId === row.taskId && one.run === row.sourceRun && one.image !== undefined)?.image;
   let outcome: Awaited<ReturnType<typeof runLeadTurn>>;
   try {
     outcome = await runLeadTurn({
       store, who, session, thread, config, key: null, message: row.text, requestId: row.request,
       ...(row.context === null ? {} : { context: row.context }),
+      ...(replyImage === undefined ? {} : { replyImage }),
       ...(options.subscriptionRunner === undefined ? {} : { subscriptionRunner: options.subscriptionRunner }),
       clock, evidenceRoot: options.evidenceRoot, revalidate, mediaDelivery: "documents", channel: "telegram", onProgress: warm.onProgress,
     });

@@ -1703,7 +1703,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(turns()).toBe(1);
       // Each confirmed image binds to the exact task and run — the same routing an outbox result message carries.
       const imageMessage = documents[0]!.messageId as number;
-      expect(store.telegramMessageBindings(binding(), String(imageMessage))).toEqual([{ taskId: "payout", taskRef: store.lookupRef("payout")!.id, run, project: repo }]);
+      expect(store.telegramMessageBindings(binding(), String(imageMessage))).toEqual([{ taskId: "payout", taskRef: store.lookupRef("payout")!.id, run, project: repo, image: { run, artifact: first, sha256: createHash("sha256").update(PNG).digest("hex") } }]);
       // Replying to the image: the turn is pinned to that result, and the existing revise flow creates the same-family revision, audited as telegram.
       answers.push(
         { text: "Reading the result.", calls: [{ id: "r1", name: "get_result", args: { task: "payout", run } }] },
@@ -1717,6 +1717,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       const card = script.card();
       expect(card.text).toContain(`Request changes to result #${run} of Guard the payout path (payout)`);
       expect(card.text).toContain("| Fix the spacing on the form.");
+      expect(card.text).toContain(`Screenshot ${first} · result #${run}`);
       expect(await tapPass(card.button(/^Confirm$/), card.messageId)).toMatchObject({ ok: true, report: { chatConfirmed: 1 } });
       const proposal = store.listLeadProposals(store.liveLeadThreadFor("alex")!.id, ["confirmed"])[0]!;
       expect(proposal).toMatchObject({ kind: "review", state: "confirmed" });
@@ -1724,7 +1725,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       const child = (proposal.outcome as { taskId: string }).taskId;
       expect(store.taskFamilyOf("payout", [repo], false)!.versions.map(one => one.id)).toEqual(["payout", child]);
       expect(store.revisionSourceOf(store.lookupRef(child)!.id)).toMatchObject({ sourceRun: run, sourceTask: "payout" });
-      expect(store.allDiffComments(run).map(one => [one.author, one.note, one.consumedBy])).toEqual([["alex", "Fix the spacing on the form.", child]]);
+      expect(store.allDiffComments(run).map(one => [one.author, one.note, one.consumedBy, one.image])).toEqual([["alex", "Fix the spacing on the form.", child, { run, artifact: first, sha256: createHash("sha256").update(PNG).digest("hex") }]]);
       expect(store.getScope(child)?.approvedDigest ?? null).toBeNull();
       // Planned first: the card opens the revision; there is nothing to approve until the plan is updated.
       expect(urlButtons(lastEdit())).toEqual([["Open task", `https://console.example/chat?task=${encodeURIComponent(child)}`]]);
@@ -1739,7 +1740,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(toolResult("get_result_images")).toMatchObject({ run, currentExecution: child, isCurrent: false, imageCount: 2 });
       expect(script.documents().slice(2).map(one => one.params["caption"])).toEqual([`payout · result #${run} · screenshot 1 of 2 · older version`, `payout · result #${run} · screenshot 2 of 2 · older version`]);
       const older = script.documents()[2]!.messageId as number;
-      expect(store.telegramMessageBindings(binding(), String(older))).toEqual([{ taskId: "payout", taskRef: store.lookupRef("payout")!.id, run, project: repo }]);
+      expect(store.telegramMessageBindings(binding(), String(older))).toEqual([{ taskId: "payout", taskRef: store.lookupRef("payout")!.id, run, project: repo, image: { run, artifact: first, sha256: createHash("sha256").update(PNG).digest("hex") } }]);
       answers.push(
         { text: "Reading.", calls: [{ id: "r3", name: "get_result", args: { task: "payout", run } }] },
         { text: "Trying.", calls: [{ id: "r4", name: "propose_review", args: { run, operation: "revise", note: "Also tighten the header." } }] },
@@ -1791,7 +1792,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(turns()).toBe(1);
       // The dropped image never binds a reply; the sent one does.
       expect(store.telegramMessageBindings(binding(), "101")).toEqual([]);
-      expect(store.telegramMessageBindings(binding(), "102")).toEqual([{ taskId: "payout", taskRef: store.lookupRef("payout")!.id, run, project: repo }]);
+      expect(store.telegramMessageBindings(binding(), "102")).toEqual([{ taskId: "payout", taskRef: store.lookupRef("payout")!.id, run, project: repo, image: { run, artifact: parts()[2]!.artifact, sha256: createHash("sha256").update(JPEG).digest("hex") } }]);
     });
 
     test("Telegram's own refusal of a document is definite and retried on the existing schedule, retry_after pauses the bot, and an acknowledgement without a message id stays pending and uncertain — with no model call anywhere", async () => {
@@ -1987,7 +1988,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
       expect(script.documents()[0]!.upload!.bytes.equals(JPEG)).toBe(true);
       expect(parts().map(one => [one.kind, one.state, one.taskId, one.run])).toEqual([["reply", "sent", null, null], ["image", "dropped", "payout", run], ["image", "sent", "payout", run]]);
       // The exact identity still binds a reply to the image, and the console link still names the exact task.
-      expect(store.telegramMessageBindings(binding(), String(script.documents()[0]!.messageId))).toEqual([{ taskId: "payout", taskRef: store.lookupRef("payout")!.id, run, project: repo }]);
+      expect(store.telegramMessageBindings(binding(), String(script.documents()[0]!.messageId))).toEqual([{ taskId: "payout", taskRef: store.lookupRef("payout")!.id, run, project: repo, image: { run, artifact: second, sha256: createHash("sha256").update(JPEG).digest("hex") } }]);
       expect(urlButtons(script.sends().at(-1))).toEqual([["Open result", `https://console.example/chat?task=payout&result=${run}`]]);
       expect(requests).toHaveLength(2);
       expect(turns()).toBe(1);

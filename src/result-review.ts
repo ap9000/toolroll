@@ -21,6 +21,24 @@
 
 import { resultStatusOf, type ResultFacts, type PublicationFacts, type DisplayStatus } from "./workspace-ui.js";
 
+/** Optional context for feedback. The sealed diff remains the revision authority. */
+export type FeedbackImage = { run: number; artifact: number; sha256: string };
+export function parseFeedbackImage(value: unknown): FeedbackImage | null | false {
+  if (value === undefined || value === null || value === "") return null;
+  try {
+    const image = typeof value === "string" ? JSON.parse(value) : value;
+    if (image === null || typeof image !== "object" || Array.isArray(image)
+      || !Number.isSafeInteger(image.run) || image.run < 1
+      || !Number.isSafeInteger(image.artifact) || image.artifact < 1
+      || typeof image.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(image.sha256)
+      || Object.keys(image).some(key => !["run", "artifact", "sha256"].includes(key))) return false;
+    return { run: image.run, artifact: image.artifact, sha256: image.sha256 };
+  } catch { return false; }
+}
+export function sameFeedbackImage(a: FeedbackImage | null | undefined, b: FeedbackImage | null | undefined): boolean {
+  return (a == null && b == null) || (a != null && b != null && a.run === b.run && a.artifact === b.artifact && a.sha256 === b.sha256);
+}
+
 /** Add re-read evidence health to the existing result/review projection.
  * This is presentation only: the recorded verdict and acceptance stay intact. */
 export function evidenceResultStatusOf(result: ResultFacts, publication: PublicationFacts, evidence: EvidenceHealth): DisplayStatus {
@@ -79,7 +97,7 @@ export function resultLeadOf(input: { role: string; report: boolean; screenshots
  * cannot be shown. `problem` is set when the stored bytes no longer verify
  * against their record; such a shot is counted as unavailable and is
  * never rendered as an image or described as validated. */
-export type ResultScreenshot = { path: string; caption: string; artifactId: number; problem: string | null };
+export type ResultScreenshot = { path: string; caption: string; artifactId: number; sha256?: string; problem: string | null };
 
 export type ResultEvidenceInput = {
   /** The proof artifact exists but cannot be shown (corrupt, unparseable). */
@@ -362,6 +380,22 @@ export const RESULT_REVIEW_SCRIPT = String.raw`
   document.addEventListener('click',function(ev){var link=ev.target&&ev.target.closest?ev.target.closest('a[href="#request-changes"]'):null;if(link)openForm();});
   if(form){
     var noteBox=form.querySelector('[name=note]'),pathBox=form.querySelector('[name=path]'),lineBox=form.querySelector('[name=line]'),pin=form.querySelector('details.result-pin');
+    var imageBox=form.querySelector('[name=image]'),imagePreview=form.querySelector('[data-feedback-image]');
+    function showImage(){
+      if(!imageBox||!imagePreview)return;
+      imagePreview.hidden=!imageBox.value;
+      var img=imagePreview.querySelector('img'),caption=imagePreview.querySelector('figcaption'),selected=null;
+      document.querySelectorAll('[data-comment-image]').forEach(function(button){if(button.getAttribute('data-comment-image')===imageBox.value)selected=button;});
+      img.hidden=!selected;
+      if(selected){var identity=JSON.parse(imageBox.value);img.src='/r/'+identity.run+'/evidence/'+identity.artifact;img.alt=selected.getAttribute('data-image-caption');caption.textContent=img.alt+' · Screenshot '+identity.artifact;}
+      else{img.removeAttribute('src');caption.textContent='This screenshot is unavailable. Restore it or remove it from your feedback.';}
+    }
+    document.addEventListener('click',function(event){
+      var button=event.target&&event.target.closest?event.target.closest('[data-comment-image],[data-remove-image]'):null;
+      if(!button||!imageBox)return;
+      event.preventDefault();imageBox.value=button.getAttribute('data-comment-image')||'';showImage();openForm();save();
+      if(noteBox){noteBox.dispatchEvent(new Event('input',{bubbles:true}));noteBox.scrollIntoView({block:'center',behavior:'instant'});noteBox.focus();}
+    });
     var limit=document.getElementById('comment-note-limit'),requestBox=form.querySelector('[name=request]');
     function updateActions(){
       var typed=!!(noteBox&&noteBox.value.trim()),batch=form.querySelector('[name=batch]');
@@ -396,7 +430,7 @@ export const RESULT_REVIEW_SCRIPT = String.raw`
     // A fresh request identity: 16 random bytes as hex, the server's own shape.
     function mint(){var bytes=new Uint8Array(16);try{crypto.getRandomValues(bytes);}catch(e){for(var i=0;i<16;i++)bytes[i]=Math.floor(Math.random()*256);}
       var hex='';for(var j=0;j<16;j++)hex+=(bytes[j]<16?'0':'')+bytes[j].toString(16);return hex;}
-    function payload(){return JSON.stringify([noteBox?noteBox.value:'',pathBox?pathBox.value:'',lineBox?lineBox.value:'']);}
+    function payload(){return JSON.stringify([noteBox?noteBox.value:'',pathBox?pathBox.value:'',lineBox?lineBox.value:'',imageBox?imageBox.value:'']);}
     // What the current token was last submitted with; null = never sent.
     var sent=null,bound=null;
     // The server refused this token for a different note or another result:
@@ -410,7 +444,7 @@ export const RESULT_REVIEW_SCRIPT = String.raw`
       var focusNote=function(){setTimeout(function(){noteBox.focus({preventScroll:true});},0);};
       if(document.readyState==='complete')focusNote();else window.addEventListener('load',focusNote);
     }
-    if(saved&&typeof saved.note==='string'&&saved.note.length<=2000){
+    if(saved&&typeof saved.note==='string'&&saved.note.length<=(noteBox?noteBox.maxLength:4000)){
       if(noteBox&&!noteBox.value)noteBox.value=saved.note;
       if(saved.note)openForm();
       if(pathBox&&!pathBox.value&&typeof saved.path==='string')pathBox.value=saved.path;
@@ -418,7 +452,9 @@ export const RESULT_REVIEW_SCRIPT = String.raw`
       if(pin&&(pathBox&&pathBox.value||lineBox&&lineBox.value))pin.open=true;
       if(typeof saved.request==='string'&&/^[a-f0-9]{32}$/.test(saved.request)&&requestBox)requestBox.value=saved.request;
       if(typeof saved.sent==='string')sent=saved.sent;
-      bound=JSON.stringify([saved.note,saved.path||'',saved.line||'']);
+      if(imageBox&&typeof saved.image==='string'&&saved.image.length<250)imageBox.value=saved.image;
+      showImage();
+      bound=JSON.stringify([saved.note,saved.path||'',saved.line||'',saved.image||'']);
       if(noteBox)noteBox.dispatchEvent(new Event('input'));
     }
     function save(){
@@ -428,8 +464,8 @@ export const RESULT_REVIEW_SCRIPT = String.raw`
       var current=payload();
       if((bound!==null&&current!==bound)||(sent!==null&&current!==sent)){sent=null;if(requestBox)requestBox.value=mint();}
       bound=current;
-      if(!note&&!path&&!line){write(draftKey,null);return;}
-      write(draftKey,{note:note,path:path,line:line,request:requestBox?requestBox.value:'',sent:sent,at:Date.now()});
+      if(!note&&!path&&!line&&!(imageBox&&imageBox.value)){write(draftKey,null);return;}
+      write(draftKey,{note:note,path:path,line:line,image:imageBox?imageBox.value:'',request:requestBox?requestBox.value:'',sent:sent,at:Date.now()});
       if(!storage&&limit)limit.textContent='Draft stays on this page only. Browser storage is unavailable.';
     }
     form.addEventListener('input',save);

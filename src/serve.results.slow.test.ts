@@ -1,3 +1,4 @@
+import { readChatResult } from "./chat-review.js";
 /**
  * The console server: the review cockpit — a ranked, verified projection of
  * completed work and its result pages.
@@ -1987,6 +1988,30 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     // Looks good never became a publication or an approval.
     expect(store.publicationForRun(run)).toBeNull();
     expect(store.getScope(revisionId)?.approvedBy ?? null).toBeNull();
+  });
+
+  test("the browser image form saves the target chat reads, rejects changed replay, and seals the same image", async () => {
+    const ref = seed("image-note", "Image feedback");
+    const run = build("image-note", ref, { patch: "diff --git a/a b/a\n+x\n", screenshot: { path: "phone.png", caption: "Phone" } });
+    store.stampRun(run, { scopeDigest: store.getScope("image-note")!.digest });
+    const shot = store.artifactsFor(run).find(one => one.kind === "screenshot")!;
+    const image = { run, artifact: shot.id, sha256: shot.sha256 };
+    await boot();
+    const cookie = await login();
+    const csrf = csrfOf(await (await fetch(url(`/r/${run}`), { headers: { cookie } })).text());
+    const fields = { csrf, note: "Give the phone heading more space.", image: JSON.stringify(image), request: "b".repeat(32), intent: "note", return: `/r/${run}` };
+    expect((await post(cookie, `/r/${run}/comment`, fields)).status).toBe(303);
+    const signed = verifyApproverByPassword(store, "alex", approverToken, ["/repo/main"]);
+    if (!signed.ok) throw Error("fixture login");
+    const read = readChatResult(store, signed.who, evidenceRoot, "image-note", run);
+    if (!read.ok) throw Error(read.message);
+    expect(read.snapshot.notes[0]).toMatchObject({ note: fields.note, image });
+    expect((await post(cookie, `/r/${run}/comment`, { ...fields, image: JSON.stringify({ ...image, sha256: "0".repeat(64) }) })).status).toBe(409);
+    expect(store.allDiffComments(run)).toHaveLength(1);
+    const page = await (await fetch(url(`/r/${run}`), { headers: { cookie } })).text();
+    const revised = await post(cookie, `/r/${run}/revise`, { csrf, ...revisionFormOf(page) });
+    expect(revised.status, await revised.text()).toBe(303);
+    expect(store.allDiffComments(run)[0]?.image).toEqual(image);
   });
 
   test("package 3 c4: a refused note sends the reader back to the view they came from; a result id that is not this task's is refused for the lens; the browser script rides every result surface", async () => {

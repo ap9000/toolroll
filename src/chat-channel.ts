@@ -1,3 +1,4 @@
+import { parseFeedbackImage, type FeedbackImage } from "./result-review.js";
 /** Shared membership-chat identity, proposal previews and result links. Transport adapters never grant authority. */
 import { FLOW_HREF } from "./flow-engine.js";
 import { closedQuestionWords } from "./decision.js";
@@ -192,12 +193,13 @@ export function whichTaskText(titles: readonly string[]): string {
 }
 
 /** The server-authored context a reply to a result message carries into the turn — the exact execution and run, never a guess. */
-export function replyContextFor(taskId: string, run: number | null): string {
+export function replyContextFor(taskId: string, run: number | null, image?: FeedbackImage): string {
   return [
     `Current task: ${taskId}. Read it with get_task before answering or proposing changes. Read its currentExecution next and bind new actions to that exact execution. Never replace the target of a prior proposal with a newer revision. Keep this turn about that task unless the operator explicitly asks to broaden it.`,
     run === null
       ? `The operator is replying to a message about execution ${taskId}.`
       : `The operator is replying to result #${run} from execution ${taskId}. Use get_result for that exact execution and run when responding to feedback; do not substitute another result. If the operator asks for changes, use propose_review revise; use note only when they explicitly ask to save feedback without starting work.`,
+    ...(image === undefined ? [] : [`The reply targets screenshot ${image.artifact} on result #${image.run}. Retain image: ${image.artifact} in propose_review so the exact screenshot stays with the feedback. Read get_result_images for this result first.`]),
   ].join(" ");
 }
 
@@ -582,6 +584,7 @@ export function proposalPreview(
               note: string;
               path: string | null;
               line: number | null;
+              image?: FeedbackImage | null;
             }[];
           }
         | undefined;
@@ -591,7 +594,8 @@ export function proposalPreview(
       const saved = (snapshot?.notes ?? []).filter((one) =>
         selected.includes(one.id),
       );
-      const note = t("note", 1_000);
+      const note = t("note", 2_000);
+      const image = parseFeedbackImage(payload["image"]);
       const path = t("path", 300);
       return card(
         `${revise ? "Request changes to" : "Save feedback on"} result #${String(payload["run"] ?? "?")} of ${taskName}`,
@@ -600,7 +604,8 @@ export function proposalPreview(
             ? []
             : [
                 `Your feedback${path === "" ? "" : ` (${path}${typeof payload["line"] === "number" ? `:${payload["line"]}` : ""})`}:`,
-                ...lines(note, 1_000),
+                ...(image ? [`Screenshot ${image.artifact} · result #${image.run}`] : []),
+                ...lines(note, 2_000),
               ]),
           ...(saved.length === 0
             ? []
@@ -608,7 +613,7 @@ export function proposalPreview(
                 "Saved notes included:",
                 ...saved.map(
                   (one) =>
-                    `• ${one.path === null ? "" : `${phoneText(one.path, 120)}${one.line === null ? "" : `:${one.line}`}: `}${phoneText(one.note, 300)}`,
+                    `• ${one.image ? `Screenshot ${one.image.artifact} · result #${one.image.run}: ` : ""}${one.path === null ? "" : `${phoneText(one.path, 120)}${one.line === null ? "" : `:${one.line}`}: `}${phoneText(one.note, 2_000)}`,
                 ),
               ]),
         ],

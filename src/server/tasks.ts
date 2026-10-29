@@ -1,3 +1,4 @@
+import { parseFeedbackImage, sameFeedbackImage } from "../result-review.js";
 import { releaseAuthorityOfTask, revokeRelease, runLiveCommands } from "../store.js";
 import { steerCapabilityOf } from "../steer-capabilities.js";
 import { canReveal, localCheckoutOf, revealInFinder } from "../checkout-proof.js";
@@ -49,7 +50,7 @@ import { fileTaskProposal } from "../proposal.js";
 import { isProviderId,PROVIDER_IDS,validateSpec,type ProviderId } from "../provider.js";
 import { completeAndOpenPullRequest,mergeAsPerson } from '../pull-request-flow.js';
 import { isQualityMode,type QualityMode } from "../quality.js";
-import { createResultRevision,requestResultChanges } from "../result-actions.js";
+import { createResultRevision,requestResultChanges,feedbackImageProblem } from "../result-actions.js";
 import { structuredHandoffView,terminalDiffView } from "../result-evidence-readers.js";
 import { fileAddTestsTask,requestFollowUpChecks } from '../result-follow-ups.js';
 import {
@@ -1426,11 +1427,13 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const viewParam = returnTo.startsWith("/t/") ? "section" : "tab";
     const back = selectedTab === "summary" ? returnTo
       : `${returnTo.replace(/&section=(?:summary|changes|checks)$/, "")}${returnTo.includes("?") ? "&" : "?"}${viewParam}=${selectedTab}`;
+    const image = parseFeedbackImage(body.get("image"));
+    if (image === false) return refuse(response, who, 400, "Choose a screenshot from this result again. Your draft is unchanged.", back);
     if (body.get("intent") === "revise") {
       const result = requestResultChanges(store, evidenceRoot, {
         run: id, batch: body.get("batch"), source: body.get("source"), actor: who.name,
         repos: admissionList(), includeUnplaced: visible(null), allowMode: who.via === "cookie",
-        note: body.get("note") ?? "", path: body.get("path") ?? "", line: body.get("line") ?? "", request: body.get("request"),
+        note: body.get("note") ?? "", path: body.get("path") ?? "", line: body.get("line") ?? "", request: body.get("request"), image,
       }, now);
       if (!result.ok) {
         const request = body.get("request") ?? "";
@@ -1468,8 +1471,10 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const request = body.get("request");
     const sourceKey = commentSourceKey(who.name, request);
     const path = rawPath === "" ? null : rawPath;
+    const imageProblem = feedbackImageProblem(store, evidenceRoot, id, image);
+    if (imageProblem !== null) return refuse(response, who, 409, imageProblem, `${back}#request-changes`);
     const inserted = store.addDiffComment(
-      { artifactId: terminal.id, runId: id, path, line, note: note.note, author: who.name, ...(sourceKey === undefined ? {} : { sourceKey }) },
+      { artifactId: terminal.id, runId: id, path, line, note: note.note, author: who.name, image, ...(sourceKey === undefined ? {} : { sourceKey }) },
       now,
     );
     if (inserted === null && sourceKey !== undefined) {
@@ -1485,7 +1490,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       if (earlier === null || earlier.run !== id) {
         return refuse(response, who, 409, `this note's request identity was already used on another result (build #${earlier === null ? "?" : earlier.run}) — go back; your words are kept, and the form will carry a new identity`, conflictBack);
       }
-      if (earlier.path !== path || earlier.line !== line || earlier.note !== note.note) {
+      if (earlier.path !== path || earlier.line !== line || earlier.note !== note.note || !sameFeedbackImage(earlier.image, image)) {
         return refuse(response, who, 409, `this request identity already recorded a different note on this result (${earlier.path === null ? "no file" : `${earlier.path}${earlier.line === null ? "" : `:${earlier.line}`}`}: "${oneLineOf(earlier.note, 80)}") — go back; your edited words are kept as a new note, and the form will carry a new identity`, conflictBack);
       }
     }
