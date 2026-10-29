@@ -24697,3 +24697,19 @@ export function agentsLiveRuns(store: Store, endedSince: Date): AgentsLiveRun[] 
 }
 
 
+
+/**
+ * This runner's watches a predecessor left needing recovery (Codex review round 1, finding 2): a watch lease still
+ * live, or one whose holder left a claim open (or a run open under a claim a reaper already released). A replacement
+ * worker takes each over — recovering the holder's incarnation in the same transaction — before it admits new work,
+ * whichever projects its start names (a project being removed when the predecessor died is in none of them).
+ */
+export function predecessorWatches(store: Store, runner: string, now: Date): { repo: string; owner: string }[] {
+  return store.handle.prepare(
+    `SELECT w.repo AS repo, w.owner AS owner FROM watch_lease w
+      WHERE w.runner = ? AND (w.expires_at > ? OR EXISTS (
+        SELECT 1 FROM claim c WHERE c.runner = w.runner AND c.incarnation = w.owner
+          AND (c.released_at IS NULL OR EXISTS (SELECT 1 FROM run r WHERE r.lease_id = c.lease_id AND r.outcome IS NULL))))
+      ORDER BY w.repo`,
+  ).all(runner, now.toISOString()).map(row => ({ repo: String(row["repo"]), owner: String(row["owner"]) }));
+}

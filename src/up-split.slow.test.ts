@@ -5,11 +5,14 @@
  * a stop drains the worker before the console closes.
  */
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { execFileSync, fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { runOperate } from "./operate.js";
+import { runOperate, runUpRole } from "./operate.js";
+import { buildIdentity, memoryChannel, type RoleToParent } from "./up-processes.js";
+import { register } from "./runner.js";
+import { PACKAGE_VERSION } from "./version.js";
 import { openStore } from "./store.js";
 import { readInstance } from "./console-instance.js";
 import { shortTempDir } from "../test/short-temp.js";
@@ -202,6 +205,90 @@ describe("toolroll up as two processes", () => {
       await up.running;
     }
   }, 90_000);
+
+  test("codex round 1 #2: a project removed during a build, then a worker crash: the replacement recovers it before new work", async () => {
+    // The state a worker leaves when it dies while a removed project's watch is still draining: the project is still
+    // bound to the runner (it is let go only once its watch stops), its watch lease names the dead incarnation, a
+    // reaper already released the claim but its run is open and its task `running`, and the console's list (so the
+    // replacement's start) no longer names it.
+    const kept = realpathSync(repo);
+    mkdirSync(join(base, "removed"));
+    const removed = realpathSync(join(base, "removed"));
+    execFileSync("git", ["init", "-q"], { cwd: removed, env: gitEnv });
+    writeFileSync(join(removed, "README.md"), "removed\n");
+    execFileSync("git", ["add", "."], { cwd: removed, env: gitEnv });
+    execFileSync("git", ["commit", "-qm", "first"], { cwd: removed, env: gitEnv });
+    const registryPath = join(base, "repos.json");
+    expect(await updateRepos(registryPath, current => addRepos(current, [kept]))).toMatchObject({ ok: true });
+    const now = new Date();
+    const lapsed = new Date(now.getTime() - 1_000).toISOString();
+    const store = openStore(db);
+    register(store, { name: "mac", host: "test", capacity: 2, repos: [kept, removed], now, newToken: () => "tok" });
+    for (const [where, owner] of [[kept, "dead-kept"], [removed, "dead-removed"]] as const) {
+      store.handle.prepare("INSERT INTO watch_lease (runner, repo, owner, generation, started_at, expires_at, heartbeat_at) VALUES ('mac', ?, ?, 1, ?, ?, ?)").run(where, owner, now.toISOString(), lapsed, now.toISOString());
+    }
+    store.createTask({ id: "stranded", title: "the build the crash interrupted" }, now);
+    const ref = store.refFor("built-in", "stranded").id;
+    store.placeTask(ref, removed);
+    store.handle.prepare("UPDATE task SET state = 'running' WHERE id = 'stranded'").run();
+    store.handle.prepare(`INSERT INTO claim (lease_id, task_ref, lease_generation, runner, acquired_at, expires_at, heartbeat_at, released_at, released_by, incarnation)
+      VALUES ('lease-stranded', ?, 1, 'mac', ?, ?, ?, ?, 'reaped', 'dead-removed')`).run(ref, now.toISOString(), lapsed, now.toISOString(), lapsed);
+    const runId = Number(store.handle.prepare("INSERT INTO run (task_ref, lease_id, runner, role, provider, branch, worktree, started_at) VALUES (?, 'lease-stranded', 'mac', 'builder', 'claude', 'b', ?, ?)")
+      .run(ref, join(base, "pool", "stranded"), now.toISOString()).lastInsertRowid);
+    store.close();
+
+    const channel = memoryChannel("worker");
+    const said: RoleToParent[] = [];
+    channel.parent.onMessage(message => { said.push(message); if (message.type === "log") lines.push(message.line); });
+    const start = { type: "start" as const, role: "worker" as const, databaseFile: db, containment: null, build: buildIdentity(PACKAGE_VERSION, fileURLToPath(new URL("./operate.ts", import.meta.url))),
+      config: { runner: "mac", token: "tok", repos: [kept], pinnedRepos: [kept], projectRoots: [], registryPath, pool: join(base, "pool"), forMs: null, publicUrl: null,
+        stopGraceMs: 1_000, verbose: false, terminal: false, leaseWaitMs: 5_000 } };
+    const running = runUpRole(start, channel.port);
+    try {
+      await until("the replacement worker to be ready", () => said.some(one => one.type === "ready") || said.find(one => one.type === "failed" || one.type === "fatal"));
+      expect(said.filter(one => one.type === "failed" || one.type === "fatal"), lines.join("\n")).toEqual([]);
+      const after = openStore(db);
+      try {
+        // Recovered before the worker said it was ready: the run ends interrupted and the task is queued again.
+        expect(after.getTask("stranded")?.state).toBe("queued");
+        expect(after.handle.prepare("SELECT outcome, reason FROM run WHERE id = ?").get(runId)).toEqual({ outcome: "failed", reason: "interrupted" });
+      } finally { after.close(); }
+      // … and only then is the removed project let go of.
+      await until("the removed project to be let go", () => { const s2 = openStore(db); try { return !s2.getRunner("mac")!.runner.repos.includes(removed); } finally { s2.close(); } });
+      const last = openStore(db);
+      try { expect(last.getRunner("mac")!.runner.repos).toEqual([kept]); } finally { last.close(); }
+    } finally {
+      channel.parent.stop(false);
+      expect(await running, lines.join("\n")).toBe(0);
+    }
+  }, 60_000);
+
+  test("codex round 1 #2: a removed project whose predecessor's lease can't be taken over stays bound, and the worker stops", async () => {
+    const kept = realpathSync(repo);
+    mkdirSync(join(base, "removed"));
+    const removed = realpathSync(join(base, "removed"));
+    const registryPath = join(base, "repos.json");
+    expect(await updateRepos(registryPath, current => addRepos(current, [kept]))).toMatchObject({ ok: true });
+    const now = new Date();
+    const store = openStore(db);
+    register(store, { name: "mac", host: "test", capacity: 2, repos: [kept, removed], now, newToken: () => "tok" });
+    // Still renewing as far as the store can tell: never handed over inside the wait.
+    store.handle.prepare("INSERT INTO watch_lease (runner, repo, owner, generation, started_at, expires_at, heartbeat_at) VALUES ('mac', ?, 'dead-removed', 1, ?, ?, ?)")
+      .run(removed, now.toISOString(), new Date(now.getTime() + 600_000).toISOString(), now.toISOString());
+    store.close();
+    const channel = memoryChannel("worker");
+    const said: RoleToParent[] = [];
+    channel.parent.onMessage(message => { said.push(message); if (message.type === "log") lines.push(message.line); });
+    const start = { type: "start" as const, role: "worker" as const, databaseFile: db, containment: null, build: buildIdentity(PACKAGE_VERSION, fileURLToPath(new URL("./operate.ts", import.meta.url))),
+      config: { runner: "mac", token: "tok", repos: [kept], pinnedRepos: [kept], projectRoots: [], registryPath, pool: join(base, "pool"), forMs: null, publicUrl: null,
+        stopGraceMs: 1_000, verbose: false, terminal: false, leaseWaitMs: 1_500 } };
+    const code = await runUpRole(start, channel.port);
+    expect(code).not.toBe(0);
+    expect(said.some(one => one.type === "ready")).toBe(false);
+    expect(said.find(one => one.type === "fatal")).toMatchObject({ detail: expect.stringContaining("another watch holds") });
+    const after = openStore(db);
+    try { expect(after.getRunner("mac")!.runner.repos).toContain(removed); } finally { after.close(); }
+  }, 60_000);
 
   test("a role child takes its start only from `up`'s channel, refuses a console start carrying a token, and refuses another build", async () => {
     const entry = fileURLToPath(new URL("./up-role-child.ts", import.meta.url));

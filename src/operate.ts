@@ -106,7 +106,7 @@ import { homedir, hostname } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import {
-  openStore, openStoreNoMigrate, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, RESULT_SCREENSHOTS, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
+  openStore, openStoreNoMigrate, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
@@ -6557,6 +6557,8 @@ async function runWatchLoop(args: {
   serviceBridge?: boolean;
   /** A restarted worker waits this long for its crashed predecessor's lease to lapse, then takes it over with recovery. */
   leaseWaitMs?: number;
+  /** What ends that wait early, when not isStopping: a removed project's drain still waits to recover its predecessor. */
+  leaseWaitStopping?: () => boolean;
 }): Promise<WatchLoopResult> {
   const { context, flags, runner, token, repo, progress } = args;
   const { store } = context;
@@ -6582,7 +6584,8 @@ async function runWatchLoop(args: {
   // recovers its incarnation in the same transaction, exactly as a fresh `up` after a crash would.
   const waitUntil = Date.now() + (args.leaseWaitMs ?? 0);
   let saidWaiting = false;
-  while (!lease.ok && lease.reason === "watch-busy" && Date.now() < waitUntil && !args.isStopping()) {
+  const waitStopping = args.leaseWaitStopping ?? args.isStopping;
+  while (!lease.ok && lease.reason === "watch-busy" && Date.now() < waitUntil && !waitStopping()) {
     if (!saidWaiting) progress(`watch: ${repo} is still held by the previous worker until ${lease.until ?? "its lease lapses"}; taking it over then`);
     saidWaiting = true;
     await new Promise(resolve => setTimeout(resolve, 1_000));
@@ -12477,8 +12480,11 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
   // Projects removed while running: each one's watch stops admitting work, finishes what it holds, then lets go.
   const releasedRepos = new Set<string>();
 
-  const launchRepo = async (repo: string, bind: boolean): Promise<void> => {
+  const launchRepo = async (repo: string, bind: boolean, drain = false): Promise<void> => {
     if (loopResults.has(repo) || stopping) return;
+    // A predecessor's watch on a project this start doesn't name (it was being removed): take it over, recovering what
+    // the predecessor held, and let it go (round 1, finding 2).
+    if (drain) releasedRepos.add(repo);
     if (bind) {
       const bound = addRunnerReposAuthed(store, { name: runnerName, token: runnerToken, repos: [repo] }, clock());
       if (!bound.ok) {
@@ -12507,6 +12513,7 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
       passes: projectPasses,
       serviceBridge: true,
       leaseWaitMs: config.leaseWaitMs,
+      ...(drain ? { leaseWaitStopping: () => stopping } : {}),
       onReady: () => {
         markReady();
         if (bind) progress(`${prefix(repo)}builder connected — queued work can start`);
@@ -12517,6 +12524,14 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
     );
     loopResults.set(repo, loop);
     void loop.then(({ repo: endedRepo, result }) => {
+      if (releasedRepos.has(endedRepo) && !stopping && !result.ok) {
+        // A removed project's watch that never held its lease (or lost it) has recovered nothing: keep the project
+        // bound so the next worker recovers it, and stop rather than strand its work (round 1, finding 2).
+        fatal = `${prefix(endedRepo)}${result.detail}`;
+        stop();
+        markReady();
+        return;
+      }
       if (releasedRepos.has(endedRepo) && !stopping) {
         // A removed project's watch has stopped: only now does the builder let go of it.
         const unbound = removeRunnerRepoAuthed(store, { name: runnerName, token: runnerToken, repo: endedRepo }, clock());
@@ -12540,6 +12555,14 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
     await ready;
   };
 
+  // Before any new work: every watch a predecessor left needing recovery on a project this start doesn't name — one
+  // being removed when it died — is taken over (its incarnation recovered in that step) and let go. Only projects the
+  // store still binds to this runner; the start's own projects recover in their own loops below (round 1, finding 2).
+  const named = new Set(config.repos);
+  const boundNow = new Set(store.getRunner(runnerName)?.runner.repos ?? []);
+  const draining = [...new Set(predecessorWatches(store, runnerName, clock()).map(one => one.repo))].filter(repo => !named.has(repo) && boundNow.has(repo));
+  for (const repo of draining) progress(`${projectName(repo)} was being removed when the previous worker stopped: recovering its work first`);
+  await Promise.all(draining.map(repo => launchRepo(repo, false, true)));
   await Promise.all(config.repos.map(repo => launchRepo(repo, false)));
 
   // Telegram: one follower for the whole service, never one per project loop. Replies and notifications go out from
