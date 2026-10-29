@@ -52,9 +52,9 @@ import { PREPARED_EVIDENCE_FILE, preparedEvidenceGit, preparedScreenshotMatches,
  * repair remains narrowly time-bounded because its job is narrowly scoped.
  */
 
-import { existsSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, realpathSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { delimiter, isAbsolute, join, resolve } from "node:path";
 import { run, runClaudeStreamJsonl, runOwnerTag, streamsInput, type ExecResult, type RunOptions } from "./exec.js";
 import { stopRequestedFor, stopWords, underStopWatch } from "./task-control.js";
 import { witnessedRunner } from "./process-custody.js";
@@ -188,16 +188,41 @@ export function verificationExecutableMissing(
   );
 }
 
+/** Shell words that are never a program on PATH: a command starting with one has no program the plane can look up. */
+const SHELL_WORDS = new Set(["!", ".", ":", "[", "alias", "bg", "break", "case", "cd", "command", "continue", "eval", "exec", "exit", "export", "false", "fg", "for",
+  "function", "getopts", "hash", "if", "jobs", "kill", "local", "pwd", "read", "readonly", "return", "set", "shift", "source", "test", "times", "trap", "true", "type",
+  "ulimit", "umask", "unalias", "unset", "until", "wait", "while", "{", "time", "echo", "printf"]);
+
+/**
+ * The approved command's own program — its first word — when the plane, looking it up itself before the check starts,
+ * finds no such executable; null when it exists or can't be told (eval-harness review 2, finding 5): a first word with
+ * any quoting, expansion, assignment or redirection, a shell builtin, or Windows (cmd.exe's lookup isn't modelled).
+ * A path is looked up from the checkout; a bare name on `path`'s absolute folders.
+ */
+export function approvedProgramMissing(command: string, cwd: string, path: string | undefined, platform: NodeJS.Platform = process.platform): string | null {
+  if (platform === "win32") return null;
+  const first = /^\s*([A-Za-z0-9._+/@-]+)(?:\s|$)/.exec(command)?.[1];
+  if (first === undefined || SHELL_WORDS.has(first)) return null;
+  const runnable = (file: string) => { try { accessSync(file, fsConstants.X_OK); return statSync(file).isFile(); } catch { return false; } };
+  if (first.includes("/")) return runnable(resolve(cwd, first)) ? null : first;
+  for (const dir of (path ?? "").split(delimiter)) if (isAbsolute(dir) && runnable(join(dir, first))) return null;
+  return first;
+}
+
 /**
  * Whether a check's first attempt failed at its launch, so the approved recovery setup may run and the check run again
- * (eval-harness review 1, finding 6): a missing executable (verificationExecutableMissing) and nothing that says the
- * check started — a check that printed its report with this run's nonce, a secret only the started check was handed on
- * its stdin, ran, whatever it exited with, so its exit is its result. A rerun that then passes still counts as a retry
- * (check-failure.ts retriedOfRun), which an automatic release approval refuses.
+ * (eval-harness review 1, finding 6; review 2, finding 5). Only trusted evidence counts: the plane itself found the
+ * approved command's own program missing before it spawned the check (approvedProgramMissing), the shell then exited
+ * 127 with nothing on stdout, and its whole stderr is the shell's one "not found" line for exactly that program. An
+ * exit 127 after anything ran — test output, a report (with or without this run's nonce), a missing program further
+ * down — is the check's own result, judged like any other failure; a person decides on it. A rerun that then passes
+ * still counts as a retry (check-failure.ts retriedOfRun), which an automatic release approval refuses.
  */
-export function launchFailedBeforeCheck(result: ExecResult, nonce: string | null, platform: NodeJS.Platform = process.platform): boolean {
-  if (!verificationExecutableMissing(result, platform)) return false;
-  return nonce === null || !reportFromOutput(result.stdout, nonce).ok;
+export function launchFailedBeforeCheck(result: ExecResult, nonce: string | null, missing: string | null, platform: NodeJS.Platform = process.platform): boolean {
+  if (missing === null || platform === "win32" || result.code !== 127 || !verificationExecutableMissing(result, platform)) return false;
+  if (result.stdout.trim() !== "" || (nonce !== null && reportFromOutput(result.stdout, nonce).ok)) return false;
+  const program = missing.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^(?:/bin/)?(?:ba|da)?sh: (?:line \\d+: |\\d+: )?${program}: (?:command )?not found$`).test(result.stderr.trim());
 }
 
 export type BuildRequest = {
@@ -2752,6 +2777,8 @@ async function settleProof(
       return await sealedTreeState(buildCheckoutGit(request.git ?? run, worktree)) === "clean" ? null : "setup-changed-files";
     };
     const ownInstall = baselineUnverifiable === null ? await ownInstallIfChanged() : null;
+    // Looked up by the plane itself before the check starts: the one trusted sign of a launch failure (review 2, finding 5).
+    const missingProgram = approvedProgramMissing(configured.command, worktree, process.env["PATH"]);
     const first = baselineUnverifiable === null && ownInstall === null ? await runVerification("Project check · attempt 1") : null;
     if (first === null) {
       verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: baselineUnverifiable !== null ? "baseline-unverifiable" : ownInstall ?? "own-install-failed" };
@@ -2760,7 +2787,7 @@ async function settleProof(
     } else if (first.stoppedByPlane === true) {
       // This worker's own hard stop ended it (a shutdown): it never finished, and its exit says nothing about the code.
       verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "stopped-by-toolroll" };
-    } else if (!launchFailedBeforeCheck(first, checkAttempt?.nonce ?? null)) {
+    } else if (!launchFailedBeforeCheck(first, checkAttempt?.nonce ?? null, missingProgram)) {
       verifyCommand = { configured: true, ran: true, exitCode: first.code };
     } else {
       const recoveryDigest = configured.recoverySetupDigest;
@@ -2855,7 +2882,8 @@ async function settleProof(
                 } else if (verificationExecutableMissing(retried)) {
                   verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "dependency-still-missing" };
                 } else {
-                  verifyCommand = { configured: true, ran: true, exitCode: retried.code, setupReplayed: true };
+                  // The first attempt, classified on its own: it never started (its program was missing).
+                  verifyCommand = { configured: true, ran: true, exitCode: retried.code, setupReplayed: true, firstAttempt: { class: "launch", program: missingProgram!, exitCode: first.code } };
                 }
               }
             }

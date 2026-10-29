@@ -123,12 +123,12 @@ export function retriedOfRun(store: Store, root: string, runId: number): string[
   const fromReport = retriedInside(parsed?.ok === true ? parsed.value : null);
   const gate = verificationEvidence(store, root, runId);
   if (!gate.ok || gate.bytes === null) return null;
-  let body: { check?: { retried?: unknown }; result?: { setupReplayed?: unknown } };
+  let body: { check?: { retried?: unknown }; result?: { setupReplayed?: unknown; firstAttempt?: unknown } };
   try { body = JSON.parse(gate.bytes.toString()) as typeof body; } catch { return null; }
   // The whole check rerun after the approved recovery setup (finding 6): its first attempt failed, and a missing
   // executable is never confirmed infrastructure, so it counts as a retry like any other — reported, and an automatic
   // approval refuses it.
-  const replayed = body.result?.setupReplayed === true ? [SETUP_REPLAY_RETRY] : [];
+  const replayed = body.result?.setupReplayed === true ? [setupReplayWords(body.result.firstAttempt)] : [];
   const receipt = body.check?.retried;
   if (receipt === undefined) return fromReport === null ? null : [...replayed, ...fromReport];
   if (receipt === null || !Array.isArray(receipt) || receipt.some(one => typeof one !== "string")) return null;
@@ -137,7 +137,19 @@ export function retriedOfRun(store: Store, root: string, runId: number): string[
 }
 
 /** How a check rerun after the approved recovery setup reads among the retries. */
-export const SETUP_REPLAY_RETRY = "the whole check, rerun after the approved setup (its first attempt exited as if a program were missing)";
+export const SETUP_REPLAY_RETRY = "the whole check, rerun after the approved setup";
+
+/**
+ * The rerun's words with its first attempt's own class (eval-harness review 2, finding 5): a launch failure names the
+ * missing program; a receipt that doesn't classify it (an older one) says so, never that it was a launch failure.
+ */
+export function setupReplayWords(first: unknown): string {
+  const one = first !== null && typeof first === "object" ? first as { class?: unknown; program?: unknown; exitCode?: unknown } : null;
+  if (one !== null && one.class === "launch" && typeof one.program === "string" && Number.isSafeInteger(one.exitCode)) {
+    return `${SETUP_REPLAY_RETRY} (its first attempt never started: ${one.program.slice(0, 200)} wasn't found, exit ${String(one.exitCode)})`;
+  }
+  return `${SETUP_REPLAY_RETRY} (its first attempt's failure isn't classified)`;
+}
 
 type BuilderRun = { id: number; outcome: string | null; scopeDigest: string | null; finishedAt: string | null; passed: boolean };
 

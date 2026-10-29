@@ -48,7 +48,10 @@ export const VERIFICATION_FAILURES = [
 export const verifyCommandFactsSchema = z.union([
   z.strictObject({ configured: z.literal(false) }),
   z.strictObject({ configured: z.literal(true), ran: z.literal(false), attemptFailed: z.literal(true), failure: z.enum(VERIFICATION_FAILURES).optional() }),
-  z.strictObject({ configured: z.literal(true), ran: z.literal(true), exitCode: z.int().min(0).max(255), setupReplayed: z.literal(true).optional() }),
+  z.strictObject({ configured: z.literal(true), ran: z.literal(true), exitCode: z.int().min(0).max(255), setupReplayed: z.literal(true).optional(),
+    // The first attempt of a check rerun after the approved setup, classified on its own (eval-harness review 2,
+    // finding 5): only a launch failure — its program missing — is ever replayed.
+    firstAttempt: z.strictObject({ class: z.literal("launch"), program: z.string().min(1).max(200), exitCode: z.int().min(0).max(255) }).optional() }),
 ]);
 
 export type VerifyCommandFacts = z.infer<typeof verifyCommandFactsSchema>;

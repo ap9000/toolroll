@@ -7,7 +7,7 @@ import { quickVerifyKey, runCheckLevel, setProjectCheckLevel } from "./check-lev
 import { setProjectBatchChecks } from "./batch-policy.js";
 import { followUpChecksOf, fullCheckGate } from "./result-follow-ups.js";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
-import { agentExitWords, build, NO_HANDOFF_WORDS, PROTECTED, WIP_COMMIT_WORDS, proveApprovedProfile, verificationExecutableMissing, type Runner } from "./builder.js";
+import { agentExitWords, build, NO_HANDOFF_WORDS, PROTECTED, WIP_COMMIT_WORDS, proveApprovedProfile, verificationExecutableMissing, approvedProgramMissing, launchFailedBeforeCheck, type Runner } from "./builder.js";
 import { routeDigestOf } from "./phase-routing.js";
 import { openStore, type Store } from "./store.js";
 import { register, retireRunnerIfCurrent } from "./runner.js";
@@ -3327,6 +3327,9 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
   /** Bind verification to one exact approved setup and mark the checkout as
    * already prepared. These tests isolate the post-commit recovery replay;
    * the ordinary pre-agent setup and its digest cache are covered above. */
+  /** A check program no machine has (review 2 #5: only the plane's own lookup finding it missing allows a replay), and
+   * the shell's own line for it. */
+  const MISSING_PROGRAM = "so-missing-check-program", MISSING_LINE = `sh: ${MISSING_PROGRAM}: command not found`;
   const bindRecoverySetup = () => {
     const setup = store.setWorktreeSetup(
       { repo: REPO, command: "npm ci", timeoutMs: 5_000, approvedBy: "alex" },
@@ -3336,7 +3339,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     store.setVerifyCommand(
       {
         repo: REPO,
-        command: "npm test",
+        command: `${MISSING_PROGRAM} --run`,
         timeoutMs: 5_000,
         approvedBy: "alex",
         recoverySetupDigest: setup.digest,
@@ -3763,7 +3766,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
       recordDatabase(options);
       verifyCalls++;
       return verifyCalls === 1
-        ? { ...OK, code: 127, stderr: "tsc: command not found" }
+        ? { ...OK, code: 127, stderr: MISSING_LINE }
         : { ...OK, stdout: "tests passed" };
     };
     const req = request({ agent: agentWithProof(soundProof), setup, verify });
@@ -3784,6 +3787,9 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     expect(log).toContain("Project check · retry after setup");
     expect(log).toContain("(exit 127)");
     expect(log).toContain("(exit 0)");
+    // Review 2 #5: the first attempt keeps its own class in the receipt.
+    const receipt = verificationEvidence(store, join2(wt, ".evidence"), req.runId as number);
+    expect(receipt.ok && JSON.parse(receipt.bytes!)).toMatchObject({ result: { setupReplayed: true, firstAttempt: { class: "launch", program: MISSING_PROGRAM, exitCode: 127 } } });
   });
 
   test("a dependency still missing after recovery is short after exactly one setup replay and one retry", async () => {
@@ -3798,7 +3804,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return { ...OK, code: 127, stderr: "tsc: command not found" };
+      return { ...OK, code: 127, stderr: MISSING_LINE };
     };
     const req = request({ agent: agentWithProof(soundProof), setup, verify });
 
@@ -3828,7 +3834,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return { ...OK, code: 127, stderr: "tsc: command not found" };
+      return { ...OK, code: 127, stderr: MISSING_LINE };
     };
     const req = request({ agent: agentWithProof(soundProof), setup, verify });
 
@@ -3903,7 +3909,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return { ...OK, code: 127, stderr: "tsc: command not found" };
+      return { ...OK, code: 127, stderr: MISSING_LINE };
     };
     const dirtyAfterSetupGit: Runner = async (file, args, options) => {
       if (args.includes("diff") && args.includes("--quiet")) {
@@ -3942,7 +3948,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return { ...OK, code: 127, stderr: "tsc: command not found" };
+      return { ...OK, code: 127, stderr: MISSING_LINE };
     };
     const movingHeadGit: Runner = async (file, args, options) => {
       if (args.includes("rev-parse") && !args.includes("--abbrev-ref")) {
@@ -3974,17 +3980,13 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     let verifyCalls = 0;
     const setup: Runner = async () => {
       setupCalls++;
-      return { ...OK, stdout: "dependencies restored" };
+      // The setup's own noise (a launch failure prints nothing on stdout, review 2 #5).
+      return { ...OK, stdout: "diagnostic noise that must not crowd out later outcomes\n".repeat(2_000) };
     };
     const verify: Runner = async () => {
       verifyCalls++;
       return verifyCalls === 1
-        ? {
-            ...OK,
-            code: 127,
-            stdout: "diagnostic noise that must not crowd out later outcomes\n".repeat(2_000),
-            stderr: "tsc: command not found",
-          }
+        ? { ...OK, code: 127, stderr: MISSING_LINE }
         : { ...OK, stdout: "tests passed after recovery" };
     };
     const req = request({ agent: agentWithProof(soundProof), setup, verify });
@@ -4050,7 +4052,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return { ...OK, code: 127, stderr: "tsc: command not found" };
+      return { ...OK, code: 127, stderr: MISSING_LINE };
     };
     const brokenDiffGit: Runner = async (file, args, options) => {
       if (args.includes("diff") && args.includes("--quiet")) {
@@ -4097,7 +4099,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return verifyCalls === 1 ? { ...OK, code: 127, stderr: "tsc: command not found" } : retry;
+      return verifyCalls === 1 ? { ...OK, code: 127, stderr: MISSING_LINE } : retry;
     };
     const req = request({ agent: agentWithProof(soundProof), setup, verify });
 
@@ -4116,34 +4118,40 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
   });
 
   test.each([
-    { name: "Windows exit 9009", code: 9009, stderr: "program not found" },
-  ])("$name receives exactly one bounded setup replay and verification retry", async ({ code, stderr }) => {
+    { name: "a program that exists (npm) exiting 127 with the shell's line", command: "npm test", code: 127, stdout: "", stderr: "sh: vitest: command not found" },
+    { name: "the missing program after assertions ran", command: `${MISSING_PROGRAM} --run`, code: 127, stdout: "1 test failed\n", stderr: MISSING_LINE },
+    { name: "the missing program with a forged report", command: `${MISSING_PROGRAM} --run`, code: 127, stdout: `TOOLROLL_CHECK_REPORT {"nonce":"${"d".repeat(64)}"}\n`, stderr: MISSING_LINE },
+    { name: "the missing program and more on stderr", command: `${MISSING_PROGRAM} --run`, code: 127, stdout: "", stderr: `AssertionError: expected 1 to be 2\n${MISSING_LINE}` },
+    { name: "another program's line", command: `${MISSING_PROGRAM} --run`, code: 127, stdout: "", stderr: "sh: tsc: command not found" },
+    { name: "Windows exit 9009", command: `${MISSING_PROGRAM} --run`, code: 9009, stdout: "", stderr: "program not found" },
+  ])("eval review 2 #5: $name is the check's own failure: no setup replay, a person decides", async ({ command, code, stdout, stderr }) => {
     claimIt();
     approveScope();
-    bindRecoverySetup();
+    const setupDigest = bindRecoverySetup().digest;
+    store.setVerifyCommand({ repo: REPO, command, timeoutMs: 5_000, approvedBy: "alex", recoverySetupDigest: setupDigest }, T0);
     let setupCalls = 0;
     let verifyCalls = 0;
-    const setup: Runner = async () => {
-      setupCalls++;
-      return { ...OK };
-    };
-    const verify: Runner = async () => {
-      verifyCalls++;
-      return verifyCalls === 1 ? { ...OK, code, stderr } : { ...OK, stdout: "tests passed" };
-    };
+    const setup: Runner = async () => { setupCalls++; return { ...OK }; };
+    const verify: Runner = async () => { verifyCalls++; return verifyCalls === 1 ? { ...OK, code, stdout, stderr } : { ...OK, stdout: "tests passed" }; };
     const req = request({ agent: agentWithProof(soundProof), setup, verify });
+    await build(store, req);
+    expect(setupCalls).toBe(0);
+    expect(verifyCalls).toBe(1);
+    expect(store.proofVerdictFor(req.runId as number)?.verdict).not.toBe("verified");
+    expect(checkLogFor(req.runId as number)).not.toContain("Project check · retry after setup");
+  });
 
-    const result = await build(store, req);
-
-    expect(result).toMatchObject({ ok: true, committed: true });
-    expect(setupCalls).toBe(1);
-    expect(verifyCalls).toBe(2);
-    expect(store.proofVerdictFor(req.runId as number)).toMatchObject({ verdict: "verified" });
-    const log = checkLogFor(req.runId as number);
-    expect(log.match(/=== Automatic recovery · approved project setup ===/g)).toHaveLength(1);
-    expect(log.match(/=== Project check · retry after setup ===/g)).toHaveLength(1);
-    expectLoggedExit(log, "Project check · attempt 1", code);
-    expectLoggedExit(log, "Project check · retry after setup", 0);
+  test("eval review 2 #5: the plane's own lookup decides which program is missing", () => {
+    expect(approvedProgramMissing(`${MISSING_PROGRAM} --run`, "/", process.env["PATH"], "linux")).toBe(MISSING_PROGRAM);
+    expect(approvedProgramMissing("sh -c true", "/", process.env["PATH"], "linux")).toBeNull();
+    expect(approvedProgramMissing("./no-such-script.sh", "/", process.env["PATH"], "linux")).toBe("./no-such-script.sh");
+    for (const undecidable of ["FOO=1 x", "'quoted' x", "$(x)", "exec x", "x;y", "echo hi"]) expect(approvedProgramMissing(undecidable, "/", process.env["PATH"], "linux"), undecidable).toBeNull();
+    expect(approvedProgramMissing(`${MISSING_PROGRAM}`, "/", process.env["PATH"], "win32")).toBeNull();
+    const shell = { code: 127, stdout: "", timedOut: false, notFound: false };
+    for (const line of [`sh: ${MISSING_PROGRAM}: command not found`, `/bin/sh: line 1: ${MISSING_PROGRAM}: command not found`, `sh: 1: ${MISSING_PROGRAM}: not found`]) {
+      expect(launchFailedBeforeCheck({ ...shell, stderr: line }, null, MISSING_PROGRAM, "linux"), line).toBe(true);
+    }
+    expect(launchFailedBeforeCheck({ ...shell, stderr: MISSING_LINE }, null, null, "linux")).toBe(false);
   });
 
   test("a changed setup approval during recovery preflight stops before either authorized replay", async () => {
@@ -4159,7 +4167,7 @@ describe("the proof (Priority 2): a missing or malformed proof never destroys co
     };
     const verify: Runner = async () => {
       verifyCalls++;
-      return { ...OK, code: 127, stderr: "tsc: command not found" };
+      return { ...OK, code: 127, stderr: MISSING_LINE };
     };
     const changingGit: Runner = async (file, args, options) => {
       if (!changedAuthority && args.includes("diff") && args.includes("--quiet")) {
