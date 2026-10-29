@@ -53,3 +53,59 @@ test("a plain repository still reads through the views", async () => {
   expect(checkoutGitSync(repo, ["rev-parse", "HEAD"]).trim()).toBe(head);
   expect((await lazyFetchSafeGit(run)("git", ["merge-base", "--is-ancestor", head, head], { cwd: repo })).code).toBe(0);
 });
+
+// ---------------------------------------------------------------------------------------------- Codex review round 2
+
+import { chmodSync, unlinkSync } from "node:fs";
+import { trustedWorktreeBinding } from "../../src/agent-fence.js";
+import { branchHead } from "../../src/coding-handoff.js";
+import { setLazyFetchSupportedForTest, viewedGitSync } from "../../src/teardown-git.js";
+
+describe.skipIf(process.platform === "win32")("review 2 #6: dispatch's binding and the coding handoff's branch read never hang", () => {
+  test("attack: an include naming a FIFO in the shared config holds neither up", () => {
+    const active = join(repo, "..", `${repo.split("/").at(-1)}-active`);
+    git("worktree", "add", "-q", "-b", "active", active);
+    try {
+      execFileSync("mkfifo", [join(repo, "hang.fifo")]);
+      git("config", "include.path", join(repo, "hang.fifo"));
+      const started = Date.now();
+      // The binding reads the registry as files: no git, so nothing the config names is opened.
+      expect(trustedWorktreeBinding(repo, active)).toMatchObject({ main: repo });
+      // The branch read goes through the frozen, bounded view, which refuses the include: no answer, never a hang.
+      expect(() => branchHead(repo, "active")).toThrow(/could not be inspected/);
+      expect(Date.now() - started).toBeLessThan(15_000);
+    } finally { rmSync(active, { recursive: true, force: true }); }
+  }, 30_000);
+
+  test("attack: the candidate's .git pointer swapped for a FIFO fails the binding at once", () => {
+    const active = join(repo, "..", `${repo.split("/").at(-1)}-active2`);
+    git("worktree", "add", "-q", "-b", "active2", active);
+    try {
+      unlinkSync(join(active, ".git"));
+      execFileSync("mkfifo", [join(active, ".git")]);
+      const started = Date.now();
+      expect(() => trustedWorktreeBinding(repo, active)).toThrow();
+      expect(Date.now() - started).toBeLessThan(5_000);
+    } finally { rmSync(active, { recursive: true, force: true }); }
+  }, 30_000);
+
+  test("a plain repository: the branch read answers", () => {
+    expect(branchHead(repo, "main")).toBe(head);
+    expect(branchHead(repo, "no-such-branch")).toBeNull();
+  });
+});
+
+describe.skipIf(process.platform === "win32")("review 2 follow-up: --no-lazy-fetch is asked of the git a view runs", () => {
+  test("a fixed git without the flag is never handed it because PATH's git has it", () => {
+    setLazyFetchSupportedForTest(null);
+    const bin = realpathSync(mkdtempSync(join(tmpdir(), "so-old-git-")));
+    try {
+      const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+      // As git 2.41.0 answers: no such option.
+      writeFileSync(join(bin, "git"), `#!/bin/sh\nfor a in "$@"; do [ "$a" = "--no-lazy-fetch" ] && { echo "unknown option: --no-lazy-fetch" >&2; exit 129; }; done\nexec ${real} "$@"\n`);
+      chmodSync(join(bin, "git"), 0o755);
+      expect(viewedGitSync(repo, ["rev-parse", "HEAD"], { git: join(bin, "git") }).status).toBe(0);
+      expect(viewedGitSync(repo, ["rev-parse", "HEAD"], {}).status).toBe(0);
+    } finally { rmSync(bin, { recursive: true, force: true }); setLazyFetchSupportedForTest(null); }
+  });
+});

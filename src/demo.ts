@@ -1253,11 +1253,12 @@ export function makeDemoRepos(root: string): { api: string; web: string } {
       writeFileSync(join(dir, file), content);
     }
     try {
-      execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir, stdio: "ignore" });
-      execFileSync("git", ["add", "-A"], { cwd: dir, stdio: "ignore" });
+      execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir, stdio: "ignore", timeout: 30_000 });
+      execFileSync("git", ["add", "-A"], { cwd: dir, stdio: "ignore", timeout: 30_000 });
       execFileSync("git", ["-c", "user.email=demo@localhost", "-c", "user.name=demo", "commit", "-q", "-m", "seed"], {
         cwd: dir,
         stdio: "ignore",
+        timeout: 30_000,
       });
     } catch {
       // No git on PATH: a plain directory still serves the demo.

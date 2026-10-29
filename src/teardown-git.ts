@@ -11,12 +11,12 @@
  * nothing is removed.
  */
 import { spawnSync } from "node:child_process";
-import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+import { accessSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { ensureGitViewsRoot, withCheckoutLock } from "./git-views.js";
 import { gitIncident, type GitIncident } from "./git-incident.js";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { run, type ExecResult } from "./exec.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
 import { WORKTREE_TIMEOUT_MS, type Runner } from "./worktree.js";
@@ -859,8 +859,8 @@ export const PAGE_READ_FLAGS: readonly string[] = [
  * its config as it starts, so the flags alone don't stop a filter planted in both after the inspection: every read
  * also runs against a view of the checkout's repository (gitView; checkoutGitSync, checkoutGit "read"), whose config and info are the plane's. The cost is cosmetic: a checkout's line-ending or encoding rules are not applied, so
  * a file they would normalize can read as changed (fail closed: shipping then asks for a clean commit). */
-export function readFlags(): readonly string[] {
-  return lazyFetchSupported() ? PAGE_READ_FLAGS : PAGE_READ_FLAGS.filter(flag => flag !== "--no-lazy-fetch");
+export function readFlags(gitFile = "git"): readonly string[] {
+  return lazyFetchSupported(gitFile) ? PAGE_READ_FLAGS : PAGE_READ_FLAGS.filter(flag => flag !== "--no-lazy-fetch");
 }
 
 /**
@@ -896,15 +896,15 @@ export function viewedGitSync(cwd: string, args: readonly string[], options: { t
     const key = commandSetting(own.stdout, { lfsChecked: true });
     if (key !== null) throw new Error(`the checkout's git config sets ${key}, which can run a command`);
     // A git without --no-lazy-fetch: a repository that could fetch lazily is refused, from the view's frozen config.
-    if (!lazyFetchSupported() && lazyFetchSetting(own.stdout) !== null) throw new Error(PARTIAL_CLONE_REFUSAL);
-    const safeArgs = withoutUnsupportedFlags(args);
+    if (!lazyFetchSupported(gitFile) && lazyFetchSetting(own.stdout) !== null) throw new Error(PARTIAL_CLONE_REFUSAL);
+    const safeArgs = withoutUnsupportedFlags(args, gitFile);
     const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
     if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
     // An external diff program is named by config, which may change after it was read: never used here.
     if (command >= 0 && safeArgs[command] === "diff") safeArgs.splice(command + 1, 0, "--no-ext-diff", "--no-textconv");
     // The operator's own values, but no filter: PAGE_READ_FLAGS reads attributes from the empty tree anyway.
     const carried = withoutFilters(carriedSettings(own.stdout));
-    const argv = [...TEARDOWN_FLAGS, ...readFlags(), "-c", "diff.ignoreSubmodules=all", ...carried, ...safeArgs];
+    const argv = [...TEARDOWN_FLAGS, ...readFlags(gitFile), "-c", "diff.ignoreSubmodules=all", ...carried, ...safeArgs];
     if (options.buffer === true) {
       // stdin is the caller's own bytes when given (cat-file --batch), else closed.
       const ran = spawnSync(gitFile, argv, { ...bounded, encoding: "buffer", ...(options.input === undefined ? {} : { input: options.input, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"] }) });
@@ -942,17 +942,30 @@ export function hardenedGit(inner: Runner = run, mode: "build" | "read" = "build
  * `protocol.allow=never` stays on every read and write, so a lazy fetch that slipped past would still find no
  * transport. Asked once per process, as the plane's other plain git probes run: no system or global config.
  */
-let lazyFetch: boolean | undefined;
-export function lazyFetchSupported(): boolean {
-  if (lazyFetch === undefined) {
-    const probe = spawnSync("git", ["--no-lazy-fetch", "version"], { cwd: "/", encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "pipe"],
-      env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
-    lazyFetch = probe.status === 0;
-  }
-  return lazyFetch;
+const lazyFetchByGit = new Map<string, boolean>();
+let lazyFetchOverride: boolean | undefined;
+/** The git executable `file` names, as the real path it runs (a bare name looked up on PATH), or `file` itself. */
+function gitExecutablePath(file: string): string {
+  const candidates = file.includes("/") ? [file] : (process.env["PATH"] ?? "").split(delimiter).filter(dir => isAbsolute(dir)).map(dir => join(dir, file));
+  for (const candidate of candidates) { try { accessSync(candidate, fsConstants.X_OK); return realpathSync(candidate); } catch { /* next */ } }
+  return file;
 }
-/** For tests: forget the probe's answer, or set it (null forgets). */
-export function setLazyFetchSupportedForTest(value: boolean | null): void { lazyFetch = value ?? undefined; }
+/** Asked once per git executable (eval-harness review 2, follow-up): a fixed git given to viewedGitSync is probed
+ * itself, never answered for by the one PATH names. */
+export function lazyFetchSupported(gitFile = "git"): boolean {
+  if (lazyFetchOverride !== undefined) return lazyFetchOverride;
+  const executable = gitExecutablePath(gitFile);
+  let known = lazyFetchByGit.get(executable);
+  if (known === undefined) {
+    const probe = spawnSync(executable, ["--no-lazy-fetch", "version"], { cwd: "/", encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "pipe"],
+      env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
+    known = probe.status === 0;
+    lazyFetchByGit.set(executable, known);
+  }
+  return known;
+}
+/** For tests: forget the probes' answers, or set one for every executable (null forgets). */
+export function setLazyFetchSupportedForTest(value: boolean | null): void { lazyFetchOverride = value ?? undefined; lazyFetchByGit.clear(); }
 
 /** The words for a partial clone refused on a git without `--no-lazy-fetch`. */
 export const PARTIAL_CLONE_REFUSAL = "this project is a partial clone; protected reads need git 2.45 or newer";
@@ -961,8 +974,8 @@ export const PARTIAL_CLONE_REFUSAL = "this project is a partial clone; protected
 export function noLazyFetch(): readonly string[] { return lazyFetchSupported() ? ["--no-lazy-fetch"] : []; }
 
 /** A caller's own arguments with `--no-lazy-fetch` taken out when the installed git doesn't know it. */
-function withoutUnsupportedFlags(args: readonly string[]): string[] {
-  return lazyFetchSupported() ? [...args] : args.filter(arg => arg !== "--no-lazy-fetch");
+function withoutUnsupportedFlags(args: readonly string[], gitFile = "git"): string[] {
+  return lazyFetchSupported(gitFile) ? [...args] : args.filter(arg => arg !== "--no-lazy-fetch");
 }
 
 /**
