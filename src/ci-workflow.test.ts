@@ -9,9 +9,9 @@ import { describe, expect, test } from "vitest";
 import { parse } from "yaml";
 import { RELEASE_TAG_CHECKS, REQUIRED_PR_CHECKS } from "./release.js";
 
-type Step = { run?: string; if?: unknown; "continue-on-error"?: unknown };
+type Step = { uses?: string; with?: Record<string, unknown>; name?: string; run?: string; if?: unknown; "continue-on-error"?: unknown };
 type Job = {
-  name?: string; "runs-on": string; if?: unknown; needs?: string | string[]; "continue-on-error"?: unknown;
+  name?: string; "runs-on": string; container?: unknown; env?: Record<string, unknown>; if?: unknown; needs?: string | string[]; "continue-on-error"?: unknown;
   strategy?: { matrix?: Record<string, unknown[]> }; steps?: Step[];
 };
 type Workflow = { file: string; on: Record<string, unknown>; jobs: Record<string, Job> };
@@ -45,6 +45,13 @@ function checks(job: Job, id: string): { name: string; runner: string }[] {
   return combos.map(combo => ({ name: fill(job.name ?? id, combo), runner: fill(job["runs-on"], combo) }));
 }
 
+/**
+ * The git lanes (ci.yml job "git"): pull-request checks that `toolroll release` doesn't wait for by name yet.
+ * TODO(eval-harness phase 1 integration): add them to REQUIRED_PR_CHECKS in src/release.ts, then drop this list.
+ */
+const PENDING_REQUIRED = ["git 2.45 · debian trixie", "git 2.47 · debian trixie"];
+const prChecks = () => [...new Set([...REQUIRED_PR_CHECKS, ...PENDING_REQUIRED])].sort();
+
 const running = (event: Event) => workflows.filter(one => triggered(one, event)).flatMap(one => Object.entries(one.jobs).flatMap(([id, job]) => checks(job, id)));
 const names = (event: Event) => running(event).map(one => one.name).sort();
 
@@ -53,15 +60,15 @@ describe("the CI workflows", () => {
     // No branch or path filter may omit required checks on a PR (including documentation-only changes).
     expect(workflows.find(one => one.file === "ci.yml")?.on["pull_request"]).toBeNull();
     const pr: Event = { kind: "pull_request", paths: ["src/release.ts"] };
-    expect(names(pr)).toEqual([...REQUIRED_PR_CHECKS].sort());
+    expect(names(pr)).toEqual(prChecks());
     expect(running(pr).filter(one => /macos/.test(one.runner))).toEqual([]);
     expect(running(pr).filter(one => /ubuntu/.test(one.runner) && /^node /.test(one.name)).map(one => one.name).sort()).toEqual(["node 22 · ubuntu-latest", "node 24 · ubuntu-latest"]);
-    expect(names({ kind: "pull_request", paths: ["README.md"] })).toEqual([...REQUIRED_PR_CHECKS].sort());
+    expect(names({ kind: "pull_request", paths: ["README.md"] })).toEqual(prChecks());
     expect(running(pr).find(one => one.name === "Windows Job Object containment")?.runner).toBe("windows-latest");
     expect(running(pr).find(one => one.name === "linux native containment · delegated cgroup v2")?.runner).toBe("ubuntu-latest");
     // The Windows repeat job only joins pull requests that touch Windows containment; it is never a required check.
     const windows = names({ kind: "pull_request", paths: ["src/containment.ts"] });
-    expect(windows.filter(name => !(REQUIRED_PR_CHECKS as readonly string[]).includes(name))).toEqual(["Windows Job Object containment · c2 × ${{ inputs.runs || 20 }}"]);
+    expect(windows.filter(name => !prChecks().includes(name))).toEqual(["Windows Job Object containment · c2 × ${{ inputs.runs || 20 }}"]);
   });
 
   test("a failed or skipped macOS leg prevents npm publication through the tag workflow dependency", () => {
@@ -104,8 +111,37 @@ describe("the CI workflows", () => {
   });
 
   test("a push to main runs the pull-request jobs again", () => {
-    expect(names({ kind: "push", branch: "main" })).toEqual([...REQUIRED_PR_CHECKS].sort());
+    expect(names({ kind: "push", branch: "main" })).toEqual(prChecks());
     expect(names({ kind: "push", branch: "toolroll/simplify-release" })).toEqual([]);
+  });
+
+  test("every pull-request job tests the candidate's head commit, not GitHub's merge commit, and proves it", () => {
+    const ci = workflows.find(one => one.file === "ci.yml")!;
+    for (const [id, job] of Object.entries(ci.jobs)) {
+      expect(job.env?.["TESTED_SHA"], id).toBe("${{ github.event.pull_request.head.sha || github.sha }}");
+      const steps = job.steps ?? [];
+      const checkout = steps.findIndex(step => step.uses?.startsWith("actions/checkout@"));
+      expect(steps[checkout]?.with?.["ref"], id).toBe("${{ env.TESTED_SHA }}");
+      // The proof runs before any other command: nothing is built or tested from an unproven tree.
+      const proof = steps.findIndex(step => step.name === "Tested commit");
+      expect(proof, id).toBeGreaterThan(checkout);
+      expect(steps[proof]?.run, id).toContain("git rev-parse HEAD");
+      expect(steps[proof]?.run, id).toContain("$TESTED_SHA");
+      expect(steps.slice(checkout + 1, proof).filter(step => step.uses !== undefined || /\bnpm\b|vitest|scripts\//.test(step.run ?? "")), id).toEqual([]);
+    }
+    // The test job's migration tests read old releases from history.
+    expect(ci.jobs["test"]?.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with?.["fetch-depth"]).toBe(0);
+  });
+
+  test("the git lanes run the git tests on the declared floor and on 2.47, unprivileged, and refuse a skip", () => {
+    const job = workflows.find(one => one.file === "ci.yml")!.jobs["git"]!;
+    expect(job.container).toBe("node:22-trixie");
+    expect(job.strategy?.matrix?.["git"]).toEqual(["2.45", "2.47"]);
+    const runs = (job.steps ?? []).map(step => step.run ?? "");
+    expect(runs).toContain("scripts/ci-git.sh ${{ matrix.git }}");
+    expect(runs.filter(run => /\bnpm (ci|run)\b|\bnode scripts\//.test(run)).every(run => run.startsWith("runuser -u node -- "))).toBe(true);
+    expect(runs.some(run => run.includes("npm run test:git"))).toBe(true);
+    expect(runs).toContain("runuser -u node -- node scripts/ci-no-skips.mjs git-lane.json");
   });
 
   test("no job runs behind a condition, so a skipped job can't stand in for a passing required check", () => {

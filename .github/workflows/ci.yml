@@ -5,6 +5,11 @@ name: CI
 # jobs. macOS runs nightly (macos.yml) and before tag publication (publish.yml): the
 # release check already ran the suite on macOS for the exact gated commit.
 #
+# Every job tests the candidate itself: the pull request's head commit (the pushed commit on main), never the merge
+# commit GitHub would synthesize, because that head is what `toolroll release` and auto-approve trust. A step proves
+# the checkout is that commit and prints it. That the head also contains main's head (so the tested tree is the tree
+# that merges) is the release gate's check, not CI's (docs/plans/eval-harness.md, phase 1 D).
+#
 # No job here is conditional. A job skipped by `if:` reports as passing to a
 # required check, so a job that should not run on an event lives in another
 # workflow rather than behind a condition. `toolroll release` waits for these
@@ -23,6 +28,8 @@ jobs:
     # unprivileged, so the agent-fence and ACP tests take the Linux fence road
     # they were never written for. The job name stays (release.ts waits for it).
     runs-on: ubuntu-24.04
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     strategy:
       fail-fast: false
       matrix:
@@ -30,8 +37,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ env.TESTED_SHA }}
           # Migration tests build old releases from git history (git archive <old commit>).
           fetch-depth: 0
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
@@ -56,8 +69,17 @@ jobs:
   linux-native-containment:
     name: linux native containment · delegated cgroup v2
     runs-on: ubuntu-latest
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -89,8 +111,17 @@ jobs:
   linux-fence:
     name: linux fence · sandbox-runtime
     runs-on: ubuntu-24.04
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -107,8 +138,17 @@ jobs:
   native-windows:
     name: Windows Job Object containment
     runs-on: windows-latest
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
@@ -119,3 +159,39 @@ jobs:
         env:
           CI: "true"
           SO_EXPECT_NATIVE_CONTAINMENT: "1"
+
+  # Git's own behaviour, on the declared floor and on the last release before 2.48 (README, Requirements): the git attack
+  # tests and the worktree/teardown tests, nothing else. 2.47 is Debian trixie's git and still has the pre-2.48
+  # `worktree add` behaviour teardown-git.ts relinkAdded works around; 2.45 is the floor (`git --no-lazy-fetch`),
+  # built from kernel.org's tarball by scripts/ci-git.sh. The tests run as the image's unprivileged user (root passes
+  # permission checks an operator's git can't), and a skipped test fails the job: a skip is not evidence. The only
+  # skips allowed are the "native …" OS-fence attacks, which need bubblewrap/Seatbelt and run in the linux fence job.
+  git:
+    name: git ${{ matrix.git }} · debian trixie
+    runs-on: ubuntu-24.04
+    container: node:22-trixie
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        git: ["2.45", "2.47"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+      - run: chown -R node:node "$GITHUB_WORKSPACE"
+      - name: Tested commit
+        run: |
+          head="$(runuser -u node -- git rev-parse HEAD)"
+          test "$head" = "$TESTED_SHA" || { echo "checked out $head, expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: scripts/ci-git.sh ${{ matrix.git }}
+      - name: The tests' git is git ${{ matrix.git }}
+        run: runuser -u node -- git --version | tee /dev/stderr | grep -qF "git version ${{ matrix.git }}."
+      - run: runuser -u node -- npm ci
+      - run: runuser -u node -- npm run test:git -- --reporter=default --reporter=json --outputFile.json=git-lane.json
+        env:
+          CI: "true"
+      - name: Every git test ran
+        run: runuser -u node -- node scripts/ci-no-skips.mjs git-lane.json
