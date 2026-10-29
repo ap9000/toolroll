@@ -69,3 +69,19 @@ export function taskBaseOf(store: Store, taskId: string, git: GitRead = readGit)
   const view = { base, branch, main: behind === null ? null : main, behind };
   return { ...view, words: `Base ${baseStandingWords(view)}` };
 }
+
+/** `git`'s answers kept for `ttlMs` (at most `entries` of them), for a page that shows the base line on every refresh:
+ * each read still goes through the same frozen view when it runs; only its answer is reused for a moment. Display only —
+ * never for a decision. */
+export function recentGitReads(git: GitRead = readGit, ttlMs = 15_000, entries = 64, now: () => number = Date.now): GitRead {
+  const kept = new Map<string, { at: number; value: string | null }>();
+  return (cwd, args) => {
+    const key = JSON.stringify([cwd, args]), at = now(), hit = kept.get(key);
+    if (hit !== undefined && at - hit.at < ttlMs && at >= hit.at) return hit.value;
+    const value = git(cwd, args);
+    kept.delete(key);
+    if (kept.size >= entries) kept.delete(kept.keys().next().value!);
+    kept.set(key, { at, value });
+    return value;
+  };
+}

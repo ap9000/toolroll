@@ -68,7 +68,7 @@ import { type ProjectPeek } from "./render-pages.js";
 import { completionForm,hardBlockerOf,homePhaseWords,owedAcceptanceOf,resultPanelHtml } from "./render-results.js";
 import { browserCaller,oneLineUa,type ChatCandidate,type Session,type Who } from "./session.js";
 export function createChatHandlers(runtime: ServerRuntime) {
-  const { firstRunStepsNow, managedRepos, leadWords, store, options, phoneSetup, visible, liveTurns, leadSaid, evidenceRoot, clock, sessions, CHAT_CANDIDATE_TTL_MS, chatFetcher, CHAT_CANDIDATES_PER_APPROVER, chatCeilingDigest, workAccess, familyOf, firstTasks, leadPrincipal, taskChatFocus, chatScopeOf, leadConversationRows, demoLeadHere, sendScreen, chromeFor, teamBrowserReply, team, teamChatProvider, runVisible, runIsLive, resultDetailOf, pullRequestTargetOf, chatEnablement, startLeadConversation, projectFamilyPeek, needsYouBadge, liveRefreshSeconds, chatKeyFor, chatCatalog, chatCatalogKnown, providerHome, mintApprovalNonce, checkLocalAgents, agentSignInCommand, bustBadge, authenticateApprover, revisionDestination, armTaskResume, consumeApprovalNonce } = runtime;
+  const { firstRunStepsNow, managedRepos, leadWords, store, options, phoneSetup, visible, liveTurns, leadSaid, evidenceRoot, clock, sessions, CHAT_CANDIDATE_TTL_MS, chatFetcher, CHAT_CANDIDATES_PER_APPROVER, chatCeilingDigest, workAccess, familyOf, firstTasks, leadPrincipal, taskChatFocus, chatScopeOf, leadConversationRows, demoLeadHere, sendScreen, chromeFor, teamBrowserReply, team, teamChatProvider, runVisible, runIsLive, resultDetailOf, pullRequestTargetOf, chatEnablement, sharedIndexPage, startLeadConversation, projectFamilyPeek, needsYouBadge, liveRefreshSeconds, chatKeyFor, chatCatalog, chatCatalogKnown, providerHome, mintApprovalNonce, checkLocalAgents, agentSignInCommand, bustBadge, authenticateApprover, revisionDestination, armTaskResume, consumeApprovalNonce } = runtime;
 
 
   // The read-only refresh (package 2): the same JSON status as before —
@@ -287,7 +287,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
     if (repos.length > 0) {
       try {
         fleetSnapshot = store.chatSnapshot(repos, now);
-        const summaries = workIndexPage(store, now, { principal: 'operator', repos, includeUnplaced: false, viewer: who.name }, { limit: 100, root: evidenceRoot }).items;
+        const summaries = sharedIndexPage({ principal: 'operator', repos, includeUnplaced: false, viewer: who.name }, { limit: 100, ...(evidenceRoot === undefined ? {} : { root: evidenceRoot }) }).items;
         fleetSnapshot.assignmentStates = Object.fromEntries(summaries.flatMap(value =>
           [value.rootId, value.activeTaskId].map(id => [id, { state: value.assignmentState, label: value.status.label, detail: value.status.detail }])));
         fleetSnapshot.attentionCount = needsYouBadge(null);
@@ -1386,9 +1386,9 @@ export function createChatHandlers(runtime: ServerRuntime) {
         agent: `${providerName(run.provider)} on ${run.runner}`, phase: homePhaseWords(run), project: run.repo === null ? null : projectName(run.repo), since: run.startedAt,
         activity: runActivityOf(store, run, now) };
     });
-    const all = workIndexPage(store, now, access, { view: "all", limit: WORK_INDEX_MAX_LIMIT, root: evidenceRoot });
-    const needs = workIndexPage(store, now, access, { view: "needs-you", limit: WORK_INDEX_MAX_LIMIT, root: evidenceRoot });
-    const done = workIndexPage(store, now, access, { view: "completed", limit: WORK_INDEX_MAX_LIMIT, root: evidenceRoot });
+    // The three whole views, read at most once per workspace revision (and on a read worker first when one is attached).
+    const view = (name: "all" | "needs-you" | "completed") => sharedIndexPage(access, { view: name, limit: WORK_INDEX_MAX_LIMIT, ...(evidenceRoot === undefined ? {} : { root: evidenceRoot }) });
+    const all = view("all"), needs = view("needs-you"), done = view("completed");
     const weekAgo = new Date(now.getTime() - 7 * 86_400_000).toISOString();
     const counts: BrowserHomeCount[] = [
       { key: "working", label: "Working now", value: agents.length, href: "/work?view=running" },

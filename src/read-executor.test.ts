@@ -7,7 +7,8 @@ import { openStore, type Store } from "./store.js";
 import { createDecisionServer } from "./serve.js";
 import { mintApiToken } from "./api-tokens.js";
 import { ReadExecutor, ReadExecutorError, attachReadExecutor, readExecutorOf } from "./read-executor.js";
-import { workIndexPage, WorkIndexCursorError } from "./work-index.js";
+import { workCountsByProject, workIndexPage, WorkIndexCursorError } from "./work-index.js";
+import { projectSummaryOf } from "./console-chrome.js";
 
 let dir: string, store: Store, file: string, project: string;
 const stamp = "2026-10-07T10:00:00.000Z";
@@ -50,6 +51,17 @@ test("a worker's read-only page equals the in-process page, page by page and per
     expect(await reads.workIndexPage(now, limited, { state: "queued", limit: 100 })).toEqual(workIndexPage(store, now, limited, { state: "queued", limit: 100 }));
     // The same cursor refusal, as the same error class the CLI turns into a usage message.
     await expect(reads.workIndexPage(now, access, { cursor: "not-a-cursor" })).rejects.toBeInstanceOf(WorkIndexCursorError);
+  } finally { await reads.close(); }
+});
+
+test("the console's chrome on a worker equals it in process, for each reader's own scope", async () => {
+  const reads = new ReadExecutor(file, 2);
+  try {
+    const projects = [{ path: project, name: "Read project" }];
+    for (const one of [{ ...access, viewer: "alex" }, { principal: "operator" as const, repos: [project], includeUnplaced: false, viewer: "robin" }]) {
+      expect(await reads.workCounts(now, one)).toEqual(workCountsByProject(store, now, one));
+      expect(await reads.projectSummary(now, one, one.viewer, projects, undefined)).toEqual(projectSummaryOf(store, now, one, one.viewer, projects, undefined));
+    }
   } finally { await reads.close(); }
 });
 

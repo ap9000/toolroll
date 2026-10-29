@@ -3,7 +3,7 @@ import { releaseObligationsOf } from "../release-recheck.js";
 import { approvalProofOf, freshlyApprovable, freshnessFor, withFreshness } from "../scope.js";
 import { liveAttemptOf, steerControlsFor } from "../steer-controls.js";
 import { originOf } from "../task-source.js";
-import { taskBaseOf } from "../task-base.js";
+import { recentGitReads, taskBaseOf } from "../task-base.js";
 import { assignmentPresentationOf,historicalAssessmentReason } from '../assignment-presentation.js';
 import { html, joinHtml, type Html } from "../html.js";
 import { assignmentStatusOf,assignmentWithEvidence } from '../assignment-ui.js';
@@ -95,6 +95,9 @@ export interface TaskViewsRuntime {
   liveRefreshSeconds: () => number;
 }
 export function createTaskViews(runtime: TaskViewsRuntime) {
+  // The task page's base line reads Git through a frozen view of the project (~0.2-0.5 s on a large repository) and
+  // the page renders it twice per view and again on every live refresh: its answers are kept for a moment.
+  const baseGit = recentGitReads();
 
   /** The first task's way to Ready shows until the first Ready result, and stays on the installation's first task. */
   function guided(rootId: string, now: Date): boolean {
@@ -528,7 +531,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
           return { rows, decisions: decisionsFor(runtime.store, rows), now };
         })(),
         steering: ref === null ? [] : runtime.store.listSteerNotes(ref.id),
-        base: taskBaseOf(runtime.store, taskId),
+        base: taskBaseOf(runtime.store, taskId, baseGit),
         steeringLive: ref !== null && runtime.store.steeringLiveBuild(ref.id, now) !== null,
         steeringRun: ref === null ? null : runtime.store.steeringLiveBuild(ref.id, now),
         release: ref === null ? null : releaseViewOf(runtime.store, ref.externalId, now, authority => releaseObligationsOf(runtime.store, runtime.evidenceRoot, authority)),
