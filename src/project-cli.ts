@@ -26,7 +26,7 @@ export function readProjectProfile(databaseFile: string): ProjectProfile | null 
   return { version: 1, repo: p['repo'], tokenFile: p['tokenFile'] as string | null };
 }
 
-function proveCredential(store: Store, tokenFile: string, repo: string): { reason: string; message: string } | null {
+function scopedCredentialRefusal(store: Store, tokenFile: string, repo: string): { reason: string; message: string } | null {
   let token: string;
   try {
     const info = statSync(tokenFile);
@@ -60,7 +60,7 @@ export async function runProjectCommand(positional: readonly string[], flags: Ma
     const credential = flags.get('token-file');
     if (credential !== undefined && (typeof credential !== 'string' || !credential || /[\x00-\x1f]/.test(credential))) return fail('usage', '--token-file requires a path.');
     const tokenFile = typeof credential === 'string' ? resolve(credential) : null;
-    const refused = tokenFile === null ? null : proveCredential(context.store, tokenFile, repo);
+    const refused = tokenFile === null ? null : scopedCredentialRefusal(context.store, tokenFile, repo);
     if (refused) return fail(refused.reason, refused.message);
     profile = { version: 1, repo, tokenFile };
     const file = projectProfilePath(context.databaseFile), temp = `${file}.${randomBytes(6).toString('hex')}.tmp`;
@@ -70,7 +70,7 @@ export async function runProjectCommand(positional: readonly string[], flags: Ma
   } else profile = readProjectProfile(context.databaseFile);
   if (action === 'activity') {
     if (profile === null || !repos.includes(profile.repo)) return fail('not-found', 'Select a saved project with project use first.');
-    const refused = profile.tokenFile === null ? null : proveCredential(context.store, profile.tokenFile, profile.repo);
+    const refused = profile.tokenFile === null ? null : scopedCredentialRefusal(context.store, profile.tokenFile, profile.repo);
     if (refused) return fail(refused.reason, refused.message);
     // Like assignment brief, an uncredentialed local database read has the
     // local operator's access. A saved scoped credential is always re-proved.

@@ -214,7 +214,7 @@ export const queueColumnsOutput = { columns: rows({ column: str, tasks: list }) 
 
 export const LEAD_TOOL_OUTPUTS = {
   get_brief: catchUpOutput,
-  get_project_activity: z.looseObject({ asOf: str, since: str, days: int, limit: int, truncated: z.boolean(), ready: z.object({ count: int, oldestFinishedAgeMs: nullable(z.number()), dated: int }), completed: z.looseObject({ count: int }), families: list, incompleteHistory: int }),
+  get_project_activity: z.looseObject({ asOf: str, since: str, days: int, limit: int, truncated: z.boolean(), ready: z.object({ count: int, oldestFinishedAgeMs: nullable(int), dated: int }), completed: z.looseObject({ count: int }), families: list, incompleteHistory: int }),
   get_project_context: repositoryContextOutput,
   get_action_status: z.looseObject({ proposal: int, operation: str, state: str, outcome: z.unknown(), finishedAt: nullable(str) }),
   get_actions: z.looseObject({ actions: rows({ operation: str, label: str, secureReview: z.boolean(), inputs: z.array(str) }), notice: str }),
