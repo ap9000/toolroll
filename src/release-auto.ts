@@ -322,7 +322,7 @@ function changeProblem(repo: string, base: string | null, candidate: string): st
  */
 export function sealAutoGreen(store: Store, input: {
   taskId: string; digest: string; candidate: string; run: number; receipt: string; ci: CiObservation; evidenceRoot: string; now: Date;
-  /** Whether GitHub refuses to merge a branch behind main, as the plane's gh read it just now (null: unreadable). */
+  /** Whether main's protection holds for the account that merges (release-adapters.ts readMainProtection), as the plane's gh read it just now (null: unreadable). */
   mainUpToDate: boolean | null;
 }): { ok: true; by: string; at: string; ci: { id: number; name: string }[] } | Refusal {
   const answer = inTransaction(store, (): { ok: true; by: string; at: string; ci: { id: number; name: string }[] } | Refusal => {
@@ -332,7 +332,7 @@ export function sealAutoGreen(store: Store, input: {
     // finding 4): without that setting nothing approves itself.
     if (input.mainUpToDate !== true) return refuse(input.mainUpToDate === null
       ? "GitHub's branch protection for main couldn't be read, so whether it refuses a branch behind main is unknown"
-      : "GitHub doesn't require branches to be up to date before merging into main (main's branch protection: \"Require branches to be up to date before merging\")");
+      : "main's branch protection doesn't hold for the account that merges: it must require branches to be up to date, require the release's checks, and allow no bypass (\"Do not allow bypassing the above settings\")");
     const checking = autoReleaseApprovalOf(store, input.taskId, "auto-check");
     if (!checking.ok) return refuse(`its check wasn't authorized automatically: ${checking.why}`);
     // The release check: this task's build on this digest, its native receipt, a Full level and no failed check before.

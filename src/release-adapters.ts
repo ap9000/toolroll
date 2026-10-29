@@ -15,7 +15,8 @@ import { parse as parseYaml } from "yaml";
 import { sleep } from "./sleep.js";
 // Loaded on first use, like the store: a static import prints Node's SQLite warning before the CLI can quiet it.
 const sqlite = (): typeof import("node:sqlite") => createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
-import type { CheckRun, DeployStop, GateState, HomebrewState, Installed, PullRequest, ReleaseAdapters } from "./release.js";
+import type { CheckRun, DeployStop, GateState, HomebrewState, Installed, MainProtection, PullRequest, ReleaseAdapters } from "./release.js";
+import { PROTECTION_MINIMUM_CHECKS, PROTECTION_REPORT_ONLY_CHECKS } from "./release.js";
 import { activeUpdateWork } from "./desktop-update-gate.js";
 import { BEFORE_SWAP, gateOwner } from "./release-gate.js";
 import { findCliLinks, switchCliLinks } from "./release-links.js";
@@ -491,7 +492,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
       async complete(repo, sha) { return readSuitesComplete(run, ciGh, repo, sha); },
       async mainHead(repo) { return readMainHead(run, ciGh, repo); },
       async contains(repo, sha, ancestor) { return readContains(run, ciGh, repo, sha, ancestor); },
-      async upToDateRequired(repo) { return readUpToDateRequired(run, ciGh, repo); },
+      async upToDateRequired(repo) { return readMainProtection(run, ciGh, repo); },
       async merge(repo, pr, head, message) {
         // The squash commit's message lists every commit that landed after the approval (release-once.md).
         const merged = object(await ghJson("gh api pulls merge", "api", "-X", "PUT", `repos/${repo}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`,
@@ -750,7 +751,7 @@ export type AutoObservers = {
   observe: (sha: string) => Promise<CiObservation>;
   /** GitHub's merge base of `sha` with the branch `base` of the recorded repository. */
   mergeBase: (base: string, sha: string) => Promise<string>;
-  /** Whether GitHub refuses to merge a branch behind main (release.ts mainProtection); null when unreadable. */
+  /** Whether main's protection holds for the account that merges (readMainProtection); null when unreadable. */
   upToDateRequired: () => Promise<boolean | null>;
   evidenceRoot: string;
 };
@@ -874,18 +875,101 @@ export async function readContains(run: Exec, gh: string, repo: string, sha: str
 }
 
 /**
- * Whether GitHub itself refuses to merge into `branch` a pull request whose branch is behind it (eval-harness review 1,
- * finding 4): required status checks with "Require branches to be up to date before merging" (classic branch
- * protection's `strict`, or a ruleset's `strict_required_status_checks_policy`). Read only — Toolroll never changes a
- * repository's settings. True only when GitHub says so; false when it plainly doesn't; null when it can't be read.
+ * Main's protection, judged for the principal that merges (eval-harness review 2, finding 1; review 1, finding 4): the
+ * plane's own gh, which merges as the same account. A layer holds only when it requires branches to be up to date, names
+ * a non-empty set of required checks covering PROTECTION_MINIMUM_CHECKS, and can't be bypassed by that account:
+ * classic protection with "Do not allow bypassing the above settings" (`enforce_admins`); an active ruleset whose
+ * bypass list reads whole, names no role, team or organization admin, and says this account never bypasses it. Read
+ * only — Toolroll never changes a repository's settings. A layer that can't be read never holds; null only when nothing
+ * could be read at all.
  */
-export async function readUpToDateRequired(run: Exec, gh: string, repo: string, branch = "main"): Promise<boolean | null> {
+export async function readMainProtection(run: Exec, gh: string, repo: string, branch = "main"): Promise<MainProtection | null> {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^[A-Za-z0-9._/-]+$/.test(branch) || branch.includes("..")) return null;
-  const classic = await run(gh, ["api", "--hostname", "github.com", `repos/${repo}/branches/${branch}/protection/required_status_checks`, "--jq", ".strict"], { cwd: "/", env: ciEnv() });
-  if (classic.code === 0 && classic.stdout.trim() === "true") return true;
-  const classicAnswered = classic.code === 0 || /HTTP 404|Not Found|not protected|not enabled/i.test(`${classic.stderr}\n${classic.stdout}`);
+  const missing: string[] = [];
+  const held: string[][] = [];
+  let read = 0;
+  const judge = (where: string, strict: boolean, checks: string[], bypass: string[]): void => {
+    const own: string[] = [];
+    if (!strict) own.push(`${where}: "Require branches to be up to date before merging" is off`);
+    if (checks.length === 0) own.push(`${where}: no required status checks`);
+    else {
+      const lacking = PROTECTION_MINIMUM_CHECKS.filter(name => !checks.includes(name));
+      if (lacking.length > 0) own.push(`${where}: required checks lack ${lacking.join(", ")}`);
+    }
+    own.push(...bypass.map(why => `${where}: ${why}`));
+    if (own.length === 0) held.push(checks); else missing.push(...own);
+  };
+  const notProtected = (out: { stdout: string; stderr: string }) => /HTTP 404|Not Found|not protected|not enabled/i.test(`${out.stderr}\n${out.stdout}`);
+  const names = (list: unknown, key: string): string[] | null => {
+    if (!Array.isArray(list)) return null;
+    const out: string[] = [];
+    for (const one of list) {
+      const name = key === "" ? one : object(one)[key];
+      if (typeof name !== "string" || name === "") return null;
+      out.push(name);
+    }
+    return out;
+  };
+  // Classic branch protection, read whole.
+  const classic = await run(gh, ["api", "--hostname", "github.com", `repos/${repo}/branches/${branch}/protection`], { cwd: "/", env: ciEnv() });
+  if (classic.code === 0) {
+    let answer: unknown = null;
+    try { answer = JSON.parse(classic.stdout); } catch { /* unreadable below */ }
+    const p = object(answer), checks = p["required_status_checks"];
+    if (answer === null || typeof answer !== "object" || Array.isArray(answer)) missing.push("classic protection couldn't be read");
+    else if (checks === undefined || checks === null) { read++; missing.push("classic protection: \"Require status checks to pass before merging\" is off"); }
+    else {
+      const rsc = object(checks), contexts = names(rsc["contexts"] ?? [], ""), apps = names(rsc["checks"] ?? [], "context");
+      const admins = p["enforce_admins"];
+      if (contexts === null || apps === null || typeof rsc["strict"] !== "boolean" || admins === undefined || admins === null || typeof object(admins)["enabled"] !== "boolean") missing.push("classic protection couldn't be read");
+      else {
+        read++;
+        judge("classic protection", rsc["strict"] === true, [...new Set([...contexts, ...apps])],
+          object(admins)["enabled"] === true ? [] : ["\"Do not allow bypassing the above settings\" is off, so administrators can merge past it"]);
+      }
+    }
+  } else if (notProtected(classic)) read++;
+  else missing.push("classic protection couldn't be read");
+  // Rulesets: every active rule requiring status checks on the branch, then its ruleset's enforcement and bypass list.
   const rules = await run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${repo}/rules/branches/${branch}`,
-    "--jq", ".[] | select(.type == \"required_status_checks\") | .parameters.strict_required_status_checks_policy"], { cwd: "/", env: ciEnv() });
-  if (rules.code === 0 && rules.stdout.split("\n").map(line => line.trim()).includes("true")) return true;
-  return rules.code === 0 && classicAnswered ? false : null;
+    "--jq", ".[] | select(.type == \"required_status_checks\") | @json"], { cwd: "/", env: ciEnv() });
+  if (rules.code !== 0) missing.push("main's rulesets couldn't be read");
+  else {
+    read++;
+    for (const line of rules.stdout.split("\n").filter(one => one.trim() !== "")) {
+      let rule: Json;
+      try { rule = object(JSON.parse(line)); } catch { missing.push("a ruleset rule couldn't be read"); continue; }
+      const id = rule["ruleset_id"], params = object(rule["parameters"]);
+      const checks = names(params["required_status_checks"], "context");
+      if (!Number.isSafeInteger(id) || Number(id) <= 0 || checks === null) { missing.push("a ruleset rule couldn't be read"); continue; }
+      const where = `ruleset ${id}`;
+      const got = await run(gh, ["api", "--hostname", "github.com", `repos/${repo}/rulesets/${id}`, "--jq", "{enforcement, target, current_user_can_bypass, bypass_actors} | @json"], { cwd: "/", env: ciEnv() });
+      let set: Json | null = null;
+      try { if (got.code === 0) set = object(JSON.parse(got.stdout)); } catch { set = null; }
+      if (set === null) { missing.push(`${where}: its settings couldn't be read`); continue; }
+      const bypass: string[] = [];
+      if (set["enforcement"] !== "active") bypass.push("it isn't active");
+      if (set["target"] !== "branch") bypass.push("it doesn't target branches");
+      if (set["current_user_can_bypass"] !== "never") bypass.push(typeof set["current_user_can_bypass"] === "string"
+        ? `the account that merges can bypass it (${set["current_user_can_bypass"]})` : "whether the account that merges can bypass it couldn't be read");
+      const actors = set["bypass_actors"];
+      if (!Array.isArray(actors)) bypass.push("its bypass list couldn't be read");
+      // Only a deploy key never merges as this account; a role, team, app or organization admin might.
+      else if (actors.some(one => object(one)["actor_type"] !== "DeployKey")) bypass.push("its bypass list names a role, team, app or organization admin");
+      judge(where, params["strict_required_status_checks_policy"] === true, checks, bypass);
+    }
+  }
+  if (held.length > 0) {
+    const required = new Set(held.flat());
+    return { effective: true, missing: [], notYetRequired: PROTECTION_REPORT_ONLY_CHECKS.filter(name => !required.has(name)) };
+  }
+  if (read === 0) return null;
+  if (missing.length === 0) missing.push("main has no branch protection or ruleset requiring status checks");
+  return { effective: false, missing, notYetRequired: [] };
+}
+
+/** Whether main's protection holds, as a yes/no (release-auto.ts sealAutoGreen): null when it can't be read. */
+export async function readUpToDateRequired(run: Exec, gh: string, repo: string, branch = "main"): Promise<boolean | null> {
+  const protection = await readMainProtection(run, gh, repo, branch);
+  return protection === null ? null : protection.effective;
 }

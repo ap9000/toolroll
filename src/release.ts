@@ -50,6 +50,21 @@ export const REQUIRED_PR_CHECKS = [
   "git 2.41 · debian trixie",
   "git 2.47 · debian trixie",
 ] as const;
+/**
+ * The pull-request checks main's GitHub protection is not yet required to name (eval-harness review 2, finding 1): the
+ * git lanes join main's protection once they have run there, so a protection without them is reported, never refused.
+ * A later release empties this list; from then on main's protection must name every REQUIRED_PR_CHECKS check.
+ */
+export const PROTECTION_REPORT_ONLY_CHECKS: readonly string[] = ["git 2.41 · debian trixie", "git 2.47 · debian trixie"];
+/** The checks main's protection must require at minimum: every required check that isn't report-only. */
+export const PROTECTION_MINIMUM_CHECKS: readonly string[] = REQUIRED_PR_CHECKS.filter(name => !PROTECTION_REPORT_ONLY_CHECKS.includes(name));
+/**
+ * Main's protection as the plane's gh reads it (release-adapters.ts readMainProtection): `effective` only when one layer
+ * (classic protection or one active ruleset) requires up-to-date branches, names every PROTECTION_MINIMUM_CHECKS check,
+ * and nobody merging as this gh can bypass it. `missing` names each absent property; `notYetRequired` the report-only
+ * checks the effective layer doesn't name.
+ */
+export type MainProtection = { effective: boolean; missing: string[]; notYetRequired: string[] };
 /** The checks a release tag runs (.github/workflows/publish.yml), awaited before Homebrew moves. */
 export const RELEASE_TAG_CHECKS = ["node 22 · macos-latest", "node 24 · macos-latest", "publish"] as const;
 
@@ -233,7 +248,7 @@ export type ReleaseAdapters = {
     contains(repo: string, sha: string, ancestor: string): Promise<boolean>;
     /** Whether GitHub refuses to merge a branch that is behind main ("Require branches to be up to date before
      * merging"); null when it can't be read. Read only. */
-    upToDateRequired(repo: string): Promise<boolean | null>;
+    upToDateRequired(repo: string): Promise<MainProtection | null>;
     tag(repo: string, tag: string): Promise<string | null>;
     createTag(repo: string, tag: string, sha: string): Promise<void>;
     release(repo: string, tag: string): Promise<boolean>;
@@ -1153,7 +1168,7 @@ async function containsMain(adapters: ReleaseAdapters, j: ReleaseJournal, nothin
 }
 
 /** The words a person's release says when GitHub doesn't itself refuse a merge of a branch behind main. */
-export const UP_TO_DATE_WARNING = "GitHub doesn't require branches to be up to date before merging into main (Settings → Branches → main's protection rule → \"Require status checks to pass before merging\" → \"Require branches to be up to date before merging\"), so a main that moves in the moment before the merge isn't refused by GitHub itself. Toolroll checks main again right before merging; turning that setting on closes the rest. Releases don't approve themselves until it is on.";
+export const UP_TO_DATE_WARNING = "Without it, a main that moves in the moment before the merge isn't refused by GitHub itself (Settings → Branches → main's protection rule: \"Require status checks to pass before merging\" with the required checks, \"Require branches to be up to date before merging\", and \"Do not allow bypassing the above settings\"). Toolroll checks main again right before merging; those settings close the rest. Releases don't approve themselves until they are on.";
 
 /**
  * Whether GitHub refuses to merge a branch behind main (eval-harness review 1, finding 4): an automatic release stops
@@ -1161,11 +1176,14 @@ export const UP_TO_DATE_WARNING = "GitHub doesn't require branches to be up to d
  * is told plainly, once, and goes on.
  */
 async function mainProtection(adapters: ReleaseAdapters, j: ReleaseJournal, auto: boolean, nothing: string): Promise<void> {
-  let required: boolean | null;
-  try { required = await adapters.github.upToDateRequired(j.github); } catch { required = null; }
-  if (required === true) return;
-  if (auto) throw new Stop("base-unprotected", `${required === null ? "GitHub's branch protection for main couldn't be read" : "GitHub doesn't require branches to be up to date before merging into main"}, so this release can't merge automatically. ${nothing}: a person releases it with \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
-  adapters.say(`  Warning: ${required === null ? "GitHub's branch protection for main couldn't be read. " : ""}${UP_TO_DATE_WARNING}`);
+  let protection: MainProtection | null;
+  try { protection = await adapters.github.upToDateRequired(j.github); } catch { protection = null; }
+  // The git lanes main's protection doesn't name yet are said, never refused (PROTECTION_REPORT_ONLY_CHECKS).
+  if (protection !== null && protection.notYetRequired.length > 0) adapters.say(`  Note: main's protection doesn't require ${protection.notYetRequired.join(", ")} yet; add ${protection.notYetRequired.length === 1 ? "it" : "them"} to its required checks.`);
+  if (protection?.effective === true) return;
+  const lacking = protection === null ? "GitHub's branch protection for main couldn't be read" : `main's protection doesn't hold: ${protection.missing.join("; ")}`;
+  if (auto) throw new Stop("base-unprotected", `${lacking}, so this release can't merge automatically. ${nothing}: a person releases it with \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
+  adapters.say(`  Warning: ${lacking}. ${UP_TO_DATE_WARNING}`);
 }
 
 async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal, wait: <T>(what: string, probe: () => Promise<T | null>) => Promise<T>): Promise<void> {

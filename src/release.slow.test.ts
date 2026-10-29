@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
-  checksVerdict, gateTaskId, journalFile, ownerApproval, prChecksVerdict, readJournal, writeJournal, REQUIRED_PR_CHECKS, RELEASE_TAG_CHECKS, runRelease, transientNetworkError,
-  type CheckRun, type GateState, type HomebrewState, type ReleaseAdapters, type ReleaseJournal,
+  checksVerdict, gateTaskId, journalFile, ownerApproval, prChecksVerdict, readJournal, writeJournal, PROTECTION_REPORT_ONLY_CHECKS, REQUIRED_PR_CHECKS, RELEASE_TAG_CHECKS, runRelease, transientNetworkError,
+  type CheckRun, type GateState, type HomebrewState, type MainProtection, type ReleaseAdapters, type ReleaseJournal,
 } from "./release.js";
 
 const SHA = "a".repeat(40), MERGE = "b".repeat(40), TREE = "c".repeat(40), OTHER = "d".repeat(40);
@@ -27,6 +27,8 @@ function world(options: { crashAfter?: Mutation } = {}) {
     mainReads: 0,
     mainAt: null as ((read: number) => string | null) | null,
     upToDate: true as boolean | null,
+    /** Main's protection as GitHub answers it; derived from `upToDate` unless a test sets it. */
+    protection: undefined as MainProtection | null | undefined,
     /** main gained a commit the branch doesn't have. */
     mainMoved: false,
     pr: { number: 170, state: "open" as "open" | "closed" | "merged", head: SHA, base: "main", mergeCommit: null as string | null },
@@ -120,7 +122,8 @@ function world(options: { crashAfter?: Mutation } = {}) {
       // main as GitHub's API answers it, and its comparison; a branch behind main once main moved.
       mainHead: async () => { s.mainReads++; return s.mainAt?.(s.mainReads) ?? s.main; },
       contains: async (_repo, _sha, ancestor) => ancestor === s.main && !s.mainMoved,
-      upToDateRequired: async () => s.upToDate,
+      upToDateRequired: async () => s.protection !== undefined ? s.protection
+        : s.upToDate === null ? null : { effective: s.upToDate, missing: s.upToDate ? [] : ["classic protection: \"Require branches to be up to date before merging\" is off"], notYetRequired: [] },
       complete: async () => s.ciComplete,
       pullRequest: async () => ({ ...s.pr }),
       // As the real adapter answers: every attempt, with its id, app, check suite and commit (a test's own fields win).
@@ -555,6 +558,18 @@ describe("toolroll release", () => {
       expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
       expect(s.said).toContainEqual(expect.stringContaining("Require branches to be up to date before merging"));
     }
+  });
+
+  test("eval review 2 #1: a person's release names exactly what main's protection lacks, and the git lanes it doesn't require yet", async () => {
+    const { s, adapters } = world();
+    s.protection = { effective: false, missing: ["classic protection: \"Do not allow bypassing the above settings\" is off, so administrators can merge past it"], notYetRequired: [] };
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
+    expect(s.said).toContainEqual(expect.stringContaining("main's protection doesn't hold: classic protection: \"Do not allow bypassing the above settings\" is off"));
+    const held = world();
+    held.s.protection = { effective: true, missing: [], notYetRequired: [...PROTECTION_REPORT_ONLY_CHECKS] };
+    expect(await runRelease(options(stateDir()), held.adapters)).toMatchObject({ ok: true });
+    expect(held.s.said).toContainEqual(expect.stringContaining("main's protection doesn't require git 2.41 · debian trixie, git 2.47 · debian trixie yet"));
+    expect(held.s.said.some(line => line.includes("Warning:"))).toBe(false);
   });
 
   test("attack: main moving after the gate is refused right before the merge", async () => {
@@ -1534,7 +1549,7 @@ describe("toolroll release: approve automatically when checks pass", () => {
     s.onSleep.push(state => { if (state.calls.includes("deploy")) state.upToDate = false; });
     s.upToDate = true;
     const at = adapters.github.upToDateRequired;
-    adapters.github.upToDateRequired = async repo => s.calls.includes("deploy") ? false : at(repo);
+    adapters.github.upToDateRequired = async repo => s.calls.includes("deploy") ? { effective: false, missing: ["classic protection: \"Do not allow bypassing the above settings\" is off"], notYetRequired: [] } : at(repo);
     expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "merge", reason: "base-unprotected" });
     expect(s.calls).not.toContain("merge");
   });

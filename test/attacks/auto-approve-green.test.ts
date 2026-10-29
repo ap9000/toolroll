@@ -500,7 +500,8 @@ describe("what a person's approval refuses, an automatic one refuses too", () =>
 // ---------------------------------------------------------------------------------------------- Codex review round 1
 
 import { execFileSync } from "node:child_process";
-import { readCheckRuns, readContains, readMainHead, readMergeBase, readUpToDateRequired, storeReleaseAdapter, type Exec } from "../../src/release-adapters.js";
+import { readCheckRuns, readContains, readMainHead, readMainProtection, readMergeBase, readUpToDateRequired, storeReleaseAdapter, type Exec } from "../../src/release-adapters.js";
+import { PROTECTION_MINIMUM_CHECKS, PROTECTION_REPORT_ONLY_CHECKS } from "../../src/release.js";
 import { adoptReleaseOperation, finishReleaseOperation, releaseOperations, reserveRelease, runReleaseOperation, takeReleaseLease } from "../../src/store.js";
 
 describe("codex r1 #1: the comparison base is the plane's own reading of where the candidate left main", () => {
@@ -544,15 +545,10 @@ describe("codex r1 #1: the comparison base is the plane's own reading of where t
     expect(await readContains(answer('["diverged",2]'), "/usr/bin/gh", "ap9000/toolroll", "b".repeat(40), "a".repeat(40))).toBe(false);
     expect(await readContains(answer('["behind",1]'), "/usr/bin/gh", "ap9000/toolroll", "b".repeat(40), "a".repeat(40))).toBe(false);
     await expect(readContains(answer("null"), "/usr/bin/gh", "ap9000/toolroll", "b".repeat(40), "a".repeat(40))).rejects.toThrow();
-    // Protection: classic strict, a ruleset's strict policy, plainly off, or unreadable.
-    const protection = (classic: { code: number; stdout: string; stderr?: string }, rules: { code: number; stdout: string }): Exec => async (_gh, args) =>
-      args.some(one => one.endsWith("/protection/required_status_checks")) ? { stderr: "", ...classic } : { stderr: "", ...rules };
-    expect(await readUpToDateRequired(protection({ code: 0, stdout: "true\n" }, { code: 0, stdout: "" }), "/usr/bin/gh", "ap9000/toolroll")).toBe(true);
-    expect(await readUpToDateRequired(protection({ code: 1, stdout: "", stderr: "HTTP 404: Branch not protected" }, { code: 0, stdout: "true\n" }), "/usr/bin/gh", "ap9000/toolroll")).toBe(true);
-    expect(await readUpToDateRequired(protection({ code: 0, stdout: "false\n" }, { code: 0, stdout: "" }), "/usr/bin/gh", "ap9000/toolroll")).toBe(false);
-    expect(await readUpToDateRequired(protection({ code: 1, stdout: "", stderr: "HTTP 404: Branch not protected" }, { code: 0, stdout: "false\n" }), "/usr/bin/gh", "ap9000/toolroll")).toBe(false);
-    expect(await readUpToDateRequired(protection({ code: 1, stdout: "", stderr: "HTTP 403" }, { code: 0, stdout: "" }), "/usr/bin/gh", "ap9000/toolroll")).toBeNull();
-    expect(await readUpToDateRequired(protection({ code: 0, stdout: "false\n" }, { code: 1, stdout: "" }), "/usr/bin/gh", "ap9000/toolroll")).toBeNull();
+    // Protection (review 2 #1): effective and non-bypassable for the account that merges, or not at all.
+    const P = protectionWorld(calls);
+    expect(await readUpToDateRequired(P.exec(), "/usr/bin/gh", "ap9000/toolroll")).toBe(true);
+    expect(await readUpToDateRequired(P.exec({ classic: { code: 1, stdout: "", stderr: "HTTP 403" }, rules: { code: 1, stdout: "", stderr: "HTTP 502" } }), "/usr/bin/gh", "ap9000/toolroll")).toBeNull();
     // Only reads: no call this makes writes to GitHub.
     expect(calls.flat()).not.toContain("-X");
   });
@@ -963,5 +959,84 @@ describe("scan round 3: every way a test can load a module is an edge, or unreso
     authorize(g);
     const sealed = seal(g, check(g));
     expect(sealed.ok ? "" : sealed.why).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------------------------- Codex review round 2
+
+type Answer = { code: number; stdout: string; stderr?: string };
+/** GitHub's protection API, scripted: main's classic protection as ap9000/toolroll has it (2026-10-28), no rulesets. */
+function protectionWorld(calls: string[][] = []) {
+  const live = () => ({ required_status_checks: { strict: true, contexts: [...PROTECTION_MINIMUM_CHECKS], checks: PROTECTION_MINIMUM_CHECKS.map(context => ({ context, app_id: 15368 })) },
+    enforce_admins: { enabled: true }, allow_force_pushes: { enabled: false } });
+  const json = (value: unknown): Answer => ({ code: 0, stdout: JSON.stringify(value) });
+  const notProtected: Answer = { code: 1, stdout: "", stderr: "gh: Branch not protected (HTTP 404)" };
+  const rule = (id: number, checks: readonly string[], strict = true) => JSON.stringify({ type: "required_status_checks", ruleset_id: id, ruleset_source_type: "Repository",
+    parameters: { strict_required_status_checks_policy: strict, required_status_checks: checks.map(context => ({ context, integration_id: 15368 })) } });
+  const ruleset = (extra: Record<string, unknown> = {}) => ({ enforcement: "active", target: "branch", current_user_can_bypass: "never", bypass_actors: [], ...extra });
+  const exec = (o: { classic?: Answer; rules?: Answer; ruleset?: (id: number) => Answer } = {}): Exec => async (_gh, args) => {
+    calls.push([...args]);
+    const path = args.find(one => one.startsWith("repos/")) ?? "";
+    if (path.endsWith("/branches/main/protection")) return { stderr: "", ...(o.classic ?? json(live())) };
+    if (path.includes("/rules/branches/")) return { stderr: "", ...(o.rules ?? { code: 0, stdout: "" }) };
+    const id = /\/rulesets\/(\d+)$/.exec(path);
+    if (id !== null) return { stderr: "", ...(o.ruleset?.(Number(id[1])) ?? { code: 1, stdout: "", stderr: "HTTP 404" }) };
+    throw new Error(`unexpected request ${path}`);
+  };
+  return { live, json, notProtected, rule, ruleset, exec };
+}
+
+describe("codex r2 #1: main's protection holds only when it is effective and nobody merging can bypass it", () => {
+  const read = (exec: Exec) => readMainProtection(exec, "/usr/bin/gh", "ap9000/toolroll");
+  const P = protectionWorld();
+
+  test("the live settings (classic, strict, the five checks, no bypassing) hold, and the git lanes not yet required are named", async () => {
+    expect(await read(P.exec())).toEqual({ effective: true, missing: [], notYetRequired: [...PROTECTION_REPORT_ONLY_CHECKS] });
+    const all = { ...P.live(), required_status_checks: { strict: true, contexts: [...REQUIRED_PR_CHECKS], checks: [] } };
+    expect(await read(P.exec({ classic: P.json(all) }))).toEqual({ effective: true, missing: [], notYetRequired: [] });
+    expect(PROTECTION_MINIMUM_CHECKS).toHaveLength(5);
+  });
+
+  test.each([
+    ["strict with no required checks", (l: ReturnType<typeof P.live>) => ({ ...l, required_status_checks: { strict: true, contexts: [], checks: [] } }), /classic protection: no required status checks/],
+    ["a minimum check missing", (l: ReturnType<typeof P.live>) => ({ ...l, required_status_checks: { strict: true, contexts: PROTECTION_MINIMUM_CHECKS.slice(1), checks: [] } }), /required checks lack node 22 · ubuntu-latest/],
+    ["administrators exempt", (l: ReturnType<typeof P.live>) => ({ ...l, enforce_admins: { enabled: false } }), /"Do not allow bypassing the above settings" is off/],
+    ["not up to date", (l: ReturnType<typeof P.live>) => ({ ...l, required_status_checks: { ...l.required_status_checks, strict: false } }), /"Require branches to be up to date before merging" is off/],
+    ["status checks off", (l: ReturnType<typeof P.live>) => ({ ...l, required_status_checks: null }), /"Require status checks to pass before merging" is off/],
+    ["the bypass setting unreadable", (l: ReturnType<typeof P.live>) => ({ required_status_checks: l.required_status_checks }), /classic protection couldn't be read/],
+  ])("classic: %s doesn't hold, and says exactly what", async (_name, change, words) => {
+    const answer = await read(P.exec({ classic: P.json(change(P.live())) }));
+    expect(answer?.effective).toBe(false);
+    expect(answer?.missing.join("; ")).toMatch(words);
+  });
+
+  test.each([
+    ["strict with zero required checks", () => P.rule(7, []), () => P.ruleset(), /ruleset 7: no required status checks/],
+    ["not strict", () => P.rule(7, REQUIRED_PR_CHECKS, false), () => P.ruleset(), /up to date before merging" is off/],
+    ["the merging account can bypass it", () => P.rule(7, REQUIRED_PR_CHECKS), () => P.ruleset({ current_user_can_bypass: "always" }), /can bypass it \(always\)/],
+    ["bypass only on pull requests", () => P.rule(7, REQUIRED_PR_CHECKS), () => P.ruleset({ current_user_can_bypass: "pull_requests_only" }), /can bypass it/],
+    ["the admin role bypasses it", () => P.rule(7, REQUIRED_PR_CHECKS), () => P.ruleset({ bypass_actors: [{ actor_id: 5, actor_type: "RepositoryRole", bypass_mode: "always" }] }), /bypass list names/],
+    ["an organization admin bypasses it", () => P.rule(7, REQUIRED_PR_CHECKS), () => P.ruleset({ bypass_actors: [{ actor_id: null, actor_type: "OrganizationAdmin", bypass_mode: "always" }] }), /bypass list names/],
+    ["its bypass list unreadable", () => P.rule(7, REQUIRED_PR_CHECKS), () => { const r = P.ruleset(); delete (r as Record<string, unknown>)["bypass_actors"]; return r; }, /bypass list couldn't be read/],
+    ["whether the account bypasses unreadable", () => P.rule(7, REQUIRED_PR_CHECKS), () => P.ruleset({ current_user_can_bypass: undefined }), /couldn't be read/],
+    ["evaluate mode", () => P.rule(7, REQUIRED_PR_CHECKS), () => P.ruleset({ enforcement: "evaluate" }), /isn't active/],
+    ["its settings unreadable", () => P.rule(7, REQUIRED_PR_CHECKS), null, /ruleset 7: its settings couldn't be read/],
+  ])("ruleset (no classic protection): %s doesn't hold", async (_name, rule, set, words) => {
+    const answer = await read(P.exec({ classic: P.notProtected, rules: { code: 0, stdout: `${rule()}\n` }, ruleset: id => set === null ? { code: 1, stdout: "", stderr: "HTTP 403" } : P.json({ ...set(), id }) }));
+    expect(answer?.effective).toBe(false);
+    expect(answer?.missing.join("; ")).toMatch(words);
+  });
+
+  test("an active, strict, covering ruleset nobody merging can bypass holds; a deploy key's bypass doesn't matter", async () => {
+    const answer = await read(P.exec({ classic: P.notProtected, rules: { code: 0, stdout: `${P.rule(9, PROTECTION_MINIMUM_CHECKS)}\n` },
+      ruleset: () => P.json(P.ruleset({ bypass_actors: [{ actor_id: 3, actor_type: "DeployKey", bypass_mode: "always" }] })) }));
+    expect(answer).toEqual({ effective: true, missing: [], notYetRequired: [...PROTECTION_REPORT_ONLY_CHECKS] });
+  });
+
+  test("no protection at all doesn't hold; nothing readable is null; a classic error never counts as unprotected", async () => {
+    expect(await read(P.exec({ classic: P.notProtected }))).toEqual({ effective: false, missing: ["main has no branch protection or ruleset requiring status checks"], notYetRequired: [] });
+    expect(await read(P.exec({ classic: { code: 1, stdout: "", stderr: "HTTP 403" }, rules: { code: 1, stdout: "", stderr: "HTTP 500" } }))).toBeNull();
+    expect((await read(P.exec({ classic: { code: 1, stdout: "", stderr: "HTTP 403" } })))?.missing).toEqual(["classic protection couldn't be read"]);
+    expect((await read(P.exec({ classic: { code: 0, stdout: "not json" } })))?.effective).toBe(false);
   });
 });
