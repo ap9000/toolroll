@@ -384,14 +384,22 @@ export const VERSIONED_PATHS: readonly string[] = Object.freeze(["package.json",
 export function versionOnlyChange(path: string, before: Buffer | null, after: Buffer | null): boolean {
   if (!VERSIONED_PATHS.includes(path) || before === null || after === null) return false;
   const rest = (bytes: Buffer): string => {
-    const json = JSON.parse(bytes.toString("utf8")) as unknown;
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    const json = JSON.parse(text) as unknown;
+    // Parsing is lossy for duplicate keys and rounded numbers. Such bytes never earn an exemption.
+    const tokens = (value: string) => JSON.stringify(value.match(/"(?:\\.|[^"\\])*"|[^\s"{}\[\]:,]+|[{}\[\]:,]/g));
+    if (tokens(text) !== tokens(JSON.stringify(json))) throw new Error("ambiguous JSON");
     if (json === null || typeof json !== "object" || Array.isArray(json)) throw new Error("not an object");
     const object = json as Record<string, unknown>;
+    if (typeof object["version"] !== "string") throw new Error("not a version string");
     delete object["version"];
     const packages = object["packages"];
     if (path === "package-lock.json" && packages !== null && typeof packages === "object" && !Array.isArray(packages)) {
       const root = (packages as Record<string, unknown>)[""];
-      if (root !== null && typeof root === "object" && !Array.isArray(root)) delete (root as Record<string, unknown>)["version"];
+      if (root !== null && typeof root === "object" && !Array.isArray(root)) {
+        if (typeof (root as Record<string, unknown>)["version"] !== "string") throw new Error("not a root version string");
+        delete (root as Record<string, unknown>)["version"];
+      }
     }
     return JSON.stringify(object);
   };

@@ -92,9 +92,16 @@ export function versionOnly(file, before, after) {
   if (!VERSIONED.includes(file) || typeof before !== "string" || typeof after !== "string") return false;
   const rest = text => {
     const json = JSON.parse(text);
+    // Match the plane: duplicate keys, rounded numbers and non-string versions owe the full check.
+    const tokens = value => JSON.stringify(value.match(/"(?:\\.|[^"\\])*"|[^\s"{}\[\]:,]+|[{}\[\]:,]/g));
+    if (tokens(text) !== tokens(JSON.stringify(json))) throw new Error("ambiguous JSON");
     if (json === null || typeof json !== "object" || Array.isArray(json)) throw new Error("not an object");
+    if (typeof json.version !== "string") throw new Error("not a version string");
     delete json.version;
-    if (file === "package-lock.json" && json.packages?.[""] !== undefined) delete json.packages[""].version;
+    if (file === "package-lock.json" && json.packages?.[""] !== undefined) {
+      if (typeof json.packages[""].version !== "string") throw new Error("not a root version string");
+      delete json.packages[""].version;
+    }
     return JSON.stringify(json);
   };
   try { return rest(before) === rest(after); } catch { return false; }

@@ -391,6 +391,19 @@ describe("eval review 1 #2: what a Full check owes, decided by the plane from ve
     expect(versionOnly(path, a, b)).toBe(only);
   });
 
+  test.each([
+    ['duplicate scripts', '{"version":"1.0.0","scripts":{"check":"safe"}}', '{"version":"1.0.1","scripts":{"check":"evil"},"scripts":{"check":"safe"}}'],
+    ['rounded metadata', '{"version":"1.0.0","build":9007199254740992}', '{"version":"1.0.1","build":9007199254740993}'],
+    ['a non-scalar version', '{"version":"1.0.0"}', '{"version":{"scripts":{"check":"evil"}}}'],
+    ['a removed version', '{"version":"1.0.0"}', '{}'],
+    ['a lockfile duplicate root', '{"version":"1.0.0","packages":{"":{"version":"1.0.0"}}}', '{"version":"1.0.1","packages":{"":{"version":"1.0.1","scripts":{"check":"evil"}},"":{"version":"1.0.1"}}}'],
+  ])("version exemption rejects ambiguous JSON: %s", async (_name, before, after) => {
+    const { versionOnlyChange } = await import("./check-report.js");
+    const path = _name!.includes('lockfile') ? "package-lock.json" : "package.json";
+    expect(versionOnlyChange(path, Buffer.from(before!), Buffer.from(after!))).toBe(false);
+    expect(versionOnly(path, before, after)).toBe(false);
+  });
+
   test("item 4: the plane reads the bump from verified blobs of both commits", async () => {
     const { treeFactsOf, versionBumpsOf } = await import("./check-report.js");
     const dir = mkdtempSync(join(tmpdir(), "so-version-bump-"));
