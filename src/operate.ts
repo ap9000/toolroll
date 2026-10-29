@@ -269,7 +269,7 @@ import {
   hashToken as hashRunnerToken,
   type Runner as RunnerRow,
 } from "./runner.js";
-import { credentialDigest, holderProvedGone, processGone, processStart, readRunnerProcessRecord, runnerProcessFile, writeRunnerProcessRecord, type RunnerProcessRecord, type RunnerProcessRole } from "./runner-process.js";
+import { credentialDigest, recordedHolderProvedGone, processGone, processStart, readRunnerProcessRecord, runnerProcessFile, sealRunnerProcessRecord, writeRunnerProcessRecord, type RunnerProcessRecord, type RunnerProcessRole } from "./runner-process.js";
 import { stopProcessTree } from "./process-tree.js";
 import { mintCoordinator, revokeCoordinator, listCoordinators } from "./coordinator.js";
 import { serveMcp } from "./mcp.js";
@@ -7664,7 +7664,7 @@ async function upCommand(
       // A holder whose every process is proved gone (its record beside the database) no longer blocks the name: an
       // `up` killed outright can't leave a fresh heartbeat in the way of the next start (the 2026-10-29 deploy).
       const tryRegister = () => registerRunnerIfIdle(store, { name, host: hostname(), repos, now: clock(),
-        previousGone: holder => holderProvedGone(readRunnerProcessRecord(runnerProcessFile(context.databaseFile, name)), holder, hostname()) });
+        previousGone: holder => recordedHolderProvedGone(runnerProcessFile(context.databaseFile, name), holder, hostname()) });
       let answer = tryRegister();
       // A holder still draining (a restart under way): it said when its drain ends, so this start waits for that and
       // then takes the name over — never another name, and never a guess from a heartbeat window.
@@ -7683,7 +7683,10 @@ async function upCommand(
         if (answer.recoveredRuns > 0) progress(`recovered ${answer.recoveredRuns} interrupted attempt(s) left by the previous ${name}`);
         // Every process given this credential is recorded (pid and start time) before it gets it: this one now, each
         // role child as it is spawned. A later start proves them gone by this record.
-        recordRunnerProcess(context.databaseFile, { runner: answer.runner, credentialHash: hashRunnerToken(answer.token) }, "up", process.pid);
+        if (!recordRunnerProcess(context.databaseFile, { runner: answer.runner, credentialHash: hashRunnerToken(answer.token) }, "up", process.pid)) {
+          retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
+          return fail(write, json, "up", "runner-alive", "The worker process record could not be saved; nothing started", EXIT.refused);
+        }
         doorAnswer = answer;
         break;
       }
@@ -7800,9 +7803,9 @@ async function upCommand(
   };
   const pendingLinks = new Map<number, (link: string | null) => void>();
   let linkRequests = 0;
-  const roleSpawned = (role: RunnerProcessRole, pid: number): void => {
+  const roleSpawned = (role: RunnerProcessRole, pid: number): boolean => {
     const held = store.getRunner(runnerName);
-    if (held !== null && held.credentialHash === hashRunnerToken(runnerToken)) recordRunnerProcess(context.databaseFile, held, role, pid);
+    return held !== null && held.credentialHash === hashRunnerToken(runnerToken) && recordRunnerProcess(context.databaseFile, held, role, pid);
   };
   consoleRole = startUpRole({
     role: "console", split, context, build, shutdownMs: 15_000, onSpawned: pid => roleSpawned("console", pid),
@@ -12215,22 +12218,26 @@ function upNeedsOneProcess(options: OperateOptions): boolean {
 /** The entry a role child runs: the built sibling when installed, the TypeScript source through tsx in a checkout. */
 /**
  * Add one process to the record of who holds this runner's credential (runner-process.ts), replacing that role's
- * earlier processes once they are gone. Best effort: without a record a later start only waits out the heartbeat.
+ * earlier processes once they are gone. A complete authenticated record is required before delivering credentials.
  */
-function recordRunnerProcess(databaseFile: string, holder: { runner: RunnerRow; credentialHash: string }, role: RunnerProcessRole, pid: number): void {
+function recordRunnerProcess(databaseFile: string, holder: { runner: RunnerRow; credentialHash: string }, role: RunnerProcessRole, pid: number): boolean {
   try {
     const started = processStart(pid);
-    if (started === null) return;
+    if (started === null) return false;
     const file = runnerProcessFile(databaseFile, holder.runner.name);
     const credential = credentialDigest(holder.credentialHash);
     const current = readRunnerProcessRecord(file);
     const same = current !== null && current.runner === holder.runner.name && current.registeredAt === holder.runner.registeredAt && current.credential === credential;
-    // A role's replaced generations leave the record only once proved gone; a start the record can't name stays out.
+    // Never bless a tampered or incomplete earlier list while appending a credential holder.
+    if (role !== "up" && (!same || current.signature !== sealRunnerProcessRecord(current, holder.credentialHash).signature)) return false;
+    // Keep every possibly live generation; truncating this list would erase custody.
     const kept = same ? current.processes.filter(one => one.role !== role || !processGone(one)) : [];
     const record: RunnerProcessRecord = { v: 1, runner: holder.runner.name, host: holder.runner.host, registeredAt: holder.runner.registeredAt, credential,
-      processes: [...kept.filter(one => one.pid !== pid), { pid, role, started }].slice(-32) };
-    writeRunnerProcessRecord(file, record);
-  } catch { /* best effort: no record proves nothing, and the door then waits as before */ }
+      processes: [...kept.filter(one => one.pid !== pid), { pid, role, started }] };
+    if (record.processes.length > 64) return false;
+    writeRunnerProcessRecord(file, sealRunnerProcessRecord(record, holder.credentialHash));
+    return true;
+  } catch { return false; }
 }
 
 function upRoleChildCommand(role: UpRoleName): { file: string; argv: string[] } {
@@ -12275,7 +12282,7 @@ function startUpRole(args: {
   onReady: (message: Extract<RoleToParent, { type: "ready" }>, again: boolean) => void;
   onEnded: (detail: string, restarting: boolean) => void;
   /** A role child was spawned with this pid, before its start (and any credential) is sent to it. */
-  onSpawned?: (pid: number) => void;
+  onSpawned?: (pid: number) => boolean;
 }): UpRoleHandle {
   const { role } = args;
   let resolveReady: (value: UpRoleReady) => void = () => {};
@@ -12357,8 +12364,16 @@ function startUpRole(args: {
       generations.spawned();
       owned.on("message", raw => receive(raw, () => controller.abort()));
       owned.on("error", () => {});
-      if (owned.pid !== undefined) {
-        try { args.onSpawned?.(owned.pid); } catch { /* the record only speeds up a later start; it never blocks this one */ }
+      let recorded = false;
+      try { recorded = owned.pid !== undefined && (args.onSpawned?.(owned.pid) ?? true); } catch { /* refuse credential delivery */ }
+      if (!recorded) {
+        fatal = "The worker process record could not be saved";
+        failed = { reason: "start", detail: fatal };
+        generations.refused(fatal);
+        owned.kill("SIGKILL");
+        controller.abort();
+        resolveReady({ ok: false, ...failed });
+        return;
       }
       // The start, including the runner token for the worker, goes over the private channel only.
       owned.send(args.start(generation), error => { if (error !== null && error !== undefined) owned.kill("SIGTERM"); });

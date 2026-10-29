@@ -5,18 +5,18 @@
  */
 import { test, expect } from "vitest";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { credentialDigest, holderProvedGone, parseProcessStart, processGone, processStart, readRunnerProcessRecord, runnerProcessFile, writeRunnerProcessRecord, type ProcessProbe, type RunnerProcessRecord } from "./runner-process.js";
+import { credentialDigest, holderProvedGone, recordedHolderProvedGone, parseProcessStart, processGone, processStart, readRunnerProcessRecord, runnerProcessFile, sealRunnerProcessRecord, writeRunnerProcessRecord, type ProcessProbe, type RunnerProcessRecord } from "./runner-process.js";
 import type { Runner } from "./runner.js";
 
 const runner: Runner = { name: "w-1", host: "here", capacity: 1, repos: [], agents: [], registeredAt: "2026-10-29T12:00:00.000Z", heartbeatAt: "2026-10-29T12:00:30.000Z", retiredAt: null };
 const holder = { runner, credentialHash: "a".repeat(64) };
-const record = (patch: Partial<RunnerProcessRecord> = {}): RunnerProcessRecord => ({
+const record = (patch: Partial<RunnerProcessRecord> = {}): RunnerProcessRecord => sealRunnerProcessRecord({
   v: 1, runner: "w-1", host: "here", registeredAt: runner.registeredAt, credential: credentialDigest(holder.credentialHash),
   processes: [{ pid: 4242, role: "up", started: "2026-10-29T11:59:59.000Z" }, { pid: 4243, role: "worker", started: "2026-10-29T12:00:01.000Z" }], ...patch,
-});
+}, holder.credentialHash);
 /** Each pid: absent, present with this start, present with an unreadable start, or unknown to the probe. */
 const probe = (world: Record<number, string | null | "unknown">): ProcessProbe => ({
   exists: pid => !(pid in world) ? "absent" : world[pid] === "unknown" ? "unknown" : "present",
@@ -39,13 +39,37 @@ test.each([
   expect(holderProvedGone(one, holder, "here", probe(world)).gone).toBe(gone);
 });
 
+test("editing a process list or replaying an unsigned record never proves a holder gone", () => {
+  const signed = record();
+  for (const forged of [{ ...signed, signature: undefined }, { ...signed, processes: [{ pid: 99999, role: "up" as const, started: "2026-10-29T11:59:59.000Z" }] }]) {
+    expect(holderProvedGone(forged, holder, "here", probe({})).gone).toBe(false);
+  }
+});
+
 test("no record, or a record read on another host, proves nothing", () => {
   expect(holderProvedGone(null, holder, "here", probe({})).gone).toBe(false);
   expect(holderProvedGone(record(), holder, "elsewhere", probe({})).gone).toBe(false);
 });
 
+test.each(["linked folder", "public file", "public folder"])("untrusted runner record storage: %s", kind => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-runner-storage-")));
+  try {
+    const file = runnerProcessFile(join(dir, "orders.db"), "w-1");
+    writeRunnerProcessRecord(file, record());
+    if (kind === "public file") chmodSync(file, 0o666);
+    if (kind === "public folder") chmodSync(join(dir, "runner-processes"), 0o777);
+    if (kind === "linked folder") {
+      rmSync(join(dir, "runner-processes"), { recursive: true });
+      mkdirSync(join(dir, "agent"));
+      symlinkSync(join(dir, "agent"), join(dir, "runner-processes"));
+      writeFileSync(file, JSON.stringify(record()), { mode: 0o600 });
+    }
+    expect(readRunnerProcessRecord(file)).toBeNull();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("a record is read strictly: a link, a damaged file or a wrong shape is no record", () => {
-  const dir = mkdtempSync(join(tmpdir(), "so-runner-process-"));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-runner-process-")));
   try {
     const file = runnerProcessFile(join(dir, "orders.db"), "w-1");
     expect(file.startsWith(join(dir, "runner-processes"))).toBe(true);
@@ -82,4 +106,25 @@ test("ps start times parse exactly, and a real process is gone only once it has 
     await new Promise(resolve => child.once("exit", resolve));
     expect(processGone(entry)).toBe(true);
   } finally { if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); }
+});
+
+test("a child registered during its parent's exit prevents takeover from an earlier record", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-runner-race-")));
+  try {
+    const file = runnerProcessFile(join(dir, "orders.db"), "w-1");
+    writeRunnerProcessRecord(file, record({ processes: [record().processes[0]!] }));
+    const racing: ProcessProbe = { exists: () => { writeRunnerProcessRecord(file, record()); return "absent"; }, start: () => null };
+    expect(recordedHolderProvedGone(file, holder, "here", racing).gone).toBe(false);
+    expect(recordedHolderProvedGone(file, holder, "here", probe({})).gone).toBe(true);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a database alias stores takeover evidence beside the actual fenced database", () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-runner-db-link-")));
+  try {
+    mkdirSync(join(dir, "state"));
+    const file = join(dir, "state", "orders.db"), alias = join(dir, "alias.db");
+    writeFileSync(file, ""); symlinkSync(file, alias);
+    expect(runnerProcessFile(alias, "w-1")).toBe(runnerProcessFile(file, "w-1"));
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

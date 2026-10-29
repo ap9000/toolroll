@@ -13,10 +13,10 @@
  * The record is the plane's own state (the folder that holds the database). It grants nothing by itself: it can
  * only let a name whose every recorded holder has exited be taken over early.
  */
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, renameSync, rmSync, writeFileSync, fsyncSync, constants } from "node:fs";
-import { dirname, join } from "node:path";
+import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, renameSync, rmSync, writeFileSync, fsyncSync, constants } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import type { Runner } from "./runner.js";
 
 export type RunnerProcessRole = "up" | "console" | "worker";
@@ -29,7 +29,24 @@ export type RunnerProcessRecord = {
   /** A digest of the plane's credential hash for this registration: it names the incarnation, it proves nothing. */
   credential: string;
   processes: RunnerProcess[];
+  /** Authenticated with the plane's stored credential hash; legacy/forged records prove nothing. */
+  signature?: string;
 };
+
+export const RUNNER_PROCESS_DIR = "runner-processes";
+
+/** The namespace is created before builds launch and denied by name, including in a shared state folder. */
+export function ensureRunnerProcessFolder(folder: string): void {
+  try { mkdirSync(folder, { mode: 0o700 }); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+  const stat = lstatSync(folder);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0
+    || (process.getuid && stat.uid !== process.getuid()) || realpathSync(folder) !== resolve(folder)) throw Error("Untrusted runner process folder");
+}
+
+export function sealRunnerProcessRecord(record: RunnerProcessRecord, credentialHash: string): RunnerProcessRecord {
+  const { signature: _signature, ...plain } = record;
+  return { ...plain, signature: createHmac("sha256", credentialHash).update(JSON.stringify(plain)).digest("hex") };
+}
 
 const MAX_RECORD = 64 * 1024;
 const MAX_PROCESSES = 64;
@@ -37,7 +54,9 @@ const ROLES = new Set<RunnerProcessRole>(["up", "console", "worker"]);
 
 /** Where a runner's record lives: beside the database, under a name derived from the runner's (never the name itself). */
 export function runnerProcessFile(databaseFile: string, runner: string): string {
-  return join(dirname(databaseFile), "runner-processes", `${createHash("sha256").update(runner, "utf8").digest("hex").slice(0, 32)}.json`);
+  let database = databaseFile;
+  try { database = realpathSync(databaseFile); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  return join(realpathSync(dirname(database)), RUNNER_PROCESS_DIR, `${createHash("sha256").update(runner, "utf8").digest("hex").slice(0, 32)}.json`);
 }
 
 /** The incarnation's name in a record: a digest of the stored credential hash, so the record never holds that hash. */
@@ -96,11 +115,14 @@ export function processGone(entry: RunnerProcess, probe: ProcessProbe = realProc
 export function readRunnerProcessRecord(file: string): RunnerProcessRecord | null {
   let fd: number | null = null;
   try {
+    const folder = lstatSync(dirname(file));
+    if (!folder.isDirectory() || folder.isSymbolicLink() || (folder.mode & 0o077) !== 0
+      || (process.getuid && folder.uid !== process.getuid()) || realpathSync(dirname(file)) !== resolve(dirname(file))) return null;
     const link = lstatSync(file);
     if (!link.isFile() || link.isSymbolicLink() || link.size > MAX_RECORD) return null;
-    fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    fd = openSync(file, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
     const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.size > MAX_RECORD || stat.ino !== link.ino) return null;
+    if (!stat.isFile() || stat.size > MAX_RECORD || stat.ino !== link.ino || stat.dev !== link.dev || (stat.mode & 0o077) !== 0) return null;
     if (typeof process.getuid === "function" && stat.uid !== process.getuid()) return null;
     const buffer = Buffer.alloc(stat.size);
     let read = 0;
@@ -125,12 +147,13 @@ function parseRecord(value: unknown): RunnerProcessRecord | null {
     if (!Number.isSafeInteger(p["pid"]) || (p["pid"] as number) <= 1 || !ROLES.has(p["role"] as RunnerProcessRole) || !text(p["started"], 32) || !ISO.test(p["started"])) return null;
     processes.push({ pid: p["pid"] as number, role: p["role"] as RunnerProcessRole, started: p["started"] });
   }
-  return { v: 1, runner: v["runner"], host: v["host"], registeredAt: v["registeredAt"], credential: v["credential"], processes };
+  return { v: 1, runner: v["runner"], host: v["host"], registeredAt: v["registeredAt"], credential: v["credential"], processes,
+    ...(typeof v["signature"] === "string" ? { signature: v["signature"] } : {}) };
 }
 
 /** Replace the record atomically: a private temp file in a private folder, renamed into place. */
 export function writeRunnerProcessRecord(file: string, record: RunnerProcessRecord): void {
-  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  ensureRunnerProcessFolder(dirname(file));
   const temp = `${file}.${randomUUID()}.tmp`;
   try {
     const fd = openSync(temp, "wx", 0o600);
@@ -146,10 +169,24 @@ export function writeRunnerProcessRecord(file: string, record: RunnerProcessReco
 export function holderProvedGone(record: RunnerProcessRecord | null, holder: { runner: Runner; credentialHash: string }, host: string,
   probe: ProcessProbe = realProcessProbe): { gone: true; detail: string } | { gone: false; why: string } {
   if (record === null) return { gone: false, why: "no readable record of its processes" };
+  const expected = sealRunnerProcessRecord(record, holder.credentialHash).signature!;
+  if (typeof record.signature !== "string" || !/^[a-f0-9]{64}$/.test(record.signature)
+    || !timingSafeEqual(Buffer.from(record.signature, "hex"), Buffer.from(expected, "hex"))) return { gone: false, why: "its process record is not authenticated" };
   if (record.runner !== holder.runner.name || record.host !== holder.runner.host || record.host !== host) return { gone: false, why: "its record is for another worker or machine" };
   if (record.registeredAt !== holder.runner.registeredAt || record.credential !== credentialDigest(holder.credentialHash)) return { gone: false, why: "its record is from an earlier start" };
   if (!record.processes.some(one => one.role === "up")) return { gone: false, why: "its record names no `up` process" };
   const left = record.processes.filter(one => !processGone(one, probe));
   if (left.length > 0) return { gone: false, why: `process ${left.map(one => one.pid).join(", ")} is still running` };
   return { gone: true, detail: `${record.runner}: process ${record.processes.map(one => `${one.pid} (${one.role})`).join(", ")} proved gone` };
+}
+
+/** Re-read after observing exit: an up may append a child between the first read and its own exit. */
+export function recordedHolderProvedGone(file: string, holder: { runner: Runner; credentialHash: string }, host: string,
+  probe: ProcessProbe = realProcessProbe): { gone: true; detail: string } | { gone: false; why: string } {
+  const record = readRunnerProcessRecord(file);
+  const proof = holderProvedGone(record, holder, host, probe);
+  if (!proof.gone) return proof;
+  const after = readRunnerProcessRecord(file);
+  if (after === null || JSON.stringify(after) !== JSON.stringify(record)) return { gone: false, why: "its process record changed during the exit proof" };
+  return proof;
 }
