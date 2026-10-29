@@ -725,7 +725,10 @@ export function run(file: string, args: readonly string[], options: RunOptions =
   return retryTransientSpawn(
     () =>
       new Promise<SpawnAttempt>(resolve => {
-        execFile(
+        // execFile's timeout sends SIGTERM and nothing more: a process that survives it (one that ignores or blocks
+        // it) never exits, and its caller would wait forever. SIGKILL follows a short grace later.
+        let hardKill: ReturnType<typeof setTimeout> | undefined;
+        const child = execFile(
           wrapped.file,
           wrapped.args,
           {
@@ -738,6 +741,7 @@ export function run(file: string, args: readonly string[], options: RunOptions =
             ...((env => env === undefined ? {} : { env }))(withSandboxEnv(childEnv, wrapped.env, (options.fence?.length ?? 0) > 0)),
           },
           (error, stdout, stderr) => {
+            if (hardKill !== undefined) clearTimeout(hardKill);
             if (error === null) {
               resolve({ result: { code: 0, stdout, stderr, timedOut: false, notFound: false }, transient: false });
               return;
@@ -748,9 +752,16 @@ export function run(file: string, args: readonly string[], options: RunOptions =
             });
           },
         );
+        if (timeoutMs > 0) {
+          hardKill = setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* gone */ } }, timeoutMs + TERM_GRACE_MS);
+          hardKill.unref?.();
+        }
       }),
   );
 }
+
+/** How long a timed-out plain command has to exit after SIGTERM before it is killed outright. */
+export const TERM_GRACE_MS = 2_000;
 
 /**
  * The buffered transport for process-group providers (claude): spawn

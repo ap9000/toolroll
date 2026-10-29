@@ -335,7 +335,7 @@ function includeIn(path: string, gitFile = "git"): string | null {
   const text = regularFile(path);
   if (text === null) return "an unreadable file";
   const parsed = spawnSync(gitFile, ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
-    { cwd: "/", encoding: "utf8", timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
+    { cwd: "/", encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL", env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
   if (parsed.status !== 0) return "an unreadable file";
   const named = parsed.stdout.split("\0").find(name => /^(include\.path|includeif\..*\.path)$/i.test(name));
   if (named !== undefined) return named.toLowerCase();
@@ -447,7 +447,7 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
     if (config === null) throw new Error("the checkout's git config couldn't be read as a plain file");
     const configPath = join(view, "config");
     writeFileSync(configPath, config, { mode: 0o600 });
-    const plain = { cwd: "/", encoding: "utf8" as const, timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } };
+    const plain = { cwd: "/", encoding: "utf8" as const, timeout: 5_000, killSignal: "SIGKILL" as const, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } };
     if (/worktreeconfig/i.test(config)) {
       const flag = spawnSync(gitFile, ["config", "--file", configPath, "--no-includes", "--type=bool", "--get", "extensions.worktreeConfig"], plain);
       if (flag.status !== 0 && flag.status !== 1) throw new Error("the checkout's git config couldn't be read");
@@ -791,7 +791,7 @@ export function lfsExtensionIn(checkout: string, gitFile = "git"): boolean {
   const path = join(checkout, ".lfsconfig");
   try { if (!lstatSync(path).isFile()) return true; } catch { return false; }
   const parsed = spawnSync(gitFile, ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
-    { cwd: "/", encoding: "utf8", timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
+    { cwd: "/", encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL", env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
   return parsed.status !== 0 || parsed.stdout.split("\0").filter(Boolean).some(name => lfsCommand(name) || ["include", "includeif"].includes(keyParts(name).section));
 }
 
@@ -890,7 +890,7 @@ export function viewedGitSync(cwd: string, args: readonly string[], options: { t
   const view = gitView(cwd, "read", options.binding, gitFile);
   try {
     const env: NodeJS.ProcessEnv = { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", LANG: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", ...view.env };
-    const bounded = { cwd, env, encoding: "utf8" as const, timeout: options.timeoutMs ?? 60_000, maxBuffer: options.maxBuffer ?? 1_048_576, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+    const bounded = { cwd, env, encoding: "utf8" as const, timeout: options.timeoutMs ?? 60_000, killSignal: "SIGKILL" as const, maxBuffer: options.maxBuffer ?? 1_048_576, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
     const own = spawnSync(gitFile, ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], bounded);
     if (own.status !== 0) throw new Error("its config couldn't be read");
     const key = commandSetting(own.stdout, { lfsChecked: true });
@@ -957,7 +957,7 @@ export function lazyFetchSupported(gitFile = "git"): boolean {
   const executable = gitExecutablePath(gitFile);
   let known = lazyFetchByGit.get(executable);
   if (known === undefined) {
-    const probe = spawnSync(executable, ["--no-lazy-fetch", "version"], { cwd: "/", encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "pipe"],
+    const probe = spawnSync(executable, ["--no-lazy-fetch", "version"], { cwd: "/", encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL", stdio: ["ignore", "pipe", "pipe"],
       env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
     known = probe.status === 0;
     lazyFetchByGit.set(executable, known);
