@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { buildIdentity, memoryChannel, parentMessage, roleMessage, startMessage, type RoleToParent } from "./up-processes.js";
+import { buildIdentity, memoryChannel, parentMessage, RoleGenerations, ROLE_NOT_READY_REPLACEMENTS, roleMessage, startMessage, type RoleToParent } from "./up-processes.js";
 
 const consoleConfig = { host: "127.0.0.1", port: 4180, allowedHosts: null, publicUrl: null, localRunner: "mac", poolRoot: "/s/worktrees", repos: ["/r"], projectRoots: [], registryPath: "/s/repos.json", editor: false };
 const workerConfig = { runner: "mac", token: "runner-token", repos: ["/r"], pinnedRepos: [], projectRoots: [], registryPath: "/s/repos.json", pool: "/s/worktrees",
@@ -53,5 +53,31 @@ describe("the messages between up and its two roles", () => {
     expect(buildIdentity("1.2.3", here)).toBe(buildIdentity("1.2.3", here));
     expect(buildIdentity("1.2.3", here)).not.toBe(buildIdentity("1.2.4", here));
     expect(buildIdentity("1.2.3", "/nonexistent")).not.toBe(buildIdentity("1.2.3", "/nonexistent"));
+  });
+});
+
+describe("a supervised role's generations (Codex review round 1, finding 5)", () => {
+  test("readiness is per generation: a replacement's refusal stops `up`; a crash after readiness restarts", () => {
+    // The reproduction: ready once, then a replacement refuses (another build). It used to restart forever.
+    const refused = new RoleGenerations();
+    refused.spawned(); expect(refused.ready()).toBe(true); expect(refused.ended()).toBe("restart");
+    refused.spawned(); refused.refused("the worker is a different build"); expect(refused.ended()).toBe("end");
+    expect(refused.refusedWith()).toBe("the worker is a different build");
+    // Never ready: the start fails as one, as before the split.
+    const never = new RoleGenerations();
+    never.spawned(); expect(never.ended()).toBe("fail-start");
+    // A crash after each readiness keeps restarting.
+    const crashy = new RoleGenerations();
+    for (let at = 0; at < 10; at++) { crashy.spawned(); expect(crashy.ready()).toBe(at === 0); expect(crashy.ended()).toBe("restart"); }
+    // Replacements that keep ending before readiness, with nothing said, stop `up` after a bounded number.
+    const silent = new RoleGenerations();
+    silent.spawned(); silent.ready(); silent.ended();
+    const verdicts: string[] = [];
+    for (let at = 0; at < ROLE_NOT_READY_REPLACEMENTS; at++) { silent.spawned(); verdicts.push(silent.ended()); }
+    expect(verdicts).toEqual([...Array(ROLE_NOT_READY_REPLACEMENTS - 1).fill("restart"), "end"]);
+    // A refusal belongs to its generation: the next spawn starts clean.
+    const clean = new RoleGenerations();
+    clean.spawned(); clean.ready(); clean.refused("x"); clean.spawned();
+    expect(clean.refusedWith()).toBeNull();
   });
 });

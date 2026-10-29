@@ -133,7 +133,7 @@ import { spawn as spawnChild } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { superviseController } from "./controller-supervisor.js";
-import { buildIdentity, memoryChannel, roleMessage, type ParentToRole, type RolePort, type RoleToParent, type UpConsoleConfig, type UpRoleName, type UpRoleStart, type UpWorkerConfig } from "./up-processes.js";
+import { buildIdentity, memoryChannel, RoleGenerations, roleMessage, type ParentToRole, type RolePort, type RoleToParent, type UpConsoleConfig, type UpRoleName, type UpRoleStart, type UpWorkerConfig } from "./up-processes.js";
 // Every envelope is checked against its command's schema (logged, never refused), then serialized unchanged.
 import { checkedEnvelopeJson as envelopeJson } from "./contracts/cli.js";
 import { auditCommand } from "./audit-cli.js";
@@ -12167,8 +12167,17 @@ function startUpRole(args: {
   const { role } = args;
   let resolveReady: (value: UpRoleReady) => void = () => {};
   const ready = new Promise<UpRoleReady>(resolve => (resolveReady = resolve));
-  let readied = false;
+  // Readiness per generation (Codex review round 1, finding 5): a replacement's refusal is never hidden by an earlier
+  // generation having been ready.
+  const generations = new RoleGenerations();
   let stopping = false;
+  // Reported once: the role ended for good (onEnded with restarting false), whichever path saw it first.
+  let endedForGood = false;
+  const endForGood = (detail: string): void => {
+    if (stopping || endedForGood) return;
+    endedForGood = true;
+    args.onEnded(detail, false);
+  };
   let failed: { reason: "port-busy" | "start"; detail: string } | null = null;
   let fatal: string | null = null;
   let closedProblem: string | null = null;
@@ -12182,17 +12191,17 @@ function startUpRole(args: {
         // Never a console and a worker from different builds: stop rather than run a mixed pair.
         fatal = `the ${role} is a different build (${message.build}) from this one (${args.build}) — restart Toolroll`;
         failed = { reason: "start", detail: fatal };
+        generations.refused(fatal);
         abort();
         return;
       }
       livePid = message.pid;
-      const again = readied;
-      readied = true;
+      const again = !generations.ready();
       if (!again) resolveReady({ ok: true, url: message.url ?? "", port: message.port, pid: message.pid });
       args.onReady(message, again);
       return;
     }
-    if (message.type === "failed") { failed = { reason: message.reason, detail: message.detail }; return; }
+    if (message.type === "failed") { failed = { reason: message.reason, detail: message.detail }; generations.refused(message.detail); return; }
     if (message.type === "fatal") { fatal = message.detail; return; }
     if (message.type === "closed") { closedProblem = message.problem; return; }
     args.onMessage(message);
@@ -12207,8 +12216,8 @@ function startUpRole(args: {
     });
     const done = running.then(code => {
       livePid = null;
-      if (!readied) resolveReady({ ok: false, ...(failed ?? { reason: "start" as const, detail: fatal ?? `the ${role} stopped while starting (exit ${code})` }) });
-      else if (!stopping) args.onEnded(fatal ?? `the ${role} stopped (exit ${code})`, false);
+      if (!generations.wasReady()) resolveReady({ ok: false, ...(failed ?? { reason: "start" as const, detail: fatal ?? `the ${role} stopped while starting (exit ${code})` }) });
+      else endForGood(fatal ?? `the ${role} stopped (exit ${code})`);
       return { problem: closedProblem };
     });
     return {
@@ -12231,6 +12240,7 @@ function startUpRole(args: {
       child = owned;
       fatal = null;
       failed = null;
+      generations.spawned();
       owned.on("message", raw => receive(raw, () => controller.abort()));
       owned.on("error", () => {});
       // The start, including the runner token for the worker, goes over the private channel only.
@@ -12241,20 +12251,30 @@ function startUpRole(args: {
       child = null;
       livePid = null;
       const exit = state.exit?.signal ?? state.exit?.code ?? "unknown";
-      if (!readied) {
+      if (stopping && generations.wasReady()) return;
+      const verdict = generations.ended();
+      if (verdict === "fail-start") {
         // A role that never became ready is not retried: the start fails as one, as before the split.
         controller.abort();
         resolveReady({ ok: false, ...(failed ?? { reason: "start" as const, detail: fatal ?? `the ${role} stopped while starting (exit ${exit})` }) });
         return;
       }
-      if (stopping) return;
+      if (verdict === "end") {
+        // A replacement that refused its start (another build or database), or kept ending before it was ready: a
+        // restart can't fix that, so the whole `up` stops instead of looping with the other role still running.
+        controller.abort();
+        endForGood(generations.refusedWith() ?? fatal ?? `the ${role} kept stopping before it was ready (exit ${exit})`);
+        return;
+      }
       // A build mismatch already aborted: that is the end, not a restart.
-      if (controller.signal.aborted) { args.onEnded(fatal ?? `the ${role} stopped (exit ${exit})`, false); return; }
+      if (controller.signal.aborted) { endForGood(fatal ?? `the ${role} stopped (exit ${exit})`); return; }
       args.onEnded(`${fatal === null ? "" : `${fatal} — `}the ${role} stopped unexpectedly (exit ${exit})`, true);
     },
-  }).catch(error => { if (!readied) resolveReady({ ok: false, reason: "start", detail: describe(error) }); });
+  }).catch(error => { if (!generations.wasReady()) resolveReady({ ok: false, reason: "start", detail: describe(error) }); });
   const done = supervised.then(() => {
-    if (!readied) resolveReady({ ok: false, ...(failed ?? { reason: "start" as const, detail: fatal ?? `the ${role} did not start` }) });
+    if (!generations.wasReady()) resolveReady({ ok: false, ...(failed ?? { reason: "start" as const, detail: fatal ?? `the ${role} did not start` }) });
+    // The supervisor ended without `up` stopping it (an abort on a refusal emits no backoff): `up` hears it either way.
+    else endForGood(generations.refusedWith() ?? fatal ?? `the ${role} stopped`);
     return { problem: closedProblem };
   });
   return {

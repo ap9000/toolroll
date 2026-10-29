@@ -169,3 +169,39 @@ export function buildIdentity(version: string, moduleFile: string): string {
   try { digest = createHash("sha256").update(readFileSync(moduleFile)).digest("hex").slice(0, 16); } catch { /* unique: never equal to any other identity */ }
   return `${version}+${digest}`;
 }
+
+/** How many replacements in a row may end before becoming ready, with no refusal said, before `up` stops. */
+export const ROLE_NOT_READY_REPLACEMENTS = 3;
+
+/**
+ * One supervised role's generations (Codex review round 1, finding 5): readiness is per generation, not for the role's
+ * whole life. When a generation ends, the verdict is:
+ * - `fail-start`: the role never became ready at all; the start fails as one, as before the split;
+ * - `restart`: this generation was ready and crashed afterwards (the supervisor starts it again);
+ * - `end`: a replacement refused to start (another build, another database, a start refused) — permanent, so the whole
+ *   `up` stops rather than loop — or ROLE_NOT_READY_REPLACEMENTS replacements in a row ended before readiness.
+ */
+export class RoleGenerations {
+  private everReady = false;
+  private generationReady = false;
+  private refusal: string | null = null;
+  private notReadyStreak = 0;
+  /** A new generation was spawned: nothing about it is known yet. */
+  spawned(): void { this.generationReady = false; this.refusal = null; }
+  /** This generation became ready; true when it is the role's first readiness ever. */
+  ready(): boolean { const first = !this.everReady; this.everReady = true; this.generationReady = true; return first; }
+  /** This generation refused its start for good (it said why, or its build is another). */
+  refused(detail: string): void { this.refusal = detail; }
+  /** What this generation said when it refused, if it did. */
+  refusedWith(): string | null { return this.refusal; }
+  /** Whether any generation ever became ready. */
+  wasReady(): boolean { return this.everReady; }
+  /** This generation ended (not stopped by `up`): what happens next. */
+  ended(): "fail-start" | "restart" | "end" {
+    if (!this.everReady) return "fail-start";
+    if (this.refusal !== null) return "end";
+    if (this.generationReady) { this.notReadyStreak = 0; return "restart"; }
+    this.notReadyStreak += 1;
+    return this.notReadyStreak >= ROLE_NOT_READY_REPLACEMENTS ? "end" : "restart";
+  }
+}
