@@ -1,3 +1,4 @@
+import { DEFAULT_LIVENESS_MS } from "./runner.js";
 import { afterEach, beforeEach, expect, test } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -87,7 +88,8 @@ test('the statement reader names quiet columns, omitted tables and transaction b
 
 test('cursor, wake and ordinary heartbeats stay quiet; real runner changes and revival invalidate', () => {
   store.raw().prepare("INSERT INTO chat_runtime(provider,installation) VALUES ('telegram','bot')").run();
-  runner(at(-160_000)); const before = revision.current();
+  // Alive until 20 s from now, then a beat that keeps it alive until 30 s (runner.ts DEFAULT_LIVENESS_MS).
+  runner(at(20_000 - DEFAULT_LIVENESS_MS)); const before = revision.current();
   expect(revision.expiresAt(NOW)).toBe(NOW.getTime() + 20_000);
   expect(revision.expiresAt(new Date(at(20_000)))).toBe(NOW.getTime() + 20_000);
   store.setServiceCursor('other-maintenance', 4, NOW);
@@ -95,7 +97,7 @@ test('cursor, wake and ordinary heartbeats stay quiet; real runner changes and r
   // A chat worker's rate-limit wait, lease renewal and poll cursor are its own bookkeeping.
   store.raw().prepare("UPDATE chat_runtime SET retry_at=? WHERE provider='telegram'").run(at(5_000));
   store.raw().prepare("UPDATE chat_runtime SET owner='worker', lease_until=?, generation=generation+1, cursor=cursor+1, heartbeat=? WHERE provider='telegram'").run(at(10_000), at(0));
-  store.raw().prepare("UPDATE runner SET heartbeat_at=?").run(at(-150_000));
+  store.raw().prepare("UPDATE runner SET heartbeat_at=?").run(at(30_000 - DEFAULT_LIVENESS_MS));
   expect(revision.current()).toBe(before);
   expect(revision.expiresAt(NOW)).toBe(NOW.getTime() + 30_000);
   // Keep the original response's deadline: renewing a beat never extends a
