@@ -806,7 +806,7 @@ export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: st
   // Which workflow each check suite is a run of (GitHub's workflow-run API): a newer run of a workflow supersedes its
   // older runs on this commit (release.ts prChecksVerdict).
   const flows = await must(run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${repo}/actions/runs?head_sha=${sha}&per_page=100`,
-    "--jq", ".workflow_runs[] | {suite: .check_suite_id, workflow: .workflow_id, path: .path, head: .head_sha, event: .event, branch: .head_branch, bases: [(.pull_requests // [])[] | .base.ref], prs: [(.pull_requests // [])[] | .number]}"], { cwd: "/", env: ciEnv() }), "gh api actions/runs");
+    "--jq", ".workflow_runs[] | {suite: .check_suite_id, workflow: .workflow_id, path: .path, head: .head_sha, event: .event, branch: .head_branch, bases: [(.pull_requests // [])[] | .base.ref], prs: [(.pull_requests // [])[] | {number, repo: .base.repo.url}]}"], { cwd: "/", env: ciEnv() }), "gh api actions/runs");
   // A pull request's base can be edited after its runs: a run counts only if no pull request it belongs to ever had its
   // base changed (GitHub's timeline), so a run made against another base can't later read as a run into main.
   const retargeted = new Map<number, boolean>();
@@ -833,8 +833,11 @@ export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: st
     // Only a run on a pull request into main, or a push to main, binds its workflow file: a pull request into another
     // branch reads that branch's workflow and join verifier, which the candidate may control (security scan of the
     // join). Any other run keeps no path, so no required check counts from it.
-    const prs = Array.isArray(one["prs"]) ? one["prs"] : [];
-    const untouched = one["event"] !== "pull_request" || (prs.length > 0 && prs.every(pr => Number.isSafeInteger(pr)) && !(await Promise.all(prs.map(pr => everRetargeted(Number(pr))))).some(Boolean));
+    // Each pull request the run belongs to must be this repository's own (a number from another repository names a
+    // different pull request here): any other refuses the run.
+    const prs = (Array.isArray(one["prs"]) ? one["prs"] : []).map(pr => (pr !== null && typeof pr === "object" ? pr as Record<string, unknown> : {}));
+    const ours = prs.length > 0 && prs.every(pr => Number.isSafeInteger(pr["number"]) && pr["repo"] === `https://api.github.com/repos/${repo}`);
+    const untouched = one["event"] !== "pull_request" || (ours && !(await Promise.all(prs.map(pr => everRetargeted(Number(pr["number"]))))).some(Boolean));
     if (mainTriggered(one) && untouched) pathOf.set(Number(one["suite"]), String(one["path"]));
   }
   const runs = out.split("\n").filter(Boolean).map(line => {

@@ -148,3 +148,11 @@ still required before automatic approval can be enabled for this executor.
 ## Not doing
 No cluster, no unsandboxed carry, no Docker socket in checks, no credentials copied into VMs, no dropping macOS
 coverage, no weakening checks to get green.
+
+### Known residual: CI run provenance (deliberately not chased further, 2026-10-29)
+Required checks count only from ci.yml runs on a push to main or a pull request into main that was never retargeted
+and belongs to this repository. The automated scan kept finding variations of one root issue: GitHub's run records
+(pull_requests, base ref, timeline) describe the pull request now, not the exact base a run used, so the plane can't
+fully prove a run's provenance from GitHub's API. It is closed properly in stage 3, where the release check runs in the
+isolated runner the plane controls. Until then automatic approval refuses candidate-writable CI reports (89c1a7e7), so
+these releases go to a person; the run-provenance checks are defence in depth.

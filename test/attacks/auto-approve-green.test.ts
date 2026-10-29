@@ -640,7 +640,7 @@ function fakeGitHub(attempts: { id: number; name: string; conclusion: string; su
       return one === undefined ? { code: 1, stdout: "", stderr: "not found" } : { code: 0, stdout: JSON.stringify({ id: one.id, status: "completed", conclusion: one.conclusion, steps: one.steps ?? [] }), stderr: "" };
     }
     // The workflow-run listing: which suite is a run of which workflow, and that workflow's file.
-    if (args.some(arg => arg.includes("/actions/runs"))) return { code: 0, stdout: flows.map(one => `${JSON.stringify({ event: "pull_request", branch: "release-x", bases: ["main"], prs: [254], ...one, head: sha })}\n`).join(""), stderr: "" };
+    if (args.some(arg => arg.includes("/actions/runs"))) return { code: 0, stdout: flows.map(one => `${JSON.stringify({ event: "pull_request", branch: "release-x", bases: ["main"], ...one, prs: (one.prs ?? [254]).map(number => ({ number, repo: number === 777 ? "https://api.github.com/repos/someone/fork" : "https://api.github.com/repos/ap9000/toolroll" })), head: sha })}\n`).join(""), stderr: "" };
     // A pull request's timeline events (the retarget check): none by default; "retargeted-<n>" names one that was.
     const timeline = args.find(arg => /\/issues\/\d+\/timeline/.test(arg));
     if (timeline !== undefined) {
@@ -970,7 +970,7 @@ describe("codex r2 #6: GitHub's 1000-suite ceiling fails an automatic approval c
     const sha = "a".repeat(40);
     const run: Exec = async (_cmd, args) => {
       const url = args.find(arg => arg.startsWith("repos/")) ?? "";
-      if (url.includes("/actions/runs")) return { code: 0, stdout: `${JSON.stringify({ suite: 7, workflow: 3, path: ".github/workflows/ci.yml", head: sha, event: "pull_request", branch: "release-x", bases: ["main"], prs: [254] })}\n`, stderr: "" };
+      if (url.includes("/actions/runs")) return { code: 0, stdout: `${JSON.stringify({ suite: 7, workflow: 3, path: ".github/workflows/ci.yml", head: sha, event: "pull_request", branch: "release-x", bases: ["main"], prs: [{ number: 254, repo: "https://api.github.com/repos/ap9000/toolroll" }] })}\n`, stderr: "" };
       return { code: 0, stdout: `${JSON.stringify({ id: 1, name: "x", status: "completed", conclusion: "success", app: "github-actions", suite: 7, head: sha })}\n`, stderr: "" };
     };
     expect(await readCheckRuns(run, "/usr/bin/gh", "ap9000/toolroll", sha)).toEqual([{ id: 1, name: "x", status: "completed", conclusion: "success", app: "github-actions", suite: 7, head: sha, workflow: 3, workflowPath: ".github/workflows/ci.yml" }]);
@@ -992,7 +992,7 @@ describe("codex r2 #6: GitHub's 1000-suite ceiling fails an automatic approval c
     const runs = await readCheckRuns(gh.run, "/usr/bin/gh", "ap9000/toolroll", f.approved);
     expect(runs.every(run => run.workflowPath === null)).toBe(true);
   });
-  test.each([["was retargeted after it ran", 666], ["has a timeline GitHub won't show", 999]])("security scan: a pull request into main that %s never stands for a required check", async (_why, pr) => {
+  test.each([["was retargeted after it ran", 666], ["has a timeline GitHub won't show", 999], ["belongs to another repository", 777]])("security scan: a pull request into main that %s never stands for a required check", async (_why, pr) => {
     const f = open();
     const attempts = [{ id: 100, name: REQUIRED_PR_CHECKS[0]!, conclusion: "success" }];
     const runs = await readCheckRuns(fakeGitHub(attempts, f.approved, [{ suite: 7, workflow: 3, path: ".github/workflows/ci.yml", event: "pull_request", bases: ["main"], prs: [pr] }]).run, "/usr/bin/gh", "ap9000/toolroll", f.approved);
