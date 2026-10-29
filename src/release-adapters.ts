@@ -25,6 +25,7 @@ import {
 } from "./store.js";
 import { acquireDeploymentLock } from "./deploy-lock.js";
 import { autoReleaseApprovalOf, liveReleaseOf } from "./scope.js";
+import { recheckReleaseTask, releaseCheckStanding } from "./check-failure.js";
 import { autoPublishHeld, holdAutoPublish, authorizeAutoCheck, giveUpAutoApproval, noteAutoCheckFailed, noteAutoRelease, releaseAutoApproves, sealAutoGreen, type CiObservation } from "./release-auto.js";
 import { proveCarry, type BuildRunner } from "./release-carry.js";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -240,7 +241,8 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   const ciGh = options.tools?.gh ?? releaseTools("").gh;
   const observeCi = async (sha: string): Promise<CiObservation> => {
     const observedAt = (options.now ?? (() => new Date()))().toISOString();
-    const runs = (await readCheckRuns(run, ciGh, releaseRepo().slug, sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, workflow: one.workflow ?? null }));
+    const runs = (await readCheckRuns(run, ciGh, releaseRepo().slug, sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, workflow: one.workflow ?? null,
+      ...(one.beforeTests === undefined ? {} : { beforeTests: one.beforeTests }) }));
     return { head: sha, observedAt, runs, complete: await readSuitesComplete(run, ciGh, releaseRepo().slug, sha) };
   };
   const database = options.database ?? databasePath(process.env, homedir());
@@ -644,6 +646,21 @@ export function storeReleaseAdapter(open: () => Store, done: (store: Store) => v
   const withStore = <T>(body: (store: Store) => T): T => { const store = open(); try { return body(store); } finally { done(store); } };
   return {
     ...(auto === undefined ? {} : { auto: autoReleaseAdapter(withStore, now, auto) }),
+    // After a failed release check, and before a pass is taken: the plane's own classification (check-failure.ts).
+    ...(auto === undefined ? {} : {
+      async recheck(taskId: string) {
+        return withStore(store => {
+          const answer = recheckReleaseTask(store, auto.evidenceRoot, taskId, now());
+          return answer.action === "rerun" ? { action: "rerun" as const, why: answer.why } : answer.action === "pending" ? { action: "pending" as const } : { action: "stop" as const, class: answer.class, why: answer.why };
+        });
+      },
+      async standing(taskId: string, run: number) {
+        return withStore(store => {
+          const standing = releaseCheckStanding(store, auto.evidenceRoot, { taskId, run });
+          return standing.ok ? { ok: true as const, retried: standing.retried } : { ok: false as const, why: standing.why, retried: standing.retried };
+        });
+      },
+    }),
     async authority(taskId) {
       return withStore(store => {
         const found = releaseAuthorityOfTask(store, taskId);
@@ -767,7 +784,48 @@ export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: st
       suite, head: textOr(one["head"]), workflow: suite === null ? null : workflowOf.get(suite) ?? null } satisfies CheckRun;
   });
   if (new Set(runs.map(one => one.id)).size !== runs.length) throw new Error("GitHub answered the same check run twice");
+  // Each unsuccessful GitHub Actions attempt: whether GitHub's own job record (a check run's id is its job's) shows it
+  // ending before any of the workflow's own steps ran. Only that ever counts as the runner's failure; unreadable is no.
+  for (const one of runs as CheckRun[]) {
+    if (one.app !== "github-actions" || one.status !== "completed" || one.conclusion === "success" || one.conclusion === "skipped" || one.conclusion === "neutral") continue;
+    one.beforeTests = await readJobBeforeTests(run, gh, repo, one.id!);
+  }
   return runs.sort((a, b) => a.id - b.id);
+}
+
+/** One job's step outcomes as GitHub's Actions API reports them. */
+export type JobRecord = { id: number; status: string; conclusion: string | null; steps: { number: number; name: string; status: string; conclusion: string | null }[] };
+
+/**
+ * Whether a finished, unsuccessful job ended before any of the workflow's own steps ran: every step after GitHub's own
+ * first one ("Set up job", always number 1) never ran (no conclusion, or skipped) — leaving out only GitHub's own
+ * closing "Complete job" when it is the last step. Step numbers and outcomes are the runner's records; nothing the
+ * candidate prints is read. A job with no steps never reached one. Anything else (a step that ran, even the checkout)
+ * is not confirmed infrastructure.
+ */
+export function failedBeforeTests(job: JobRecord): boolean {
+  if (job.status !== "completed" || job.conclusion === "success" || job.conclusion === null) return false;
+  const steps = [...job.steps].sort((a, b) => a.number - b.number);
+  if (new Set(steps.map(one => one.number)).size !== steps.length) return false;
+  const last = steps.at(-1);
+  const own = steps.filter(one => one.number > 1 && !(one === last && one.name === "Complete job" && steps.length > 1));
+  return own.every(one => one.status !== "in_progress" && (one.conclusion === null || one.conclusion === "skipped"));
+}
+
+/** GitHub's job record for one check run (its job), read strictly: null when it can't be read whole. */
+export async function readJobBeforeTests(run: Exec, gh: string, repo: string, id: number): Promise<boolean | null> {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !Number.isSafeInteger(id) || id <= 0) return null;
+  let out: { code: number; stdout: string };
+  try { out = await run(gh, ["api", "--hostname", "github.com", `repos/${repo}/actions/jobs/${id}`, "--jq", "{id, status, conclusion, steps: [(.steps // [])[] | {number, name, status, conclusion}]}"], { cwd: "/", env: ciEnv() }); }
+  catch { return null; }
+  if (out.code !== 0) return null;
+  let job: Json;
+  try { job = object(JSON.parse(out.stdout)); } catch { return null; }
+  const steps = Array.isArray(job["steps"]) ? job["steps"].map(object) : null;
+  if (job["id"] !== id || typeof job["status"] !== "string" || steps === null) return null;
+  if (steps.some(one => !Number.isSafeInteger(one["number"]) || typeof one["status"] !== "string" || typeof one["name"] !== "string")) return null;
+  return failedBeforeTests({ id, status: String(job["status"]), conclusion: textOr(job["conclusion"]),
+    steps: steps.map(one => ({ number: Number(one["number"]), name: String(one["name"]), status: String(one["status"]), conclusion: textOr(one["conclusion"]) })) });
 }
 
 /** GitHub lists check runs from at most the latest 1000 check suites of a commit: the history is whole only below that. */

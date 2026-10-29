@@ -62,11 +62,19 @@ const POLL_MS = 15_000;
  * under, when known. */
 export type CheckRun = { name: string; status: string; conclusion: string | null; app?: string | null; id?: number | null; suite?: number | null; head?: string | null;
   /** The workflow (its id, from GitHub's workflow-run API) that this check's suite is a run of, when known. */
-  workflow?: number | null };
+  workflow?: number | null;
+  /** GitHub's own job record (its steps, read by the plane's gh) shows this unsuccessful attempt ended before any of the
+   * workflow's own steps ran: the runner failed, not the tests. Absent or false: nothing shows that. */
+  beforeTests?: boolean | null };
 
-/** How many failed attempts of one CI check, and failed release-check runs, an automatic approval tolerates (flakes on a
- * pinned commit and digest), before a person decides (auto-approve-green.md). */
-export const AUTO_FLAKE_CAP = 2;
+/**
+ * Failure classes replace a flat flake allowance (docs/plans/eval-harness.md; check-failure.ts says the classes): only a
+ * failure the plane itself confirmed as infrastructure is ever run again under the same approval — at most once per
+ * incident and twice per candidate — for a release check and for a GitHub CI job alike. A failing test, a typecheck, an
+ * attack test, a migration: none tolerated. An unexplained failure blocks, and a person decides.
+ */
+export const INFRA_RERUNS_PER_INCIDENT = 1;
+export const INFRA_RERUNS_PER_CANDIDATE = 2;
 /** One failed attempt that a later attempt of the same job passed. */
 export type CheckFailure = { id: number; name: string; conclusion: string | null };
 
@@ -102,6 +110,10 @@ export type LandedCommit = { sha: string; files: { path: string; added: number; 
 /** A release's authority record as the coordinator reads it (store.ts release_authority). */
 export type AuthorityView = { id: number; generation: number; state: string; tipSha: string; tipTask: string; version: string; pr: number; landed: LandedCommit[] };
 export type ReleaseAction = "dispatch" | "deploy" | "merge" | "complete";
+/** The plane's answer after a failed release check: rerun (confirmed infrastructure), already rerunning, or stop. */
+export type FailureClassName = "deterministic" | "infrastructure" | "unknown" | "agent-behaviour";
+export type RecheckView = { action: "rerun"; why: string } | { action: "pending" } | { action: "stop"; class: FailureClassName | null; why: string };
+
 export type OperationView = { id: string; kind: "deploy" | "merge"; state: "reserved" | "running" | "succeeded" | "failed" | "unknown"; candidate: string; externalRef: string | null; reservedAt: string;
   /** Reserved by a person's own deploy run (deploy-browser.mjs), not a coordinator. */
   direct: boolean;
@@ -126,6 +138,13 @@ export type ReleaseAuthorityAdapter = {
    * the authority could not be stopped (a stale epoch, a merge already reserved): the coordinator fails closed. */
   needsApproval(authority: number, reason: string, epoch: number): Promise<boolean>;
   operations(authority: number): Promise<OperationView[]>;
+  /** After a failed release check (check-failure.ts): the plane classifies it from its own records and, only for
+   * confirmed infrastructure within its limits, runs the check again on the same candidate under the same approval.
+   * Absent on an older plane: a failed check stops as before. */
+  recheck?(taskId: string): Promise<RecheckView>;
+  /** Whether a passing check stands given every earlier attempt on the same commit (an earlier failure that wasn't
+   * confirmed infrastructure isn't erased by a pass), and what passed only on a retry. */
+  standing?(taskId: string, run: number): Promise<{ ok: true; retried: string[] } | { ok: false; why: string; retried: string[] }>;
   /** Releases that approve themselves when green (docs/plans/auto-approve-green.md): the plane's own seals, each proven
    * again inside the plane. Absent: a plane that can't, and every release asks a person as before. */
   auto?: AutoReleaseAdapter;
@@ -550,19 +569,21 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
         ? `${what}. Nothing was merged. The deploy had already started, so this commit needs a person's approval again: run \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`
         : `${what}. Nothing was deployed or merged. This commit needs a person's approval: run \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
     };
-    /** An automatic approval's CI allowance: at most AUTO_FLAKE_CAP failed attempts per job; a person's has none. */
-    const autoCap = (): { cap?: number } => (j.auto?.state === "approved" ? { cap: AUTO_FLAKE_CAP } : {});
+    /** An automatic approval's CI allowance: only attempts GitHub shows failing before the tests ran, at most
+     * INFRA_RERUNS_PER_CANDIDATE on the commit; a person's approval judges each job by its latest attempt. */
+    const autoCap = (): { auto?: true } => (j.auto?.state === "approved" ? { auto: true } : {});
     /**
      * An automatically approved release stands only while its CI does (auto-approve-green.md): the complete, current
      * checks on the exact commit are read again right before each step that can't be taken back — the deploy, the CLI
-     * relink, the merge and the tag. Anything but green (failed, a job re-run and pending, past the flake cap) stops the
+     * relink, the merge and the tag. Anything but green (failed, a job re-run and pending, an earlier failure GitHub
+     * doesn't show as the runner's own) stops the
      * release, revokes its approval and tells the owner; the commit then needs a person.
      */
     const autoCiHolds = async (before: string) => {
       if (j.auto?.state !== "approved") return;
       const read = await adapters.github.checks(j.github, j.candidate.sha);
       const whole = adapters.github.complete === undefined ? false : await adapters.github.complete(j.github, j.candidate.sha);
-      const verdict = whole ? prChecksVerdict(read, j.candidate.sha, REQUIRED_PR_CHECKS, { cap: AUTO_FLAKE_CAP }) : { state: "failed" as const, failed: ["GitHub's check history of this commit can't be read whole"] };
+      const verdict = whole ? prChecksVerdict(read, j.candidate.sha, REQUIRED_PR_CHECKS, { auto: true }) : { state: "failed" as const, failed: ["GitHub's check history of this commit can't be read whole"] };
       if (verdict.state === "passed") return;
       if (before === "the tag") {
         // Already merged: nothing to revoke. It isn't tagged or published, and a person decides — durably, in the plane.
@@ -637,7 +658,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
     };
     const fullCheck = (gate: GateState) => {
       if (gate.result?.level !== "full") throw new Stop("check-level", `A Full check is required for this release (run ${gate.result?.run ?? "unknown"}: ${gate.result?.level ?? "unknown"}). Quick and Off checks cannot release a build.`);
-      if (gate.result.check !== "passed") throw new Stop("check-failed", `The Full release check of ${j.candidate.sha.slice(0, 7)} did not pass (run ${gate.result.run}: ${gate.result.check}). It stays as it is: fix the branch and release the new commit with --new.`);
+      if (gate.result.check !== "passed") throw new Stop("check-failed", checkFailedWords({ sha: j.candidate.sha, run: gate.result.run, class: null, why: `its check reads ${gate.result.check}`, branch: j.branch, checkout: j.checkout, taskId: j.task.id }));
     };
     /** The commit the passing build recorded: what the deployed runtime is stamped with. */
     const builtHead = () => j.check?.head ?? j.candidate.sha;
@@ -738,6 +759,17 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             await approved(gate);
             // A rerun of the same approved commit is on its way: the failure before it is not this release's answer.
             if (gate.pending === true && gate.result?.check !== "passed") return null;
+            // A failed Full check: the plane says why (its own records only) and reruns it under the same approval only
+            // for confirmed infrastructure; every attempt stays in the evidence. Anything else stops, saying its class.
+            if (gate.failed === null && gate.result !== null && gate.result.level === "full" && gate.result.check === "failed" && rel?.recheck !== undefined) {
+              const answer = await rel.recheck(j.task.id);
+              if (answer.action === "pending") return null;
+              if (answer.action === "rerun") {
+                say(`  run ${gate.result.run} failed: ${answer.why}. Toolroll confirmed it as its own infrastructure, so the check runs again on ${j.candidate.sha.slice(0, 7)} under the same approval`);
+                return null;
+              }
+              throw new Stop("check-failed", checkFailedWords({ sha: j.candidate.sha, run: gate.result.run, class: answer.class, why: answer.why, branch: j.branch, checkout: j.checkout, taskId: j.task.id }));
+            }
             if (gate.failed !== null) throw new Stop("check-failed", `The release build of ${j.task.id} failed: ${gate.failed}. Fix it and release the new commit with --new.`, true);
             if (gate.result === null || gate.result.check === "running" || gate.result.check === "pending") return null;
             // The build records a prepared candidate as a commit of its own (its message names the task): it must hold
@@ -748,6 +780,13 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             }
             fullCheck(gate);
             if (gate.result.worktree === null) throw new Stop("worktree", `Run ${gate.result.run} names no checkout to deploy from.`);
+            // A pass stands only when no earlier attempt on this commit failed for a reason other than confirmed
+            // infrastructure the release reran; what passed only on a retry is said (and an automatic approval refuses it).
+            if (rel?.standing !== undefined) {
+              const standing = await rel.standing(j.task.id, gate.result.run);
+              if (!standing.ok) throw new Stop("check-failed", `Run ${gate.result.run} passed on ${j.candidate.sha.slice(0, 7)}, but ${standing.why}: approve this commit again with \`toolroll release ${j.branch} --repo ${j.checkout} --new\`, or fix the branch and release the new commit the same way.`);
+              if (standing.retried.length > 0) say(`  run ${gate.result.run} passed, but only on a retry: ${standing.retried.join(", ")}`);
+            }
             return { run: gate.result.run, receipt: gate.result.receipt, worktree: gate.result.worktree, head };
           };
           const result = await waitFor("check", `the release check of ${j.candidate.sha.slice(0, 7)}`, async () => {
@@ -1130,10 +1169,12 @@ function networkWords(error: unknown): string {
  * each reported attempt must be filed under `head` with a check-run id; a required check counts only from GitHub
  * Actions (an app that names a check alike can't stand in for it); attempts are grouped by the job they belong to — the
  * app, its check suite (a workflow run, whose re-runs stay in it) and the name — and every group is judged by its
- * latest attempt; every required check needs a group. With `cap`, a group whose earlier attempts failed more than `cap`
- * times fails too (an automatic approval's flake allowance); the failures it tolerated are returned.
+ * latest attempt; every required check needs a group. With `auto` (an automatic approval), every earlier failed attempt
+ * must be one GitHub's own job record shows ending before any workflow step ran (`beforeTests`: confirmed
+ * infrastructure), and at most INFRA_RERUNS_PER_CANDIDATE of them on the commit; any other earlier failure — a test,
+ * a typecheck, or one nothing explains — fails the verdict, so a person decides. The failures it tolerated are returned.
  */
-export function prChecksVerdict(runs: readonly CheckRun[], head: string, required: readonly string[], options: { cap?: number } = {}):
+export function prChecksVerdict(runs: readonly CheckRun[], head: string, required: readonly string[], options: { auto?: true } = {}):
   { state: "passed"; failures: CheckFailure[] } | { state: "pending"; waiting: string[] } | { state: "failed"; failed: string[] } {
   const failed: string[] = [], waiting: string[] = [], failures: CheckFailure[] = [];
   const valid: CheckRun[] = [];
@@ -1154,6 +1195,7 @@ export function prChecksVerdict(runs: readonly CheckRun[], head: string, require
   const groups = new Map<string, CheckRun[]>();
   for (const run of valid) { const key = JSON.stringify([workflowOf(run), run.name]); groups.set(key, [...(groups.get(key) ?? []), run]); }
   const judged = new Set<string>();
+  let infrastructure = 0;
   for (const attempts of groups.values()) {
     const ordered = [...attempts].sort((a, b) => a.id! - b.id!);
     const now = current.get(workflowOf(ordered[0]!)) ?? null;
@@ -1166,14 +1208,39 @@ export function prChecksVerdict(runs: readonly CheckRun[], head: string, require
     if (latest.status !== "completed") { waiting.push(`${name} (${latest.status})`); continue; }
     if (latest.conclusion !== "success") { failed.push(`${name} (${latest.conclusion ?? "no conclusion"})`); continue; }
     const earlier = ordered.filter(one => one !== latest);
-    // An automatic approval also waits out an earlier attempt of the current run still running (it counts toward the cap).
-    if (options.cap !== undefined && earlier.some(one => (one.suite ?? null) === now && one.status !== "completed")) { waiting.push(`${name} (an earlier attempt still running)`); continue; }
-    // The cap counts every failed attempt of the job, in the current run and in the runs it superseded.
+    // An automatic approval also waits out an earlier attempt of the current run still running.
+    if (options.auto === true && earlier.some(one => (one.suite ?? null) === now && one.status !== "completed")) { waiting.push(`${name} (an earlier attempt still running)`); continue; }
+    // Every failed attempt of the job, in the current run and in the runs it superseded.
     const flaked = earlier.filter(one => one.status === "completed" && one.conclusion !== "success");
-    if (options.cap !== undefined && flaked.length > options.cap) { failed.push(`${name} (failed ${flaked.length} times before it passed)`); continue; }
+    if (options.auto === true) {
+      const unexplained = flaked.filter(one => one.beforeTests !== true);
+      if (unexplained.length > 0) { failed.push(`${name} (failed ${unexplained.length === 1 ? "once" : `${unexplained.length} times`} before it passed, and GitHub doesn't show its runner failing before the tests ran)`); continue; }
+      infrastructure += flaked.length;
+    }
     failures.push(...flaked.map(one => ({ id: one.id!, name, conclusion: one.conclusion })));
   }
+  if (options.auto === true && infrastructure > INFRA_RERUNS_PER_CANDIDATE) failed.push(`GitHub's runners failed ${infrastructure} times on this commit before the tests ran (at most ${INFRA_RERUNS_PER_CANDIDATE} are rerun)`);
   for (const name of required) if (!judged.has(name)) waiting.push(`${name} (not started)`);
   if (failed.length > 0) return { state: "failed", failed };
   return waiting.length > 0 ? { state: "pending", waiting } : { state: "passed", failures };
+}
+
+/**
+ * What a failed release check means and what happens next, by its class (check-failure.ts), in words. Only confirmed
+ * infrastructure reruns on its own; nothing else is rerun to pass.
+ */
+export function checkFailedWords(input: { sha: string; run: number; class: FailureClassName | null; why: string; branch: string; checkout: string; taskId: string }): string {
+  const short = input.sha.slice(0, 7), again = `\`toolroll release ${input.branch} --repo ${input.checkout} --new\``;
+  switch (input.class) {
+    case "deterministic":
+      return `The Full release check of ${short} failed (run ${input.run}): ${input.why}. That is a failure in the code or its tests, so it isn't run again: fix the branch, then release the new commit with ${again}.`;
+    case "agent-behaviour":
+      return `The Full release check of ${short} failed (run ${input.run}): ${input.why}. Real-model journeys are counted, never rerun until they pass, so a person decides: fix the branch and release the new commit with ${again}, or approve this commit again with ${again}.`;
+    case "infrastructure":
+      return `The Full release check of ${short} failed (run ${input.run}): ${input.why}. It was already run again as often as a commit is (${INFRA_RERUNS_PER_CANDIDATE} times), so a person decides: approve this commit again with ${again}.`;
+    case "unknown":
+      return `The Full release check of ${short} failed (run ${input.run}) with no failure Toolroll could explain: ${input.why}. It isn't rerun to pass. To look into it, \`toolroll task regate ${input.taskId}\` runs it again on the same commit, but a pass then doesn't erase this failure: a person decides, and approves this commit again with ${again}, or fixes the branch and releases the new commit the same way.`;
+    default:
+      return `The Full release check of ${short} did not pass (run ${input.run}): ${input.why}. Fix the branch and release the new commit with ${again}.`;
+  }
 }

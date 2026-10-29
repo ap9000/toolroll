@@ -17,6 +17,7 @@ import { mergePullRequest } from "../../src/pull-request-flow.js";
 import { assignmentOf } from "../../src/assignment.js";
 import { runReleaseCommand } from "../../src/release-cli.js";
 import { REQUIRED_PR_CHECKS } from "../../src/release.js";
+import { RELEASE_RECHECK_ACTION } from "../../src/check-failure.js";
 // @ts-expect-error plain ESM script without declarations
 import { deploymentCandidate } from "../../scripts/deploy-candidate.mjs";
 import * as installedScope from "../../src/scope.js";
@@ -42,6 +43,13 @@ const green = (head: string, at = LATER): CiObservation => ({ head, observedAt: 
 const authorize = (f: ReleaseFixture, base = f.base) => authorizeAutoCheck(f.store, { taskId: f.taskId, digest: digestOf(f), candidate: f.approved, base, now: LATER });
 /** The release check of the candidate, sealed as the builder seals it, on the build's real base. */
 const check = (f: ReleaseFixture, head = f.approved, report: (units: readonly string[]) => ReturnType<typeof reportOf> = passingReport) => sealedCheck(f, f.taskId, head, (_plan, units) => report(units), { base: f.base }).runId;
+/** A release check Toolroll's own shutdown stopped (the plane's own record), rerun by the release unless `rerun` is false. */
+const infraCheck = (f: ReleaseFixture, rerun = true) => {
+  const run = sealedCheck(f, f.taskId, f.approved, () => null, { base: f.base, plane: { configured: true, ran: false, attemptFailed: true, failure: "stopped-by-toolroll" } }).runId;
+  if (rerun) rerunRecorded(f, run);
+  return run;
+};
+const rerunRecorded = (f: ReleaseFixture, run: number) => f.store.recordAction({ at: LATER.toISOString(), actor: "toolroll", repo: f.repo, taskId: f.taskId, runId: run, action: RELEASE_RECHECK_ACTION, outcome: "infrastructure", source: "work" });
 const receiptOf = (f: ReleaseFixture) => assignmentOf(f.store, f.taskId, LATER, { principal: "operator", repos: null, includeUnplaced: true }, EVIDENCE(f))!.receipt!.digest;
 const seal = (f: ReleaseFixture, run: number, ci: CiObservation = green(f.approved), extra: { digest?: string; receipt?: string } = {}) =>
   sealAutoGreen(f.store, { taskId: f.taskId, digest: extra.digest ?? digestOf(f), candidate: f.approved, run, receipt: extra.receipt ?? receiptOf(f), ci, evidenceRoot: EVIDENCE(f), now: LATER });
@@ -143,15 +151,35 @@ describe("attack 2: a forged or stale CI observation", () => {
     expect(f.store.handle.prepare("SELECT subject FROM notification WHERE kind = 'release-auto'").all().map(row => String(row["subject"]))).toEqual(["Release 0.9.71 needs you"]);
   });
 
-  test.each([1, 2])("a flaky CI check (%i failed attempt(s), latest a GitHub Actions success) approves, and the failures are recorded", failed => {
+  test.each([1, 2])("a CI job whose runner failed before its tests (%i time(s), GitHub's own job record says so) approves, and the failures are recorded", failed => {
     const f = open();
     authorize(f);
     const run = check(f);
     const ci = green(f.approved);
-    const flakes = Array.from({ length: failed }, (_, i) => ({ ...ci.runs[1]!, id: 10 + i, conclusion: "failure" }));
+    const flakes = Array.from({ length: failed }, (_, i) => ({ ...ci.runs[1]!, id: 10 + i, conclusion: "failure", beforeTests: true }));
     expect(seal(f, run, { ...ci, runs: [...flakes, ...ci.runs] })).toMatchObject({ ok: true });
     const evidence = f.store.handle.prepare("SELECT detail FROM action_ledger WHERE task_id = ? AND action = 'release auto-approved' AND outcome = 'auto-green'").get(f.taskId);
     expect(JSON.parse(String(evidence!["detail"]))).toMatchObject({ ciFailures: flakes.map(one => ({ id: one.id, name: one.name, conclusion: "failure" })), checkFailures: [] });
+  });
+
+  test.each([
+    ["a failed attempt nothing explains (a test failure, as far as anyone can tell)", (id: number) => ({ id, conclusion: "failure" })],
+    ["a failed attempt whose job record couldn't be read", (id: number) => ({ id, conclusion: "failure", beforeTests: null })],
+    ["a timed-out attempt after its tests started", (id: number) => ({ id, conclusion: "timed_out", beforeTests: false })],
+  ])("failure classes: %s before the pass needs a person", (_name, attempt) => {
+    const f = open();
+    authorize(f);
+    const ci = green(f.approved);
+    expect(seal(f, check(f), { ...ci, runs: [{ ...ci.runs[1]!, ...attempt(10) }, ...ci.runs] })).toMatchObject({ ok: false, why: expect.stringContaining("doesn't show its runner failing before the tests ran") });
+    expect(basis(f)).toBeNull();
+  });
+
+  test("failure classes: three runner failures on the commit, even before the tests, need a person", () => {
+    const f = open();
+    authorize(f);
+    const ci = green(f.approved);
+    const flakes = [10, 11, 12].map((id, i) => ({ ...ci.runs[i % 2]!, id, conclusion: "failure", beforeTests: true }));
+    expect(seal(f, check(f), { ...ci, runs: [...flakes, ...ci.runs] })).toMatchObject({ ok: false, why: expect.stringContaining("failed 3 times on this commit before the tests ran") });
   });
 
   test("the rule itself: only a fresh, complete, latest-attempt-success GitHub Actions reading of the exact head passes", () => {
@@ -182,23 +210,55 @@ describe("attack 3: a check that isn't of this commit, this scope, or the first 
     expect(seal(f, stranger)).toMatchObject({ ok: false, why: expect.stringContaining("isn't a finished build of this release task") });
   });
 
-  const red = () => reportOf(UNITS.map(file => file === "src/index.test.ts" ? { file, failed: ["answer"] } : { file }));
-  test.each([1, 2])("a flaky release check (%i failed run(s), then a pass on the same commit and digest) approves, and the failures are recorded", failed => {
+  const red = (units: readonly string[] = UNITS) => reportOf(units.map(file => file === "src/index.test.ts" ? { file, failed: ["answer"] } : { file }));
+  test.each([1, 2])("confirmed infrastructure (%i run(s) Toolroll's shutdown stopped, each rerun by the release), then a pass, approves; the failures are recorded", failed => {
     const f = open();
     authorize(f);
-    const failedRuns = Array.from({ length: failed }, () => check(f, f.approved, red));
+    const failedRuns = Array.from({ length: failed }, () => infraCheck(f));
     const rerun = check(f);
     expect(seal(f, rerun)).toMatchObject({ ok: true });
     const evidence = f.store.handle.prepare("SELECT detail FROM action_ledger WHERE task_id = ? AND action = 'release auto-approved' AND outcome = 'auto-green'").get(f.taskId);
     expect(JSON.parse(String(evidence!["detail"]))).toMatchObject({ checkFailures: failedRuns, ciFailures: [] });
   });
 
-  test("the cap: three failed release-check runs before the pass need a person", () => {
+  test("failure classes: a failing test before the pass is never erased by it (no flake allowance)", () => {
     const f = open();
     authorize(f);
-    for (let n = 0; n < 3; n++) check(f, f.approved, red);
-    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("failed 3 times before it passed") });
+    const failedRun = check(f, f.approved, red);
+    // Even a rerun row recorded for it (a forged one) doesn't make a test failure infrastructure.
+    rerunRecorded(f, failedRun);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringMatching(/run \d+\) failed: src\/index.test.ts failed .*a person decides/) });
     expect(basis(f)).toBeNull();
+  });
+
+  test("failure classes: an unexplained failure (no report at all) before the pass needs a person", () => {
+    const f = open();
+    authorize(f);
+    sealedCheck(f, f.taskId, f.approved, () => null, { base: f.base });
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("unexplained") });
+  });
+
+  test("failure classes: infrastructure the release didn't rerun itself (a person's or anyone's regate) needs a person", () => {
+    const f = open();
+    authorize(f);
+    infraCheck(f, false);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("wasn't rerun by the release") });
+  });
+
+  test("the cap: three infrastructure failures before the pass need a person", () => {
+    const f = open();
+    authorize(f);
+    for (let n = 0; n < 3; n++) infraCheck(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("a person decides") });
+    expect(basis(f)).toBeNull();
+  });
+
+  test("a real-model journey that passed only on its retry is counted: no automatic approval", () => {
+    const f = open();
+    authorize(f);
+    const retried = (units: readonly string[]) => reportOf(units.map(file => ({ file })), { journeys: [{ script: "app", kind: "real", finished: true,
+      groups: [{ group: "lead", state: "passed", retried: true, unattributed: false, journeys: [{ name: "answers", state: "passed" }] }] }] });
+    expect(seal(f, check(f, f.approved, retried))).toMatchObject({ ok: false, why: expect.stringContaining("passed only on a retry (app real-model journey group lead)") });
   });
 
   test("an earlier failed check on different scope text needs a person", () => {
@@ -447,10 +507,16 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
  * GitHub's check-runs endpoint as it behaves: `filter=latest` (its default) lists only the newest attempt of each job;
  * `filter=all` lists every attempt. Answers as gh does with --paginate --jq (one JSON object per line).
  */
-function fakeGitHub(attempts: { id: number; name: string; conclusion: string; suite?: number; app?: string; head?: string }[], sha: string) {
+function fakeGitHub(attempts: { id: number; name: string; conclusion: string; suite?: number; app?: string; head?: string; steps?: { number: number; name: string; status: string; conclusion: string | null }[] }[], sha: string) {
   const calls: string[][] = [];
   const run: Exec = async (_cmd, args) => {
     calls.push([...args]);
+    // GitHub's job record (a check run's id is its job's): its steps as the runner recorded them.
+    const job = args.find(arg => /\/actions\/jobs\/\d+$/.test(arg));
+    if (job !== undefined) {
+      const one = attempts.find(attempt => job.endsWith(`/${attempt.id}`));
+      return one === undefined ? { code: 1, stdout: "", stderr: "not found" } : { code: 0, stdout: JSON.stringify({ id: one.id, status: "completed", conclusion: one.conclusion, steps: one.steps ?? [] }), stderr: "" };
+    }
     // The workflow-run listing (which suite is a run of which workflow): none here.
     if (args.some(arg => arg.includes("/actions/runs"))) return { code: 0, stdout: "", stderr: "" };
     const url = args.find(arg => arg.includes("/check-runs")) ?? "";
@@ -483,22 +549,26 @@ describe("codex r1 #3: the cap counts every attempt GitHub holds, read through t
     await expect(readCheckRuns(twice, "/usr/bin/gh", "ap9000/toolroll", "a".repeat(40))).rejects.toThrow();
   });
 
-  test.each([[2, true], [3, false]] as const)("%i failed attempts of one job before its pass, end to end through the store adapter: approved=%s", async (failed, approved) => {
+  /** Steps as GitHub records them: only its own "Set up job" ran (the runner failed before the tests), or the tests too. */
+  const RUNNER_LOST = [{ number: 1, name: "Set up job", status: "completed", conclusion: "failure" }, { number: 2, name: "Run tests", status: "completed", conclusion: "skipped" }, { number: 3, name: "Complete job", status: "completed", conclusion: "success" }];
+  const TESTS_FAILED = [{ number: 1, name: "Set up job", status: "completed", conclusion: "success" }, { number: 2, name: "Set up job", status: "completed", conclusion: "failure" }, { number: 3, name: "Complete job", status: "completed", conclusion: "success" }];
+  test.each([[2, RUNNER_LOST, true], [3, RUNNER_LOST, false], [1, TESTS_FAILED, false], [1, [], true]] as const)("%i failed attempts of one job before its pass, end to end through the store adapter (steps %j): approved=%s", async (failed, steps, approved) => {
     const f = open();
     const attempts = [
-      ...Array.from({ length: failed }, (_, i) => ({ id: 10 + i, name: REQUIRED_PR_CHECKS[0], conclusion: "failure" })),
+      // A step the candidate named like GitHub's own "Set up job" still counts as a step that ran: numbers, not names.
+      ...Array.from({ length: failed }, (_, i) => ({ id: 10 + i, name: REQUIRED_PR_CHECKS[0], conclusion: "failure", steps: [...steps] })),
       ...REQUIRED_PR_CHECKS.map((name, i) => ({ id: 100 + i, name, conclusion: "success" })),
     ];
     const gh = fakeGitHub(attempts, f.approved);
     const rel = storeReleaseAdapter(() => f.store, () => {}, () => LATER, undefined, {
-      observe: async sha => ({ head: sha, observedAt: LATER.toISOString(), complete: true, runs: (await readCheckRuns(gh.run, "/usr/bin/gh", "ap9000/toolroll", sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null })) }),
+      observe: async sha => ({ head: sha, observedAt: LATER.toISOString(), complete: true, runs: (await readCheckRuns(gh.run, "/usr/bin/gh", "ap9000/toolroll", sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, beforeTests: one.beforeTests ?? null })) }),
       mergeBase: async () => f.base, evidenceRoot: EVIDENCE(f),
     });
     expect(await rel.auto!.authorizeCheck({ taskId: f.taskId, digest: digestOf(f), candidate: f.approved })).toEqual({ ok: true });
     const run = check(f);
     const answer = await rel.auto!.approve({ taskId: f.taskId, digest: digestOf(f), candidate: f.approved, run, receipt: receiptOf(f) });
     expect(answer.ok).toBe(approved);
-    if (!approved) expect(answer).toMatchObject({ why: expect.stringContaining("failed 3 times") });
+    if (!approved) expect(answer).toMatchObject({ why: expect.stringMatching(/failed 3 times|doesn't show its runner failing/) });
   });
 });
 
@@ -553,34 +623,31 @@ describe("codex r1 #7 and the scan: flake retries as the builder and regate real
   };
   const red = () => reportOf(UNITS.map(file => file === "src/index.test.ts" ? { file, failed: ["answer"] } : { file }));
 
-  test("a regate starting at the first attempt's build commit, then passing, approves", () => {
+  test("a release rerun (confirmed infrastructure) starting at the first attempt's build commit, then passing, approves", () => {
     const f = open({ candidate: { "src/index.js": "export const answer = 43;\n" } });
     authorize(f);
     const b1 = buildCommit(f, f.base);
-    sealedCheck(f, f.taskId, b1, () => red(), { base: f.base });
+    const first = sealedCheck(f, f.taskId, b1, () => null, { base: f.base, plane: { configured: true, ran: false, attemptFailed: true, failure: "custody-lost" } }).runId;
+    rerunRecorded(f, first);
     // The regate's attempt starts at B1 (the previous build commit) and commits B2 on it.
     const b2 = buildCommit(f, b1);
     const rerun = sealedCheck(f, f.taskId, b2, (_plan, units) => passingReport(units), { base: b1 }).runId;
     expect(seal(f, rerun)).toMatchObject({ ok: true });
   });
 
-  test("every unsuccessful build counts toward the cap: two failed checks and an interrupted build need a person", () => {
+  test("every unsuccessful build counts: an interrupted build before the pass needs a person", () => {
     const f = open();
     authorize(f);
-    check(f, f.approved, red);
-    check(f, f.approved, red);
     const interrupted = builtRun(f.store, f.taskId, f.approved, f.base);
     f.store.handle.prepare("UPDATE run SET outcome = 'interrupted' WHERE id = ?").run(interrupted);
-    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("failed 3 times") });
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("its build ended interrupted") });
   });
 
-  test("a build that never recorded a check counts too", () => {
+  test("a build that never recorded a check counts too: unexplained, a person decides", () => {
     const f = open();
     authorize(f);
-    check(f, f.approved, red);
-    check(f, f.approved, red);
-    builtRun(f.store, f.taskId, f.approved, f.base);
-    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("failed 3 times") });
+    rerunRecorded(f, builtRun(f.store, f.taskId, f.approved, f.base));
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("unexplained") });
   });
 });
 

@@ -1339,18 +1339,53 @@ describe("toolroll release: approve automatically when checks pass", () => {
     expect(plane).toMatchObject({ authorizations: 1, approvals: 1, released: [] });
   });
 
-  test("a failed release check stops and tells the owner; a regate of the same commit that passes (a flake) then approves itself", async () => {
+  test("failure classes: confirmed infrastructure is checked again under the same approval, and its pass approves itself", async () => {
     const dir = stateDir();
     const { s, adapters, plane } = autoWorld();
-    s.onSleep = [state => { if (state.gate.approval !== null && state.gate.result === null) state.gate.result = { run: 2757, head: SHA, check: "failed", level: "full", receipt: RECEIPT, worktree: "/w" }; }];
-    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "check", reason: "check-failed" });
-    expect(plane).toMatchObject({ approvals: 0, gaveUp: [], checkFailed: [expect.stringContaining("did not pass")] });
-    // Still checking automatically: the regate reruns the same commit and digest, and its pass is sealed by the plane.
-    expect(s.gate.approval).toMatchObject({ basis: "auto-check" });
-    s.gate.pending = true;
-    s.onSleep = [state => { state.gate.pending = false; state.gate.result = { run: 2758, head: SHA, check: "passed", level: "full", receipt: RECEIPT, worktree: "/w" }; }];
+    const asked: string[] = [];
+    // The plane (check-failure.ts) classifies from its own records: here, Toolroll's own shutdown stopped run 2757.
+    adapters.release!.recheck = async task => { asked.push(task); s.gate.pending = true; return { action: "rerun", why: "Toolroll's own shutdown stopped the check before it finished" }; };
+    adapters.release!.standing = async () => ({ ok: true, retried: [] });
+    s.onSleep = [state => {
+      if (state.gate.approval !== null && state.gate.result === null) state.gate.result = { run: 2757, head: SHA, check: "failed", level: "full", receipt: RECEIPT, worktree: "/w" };
+      // The rerun the plane queued finishes and passes.
+      else if (state.gate.pending === true) { state.gate.pending = false; state.gate.result = { run: 2758, head: SHA, check: "passed", level: "full", receipt: RECEIPT, worktree: "/w" }; }
+    }];
     expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
-    expect(plane).toMatchObject({ approvals: 1, released: ["v0.9.52"] });
+    expect(asked).toEqual([gateTaskId("0.9.52", SHA)]);
+    expect(s.said.join("\n")).toContain("Toolroll confirmed it as its own infrastructure, so the check runs again");
+    expect(plane).toMatchObject({ approvals: 1, checkFailed: [], released: ["v0.9.52"] });
+  });
+
+  test.each([
+    ["deterministic", "src/index.test.ts failed", "fix the branch, then release the new commit with `toolroll release"],
+    ["unknown", "the check exited 1 with no failing test identified", "a pass then doesn't erase this failure: a person decides"],
+    ["agent-behaviour", "app real-model journey group lead failed", "never rerun until they pass, so a person decides"],
+  ] as const)("failure classes: a %s failure stops with the truth about what happens next; nothing reruns it", async (kind, why, words) => {
+    const dir = stateDir();
+    const { s, adapters, plane } = autoWorld();
+    adapters.release!.recheck = async () => ({ action: "stop", class: kind, why });
+    s.onSleep = [state => { if (state.gate.approval !== null && state.gate.result === null) state.gate.result = { run: 2757, head: SHA, check: "failed", level: "full", receipt: RECEIPT, worktree: "/w" }; }];
+    const outcome = await runRelease(options(dir), adapters);
+    expect(outcome).toMatchObject({ ok: false, step: "check", reason: "check-failed", message: expect.stringContaining(why) });
+    expect(outcome.ok ? "" : outcome.message).toContain(words);
+    expect(plane).toMatchObject({ approvals: 0, checkFailed: [expect.stringContaining(why)] });
+  });
+
+  test("failure classes: a pass after a failure that wasn't infrastructure doesn't stand (a diagnostic rerun erases nothing)", async () => {
+    const dir = stateDir();
+    const { s, adapters, plane } = autoWorld({ setting: false });
+    adapters.release!.standing = async () => ({ ok: false, why: "an earlier check of this commit (run 2757) failed: src/index.test.ts failed (a failure in the code or its tests: fix the branch). A later pass doesn't erase it, so a person decides", retried: [] });
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "check", reason: "check-failed", message: expect.stringContaining("A later pass doesn't erase it") });
+    expect(s.calls).not.toContain("deploy");
+    expect(plane.approvals).toBe(0);
+  });
+
+  test("a journey that passed only on its retry is said, never silently part of a person's pass", async () => {
+    const { s, adapters } = autoWorld({ setting: false });
+    adapters.release!.standing = async () => ({ ok: true, retried: ["app real-model journey group lead"] });
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
+    expect(s.said.join("\n")).toContain("passed, but only on a retry: app real-model journey group lead");
   });
 
   test("the setting lowered while the check runs: it doesn't approve, and a person is asked", async () => {
@@ -1435,13 +1470,20 @@ describe("toolroll release: approve automatically when checks pass", () => {
     expect(plane.gaveUp).toEqual([expect.stringContaining("release build")]);
   });
 
-  test("prChecksVerdict: jobs by app, suite and name, judged by the latest attempt; the cap only for an automatic approval", () => {
+  test("prChecksVerdict: jobs by app, suite and name, judged by the latest attempt; failure classes only for an automatic approval", () => {
     const at = (id: number, conclusion: string | null, extra: Partial<CheckRun> = {}): CheckRun => ({ id, name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion, app: "github-actions", suite: 1, head: SHA, ...extra });
     const rest = passing(REQUIRED_PR_CHECKS.slice(1)).map((run, i) => ({ ...run, id: 100 + i, app: "github-actions", suite: 1, head: SHA }));
     const flaky = [at(1, "failure"), at(2, "failure"), at(3, "failure"), at(4, "success"), ...rest];
     expect(prChecksVerdict(flaky, SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "passed" });
-    expect(prChecksVerdict(flaky, SHA, REQUIRED_PR_CHECKS, { cap: 2 })).toMatchObject({ state: "failed", failed: [expect.stringContaining("failed 3 times")] });
-    expect(prChecksVerdict(flaky.slice(1), SHA, REQUIRED_PR_CHECKS, { cap: 2 })).toMatchObject({ state: "passed", failures: [{ id: 2 }, { id: 3 }] });
+    // An automatic approval: an earlier failure nothing shows as the runner's own is never tolerated, however few.
+    expect(prChecksVerdict(flaky, SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "failed", failed: [expect.stringContaining("failed 3 times before it passed")] });
+    expect(prChecksVerdict([at(3, "failure"), at(4, "success"), ...rest], SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "failed", failed: [expect.stringContaining("failed once before it passed")] });
+    // Confirmed infrastructure (GitHub's job record: no workflow step ran), at most two on the commit.
+    const infra = (id: number) => at(id, "failure", { beforeTests: true });
+    expect(prChecksVerdict([infra(2), infra(3), at(4, "success"), ...rest], SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "passed", failures: [{ id: 2 }, { id: 3 }] });
+    expect(prChecksVerdict([infra(1), infra(2), infra(3), at(4, "success"), ...rest], SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "failed", failed: [expect.stringContaining("failed 3 times on this commit before the tests ran")] });
+    // A candidate-written "infrastructure" label is no record: only the plane's beforeTests reading counts.
+    expect(prChecksVerdict([at(3, "failure", { name: `${REQUIRED_PR_CHECKS[0]}`, conclusion: "infrastructure" }), at(4, "success"), ...rest], SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "failed" });
     // Two workflow runs of the same job: each must pass on its own latest attempt.
     expect(prChecksVerdict([at(1, "success"), at(2, "failure", { suite: 2 }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
     expect(prChecksVerdict([at(1, "success", { app: "other" }), ...rest], SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "failed" });
@@ -1500,7 +1542,7 @@ describe("toolroll release: approve automatically when checks pass", () => {
     expect(s.calls).toContain("merge");
   });
 
-  test("codex r2 #5: a required check must be green in its newest run; the cap counts the superseded runs' failures", () => {
+  test("codex r2 #5: a required check must be green in its newest run; the classes count the superseded runs' failures", () => {
     const run = (id: number, suite: number, conclusion: string, name: string = REQUIRED_PR_CHECKS[0]): CheckRun => ({ id, name, status: "completed", conclusion, app: "github-actions", suite, head: SHA, workflow: 1 });
     const rest = REQUIRED_PR_CHECKS.slice(1).map((name, i) => run(100 + i, 3, "success", name));
     // Newest run red, older green: failed.
@@ -1508,8 +1550,10 @@ describe("toolroll release: approve automatically when checks pass", () => {
     // Older runs red, newest green: passes for a person; with the cap, three failures across runs is too many.
     const history = [run(1, 1, "failure"), run(2, 2, "failure"), run(3, 2, "failure"), run(4, 3, "success"), ...rest];
     expect(prChecksVerdict(history, SHA, REQUIRED_PR_CHECKS)).toMatchObject({ state: "passed" });
-    expect(prChecksVerdict(history, SHA, REQUIRED_PR_CHECKS, { cap: 2 })).toMatchObject({ state: "failed", failed: [expect.stringContaining("failed 3 times")] });
-    expect(prChecksVerdict(history.slice(1), SHA, REQUIRED_PR_CHECKS, { cap: 2 })).toMatchObject({ state: "passed", failures: [{ id: 2 }, { id: 3 }] });
+    expect(prChecksVerdict(history, SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "failed", failed: [expect.stringContaining("failed 3 times")] });
+    const infra = history.map(one => one.conclusion === "failure" ? { ...one, beforeTests: true } : one);
+    expect(prChecksVerdict(infra, SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "failed", failed: [expect.stringContaining("failed 3 times on this commit before the tests ran")] });
+    expect(prChecksVerdict(infra.slice(1), SHA, REQUIRED_PR_CHECKS, { auto: true })).toMatchObject({ state: "passed", failures: [{ id: 2 }, { id: 3 }] });
   });
 
   test("codex r2 #6: history that can't be read whole stops an automatic release, and leaves a person's alone", async () => {

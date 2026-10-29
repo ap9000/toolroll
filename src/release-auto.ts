@@ -18,7 +18,8 @@ import { runCheckLevel } from "./check-levels.js";
 import { readVerifiedCommit, verifiedBlobs, verifiedTreeDiff, verifiedTreeEntries } from "./commit-extract.js";
 import { mightName, testInfrastructure, type TestInfrastructure } from "./test-infra.js";
 import { chatControlHref } from "./chat-controls.js";
-import { AUTO_FLAKE_CAP, REQUIRED_PR_CHECKS, prChecksVerdict, type CheckFailure } from "./release.js";
+import { INFRA_RERUNS_PER_CANDIDATE, REQUIRED_PR_CHECKS, prChecksVerdict, type CheckFailure } from "./release.js";
+import { releaseCheckStanding } from "./check-failure.js";
 import { CARRY_RULES, rulePath } from "./release-carry.js";
 import { AUTO_EVIDENCE_ACTION, AUTO_WITHDRAWN_ACTION, LIVE_RELEASE_STATES, RELEASE_APPROVAL_ACTION, releaseAuthorityOfTask, releaseAutoApproves, type ReleaseApprovalSetting, releaseApprovalSetting } from "./release-authority.js";
 import { autoReleaseApprovalOf, personApprovalOf } from "./scope.js";
@@ -33,7 +34,9 @@ export const RELEASE_APPROVAL_WORDS = { ask: "Ask me", auto: "Approve automatica
 export const CI_OBSERVATION_MS = 5 * 60_000;
 
 /** One check run on the candidate as the plane's own `gh` reported it (oldest first). */
-export type ObservedCheckRun = { id: number | null; name: string; status: string; conclusion: string | null; app: string | null; suite?: number | null; head?: string | null; workflow?: number | null };
+export type ObservedCheckRun = { id: number | null; name: string; status: string; conclusion: string | null; app: string | null; suite?: number | null; head?: string | null; workflow?: number | null;
+  /** GitHub's job record shows this unsuccessful attempt ended before any workflow step ran (release-adapters.ts). */
+  beforeTests?: boolean | null };
 /** The plane's own look at GitHub CI for one commit (release-adapters.ts makes it, right before the seal). */
 export type CiObservation = { head: string; observedAt: string; runs: readonly ObservedCheckRun[];
   /** Whether the history is whole (fewer check suites than GitHub's check-runs ceiling): false or absent refuses. */
@@ -208,17 +211,16 @@ export function autoPathProblem(path: string): string | null {
   return "it's outside what a release approves itself for (product code, tests, docs, the changelog and a version bump)";
 }
 
-/** Flakes: how many failed attempts one CI job, and how many unsuccessful release-check runs, may have before a person
- * decides. The head and digest are pinned, so between attempts only nondeterminism differs. */
-export const MAX_FAILED_ATTEMPTS = AUTO_FLAKE_CAP;
-
-/** One CI attempt that failed before its job's latest attempt passed, as the evidence records it. */
+/** One CI attempt that failed before its job's latest attempt passed (GitHub showed its runner failing before the
+ * tests ran), as the evidence records it. */
 export type CiFailure = CheckFailure;
 
 /**
  * GitHub CI on the exact head, as the plane read it (every attempt): fresh, every run GitHub Actions, and the same
  * verdict every later release boundary uses (release.ts prChecksVerdict: exact head, each job by its latest attempt,
- * every required check present), with the flake cap. The tolerated failures are returned for the evidence.
+ * every required check present), where an earlier failure stands only as confirmed infrastructure (GitHub's job record
+ * shows it ended before any workflow step ran), at most INFRA_RERUNS_PER_CANDIDATE of them. The tolerated failures are
+ * returned for the evidence.
  */
 export function ciVerdict(observation: CiObservation, candidate: string, now: Date): { ok: true; failures: CiFailure[] } | { ok: false; problem: string } {
   const no = (problem: string) => ({ ok: false as const, problem });
@@ -228,7 +230,7 @@ export function ciVerdict(observation: CiObservation, candidate: string, now: Da
   if (observation.complete !== true) return no("GitHub's check history of this commit can't be read whole");
   const other = observation.runs.find(run => run.app !== "github-actions");
   if (other !== undefined) return no(`${other.name} was reported by ${other.app ?? "an unknown app"}, not GitHub Actions`);
-  const verdict = prChecksVerdict(observation.runs, candidate, REQUIRED_PR_CHECKS, { cap: MAX_FAILED_ATTEMPTS });
+  const verdict = prChecksVerdict(observation.runs, candidate, REQUIRED_PR_CHECKS, { auto: true });
   if (verdict.state === "failed") return no(verdict.failed.join(", "));
   if (verdict.state === "pending") return no(`not finished: ${verdict.waiting.join(", ")}`);
   return { ok: true, failures: verdict.failures };
@@ -332,14 +334,19 @@ export function sealAutoGreen(store: Store, input: {
     const head = run.headRevision;
     if (head === null) return refuse(`run ${input.run} recorded no commit`);
     if (runCheckLevel(store, run.id) !== "full") return refuse("the release check wasn't Full");
-    // A flake: earlier builds of this task may have failed — every one that didn't finish built with a passed check
-    // counts (a failed check, a check that never ran, a build that failed or was interrupted) — but only re-runs of the
-    // same signed scope (the regate road keeps the candidate and digest), and at most MAX_FAILED_ATTEMPTS of them.
+    // Earlier builds of this task that didn't finish built with a passed check (a failed check, a check that never ran,
+    // a build that failed or was interrupted) stand only as confirmed infrastructure the release itself reran on the
+    // same signed scope, at most INFRA_RERUNS_PER_CANDIDATE (check-failure.ts): a failing test, an unexplained failure
+    // or a real-model journey before the pass means a person decides. So does anything that passed only on a retry.
     const failedRuns = store.handle.prepare(`SELECT r.id, r.scope_digest FROM run r LEFT JOIN run_check c ON c.run = r.id
         WHERE r.task_ref = ? AND r.role = 'builder' AND r.id <> ?
           AND NOT (COALESCE(r.outcome, '') IN ('built', 'no-change') AND COALESCE(c.status, '') = 'passed') ORDER BY r.id`).all(facts.taskRef, run.id);
     if (failedRuns.some(one => one["scope_digest"] !== input.digest)) return refuse("an earlier check of this release ran on different scope text, so a person decides");
-    if (failedRuns.length > MAX_FAILED_ATTEMPTS) return refuse(`the release check failed ${failedRuns.length} times before it passed, so a person decides`);
+    if (failedRuns.some(one => Number(one["id"]) > run.id)) return refuse(`run ${input.run} isn't this task's newest build`);
+    const standing = releaseCheckStanding(store, input.evidenceRoot, { taskId: input.taskId, run: run.id });
+    if (!standing.ok) return refuse(standing.why);
+    if (standing.retried.length > 0) return refuse(`the release check passed only on a retry (${standing.retried.slice(0, 3).join(", ")}${standing.retried.length > 3 ? ", …" : ""}), so a person decides`);
+    if (failedRuns.length > INFRA_RERUNS_PER_CANDIDATE) return refuse(`the release check failed ${failedRuns.length} times before it passed, so a person decides`);
     const checkFailures = failedRuns.map(one => Number(one["id"]));
     const newest = store.runsFor(facts.taskRef).find(one => one.role === "builder");
     if (newest?.id !== run.id) return refuse(`run ${input.run} isn't this task's newest build`);
@@ -404,15 +411,15 @@ export function giveUpAutoApproval(store: Store, input: { taskId: string; why: s
   });
 }
 
-/** A release check failed while checking automatically: tell the owner. The `auto-check` stays, so a regate of the same
- * commit and digest (a flake) may still approve itself, within MAX_FAILED_ATTEMPTS failed runs. */
+/** A release check failed while checking automatically: tell the owner. The `auto-check` stays: a rerun the release
+ * itself made after confirmed infrastructure may still approve itself; any other failure means a person decides. */
 export function noteAutoCheckFailed(store: Store, input: { taskId: string; why: string; now: Date }): void {
   const ref = store.lookupRef(input.taskId);
   if (ref === null) return;
   const version = store.getScope(input.taskId)?.releaseTerms?.packageVersion ?? null;
   store.enqueueNotification({ dedupeKey: `release-auto-check-failed:${input.taskId}:${input.why.slice(0, 120)}`, kind: "release-auto", pushClass: "attention",
     subject: `Release${version === null ? "" : ` ${version}`} check failed`,
-    body: `${input.why}. Rerun it on the same commit (a flake still approves itself, up to ${MAX_FAILED_ATTEMPTS} failed checks), or fix the branch and release the new commit.`,
+    body: `${input.why}. Only a failure Toolroll confirmed as its own infrastructure is checked again automatically; for anything else, approve it yourself or fix the branch and release the new commit.`,
     link: chatControlHref("task", input.taskId), source: { taskRef: ref.id } }, input.now);
 }
 

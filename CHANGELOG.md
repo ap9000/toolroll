@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+- **A release check that's cut short still leaves its evidence.** Every
+  part of the release check (typecheck, build, units, journeys, upgrades)
+  now prints its output as it runs, each line tagged with its part (and
+  upgrade version), instead of only at the very end. Each part's end is
+  recorded with its start time, exit code, signal, timeout and whether it
+  was stopped, and a failing upgrade version's own log is printed the moment
+  it fails. Release check 3261 was stored as "exit 1" with nothing but its
+  header: a signal had ended it, the plane recorded the signal as a plain
+  exit 1, and the parts' output was still waiting to be printed. A command
+  ended by a signal, or by Toolroll's own shutdown, now says so.
+- **No complete result, no pass.** A release's Full check counts only with
+  its valid report (carrying that run's secret), a result for every part,
+  unit file, journey group and upgrade version it owed, and a successful
+  exit. A missing, malformed, cut-short or incomplete report is an error
+  ("no result"), never a pass.
+- **Failures are classed, and only Toolroll's own infrastructure is rerun.**
+  The flat "two flakes" allowance is gone. A failing test, typecheck, build,
+  attack test or upgrade is never rerun to pass: fix the branch. A failure
+  Toolroll itself confirms as infrastructure (the check never started, the
+  worker lost the build, Toolroll's shutdown stopped it, or a GitHub job
+  whose runner failed before any of its steps ran) is checked again on the
+  same commit under the same approval, at most once per incident and twice
+  per commit, with no new approval. An unexplained failure blocks: a
+  diagnostic rerun may run, but its pass doesn't erase the failure, so you
+  decide. Real-model journeys are counted, never rerun until they pass, and
+  one that passed only on a retry is now reported (an automatic approval
+  won't approve it). `toolroll release` says which of these happened and
+  what to do next, instead of always asking for `--new`.
+
 ## 0.9.76 — 2026-10-28
 
 - **Releases can approve themselves when they're green.** A new per-project
