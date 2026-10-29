@@ -2,6 +2,12 @@
 
 ## 0.9.77 — 2026-10-29
 
+- **Sandboxed commands no longer hang on macOS 26.5.** The fence denies most
+  macOS system services and, by default, asked macOS to report each denial; on
+  macOS 26.5.2 about one denied lookup in 70 never returned while that report
+  was made, so a sandboxed `npm ci`, `npm pack` or any Node program setting up
+  DNS could hang forever (a release carry until its 20-minute timeout). Denials
+  are now made without the report; nothing the fence allows or denies changed.
 - **The console is fast again.** 0.9.76's release-approval setting was read by
   walking a project's whole action ledger once per task row, and every page's
   sidebar runs that list four times, so each page blocked the console for about
