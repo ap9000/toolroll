@@ -919,6 +919,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
               etag: '"' + createHash('sha256').update(`${key}:${revision}:${expiresAt}`).digest('hex') + '"' };
           }
           await prefetchChrome(route, url, who);
+          // The worker wait lets a sign-out, credential/access change or console ceiling change land. Prove the
+          // cookie and route again before rendering protected content or answering with a content validator.
+          if (who.via === 'cookie') {
+            const current = identify(request, false);
+            if (current?.via !== 'cookie' || current.session !== who.session) return redirect(response, loginHref(url.pathname + url.search));
+            if (!projectRequestAllowed(route, route.project, url, who, request, response, null)) return;
+          }
           return handleGet(route, url, who, request, response);
         }
         return handlePost(route, url, who, request, response, body!);
