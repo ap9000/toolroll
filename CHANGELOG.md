@@ -13,9 +13,16 @@
   for the unit suite; the check's load budget is unchanged.
 - **An automatic release checks while CI runs.** With "Approve automatically
   when checks pass" on, the release files its task and runs its check beside
-  CI instead of after it. Nothing is approved, by Toolroll or a person, before
-  every pull request check passed on the commit; a person is still asked only
-  once CI passed.
+  CI instead of after it. Toolroll approves it only once every pull request
+  check passed on the commit.
+- **A release asks for your approval while CI runs.** `toolroll release` files
+  the release task and asks you right away instead of waiting for GitHub's
+  checks; after you approve, the release check runs beside CI. The approval
+  says "GitHub's checks are still running; nothing deploys until they pass."
+  Nothing is deployed, merged, tagged or published until every required check
+  passed on the exact commit, read again right before the deploy; if one
+  fails, the release stops before the deploy. A check that already failed
+  still stops the release before anyone is asked.
 - **The console stays responsive while builds and checks run.** `toolroll up`
   now runs two processes: the console (pages, sign-in and approvals) and the
   worker (builds, checks, follow-ups and housekeeping). On a copy of a real

@@ -98,8 +98,7 @@ units + real, so about **9 instead of 12–14 minutes** on the measured runs.
 
 ### D2. An automatic release checks beside CI (up to the whole CI time per automatic round)
 
-With the project's "Approve automatically when checks pass" on (read from the plane's own records for the gate
-checkout, `settingFor`), the gate still stops at once on a pull request check that already failed. It no longer
+With the project's "Approve automatically when checks pass" on (since 2026-10-29, on every release), the gate still stops at once on a pull request check that already failed. It no longer
 *waits* for the checks to finish before filing the release task. The task is filed, the plane seals `auto-check`, and
 the release check runs while CI runs. Nothing about what an approval proves changes:
 
@@ -107,15 +106,42 @@ the release check runs while CI runs. Nothing about what an approval proves chan
   `sealAutoGreen` then makes its own fresh CI observation and proof, unchanged.
 - If CI fails there, the automatic road ends (`giveUp`: the task asks a person, as on any refusal) and the release
   stops with `ci-failed`.
-- A person's road never gets ahead of CI. If the gate filed while CI ran (`ciAhead` in the journal), the approval step
-  waits for every check to pass before asking anyone, and stops if one failed. With the setting off, or on an older
-  plane without `settingFor`, the gate waits exactly as before.
-
-The setting is the plane's own record, keyed by project. Nothing the candidate writes reaches it, and it only decides
-when to wait, never what has to pass.
+- A person's road: see "Decision: a person's release asks during CI" below (it replaced "a person's road never gets
+  ahead of CI", and with it the CI hold the gate placed and the `settingFor` hint that chose whether to file early).
 
 **Today this does nothing in production.** Automatic approval needs release terms, and none can be made while the
 release checks run unsandboxed (see Measurements).
+
+## Decision: a person's release asks during CI
+
+Alex, 2026-10-29: for a release a person approves, `toolroll release` files the release task and asks for approval
+right away, while the pull request's checks still run. Built on branch `approve-during-ci` (off b4bf1c46).
+
+- **The gate** stops only on a required check that already failed (as before). Checks still running or not started no
+  longer hold it, on either road: the task is filed (`ciAhead` in the journal) and a person is asked at once.
+- **What the person sees.** The CLI, the console's approval sheet and the chat release card say "GitHub's checks are
+  still running; nothing deploys until they pass." The plane learns it from a ledger row the coordinator records before
+  filing (`release asked while CI runs`, release-ci-hold.ts `noteCiRunning`); the row holds nothing and ends only when
+  the plane itself reads exact-head CI passing (`liftCiHold`: fresh, whole, GitHub Actions, ci.yml, every required
+  check). While asking, the coordinator looks at CI on each poll: a check that failed stops the release before anyone
+  approves a red commit.
+- **After the approval** the release check runs at once, beside CI.
+- **Nothing irreversible before CI is green on the exact head.** A release filed while CI ran (`ciBeforeDeploy`, kept
+  for the commit even after CI was seen green) reads the required checks again, fresh, right before the deploy
+  reservation, and waits for them within the ci step's limit: the person's verdict (`prChecksVerdict`: exact head,
+  GitHub Actions only, required names from ci.yml, each job by its latest attempt in the newest run of its workflow).
+  A check that failed, including a newer attempt of one that was green when the person approved, stops the release
+  before the deploy: nothing deployed, merged, tagged or published. The approval stands for that commit only: a job
+  rerun to green on GitHub lets the same command go on; a fix is a new commit that goes through approval again. The
+  merge still re-reads CI at the moment of merging and the ci step still runs after the deploy, unchanged; a failure
+  after the deploy still needs a person's fresh approval.
+- **The automatic road is unchanged.** Its `auto-green` seal still waits for every check to pass (the check step waits,
+  and `sealAutoGreen` reads CI itself), and `autoCiHolds` still reads CI before each irreversible step.
+- **The CI hold.** It existed so the automatic road's fallback would not ask a person before CI passed; under this
+  decision a person may be asked during CI, so the fallback asks at once too, and the coordinator no longer places the
+  hold. It never guarded the automatic seal (the seal primitive exempts `auto-check`/`auto-green`; `sealAutoGreen`
+  proves CI itself), so nothing the automatic road proves changes. A hold an older coordinator placed still holds every
+  approval but the automatic road's until the plane reads CI passing, exactly as before.
 
 ## Not built, and why
 
@@ -152,7 +178,6 @@ sound, require Full", source fixes keep a Full check.
    projects' checks (0.9.71 brought sandboxed checks back), or turn on "Carry release approvals when checks aren't
    sandboxed" (person-proven). Until one is done, test-only carries, targeted rechecks and automatic approval
    (including D2) never apply.
-2. **A person's release could also overlap CI.** Today the person is asked only once CI passed (feedback: ask for an
-   approval only when fully ready), so CI and the check run in series. Asking while CI runs, with deploy still waiting
-   for CI, would save about the CI time per person-approved round. Not built: it changes when the owner is asked.
+2. **A person's release could also overlap CI.** Decided 2026-10-29: yes, and built (see "Decision: a person's
+   release asks during CI").
 3. **No branch-protection change is needed** for the shards: the required names are unchanged.

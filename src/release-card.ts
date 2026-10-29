@@ -25,6 +25,7 @@ import { verifiedRange } from "./commit-extract.js";
 import { releaseTermsSchema, type ReleaseTerms } from "./contracts/release-terms.js";
 import { routeFromJson } from "./phase-routing.js";
 import { projectName } from "./project.js";
+import { RELEASE_CI_RUNNING_WORDS, releaseCiRunningOf } from "./release-ci-hold.js";
 import { RELEASE_PATH, releaseConfigProblem, releaseGitEnv, releaseRemote, releaseTools } from "./release-git.js";
 import type { Scope } from "./scope.js";
 import type { Store } from "./store.js";
@@ -277,6 +278,8 @@ export function releaseCardOf(store: Store, scope: Scope, formDigest: string, wo
     terms === null ? `Checks: ${value("checks")} · check access: ${value("checkAccess")}` : `Carry later commits: ${terms.policy.carry ? "yes" : "no"} · checks: ${value("checks")} · expires ${terms.expiresAt}`,
     // Option A's disclosure, on the card as on the approval sheet: never approved from chat without it.
     ...(terms !== null && terms.policy.carry && terms.access !== "sandboxed" ? ["This project's checks don't run in the sandbox: later test-only commits will run outside the sandbox without being shown to you first."] : []),
+    // Filed while CI runs (Alex, 2026-10-29): a person may approve now, and is told plainly what still waits.
+    ...(releaseCiRunningOf(store, scope.taskId) === null ? [] : [RELEASE_CI_RUNNING_WORDS]),
     "",
     ...changeWords(changes, terms, 5),
     "",

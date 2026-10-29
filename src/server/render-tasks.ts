@@ -2,6 +2,7 @@
 import { networkWords } from "../egress.js";
 import type { ReleaseView } from "../release-view.js";
 import { releaseAsksAgainWords, releaseTermsSentence } from "../scope.js";
+import { RELEASE_CI_RUNNING_WORDS } from "../release-ci-hold.js";
 import { writesWords } from "../writes-mode.js";
 import { checkAccessWords } from "../check-access.js";
 import { sandboxTermsWords } from "../project-sandbox.js";
@@ -1485,6 +1486,8 @@ export function taskBodyParts(data: {
   approvalProof?: { method: string; at: string } | null;
   /** A release task the plane approved (or is checking) itself (docs/plans/auto-approve-green.md): its candidate. */
   autoRelease?: { kind: "checking" | "approved"; candidate: string } | null;
+  /** A release task filed while its pull request's CI still runs (a person may approve now; nothing deploys before CI passes). */
+  releaseCiRunning?: boolean;
   /** One approval per release (release-once.md): the release this task belongs to, and whether this reader may stop it. */
   release?: ReleaseView | null;
   canStopRelease?: boolean;
@@ -1925,7 +1928,7 @@ export function taskBodyParts(data: {
           scope.touches.length === 0 ? "" : html`<p class="scope-paths"><strong>Touches</strong> ${scope.touches.join(", ")}</p>`,
           html`<p><strong>Quality</strong> ${qualityModeTitle(scope.qualityMode ?? "default")}</p>`,
           acceptanceCeremonyHtml(scope.acceptance),
-          scope.releaseTerms == null ? "" : html`<p><strong>Release</strong></p><p class="recap">${releaseTermsSentence(scope.releaseTerms)}</p>${scope.releaseTerms.policy.carry ? html`<details><summary>What asks again</summary><ul>${joinHtml(releaseAsksAgainWords(scope.releaseTerms).map(line => html`<li>${line}</li>`), "")}</ul></details>` : ""}`,
+          scope.releaseTerms == null ? "" : html`<p><strong>Release</strong></p><p class="recap">${releaseTermsSentence(scope.releaseTerms)}</p>${data.releaseCiRunning === true ? html`<p class="meta">${RELEASE_CI_RUNNING_WORDS}</p>` : ""}${scope.releaseTerms.policy.carry ? html`<details><summary>What asks again</summary><ul>${joinHtml(releaseAsksAgainWords(scope.releaseTerms).map(line => html`<li>${line}</li>`), "")}</ul></details>` : ""}`,
           approval.approved && data.autoRelease != null
             ? html`<p class="meta scope-seal">${autoReleaseWords(data.autoRelease)} · <span class="seal">signs ${shortDigest(scope.digest)}</span></p>`
             : approval.approved && data.release?.kind === "carried"

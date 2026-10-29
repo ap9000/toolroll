@@ -8,6 +8,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { releaseFixture, builtRun, sealedCheck, reportOf, RELEASE_NOW, EVIDENCE, type ReleaseFixture } from "../release-fixture.js";
 import { authorizeAutoCheck, ciProblem, giveUpAutoApproval, holdApprovalForCi, liftCiHold, sealAutoGreen, setReleaseApproval, type CiObservation } from "../../src/release-auto.js";
+import { noteCiRunning, releaseCiRunningOf, RELEASE_CI_RUNNING_WORDS } from "../../src/release-ci-hold.js";
 import { releaseAutoApproves } from "../../src/release-authority.js";
 import { approve, liveReleaseOf, personApprovalOf, propose, releaseApprovalOf } from "../../src/scope.js";
 import { releaseAuthorityOfTask } from "../../src/store.js";
@@ -1166,6 +1167,8 @@ describe("codex r2 #1: main's protection holds only when it is effective and nob
   });
 });
 
+// Since Alex's decision of 2026-10-29 the coordinator no longer places this hold (it notes CI running instead, below);
+// a hold an older coordinator placed still holds exactly as before.
 describe("codex round 1 #4: a release filed while CI runs is approvable by nobody until the plane reads CI passing", () => {
   const notices = (f: ReleaseFixture) => f.store.handle.prepare("SELECT subject, body FROM notification WHERE kind = 'release-auto' ORDER BY id").all().map(row => `${String(row["subject"])}: ${String(row["body"])}`);
   test("the automatic road refuses with CI pending: no 'approve it yourself', and a person's, a chat's or a mode's yes is refused in words", () => {
@@ -1206,5 +1209,46 @@ describe("codex round 1 #4: a release filed while CI runs is approvable by nobod
     expect(liftCiHold(f.store, { taskId: f.taskId, candidate: f.approved, ci: green(f.approved), ask: true, now: LATER })).toEqual({ ok: true });
     expect(notices(f).at(-1)).toMatch(/needs you: GitHub CI passed on .*Approve it yourself/);
     expect(approve(f.store, f.taskId, "alex", LATER, digestOf(f), f.password)).toMatchObject({ ok: true });
+  });
+});
+
+describe("a person's release asks during CI (Alex, 2026-10-29): a person may approve, the plane never seals before CI", () => {
+  const notices = (f: ReleaseFixture) => f.store.handle.prepare("SELECT subject, body FROM notification WHERE kind = 'release-auto' ORDER BY id").all().map(row => `${String(row["subject"])}: ${String(row["body"])}`);
+  const pending = (head: string): CiObservation => ({ ...green(head), runs: green(head).runs.map((run, i) => i === 0 ? { ...run, status: "in_progress", conclusion: null } : run) });
+
+  test("the note holds nothing: a person's typed yes seals while CI runs, and the automatic fallback asks them at once", () => {
+    const f = open();
+    noteCiRunning(f.store, { taskId: f.taskId, candidate: f.approved, now: RELEASE_NOW });
+    expect(releaseCiRunningOf(f.store, f.taskId)).toEqual({ candidate: f.approved });
+    giveUpAutoApproval(f.store, { taskId: f.taskId, why: "its checks run unsandboxed", now: LATER });
+    expect(notices(f)).toEqual([expect.stringMatching(/needs you: .*Approve it yourself.*GitHub's checks are still running; nothing deploys until they pass\.$/)]);
+    expect(approve(f.store, f.taskId, "alex", LATER, digestOf(f), f.password)).toMatchObject({ ok: true });
+    expect(personApprovalOf(f.store, f.taskId)).toMatchObject({ ok: true });
+  });
+
+  test("the plane's automatic approval never seals before CI passed on the exact commit, note or not", () => {
+    const f = open();
+    noteCiRunning(f.store, { taskId: f.taskId, candidate: f.approved, now: RELEASE_NOW });
+    expect(authorize(f)).toMatchObject({ ok: true });
+    const run = check(f);
+    for (const ci of [pending(f.approved), { ...green(f.approved), runs: green(f.approved).runs.slice(1) }, green("e".repeat(40))]) {
+      expect(seal(f, run, ci)).toMatchObject({ ok: false });
+      expect(releaseAuthorityOfTask(f.store, f.taskId)).toBeNull();
+    }
+    // Nor does ending the note on someone's word: only a passing reading ends it, and the seal reads CI again itself.
+    expect(liftCiHold(f.store, { taskId: f.taskId, candidate: f.approved, ci: pending(f.approved), ask: false, now: LATER })).toMatchObject({ ok: false, why: expect.stringContaining("hasn't finished") });
+    expect(releaseCiRunningOf(f.store, f.taskId)).not.toBeNull();
+  });
+
+  test("only the plane's reading of exact-head CI passing ends the note, quietly (the person was already asked)", () => {
+    const f = open();
+    noteCiRunning(f.store, { taskId: f.taskId, candidate: f.approved, now: RELEASE_NOW });
+    expect(liftCiHold(f.store, { taskId: f.taskId, candidate: "e".repeat(40), ci: green("e".repeat(40)), ask: true, now: LATER })).toMatchObject({ ok: false });
+    expect(liftCiHold(f.store, { taskId: f.taskId, candidate: f.approved, ci: { ...green(f.approved), complete: false }, ask: true, now: LATER })).toMatchObject({ ok: false });
+    expect(releaseCiRunningOf(f.store, f.taskId)).not.toBeNull();
+    expect(liftCiHold(f.store, { taskId: f.taskId, candidate: f.approved, ci: green(f.approved), ask: true, now: LATER })).toEqual({ ok: true });
+    expect(releaseCiRunningOf(f.store, f.taskId)).toBeNull();
+    expect(notices(f)).toEqual([]);
+    expect(RELEASE_CI_RUNNING_WORDS).toBe("GitHub's checks are still running; nothing deploys until they pass.");
   });
 });

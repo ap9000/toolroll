@@ -452,15 +452,8 @@ describe("toolroll release", () => {
     const early: [string, (w: ReturnType<typeof world>) => void, { stop: string | null; line: string | null }][] = [
       ["a failed required check stops before filing or approval", w => { w.s.checks.set(SHA, failing("failure")); }, { stop: "ci-failed", line: null }],
       ["a cancelled required check stops before filing or approval", w => { w.s.checks.set(SHA, failing("cancelled")); }, { stop: "ci-failed", line: null }],
-      ["checks not started are named, waited for, and go on once they pass", w => {
-        w.s.checks.set(SHA, passing(REQUIRED_PR_CHECKS.slice(0, 2)));
-        w.s.onSleep.push(state => { if (state.checks.get(SHA)!.length < REQUIRED_PR_CHECKS.length) state.checks.set(SHA, passing(REQUIRED_PR_CHECKS)); });
-      }, { stop: null, line: `${REQUIRED_PR_CHECKS[2]} (not started)` }],
-      ["a check that fails while the gate waits stops it", w => {
-        w.s.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "in_progress", conclusion: null }]);
-        w.s.onSleep.push(state => { if (state.gate.result === null && state.calls.length === 0) state.checks.set(SHA, failing("failure")); });
-      }, { stop: "ci-failed", line: `${REQUIRED_PR_CHECKS[0]} (in_progress)` }],
-      ["checks that never start stop at the gate's limit, named", w => { w.s.checks.set(SHA, passing(REQUIRED_PR_CHECKS.slice(1))); }, { stop: "ci-missing", line: `${REQUIRED_PR_CHECKS[0]} (not started)` }],
+      // Checks not started or still running no longer hold the gate (Alex, 2026-10-29): see "a person's release asks
+      // during CI" below.
       ["unreadable checks are waited out, never taken for a pass", w => {
         const checks = w.adapters.github.checks;
         let first = true;
@@ -1658,80 +1651,148 @@ describe("toolroll release: approve automatically when checks pass", () => {
     expect(await runRelease(options(stateDir()), person.adapters)).toMatchObject({ ok: true });
   });
 
-  // pipeline-speed.md D2: on the automatic road the release check runs beside CI instead of after it; nothing is
-  // approved — by the plane or a person — before every pull request check passed on the candidate.
+  // pipeline-speed.md D2 and "Decision: a person's release asks during CI" (Alex, 2026-10-29): the gate files the task
+  // while CI runs and the release check runs beside it. A person may approve meanwhile; the plane's automatic approval
+  // waits for every check to pass, and nothing deploys, merges, tags or publishes before they do.
   const running = (names: readonly string[]): CheckRun[] => names.map(name => ({ name, status: "in_progress", conclusion: null }));
+  const redCi = (): CheckRun[] => [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "failure" }];
+  const green = (state: { checks: Map<string, CheckRun[]> }) => checksVerdict(state.checks.get(SHA) ?? [], REQUIRED_PR_CHECKS).state === "passed";
   const ciAheadWorld = (setting: boolean) => {
     const w = autoWorld({ setting });
-    w.adapters.release!.auto!.settingFor = async () => w.plane.setting;
     w.s.gateSeesChecks = true;
     w.s.checks.set(SHA, running(REQUIRED_PR_CHECKS));
-    const seen = { filedWhileRunning: false, checkedWhileRunning: false };
-    // The plane's CI hold (codex round 1 #4): placed before filing, lifted only on the plane's own reading of CI.
-    const ciHold = { held: null as string | null, heldBeforeFiling: false, lifts: [] as boolean[] };
-    w.adapters.release!.auto!.holdForCi = async (_task, candidate) => { ciHold.held = candidate; };
+    const seen = { filedWhileRunning: false, checkedWhileRunning: false, sealedWhileRunning: false, irreversibleWhileRunning: [] as string[] };
+    // The plane's "CI still running" note: recorded before filing, ended only on the plane's own reading of CI.
+    const ciNote = { noted: null as string | null, notedBeforeFiling: false, lifts: [] as boolean[] };
+    w.adapters.release!.auto!.ciRunning = async (_task, candidate) => { ciNote.noted = candidate; };
     w.adapters.release!.auto!.ciPassed = async (_task, candidate, ask) => {
       if (checksVerdict(w.s.checks.get(candidate) ?? [], REQUIRED_PR_CHECKS).state !== "passed") return { ok: false, why: "CI hasn't finished" };
-      ciHold.held = null; ciHold.lifts.push(ask);
+      ciNote.noted = null; ciNote.lifts.push(ask);
       return { ok: true };
     };
     const fileGate = w.adapters.toolroll.fileGate;
-    w.adapters.toolroll.fileGate = async input => { seen.filedWhileRunning = w.s.checks.get(SHA)![0]!.status !== "completed"; ciHold.heldBeforeFiling = ciHold.held === SHA; return fileGate(input); };
-    return { ...w, seen, ciHold };
+    w.adapters.toolroll.fileGate = async input => { seen.filedWhileRunning = !green(w.s); ciNote.notedBeforeFiling = ciNote.noted === SHA; return fileGate(input); };
+    // The automatic seal and every irreversible step, watched: none may happen while CI isn't green on the commit.
+    const approve = w.adapters.release!.auto!.approve;
+    w.adapters.release!.auto!.approve = async input => { if (!green(w.s)) seen.sealedWhileRunning = true; return approve(input); };
+    const deploy = w.adapters.toolroll.deploy, merge = w.adapters.github.merge, createTag = w.adapters.github.createTag;
+    w.adapters.toolroll.deploy = async input => { if (!green(w.s)) seen.irreversibleWhileRunning.push("deploy"); return deploy(input); };
+    w.adapters.github.merge = async (...args) => { if (!green(w.s)) seen.irreversibleWhileRunning.push("merge"); return merge(...args); };
+    w.adapters.github.createTag = async (...args) => { if (!green(w.s)) seen.irreversibleWhileRunning.push("createTag"); return createTag(...args); };
+    return { ...w, seen, ciNote };
   };
+  const IRREVERSIBLE = ["deploy", "switchLinks", "merge", "deleteBranch", "createTag", "propose", "brewMerge"];
 
-  test("pipeline-speed D2: the automatic road files and checks while CI runs, and approves only once CI passed", async () => {
+  test("pipeline-speed D2: the automatic road files and checks while CI runs, and seals only once CI passed", async () => {
     const { s, adapters, plane, seen } = ciAheadWorld(true);
     let after = 0;
     s.onSleep.push(state => {
       if (state.gate.result === null) return;
-      if (state.checks.get(SHA)![0]!.status !== "completed") seen.checkedWhileRunning = true;
+      if (!green(state)) seen.checkedWhileRunning = true;
       if (++after === 3) state.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
     });
     expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
-    expect(seen).toEqual({ filedWhileRunning: true, checkedWhileRunning: true });
+    expect(seen).toEqual({ filedWhileRunning: true, checkedWhileRunning: true, sealedWhileRunning: false, irreversibleWhileRunning: [] });
     expect(plane).toMatchObject({ approvals: 1, gaveUp: [] });
-    expect(s.said).toContain(`  Pull request checks on ${SHA.slice(0, 7)} are still running: the release check runs beside them, and nothing is approved before they pass`);
+    expect(s.said).toContain(`  Pull request checks on ${SHA.slice(0, 7)} are still running: the release check runs beside them, and nothing deploys before they pass`);
     expect(s.calls.slice(0, 2)).toEqual(["fileGate", "autoGreen"]);
   });
 
   test("pipeline-speed D2: CI failing beside the check ends the automatic road, and the person's road refuses it too", async () => {
     const dir = stateDir();
-    const { s, adapters, plane } = ciAheadWorld(true);
-    s.onSleep.push(state => { if (state.gate.result !== null) state.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS.slice(1)), { name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "failure" }]); });
+    const { s, adapters, plane, seen } = ciAheadWorld(true);
+    s.onSleep.push(state => { if (state.gate.result !== null) state.checks.set(SHA, redCi()); });
     expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, reason: "ci-failed", message: expect.stringContaining("Nothing was approved") });
     expect(plane.approvals).toBe(0);
+    expect(seen.sealedWhileRunning).toBe(false);
     expect(plane.gaveUp).toEqual([expect.stringContaining("Pull request checks already failed")]);
     expect(readJournal(journalFile(dir, "toolroll/simplify-release"))).toMatchObject({ step: "approval", auto: { state: "refused" }, ciAhead: true });
-    // Run again: the person's road waits for CI before asking anyone, and CI still fails.
+    // Run again: the person's road stops on the failed check before asking anyone.
     s.gate.approval = null;
-    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, reason: "ci-failed", message: expect.stringContaining("Nothing was sent for approval") });
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "approval", reason: "ci-failed", message: expect.stringContaining("Nothing was deployed or merged") });
     expect(s.said.some(line => line.includes("needs your approval"))).toBe(false);
-    expect(s.calls).not.toContain("deploy");
+    expect(s.calls).toEqual(["fileGate"]);
   });
 
-  test("codex round 1 #4: the automatic road refusing with CI pending asks nobody until the plane lifts its CI hold", async () => {
-    const { s, adapters, plane, ciHold } = ciAheadWorld(true);
+  test("the automatic road refusing with CI pending asks a person at once; nothing deploys before CI passes", async () => {
+    const { s, adapters, plane, seen, ciNote } = ciAheadWorld(true);
     adapters.release!.auto!.authorizeCheck = async () => ({ ok: false, why: "its checks run unsandboxed" });
-    let sleeps = 0, askedWhileHeld = false;
-    s.onSleep.push(state => {
-      if (s.said.some(line => line.includes("needs your approval")) && ciHold.held !== null) askedWhileHeld = true;
-      if (++sleeps === 3) state.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
-      if (ciHold.held === null && state.gate.approval === null) state.gate.approval = { by: "alex", at: new Date(state.now).toISOString(), digest: DIGEST, basis: null, role: "approver", active: true, person: { ok: true } } as never;
+    let sleeps = 0, askedWhileRunning = false;
+    s.onSleep.unshift(state => {
+      if (s.said.some(line => line.includes("needs your approval")) && !green(state)) askedWhileRunning = true;
+      if (++sleeps === 6) state.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
     });
-    await runRelease(options(stateDir()), adapters);
-    expect(ciHold.heldBeforeFiling).toBe(true);
-    expect(plane.gaveUp).toEqual(["its checks run unsandboxed"]);
-    expect(askedWhileHeld).toBe(false);
-    expect(ciHold.lifts).toEqual([true]);
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
+    expect(ciNote.notedBeforeFiling).toBe(true);
+    expect(plane).toMatchObject({ gaveUp: ["its checks run unsandboxed"], approvals: 0 });
+    expect(askedWhileRunning).toBe(true);
+    expect(s.said).toContain("  GitHub's checks are still running; nothing deploys until they pass.");
+    expect(seen.irreversibleWhileRunning).toEqual([]);
+    expect(ciNote.noted).toBeNull();
   });
 
-  test("pipeline-speed D2: without automatic approval the gate still waits for CI before filing anything", async () => {
-    const { s, adapters, seen } = ciAheadWorld(false);
-    let sleeps = 0;
-    s.onSleep.unshift(state => { if (++sleeps === 2) state.checks.set(SHA, passing(REQUIRED_PR_CHECKS)); });
-    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
-    expect(seen.filedWhileRunning).toBe(false);
-    expect(s.said.some(line => line.includes("still running"))).toBe(false);
+  describe("a person's release asks during CI (Alex, 2026-10-29)", () => {
+    test("filed and asked while CI runs; the check runs at once; nothing deploys until CI passes, then it proceeds", async () => {
+      const dir = stateDir();
+      const { s, adapters, seen, ciNote } = ciAheadWorld(false);
+      let checkedWhileRunning = false, sleeps = 0, deployWaited = false;
+      s.onSleep.push(state => {
+        if (state.gate.result !== null && !green(state)) checkedWhileRunning = true;
+        // Approved and checked while CI still runs; the release then waits before the deploy.
+        if (state.gate.completion !== null && !green(state)) { deployWaited = true; if (++sleeps === 3) state.checks.set(SHA, passing(REQUIRED_PR_CHECKS)); }
+      });
+      expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
+      expect(seen).toMatchObject({ filedWhileRunning: true, irreversibleWhileRunning: [] });
+      expect(checkedWhileRunning && deployWaited).toBe(true);
+      expect(ciNote).toMatchObject({ notedBeforeFiling: true, noted: null, lifts: [false] });
+      expect(s.said).toContain("  GitHub's checks are still running; nothing deploys until they pass.");
+      expect(s.said.findIndex(line => line.includes("needs your approval"))).toBeLessThan(s.said.findIndex(line => line.startsWith("• check")));
+      expect(s.calls).toEqual(["fileGate", "complete", ...IRREVERSIBLE]);
+      expect(readJournal(journalFile(dir, "toolroll/simplify-release"))).toMatchObject({ step: "done", ciAhead: false, ciBeforeDeploy: true });
+    });
+
+    test("approved before CI, the check passes, then CI fails: nothing is deployed, merged, tagged or published", async () => {
+      const dir = stateDir();
+      const { s, adapters } = ciAheadWorld(false);
+      s.onSleep.push(state => { if (state.gate.completion !== null) state.checks.set(SHA, redCi()); });
+      const outcome = await runRelease(options(dir), adapters);
+      expect(outcome).toMatchObject({ ok: false, step: "deploy", reason: "ci-failed" });
+      expect(outcome.ok === false && outcome.message).toContain("Nothing was deployed, merged, tagged or published");
+      expect(outcome.ok === false && outcome.message).toContain(`The approval covers ${SHA.slice(0, 7)} only`);
+      expect(s.calls).toEqual(["fileGate", "complete"]);
+      // Rerunning with CI still red stops the same way; nothing irreversible, ever.
+      expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: false, step: "deploy", reason: "ci-failed" });
+      for (const call of IRREVERSIBLE) expect(s.calls).not.toContain(call);
+      expect(s.published).toBe(false);
+      // The failed job rerun on GitHub and green: the same approval of the same commit goes on.
+      s.checks.set(SHA, [...redCi(), ...passing([REQUIRED_PR_CHECKS[0]])]);
+      expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
+      expect(s.calls.filter(one => one === "deploy")).toHaveLength(1);
+    });
+
+    test("CI that was green while asking but whose newer attempt fails before the deploy stops the release", async () => {
+      const { s, adapters, ciNote } = ciAheadWorld(false);
+      // Green by the approval, then a rerun of one job fails while the release check runs.
+      s.onSleep.unshift(state => {
+        if (state.gate.exists && state.gate.approval === null) state.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
+        else if (state.gate.approval !== null) state.checks.set(SHA, [...passing(REQUIRED_PR_CHECKS), { name: REQUIRED_PR_CHECKS[0], status: "completed", conclusion: "failure" }]);
+      });
+      expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "deploy", reason: "ci-failed" });
+      expect(ciNote.lifts).toEqual([true]);
+      for (const call of IRREVERSIBLE) expect(s.calls).not.toContain(call);
+    });
+
+    test("a check that never finishes keeps the deploy waiting until its limit, and nothing deploys", async () => {
+      const { s, adapters } = ciAheadWorld(false);
+      expect(await runRelease(options(stateDir(), { limits: { ci: 1 } }), adapters)).toMatchObject({ ok: false, step: "deploy", reason: "timeout" });
+      expect(s.calls).toEqual(["fileGate", "complete"]);
+    });
+
+    test("a check that already failed at the gate still stops there: nothing filed, nobody asked", async () => {
+      const { s, adapters } = ciAheadWorld(false);
+      s.checks.set(SHA, redCi());
+      expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "gate", reason: "ci-failed" });
+      expect(s.calls).toEqual([]);
+    });
   });
 });
