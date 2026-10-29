@@ -61,6 +61,7 @@ export function classifyCheckFailure(facts: CheckFacts, report: CheckReport | nu
     const infra = PLANE_INFRA[failure];
     if (infra !== undefined) return { class: "infrastructure", why: infra };
     if (failure === "timed-out" || failure === "retry-timed-out") return { class: "unknown", why: "the check timed out, and nothing says why" };
+    if (failure === "baseline-unverifiable") return { class: "unknown", why: "the last release Toolroll recorded couldn't be verified, so what the check owed is unknown and it wasn't run" };
     if (failure === "no-result") return { class: "unknown", why: "the check gave no complete result (no valid report, or a part, file or journey with no outcome)" };
     if (failure === "coverage-incomplete") return { class: "deterministic", why: facts.coverage === "identity-removed" ? "a required test was removed, renamed or newly skipped" : "the check didn't cover everything it owed" };
     return { class: "unknown", why: `the check couldn't run to its end (${failure || "no reason recorded"})` };

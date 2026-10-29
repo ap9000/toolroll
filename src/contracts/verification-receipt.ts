@@ -36,6 +36,8 @@ export const VERIFICATION_FAILURES = [
   "no-result",
   // Toolroll's own shutdown stopped the check (its hard stop): it never finished.
   "stopped-by-toolroll",
+  // A Full check whose recorded last release couldn't be verified: what it owed is unknown, so it never ran.
+  "baseline-unverifiable",
 ] as const;
 
 /**

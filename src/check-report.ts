@@ -26,7 +26,7 @@ import {
   type CheckContext, type CheckPart, type CheckInventory, type CheckReport, type ObligationSnapshot, type SealedInventory, type TargetedPlan,
 } from "./contracts/release-check.js";
 import { readVerifiedArtifact, storeEvidence } from "./evidence.js";
-import { releaseBaseline } from "./release-card.js";
+import { releaseBaselineRecord } from "./release-card.js";
 import { checkAttemptOf, recordCheckAttempt, type Store, type VerifyCommand } from "./store.js";
 
 /** The sealed artifacts' capture labels: what a reader looks for, by exact name. */
@@ -185,10 +185,15 @@ export type PreparedAttempt = {
   watch: string[];
 };
 
+/** A Full check's preparation refused (eval-harness review 2, finding 4): the plane recorded a release whose commit it
+ * can't verify now, so the check's obligations can't be decided. The check isn't run (builder.ts: `baseline-unverifiable`). */
+export class CheckBaselineUnverifiable extends Error {}
+
 /**
  * Seal a check's attempt row before its command is spawned: intended mode, nonce hash, inventory and context (and for a
  * targeted check its plan and obligation snapshot, sealed as artifacts first). Null when the plane can't read the
- * commit, which leaves the check running exactly as it always has, with no handshake.
+ * commit, which leaves the check running exactly as it always has, with no handshake. Throws CheckBaselineUnverifiable,
+ * having sealed nothing, when a recorded last release can't be verified.
  */
 export function prepareCheckAttempt(store: Store, root: string, input: {
   runId: number; repo: string; head: string; command: VerifyCommand; access: string;
@@ -204,9 +209,18 @@ export function prepareCheckAttempt(store: Store, root: string, input: {
   if (!read.ok) return null;
   const plan = input.plan ?? null, snapshot = input.snapshot ?? null;
   // A full check owes what the plane decides here, from the last release it recorded (never a tag the checkout holds).
-  const baseline = plan === null ? releaseBaseline(store, input.repo) : null;
-  const baseRead = baseline === null ? null : treeFactsOf(gitDir, baseline);
-  const owed = fullObligationsOf(read.facts, baseRead !== null && baseRead.ok ? baseRead.facts : null);
+  // No release recorded owes everything the candidate can run; a recorded one that can't be verified refuses the
+  // preparation (eval-harness review 2, finding 4): read as "no release", it would drop what the last release could run.
+  const baseline = plan === null ? releaseBaselineRecord(store, input.repo) : { recorded: false as const };
+  let baseFacts: TreeFacts | null = null;
+  if (baseline.recorded) {
+    const baseRead = baseline.sha === null ? null : treeFactsOf(gitDir, baseline.sha);
+    if (baseRead === null || !baseRead.ok) {
+      throw new CheckBaselineUnverifiable(`The last release Toolroll recorded (${baseline.sha === null ? "its merge commit isn't a full id" : baseline.sha.slice(0, 7)}) couldn't be verified${baseRead !== null && !baseRead.ok ? ` (${baseRead.problem})` : ""}, so what this check owes is unknown; it wasn't run.`);
+    }
+    baseFacts = baseRead.facts;
+  }
+  const owed = fullObligationsOf(read.facts, baseFacts);
   const release = input.release !== false;
   const ciSubstitute = !release;
   const inventory = inventoryOf(read.facts, plan, { owed, release });

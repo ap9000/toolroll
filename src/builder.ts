@@ -11,7 +11,7 @@ import { queueBatchCheck } from "./batch-checks.js";
 import { batchesFullCheck } from "./batch-policy.js";
 import { skillsContext } from "./project-skills.js";
 import { failedVerificationEvidence, sealVerificationReceipt, verificationEvidence, reuseObservationVerification } from "./verification-evidence.js";
-import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, prepareCheckAttempt, reportFromOutput, sealCheckOutcome, type PreparedAttempt } from "./check-report.js";
+import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, CheckBaselineUnverifiable, prepareCheckAttempt, reportFromOutput, sealCheckOutcome, type PreparedAttempt } from "./check-report.js";
 import { retriedInside } from "./check-failure.js";
 import type { CheckReport } from "./contracts/release-check.js";
 import { planTargetedRecheck, settleCoverage } from "./release-recheck.js";
@@ -2662,6 +2662,7 @@ async function settleProof(
   } else {
     const verifyRunner = request.verify ?? run;
     const verifyShell = approvedCommandShell(configured.command);
+    let baselineUnverifiable: string | null = null;
     // A Full check of a prepared candidate (a release gate, the nightly check): its attempt is sealed before the command
     // runs — intended mode, nonce, inventory, context — and the handshake goes on its stdin (check-report.ts).
     // A release task's check is targeted when the release's last full check allows it (release-recheck.ts): its plan and
@@ -2671,8 +2672,16 @@ async function settleProof(
       const decision = planTargetedRecheck(store, root, { runId, taskId: request.taskId, repo, head: sealedHead, command: configured, access, now: now() });
       // A release's check (signed terms or an open authority): CI never stands in for its unit suite.
       const release = decision.authority !== null || (store.getScope(request.taskId)?.releaseTerms ?? null) !== null;
-      checkAttempt = prepareCheckAttempt(store, root, { runId, repo, head: sealedHead, command: configured, access, authority: decision.authority,
-        ...(decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch, release }, now());
+      try {
+        checkAttempt = prepareCheckAttempt(store, root, { runId, repo, head: sealedHead, command: configured, access, authority: decision.authority,
+          ...(decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch, release }, now());
+      } catch (error) {
+        // A recorded last release that can't be verified (eval-harness review 2, finding 4): nothing runs.
+        if (!(error instanceof CheckBaselineUnverifiable)) throw error;
+        checkAttempt = null;
+        baselineUnverifiable = error.message;
+        recordCheckNote(error.message);
+      }
       if (checkAttempt !== null && decision.mode === "targeted") store.addRunNote(runId, "Toolroll", `Re-running only what failed at run #${decision.plan.base}: ${decision.plan.units.length} unit files, ${decision.plan.groups.reduce((n, one) => n + one.groups.length, 0)} journey groups, ${decision.plan.versions.length} upgrade versions${decision.plan.parts.length > 0 ? `, and in full: ${decision.plan.parts.join(", ")}` : ""}.`, now());
     } else checkAttempt = null;
     const checkProgress = new CheckProgressTracker(snapshot => {
@@ -2742,10 +2751,10 @@ async function settleProof(
       if (installed.notFound || installed.timedOut || installed.code !== 0) return "own-install-failed";
       return await sealedTreeState(buildCheckoutGit(request.git ?? run, worktree)) === "clean" ? null : "setup-changed-files";
     };
-    const ownInstall = await ownInstallIfChanged();
-    const first = ownInstall === null ? await runVerification("Project check · attempt 1") : null;
+    const ownInstall = baselineUnverifiable === null ? await ownInstallIfChanged() : null;
+    const first = baselineUnverifiable === null && ownInstall === null ? await runVerification("Project check · attempt 1") : null;
     if (first === null) {
-      verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: ownInstall ?? "own-install-failed" };
+      verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: baselineUnverifiable !== null ? "baseline-unverifiable" : ownInstall ?? "own-install-failed" };
     } else if (first.notFound || first.timedOut) {
       verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: first.timedOut ? "timed-out" : "spawn-failed" };
     } else if (first.stoppedByPlane === true) {

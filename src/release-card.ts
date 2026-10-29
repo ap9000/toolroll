@@ -170,10 +170,21 @@ const sha256 = (text: string): string => createHash("sha256").update(text).diges
 /** The plane's own record of the last verified release of `repo`: the merge commit GitHub answered with, recorded once
  * the release verified the merged tree (the newest merged authority whose merge operation succeeded). Never a tag. */
 export function releaseBaseline(store: Store, repo: string): string | null {
+  const record = releaseBaselineRecord(store, repo);
+  return record.recorded ? record.sha : null;
+}
+
+/**
+ * Whether the plane recorded a verified release of `repo`, and its merge commit (eval-harness review 2, finding 4):
+ * `recorded: false` only when no merged release is on the record at all; a recorded one whose commit isn't a full id is
+ * `recorded: true` with `sha: null` — something to refuse on, never "no previous release".
+ */
+export function releaseBaselineRecord(store: Store, repo: string): { recorded: false } | { recorded: true; sha: string | null } {
   const row = store.handle.prepare(`SELECT o.external_ref FROM release_authority a JOIN release_operation o ON o.authority = a.id
-    WHERE a.repo = ? AND a.state = 'merged' AND o.kind = 'merge' AND o.state = 'succeeded' AND o.external_ref IS NOT NULL ORDER BY a.id DESC, o.finished_at DESC LIMIT 1`).get(repo);
-  const ref = row === undefined ? null : String(row["external_ref"]);
-  return ref !== null && SHA.test(ref) ? ref : null;
+    WHERE a.repo = ? AND a.state = 'merged' AND o.kind = 'merge' AND o.state = 'succeeded' ORDER BY a.id DESC, o.finished_at DESC LIMIT 1`).get(repo);
+  if (row === undefined) return { recorded: false };
+  const ref = row["external_ref"];
+  return { recorded: true, sha: typeof ref === "string" && SHA.test(ref) ? ref : null };
 }
 
 /** The commits after `from` up to `to`, as verified Git objects only, from the project's recorded Git directory: the

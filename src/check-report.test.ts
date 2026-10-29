@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, checkAttemptOf, type Store } from "./store.js";
 import {
-  CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, payloadDigest, prepareCheckAttempt, readSealedJson,
+  CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, CheckBaselineUnverifiable, payloadDigest, prepareCheckAttempt, readSealedJson,
   fullCheckProblem, fullObligationsOf, reportFromOutput, sealCheckOutcome, treeFactsOf, projectGitDir, MODEL_PATHS, NOTHING_PATHS,
 } from "./check-report.js";
 import { MODEL, NOTHING, owedSelection, parseHandshake } from "../scripts/release-check.mjs";
@@ -97,6 +97,53 @@ describe("the check attempt, sealed before the check runs", () => {
     const command = store.setVerifyCommand({ repo, command: "true", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
     expect(prepareCheckAttempt(store, root, { runId, repo: join(repo, "missing"), head, command, access: "sandboxed" }, NOW)).toBeNull();
     expect(checkAttemptOf(store, runId)).toBeNull();
+    store.close();
+  });
+});
+
+describe("eval review 2 #4: a recorded last release that can't be verified refuses the preparation", () => {
+  /** The review's probe: the last release could run both journeys and the upgrade path; the candidate deletes all three. */
+  const released = () => {
+    const made = setup();
+    for (const path of ["scripts/flows-e2e.mjs", "scripts/app-e2e.mjs", "scripts/upgrade-path.mjs"]) writeFileSync(join(made.repo, path), "export {};\n");
+    git(made.repo, "add", "-A"); git(made.repo, "commit", "-qm", "released");
+    const baseline = git(made.repo, "rev-parse", "HEAD");
+    git(made.repo, "rm", "-q", "scripts/flows-e2e.mjs", "scripts/app-e2e.mjs", "scripts/upgrade-path.mjs"); git(made.repo, "commit", "-qm", "candidate deletes them");
+    const command = made.store.setVerifyCommand({ repo: made.repo, command: "node scripts/release-check.mjs", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
+    return { ...made, baseline, head: git(made.repo, "rev-parse", "HEAD"), command };
+  };
+  /** A merged release on the plane's record (release-card.test.ts recordMergedRelease). */
+  const record = (store: Store, repo: string, mergeCommit: string | null) => {
+    const id = Number(store.handle.prepare(`INSERT INTO release_authority (repo, generation, version, pr, branch, base, anchor_task, anchor_digest, approved_sha, approved_tree, tip_sha, tip_task,
+      policy_json, policy_digest, verify_command, verify_digest, access_digest, state, expires_at, created_at) VALUES (?,1,'0.9.72',1,'b','main','t','d',?,?,?,'t','{}','p',1,'v','a','merged',?,?)`)
+      .run(repo, "a".repeat(40), "a".repeat(40), "a".repeat(40), NOW.toISOString(), NOW.toISOString()).lastInsertRowid);
+    store.handle.prepare("INSERT INTO release_operation (id, authority, kind, task_id, candidate, epoch, state, external_ref, reserved_at, finished_at) VALUES (?,?, 'merge', 't', ?, 1, 'succeeded', ?, ?, ?)")
+      .run(`op-${id}`, id, "a".repeat(40), mergeCommit, NOW.toISOString(), NOW.toISOString());
+  };
+
+  test("readable: what the last release could run stays owed", () => {
+    const { repo, head, store, runId, root, baseline, command } = released();
+    record(store, repo, baseline);
+    const prepared = prepareCheckAttempt(store, root, { runId, repo, head, command, access: "sandboxed" }, NOW)!;
+    expect(JSON.parse(prepared.stdin).owed).toEqual(expect.arrayContaining(["flows", "app", "upgrade"]));
+    store.close();
+  });
+
+  test.each([
+    ["a commit the project doesn't hold", "f".repeat(40)],
+    ["a merge commit that isn't a full id", "not-a-sha"],
+    ["no merge commit at all", null],
+  ])("attack: %s is refused, nothing sealed — never read as \"no previous release\"", (_name, ref) => {
+    const { repo, head, store, runId, root, command } = released();
+    record(store, repo, ref);
+    expect(() => prepareCheckAttempt(store, root, { runId, repo, head, command, access: "sandboxed" }, NOW)).toThrow(CheckBaselineUnverifiable);
+    expect(checkAttemptOf(store, runId)).toBeNull();
+    store.close();
+  });
+
+  test("no release recorded owes everything the candidate itself can run", () => {
+    const { repo, head, store, runId, root, command } = released();
+    expect(JSON.parse(prepareCheckAttempt(store, root, { runId, repo, head, command, access: "sandboxed" }, NOW)!.stdin).owed).toEqual(["typecheck", "build", "unit"]);
     store.close();
   });
 });

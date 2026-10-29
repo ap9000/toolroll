@@ -826,6 +826,8 @@ function verificationFailureWords(failure: Extract<VerifyCommandFacts, { ran: fa
           return "the release check didn't cover everything it owed, or a required test went missing or was skipped";
         case "no-result":
           return "the release check gave no complete result (no valid report, or a part, file or journey with no outcome), so it can't count as a pass";
+        case "baseline-unverifiable":
+          return "the last release Toolroll recorded couldn't be verified, so what the release check owed is unknown and it wasn't run";
         case "stopped-by-toolroll":
           return "Toolroll's own shutdown stopped the approved verification command before it finished";
         case "timed-out":
