@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.78 — 2026-10-29
 
 - **Toolroll says when it is restarting.** The worker and console now record
   when they start, keep a heartbeat every 15 seconds, and record when they
