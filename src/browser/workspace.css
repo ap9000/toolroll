@@ -49,11 +49,6 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-skip-link { position: fixed; z-index: 100; top: 12px; left: 12px; transform: translateY(-200%); background: var(--so-accent); color: var(--so-on-accent) !important; padding: 10px var(--so-space-lg); border-radius: var(--so-radius-md); }
 .so-skip-link:focus { transform: none; }
 
-/* Button comes from components/ui/button; .ui-button is only a hook for sizing in context and the press. */
-.ui-button { transition: background-color 120ms var(--so-ease-out), color 120ms var(--so-ease-out), box-shadow 120ms var(--so-ease-out), transform 160ms var(--so-ease-out); }
-.ui-input, .ui-textarea { width: 100%; min-width: 0; border: 1px solid var(--so-input-line); border-radius: var(--so-radius-md); padding: 7px 10px; background: var(--so-paper); color: var(--so-ink); font: inherit; }
-.ui-input::placeholder, .ui-textarea::placeholder { color: var(--so-muted); opacity: 1; }
-.ui-label { display: block; font-size: 12px; font-weight: 500; margin-bottom: 6px; }
 .ui-alert { background: var(--so-raised); color: var(--so-ink); padding: 9px var(--so-space-md); border-radius: var(--so-radius-md); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
 .ui-alert--error { background: var(--so-danger-soft); color: var(--so-danger); }
 .ui-alert a { font-weight: 650; text-decoration: underline; }
@@ -83,7 +78,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 @media (hover: hover) and (pointer: fine) { .so-new-task:hover { background: var(--so-accent-hover); } }
 .so-new-task svg { width: 15px; height: 15px; }
 .so-project-switch { padding: 0; margin-bottom: var(--so-space-lg); }
-.so-project-switch .ui-label { color: var(--so-muted); font-size: 11.5px; margin: 0 var(--so-space-sm) 5px; }
+.so-project-switch [data-slot="label"] { color: var(--so-muted); font-size: 11.5px; margin: 0 var(--so-space-sm) 5px; }
 .so-project-switch select { width: 100%; min-height: 32px; border: 0; border-radius: var(--so-radius-md); padding: 6px 23px 6px 9px; background: var(--so-paper); box-shadow: var(--so-pill-shadow); color: var(--so-ink); font-size: 12.5px; text-overflow: ellipsis; }
 .so-primary-navigation { display: flex; flex-direction: column; gap: 1px; }
 .so-primary-navigation a, .so-navigation-bottom > a { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 6px var(--so-space-sm); text-decoration: none; border-radius: var(--so-radius-md); color: var(--so-nav-ink); font-size: 13px; font-weight: 500; transition: background-color 120ms var(--so-ease-out), color 120ms var(--so-ease-out); }
@@ -97,7 +92,6 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-account { border-top: 1px solid var(--so-input-line); margin-top: var(--so-space-md); padding: 10px var(--so-space-sm) 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; }
 .so-account > span { display: block; font-size: 11px; color: var(--so-muted); width: 100%; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
 .so-account form { margin: 0; padding: 0; background: transparent; border: 0; }
-.so-account .ui-button { padding-left: 0; }
 
 .so-main-column { min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--so-paper); border-radius: var(--so-sheet-radius); box-shadow: var(--so-sheet-shadow); overflow: hidden; }
 .so-workspace-header { flex-shrink: 0; min-height: 52px; padding: var(--so-space-sm) var(--so-space-md) var(--so-space-sm) var(--so-space-xl); display: flex; align-items: center; gap: var(--so-space-md); border-bottom: 1px solid var(--so-line); }
@@ -114,15 +108,13 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-sign-in-detail { color: var(--so-ink); }
 .so-sign-in code { font-size: 12px; }
 .so-sign-in form { grid-column: 2; grid-row: 1 / span 2; margin: 0; }
-.so-sign-in .ui-button { min-height: 36px; white-space: nowrap; }
-@media (max-width: 759px) { .so-sign-in { grid-template-columns: 1fr; row-gap: 6px; } .so-sign-in form { grid-column: 1; grid-row: auto; } .so-sign-in .ui-button { min-height: 44px; } }
+@media (max-width: 759px) { .so-sign-in { grid-template-columns: 1fr; row-gap: 6px; } .so-sign-in form { grid-column: 1; grid-row: auto; } }
 /* A newer Toolroll: neutral (raised), never the accent — an update does not need a person. */
 .so-update { display: flex; align-items: center; gap: var(--so-space-sm); padding-block: var(--so-space-xs); padding-right: var(--so-space-xs); }
 .so-update p { margin: 0; flex: 1; min-width: 0; }
 .so-update a { font-weight: 500; }
 .so-update form { margin: 0; flex-shrink: 0; }
-.so-update .ui-button { color: var(--so-muted); }
-@media (max-width: 900px) { .so-update .ui-button { width: 44px; height: 44px; } }
+
 .so-workspace .so-main-content { flex: 1; min-height: 0; min-width: 0; max-width: none; width: 100%; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .so-page-content { padding: var(--so-space-2xl) var(--so-space-3xl); overflow: auto; min-height: 0; }
 .so-lead-chat { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -162,18 +154,13 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-composer-area form[data-workspace-composer] { border: 1px solid var(--so-input-line); border-radius: 14px; padding: 7px 7px 7px 14px; margin: 0; background: var(--so-paper); box-shadow: 0 1px 2px rgb(0 0 0 / .04); transition: border-color 120ms var(--so-ease-out), box-shadow 120ms var(--so-ease-out); }
 .so-composer-area form[data-workspace-composer]:focus-within { border-color: var(--so-input-line); box-shadow: 0 0 0 3px var(--so-signal-soft); }
 .so-composer-row { display: flex; align-items: flex-end; gap: 8px; }
-.so-composer-area .ui-textarea { flex: 1; min-width: 0; min-height: 24px; max-height: 180px; resize: none; border: 0; border-radius: 0; padding: 5px 0; box-shadow: none; font-size: 14px; line-height: 1.6; }
-.so-composer-area .ui-textarea:focus-visible { outline: 0; }
 .so-composer-row > .so-composer-chip { flex: none; align-self: center; max-width: 30%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 2px 8px; border: 1px solid var(--so-line); border-radius: var(--so-radius-full); color: var(--so-neutral-ink); font-size: 12px; }
-.so-composer-row > .so-composer-send.ui-button { flex: none; width: 32px; height: 32px; min-height: 32px; padding: 0; border-radius: 50%; }
-.so-composer-row > .so-composer-send.ui-button:disabled { background: var(--so-soft); color: var(--so-muted); opacity: 1; }
 .so-composer-row > .so-composer-send svg { width: 16px; height: 16px; }
 .so-composer-hint { position: absolute; left: 0; right: 0; bottom: 1px; margin: 0; padding: 0 44px; color: var(--so-muted); font-size: 12px; line-height: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; visibility: hidden; }
 .so-composer-area:has(#lead-message:focus:placeholder-shown) .so-composer-hint, .so-composer-hint[data-warning] { visibility: visible; }
 .so-composer-hint[data-warning] { color: var(--so-ink); }
 .so-connection { display: flex; gap: var(--so-space-sm); align-items: center; justify-content: space-between; color: var(--so-warning); background: var(--so-warning-soft); padding: 10px var(--so-space-md); border-radius: var(--so-radius-md); margin-bottom: 10px; font-size: 12px; }
 .so-connection > span { min-width: 0; overflow-wrap: anywhere; }
-.so-connection .ui-button { flex-shrink: 0; }
 .so-conversation-settings { margin: 9px 2px 0; font-size: 11px; }
 .so-conversation-settings > summary { padding: 2px 0; font-size: 11px; }
 .so-catch-up { margin-bottom: 26px; }
@@ -346,7 +333,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-command-results span { overflow-wrap: anywhere; }
 .so-command-results small { color: var(--so-muted); flex-shrink: 0; font-size: 11px; }
 .so-command-empty { color: var(--so-muted); font-size: 13px; }
-.so-command-dialog .ui-input:focus-visible { outline: 0; border-color: var(--so-signal); box-shadow: 0 0 0 3px var(--so-signal-soft); }
+.so-command-dialog [data-slot="input"]:focus-visible { outline: 0; border-color: var(--so-signal); box-shadow: 0 0 0 3px var(--so-signal-soft); }
 
 @media (max-width: 1150px) and (min-width: 901px) {
   .so-workspace { grid-template-columns: 184px minmax(0, 1fr) 286px; }
@@ -390,7 +377,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-phone-work-button { margin-left: auto; flex-shrink: 0; }
   .so-command-trigger { margin-left: auto; min-height: 44px; }
   .so-command-hint { display: none; }
-  .so-command-dialog .ui-input { font-size: 16px; }
+  .so-command-dialog [data-slot="input"] { font-size: 16px; }
   .so-workspace-header { min-height: 60px; padding: 10px var(--so-space-lg) 10px var(--so-space-sm); gap: 9px; }
   .so-workspace-header h1 { font-size: 16px; }
   .so-focus-label { display: none; }
@@ -405,7 +392,6 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .ui-message-content { font-size: 15px; line-height: 1.7; }
   .ui-message--user { max-width: 94%; }
   .so-composer-area { padding: 8px 12px max(12px, var(--safe-bottom)); }
-  .so-composer-area .ui-textarea { font-size: 16px; }
   .so-conversation-settings { margin-top: 7px; }
   .so-conversation-settings > summary { min-height: 30px; display: flex; align-items: center; }
   .so-workspace-notices { padding: 10px 14px 0; }
@@ -419,7 +405,6 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-native-region :where(input, textarea, select) { font-size: 16px; }
   .so-native-region .result-tabs :where(a, button) { min-height: 44px; }
   .so-connection { align-items: flex-start; }
-  .so-connection .ui-button { min-height: 40px; }
   .so-primary-navigation a, .so-navigation-bottom > a { min-height: 44px; font-size: 14px; }
   .so-project-switch select { min-height: 44px; font-size: 16px; }
 }
@@ -427,7 +412,7 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 /* Press feedback: anchor buttons scale like buttons do; nav links fill
    with their hover background instead. */
 @media (prefers-reduced-motion: no-preference) {
-  :is(a.ui-button, .so-new-task, .so-close-work, .so-work-action, .so-all-work):active { transform: scale(.985); }
+  :is(.so-new-task, .so-close-work, .so-work-action, .so-all-work):active { transform: scale(.985); }
 }
 .so-primary-navigation a:not([aria-current="page"]):active, .so-navigation-bottom > a:not([aria-current="page"]):active { background: var(--so-nav-hover); color: var(--so-ink); }
 .so-recent-chats a:not([aria-current="page"]):active { background: var(--so-soft); }
@@ -456,8 +441,6 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-team-form { display: grid; gap: 14px; margin: var(--so-space-lg) 0 var(--so-space-2xl); }
 .so-team-form > label { display: grid; gap: 6px; font-size: 13px; font-weight: 550; }
 .so-team-form select { min-width: 0; width: 100%; min-height: 44px; border: 1px solid var(--so-line); border-radius: var(--so-radius-md); background: var(--so-paper); color: var(--so-ink); padding: var(--so-space-sm); }
-.so-team-form .ui-button { justify-self: start; }
-.so-team-chat .ui-button { min-height: 44px; }
 .so-team-projects { border: 0; padding: 0; margin: 0; min-width: 0; }
 .so-team-projects legend { font-weight: 550; font-size: 13px; margin-bottom: 6px; }
 .so-team-projects label { display: flex; align-items: center; gap: 9px; min-height: 44px; overflow-wrap: anywhere; }
@@ -638,7 +621,6 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-first-run-steps > li[data-done="true"] .so-first-run-mark { border-color: var(--so-success); background: var(--so-success); color: var(--so-paper); }
 .so-first-run-title { flex: 1; min-width: 0; font-size: 14px; font-weight: 500; color: var(--so-ink); }
 .so-first-run-steps > li[data-done="true"] .so-first-run-title { color: var(--so-muted); }
-.so-first-run-steps .ui-button { white-space: nowrap; }
 .so-first-run-checking { font-size: 12.5px; color: var(--so-muted); }
 .so-first-run-command { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 2px; min-width: 0; max-width: 100%; }
 .so-first-run-command code { min-width: 0; padding: 3px var(--so-space-sm); border-radius: var(--so-radius-sm); background: var(--so-raised); font: 500 12.5px/1.4 var(--so-mono); color: var(--so-ink); overflow-wrap: anywhere; }
@@ -703,7 +685,6 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-first-run h2 { font-size: 22px; }
   .so-first-run-choices { margin-left: 0; }
   .so-first-run-choices > div { padding: 10px; }
-  .so-first-run-steps .ui-button { min-height: 44px; }
 }
 
 /* Phones (760px and narrower) show about a third more on a screen (2026-09-30).
@@ -765,10 +746,8 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
   .so-first-run-steps > li { min-height: 44px; padding: var(--so-space-xs) 0; }
   /* The composer on a phone: the same one row, 16px words (iOS doesn't zoom), a 44px send, no chip (the header names
      the task) and no hint (Return writes a new line there); a warning shows under the box. */
-  .so-composer-area .ui-textarea { min-height: 44px; padding: 10px 0; }
   .so-composer-area form[data-workspace-composer] { padding: 4px 4px 4px 12px; }
   .so-composer-row > .so-composer-chip { display: none; }
-  .so-composer-row > .so-composer-send.ui-button { width: 44px; height: 44px; min-height: 44px; }
   .so-composer-hint { position: static; padding: 4px 4px 0; }
   .so-composer-hint:not([data-warning]) { display: none; }
   .ui-disclosure { margin-top: var(--so-space-xs); }
@@ -889,7 +868,7 @@ details.result-request-open > summary::marker { content: ""; }
   .so-result-host[data-line-steer] .diff-line code { white-space: pre; overflow-wrap: normal; font-size: 12px; }
   .so-result-host[data-line-steer] .diff-hunk-head { overflow-x: auto; white-space: pre; overflow-wrap: normal; }
   /* The header's chips are quiet: a 1px line and 12px words, on the same 44px tap target. */
-  .so-needs-chip, .so-workspace-header .so-phone-work-button.ui-button { border: 6px solid transparent; background: transparent; background-clip: padding-box; box-shadow: inset 0 0 0 1px var(--so-line); border-radius: var(--so-radius-full); color: var(--so-ink); font: 500 12px/1 var(--so-font-sans); padding: 0 12px; }
+  .so-needs-chip { border: 6px solid transparent; background: transparent; background-clip: padding-box; box-shadow: inset 0 0 0 1px var(--so-line); border-radius: var(--so-radius-full); color: var(--so-ink); font: 500 12px/1 var(--so-font-sans); padding: 0 var(--spacing-phone-card); }
 }
 @media (max-width: 900px) {
   /* The Workbench on a phone: the result opens as a sheet over the chat, which stays in view (dimmed) above it. */

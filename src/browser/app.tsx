@@ -5,9 +5,9 @@ import { createRoot } from "react-dom/client";
 import type { BrowserCrewItem, BrowserMessage, BrowserProjectState, BrowserRailTask, BrowserWorkspace } from "../browser-workspace.js";
 import { DISPLAY_STATES, STATE_WORDS, type DisplayState } from "../agent-state-words.js";
 import {
-  Alert, Artifact, ArtifactContent, Badge, Conversation, ConversationContent,
+  Alert, Artifact, ArtifactContent, Conversation, ConversationContent,
   ConversationEmptyState, ConversationScrollButton, Dialog, DialogClose, DialogContent,
-  DialogDescription, DialogTitle, DialogTrigger, Disclosure, Input, Label, Message, MessageContent, Textarea, FormToken, Passwordless, PostForm } from "./ui/index.js";
+  DialogDescription, DialogTitle, DialogTrigger, Disclosure, Message, MessageContent, FormToken, Passwordless, PostForm } from "./ui/index.js";
 import {
   awaitReceipt, carryDraft, editDraft, emptyDraft, isWorkspace, queuedDraft, readWorkspace, receiveDraft, rejectDraft,
   restoreDraft, sameConversation, saveDraft, sendMessage, submitDraft, WorkspaceAuthError,
@@ -25,7 +25,7 @@ import { TaskDetails, ViewHost, type ThreadChat } from "./views/index.js";
 import { threadWhen, whenTitle } from "./views/task-view.js";
 import { Home } from "./views/home-view.js";
 import { HeadlineBadge, headlineGlyph } from "./views/status-summary.js";
-import { Toaster, Button as ViewButton, cn } from "./components/ui/index.js";
+import { Toaster, Button as ViewButton, Badge, Input, Label, Textarea, cn } from "./components/ui/index.js";
 import { updateNoticeWords } from "../update-notice.js";
 import { shortAge } from "../when-html.js";
 import { useLiveRoom } from "./live.js";
@@ -806,7 +806,7 @@ function LeadChat({ controller, docked = null }: { controller: ReturnType<typeof
         {/* One row: where it goes (a quiet chip), the words, and the send arrow. */}
         <div className="so-composer-row">
           {!dock && (chat.project || (chat.taskId && workspace.focus)) && <span className="so-composer-chip" data-composer-scope title={chat.project ? chat.project : workspace.focus!.title}>{chat.project ? chat.project : workspace.focus!.title}</span>}
-          <Textarea ref={box} id="lead-message" name="message" rows={1} maxLength={chat.maxChars} placeholder={dock?.placeholder ?? "Message your lead…"} value={draft.text}
+          <Textarea className="flex-1 min-w-0 min-h-6 max-h-[180px] resize-none rounded-none border-0 px-0 py-1.25 text-sm leading-[1.6] shadow-none focus-visible:ring-0 max-[900px]:text-base phone:min-h-11 phone:py-2.5" ref={box} id="lead-message" name="message" rows={1} maxLength={chat.maxChars} placeholder={dock?.placeholder ?? "Message your lead…"} value={draft.text}
             role={commandMatches.length > 0 ? "combobox" : undefined} aria-expanded={commandMatches.length > 0 ? true : undefined} aria-controls={commandMatches.length > 0 ? commandList : undefined}
             onChange={event => { setCommandsClosed(false); controller.edit(event.target.value); }} onKeyDown={event => {
               if (commandMatches.length > 0) {

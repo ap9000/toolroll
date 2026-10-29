@@ -3,7 +3,9 @@ import { roomName, useLiveRoom } from './live.js';
 import type { FormEvent, ReactNode } from 'react';
 import type { TeamMessage, TeamOperation, TeamProposal, TeamResponse, TeamSnapshot } from '../team-contract.js';
 import { Button } from './components/ui/button.js';
-import { Alert, Badge, Disclosure, Input, Label, Textarea } from './ui/index.js';
+import { Badge } from './components/ui/badge.js';
+import { Input, Label, Textarea } from './components/ui/form-controls.js';
+import { Alert, Disclosure } from './ui/index.js';
 import { ActionCards } from './chat-cards.js';
 import { leaveFor } from './first-run.js';
 
