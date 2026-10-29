@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classify, recordedStillRunning, listProcesses, serviceProcesses, serviceStopper, stopServiceProcesses } from "../scripts/deploy-stop.mjs";
+import { fakePid } from "../test/fake-pid.js";
 
 type Row = { pid: number; ppid: number; start: string; command: string };
 const node = process.execPath;
@@ -14,7 +15,7 @@ const [prior, next] = dists as [string, string];
 const database = "/state/orders.db";
 
 test.each(["spoofed argv", "reused recorded pid"])("historical process observations never authorize a signal: %s", scenario => {
-  const row: Row = { pid: 4242, ppid: 1, start: "Thu Oct 29 13:00:00 2026", command: `${node} ${prior}/cli.js up --db ${database}` };
+  const row: Row = { pid: fakePid(42), ppid: 1, start: "Thu Oct 29 13:00:00 2026", command: `${node} ${prior}/cli.js up --db ${database}` };
   const signals: number[] = [];
   expect(() => stopServiceProcesses({ dists, database, recorded: scenario === "reused recorded pid" ? [row.pid] : [], termMs: 0, killMs: 0 }, {
     list: () => [row], kill: (pid: number) => { signals.push(pid); }, sleep: () => {},
@@ -23,7 +24,7 @@ test.each(["spoofed argv", "reused recorded pid"])("historical process observati
 });
 
 test("changed argv cannot prove a recorded process exited", () => {
-  const row: Row = { pid: 4242, ppid: 1, start: "Thu Oct 29 13:00:00 2026", command: "unrelated-looking-title" };
+  const row: Row = { pid: fakePid(42), ppid: 1, start: "Thu Oct 29 13:00:00 2026", command: "unrelated-looking-title" };
   expect(recordedStillRunning([row], row.pid, { dists, database })).toBe(true);
   expect(recordedStillRunning([], row.pid, { dists, database })).toBe(false);
 });

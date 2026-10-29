@@ -10,12 +10,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { credentialDigest, holderProvedGone, recordedHolderProvedGone, parseProcessStart, processGone, processStart, readRunnerProcessRecord, runnerProcessFile, sealRunnerProcessRecord, writeRunnerProcessRecord, type ProcessProbe, type RunnerProcessRecord } from "./runner-process.js";
 import type { Runner } from "./runner.js";
+import { fakePid } from "../test/fake-pid.js";
 
 const runner: Runner = { name: "w-1", host: "here", capacity: 1, repos: [], agents: [], registeredAt: "2026-10-29T12:00:00.000Z", heartbeatAt: "2026-10-29T12:00:30.000Z", retiredAt: null };
 const holder = { runner, credentialHash: "a".repeat(64) };
 const record = (patch: Partial<RunnerProcessRecord> = {}): RunnerProcessRecord => sealRunnerProcessRecord({
   v: 1, runner: "w-1", host: "here", registeredAt: runner.registeredAt, credential: credentialDigest(holder.credentialHash),
-  processes: [{ pid: 4242, role: "up", started: "2026-10-29T11:59:59.000Z" }, { pid: 4243, role: "worker", started: "2026-10-29T12:00:01.000Z" }], ...patch,
+  processes: [{ pid: fakePid(42), role: "up", started: "2026-10-29T11:59:59.000Z" }, { pid: fakePid(43), role: "worker", started: "2026-10-29T12:00:01.000Z" }], ...patch,
 }, holder.credentialHash);
 /** Each pid: absent, present with this start, present with an unreadable start, or unknown to the probe. */
 const probe = (world: Record<number, string | null | "unknown">): ProcessProbe => ({
@@ -25,23 +26,23 @@ const probe = (world: Record<number, string | null | "unknown">): ProcessProbe =
 
 test.each([
   ["every process exited", {}, record(), true],
-  ["a pid reused by a process started later", { 4242: "2026-10-29T13:00:00.000Z", 4243: "2026-10-29T13:00:01.000Z" }, record(), true],
-  ["the `up` still runs", { 4242: "2026-10-29T11:59:59.000Z" }, record(), false],
-  ["a role still runs", { 4243: "2026-10-29T12:00:01.000Z" }, record(), false],
-  ["a process whose start can't be read", { 4242: null }, record(), false],
-  ["a pid the probe can't answer for", { 4242: "unknown" }, record(), false],
+  ["a pid reused by a process started later", { [fakePid(42)]: "2026-10-29T13:00:00.000Z", [fakePid(43)]: "2026-10-29T13:00:01.000Z" }, record(), true],
+  ["the `up` still runs", { [fakePid(42)]: "2026-10-29T11:59:59.000Z" }, record(), false],
+  ["a role still runs", { [fakePid(43)]: "2026-10-29T12:00:01.000Z" }, record(), false],
+  ["a process whose start can't be read", { [fakePid(42)]: null }, record(), false],
+  ["a pid the probe can't answer for", { [fakePid(42)]: "unknown" }, record(), false],
   ["a record from an earlier start", {}, record({ registeredAt: "2026-10-29T11:00:00.000Z" }), false],
   ["a record for another credential", {}, record({ credential: credentialDigest("b".repeat(64)) }), false],
   ["a record for another machine", {}, record({ host: "elsewhere" }), false],
   ["a record for another worker", {}, record({ runner: "w-2" }), false],
-  ["a record that names no `up`", {}, record({ processes: [{ pid: 4243, role: "worker", started: "2026-10-29T12:00:01.000Z" }] }), false],
+  ["a record that names no `up`", {}, record({ processes: [{ pid: fakePid(43), role: "worker", started: "2026-10-29T12:00:01.000Z" }] }), false],
 ] as const)("holder proved gone: %s → %s", (_, world, one, gone) => {
   expect(holderProvedGone(one, holder, "here", probe(world)).gone).toBe(gone);
 });
 
 test("editing a process list or replaying an unsigned record never proves a holder gone", () => {
   const signed = record();
-  for (const forged of [{ ...signed, signature: undefined }, { ...signed, processes: [{ pid: 99999, role: "up" as const, started: "2026-10-29T11:59:59.000Z" }] }]) {
+  for (const forged of [{ ...signed, signature: undefined }, { ...signed, processes: [{ pid: fakePid(99), role: "up" as const, started: "2026-10-29T11:59:59.000Z" }] }]) {
     expect(holderProvedGone(forged, holder, "here", probe({})).gone).toBe(false);
   }
 });
@@ -80,7 +81,7 @@ test("a record is read strictly: a link, a damaged file or a wrong shape is no r
     symlinkSync(file, linked);
     expect(readRunnerProcessRecord(linked)).toBeNull();
     for (const bad of ["not json", JSON.stringify({ ...record(), v: 2 }), JSON.stringify({ ...record(), processes: [{ pid: 1, role: "up", started: "2026-10-29T11:59:59.000Z" }] }),
-      JSON.stringify({ ...record(), processes: [{ pid: 4242, role: "builder", started: "2026-10-29T11:59:59.000Z" }] }), JSON.stringify({ ...record(), processes: [] })]) {
+      JSON.stringify({ ...record(), processes: [{ pid: fakePid(42), role: "builder", started: "2026-10-29T11:59:59.000Z" }] }), JSON.stringify({ ...record(), processes: [] })]) {
       writeFileSync(file, bad);
       expect(readRunnerProcessRecord(file)).toBeNull();
     }
