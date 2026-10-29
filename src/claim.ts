@@ -104,6 +104,7 @@ export type AcquireResult =
   /** A coordinator filed this and no password ceremony has sealed its
    * scope yet — nothing claims, plans, or runs it until one does. */
   | { ok: false; reason: "coordinator-filed" }
+  | { ok: false; reason: "watch-custody" }
   /** The runner reported draining (v137 lifecycle): its stop has begun, so it takes no new work. */
   | { ok: false; reason: "draining"; until: string };
 
@@ -212,6 +213,11 @@ function acquireLocked(
       if (!gate.runner.repos.includes(placedRepo)) {
         return { ok: false as const, reason: "unauthorized-repo" as const, repo: placedRepo };
       }
+      // The watch may have lapsed while this pass awaited I/O, before its heartbeat callback ran. Runner tokens
+      // survive a role restart, so prove this exact watch in the claim transaction as well.
+      if (options.incarnation !== undefined && db.prepare(
+        "SELECT 1 FROM watch_lease WHERE runner = ? AND repo = ? AND owner = ? AND expires_at > ?",
+      ).get(runner, placedRepo, options.incarnation, stamp) === undefined) return { ok: false as const, reason: "watch-custody" as const };
       // THE COORDINATOR QUARANTINE in the one primitive every claim road
       // shares (MCP spec v6, round-3 f1): a coordinator-filed task whose
       // scope has not been sealed by the password ceremony claims for

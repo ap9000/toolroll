@@ -304,14 +304,8 @@ export function registerRunnerIfIdle(
     let signedOff: string | null = null;
     const blocked = existing !== null && ((existing.runner.retiredAt === null && isAlive(existing.runner, now)) || store.liveWatchLeaseOf(name, now) !== null);
     const drain = existing === null ? null : drainOf(store, existing.runner, now);
-    if (blocked && existing !== null && drain?.ended === true) {
-      store.retireRunner(name, now);
-      store.expireWatchLeasesOf(name, now);
-      store.recordAction({ at: now.toISOString(), actor: "toolroll up", repo: null, taskId: null, runId: null,
-        action: "worker signed off", outcome: "drain ended", source: "policy", detail: `${name} reported draining until ${drain.until}` });
-      signedOff = `its drain ended at ${drain.until}`;
-      existing = store.getRunner(name);
-    } else if (blocked && existing !== null && previousGone !== undefined) {
+    // A scheduled drain deadline is not proof that its timer ran or its children exited.
+    if (blocked && existing !== null && previousGone !== undefined) {
       const proof = previousGone(existing);
       if (proof.gone) {
         store.retireRunner(name, now);
@@ -322,10 +316,9 @@ export function registerRunnerIfIdle(
         existing = store.getRunner(name);
       }
     }
-    // A holder still draining: refused at once with when its drain ends, so the caller waits for that instead of a
-    // heartbeat window (two live holders stay impossible).
-    if (existing !== null && drain !== null && !drain.ended && (isAlive(existing.runner, now) || store.liveWatchLeaseOf(name, now) !== null)) {
-      return { ok: false as const, reason: "runner-draining" as const, until: drain.until, detail: `Toolroll is restarting (draining): ${name} finishes stopping by ${drain.until}` };
+    // A live draining holder remains exclusive even if its advertised deadline has passed.
+    if (existing !== null && drain !== null && (isAlive(existing.runner, now) || store.liveWatchLeaseOf(name, now) !== null)) {
+      return { ok: false as const, reason: "runner-draining" as const, until: drain.until, detail: `Toolroll is restarting (draining): ${name} is still stopping (scheduled by ${drain.until})` };
     }
     if (existing !== null && existing.runner.retiredAt === null && isAlive(existing.runner, now)) {
       return {
@@ -643,7 +636,7 @@ export const workerComponent = (name: string): string => `worker:${name}`;
 
 /**
  * The stop begins (durable-actors' draining report), fenced by this holder's credential: from now this runner takes
- * no new work (claim.ts acquire refuses), and its drain ends by `until`, after which it never blocks a new start.
+ * no new work (claim.ts acquire refuses). `until` is a schedule, never proof that the holder exited.
  */
 export function drainRunnerIfCurrent(store: Store, name: string, token: string, now: Date, until: Date): boolean {
   return store.transact(() => {

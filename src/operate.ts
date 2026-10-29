@@ -1789,6 +1789,7 @@ function claimCommand(
     if (result.reason === "unauthorized-repo") return fail(write, json, "claim", "unauthorized-repo", `this runner is not bound to ${result.repo} — \`runner bind\` adds it`, EXIT.refused);
     if (result.reason === "coordinator-filed") return fail(write, json, "claim", "coordinator-filed", "a coordinator filed this — nothing runs until the operator signs its scope", EXIT.refused);
     if (result.reason === "sweep-limit") return fail(write, json, "claim", "sweep-limit", `its sweep already has ${result.limit} running at once — it starts when one finishes`, EXIT.refused, { sweep: result.sweep, limit: result.limit });
+    if (result.reason === "watch-custody") return fail(write, json, "claim", "watch-custody", "This worker no longer holds the project; restart the watch", EXIT.refused);
     if (result.reason === "draining") return fail(write, json, "claim", "draining", `Toolroll is restarting (draining): ${runner} takes no new work until it is back (by ${result.until})`, EXIT.refused, { until: result.until });
     return fail(write, json, "claim", result.reason, `held by ${result.by} until ${result.until}`, EXIT.refused, { holder: result.by, until: result.until });
   }
@@ -7666,12 +7667,11 @@ async function upCommand(
       const tryRegister = () => registerRunnerIfIdle(store, { name, host: hostname(), repos, now: clock(),
         previousGone: holder => recordedHolderProvedGone(runnerProcessFile(context.databaseFile, name), holder, hostname()) });
       let answer = tryRegister();
-      // A holder still draining (a restart under way): it said when its drain ends, so this start waits for that and
-      // then takes the name over — never another name, and never a guess from a heartbeat window.
+      // Wait for a draining holder to sign off or be proved gone, never just for its deadline to elapse.
       const drainWaitUntil = Date.now() + 2 * 60_000;
       let saidDraining = false;
       while (!answer.ok && answer.reason === "runner-draining" && Date.now() < drainWaitUntil) {
-        if (!saidDraining) progress(`${answer.detail}; this start takes over then`);
+        if (!saidDraining) progress(`${answer.detail}; waiting for it to stop`);
         saidDraining = true;
         await new Promise(resolveWait => setTimeout(resolveWait, 1_000));
         answer = tryRegister();
