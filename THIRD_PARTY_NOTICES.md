@@ -247,14 +247,14 @@ limitations under the License.
 
 ## shadcn/ui — MIT
 
-Button and Dialog composition in `src/browser/ui/primitives.tsx` adapts:
+Dialog composition in `src/browser/ui/primitives.tsx` adapts:
 https://github.com/shadcn-ui/ui/tree/a87a63b2ca25143d26c8bd0903e4e9bc77b3f824/apps/v4/registry/new-york-v4/ui
 
 Source inspected 20 September 2026, revision
-`a87a63b2ca25143d26c8bd0903e4e9bc77b3f824`, files `button.tsx` and
-`dialog.tsx`. Adaptations replace Tailwind/CVA with local class variants, use
-individual Radix packages, default buttons to type=button, and leave dialog
-close controls to the calling surface. Radix supplies focus and dismissal behavior.
+`a87a63b2ca25143d26c8bd0903e4e9bc77b3f824`, file `dialog.tsx`. Adaptations
+replace Tailwind/CVA with local class variants, use individual Radix packages,
+and leave dialog close controls to the calling surface. Radix supplies focus
+and dismissal behavior.
 
 The rebuilt views (23 September 2026) add `src/browser/components/ui/`:
 button, badge, card, tabs, radio-group, select, switch, label, input,

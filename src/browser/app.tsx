@@ -5,9 +5,9 @@ import { createRoot } from "react-dom/client";
 import type { BrowserCrewItem, BrowserMessage, BrowserProjectState, BrowserRailTask, BrowserWorkspace } from "../browser-workspace.js";
 import { DISPLAY_STATES, STATE_WORDS, type DisplayState } from "../agent-state-words.js";
 import {
-  Alert, Artifact, ArtifactContent, Badge, Conversation, ConversationContent,
+  Alert, Artifact, ArtifactContent, Conversation, ConversationContent,
   ConversationEmptyState, ConversationScrollButton, Dialog, DialogClose, DialogContent,
-  DialogDescription, DialogTitle, DialogTrigger, Disclosure, Input, Label, Message, MessageContent, Textarea, FormToken, Passwordless, PostForm } from "./ui/index.js";
+  DialogDescription, DialogTitle, DialogTrigger, Disclosure, Message, MessageContent, FormToken, Passwordless, PostForm } from "./ui/index.js";
 import {
   awaitReceipt, carryDraft, editDraft, emptyDraft, isWorkspace, queuedDraft, readWorkspace, receiveDraft, rejectDraft,
   restoreDraft, sameConversation, saveDraft, sendMessage, submitDraft, WorkspaceAuthError,
@@ -25,7 +25,7 @@ import { TaskDetails, ViewHost, type ThreadChat } from "./views/index.js";
 import { threadWhen, whenTitle } from "./views/task-view.js";
 import { Home } from "./views/home-view.js";
 import { HeadlineBadge, headlineGlyph } from "./views/status-summary.js";
-import { Toaster, Button as ViewButton, cn } from "./components/ui/index.js";
+import { Toaster, Button as ViewButton, Badge, Input, Label, Textarea, cn } from "./components/ui/index.js";
 import { updateNoticeWords } from "../update-notice.js";
 import { shortAge } from "../when-html.js";
 import { useLiveRoom } from "./live.js";
@@ -594,7 +594,7 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
     <a href="/chat" className="so-wordmark"><span className="so-brand-mark" aria-hidden="true"><i /><i /><i /></span>Toolroll</a>
     <a href="/tasks/new" className="so-new-task"><Icon name="plus" />New task</a>
     {workspace.projects.length > 0 && <div className="so-project-switch">
-      <Label htmlFor={projectId}>Project</Label>
+      <Label className="mx-2 mt-0 mb-1.25 block text-[11.5px] leading-[inherit] text-muted-foreground" htmlFor={projectId}>Project</Label>
       <select id={projectId} value={currentProject?.href ?? "/work"} onChange={event => { leaveFor(event.target.value); }}>
         <option value="/work">All projects</option>
         {workspace.projects.map(project => <option key={project.path} value={project.href}>{project.name}</option>)}
@@ -671,7 +671,7 @@ export function CommandMenu({ workspace }: { workspace: BrowserWorkspace }) {
       <div className="so-command-heading"><DialogTitle>Go to</DialogTitle><DialogClose asChild><ViewButton className="max-[901px]:size-11 max-[901px]:min-h-11" variant="ghost" size="icon" aria-label="Close search"><Icon name="close" /></ViewButton></DialogClose></div>
       <DialogDescription className="so-sr-only">Search pages, projects, and tasks. Use Tab or the arrow keys to choose a link.</DialogDescription>
       <Label htmlFor={searchId} className="so-sr-only">Search workspace</Label>
-      <Input ref={searchInput} id={searchId} type="search" placeholder="Search workspace…" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => {
+      <Input className="focus-visible:border-signal focus-visible:ring-[3px] focus-visible:ring-signal-soft max-[900px]:text-base" ref={searchInput} id={searchId} type="search" placeholder="Search workspace…" value={query} onChange={event => setQuery(event.target.value)} onKeyDown={event => {
         if (event.key === "ArrowDown") { event.preventDefault(); results.current?.querySelector("a")?.focus(); }
       }} />
       <ul ref={results} className="so-command-results" onKeyDown={event => {
@@ -806,7 +806,7 @@ function LeadChat({ controller, docked = null }: { controller: ReturnType<typeof
         {/* One row: where it goes (a quiet chip), the words, and the send arrow. */}
         <div className="so-composer-row">
           {!dock && (chat.project || (chat.taskId && workspace.focus)) && <span className="so-composer-chip" data-composer-scope title={chat.project ? chat.project : workspace.focus!.title}>{chat.project ? chat.project : workspace.focus!.title}</span>}
-          <Textarea ref={box} id="lead-message" name="message" rows={1} maxLength={chat.maxChars} placeholder={dock?.placeholder ?? "Message your lead…"} value={draft.text}
+          <Textarea className="flex-1 min-w-0 min-h-6 max-h-[180px] resize-none rounded-none border-0 px-0 py-1.25 text-sm leading-[1.6] shadow-none focus-visible:ring-0 max-[900px]:text-base phone:min-h-11 phone:py-2.5" ref={box} id="lead-message" name="message" rows={1} maxLength={chat.maxChars} placeholder={dock?.placeholder ?? "Message your lead…"} value={draft.text}
             role={commandMatches.length > 0 ? "combobox" : undefined} aria-expanded={commandMatches.length > 0 ? true : undefined} aria-controls={commandMatches.length > 0 ? commandList : undefined}
             onChange={event => { setCommandsClosed(false); controller.edit(event.target.value); }} onKeyDown={event => {
               if (commandMatches.length > 0) {
