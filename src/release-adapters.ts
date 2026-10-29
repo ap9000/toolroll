@@ -27,7 +27,7 @@ import {
 import { acquireDeploymentLock } from "./deploy-lock.js";
 import { autoReleaseApprovalOf, liveReleaseOf } from "./scope.js";
 import { recheckReleaseTask, releaseCheckStanding } from "./check-failure.js";
-import { noteCiRunning } from "./release-ci-hold.js";
+import { noteCiRunning, releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
 import { autoPublishHeld, holdAutoPublish, liftCiHold, authorizeAutoCheck, giveUpAutoApproval, noteAutoCheckFailed, noteAutoRelease, releaseAutoApproves, sealAutoGreen, type CiObservation } from "./release-auto.js";
 import { proveCarry, type BuildRunner } from "./release-carry.js";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -756,6 +756,8 @@ function autoReleaseAdapter(withStore: <T>(body: (store: Store) => T) => T, now:
     async giveUp(taskId, why) { withStore(store => giveUpAutoApproval(store, { taskId, why, now: now() })); },
     async ciRunning(taskId, candidate) { withStore(store => noteCiRunning(store, { taskId, candidate, now: now() })); },
     async ciPassed(taskId, candidate, ask) {
+      // Reconcile the plane's record, not journal flags; without a pending row there is nothing to lift.
+      if (!withStore(store => releaseCiHoldOf(store, taskId) !== null || releaseCiRunningOf(store, taskId) !== null)) return { ok: true as const };
       // The plane reads CI itself; a short network failure is asked again a few times, and unreadable is never a pass.
       let ci: CiObservation | null = null, problem = "";
       for (let attempt = 0; attempt < 3 && ci === null; attempt++) {

@@ -11,6 +11,10 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, test } from "vitest";
 import { openStore, type Store } from "../../src/store.js";
 import { APPROVAL_PROOF, addApprover, approvalProofDetail, personApprovalOf, propose } from "../../src/scope.js";
+import { noteCiRunning } from "../../src/release-ci-hold.js";
+import { liftCiHold } from "../../src/release-auto.js";
+import { REQUIRED_PR_CHECKS } from "../../src/release.js";
+import { deploymentGate } from "../../src/deploy-gate.js";
 // @ts-expect-error plain ESM script without declarations
 import { deploymentCandidate } from "../../scripts/deploy-candidate.mjs";
 import { useScratch } from "./harness.js";
@@ -40,6 +44,28 @@ function candidate(store: Store, id: string, proof: string): number {
 
 describe("attack: the candidate's own scope.js approves its deployment", () => {
   const scratch = useScratch("deploy-approval");
+
+  test("a person's early approval cannot bypass pending CI through either deployment gate, even without release terms", () => {
+    const store = openStore(join(scratch(), "orders.db"));
+    try {
+      expect(addApprover(store, "alex", NOW).ok).toBe(true);
+      for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", NOW);
+      const runId = candidate(store, "early-approval", "password-now");
+      noteCiRunning(store, { taskId: "early-approval", candidate: HEAD, now: NOW });
+      const input = { runId, head: HEAD, evidenceRoot: "/evidence", now: NOW };
+      const deps = { assignmentOf: () => null, verificationEvidence: () => ({ ok: false }), installedScope: { personApprovalOf } };
+      for (const releaseFlow of [false, true]) {
+        expect(deploymentGate(store, { ...input, releaseFlow })).toMatchObject({ ok: false, message: expect.stringContaining("CI") });
+        expect(() => deploymentCandidate(store, { ...input, releaseFlow }, deps)).toThrow("CI");
+      }
+      expect(liftCiHold(store, { taskId: "early-approval", candidate: HEAD, now: NOW, ask: false, ci: {
+        head: HEAD, observedAt: NOW.toISOString(), complete: true,
+        runs: REQUIRED_PR_CHECKS.map((name, i) => ({ id: i + 1, suite: 1, name, status: "completed", conclusion: "success", head: HEAD, app: "github-actions", workflowPath: ".github/workflows/ci.yml" })),
+      } })).toEqual({ ok: true });
+      expect(deploymentGate(store, input)).toMatchObject({ ok: false, message: expect.stringContaining("Native check") });
+      expect(() => deploymentCandidate(store, input, deps)).toThrow("Native check");
+    } finally { store.close(); }
+  });
 
   test("a candidate dist whose personApprovalOf returns yes is never asked; a lead-sealed candidate is refused", async () => {
     const dir = scratch();

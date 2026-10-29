@@ -1216,6 +1216,21 @@ describe("a person's release asks during CI (Alex, 2026-10-29): a person may app
   const notices = (f: ReleaseFixture) => f.store.handle.prepare("SELECT subject, body FROM notification WHERE kind = 'release-auto' ORDER BY id").all().map(row => `${String(row["subject"])}: ${String(row["body"])}`);
   const pending = (head: string): CiObservation => ({ ...green(head), runs: green(head).runs.map((run, i) => i === 0 ? { ...run, status: "in_progress", conclusion: null } : run) });
 
+  test.each(["reserve", "issue"] as const)("a direct deploy cannot %s while the approved release still waits for CI", phase => {
+    const f = open();
+    expect(approve(f.store, f.taskId, "alex", LATER, digestOf(f), f.password)).toMatchObject({ ok: true });
+    const a = f.authority();
+    const reserve = () => reserveRelease(f.store, { authority: a.id, kind: "deploy", taskId: f.taskId, candidate: f.approved, epoch: null, operationId: "direct", now: LATER });
+    if (phase === "issue") expect(reserve()).toMatchObject({ ok: true });
+    noteCiRunning(f.store, { taskId: f.taskId, candidate: f.approved, now: LATER });
+    expect(personApprovalOf(f.store, f.taskId)).toMatchObject({ ok: true });
+    if (phase === "reserve") expect(reserve()).toMatchObject({ ok: false, why: expect.stringContaining("CI") });
+    else expect(runReleaseOperation(f.store, "direct", a.leaseEpoch, LATER)).toBe(false);
+    expect(liftCiHold(f.store, { taskId: f.taskId, candidate: f.approved, ci: green(f.approved), ask: false, now: LATER })).toEqual({ ok: true });
+    if (phase === "reserve") expect(reserve()).toMatchObject({ ok: true });
+    expect(runReleaseOperation(f.store, "direct", a.leaseEpoch, LATER)).toBe(true);
+  });
+
   test("the note holds nothing: a person's typed yes seals while CI runs, and the automatic fallback asks them at once", () => {
     const f = open();
     noteCiRunning(f.store, { taskId: f.taskId, candidate: f.approved, now: RELEASE_NOW });

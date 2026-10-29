@@ -17,6 +17,11 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now, rel
     `Run ${runId} is not a built candidate at ${head.slice(0, 7)}.`);
   requireFact(scope && scope.approvedDigest === scope.digest && scope.digest === run.scopeDigest,
     "The run's signed scope is no longer the approved one.");
+  // The same gate as the installed deploy-gate.ts, read from the plane even when its runtime predates this rule.
+  // A person's approval during CI must not let a direct deployment bypass the coordinator's wait.
+  const ci = store.handle.prepare("SELECT action FROM action_ledger WHERE task_id = ? AND action IN (?, ?) ORDER BY id DESC LIMIT 1")
+    .get(ref.externalId, "release asked while CI runs", "release approval CI passed");
+  requireFact(ci?.action !== "release asked while CI runs", "This release still waits for GitHub CI. Resume it with `toolroll release`.");
   // Only a person's approval deploys (docs/plans/approval-policy.md §1.7): the ceremony or a paired-chat tap, with a
   // person's proof recorded for these exact words — never the lead, a mode, a flow or a schedule. Every phase, resumed
   // ones included, proves the candidate through here. The answer comes from the INSTALLED runtime's scope.js when it

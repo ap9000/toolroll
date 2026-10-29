@@ -121,7 +121,7 @@ right away, while the pull request's checks still run. Built on branch `approve-
   longer hold it, on either road: the task is filed (`ciAhead` in the journal) and a person is asked at once.
 - **What the person sees.** The CLI, the console's approval sheet and the chat release card say "GitHub's checks are
   still running; nothing deploys until they pass." The plane learns it from a ledger row the coordinator records before
-  filing (`release asked while CI runs`, release-ci-hold.ts `noteCiRunning`); the row holds nothing and ends only when
+  filing (`release asked while CI runs`, release-ci-hold.ts `noteCiRunning`); the row never holds approval and ends only when
   the plane itself reads exact-head CI passing (`liftCiHold`: fresh, whole, GitHub Actions, ci.yml, every required
   check). While asking, the coordinator looks at CI on each poll: a check that failed stops the release before anyone
   approves a red commit.
@@ -135,6 +135,9 @@ right away, while the pull request's checks still run. Built on branch `approve-
   rerun to green on GitHub lets the same command go on; a fix is a new commit that goes through approval again. The
   merge still re-reads CI at the moment of merging and the ci step still runs after the deploy, unchanged; a failure
   after the deploy still needs a person's fresh approval.
+- **Direct deployment cannot bypass CI.** The runtime and deployment-script gates, and the store's reservation and
+  issuance guards, refuse a release whose CI-running row remains. This includes releases without carry terms.
+  The coordinator reconciles that row from a fresh plane observation even if a crash lost its journal flags.
 - **The automatic road is unchanged.** Its `auto-green` seal still waits for every check to pass (the check step waits,
   and `sealAutoGreen` reads CI itself), and `autoCiHolds` still reads CI before each irreversible step.
 - **The CI hold.** It existed so the automatic road's fallback would not ask a person before CI passed; under this

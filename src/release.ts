@@ -626,7 +626,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       const read = await adapters.github.checks(j.github, j.candidate.sha);
       const whole = adapters.github.complete === undefined ? false : await adapters.github.complete(j.github, j.candidate.sha);
       const verdict = whole ? prChecksVerdict(read, j.candidate.sha, REQUIRED_PR_CHECKS, { auto: true, workflow: REQUIRED_PR_CHECKS_WORKFLOW }) : { state: "failed" as const, failed: ["GitHub's check history of this commit can't be read whole"] };
-      if (verdict.state === "passed") return;
+      if (verdict.state === "passed") { await liftCiHold(false, `The release cannot continue before ${before}`); return; }
       if (before === "the tag") {
         // Already merged: nothing to revoke. It isn't tagged or published, and a person decides — durably, in the plane.
         const why = `Pull request checks on ${j.candidate.sha.slice(0, 7)} stopped passing after the merge`;
@@ -701,7 +701,10 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
         throw new Stop("ci-failed", `GitHub's checks failed on ${j.candidate.sha.slice(0, 7)}: ${verdict.failed.join(", ")}. ${nothing}. ${j.approval === null ? "" : `The approval covers ${j.candidate.sha.slice(0, 7)} only. `}Rerun the failed job on GitHub and run \`${resume}\` again, or fix the branch and release the new commit with \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
       }
       if (verdict.state !== "passed") return false;
-      if (j.ciAhead === true) { await liftCiHold(ask, nothing); j.ciAhead = false; save(); }
+      // The plane's note can survive a crash before the journal saved ciAhead. Clear it on the plane's own reading,
+      // even on an older/resumed journal whose flags say nothing about CI.
+      await liftCiHold(ask, nothing);
+      if (j.ciAhead === true) { j.ciAhead = false; save(); }
       return true;
     };
     /** Every person's release reads exact-head CI at deployment, even if it was green at the gate or an older

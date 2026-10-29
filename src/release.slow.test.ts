@@ -1668,6 +1668,7 @@ describe("toolroll release: approve automatically when checks pass", () => {
     const ciNote = { noted: null as string | null, notedBeforeFiling: false, lifts: [] as boolean[] };
     w.adapters.release!.auto!.ciRunning = async (_task, candidate) => { ciNote.noted = candidate; };
     w.adapters.release!.auto!.ciPassed = async (_task, candidate, ask) => {
+      if (ciNote.noted === null) return { ok: true };
       if (checksVerdict(w.s.checks.get(candidate) ?? [], REQUIRED_PR_CHECKS).state !== "passed") return { ok: false, why: "CI hasn't finished" };
       ciNote.noted = null; ciNote.lifts.push(ask);
       return { ok: true };
@@ -1797,9 +1798,17 @@ describe("toolroll release: approve automatically when checks pass", () => {
     });
 
     test("a check that never finishes keeps the deploy waiting until its limit, and nothing deploys", async () => {
-      const { s, adapters } = ciAheadWorld(false);
-      expect(await runRelease(options(stateDir(), { limits: { ci: 1 } }), adapters)).toMatchObject({ ok: false, step: "deploy", reason: "timeout" });
+      const { s, adapters, ciNote } = ciAheadWorld(false);
+      const dir = stateDir();
+      expect(await runRelease(options(dir, { limits: { ci: 1 } }), adapters)).toMatchObject({ ok: false, step: "deploy", reason: "timeout" });
       expect(s.calls).toEqual(["fileGate", "complete"]);
+      // A note can survive a crash before its journal flags were saved. Green CI must reconcile the plane's note too.
+      const journal = readJournal(journalFile(dir, "toolroll/simplify-release"))!;
+      delete journal.ciAhead; delete journal.ciBeforeDeploy;
+      writeJournal(journalFile(dir, "toolroll/simplify-release"), journal);
+      s.checks.set(SHA, passing(REQUIRED_PR_CHECKS));
+      expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
+      expect(ciNote.noted).toBeNull();
     });
 
     test("a check that already failed at the gate still stops there: nothing filed, nobody asked", async () => {

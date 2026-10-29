@@ -31,9 +31,10 @@ export function releaseCiHoldWords(hold: { candidate: string | null }): string {
 
 /**
  * A person's release asks for approval while its pull request's CI still runs (Alex, 2026-10-29; pipeline-speed.md,
- * "Decision: a person's release asks during CI"). This row holds nothing: it only lets the approval card say so, until
+ * "Decision: a person's release asks during CI"). This row never holds approval: it lets the approval card say so, until
  * the plane reads exact-head CI passing (`liftCiHold` records RELEASE_CI_PASSED_ACTION, which ends it as it ends a
- * hold). The deploy, merge, tag and publication wait for CI in `toolroll release` itself, whatever this row says.
+ * hold). Deployment gates and operation issuance also refuse while it remains, so a direct deploy cannot bypass
+ * the coordinator's CI wait. Its absence is not a CI pass: the coordinator still reads exact-head checks itself.
  */
 export const RELEASE_CI_RUNNING_ACTION = "release asked while CI runs";
 export const RELEASE_CI_RUNNING_WORDS = "GitHub's checks are still running; nothing deploys until they pass.";

@@ -77,7 +77,7 @@ import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
 import { liveReleaseOf } from "./scope.js";
-import { releaseCiHoldOf } from "./release-ci-hold.js";
+import { releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
 import { APPROVAL_BASES, approvalOf, machineActing, personProof, proofDetailOf, quarantinedAuthor, sealOriginOf, type ScopeAuthor, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
 import { resolveScopeProfile, resolveRouteCandidates, exactPinOf, routeOfTask, agentChoicesFor } from "./agentconfig.js";
 import {
@@ -24367,6 +24367,8 @@ export function reserveRelease(store: Store, input: { authority: number; kind: "
   return store.transact(() => {
     const a = releaseAuthority(store, input.authority);
     if (a === null) return { ok: false as const, why: `No release ${input.authority}.` };
+    // Early approval authorizes the check, never an irreversible operation before the plane confirms exact-head CI.
+    if (releaseCiRunningOf(store, input.taskId) !== null) return { ok: false as const, why: "This release still waits for GitHub CI. Resume it with `toolroll release`." };
     const at = input.now.toISOString();
     // Expiry stops every live state; an operation already reserved settles only through reconciliation.
     if (a.expiresAt <= at) return { ok: false as const, why: "The release approval expired." };
@@ -24402,6 +24404,7 @@ export function runReleaseOperation(store: Store, id: string, epoch: number, now
     const op = releaseOperation(store, id);
     const a = op === null ? null : releaseAuthority(store, op.authority);
     if (op === null || a === null || op.state !== "reserved" || op.epoch !== epoch || a.leaseEpoch !== epoch) return false;
+    if (releaseCiRunningOf(store, op.taskId) !== null) return false;
     // Past the expiry nothing new starts; the reserved operation is settled by reconciliation instead.
     if (a.expiresAt <= now.toISOString()) return false;
     // The lease that reserved it still holds (a person's direct deploy: still no coordinator holding the release), and
