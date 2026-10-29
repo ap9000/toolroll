@@ -280,6 +280,9 @@ export type ReleaseAdapters = {
     statuses(head: string): Promise<CheckRun[]>;
     state(version: string): Promise<HomebrewState>;
     propose(version: string): Promise<{ pr: number; head: string }>;
+    /** Right before the merge: the change is the tap's own open pull request at exactly `head`, and its formula is
+     * exactly the tap's formula with npm's published tarball for `version` and that tarball's own sha256. */
+    verified(pr: number, head: string, version: string): Promise<{ ok: true } | { ok: false; why: string }>;
     merge(pr: number, head: string): Promise<void>;
   };
 };
@@ -551,6 +554,13 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       let state = await brew.state(j.packageVersion);
       if (state.kind === "newer") return { state: "superseded", why: `the tap already names ${state.version}` };
       if (state.kind === "current") return { state: "current", why: null };
+      // A change this release already proposed is the only one it ever merges (security scan): another pull request for
+      // the same version, a moved head or a closed change is failed, never adopted or merged.
+      const journaled = j.homebrew?.pr != null && j.homebrew.head != null ? { pr: j.homebrew.pr, head: j.homebrew.head } : null;
+      if (journaled !== null && state.kind === "missing") return { state: "failed", why: `${brew.repo} #${journaled.pr} was closed before it merged` };
+      if (journaled !== null && state.kind === "proposed" && (state.pr !== journaled.pr || state.head !== journaled.head)) {
+        return { state: "failed", why: `${brew.repo}'s change for ${j.packageVersion} is now #${state.pr} at ${state.head.slice(0, 7)}, not the #${journaled.pr} at ${journaled.head.slice(0, 7)} this release proposed` };
+      }
       if (state.kind === "missing") { intend("homebrew"); const proposed = await brew.propose(j.packageVersion); state = { kind: "proposed", ...proposed }; }
       const proposed = state;
       j.homebrew = { pr: proposed.pr, head: proposed.head, merged: false, state: "pending", why: null };
@@ -588,7 +598,10 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       if (now.kind === "newer") return { state: "superseded", why: `the tap already names ${now.version}` };
       if (now.kind === "missing") return { state: "failed", why: `${brew.repo} #${proposed.pr} was closed before it merged` };
       if (now.kind === "proposed" && now.head !== proposed.head) return { state: "failed", why: `${brew.repo} #${proposed.pr} moved to ${now.head.slice(0, 7)} after its checks were read` };
-      if (now.kind !== "current") await brew.merge(proposed.pr, proposed.head);
+      if (now.kind === "current") return { state: "current", why: null };
+      const verified = await brew.verified(proposed.pr, proposed.head, j.packageVersion);
+      if (!verified.ok) return { state: "failed", why: verified.why };
+      await brew.merge(proposed.pr, proposed.head);
       return { state: "current", why: null };
     };
     // ---- one approval per release (release-once.md) -------------------------------------------------------------

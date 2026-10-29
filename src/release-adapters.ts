@@ -564,8 +564,11 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         // Ordering (pipeline-speed.md, P1): a tap already on a later version is never moved back by an older release.
         const named = formulaVersion(current.text);
         if (named !== null && versionAfter(named, version)) return { kind: "newer", version: named };
-        const open = (await ghJson("gh pr list", "pr", "list", "--repo", tap, "--head", brewBranch(version), "--state", "open", "--json", "number,headRefOid")) as Json[];
-        const pr = open[0];
+        // Only a change from the tap's own branch counts: a fork's pull request of the same branch name never does.
+        const open = (await ghJson("gh pr list", "pr", "list", "--repo", tap, "--head", brewBranch(version), "--state", "open", "--json", "number,headRefOid,headRepository,headRepositoryOwner,isCrossRepository")) as Json[];
+        const own = open.filter(one => tapOwnHead(one, tap));
+        if (own.length > 1) throw new Error(`${tap} has ${own.length} open changes for ${brewBranch(version)}`);
+        const pr = own[0];
         return pr === undefined ? { kind: "missing" } : { kind: "proposed", pr: Number(pr["number"]), head: String(pr["headRefOid"]) };
       },
       async propose(version) {
@@ -590,6 +593,22 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         const opened = (await ghJson("gh pr view", "pr", "view", branch, "--repo", tap, "--json", "number,headRefOid")) as Json;
         return { pr: Number(opened["number"]), head: String(opened["headRefOid"]) };
       },
+      async verified(pr, head, version) {
+        // The change at exactly `head` is the tap's own, and its formula is exactly today's formula with npm's published
+        // tarball and that tarball's own sha256: nothing else is ever merged.
+        const view = object(await ghJson("gh pr view", "pr", "view", String(pr), "--repo", tap, "--json", "number,headRefOid,headRefName,headRepository,headRepositoryOwner,isCrossRepository,state"));
+        if (Number(view["number"]) !== pr || view["headRefOid"] !== head || view["headRefName"] !== brewBranch(version) || view["state"] !== "OPEN" || !tapOwnHead(view, tap)) {
+          return { ok: false, why: `${tap} #${pr} isn't the tap's own open change at ${head.slice(0, 7)}` };
+        }
+        const tarball = `https://registry.npmjs.org/toolroll/-/toolroll-${version}.tgz`;
+        const response = await get(tarball, { signal: AbortSignal.timeout(60_000) });
+        if (!response.ok) return { ok: false, why: `downloading ${tarball} answered ${response.status}` };
+        const sha256 = createHash("sha256").update(Buffer.from(await response.arrayBuffer())).digest("hex");
+        const expected = bumpFormula((await formulaAt(await defaultBranch())).text, tarball, sha256);
+        const atHead = await formulaAt(head);
+        if (atHead.text !== expected) return { ok: false, why: `${tap} #${pr}'s formula isn't npm's ${version} tarball with its sha256 ${sha256.slice(0, 12)}` };
+        return { ok: true };
+      },
       async merge(pr, head) {
         const merged = object(await ghJson(`merging ${tap} #${pr}`, "api", "-X", "PUT", `repos/${tap}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`));
         if (merged["merged"] !== true || typeof merged["sha"] !== "string") throw new Error(`GitHub did not merge ${tap} #${pr}: ${String(merged["message"] ?? "no merge commit")}`);
@@ -607,6 +626,16 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
 }
 
 const brewBranch = (version: string) => `toolroll-${version}`;
+
+/** Whether a pull request's head is a branch of the tap itself (never a fork's). */
+export function tapOwnHead(pr: Json, tap: string): boolean {
+  const [owner, name] = tap.split("/");
+  const repo = pr["headRepository"], who = pr["headRepositoryOwner"];
+  const repoName = repo !== null && typeof repo === "object" ? (repo as Record<string, unknown>)["name"] : undefined;
+  const ownerLogin = who !== null && typeof who === "object" ? (who as Record<string, unknown>)["login"] : undefined;
+  return pr["isCrossRepository"] === false && typeof repoName === "string" && typeof ownerLogin === "string"
+    && repoName.toLowerCase() === (name ?? "").toLowerCase() && ownerLogin.toLowerCase() === (owner ?? "").toLowerCase();
+}
 
 /** The version a formula's tarball url names (`…/toolroll-<x.y.z>.tgz`), or null. */
 export function formulaVersion(text: string): string | null {

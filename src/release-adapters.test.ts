@@ -419,3 +419,15 @@ describe("the tap's formula version (pipeline-speed.md, P1: an older release nev
     expect(versionAfter("1.0.0", "0.99.99")).toBe(true);
   });
 });
+
+describe("security scan: only the tap's own branch is a Homebrew change", () => {
+  test("a fork's pull request of the same branch name never counts", async () => {
+    const { tapOwnHead } = await import("./release-adapters.js");
+    const own = { isCrossRepository: false, headRepository: { name: "homebrew-toolroll" }, headRepositoryOwner: { login: "ap9000" } };
+    expect(tapOwnHead(own, "ap9000/homebrew-toolroll")).toBe(true);
+    expect(tapOwnHead({ ...own, isCrossRepository: true }, "ap9000/homebrew-toolroll")).toBe(false);
+    expect(tapOwnHead({ ...own, headRepositoryOwner: { login: "mallory" } }, "ap9000/homebrew-toolroll")).toBe(false);
+    expect(tapOwnHead({ ...own, headRepository: { name: "homebrew-other" } }, "ap9000/homebrew-toolroll")).toBe(false);
+    expect(tapOwnHead({ number: 1 }, "ap9000/homebrew-toolroll")).toBe(false);
+  });
+});

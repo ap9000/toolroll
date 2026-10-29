@@ -57,6 +57,8 @@ function world(options: { crashAfter?: Mutation } = {}) {
     brew: { kind: "missing" } as HomebrewState,
     brewChecked: true,
     brewStatuses: [] as CheckRun[],
+    /** What the adapter's check of the change at its exact head says (its own branch, npm's tarball and sha256). */
+    brewVerified: { ok: true } as { ok: true } | { ok: false; why: string },
     /** Whether GitHub's check history reads whole (fewer than 1000 suites). */
     ciComplete: true,
     calls: [] as string[],
@@ -154,12 +156,14 @@ function world(options: { crashAfter?: Mutation } = {}) {
       statuses: async () => structuredClone(s.brewStatuses),
       state: async () => structuredClone(s.brew),
       propose: async () => { s.brew = { kind: "proposed", pr: 12, head: OTHER }; landed("propose"); return { pr: 12, head: OTHER }; },
+      verified: async () => structuredClone(s.brewVerified),
       merge: async () => { s.brew = { kind: "current" }; landed("brewMerge"); },
     },
   };
   return { s, adapters };
 }
 
+type World = ReturnType<typeof world>["s"];
 const stateDir = () => mkdtempSync(join(tmpdir(), "so-release-"));
 const state = <T>(s: T): T => s;
 
@@ -675,6 +679,29 @@ describe("toolroll release", () => {
     expect(await runRelease(options(stateDir()), during.adapters)).toMatchObject({ ok: true, journal: { homebrew: { state: "superseded" } } });
     expect(during.s.calls).toContain("propose");
     expect(during.s.calls).not.toContain("brewMerge");
+  });
+
+  test.each([
+    ["another pull request for the same version", (s: World) => { s.brew = { kind: "proposed", pr: 99, head: OTHER }; }],
+    ["the proposed change's head moved", (s: World) => { s.brew = { kind: "proposed", pr: 12, head: "f".repeat(40) }; }],
+    ["the proposed change was closed (a fork's of the same name never counts as it)", (s: World) => { s.brew = { kind: "missing" }; }],
+  ] as const)("security scan: finishing Homebrew never merges when %s", async (_name, change) => {
+    const { s, adapters } = world();
+    s.checks.set(`brew:${OTHER}`, []);
+    const dir = stateDir();
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true, journal: { homebrew: { state: "pending", pr: 12, head: OTHER } } });
+    change(s);
+    s.checks.set(`brew:${OTHER}`, passing(["brew test"]).map(run => ({ ...run, app: "github-actions" })));
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true, journal: { step: "homebrew", homebrew: { state: "failed", merged: false } } });
+    expect(s.calls).not.toContain("brewMerge");
+    expect(s.calls.filter(one => one === "propose")).toHaveLength(1);
+  });
+
+  test("security scan: a change whose formula isn't npm's tarball with its sha256 (or isn't the tap's own) is never merged", async () => {
+    const { s, adapters } = world();
+    s.brewVerified = { ok: false, why: "ap9000/homebrew-toolroll #12's formula isn't npm's 0.9.52 tarball with its sha256 aaaaaaaaaaaa" };
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true, journal: { homebrew: { state: "failed", why: expect.stringContaining("sha256") } } });
+    expect(s.calls).not.toContain("brewMerge");
   });
 
   test("the CLI says the release is published and Homebrew pending, and how to finish it", async () => {
