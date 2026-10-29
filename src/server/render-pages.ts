@@ -1352,6 +1352,7 @@ export function projectsPage(
   returnTo = "/",
   pullRequestsOn?: (path: string) => boolean,
   checkLevelOf?: (path: string) => CheckLevel,
+  activity?: BrowserProjectsView["activity"],
 ): Screen {
   // The onboarding card (repo onboarding, findings 1-39): preview first,
   // then a password-confirmed clone into a configured root. Disabled
@@ -1502,7 +1503,7 @@ export function projectsPage(
     candidateItems.length > 0 ? html`<h2>Available</h2>${cards(candidateItems)}` : null,
     addCard,
   ], "\n"), { chrome, workspace: { view: {
-    kind: "projects", choosing, problem, returnTo,
+    kind: "projects", choosing, problem, returnTo, ...(activity === undefined ? {} : { activity }),
     recent: recent.map(one => rowOf(one.path, one.name, one.lastOpenedAt)),
     available: candidates.map(path => rowOf(path, projectName(path), null)),
     add: { browse: browsable ? "/projects/browse" : null, github: onboard === null ? null : "/projects/github", html: htmlString(addForms) },

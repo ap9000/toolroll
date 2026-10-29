@@ -8,6 +8,7 @@ import { configPath, loadRepos } from './repos.js';
 import { authenticateCoordinator } from './coordinator.js';
 import { canonicalProject } from './project.js';
 import { envelopeJson } from './envelope.js';
+import { projectOutcomes } from './project-outcomes.js';
 import type { Store } from './store.js';
 
 export type ProjectProfile = { version: 1; repo: string; tokenFile: string | null };
@@ -26,12 +27,12 @@ export function readProjectProfile(databaseFile: string): ProjectProfile | null 
 }
 
 export async function runProjectCommand(positional: readonly string[], flags: Map<string, string | true>, context: {
-  store: Store; databaseFile: string; write: (line: string) => void; json: boolean; registryFile?: string;
+  store: Store; databaseFile: string; write: (line: string) => void; json: boolean; registryFile?: string; now?: Date;
 }): Promise<number> {
   const action = positional[0] ?? 'show', command = `project ${action}`;
   const fail = (reason: string, message: string) => { context.write(context.json ? envelopeJson({ ok: false, command, reason, message }) : message); return reason === 'usage' ? 2 : 3; };
-  if (!['use', 'show'].includes(action) || positional.length > (action === 'use' ? 2 : 1)) return fail('usage', 'Use project use <saved checkout path> [--token-file PATH], or project show.');
-  const allowed = new Set(['db', 'json', ...(action === 'use' ? ['token-file'] : [])]);
+  if (!['use', 'show', 'activity'].includes(action) || positional.length > (action === 'use' ? 2 : 1)) return fail('usage', 'Use project use <saved checkout path> [--token-file PATH], project show, or project activity [--json].');
+  const allowed = new Set(['db', 'json', ...(['use', 'activity'].includes(action) ? ['token-file'] : [])]);
   for (const name of flags.keys()) if (!allowed.has(name)) return fail('usage', `--${name} is not a project ${action} option.`);
   const registry = await loadRepos(context.registryFile ?? configPath(process.env, homedir()));
   if ('error' in registry) return fail('configuration', registry.error);
@@ -60,6 +61,27 @@ export async function runProjectCommand(positional: readonly string[], flags: Ma
     writeFileSync(temp, `${JSON.stringify(profile, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
     renameSync(temp, file);
   } else profile = readProjectProfile(context.databaseFile);
+  if (action === 'activity') {
+    if (profile === null || !repos.includes(profile.repo)) return fail('not-found', 'Select a saved project with project use first.');
+    const credentialFile = flags.get('token-file') ?? profile.tokenFile;
+    if (credentialFile !== null) {
+      if (typeof credentialFile !== 'string' || !credentialFile) return fail('usage', '--token-file requires a path.');
+      let token: string;
+      try {
+        const info = statSync(credentialFile);
+        if (!info.isFile() || info.size > 16_384) return fail('unauthenticated', 'The scoped credential file is unavailable.');
+        token = readFileSync(credentialFile, 'utf8').trim();
+      } catch { return fail('unauthenticated', 'The scoped credential file is unavailable.'); }
+      const auth = authenticateCoordinator(context.store, token);
+      if (!auth.ok) return fail('unauthenticated', 'The scoped credential is invalid or revoked.');
+      if (!auth.who.repos.includes(profile.repo)) return fail('not-found', 'That project is unavailable to this credential.');
+    }
+    // Like assignment brief, an uncredentialed local database read has the
+    // local operator's access. A saved scoped credential is always re-proved.
+    const result = projectOutcomes(context.store, profile.repo, context.now ?? new Date(), { principal: 'operator', repos: [profile.repo] });
+    context.write(context.json ? envelopeJson({ ok: true, command, result }) : JSON.stringify(result, null, 2));
+    return 0;
+  }
   const result = { profile, saved: profile !== null && repos.includes(profile.repo) };
   context.write(context.json ? envelopeJson({ ok: true, command, result }) : profile === null ? 'No project selected. Use project use <saved checkout path>.' : `${profile.repo}${result.saved ? '' : ' (no longer saved)'}\n${profile.tokenFile === null ? 'Uses your existing local sign-in for operator actions.' : `Scoped credential reference: ${profile.tokenFile}`}`);
   return 0;

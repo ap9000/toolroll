@@ -2,6 +2,7 @@
  * what needs attention on the first line, where it lives and when it was
  * last opened on the second, Open on the right. Opening stays the server's
  * POST (the session's project changes there), so every road is a form. */
+import { ProjectActivity } from "./project-activity.js";
 import { PostForm } from "../ui/index.js";
 import { BookOpen, Copy, FolderOpen, GitBranch, GitPullRequest, ListChecks, Plus } from "lucide-react";
 import { threadWhen } from "./task-view.js";
@@ -134,6 +135,8 @@ export function ProjectsView({ view, csrf }: { view: BrowserProjectsView; csrf: 
     </header>
 
     {view.problem !== null && <p role="alert" className="rounded-md bg-destructive-soft px-3 py-2 text-sm text-destructive">{view.problem}</p>}
+
+    {!view.choosing && view.activity && <ProjectActivity {...view.activity} />}
 
     <Group label="Recent" rows={view.recent} {...shared} />
     <Group label="Available" rows={view.available} {...shared} />

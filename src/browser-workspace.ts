@@ -343,6 +343,7 @@ export type BrowserProjectRow = {
 };
 export type BrowserProjectsView = {
   kind: 'projects';
+  activity?: { project: string; report: import('./project-outcomes.js').ProjectOutcomes | null };
   /** Arrived from New task: choosing where the task belongs. */
   choosing: boolean;
   problem: string | null;
