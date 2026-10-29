@@ -186,6 +186,52 @@ terms are refused while the release projects' checks run unsandboxed. So neither
   The worker has none of the release coordinator's adapters (gh, the tap, the journal), and running them unattended
   is a separate decision.
 
+## Item 3. The macOS suite before the merge; publication waits for the publish job only
+
+### Built (a)
+
+- **ci.yml runs the hosted macOS Node 22/24 suite on every pull request and main push**, in four shards per Node
+  version (`node N · macos shard i/4`, macos-latest), joined like the Linux shards by `node N · macos-latest` (an
+  always-running Linux job: every shard succeeded, and the trusted base revision's `scripts/ci-shards.mjs verify`
+  finds every test file of the tested commit run exactly once, counts consistent, skips only where the base can skip).
+  The artifacts are named `macos-shard-N-i` and renamed to the verifier's `shard-N-i` folders before it runs.
+- `REQUIRED_PR_CHECKS` names both macOS joins, so `toolroll release` waits for them on the exact head (gate, before
+  the deploy, at the merge). `PROTECTION_REPORT_ONLY_CHECKS` names them too: main's protection not requiring them yet
+  is reported, never refused. **Owner decision:** add `node 22 · macos-latest` and `node 24 · macos-latest` to main's
+  required checks once they have run there; then a later release empties them from the report-only list.
+- The nightly macos.yml jobs are renamed `nightly macOS · node N` and publish.yml's `tag macOS · node N`: a required
+  name from another workflow on a candidate fails the CI verdict (prChecksVerdict), so no other workflow may share it.
+- **Publication's verdict** (release.ts `tagChecksVerdict`): only publish.yml's `publish` job (RELEASE_TAG_CHECKS), by
+  its newest attempt; it `needs` the macOS legs, so their failure leaves it failed or skipped. Main's own CI push run
+  on the merge commit no longer holds publication (it used to wait for every reported check, ~8–20 minutes).
+- **Saved now:** main's CI push run on the post-merge tail (the merged tree was proved equal to the tested head).
+  macOS failures surface before the deploy and merge instead of after. **Not yet saved:** the tag's own macOS rerun
+  (about one macOS suite) — publish.yml still runs it; removing it needs (b).
+
+### Not built: (b) a plane-issued release certificate instead of the tag's macOS rerun
+
+Not built in this round, because it can't be made sound yet: the release projects' checks run unsandboxed as the
+owner's user, so no key in the owner's home (state folder or login keychain) is "held only by the plane" — a candidate's
+check could read it and sign its own certificate. The design, for when the key's custody is solved (a sandboxed
+release check, or a key in a store the check can't reach):
+
+- **Key.** An Ed25519 key the plane generates (`toolroll release --signing-key` prints the public key and the command
+  `gh variable set TOOLROLL_RELEASE_PUBLIC_KEY --repo ap9000/toolroll`). The public key is pinned in a repository
+  variable, outside every candidate file; a key rotation is a person's act.
+- **Certificate** (canonical JSON, version 1): repository, tag, package name and version, pull request number and head,
+  the prepared tree, the merge commit and its tree, the release task, its scope digest, approval (by, at, basis) and
+  completion, the check run and its sealed receipt digest, the sealed inventory and context digests of that check
+  (owed parts, execution context), and each required ci.yml check run (id, name, workflow run id and attempt,
+  conclusion) on the head, including both macOS joins; the npm tarball digest once the release check packs the tarball
+  it tests. Signed by the coordinator at the tag step and carried in the annotated tag's message.
+- **Publish.yml** (job `release proof`, Ubuntu): reads the annotated tag, verifies the signature with
+  `vars.TOOLROLL_RELEASE_PUBLIC_KEY`, requires the certificate's tag, merge commit (= `GITHUB_SHA`), tree (= the tag's
+  tree), version (= package.json) and repository to match, and reads each named check run back from GitHub's API
+  (head, name, ci.yml, success). Missing or mismatched proof fails, and `publish` needs it. With the variable unset
+  (the transition: the coordinator that tags the first such release is the previous runtime), the macOS legs run as
+  today; with it set, they don't run and a certificate is required. Keep the merged-tree comparison, npm OIDC with
+  provenance and the package checks; publish the certified tarball digest when the check produces one.
+
 ## Not built, and why
 
 ### B. More CI reuse inside the release check

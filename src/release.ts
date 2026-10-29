@@ -50,6 +50,10 @@ export const REQUIRED_PR_CHECKS = [
   // The git lanes (ci.yml job "git"): the declared floor (git-floor.ts) and Debian trixie's 2.47.
   "git 2.41 · debian trixie",
   "git 2.47 · debian trixie",
+  // The unit suite on macOS (ci.yml jobs "macos-shard" and "macos"; pipeline-speed.md, item 3a): tested on the candidate
+  // before it merges, no longer only on the tag after.
+  "node 22 · macos-latest",
+  "node 24 · macos-latest",
 ] as const;
 /** The workflow file every REQUIRED_PR_CHECKS job belongs to: a job of that name from any other workflow (a lookalike
  * added beside it) never stands for it (Codex review round 1, inherited CI limitation). */
@@ -59,7 +63,7 @@ export const REQUIRED_PR_CHECKS_WORKFLOW = ".github/workflows/ci.yml";
  * git lanes join main's protection once they have run there, so a protection without them is reported, never refused.
  * A later release empties this list; from then on main's protection must name every REQUIRED_PR_CHECKS check.
  */
-export const PROTECTION_REPORT_ONLY_CHECKS: readonly string[] = ["git 2.41 · debian trixie", "git 2.47 · debian trixie"];
+export const PROTECTION_REPORT_ONLY_CHECKS: readonly string[] = ["git 2.41 · debian trixie", "git 2.47 · debian trixie", "node 22 · macos-latest", "node 24 · macos-latest"];
 /** The checks main's protection must require at minimum: every required check that isn't report-only. */
 export const PROTECTION_MINIMUM_CHECKS: readonly string[] = REQUIRED_PR_CHECKS.filter(name => !PROTECTION_REPORT_ONLY_CHECKS.includes(name));
 /**
@@ -69,8 +73,11 @@ export const PROTECTION_MINIMUM_CHECKS: readonly string[] = REQUIRED_PR_CHECKS.f
  * checks the effective layer doesn't name.
  */
 export type MainProtection = { effective: boolean; missing: string[]; notYetRequired: string[] };
-/** The checks a release tag runs (.github/workflows/publish.yml), awaited before Homebrew moves. */
-export const RELEASE_TAG_CHECKS = ["node 22 · macos-latest", "node 24 · macos-latest", "publish"] as const;
+/** The check a release's publication waits for on its tag (.github/workflows/publish.yml): the publish job, which
+ * needs every other job of that workflow (pipeline-speed.md, item 3), so its success stands for them and a failed one
+ * leaves it failed or skipped. Nothing else reported on the merge commit (main's own CI push run) holds publication. */
+export const RELEASE_TAG_CHECKS = ["publish"] as const;
+export const RELEASE_TAG_WORKFLOW = ".github/workflows/publish.yml";
 
 export const RELEASE_STEPS = ["gate", "approval", "check", "complete", "quiet", "deploy", "link", "ci", "merge", "tree", "tag", "publish", "homebrew", "done"] as const;
 export type ReleaseStep = typeof RELEASE_STEPS[number];
@@ -438,6 +445,17 @@ export function checksVerdict(runs: readonly CheckRun[], required: readonly stri
   }
   if (failed.length > 0) return { state: "failed", failed };
   return waiting.length > 0 ? { state: "pending", waiting } : { state: "passed" };
+}
+
+/**
+ * Publication's verdict on the tag commit (pipeline-speed.md, item 3): only RELEASE_TAG_CHECKS, from publish.yml (or a
+ * check whose workflow GitHub doesn't name), each by its newest attempt. Every other check on the merge commit — main's
+ * own CI run — is not waited for: the candidate's checks already passed on its exact head before the merge, and the
+ * merged tree was proved equal to it.
+ */
+export function tagChecksVerdict(runs: readonly CheckRun[]): ReturnType<typeof checksVerdict> {
+  const names: readonly string[] = RELEASE_TAG_CHECKS;
+  return checksVerdict(runs.filter(run => names.includes(run.name) && (run.workflowPath == null || workflowIs(run.workflowPath, RELEASE_TAG_WORKFLOW))), RELEASE_TAG_CHECKS);
 }
 
 /** Run the release from wherever its journal stopped. */
@@ -1195,7 +1213,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           if (j.intents.publish === undefined) intend("publish");
           await waitFor("publish", `npm, the GitHub release and the tag's checks for ${j.tag}`, async () => {
             if (await adapters.github.tag(j.github, j.tag) !== j.tagged!.sha) throw new Stop("conflict", `${j.tag} no longer points at the verified merge commit. Homebrew was not updated.`);
-            const verdict = checksVerdict(await adapters.github.checks(j.github, j.tagged!.sha), RELEASE_TAG_CHECKS);
+            const verdict = tagChecksVerdict(await adapters.github.checks(j.github, j.tagged!.sha));
             if (verdict.state === "failed") throw new Stop("publish-failed", `The release tag's checks failed: ${verdict.failed.join(", ")}. Homebrew was not updated.`);
             if (verdict.state === "pending") return null;
             return await adapters.registry.published(j.packageName, j.packageVersion) && await adapters.github.release(j.github, j.tag) ? true : null;

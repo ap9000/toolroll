@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **The macOS suite runs on the candidate before it merges.** Pull requests
+  and main pushes now run the unit suite on hosted macOS with Node 22 and 24,
+  in four shards each, joined into `node 22 · macos-latest` and
+  `node 24 · macos-latest` exactly like the Linux checks. `toolroll release`
+  waits for them; main's protection not requiring them yet is reported, not
+  refused. After the merge, publication waits only for the tag's publish job,
+  no longer for main's own CI run on the merge commit. The nightly and tag
+  macOS jobs are renamed so no other workflow shares a required name.
 - **A release is published without waiting for Homebrew.** `toolroll release`
   ends with "Published; Homebrew pending" once npm and the GitHub release are
   verified, instead of waiting up to 45 minutes for the tap's checks. Homebrew

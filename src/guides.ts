@@ -498,10 +498,11 @@ with a time limit.
 10. **tree**: main's merge commit must have exactly the gated tree, or
    nothing is tagged.
 11. **tag**: pushes \`v<version>\` on that merge commit. In publish.yml,
-    macOS Node 22 and 24 must both pass before npm and GitHub publication.
+    macOS Node 22 and 24 must both pass before npm and GitHub publication
+    (the candidate's macOS checks already passed in ci.yml before the merge).
     macos.yml keeps the nightly matrix.
-12. **publish**: waits for npm, the GitHub release and the tag's macOS
-    and publish checks.
+12. **publish**: waits for npm, the GitHub release and the tag's publish
+    job (which needs the macOS legs); not main's own CI on the merge commit.
 13. **homebrew**: the release is published once npm and the GitHub release
     are verified. It proposes the tap's formula change (checksum from npm's
     tarball) and looks at its checks once: \`Published; Homebrew pending\`

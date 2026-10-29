@@ -15,6 +15,8 @@ const DIGEST = "scope-digest-1", RECEIPT = "receipt-1";
 const T0 = Date.parse("2026-10-08T09:00:00.000Z");
 // GitHub's workflow-run path of each job: a required check counts only from ci.yml (codex round 1, inherited CI limitation).
 const passing = (names: readonly string[]): CheckRun[] => names.map(name => ({ name, status: "completed", conclusion: "success", workflowPath: ".github/workflows/ci.yml" }));
+/** The tag's checks, from publish.yml. */
+const tagPassing = (names: readonly string[]): CheckRun[] => names.map(name => ({ name, status: "completed", conclusion: "success", workflowPath: ".github/workflows/publish.yml" }));
 const MUTATIONS = ["fileGate", "complete", "deploy", "merge", "deleteBranch", "createTag", "propose", "brewMerge"] as const;
 type Mutation = typeof MUTATIONS[number];
 
@@ -144,7 +146,7 @@ function world(options: { crashAfter?: Mutation } = {}) {
       createTag: async (_repo, tag, sha) => {
         s.tags.set(tag, sha);
         s.published = true; s.released = true;
-        s.checks.set(sha, passing(RELEASE_TAG_CHECKS));
+        s.checks.set(sha, tagPassing(RELEASE_TAG_CHECKS));
         landed("createTag");
       },
       release: async () => s.released,
@@ -580,7 +582,7 @@ describe("toolroll release", () => {
     const held = world();
     held.s.protection = { effective: true, missing: [], notYetRequired: [...PROTECTION_REPORT_ONLY_CHECKS] };
     expect(await runRelease(options(stateDir()), held.adapters)).toMatchObject({ ok: true });
-    expect(held.s.said).toContainEqual(expect.stringContaining("main's protection doesn't require git 2.41 · debian trixie, git 2.47 · debian trixie yet"));
+    expect(held.s.said).toContainEqual(expect.stringContaining("main's protection doesn't require git 2.41 · debian trixie, git 2.47 · debian trixie, node 22 · macos-latest, node 24 · macos-latest yet"));
     expect(held.s.said.some(line => line.includes("Warning:"))).toBe(false);
   });
 
@@ -628,7 +630,7 @@ describe("toolroll release", () => {
     const tag = adapters.github.createTag;
     adapters.github.createTag = async (...args) => {
       await tag(...args);
-      s.checks.set(MERGE, [...passing(RELEASE_TAG_CHECKS.filter(one => one !== name)), { name, status: "completed", conclusion: "failure" }]);
+      s.checks.set(MERGE, [...tagPassing(RELEASE_TAG_CHECKS.filter(one => one !== name)), { name, status: "completed", conclusion: "failure", workflowPath: ".github/workflows/publish.yml" }]);
     };
     const result = await runRelease(options(stateDir()), adapters);
     expect(result).toMatchObject({ ok: false, step: "publish", reason: "publish-failed" });
@@ -702,6 +704,18 @@ describe("toolroll release", () => {
     s.brewVerified = { ok: false, why: "ap9000/homebrew-toolroll #12's formula isn't npm's 0.9.52 tarball with its sha256 aaaaaaaaaaaa" };
     expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true, journal: { homebrew: { state: "failed", why: expect.stringContaining("sha256") } } });
     expect(s.calls).not.toContain("brewMerge");
+  });
+
+  test("pipeline-speed item 3: publication waits for publish.yml's publish job only, never main's own CI on the merge commit", async () => {
+    const { tagChecksVerdict } = await import("./release.js");
+    const ok = (name: string, workflowPath: string | null, conclusion = "success", status = "completed") => ({ name, status, conclusion: status === "completed" ? conclusion : null, workflowPath });
+    // main's push CI still running (or failed) on the merge commit doesn't hold the published release.
+    expect(tagChecksVerdict([ok("publish", ".github/workflows/publish.yml"), ok("node 22 · macos-latest", ".github/workflows/ci.yml", "", "in_progress"), ok("node 24 · ubuntu-latest", ".github/workflows/ci.yml", "failure")])).toEqual({ state: "passed" });
+    // The publish job skipped (a macOS leg failed) or failed is a failed publication; not started yet is pending.
+    expect(tagChecksVerdict([ok("publish", ".github/workflows/publish.yml", "skipped")])).toMatchObject({ state: "failed" });
+    expect(tagChecksVerdict([])).toMatchObject({ state: "pending" });
+    // A job named publish from another workflow never stands in for it.
+    expect(tagChecksVerdict([ok("publish", ".github/workflows/other.yml")])).toMatchObject({ state: "pending" });
   });
 
   test("the CLI says the release is published and Homebrew pending, and how to finish it", async () => {
@@ -1690,8 +1704,8 @@ describe("toolroll release: approve automatically when checks pass", () => {
       // The PR workflow (workflow 1), matrix names and all, green.
       ...(await ci(repo, sha)).map(run => ({ ...run, workflow: 1 })),
       // macos.yml run by hand twice on this commit: the first run failed, the second (a newer suite) passed.
-      { id: 500, name: "node 22 · macos-latest", status: "completed", conclusion: "failure", app: "github-actions", suite: 20, head: sha, workflow: 9 },
-      { id: 600, name: "node 22 · macos-latest", status: "completed", conclusion: "success", app: "github-actions", suite: 21, head: sha, workflow: 9 },
+      { id: 500, name: "nightly macOS · node 22", status: "completed", conclusion: "failure", app: "github-actions", suite: 20, head: sha, workflow: 9 },
+      { id: 600, name: "nightly macOS · node 22", status: "completed", conclusion: "success", app: "github-actions", suite: 21, head: sha, workflow: 9 },
     ];
     expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
     expect(s.calls).toContain("merge");

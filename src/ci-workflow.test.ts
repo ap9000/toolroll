@@ -50,7 +50,7 @@ const prChecks = () => [...REQUIRED_PR_CHECKS].sort();
 /** The unit suite's shards (pipeline-speed.md, part A): they run beside the required checks; each Node version's join
  * job carries the required name. */
 const SHARDS = 4;
-const shardChecks = () => ["22", "24"].flatMap(node => Array.from({ length: SHARDS }, (_, at) => `node ${node} · shard ${at + 1}/${SHARDS}`)).sort();
+const shardChecks = () => ["22", "24"].flatMap(node => Array.from({ length: SHARDS }, (_, at) => [`node ${node} · shard ${at + 1}/${SHARDS}`, `node ${node} · macos shard ${at + 1}/${SHARDS}`])).flat().sort();
 const ciChecks = () => [...prChecks(), ...shardChecks()].sort();
 
 const running = (event: Event) => workflows.filter(one => triggered(one, event)).flatMap(one => Object.entries(one.jobs).flatMap(([id, job]) => checks(job, id)));
@@ -64,12 +64,14 @@ describe("the CI workflows", () => {
     expect(varying).toEqual([]);
   });
 
-  test("a pull request runs Ubuntu on Node 22 and 24 plus the Linux and Windows containment jobs, and no macOS", () => {
+  test("a pull request runs Ubuntu and macOS on Node 22 and 24 plus the Linux and Windows containment jobs", () => {
     // No branch or path filter may omit required checks on a PR (including documentation-only changes).
     expect(workflows.find(one => one.file === "ci.yml")?.on["pull_request"]).toBeNull();
     const pr: Event = { kind: "pull_request", paths: ["src/release.ts"] };
     expect(names(pr)).toEqual(ciChecks());
-    expect(running(pr).filter(one => /macos/.test(one.runner))).toEqual([]);
+    // pipeline-speed.md item 3a: the macOS suite runs on the candidate before it merges, sharded; its joins run on Linux.
+    expect(running(pr).filter(one => /macos/.test(one.runner)).map(one => one.name).sort()).toEqual(shardChecks().filter(name => name.includes("macos shard")));
+    expect(running(pr).filter(one => /^node \d+ · macos-latest$/.test(one.name)).map(one => one.runner)).toEqual(["ubuntu-24.04", "ubuntu-24.04"]);
     expect(running(pr).filter(one => /ubuntu/.test(one.runner) && /^node \d+ · ubuntu-latest$/.test(one.name)).map(one => one.name).sort()).toEqual(["node 22 · ubuntu-latest", "node 24 · ubuntu-latest"]);
     expect(names({ kind: "pull_request", paths: ["README.md"] })).toEqual(ciChecks());
     expect(running(pr).find(one => one.name === "Windows Job Object containment")?.runner).toBe("windows-latest");
@@ -86,8 +88,8 @@ describe("the CI workflows", () => {
     expect(publisher.needs).toBe("macos");
     const macos = workflow.jobs["macos"]!;
     expect(checks(macos, "macos")).toEqual([
-      { name: "node 22 · macos-latest", runner: "macos-latest" },
-      { name: "node 24 · macos-latest", runner: "macos-latest" },
+      { name: "tag macOS · node 22", runner: "macos-latest" },
+      { name: "tag macOS · node 24", runner: "macos-latest" },
     ]);
     // GitHub needs requires every matrix leg to succeed. Neither the job nor a test step may override failure:
     // https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-jobs
@@ -110,11 +112,12 @@ describe("the CI workflows", () => {
 
   test("macOS runs nightly and on release tags, on Node 22 and 24", () => {
     const macos = (event: Event) => running(event).filter(one => /macos/.test(one.runner)).map(one => one.name).sort();
-    expect(macos({ kind: "schedule" })).toEqual(["node 22 · macos-latest", "node 24 · macos-latest"]);
-    expect(macos({ kind: "push", tag: "v0.9.52" })).toEqual(["node 22 · macos-latest", "node 24 · macos-latest"]);
-    expect(macos({ kind: "push", branch: "main" })).toEqual([]);
-    // Everything a release waits for on its tag runs there: macOS, and the npm publish.
-    expect(names({ kind: "push", tag: "v0.9.52" })).toEqual([...RELEASE_TAG_CHECKS].sort());
+    expect(macos({ kind: "schedule" })).toEqual(["nightly macOS · node 22", "nightly macOS · node 24"]);
+    expect(macos({ kind: "push", tag: "v0.9.52" })).toEqual(["tag macOS · node 22", "tag macOS · node 24"]);
+    expect(macos({ kind: "push", branch: "main" })).toEqual(shardChecks().filter(name => name.includes("macos shard")));
+    // What a release waits for on its tag runs there: the npm publish, which needs both macOS legs.
+    expect(names({ kind: "push", tag: "v0.9.52" })).toEqual(["publish", "tag macOS · node 22", "tag macOS · node 24"]);
+    expect(names({ kind: "push", tag: "v0.9.52" })).toEqual(expect.arrayContaining([...RELEASE_TAG_CHECKS]));
     expect(workflows.find(one => one.file === "macos.yml")?.on["schedule"]).toEqual([{ cron: expect.stringMatching(/^\d+ \d+ \* \* \*$/) }]);
   });
 
@@ -159,7 +162,7 @@ describe("the CI workflows", () => {
   test("no job runs behind a condition, so a skipped job can't stand in for a passing required check", () => {
     // The one exception always runs: the shards' join, which a failed shard would otherwise skip into a pass.
     const conditional = workflows.flatMap(one => Object.entries(one.jobs).filter(([, job]) => job.if !== undefined).map(([id, job]) => `${one.file}: ${id} ${String(job.if)}`));
-    expect(conditional).toEqual(["ci.yml: test ${{ always() }}"]);
+    expect(conditional).toEqual(["ci.yml: test ${{ always() }}", "ci.yml: macos ${{ always() }}"]);
   });
 
   test("pipeline-speed A: each required Node check joins every shard of the unit suite and fails unless all of them passed on the tested commit", () => {
@@ -196,5 +199,31 @@ describe("the CI workflows", () => {
     expect(verify).toContain("verifier=.trusted-base/scripts/ci-shards.mjs");
     expect(verify).toContain(`node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node \${{ matrix.node }} --shards ${SHARDS}`);
     expect(steps.find(step => step.uses?.startsWith("actions/download-artifact@"))?.with).toMatchObject({ pattern: "shard-${{ matrix.node }}-*", path: "${{ runner.temp }}/shards" });
+  });
+
+  test("pipeline-speed item 3a: each macOS check joins every macOS shard exactly as the Linux one does", () => {
+    const ci = workflows.find(one => one.file === "ci.yml")!;
+    const shard = ci.jobs["macos-shard"]!, join = ci.jobs["macos"]!, linux = ci.jobs["test-shard"]!;
+    expect(shard["runs-on"]).toBe("macos-latest");
+    expect(shard.strategy?.matrix).toEqual({ node: ["22", "24"], shard: Array.from({ length: SHARDS }, (_, at) => at + 1) });
+    expect((shard.strategy as { "fail-fast"?: unknown })["fail-fast"]).toBe(false);
+    expect(join.needs).toBe("macos-shard");
+    expect(checks(join, "macos").map(one => one.name)).toEqual(["node 22 · macos-latest", "node 24 · macos-latest"]);
+    for (const job of [shard, join]) {
+      expect(job["continue-on-error"] ?? false).toBe(false);
+      for (const step of job.steps ?? []) { expect(step.if).toBeUndefined(); expect(step["continue-on-error"] ?? false).toBe(false); }
+    }
+    const runs = (job: Job) => (job.steps ?? []).map(step => step.run ?? "");
+    // The same suite command as Linux's shards, the same report, under its own artifact name.
+    const suite = (job: Job) => runs(job).find(run => run.startsWith("npm run test:all"));
+    expect(suite(shard)).toBe(suite(linux));
+    expect(shard.steps?.find(step => step.uses?.startsWith("actions/upload-artifact@"))?.with).toMatchObject({ name: "macos-shard-${{ matrix.node }}-${{ matrix.shard }}", path: "${{ runner.temp }}/shard-report.json", "if-no-files-found": "error" });
+    expect(shard.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with?.["fetch-depth"]).toBe(0);
+    // The join: the shards' own result, then the trusted base revision's verifier over every report; nothing installed.
+    const steps = join.steps ?? [];
+    expect((steps.find(step => step.name === "Every shard passed") as { env?: Record<string, string> }).env?.["SHARDS"]).toBe("${{ needs.macos-shard.result }}");
+    expect(runs(join).filter(run => /\bnpm\b|\bnpx\b|vitest/.test(run))).toEqual([]);
+    expect(steps.find(step => step.uses?.startsWith("actions/checkout@") && step.with?.["path"] === ".trusted-base")?.with).toMatchObject({ ref: "${{ github.event.pull_request.base.sha || github.sha }}", "persist-credentials": false });
+    expect(runs(join).at(-1)).toBe(runs(ci.jobs["test"]!).at(-1));
   });
 });
