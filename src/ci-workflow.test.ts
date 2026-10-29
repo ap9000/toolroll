@@ -116,8 +116,7 @@ describe("the CI workflows", () => {
     expect(macos({ kind: "push", tag: "v0.9.52" })).toEqual(["tag macOS · node 22", "tag macOS · node 24"]);
     expect(macos({ kind: "push", branch: "main" })).toEqual(shardChecks().filter(name => name.includes("macos shard")));
     // What a release waits for on its tag runs there: the npm publish, which needs both macOS legs.
-    expect(names({ kind: "push", tag: "v0.9.52" })).toEqual(["publish", "tag macOS · node 22", "tag macOS · node 24"]);
-    expect(names({ kind: "push", tag: "v0.9.52" })).toEqual(expect.arrayContaining([...RELEASE_TAG_CHECKS]));
+    expect(names({ kind: "push", tag: "v0.9.52" })).toEqual([...RELEASE_TAG_CHECKS].sort());
     expect(workflows.find(one => one.file === "macos.yml")?.on["schedule"]).toEqual([{ cron: expect.stringMatching(/^\d+ \d+ \* \* \*$/) }]);
   });
 

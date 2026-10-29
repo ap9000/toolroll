@@ -492,7 +492,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         return prs.find(one => one.state === "open") ?? prs.filter(one => one.state === "merged").sort((a, b) => b.number - a.number)[0] ?? null;
       },
       // Every attempt (filter=all), with its app, check suite and commit: the release judges each job by its latest attempt.
-      async checks(repo, sha) { return readCheckRuns(run, ciGh, repo, sha); },
+      async checks(repo, sha, options) { return readCheckRuns(run, ciGh, repo, sha, options); },
       async complete(repo, sha) { return readSuitesComplete(run, ciGh, repo, sha); },
       async mainHead(repo) { return readMainHead(run, ciGh, repo); },
       async contains(repo, sha, ancestor) { return readContains(run, ciGh, repo, sha, ancestor); },
@@ -867,7 +867,10 @@ function ciEnv(): NodeJS.ProcessEnv {
  * lists only the latest of each), every page — with its id, app, check suite and the commit it is filed under, oldest
  * first. A row that doesn't parse stops the read: a partial answer is never taken for the whole.
  */
-export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: string): Promise<CheckRun[]> {
+export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: string,
+  /** A release tag (pipeline-speed.md, item 3): a push of exactly this tag binds its workflow file too. */
+  options: { tag?: string } = {}): Promise<CheckRun[]> {
+  if (options.tag !== undefined && !/^v\d+\.\d+\.\d+$/.test(options.tag)) throw new Error("not a release tag");
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^[0-9a-f]{40}$/.test(sha)) throw new Error("not a repository and commit GitHub can be asked about");
   const out = await must(run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${repo}/commits/${sha}/check-runs?filter=all&per_page=100`,
     "--jq", ".check_runs[] | {id, name, status, conclusion, app: .app.slug, suite: .check_suite.id, head: .head_sha}"], { cwd: "/", env: ciEnv() }), "gh api check-runs");
@@ -906,7 +909,7 @@ export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: st
     const prs = (Array.isArray(one["prs"]) ? one["prs"] : []).map(pr => (pr !== null && typeof pr === "object" ? pr as Record<string, unknown> : {}));
     const ours = prs.length > 0 && prs.every(pr => Number.isSafeInteger(pr["number"]) && pr["repo"] === `https://api.github.com/repos/${repo}`);
     const untouched = one["event"] !== "pull_request" || (ours && !(await Promise.all(prs.map(pr => everRetargeted(Number(pr["number"]))))).some(Boolean));
-    if (mainTriggered(one) && untouched) pathOf.set(Number(one["suite"]), String(one["path"]));
+    if ((mainTriggered(one) || tagTriggered(one, options.tag)) && untouched) pathOf.set(Number(one["suite"]), String(one["path"]));
   }
   const runs = out.split("\n").filter(Boolean).map(line => {
     const one = object(JSON.parse(line));
@@ -1102,6 +1105,11 @@ export async function readMainProtection(run: Exec, gh: string, repo: string, br
 export async function readUpToDateRequired(run: Exec, gh: string, repo: string, branch = "main"): Promise<boolean | null> {
   const protection = await readMainProtection(run, gh, repo, branch);
   return protection === null ? null : protection.effective;
+}
+
+/** Whether a workflow run is the push of exactly this release tag (its workflow file is the tagged commit's own, on main). */
+function tagTriggered(run: Record<string, unknown>, tag: string | undefined): boolean {
+  return tag !== undefined && run["event"] === "push" && run["branch"] === tag;
 }
 
 /** Whether a workflow run was triggered on main: a push to main, or a pull request whose every base is main. */

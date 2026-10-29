@@ -706,16 +706,21 @@ describe("toolroll release", () => {
     expect(s.calls).not.toContain("brewMerge");
   });
 
-  test("pipeline-speed item 3: publication waits for publish.yml's publish job only, never main's own CI on the merge commit", async () => {
+  test("pipeline-speed item 3: publication waits for publish.yml's named jobs only, never main's own CI on the merge commit", async () => {
     const { tagChecksVerdict } = await import("./release.js");
-    const ok = (name: string, workflowPath: string | null, conclusion = "success", status = "completed") => ({ name, status, conclusion: status === "completed" ? conclusion : null, workflowPath });
+    const PUBLISH = ".github/workflows/publish.yml";
+    const one = (name: string, workflowPath: string | null, conclusion = "success", status = "completed", app: string | null = "github-actions") => ({ name, status, conclusion: status === "completed" ? conclusion : null, workflowPath, app });
+    const tag = RELEASE_TAG_CHECKS.map(name => one(name, PUBLISH));
     // main's push CI still running (or failed) on the merge commit doesn't hold the published release.
-    expect(tagChecksVerdict([ok("publish", ".github/workflows/publish.yml"), ok("node 22 · macos-latest", ".github/workflows/ci.yml", "", "in_progress"), ok("node 24 · ubuntu-latest", ".github/workflows/ci.yml", "failure")])).toEqual({ state: "passed" });
+    expect(tagChecksVerdict([...tag, one("node 22 · macos-latest", ".github/workflows/ci.yml", "", "in_progress"), one("node 24 · ubuntu-latest", ".github/workflows/ci.yml", "failure")])).toEqual({ state: "passed" });
     // The publish job skipped (a macOS leg failed) or failed is a failed publication; not started yet is pending.
-    expect(tagChecksVerdict([ok("publish", ".github/workflows/publish.yml", "skipped")])).toMatchObject({ state: "failed" });
+    expect(tagChecksVerdict([...tag.filter(run => run.name !== "publish"), one("publish", PUBLISH, "skipped")])).toMatchObject({ state: "failed" });
     expect(tagChecksVerdict([])).toMatchObject({ state: "pending" });
-    // A job named publish from another workflow never stands in for it.
-    expect(tagChecksVerdict([ok("publish", ".github/workflows/other.yml")])).toMatchObject({ state: "pending" });
+    // Security scan: a check of the same name from another workflow, from a run with no bound path, or from another app
+    // never stands in for it.
+    for (const fake of [one("publish", ".github/workflows/other.yml"), one("publish", null), one("publish", PUBLISH, "success", "completed", "vercel")]) {
+      expect(tagChecksVerdict([...tag.filter(run => run.name !== "publish"), fake])).toMatchObject({ state: "pending" });
+    }
   });
 
   test("the CLI says the release is published and Homebrew pending, and how to finish it", async () => {

@@ -201,7 +201,7 @@ terms are refused while the release projects' checks run unsandboxed. So neither
   required checks once they have run there; then a later release empties them from the report-only list.
 - The nightly macos.yml jobs are renamed `nightly macOS · node N` and publish.yml's `tag macOS · node N`: a required
   name from another workflow on a candidate fails the CI verdict (prChecksVerdict), so no other workflow may share it.
-- **Publication's verdict** (release.ts `tagChecksVerdict`): only publish.yml's `publish` job (RELEASE_TAG_CHECKS), by
+- **Publication's verdict** (release.ts `tagChecksVerdict`): only publish.yml's named jobs (RELEASE_TAG_CHECKS: `publish` and the two `tag macOS` legs), GitHub Actions runs bound to the tag's own push (readCheckRuns `tag`), by
   its newest attempt; it `needs` the macOS legs, so their failure leaves it failed or skipped. Main's own CI push run
   on the merge commit no longer holds publication (it used to wait for every reported check, ~8–20 minutes).
 - **Saved now:** main's CI push run on the post-merge tail (the merged tree was proved equal to the tested head).

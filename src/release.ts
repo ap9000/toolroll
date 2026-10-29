@@ -73,10 +73,10 @@ export const PROTECTION_MINIMUM_CHECKS: readonly string[] = REQUIRED_PR_CHECKS.f
  * checks the effective layer doesn't name.
  */
 export type MainProtection = { effective: boolean; missing: string[]; notYetRequired: string[] };
-/** The check a release's publication waits for on its tag (.github/workflows/publish.yml): the publish job, which
- * needs every other job of that workflow (pipeline-speed.md, item 3), so its success stands for them and a failed one
- * leaves it failed or skipped. Nothing else reported on the merge commit (main's own CI push run) holds publication. */
-export const RELEASE_TAG_CHECKS = ["publish"] as const;
+/** The checks a release's publication waits for on its tag (.github/workflows/publish.yml, pipeline-speed.md item 3):
+ * the publish job and the macOS legs it needs, each named. Nothing else reported on the merge commit (main's own CI push
+ * run) holds publication. */
+export const RELEASE_TAG_CHECKS = ["publish", "tag macOS · node 22", "tag macOS · node 24"] as const;
 export const RELEASE_TAG_WORKFLOW = ".github/workflows/publish.yml";
 
 export const RELEASE_STEPS = ["gate", "approval", "check", "complete", "quiet", "deploy", "link", "ci", "merge", "tree", "tag", "publish", "homebrew", "done"] as const;
@@ -262,7 +262,8 @@ export type ReleaseAdapters = {
   github: {
     authenticated(): Promise<boolean>;
     pullRequest(repo: string, branch: string): Promise<PullRequest | null>;
-    checks(repo: string, sha: string): Promise<CheckRun[]>;
+    /** `tag`: a release tag's push binds its workflow file too (only that exact tag's push). */
+    checks(repo: string, sha: string, options?: { tag?: string }): Promise<CheckRun[]>;
     /** Whether GitHub's check history of this commit can be read whole (fewer check suites than the check-runs
      * endpoint's ceiling). Absent or false: an automatic release fails closed; a person's is unaffected. */
     complete?(repo: string, sha: string): Promise<boolean>;
@@ -448,14 +449,16 @@ export function checksVerdict(runs: readonly CheckRun[], required: readonly stri
 }
 
 /**
- * Publication's verdict on the tag commit (pipeline-speed.md, item 3): only RELEASE_TAG_CHECKS, from publish.yml (or a
- * check whose workflow GitHub doesn't name), each by its newest attempt. Every other check on the merge commit — main's
+ * Publication's verdict on the tag commit (pipeline-speed.md, item 3): only RELEASE_TAG_CHECKS, from GitHub Actions
+ * runs of publish.yml bound to the tag's push, each by its newest attempt. Every other check on the merge commit — main's
  * own CI run — is not waited for: the candidate's checks already passed on its exact head before the merge, and the
  * merged tree was proved equal to it.
  */
 export function tagChecksVerdict(runs: readonly CheckRun[]): ReturnType<typeof checksVerdict> {
   const names: readonly string[] = RELEASE_TAG_CHECKS;
-  return checksVerdict(runs.filter(run => names.includes(run.name) && (run.workflowPath == null || workflowIs(run.workflowPath, RELEASE_TAG_WORKFLOW))), RELEASE_TAG_CHECKS);
+  // Only GitHub Actions runs of publish.yml bound to the tag's own push (release-adapters.ts readCheckRuns): a check of
+  // the same name from another workflow, an unbound run or another app is never counted (security scan).
+  return checksVerdict(runs.filter(run => names.includes(run.name) && run.app === "github-actions" && workflowIs(run.workflowPath, RELEASE_TAG_WORKFLOW)), RELEASE_TAG_CHECKS);
 }
 
 /** Run the release from wherever its journal stopped. */
@@ -1213,7 +1216,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           if (j.intents.publish === undefined) intend("publish");
           await waitFor("publish", `npm, the GitHub release and the tag's checks for ${j.tag}`, async () => {
             if (await adapters.github.tag(j.github, j.tag) !== j.tagged!.sha) throw new Stop("conflict", `${j.tag} no longer points at the verified merge commit. Homebrew was not updated.`);
-            const verdict = tagChecksVerdict(await adapters.github.checks(j.github, j.tagged!.sha));
+            const verdict = tagChecksVerdict(await adapters.github.checks(j.github, j.tagged!.sha, { tag: j.tag }));
             if (verdict.state === "failed") throw new Stop("publish-failed", `The release tag's checks failed: ${verdict.failed.join(", ")}. Homebrew was not updated.`);
             if (verdict.state === "pending") return null;
             return await adapters.registry.published(j.packageName, j.packageVersion) && await adapters.github.release(j.github, j.tag) ? true : null;
