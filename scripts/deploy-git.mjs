@@ -62,3 +62,105 @@ export function safeGitArgs(repo, env, supported = lazyFetchFlagSupported(env)) 
   if (key !== null) throw Error(`The repository's git config sets ${key}, which this git (no --no-lazy-fetch) can't read past safely; deploy with git 2.45 or newer, or remove it.`);
   return [...SAFE_GIT_BASE, ...repo];
 }
+
+// ---- reading a commit with no filter, attribute or textconv (security scan of deploy-git.mjs) ------------------------
+// `git archive`, `git show <rev>:<path>` and `git status` would apply the repository's attributes (its worktree
+// .gitattributes, its info/attributes) and the filter, textconv or diff programs its config names: a build that can
+// write the project's Git directory could make the deployment run a command. These reads use only `ls-tree` and
+// `cat-file --batch`, which hand back stored bytes, and hash every object here against the id that names it; the
+// cleanliness check hashes the working files itself. Nothing here applies an attribute.
+
+/** The empty tree's id, and the attribute isolation every read here also takes. */
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+export const NO_ATTRIBUTES = [`--attr-source=${EMPTY_TREE}`, "-c", "core.attributesFile=/dev/null", "-c", "core.pager=cat", "-c", "diff.external=", "-c", "core.alternateRefsCommand="];
+
+import { createHash } from "node:crypto";
+import { lstatSync, mkdirSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, sep } from "node:path";
+
+const objectId = (format, type, bytes) => createHash(format).update(`${type} ${bytes.length}\0`).update(bytes).digest("hex");
+const run = (args, env, input) => {
+  const ran = spawnSync("git", args, { env, input, maxBuffer: 1024 * 1024 * 1024, timeout: 300_000, stdio: [input === undefined ? "ignore" : "pipe", "pipe", "pipe"] });
+  if (ran.status !== 0) throw Error(`git ${args.find(one => !one.startsWith("-") && !one.includes("=")) ?? ""} failed: ${String(ran.stderr ?? "").trim().slice(0, 300)}`);
+  return ran.stdout;
+};
+/** A tree path that stays where it says. */
+const plainPath = path => path !== "" && !path.startsWith("/") && !/[\u0000-\u001f\\]/.test(path) && path.split("/").every(part => part !== "" && part !== "." && part !== "..");
+
+/** Every entry of `commit`'s tree (recursive), from `ls-tree -r -z --full-tree`: mode, type, id, path. */
+export function treeOf(repo, commit, env) {
+  const out = run([...safeGitArgs(repo, env), ...NO_ATTRIBUTES, "ls-tree", "-r", "-z", "--full-tree", commit], env).toString("utf8");
+  return out.split("\0").filter(Boolean).map(line => {
+    const tab = line.indexOf("\t");
+    const [mode, type, id] = line.slice(0, tab).split(" ");
+    const path = line.slice(tab + 1);
+    if (!plainPath(path) || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(id ?? "")) throw Error(`The commit's tree names a path or object this can't read: ${JSON.stringify(path)}`);
+    return { mode, type, id, path };
+  });
+}
+
+/** Objects by id, read raw with `cat-file --batch` and each hashed here against its id. */
+export function objectsOf(repo, ids, env) {
+  const wanted = [...new Set(ids)];
+  const found = new Map();
+  if (wanted.length === 0) return found;
+  const out = run([...safeGitArgs(repo, env), ...NO_ATTRIBUTES, "cat-file", "--batch"], env, Buffer.from(wanted.map(id => `${id}\n`).join("")));
+  let at = 0;
+  for (const id of wanted) {
+    const newline = out.indexOf(0x0a, at);
+    const header = out.subarray(at, newline).toString("utf8").split(" ");
+    if (newline < 0 || header.length !== 3 || header[0] !== id) throw Error(`Object ${id.slice(0, 12)} is missing or unreadable.`);
+    const start = newline + 1, end = start + Number(header[2]);
+    const bytes = out.subarray(start, end);
+    if (objectId(id.length === 40 ? "sha1" : "sha256", header[1], bytes) !== id) throw Error(`Object ${id.slice(0, 12)} doesn't hash to its id.`);
+    found.set(id, { type: header[1], bytes });
+    at = end + 1;
+  }
+  return found;
+}
+
+/** Write `commit`'s files into `dest` (an empty folder), stored bytes only: regular files and symlinks; a submodule is
+ * left out as `git archive` leaves it. */
+export function extractTree(repo, commit, dest, env) {
+  const entries = treeOf(repo, commit, env);
+  const blobs = objectsOf(repo, entries.filter(one => one.type === "blob").map(one => one.id), env);
+  for (const one of entries) {
+    if (one.type === "commit") continue;
+    const target = join(dest, ...one.path.split("/"));
+    if (!target.startsWith(dest + sep)) throw Error(`${one.path} leaves the folder.`);
+    mkdirSync(dirname(target), { recursive: true });
+    const bytes = blobs.get(one.id).bytes;
+    if (one.mode === "120000") symlinkSync(bytes.toString("utf8"), target);
+    else if (one.mode === "100644" || one.mode === "100755") writeFileSync(target, bytes, { flag: "wx", mode: one.mode === "100755" ? 0o755 : 0o644 });
+    else throw Error(`${one.path} has mode ${one.mode}, which isn't a file.`);
+  }
+  return entries.length;
+}
+
+/** One path's stored bytes at `commit`, or null when the commit has no such file. */
+const trees = new Map();
+export function blobAt(repo, commit, path, env) {
+  const key = JSON.stringify([repo, commit]);
+  if (!trees.has(key)) trees.set(key, new Map(treeOf(repo, commit, env).map(entry => [entry.path, entry])));
+  const one = trees.get(key).get(path);
+  if (one === undefined || one.type !== "blob") return null;
+  return objectsOf(repo, [one.id], env).get(one.id).bytes;
+}
+
+/** The tracked files of `checkout` whose working bytes differ from `commit`'s (or are missing), hashed here with no
+ * filter: what `git status --untracked-files=no` would call changed, without running anything it names. */
+export function trackedChanges(checkout, commit, env) {
+  const changed = [];
+  for (const one of treeOf(["-C", checkout], commit, env)) {
+    if (one.type !== "blob") continue;
+    const path = join(checkout, ...one.path.split("/"));
+    let bytes = null;
+    try {
+      const held = lstatSync(path);
+      if (one.mode === "120000") bytes = held.isSymbolicLink() ? Buffer.from(readlinkSync(path)) : null;
+      else bytes = held.isFile() ? readFileSync(path) : null;
+    } catch { bytes = null; }
+    if (bytes === null || objectId(one.id.length === 40 ? "sha1" : "sha256", "blob", bytes) !== one.id) changed.push(one.path);
+  }
+  return changed;
+}

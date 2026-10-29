@@ -64,3 +64,34 @@ describe("the deployment script's git reads", () => {
     expect(safeGitArgs(["-C", source], plain, false)).toEqual(expect.arrayContaining(PINNED_PROTOCOLS));
   });
 });
+
+// @ts-expect-error plain ESM script without declarations
+import { blobAt, extractTree, trackedChanges } from "../../scripts/deploy-git.mjs";
+import { existsSync, readFileSync as readText } from "node:fs";
+
+describe("security scan: the deployment script reads a commit with no filter, attribute or textconv", () => {
+  test("attack: a filter, textconv and diff program the repository names never run, and the bytes are the stored ones", () => {
+    const repo = join(root, "filtered"), marker = join(root, "ran");
+    execFileSync("git", ["init", "-q", "-b", "main", repo], { env });
+    writeFileSync(join(repo, "a.txt"), "stored\n");
+    writeFileSync(join(repo, "link"), "");
+    git(repo, "add", "-A"); git(repo, "commit", "-qm", "one");
+    const head = git(repo, "rev-parse", "HEAD").trim();
+    // The build plants programs in the repository's config and asks for them from every attributes source.
+    const touch = `sh -c 'touch ${marker}; cat'`;
+    for (const [key, value] of [["filter.evil.smudge", touch], ["filter.evil.clean", touch], ["filter.evil.process", `sh -c 'touch ${marker}'`], ["diff.evil.textconv", touch], ["diff.external", touch]]) git(repo, "config", key, value);
+    writeFileSync(join(repo, ".git", "info", "attributes"), "* filter=evil diff=evil\n");
+    writeFileSync(join(repo, ".gitattributes"), "* filter=evil diff=evil\n");
+    const dest = realpathSync(mkdtempSync(join(root, "out-")));
+    expect(extractTree(["-C", repo], head, dest, plain)).toBe(2);
+    expect(readText(join(dest, "a.txt"), "utf8")).toBe("stored\n");
+    expect(blobAt(["-C", repo], head, "a.txt", plain)!.toString()).toBe("stored\n");
+    expect(blobAt(["-C", repo], head, "missing.txt", plain)).toBeNull();
+    // Dirty a tracked file's stat so status would run the clean filter; the check hashes it itself.
+    writeFileSync(join(repo, "a.txt"), "stored\n");
+    expect(trackedChanges(repo, head, plain)).toEqual([]);
+    writeFileSync(join(repo, "a.txt"), "changed\n");
+    expect(trackedChanges(repo, head, plain)).toEqual(["a.txt"]);
+    expect(existsSync(marker)).toBe(false);
+  });
+});

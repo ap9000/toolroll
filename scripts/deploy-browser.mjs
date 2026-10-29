@@ -23,7 +23,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { deployStateDir, loadNames, stagedRuntimePaths } from "./deploy-paths.mjs";
-import { safeGitArgs } from "./deploy-git.mjs";
+import { blobAt, extractTree, NO_ATTRIBUTES, safeGitArgs, trackedChanges } from "./deploy-git.mjs";
 import { loadCodingDeploymentRuntime } from "./deploy-coding.mjs";
 import { recoverOnExit } from "./deploy-recovery.mjs";
 import { browserDeployment, openDeploymentDatabase, sha, snapshot } from "./deploy-phases.mjs";
@@ -88,7 +88,7 @@ const gitDirGiven = flag("git-dir");
 const REPO_GIT = gitDirGiven === undefined ? ["-C", source] : ["--git-dir", gitDirGiven];
 const headGiven = flag("head");
 if (headGiven !== undefined) requireTrue(/^[0-9a-f]{40}$/.test(headGiven), "--head takes the full approved commit SHA.");
-const candidateHead = headGiven ?? execFileSync("git", [...safeGitArgs(REPO_GIT, SAFE_GIT_ENV), "rev-parse", "HEAD"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim();
+const candidateHead = headGiven ?? execFileSync("git", [...safeGitArgs(REPO_GIT, SAFE_GIT_ENV), ...NO_ATTRIBUTES, "rev-parse", "HEAD"], { encoding: "utf8", env: SAFE_GIT_ENV, timeout: 60_000 }).trim();
 const short = candidateHead.slice(0, 7);
 const stageDir = flag("stage") ?? join(stateDir, "staged-upgrades", `browser-${short}-${randomUUID().slice(0, 6)}`);
 const journalFile = join(stageDir, "deployment.json");
@@ -124,7 +124,7 @@ function facts(db) {
   const result = deploymentCandidate(store, { runId, head: candidateHead, evidenceRoot, now: new Date(), releaseFlow: flag("operation") !== undefined }, {
     assignmentOf: oldRt.assignment.assignmentOf, verificationEvidence: oldRt.evidence.verificationEvidence, installedScope: oldRt.scope,
   });
-  requireTrue(resolve(result.worktree) === source || execFileSync("git", [...safeGitArgs(["-C", result.worktree], SAFE_GIT_ENV), "rev-parse", "HEAD"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim() === candidateHead, "Run this from the builder's worktree for this run.");
+  requireTrue(resolve(result.worktree) === source || execFileSync("git", [...safeGitArgs(["-C", result.worktree], SAFE_GIT_ENV), ...NO_ATTRIBUTES, "rev-parse", "HEAD"], { encoding: "utf8", env: SAFE_GIT_ENV, timeout: 60_000 }).trim() === candidateHead, "Run this from the builder's worktree for this run.");
   return result;
 }
 function quiet(db) {
@@ -158,7 +158,9 @@ const list = (root, prefix = "") => readdirSync(join(root, prefix), { withFileTy
 // ---- phases ------------------------------------------------------------------
 function stage() {
   // Run by hand, the checkout must be clean; under the release every packed byte is proven against the commit itself.
-  if (gitDirGiven === undefined) requireTrue(!execFileSync("git", [...safeGitArgs(["-C", source], SAFE_GIT_ENV), "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim(), "The candidate checkout has tracked changes.");
+  // Tracked files hashed here with no filter (deploy-git.mjs trackedChanges), never `git status`, which runs the clean
+  // filters the repository's attributes name.
+  if (gitDirGiven === undefined) requireTrue(trackedChanges(source, candidateHead, SAFE_GIT_ENV).length === 0, "The candidate checkout has tracked changes.");
   if (!releaseMode) requireTrue(existsSync(join(source, "dist")), "The candidate has no dist; the native gate builds it.");
   mkdirSync(stageDir, { recursive: true, mode: 0o700 });
   // Spotlight leaves staged runtimes alone (src/never-index.ts).
@@ -210,8 +212,8 @@ function cleanBuildOf(commit) {
     requireTrue(commit === candidateHead, "The extraction is of the approved commit only.");
     cpSync(approvedRoot, scratch, { recursive: true, verbatimSymlinks: true });
   } else {
-    const archive = execFileSync("git", [...safeGitArgs(REPO_GIT, SAFE_GIT_ENV), "archive", "--format=tar", commit], { env: SAFE_GIT_ENV, maxBuffer: 1024 * 1024 * 1024 });
-    execFileSync("tar", ["-x", "-C", scratch], { input: archive });
+    // The commit's stored bytes, each object hashed against its id; never `git archive`, which applies attributes.
+    extractTree(REPO_GIT, commit, scratch, SAFE_GIT_ENV);
   }
   const env = NPM_ENV;
   execFileSync("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline", "--silent"], { cwd: scratch, stdio: ["ignore", "ignore", "inherit"], env });
@@ -254,7 +256,7 @@ function proveStaged() {
   for (const f of list(self).filter(f => !f.startsWith("dist/"))) {
     const expected = releaseMode
       ? (existsSync(join(approvedRoot, f)) ? readFileSync(join(approvedRoot, f)) : null)
-      : (() => { const blob = spawnSync("git", [...safeGitArgs(REPO_GIT, SAFE_GIT_ENV), "show", `${candidateHead}:${f}`], { maxBuffer: 64 * 1024 * 1024, env: SAFE_GIT_ENV }); return blob.status === 0 ? blob.stdout : null; })();
+      : blobAt(REPO_GIT, candidateHead, f, SAFE_GIT_ENV);
     requireTrue(expected !== null && expected.equals(readFileSync(join(self, f))), `Packed file differs from the candidate commit: ${f}`);
   }
   const staged = stagedPackages(join(runtime, "node_modules"), "node_modules").filter(dep => dep !== `node_modules/${stagedName}`).sort();

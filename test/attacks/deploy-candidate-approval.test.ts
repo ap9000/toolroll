@@ -102,9 +102,13 @@ describe("attack: the candidate's own scope.js approves its deployment", () => {
     // Every git read of the candidate (HEAD, status, the archive it builds from, the blobs it compares) ignores
     // replacement objects and lazy fetch, and no shell pipes an archive.
     const calls = [...browser.matchAll(/(?:execFileSync|spawnSync)\("git", \[([^\]]*)/g)].map(one => one[1]!);
-    expect(calls.length).toBeGreaterThanOrEqual(5);
+    expect(calls.length).toBeGreaterThanOrEqual(2);
     for (const args of calls) expect(args.startsWith("...safeGitArgs("), args).toBe(true);
-    expect(browser).toContain('import { safeGitArgs } from "./deploy-git.mjs";');
+    // The commit's files and the checkout's cleanliness are read with no attribute applied (deploy-git.mjs): never
+    // archive, show or status, which run the filters and textconv a repository names.
+    expect(browser).not.toMatch(/"(archive|show|status)"/);
+    expect(browser).toContain("extractTree(REPO_GIT, commit, scratch, SAFE_GIT_ENV)");
+    expect(browser).toMatch(/import \{[^}]*safeGitArgs[^}]*\} from "\.\/deploy-git\.mjs";/);
     expect(browser).toMatch(/GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1"/);
     expect(browser).not.toMatch(/git -C .*archive/);
   });
