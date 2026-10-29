@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.77 — 2026-10-29
 
 - **A renamed or dropped CI job no longer hides its failure.** Every failed
   attempt on a commit is judged before newer runs replace older ones, so a
