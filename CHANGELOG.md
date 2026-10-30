@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.81 — 2026-10-30
+
+- **The release proof works after the merge.** GitHub empties a CI run's
+  pull-request link once the pull request merges and its branch is deleted,
+  so 0.9.80's tag could never prove its checks and wasn't published. A run
+  with no link now stands only when its branch has had exactly one pull
+  request, ever, and that pull request merged into main. 0.9.80's changes
+  ship in this release.
+
 ## 0.9.80 — 2026-10-30
 
 - **Each test runs once, where it adds something** (docs/plans/test-matrix.md).

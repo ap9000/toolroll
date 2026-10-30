@@ -454,6 +454,7 @@ describe("test-matrix: the release proof (scripts/release-proof.mjs)", () => {
       pulls: [{ number: 258, merged_at: "2026-10-30T00:00:00Z" as string | null, merge_commit_sha: TAG, base: { ref: "main", repo: { full_name: REPO } }, head: { sha: HEAD, ref: BRANCH, repo: { full_name: REPO } } }],
       headCommit: { sha: HEAD, tree: { sha: TREE } },
       runs, runsTotal: runs.length,
+      branchPulls: [{ number: 258, base: { ref: "main", repo: { full_name: REPO } }, head: { ref: BRANCH, repo: { full_name: REPO } } }],
       jobs: new Map<number, JobRecord[]>([[10, [...jobsFor(10, CI), { name: SCOPE, run_id: 10, head_sha: HEAD, status: "completed", conclusion: "success" }]], [11, jobsFor(11, RC)]]),
     };
   };
@@ -465,13 +466,24 @@ describe("test-matrix: the release proof (scripts/release-proof.mjs)", () => {
     expect(proofProblem(world())).toBeNull();
   });
 
+  test("after the merge GitHub empties each run's PR binding; the branch's one PR into main still binds it", () => {
+    const w = world();
+    for (const one of w.runs) one.pull_requests = [];
+    expect(proofProblem(w)).toBeNull();
+  });
+
   test.each([
     ["a run belongs to another PR on the same head and branch", (w: World) => { w.runs[0]!.pull_requests[0]!.number = 259; }, /pull request binding/],
-    ["a run has no PR binding", (w: World) => { w.runs[0]!.pull_requests = []; }, /pull request binding/],
+    ["a run has no PR binding and its branch had another PR", (w: World) => { w.runs[0]!.pull_requests = []; w.branchPulls.push({ ...w.branchPulls[0]!, number: 259 }); }, /pull request binding/],
+    ["a run has no PR binding and its branch's only PR went elsewhere", (w: World) => { w.runs[0]!.pull_requests = []; w.branchPulls[0]!.base.ref = "attacker-base"; }, /pull request binding/],
+    ["a run has no PR binding and its branch's only PR is another", (w: World) => { w.runs[0]!.pull_requests = []; w.branchPulls[0]!.number = 259; }, /pull request binding/],
+    ["a run has no PR binding and the branch's PRs can't be read", (w: World) => { w.runs[0]!.pull_requests = []; (w as { branchPulls: unknown }).branchPulls = undefined; }, /pull request binding/],
+    ["a run has no PR binding and the branch's PRs are none", (w: World) => { w.runs[0]!.pull_requests = []; w.branchPulls = []; }, /pull request binding/],
+    ["a run binds two PRs", (w: World) => { w.runs[0]!.pull_requests.push(binding()); }, /pull request binding/],
     ["a run belongs to a PR into an untrusted base", (w: World) => { w.runs[0]!.pull_requests[0]!.base.ref = "attacker-base"; }, /pull request binding/],
     ["a run's PR binding names another repository", (w: World) => { w.runs[0]!.pull_requests[0]!.base.repo.url = "https://api.github.com/repos/evil/toolroll"; }, /pull request binding/],
     ["a run's PR binding names another head", (w: World) => { w.runs[0]!.pull_requests[0]!.head.sha = "9".repeat(40); }, /pull request binding/],
-    ["newest run has an invalid PR binding; older green must not stand", (w: World) => { addRun(w, run(20, CI, { pull_requests: [] }), jobsFor(20, CI)); }, /pull request binding/],
+    ["newest run has an invalid PR binding; older green must not stand", (w: World) => { addRun(w, run(20, CI, { pull_requests: [{ ...binding(), number: 259 }] }), jobsFor(20, CI)); }, /pull request binding/],
     ["checks first passed after an unchecked merge", (w: World) => { setJob(w, 10, "node 24 · ubuntu-latest", { completed_at: "2026-10-30T00:00:01Z" }); }, /before.*merged/],
     ["GitHub omitted when a check passed", (w: World) => { setJob(w, 10, "node 24 · ubuntu-latest", { completed_at: null }); }, /before.*merged/],
     ["no valid merge time", (w: World) => { w.pulls[0]!.merged_at = "not a date"; }, /merge time/],
@@ -530,6 +542,7 @@ describe("test-matrix: the release proof (scripts/release-proof.mjs)", () => {
       [`git/commits/${HEAD}`]: [{ body: w.headCommit }],
       [`compare/${HEAD}...${TAG}`]: [{ body: { base_commit: { sha: HEAD }, merge_base_commit: { sha: w.commit.parents[0]!.sha }, ahead_by: 1, commits: [{ sha: TAG }] } }],
       ["issues/258/timeline?page=1"]: [{ body: [] }],
+      ["pulls?page=1"]: [{ body: w.branchPulls }],
       [`actions/runs?page=1`]: [{ body: { total_count: w.runs.length, workflow_runs: w.runs } }],
       ...Object.fromEntries([...w.jobs].map(([id, jobs]) => [`actions/runs/${id}/attempts/1/jobs?page=1`, [{ body: { total_count: jobs.length, jobs: jobs.map((job, at) => ({ id: id * 100 + at, ...job })) } }]])),
     };
@@ -556,6 +569,14 @@ globalThis.fetch = async (url, options) => {
   };
   test.each([
     ["all required jobs on the newest attempt", (_: Replies) => {}, true],
+    ["after the merge: runs unbound, the branch's one PR into main", (r: Replies) => {
+      r["actions/runs?page=1"] = [{ body: { total_count: 2, workflow_runs: world().runs.map(one => ({ ...one, pull_requests: [] })) } }];
+    }, true],
+    ["after the merge: runs unbound, the branch had a second PR", (r: Replies) => {
+      r["actions/runs?page=1"] = [{ body: { total_count: 2, workflow_runs: world().runs.map(one => ({ ...one, pull_requests: [] })) } }];
+      r["pulls?page=1"] = [{ body: [...world().branchPulls, { ...world().branchPulls[0]!, number: 259 }] }];
+    }, false],
+    ["the branch's pull requests can't be read", (r: Replies) => { r["pulls?page=1"] = [{ status: 500 }]; }, false],
     ["a rebase introduced several commits on main, not one squash", (r: Replies) => {
       r[`compare/${HEAD}...${TAG}`] = [{ body: { base_commit: { sha: HEAD }, merge_base_commit: { sha: "d".repeat(40) }, ahead_by: 2, commits: [{ sha: TREE }, { sha: TAG }] } }];
     }, false],
