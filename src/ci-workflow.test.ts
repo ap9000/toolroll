@@ -73,11 +73,15 @@ function checks(job: Job, id: string, event: Event, file: string): Check[] {
     return Object.entries(called.jobs).flatMap(([inner, one]) => checks(one, inner, event, called.file))
       .map(one => ({ ...one, name: `${job.name ?? id} / ${one.name}`, runs: runs && one.runs }));
   }
+  // GitHub doesn't expand a matrix for a job its `if:` skips: it reports one check under the name as written.
+  if (!runs && /\$\{\{\s*matrix\./.test(job.name ?? id)) return [{ name: job.name ?? id, runner: job["runs-on"] ?? "", runs, workflow: `.github/workflows/${file}` }];
   const matrix = job.strategy?.matrix ?? {};
   let combos: Record<string, string>[] = [{}];
   for (const [key, values] of Object.entries(matrix)) combos = combos.flatMap(combo => values.map(value => ({ ...combo, [key]: String(value) })));
   const fill = (text: string, combo: Record<string, string>) => text.replace(/\$\{\{\s*matrix\.(\w+)\s*\}\}/g, (_, key: string) => combo[key] ?? "");
-  return combos.map(combo => ({ name: fill(job.name ?? id, combo), runner: fill(job["runs-on"] ?? "", combo), runs, workflow: `.github/workflows/${file}` }));
+  // A matrix job whose name mentions no matrix value gets GitHub's suffix: "name (v1, v2)".
+  const suffix = (combo: Record<string, string>) => Object.keys(matrix).length > 0 && !/\$\{\{\s*matrix\./.test(job.name ?? id) ? ` (${Object.values(combo).join(", ")})` : "";
+  return combos.map(combo => ({ name: fill(job.name ?? id, combo) + suffix(combo), runner: fill(job["runs-on"] ?? "", combo), runs, workflow: `.github/workflows/${file}` }));
 }
 
 const SHARDS = 4;
@@ -92,6 +96,24 @@ const REPEAT = "Windows Job Object containment · c2 repeat";
 const runsOf = (job: Job) => (job.steps ?? []).map(step => step.run ?? "");
 
 describe("the CI workflows", () => {
+  test("every required check reports under its exact name on an ordinary pull request, run or skipped", () => {
+    // 0.9.80: release-candidate.yml's skipped Node 22 jobs reported "node ${{ matrix.node }} · …", so main's protection
+    // never saw "node 22 · ubuntu-latest" and blocked every pull request not from a release-* branch.
+    for (const event of [pr(["src/release.ts"]), pr(["docs/plans/x.md"]), pr(["src/release.ts"], "release-9.9.9")]) {
+      const all = names(event);
+      expect(REQUIRED_PR_CHECKS.filter(name => !all.includes(name)), event.kind === "pull_request" ? event.branch : "").toEqual([]);
+    }
+  });
+
+  test("Release candidate writes Node 22 out: no matrix carries it", () => {
+    const rc = workflow("release-candidate.yml");
+    for (const [id, job] of Object.entries(rc.jobs)) {
+      expect(job.strategy?.matrix?.["node"], id).toBeUndefined();
+      expect(job.name, id).toMatch(/^node 22 · /);
+    }
+    expect(JSON.stringify(rc)).not.toContain("matrix.node");
+  });
+
   test("eval review 1 #1: every job's check name is fixed by the workflow and its matrix, never by an input or event", () => {
     // A name that varies between runs on one commit (a dispatch count, a branch) reads as another job, and an older
     // run's job under the old name would be history only. Only matrix values may appear in a name.
@@ -104,19 +126,22 @@ describe("the CI workflows", () => {
     expect(workflow("release-candidate.yml").on["pull_request"]).toBeNull();
     const all = [...REQUIRED_PR_CHECKS, ...shardNames("24"), ...shardNames("22"), SCOPE].sort();
     const change = pr(["src/release.ts"]);
-    expect(names(change)).toEqual(all);
+    // Skipped, Node 22's shards report once each, unexpanded (GitHub skips a matrix job before expanding it); the
+    // required names are written out, so they report exactly.
+    const skippedShards = ["node 22 · shard ${{ matrix.shard }}/4", "node 22 · macos shard ${{ matrix.shard }}/4"];
+    expect(names(change)).toEqual([...all.filter(name => !shardNames("22").includes(name)), ...skippedShards].sort());
     // An ordinary pull request: Node 22 reports skipped (main's protection reads that as passing a merge; a release never).
     expect(executed(change)).toEqual([...REQUIRED_PR_CHECKS.filter(name => !name.startsWith("node 22")), ...shardNames("24"), SCOPE].sort());
     // A release candidate's pull request runs everything.
     expect(executed(pr(["package.json", "CHANGELOG.md"], "release-0.9.80"))).toEqual(all);
     // The macOS suite runs on the candidate before it merges, sharded; its joins run on Linux.
     const macos = reported(change).filter(one => /macos/.test(one.runner));
-    expect(macos.map(one => one.name).sort()).toEqual([...shardNames("24"), ...shardNames("22")].filter(name => name.includes("macos shard")).sort());
+    expect(macos.map(one => one.name).sort()).toEqual([...shardNames("24").filter(name => name.includes("macos shard")), skippedShards[1]!].sort());
     expect(reported(change).filter(one => /^node \d+ · macos-latest$/.test(one.name)).map(one => one.runner)).toEqual(["ubuntu-24.04", "ubuntu-24.04"]);
     expect(reported(change).find(one => one.name === "Windows Job Object containment")?.runner).toBe("windows-latest");
     expect(reported(change).find(one => one.name === "linux native containment · delegated cgroup v2")?.runner).toBe("ubuntu-latest");
     // The Windows repeat job only joins pull requests that touch Windows containment; it is never a required check.
-    expect(names(pr(["src/containment.ts"])).filter(name => !all.includes(name))).toEqual([REPEAT]);
+    expect(names(pr(["src/containment.ts"])).filter(name => !all.includes(name) && !skippedShards.includes(name))).toEqual([REPEAT]);
   });
 
   test("test-matrix: a documentation-only pull request skips the area lanes and nothing else; anything more runs them", () => {
@@ -129,7 +154,7 @@ describe("the CI workflows", () => {
     }
     // The lanes' condition is the fail-closed one: they run unless the scope job succeeded and said docs-only.
     const ci = workflow("ci.yml");
-    for (const id of ["linux-native-containment", "linux-fence", "native-windows", "git"]) {
+    for (const id of ["linux-native-containment", "linux-fence", "native-windows", "git-floor", "git-247"]) {
       expect(ci.jobs[id]?.needs, id).toBe("scope");
       expect(ci.jobs[id]?.if, id).toBe(LANE);
     }
@@ -163,7 +188,7 @@ describe("the CI workflows", () => {
     // accepts a skipped check. The shards' joins always run; the area lanes and Node 22 skip only as described above.
     const conditional = workflows.flatMap(one => Object.entries(one.jobs).filter(([, job]) => job.if !== undefined).map(([id, job]) => `${one.file}: ${id} ${String(job.if)}`)).sort();
     expect(conditional).toEqual([
-      `ci.yml: git ${LANE}`, `ci.yml: linux-fence ${LANE}`, `ci.yml: linux-native-containment ${LANE}`,
+      `ci.yml: git-247 ${LANE}`, `ci.yml: git-floor ${LANE}`, `ci.yml: linux-fence ${LANE}`, `ci.yml: linux-native-containment ${LANE}`,
       "ci.yml: macos ${{ always() }}", `ci.yml: native-windows ${LANE}`, "ci.yml: test ${{ always() }}",
       `main-push.yml: full ${UNPROVEN}`,
       `release-candidate.yml: macos \${{ always() && (${RELEASE_BRANCH}) }}`, `release-candidate.yml: macos-shard \${{ ${RELEASE_BRANCH} }}`,
@@ -297,17 +322,26 @@ describe("the CI workflows", () => {
   });
 
   test("the git lanes run the git tests on the declared floor and on 2.47, unprivileged, and refuse a skip", () => {
-    const job = workflow("ci.yml").jobs["git"]!;
+    // Two jobs with written-out names (a skipped matrix job reports its name unexpanded), otherwise identical.
+    const lanes = workflow("ci.yml").jobs;
+    expect(lanes["git-floor"]?.name).toBe(`git ${GIT_FLOOR_WORDS} · debian trixie`);
+    expect(lanes["git-247"]?.name).toBe("git 2.47 · debian trixie");
+    expect(lanes["git-floor"]?.strategy).toBeUndefined();
+    expect(lanes["git-247"]?.strategy).toBeUndefined();
+    // The same job but for its version and the floor's partial-clone step.
+    const as247 = JSON.stringify({ ...lanes["git-floor"], name: "", steps: lanes["git-floor"]?.steps?.filter(step => !(step.run ?? "").includes("checkout-git-partial-clone"))}).replaceAll(GIT_FLOOR_WORDS, "2.47");
+    expect(JSON.stringify({ ...lanes["git-247"], name: "" })).toBe(as247);
+    expect(JSON.stringify(lanes["git-247"])).not.toContain("checkout-git-partial-clone");
+    const job = lanes["git-floor"]!;
     expect(job.container).toEqual({ image: "node:22-trixie", options: "--init" });
-    expect(job.strategy?.matrix?.["git"]).toEqual([GIT_FLOOR_WORDS, "2.47"]);
     const runs = runsOf(job);
-    expect(runs).toContain("scripts/ci-git.sh ${{ matrix.git }}");
+    expect(runs).toContain(`scripts/ci-git.sh ${GIT_FLOOR_WORDS}`);
     expect(runs.filter(run => /\bnpm (ci|run)\b|\bnode scripts\//.test(run)).every(run => run.startsWith("runuser -u node -- "))).toBe(true);
     expect(runs.some(run => run.includes("npm run test:git"))).toBe(true);
     expect(runs).toContain("runuser -u node -- node scripts/ci-no-skips.mjs git-lane.json");
     // The floor's git has no --no-lazy-fetch: its lane proves, by name, that a partial clone is refused there.
     const floor = (job.steps ?? []).find(step => (step.run ?? "").includes("checkout-git-partial-clone.test.ts"));
-    expect(floor?.if).toBe(`matrix.git == '${GIT_FLOOR_WORDS}'`);
+    expect(floor?.if).toBeUndefined();
     expect(floor?.run).toMatch(/^runuser -u node -- /);
   });
 
@@ -316,10 +350,13 @@ describe("the CI workflows", () => {
       const one = workflow(file);
       for (const [shardId, joinId, artifact, os] of [["test-shard", "test", "shard", "ubuntu"], ["macos-shard", "macos", "macos-shard", "macos"]] as const) {
         const shard = one.jobs[shardId]!, join = one.jobs[joinId]!;
+        // ci.yml's Node comes from its matrix; Release candidate writes 22 out (a matrix value would be appended to the
+        // join's required name, and a skipped matrix job reports its name unexpanded).
+        const nodeRef = file === "ci.yml" ? "${{ matrix.node }}" : node;
         // Every shard, never failing fast (a cancelled shard proves nothing), nothing tolerated.
-        expect(shard.strategy?.matrix, file).toEqual({ node: [node], shard: Array.from({ length: SHARDS }, (_, at) => at + 1) });
+        expect(shard.strategy?.matrix, file).toEqual({ ...(file === "ci.yml" ? { node: [node] } : {}), shard: Array.from({ length: SHARDS }, (_, at) => at + 1) });
         expect((shard.strategy as { "fail-fast"?: unknown })["fail-fast"]).toBe(false);
-        expect(join.strategy?.matrix).toEqual({ node: [node] });
+        expect(join.strategy?.matrix).toEqual(file === "ci.yml" ? { node: [node] } : undefined);
         expect(join.needs).toBe(shardId);
         expect(checks(join, joinId, pr([]), file).map(check => check.name)).toEqual([`node ${node} · ${os}-latest`]);
         for (const job of [shard, join]) {
@@ -331,7 +368,7 @@ describe("the CI workflows", () => {
         expect(runsOf(shard)).toContain(`npm run test:all -- --shard=\${{ matrix.shard }}/${SHARDS} --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"`);
         expect(runsOf(shard)).toEqual(expect.arrayContaining(["npm ci", "npm run typecheck", "npm run build"]));
         expect(runsOf(shard).filter(run => run.includes("ci-shards"))).toEqual([]);
-        expect(shard.steps?.find(step => step.uses?.startsWith("actions/upload-artifact@"))?.with).toMatchObject({ name: `${artifact}-\${{ matrix.node }}-\${{ matrix.shard }}`, path: "${{ runner.temp }}/shard-report.json", "if-no-files-found": "error" });
+        expect(shard.steps?.find(step => step.uses?.startsWith("actions/upload-artifact@"))?.with).toMatchObject({ name: `${artifact}-${nodeRef}-\${{ matrix.shard }}`, path: "${{ runner.temp }}/shard-report.json", "if-no-files-found": "error" });
         expect(shard.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with?.["fetch-depth"]).toBe(0);
         // The join: the shards' own result first, then their reports against the include policy, by the trusted base
         // revision's verifier. It installs and runs nothing of the candidate's.
@@ -342,10 +379,10 @@ describe("the CI workflows", () => {
         expect(steps[result]?.run).toMatch(/^test "\$SHARDS" = success \|\|/);
         expect(runsOf(join).filter(run => /\bnpm\b|\bnpx\b|vitest/.test(run))).toEqual([]);
         expect(steps.find(step => step.uses?.startsWith("actions/setup-node@"))?.with?.["cache"]).toBeUndefined();
-        expect(steps.find(step => step.uses?.startsWith("actions/download-artifact@"))?.with?.["pattern"]).toBe(`${artifact}-\${{ matrix.node }}-*`);
+        expect(steps.find(step => step.uses?.startsWith("actions/download-artifact@"))?.with?.["pattern"]).toBe(`${artifact}-${nodeRef}-*`);
         const verify = runsOf(join).at(-1)!;
         expect(verify).toContain("verifier=.trusted-base/scripts/ci-shards.mjs");
-        expect(verify).toContain(`node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node \${{ matrix.node }} --shards ${SHARDS} --native`);
+        expect(verify).toContain(`node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${nodeRef} --shards ${SHARDS} --native`);
       }
       // macOS runs the same suite command as Linux.
       const suite = (job: Job) => runsOf(job).find(run => run.startsWith("npm run test:all"));
