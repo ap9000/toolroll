@@ -55,7 +55,7 @@ const exhausted = (): ExecResult => ({ code: 124, stdout: "", stderr: "the netwo
 /** Secondary rate limit or 429: transient, and GitHub may say how long to wait. */
 const RATE_LIMITED = /secondary rate limit|abuse detection|HTTP 429|Too Many Requests/i;
 /** A definitive answer: GitHub (or git) answered, and the answer is no. Checked before the transient phrases. */
-const DEFINITIVE = /Not Found|Unauthorized|Forbidden|Bad Request|Bad credentials|Requires authentication|authentication required|Authentication failed|Permission denied|Repository not found|Resource not accessible|Must have admin rights|could not read Username|not protected|not enabled|Reference already exists|Validation Failed|Head branch was modified|not mergeable|API rate limit exceeded|GH00[136]|protected branch update failed|\[rejected\]|updates were rejected|stale info|required status check|repository rule violations/i;
+const DEFINITIVE = /Toolroll won't run Git|Not Found|Unauthorized|Forbidden|Bad Request|Bad credentials|Requires authentication|authentication required|Authentication failed|Permission denied|Repository not found|Resource not accessible|Must have admin rights|could not read Username|not protected|not enabled|Reference already exists|Validation Failed|Head branch was modified|not mergeable|API rate limit exceeded|GH00[136]|protected branch update failed|\[rejected\]|updates were rejected|stale info|required status check|repository rule violations/i;
 /** Transport failures and server-side trouble: nothing was answered yet. */
 const TRANSIENT = new RegExp([
   "error connecting to", "Could not resolve host", "no such host", "Temporary failure in name resolution", "nodename nor servname",
@@ -102,8 +102,13 @@ export function transientResult(result: ExecResult): ReturnType<typeof transient
 function gitSubcommand(args: readonly string[]): string | null {
   for (let at = 0; at < args.length; at++) {
     const arg = args[at]!;
-    if (arg === "-c" || arg === "-C") { at++; continue; }
-    if (arg.startsWith("-")) continue;
+    if (["-c", "-C", "--git-dir", "--work-tree", "--namespace", "--config-env"].includes(arg)) {
+      if (args[++at] === undefined) return null;
+      continue;
+    }
+    if (/^-[cC]./.test(arg) || /^--(?:git-dir|work-tree|namespace|config-env|attr-source)=/.test(arg)) continue;
+    if (["--no-optional-locks", "--no-replace-objects", "--no-pager", "--no-lazy-fetch", "--literal-pathspecs"].includes(arg)) continue;
+    if (arg.startsWith("-")) return null;
     return arg;
   }
   return null;

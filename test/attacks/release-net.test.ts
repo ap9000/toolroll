@@ -25,6 +25,7 @@ describe("release retries never replay a write disguised as a read", () => {
 describe("a refusal cannot become transient through accompanying network or rate-limit text", () => {
   test.each([
     "gh: Head branch was modified (HTTP 409)\nsecondary rate limit",
+    "Toolroll won't run Git: its Git config sets url.https://host/Connection reset.insteadof",
     "gh: Bad credentials (HTTP 401)\nHTTP 429: Too Many Requests",
     "gh: Resource not accessible by integration (HTTP 403)\nsecondary rate limit",
     "gh: Validation Failed (HTTP 422)\nToo Many Requests",
@@ -92,6 +93,16 @@ describe("a merge result must still be the approved change", () => {
       if (args.includes("POST")) { writes++; return lost; }
       return ok({ object: { type: "commit", sha: HEAD } });
     }).github.createTag("a/b", "v1", MERGE)).rejects.toThrow();
+    expect(writes).toBe(1);
+  });
+});
+
+
+describe("Git global option values cannot disguise a push as a read", () => {
+  test.each(["--git-dir", "--work-tree", "--namespace"])("%s consumes its value", async flag => {
+    let writes = 0;
+    const run = retryingExec(async () => { writes++; return lost; }, { say: () => {}, sleep: async () => {}, now: () => new Date(0) });
+    await run("/usr/bin/git", [flag, "fetch", "push", "origin", "HEAD"]);
     expect(writes).toBe(1);
   });
 });
