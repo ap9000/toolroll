@@ -534,6 +534,99 @@ CREATE TABLE IF NOT EXISTS live_backup (
 );
 `;
 
+/** v139 (docs/plans/evals-nightly.md, part A): GitHub's nightly as release debt. New tables only. `nightly_lane` keeps
+ * one stable id per required check (its workflow file and name when it was seeded); `nightly_lane_alias` a person's
+ * rename of one. `github_nightly_cursor` is how far listing has got, `github_nightly_watch` every counted run still
+ * read again for new attempts. `nightly_lane_job` records each completed lane job once; `nightly_lane_failure` each
+ * test failure, open until a later counted nightly run passes that lane (or a person retires it). `nightly_exemption`
+ * is one release candidate's own pull-request job that passed a lane after its failure. Kept apart from
+ * `main_check_failure`, whose `run` is a Toolroll run. */
+export const V139_SCHEMA = `
+CREATE TABLE IF NOT EXISTS nightly_lane (
+  repo          TEXT NOT NULL,
+  lane_id       TEXT NOT NULL,
+  workflow      TEXT NOT NULL,
+  display_name  TEXT NOT NULL,
+  seeded_at     TEXT NOT NULL,
+  retired_at    TEXT,
+  retired_by    TEXT,
+  retired_proof TEXT,
+  PRIMARY KEY (repo, lane_id)
+);
+CREATE TABLE IF NOT EXISTS nightly_lane_alias (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo    TEXT NOT NULL,
+  lane_id TEXT NOT NULL,
+  name    TEXT NOT NULL,
+  by      TEXT NOT NULL,
+  proof   TEXT NOT NULL,
+  at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS nightly_lane_alias_by_name ON nightly_lane_alias (repo, name, id);
+CREATE TABLE IF NOT EXISTS github_nightly_cursor (
+  repo          TEXT PRIMARY KEY,
+  page_cursor   TEXT NOT NULL,
+  last_ok_at    TEXT,
+  last_why      TEXT,
+  last_tried_at TEXT
+);
+CREATE TABLE IF NOT EXISTS github_nightly_watch (
+  repo            TEXT NOT NULL,
+  gh_run          INTEGER NOT NULL,
+  created_at      TEXT NOT NULL,
+  attempts_read   INTEGER NOT NULL DEFAULT 0 CHECK (attempts_read >= 0),
+  finished        INTEGER NOT NULL DEFAULT 0 CHECK (finished IN (0, 1)),
+  last_checked_at TEXT,
+  PRIMARY KEY (repo, gh_run)
+);
+CREATE TABLE IF NOT EXISTS nightly_lane_job (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo         TEXT NOT NULL,
+  lane_id      TEXT NOT NULL,
+  gh_run       INTEGER NOT NULL,
+  attempt      INTEGER NOT NULL,
+  job_id       INTEGER NOT NULL,
+  sha          TEXT NOT NULL,
+  started_at   TEXT,
+  completed_at TEXT,
+  conclusion   TEXT,
+  cause        TEXT NOT NULL CHECK (cause IN ('passed','test-failure','runner-failure','not-run')),
+  read_at      TEXT NOT NULL,
+  UNIQUE (repo, gh_run, attempt, job_id)
+);
+CREATE INDEX IF NOT EXISTS nightly_lane_job_passes ON nightly_lane_job (repo, lane_id, started_at) WHERE cause = 'passed';
+CREATE TABLE IF NOT EXISTS nightly_lane_failure (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo           TEXT NOT NULL,
+  lane_id        TEXT NOT NULL,
+  gh_run         INTEGER NOT NULL,
+  attempt        INTEGER NOT NULL,
+  job_id         INTEGER NOT NULL,
+  sha            TEXT NOT NULL,
+  completed_at   TEXT NOT NULL,
+  opened_at      TEXT NOT NULL,
+  cleared_at     TEXT,
+  cleared_by_job TEXT,
+  closed_why     TEXT,
+  UNIQUE (repo, gh_run, attempt, job_id)
+);
+CREATE INDEX IF NOT EXISTS nightly_lane_failure_open ON nightly_lane_failure (repo, id) WHERE cleared_at IS NULL;
+CREATE TABLE IF NOT EXISTS nightly_exemption (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  task         TEXT NOT NULL,
+  candidate    TEXT NOT NULL,
+  failure_id   INTEGER NOT NULL REFERENCES nightly_lane_failure(id),
+  pr           INTEGER NOT NULL,
+  gh_run       INTEGER NOT NULL,
+  attempt      INTEGER NOT NULL,
+  job_id       INTEGER NOT NULL,
+  started_at   TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  read_at      TEXT NOT NULL,
+  UNIQUE (task, candidate, failure_id)
+);
+`;
+
 /** A project's "Show commands in the live view" (live-detail.ts): absent means off. */
 export const LIVE_DETAIL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS live_detail_setting (
@@ -858,7 +951,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v138 adds, and changes no saved row: a release check's purpose (task_scope.release_check_json; docs/plans/
 // pipeline-speed.md, P0) — this exact candidate is a release's check, for a release that can't carry. Saved rows read
 // NULL: no purpose (a termsless release task stays exactly as it was approved).
-export const SCHEMA_VERSION = 138;
+// v139 adds, and changes no saved row: GitHub's nightly as release debt (docs/plans/evals-nightly.md, part A) — stable
+// lanes and a person's aliases, the read cursor and watch list, each lane job read, open lane failures and a release
+// candidate's exemptions (V139_SCHEMA, new tables only).
+export const SCHEMA_VERSION = 139;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -996,7 +1092,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -5402,6 +5498,8 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   for (const [table, columns] of Object.entries(V138_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   }
+  // v139: GitHub's nightly as release debt (new tables only).
+  db.exec(V139_SCHEMA);
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");

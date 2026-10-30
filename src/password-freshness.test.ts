@@ -357,7 +357,9 @@ describe("where freshness may be honoured", () => {
     // checkApproverPassword), which proves through proveAccountNow. The counts make a new call site a reviewed change.
     expect(hits["checkApproverPassword()"]).toEqual({ "src/server/guards.ts": 2 });
     // Passwordless: credential acts moved to authenticateCredential / credentialApprover / proveCredential (pinned below).
-    expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1, "src/operate.ts": 58, "src/pull-request-flow.ts": 1,
+    expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1,
+      // nightly-github: turning GitHub's nightly on, a lane alias and a lane's retirement, each a person proved now.
+      "src/nightly-github.ts": 1, "src/operate.ts": 58, "src/pull-request-flow.ts": 1,
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
       "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 9, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 23,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
@@ -439,6 +441,8 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/desktop-host.ts#pairDesktopLogin@10": 3,
     "src/nightly-check.ts#<module>": 2,
     "src/nightly-check.ts#createNightlyCheckFlow@5": 1,
+    "src/nightly-github.ts#<module>": 2,
+    "src/nightly-github.ts#provePerson@11": 1,
     "src/operate.ts#<module>": 1,
     "src/operate.ts#acceptTaskProof@100": 1,
     "src/operate.ts#authenticateApprover@127": 1,

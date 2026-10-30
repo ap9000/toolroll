@@ -782,3 +782,32 @@ Each claim was checked against the code. All 16 findings are accepted. One part 
 | 12 | Subscription cache usage, provider turns and model were dropped (src/subscription-chat.ts:184; `LeadProviderAnswer` at src/converse.ts:436) | Both streamed and buffered chat and the direct lead path carry model, turns, reported cost and cache tokens, with null when not reported. They are persisted on `chat_turn` (v140) |
 | 14 | Lead requests bypass `invokeAgent` (src/lead.ts:543); reservations could double-count | Every provider dispatch, lead requests included, is capped, counted in the case's dispatch limit, and carved from the campaign reservation. Reviewer campaigns use the same ledger. Worst case per campaign is now about $130 |
 
+
+## Build notes
+
+Where the build took the safer or more concrete reading of this plan, recorded as it was built.
+
+**A1 (v139).**
+- The opt-in is a person's row in the plane's own action ledger (`github nightly debt on`: the recorded remote's URL,
+  its record, the owner/name, the person and their proof), like the nightly check's approval; the schema above has no
+  table for it. A changed recorded remote stops reading ("turn it on again"); recorded debt still holds.
+- Schema detail beyond the table above: `github_nightly_cursor.last_tried_at` (the background read's claim, so two
+  processes never read the same project at once, at most every 30 minutes), `nightly_lane.seeded_at`,
+  `nightly_lane_job.read_at`, and the failure's job reference spelled out as `gh_run`, `attempt`, `job_id` and its
+  `completed_at`. A failing job GitHub gives no completion time is recorded as completed when read (only a later pass
+  clears it).
+- The paging cursor resumes with GitHub's `created<=` filter on the oldest run of the last whole page (GitHub answers
+  at most 1000 runs to one filtered listing, so page numbers alone can't resume a backlog). Listing stops at runs older
+  than 40 days, which can no longer be unfinished.
+- A run whose commit the plane can't yet place on main (main not read lately, the commit not fetched yet, or a read of
+  main older than the run) stays on the watch list unread until it can, whatever its age. A run is dropped as "not on
+  main" only when it is finished and a read of main made after the run was created doesn't contain it (security scan
+  of A1: a stale read of main must never drop a run whose commit landed later).
+- `failedBeforeTests` moved to src/github-jobs.ts (re-exported from src/release-adapters.ts) so the nightly reader
+  shares it without loading the release adapters.
+- Lanes: a job resolves through a person's alias first (newest for that name), then the lane seeded under that name.
+  An alias is refused for any name another live lane answers to, or a required check's name another lane owns,
+  whatever its debt (security scan of A1). So when a required check is renamed in REQUIRED_PR_CHECKS, the new name is
+  seeded as its own lane on the next read, and the old lane's open debt ends only by a later pass or by a person
+  retiring the old lane (allowed once no required check names it). A retired lane whose name becomes required again
+  is opened again.

@@ -33,6 +33,8 @@ import { autoPublishHeld, holdAutoPublish, liftCiHold, authorizeAutoCheck, giveU
 import { proveCarry, type BuildRunner } from "./release-carry.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { deploymentGate } from "./deploy-gate.js";
+import { failedBeforeTests, type JobRecord } from "./github-jobs.js";
+export { failedBeforeTests, type JobRecord } from "./github-jobs.js";
 import { extractCommit } from "./commit-extract.js";
 import { teardownGit, refusal as gitRefusal } from "./teardown-git.js";
 import { RELEASE_REMOTE, releaseConfigProblem, releaseGitArgs, releaseGitEnv, releaseRemote, releaseTools, type ReleaseRepo, type ReleaseTools } from "./release-git.js";
@@ -1023,25 +1025,6 @@ export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: st
   return runs.sort((a, b) => a.id - b.id);
 }
 
-/** One job's step outcomes as GitHub's Actions API reports them. */
-export type JobRecord = { id: number; status: string; conclusion: string | null; steps: { number: number; name: string; status: string; conclusion: string | null }[] };
-
-/**
- * Whether a finished, unsuccessful job ended before any of the workflow's own steps ran: every step after GitHub's own
- * first one ("Set up job", always number 1) never ran (no conclusion, or skipped) — leaving out only GitHub's own
- * closing "Complete job" when it is the last step. Step numbers and outcomes are the runner's records; nothing the
- * candidate prints is read. A job with no steps never reached one. Anything else (a step that ran, even the checkout)
- * is not confirmed infrastructure.
- */
-export function failedBeforeTests(job: JobRecord): boolean {
-  if (job.status !== "completed" || job.conclusion === "success" || job.conclusion === null) return false;
-  const steps = [...job.steps].sort((a, b) => a.number - b.number);
-  if (new Set(steps.map(one => one.number)).size !== steps.length) return false;
-  const last = steps.at(-1);
-  const own = steps.filter(one => one.number > 1 && !(one === last && one.name === "Complete job" && steps.length > 1));
-  return own.every(one => one.status !== "in_progress" && (one.conclusion === null || one.conclusion === "skipped"));
-}
-
 /** GitHub's job record for one check run (its job), read strictly: null when it can't be read whole. */
 export async function readJobBeforeTests(run: Exec, gh: string, repo: string, id: number): Promise<boolean | null> {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !Number.isSafeInteger(id) || id <= 0) return null;
@@ -1056,6 +1039,24 @@ export async function readJobBeforeTests(run: Exec, gh: string, repo: string, id
   if (steps.some(one => !Number.isSafeInteger(one["number"]) || typeof one["status"] !== "string" || typeof one["name"] !== "string")) return null;
   return failedBeforeTests({ id, status: String(job["status"]), conclusion: textOr(job["conclusion"]),
     steps: steps.map(one => ({ number: Number(one["number"]), name: String(one["name"]), status: String(one["status"]), conclusion: textOr(one["conclusion"]) })) });
+}
+
+/**
+ * GitHub's REST API as GitHub's nightly reads it (nightly-github.ts): GET only, github.com only, a repository path, the
+ * plane's own gh with the allowlisted environment, each call bounded by its caller's deadline. A background read rides
+ * out a short network failure (release-net.ts, within that call's own share of the deadline); a boundary's read is
+ * plain exec. Never an answer that isn't GitHub's whole JSON.
+ */
+export function githubReads(run: Exec, gh: string, options: { retry?: boolean } = {}): (path: string, timeoutMs: number) => Promise<{ ok: true; body: unknown } | { ok: false; why: string }> {
+  return async (path, timeoutMs) => {
+    if (!/^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_./?&=%-]+$/.test(path) || timeoutMs <= 0) return { ok: false, why: "not a read this makes" };
+    const exec = options.retry === true ? retryingExec(run, { say: () => {}, sleep, budgetMs: timeoutMs }) : run;
+    let result: ExecResult;
+    try { result = await exec(gh, ["api", "--hostname", "github.com", "--method", "GET", path], { cwd: "/", env: ciEnv(), timeoutMs }); }
+    catch (error) { return { ok: false, why: String((error as Error)?.message ?? error).slice(0, 200) }; }
+    if (result.code !== 0) return { ok: false, why: result.code === 124 ? "GitHub didn't answer in time" : result.code === 127 ? "gh isn't installed" : (result.stderr || result.stdout).trim().split("\n").slice(-1)[0]!.slice(0, 200) || `gh exited ${result.code}` };
+    try { return { ok: true, body: JSON.parse(result.stdout) as unknown }; } catch { return { ok: false, why: "GitHub's answer couldn't be read" }; }
+  };
 }
 
 /** GitHub lists check runs from at most the latest 1000 check suites of a commit: the history is whole only below that. */
