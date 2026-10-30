@@ -336,14 +336,22 @@ function gitDirsOf(checkout: string): { gitdir: string; common: string } | null 
 }
 
 
+/** What includeIn answers when Git didn't finish parsing the file in time: still a refusal, named as what it is. */
+export const INCLUDE_PARSE_TIMED_OUT = "Git didn't finish reading it in time";
+/** The include parse's own limit: a loaded machine (a CI runner's parallel test files) can take seconds to start git, and
+ * a refusal that names a slow machine an "unreadable file" sent two releases chasing a config that was fine. */
+const INCLUDE_PARSE_MS = 15_000;
+
 /** The include key one config file sets (lowercased, as git names it), "include" when only a plain reading finds one,
- * or "an unreadable file" when it can't be read as a plain file or parsed; null when it includes nothing. */
+ * "an unreadable file" when it can't be read as a plain file or parsed, or INCLUDE_PARSE_TIMED_OUT when the caller's
+ * deadline or the parse's own limit ran out first; null when it includes nothing. Every non-null answer refuses. */
 function includeIn(path: string, gitFile = "git", limit?: Limit): string | null {
   const text = regularFile(path);
   if (text === null) return "an unreadable file";
-  if (limit !== undefined && limit() <= 0) return "an unreadable file";
+  if (limit !== undefined && limit() <= 0) return INCLUDE_PARSE_TIMED_OUT;
   const parsed = spawnSync(gitFile, ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
-    { cwd: "/", encoding: "utf8", timeout: setupTimeout(limit), killSignal: "SIGKILL", env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
+    { cwd: "/", encoding: "utf8", timeout: limit === undefined ? INCLUDE_PARSE_MS : Math.max(1, Math.min(INCLUDE_PARSE_MS, limit())), killSignal: "SIGKILL", env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
+  if (parsed.status === null && (parsed.signal === "SIGKILL" || (parsed.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT")) return INCLUDE_PARSE_TIMED_OUT;
   if (parsed.status !== 0) return "an unreadable file";
   const named = parsed.stdout.split("\0").find(name => /^(include\.path|includeif\..*\.path)$/i.test(name));
   if (named !== undefined) return named.toLowerCase();
@@ -476,6 +484,7 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
       if (unset.status !== 0 && unset.status !== 5) throw new Error("the checkout's git config couldn't be read");
     }
     const include = includeIn(configPath, gitFile, limit);
+    if (include === INCLUDE_PARSE_TIMED_OUT) throw new Error(`the checkout's git config couldn't be checked: ${INCLUDE_PARSE_TIMED_OUT}; try again`);
     if (include !== null) throw new Error(`the checkout's git config includes another file (${include})`);
     mkdirSync(join(view, "info"));
     // A main checkout's sparse-checkout patterns are in its own (common) info folder; a linked one's in its admin's.
