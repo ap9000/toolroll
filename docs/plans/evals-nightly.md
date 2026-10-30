@@ -868,3 +868,18 @@ Where the build took the safer or more concrete reading of this plan, recorded a
    opt-in reads the recorded remote there too.
 8. The failure notice names its project (`source: { project }`) and links to the board, so a project's chats may
    deliver it.
+
+**Codex round 2 on A1–A3 (1, 2, 4, 8 closed; residuals of 3, 5, 6, 7 fixed).**
+- 3: `deploymentCandidate` counts an exemption only when this deployment re-read it (`nightlyRefreshed`, set by
+  scripts/deploy-browser.mjs only after the installed `refreshNightlyForDeploy` ran without throwing). An installed
+  runtime without it, a refresh that threw, or any other caller: debt only, every open failure holds.
+- 5: settlement keeps ancestry three-state (`MainHistory.mainContains` answers yes/no/unknown); an unreadable or
+  timed-out ancestry, or the deadline passing between candidates, leaves the read incomplete with its reason, so the
+  last whole read's time stays and the warning shows.
+- 6: the deadline is absolute and goes down to every git subprocess: `GitRunner.deadline` → teardown-git.ts
+  `viewedGitSync({ deadline })`, which works out each subprocess's limit (setup calls of the git view included) from
+  what is left as it starts, refuses to start one past it, and fails a read that ended past it;
+  `verifiedFirstParentAncestry` never answers yes or no past the deadline. The once-per-process `--no-lazy-fetch`
+  probe (5 s, cached) is left as it is.
+- 7: opt-in, alias and retire now check the password inside their own transaction (`provePerson` runs under the lock
+  with the write), so neither a revocation nor a credential rotation can land between the proof and the change.

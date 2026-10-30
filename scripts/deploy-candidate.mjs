@@ -1,6 +1,6 @@
 // Deployment uses a real passing project check and the lead/user's decision
 // about that exact result. It never schedules or depends on a model reviewer.
-export function deploymentCandidate(store, { runId, head, evidenceRoot, now, releaseFlow = false }, { assignmentOf, verificationEvidence, installedScope, installedNightly }) {
+export function deploymentCandidate(store, { runId, head, evidenceRoot, now, releaseFlow = false, nightlyRefreshed = false }, { assignmentOf, verificationEvidence, installedScope, installedNightly }) {
   const requireFact = (value, message) => { if (!value) throw Error(message); };
   const run = store.getRun(runId);
   const ref = run ? store.refById(run.taskRef) : null;
@@ -38,9 +38,11 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now, rel
   const approvedTask = release?.applies === true ? release.authority.anchorTask : ref.externalId;
   // GitHub's nightly lane debt (docs/plans/evals-nightly.md, part A2) holds every deploy of the project, a person's
   // approval or not, unless this exact candidate holds a fresh exemption. Read by the INSTALLED runtime; one too old to
-  // read the debt refuses while any is open rather than reinterpret what it can't read.
+  // read the debt refuses while any is open rather than reinterpret what it can't read. An exemption counts only after
+  // THIS deployment re-read it (`nightlyRefreshed`: the installed runtime's refreshNightlyForDeploy ran just now);
+  // otherwise every open failure holds, exemption or not (Codex round 2, finding 3).
   const nightly = typeof installedNightly?.nightlyDebtHold === 'function'
-    ? installedNightly.nightlyDebtHold(store, { repo: ref.repo, taskId: ref.externalId, candidate: scope.candidate ?? head, phase: 'deploy', release: release?.applies === true, now })
+    ? installedNightly.nightlyDebtHold(store, { repo: ref.repo, taskId: nightlyRefreshed === true ? ref.externalId : null, candidate: scope.candidate ?? head, phase: 'deploy', release: release?.applies === true, now })
     : nightlyDebtFromRecords(store, ref.repo);
   requireFact(nightly === null, nightly?.why);
   // A release's own automatic approval (docs/plans/auto-approve-green.md) stands only inside `toolroll release`: the

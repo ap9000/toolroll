@@ -21,7 +21,7 @@
  * Trust: a lane's conclusion is GitHub's record of the job, not independent evidence (the tests are the repository's
  * code). It only ever adds holds, and never trusts more than the required-checks gate already does.
  */
-import { approverStanding, authenticateApprover, personProof } from "./scope.js";
+import { authenticateApprover, personProof } from "./scope.js";
 import { verifiedFirstParentAncestry } from "./commit-extract.js";
 import { projectGitDir } from "./check-report.js";
 import { failedBeforeTests } from "./github-jobs.js";
@@ -73,7 +73,8 @@ export type GhRead = (path: string, timeoutMs: number) => Promise<{ ok: true; bo
 export type MainHistory = {
   /** `deadline`: wall-clock milliseconds by which the local history work stops ("unknown" then). */
   onMain(sha: string, since: string, deadline: number): "yes" | "no" | "unknown";
-  mainContains(sha: string, ancestor: string, deadline: number): boolean };
+  /** Three-state, like onMain: "unknown" when history couldn't be read whole or the deadline passed. */
+  mainContains(sha: string, ancestor: string, deadline: number): "yes" | "no" | "unknown" };
 export type NightlyDeps = MainHistory & { gh: GhRead; now: () => Date };
 /** One read inside a read's deadline. */
 type Get = (path: string) => Promise<{ ok: true; body: unknown } | { ok: false; why: string }>;
@@ -146,29 +147,22 @@ export function laneName(store: Store, repo: string, laneId: string): string {
   return lane === undefined ? laneId : String(lane["display_name"]);
 }
 
-type Proved = { ok: true; by: string; proof: string; generation: number } | { ok: false; message: string };
+type Proved = { ok: true; by: string; proof: string } | { ok: false; message: string };
+/** A person proved now — called INSIDE the mutation's own transaction (Codex rounds 1 and 2, finding 7): the password
+ * is checked, and the approver's standing and access read, under the same lock as the write, so nothing (a
+ * revocation, a credential rotation, an access change) can land between the proof and the change. */
 function provePerson(store: Store, repo: string, as: string, token: string, what: string): Proved {
   const proved = authenticateApprover(store, as, token, repo);
-  const account = store.accountOf(as);
-  if (!proved.ok || !personProof(proved.method) || account === null) return { ok: false, message: `Only an approver of this project, proved as a person, ${what}.` };
-  return { ok: true, by: as, proof: proved.method, generation: account.generation };
+  if (!proved.ok || !personProof(proved.method)) return { ok: false, message: `Only an approver of this project, proved as a person, ${what}.` };
+  return { ok: true, by: as, proof: proved.method };
 }
-/** Inside the mutation's own transaction: the person proved a moment ago is still an active approver of this project,
- * on the same account generation, which moves with every credential rotation, access change and revocation (Codex
- * round 1, finding 7: never a standing read before the lock). */
-function stillProved(store: Store, repo: string, proved: Extract<Proved, { ok: true }>): boolean {
-  const account = store.accountOf(proved.by);
-  return approverStanding(store, proved.by, repo).ok && account !== null && account.generation === proved.generation;
-}
-const REVOKED = "Your approval of this project changed while this was being made; nothing was changed.";
 
 /** `toolroll release nightly --github`: a person turns GitHub's nightly into release debt for this project. The
  * repository is the project's recorded remote's, never the checkout's. */
 export function optInGithubNightly(store: Store, input: { repo: string; as: string; token: string }, now: Date): { ok: true; slug: string; lanes: number } | { ok: false; message: string } {
-  const proved = provePerson(store, input.repo, input.as, input.token, "turns on GitHub's nightly");
-  if (!proved.ok) return proved;
   return store.transact(() => {
-    if (!stillProved(store, input.repo, proved)) return { ok: false as const, message: REVOKED };
+    const proved = provePerson(store, input.repo, input.as, input.token, "turns on GitHub's nightly");
+    if (!proved.ok) return proved;
     // The recorded remote as it stands inside this transaction.
     const identity = trustedRemoteIdentity(store, input.repo);
     const remote = identity === null ? null : releaseRemote(identity.url);
@@ -184,12 +178,11 @@ export function optInGithubNightly(store: Store, input: { repo: string; as: stri
 
 /** `--lane-alias <old-id> <new name>`: a person says a renamed job is the same lane. Open debt goes with the lane. */
 export function aliasNightlyLane(store: Store, input: { repo: string; laneId: string; name: string; as: string; token: string }, now: Date): { ok: true } | { ok: false; message: string } {
-  const proved = provePerson(store, input.repo, input.as, input.token, "renames a nightly lane");
-  if (!proved.ok) return proved;
   const name = input.name.trim();
   if (name === "" || name.length > 200 || /[\u0000-\u001f\u007f]/.test(name)) return { ok: false, message: "That isn't a job name." };
   return store.transact(() => {
-    if (!stillProved(store, input.repo, proved)) return { ok: false as const, message: REVOKED };
+    const proved = provePerson(store, input.repo, input.as, input.token, "renames a nightly lane");
+    if (!proved.ok) return proved;
     const lane = store.handle.prepare("SELECT workflow, retired_at FROM nightly_lane WHERE repo = ? AND lane_id = ?").get(input.repo, input.laneId);
     if (lane === undefined || lane["retired_at"] !== null) return { ok: false as const, message: `No live lane ${input.laneId} in this project.` };
     // Only a name no other lane answers to: never one another live lane resolves (whatever its debt), nor a required
@@ -208,10 +201,9 @@ export function aliasNightlyLane(store: Store, input: { repo: string; laneId: st
 /** `--lane-retire <lane-id>`: a person retires a lane no required check names any more; its open debt closes,
  * recorded as theirs. */
 export function retireNightlyLane(store: Store, input: { repo: string; laneId: string; as: string; token: string }, now: Date): { ok: true; closed: number } | { ok: false; message: string } {
-  const proved = provePerson(store, input.repo, input.as, input.token, "retires a nightly lane");
-  if (!proved.ok) return proved;
   return store.transact(() => {
-    if (!stillProved(store, input.repo, proved)) return { ok: false as const, message: REVOKED };
+    const proved = provePerson(store, input.repo, input.as, input.token, "retires a nightly lane");
+    if (!proved.ok) return proved;
     const lane = store.handle.prepare("SELECT retired_at FROM nightly_lane WHERE repo = ? AND lane_id = ?").get(input.repo, input.laneId);
     if (lane === undefined || lane["retired_at"] !== null) return { ok: false as const, message: `No live lane ${input.laneId} in this project.` };
     const required = laneNames(store, input.repo, input.laneId).filter(name => (REQUIRED_PR_CHECKS as readonly string[]).includes(name));
@@ -362,7 +354,7 @@ export async function readGithubNightly(store: Store, repo: string, deps: Nightl
   const complete = listing.ok && listing.complete && watched.ok && watched.complete && settled.complete;
   // Partial progress is never a whole read (Codex round 1, finding 5): what is still unresolved is said, and the last
   // whole read's time stays as it was.
-  const unresolved = problem ?? (complete ? null : watched.ok && watched.unresolved !== null ? watched.unresolved : "some runs are still to be read");
+  const unresolved = problem ?? (complete ? null : watched.ok && watched.unresolved !== null ? watched.unresolved : settled.unresolved ?? "some runs are still to be read");
   noteRead(store, repo, unresolved, deps.now());
   return problem === null ? { ok: true, listed: listing.listed, checked: watched.checked, complete } : { ok: false, why: problem };
 }
@@ -538,14 +530,24 @@ export function openFailures(store: Store, repo: string): LaneFailure[] {
  * completed, on a commit that contains the failed one. A re-run inside the same run never clears. Local history work
  * stops at `wall` (wall-clock ms); what is left is settled on a later read.
  */
-export function settleGithubNightly(store: Store, repo: string, history: Pick<MainHistory, "mainContains">, now: Date, wall = Date.now() + NIGHTLY_BACKGROUND_READ_MS): { cleared: number; complete: boolean } {
-  let cleared = 0;
+export function settleGithubNightly(store: Store, repo: string, history: Pick<MainHistory, "mainContains">, now: Date, wall = Date.now() + NIGHTLY_BACKGROUND_READ_MS): { cleared: number; complete: boolean; unresolved: string | null } {
+  let cleared = 0, unresolved: string | null = null;
+  const late = () => ({ cleared, complete: false, unresolved: unresolved ?? "settling the open failures ran out of time; the rest is settled on the next read" });
   for (const failure of openFailures(store, repo)) {
-    if (Date.now() >= wall) return { cleared, complete: false };
+    if (Date.now() >= wall) return late();
     const passes = store.handle.prepare(`SELECT j.gh_run, j.attempt, j.job_id, j.sha FROM nightly_lane_job j JOIN nightly_lane_failure f ON f.id = ?
         WHERE j.repo = ? AND j.lane_id = ? AND j.cause = 'passed' AND j.gh_run <> f.gh_run AND j.run_created_at > f.run_created_at
           AND j.started_at IS NOT NULL AND j.started_at > f.completed_at ORDER BY j.started_at, j.id`).all(failure.id, repo, failure.laneId);
-    const pass = passes.find(one => String(one["sha"]) === failure.sha || history.mainContains(String(one["sha"]), failure.sha, wall));
+    // Three-state, candidate by candidate: an unreadable or timed-out ancestry is never "doesn't contain" (Codex round 2,
+    // finding 5) — the failure stays open and the read says it is unresolved.
+    let pass: (typeof passes)[number] | undefined;
+    for (const one of passes) {
+      if (Date.now() >= wall) return late();
+      const contains = String(one["sha"]) === failure.sha ? "yes" : history.mainContains(String(one["sha"]), failure.sha, wall);
+      if (contains === "yes") { pass = one; break; }
+      if (contains === "unknown") unresolved ??= `whether nightly run ${Number(one["gh_run"])} contains ${failure.sha.slice(0, 7)} couldn't be read yet`;
+    }
+    if (Date.now() >= wall) return late();
     if (pass === undefined) continue;
     const by = `${Number(pass["gh_run"])}/${Number(pass["attempt"])}/${Number(pass["job_id"])}`;
     store.transact(() => {
@@ -555,7 +557,7 @@ export function settleGithubNightly(store: Store, repo: string, history: Pick<Ma
       cleared++;
     });
   }
-  return { cleared, complete: true };
+  return unresolved === null ? { cleared, complete: true, unresolved: null } : { cleared, complete: false, unresolved };
 }
 
 /** Main's history as the plane read it from the project's recorded remote (nightly-check.ts trustedMainOf), from the
@@ -577,7 +579,8 @@ export function mainHistoryOf(store: Store, repo: string, now: Date): MainHistor
       return readAt !== null && Number.isFinite(Date.parse(readAt)) && Date.parse(readAt) > Date.parse(since) ? "no" : "unknown";
     },
     mainContains(sha, ancestor, deadline) {
-      return gitDir !== null && SHA.test(sha) && SHA.test(ancestor) && verifiedFirstParentAncestry(gitDir, sha, ancestor, { deadline, max: MAIN_WALK }) === "yes";
+      if (gitDir === null || !SHA.test(sha) || !SHA.test(ancestor)) return "unknown";
+      return verifiedFirstParentAncestry(gitDir, sha, ancestor, { deadline, max: MAIN_WALK });
     },
   };
 }

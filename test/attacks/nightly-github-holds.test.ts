@@ -50,7 +50,7 @@ describe("what the opt-in says is what the gates do", () => {
     if (!lease.ok) throw new Error(lease.why);
     expect(reserveRelease(f.store, { authority: f.authority().id, kind: "deploy", taskId: f.taskId, candidate: f.approved, epoch: lease.epoch, operationId: "d1", now: NOW })).toMatchObject({ ok: false, why: expect.stringContaining("can't deploy") });
     // …and the tag, even with GitHub unreadable.
-    const offline = { gh: async () => ({ ok: false as const, why: "offline" }), now: () => NOW, onMain: () => "unknown" as const, mainContains: () => false };
+    const offline = { gh: async () => ({ ok: false as const, why: "offline" }), now: () => NOW, onMain: () => "unknown" as const, mainContains: () => "unknown" as const };
     expect(await nightlyBoundary(f.store, { repo: f.repo, taskId: f.taskId, candidate: f.approved, pr: 240, phase: "tag" }, offline)).toMatchObject({ ok: false, why: expect.stringContaining("can't be tagged or published") });
   });
 });
@@ -106,10 +106,15 @@ describe("Codex round 1, finding 3: a deploy started by hand reads again before 
     exempt(f, failure);
     const run = builtRun(f.store, f.taskId, f.approved);
     const deps = { assignmentOf: () => null, verificationEvidence: () => ({ ok: false, problem: "none" }), installedNightly, installedScope: { liveReleaseOf, personApprovalOf } };
-    // Before the refresh the fresh exemption gets past the nightly rule (and stops later, for its missing check)…
-    expect(() => deploymentCandidate(f.store, { runId: run, head: f.approved, evidenceRoot: EVIDENCE(f), now: NOW }, deps)).toThrow(/^Native check unavailable/);
-    // …the deploy's own bounded read can't re-read the candidate's CI: it no longer does.
+    const check = (nightlyRefreshed: boolean, nightly: object = deps) => () => deploymentCandidate(f.store, { runId: run, head: f.approved, evidenceRoot: EVIDENCE(f), now: NOW, nightlyRefreshed }, { ...deps, ...nightly });
+    // Re-read by this deployment just now, the fresh exemption gets past the nightly rule (and stops later)…
+    expect(check(true)).toThrow(/^Native check unavailable/);
+    // …but not re-read by this deployment (an installed runtime without refreshNightlyForDeploy, or one that threw), no
+    // exemption counts: every open failure holds (Codex round 2, finding 3).
+    expect(check(false)).toThrow(/GitHub's nightly failed/);
+    expect(check(false, { installedNightly: { nightlyDebtHold: installedNightly.nightlyDebtHold } })).toThrow(/GitHub's nightly failed/);
+    // …and the deploy's own bounded read that can't re-read the candidate's CI takes the exemption away.
     await installedNightly.refreshNightlyForDeploy(f.store, { runId: run, now: () => NOW, gh: async () => ({ ok: false, why: "offline" }) });
-    expect(() => deploymentCandidate(f.store, { runId: run, head: f.approved, evidenceRoot: EVIDENCE(f), now: NOW }, deps)).toThrow(/GitHub's nightly failed/);
+    expect(check(true)).toThrow(/GitHub's nightly failed/);
   });
 });

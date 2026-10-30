@@ -8,6 +8,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, realpathSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { verifiedFirstParentAncestry } from "../../src/commit-extract.js";
+import { viewedGitSync } from "../../src/teardown-git.js";
 import { laneIdOf, mainHistoryOf, readGithubNightly } from "../../src/nightly-github.js";
 import { recordTrustedMain } from "../../src/store.js";
 import { LANE_UBUNTU, nightlyWorld, openLanes, REMOTE, T0, type FakeRun, type NightlyWorld } from "../github-nightly-fake.js";
@@ -154,5 +155,26 @@ describe("a run read while it changes", () => {
     expect(await readGithubNightly(w.store, w.repo, w.deps(), 60_000)).toMatchObject({ ok: false });
     expect(openLanes(w.store, w.repo)).toEqual([UBUNTU]);
     expect(w.store.handle.prepare("SELECT COUNT(*) AS n FROM nightly_lane_job WHERE gh_run = 2").get()?.["n"]).toBe(0);
+  });
+});
+
+describe("Codex round 2, finding 6: the deadline is absolute, down to every git subprocess", () => {
+  test("nothing past the deadline is ever an answer, and an expired deadline starts no git at all", () => {
+    const w = (world = nightlyWorld());
+    mkdirSync(w.repo, { recursive: true });
+    const git = (...args: string[]) => execFileSync("git", ["-C", w.repo, "-c", "user.name=T", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" }).trim();
+    git("init", "-q", "-b", "main");
+    git("commit", "-q", "--allow-empty", "-m", "first");
+    const first = git("rev-parse", "HEAD");
+    for (let n = 0; n < 30; n++) git("commit", "-q", "--allow-empty", "-m", `c${n}`);
+    const head = git("rev-parse", "HEAD");
+    const gitDir = join(realpathSync(w.repo), ".git");
+    for (const ms of [1, 20, 60]) {
+      const deadline = Date.now() + ms;
+      const answer = verifiedFirstParentAncestry(gitDir, head, first, { deadline });
+      expect(answer === "unknown" || Date.now() <= deadline, `${ms} ms: ${answer}`).toBe(true);
+    }
+    expect(() => viewedGitSync(realpathSync(w.repo), ["rev-parse", "HEAD"], { deadline: Date.now() - 1 })).toThrow(/deadline passed/);
+    expect(verifiedFirstParentAncestry(gitDir, head, first, { deadline: Date.now() + 60_000 })).toBe("yes");
   });
 });

@@ -206,8 +206,11 @@ export type Verified<T> = { ok: true; value: T } | { ok: false; message: string 
 /** Which Git runs and with what environment: the release path's fixed absolute Git and its own environment, or by
  * default the checkout Git environment's. The hardening settings are added over either. */
 export type GitRunner = { git?: string; env?: NodeJS.ProcessEnv;
-  /** Each git call's time limit (default five minutes): a caller with a deadline bounds every call by it. */
-  timeoutMs?: number };
+  /** Each git call's time limit (default five minutes). */
+  timeoutMs?: number;
+  /** An absolute wall-clock deadline (ms): every git subprocess, setup included, gets only what is left of it, and a
+   * read past it fails (teardown-git.ts viewedGitSync). */
+  deadline?: number };
 
 /** One protected git run: its exit (null when it didn't end on its own), its output, and why it was refused before it
  * ran (a frozen view's refusal), else null. */
@@ -228,7 +231,7 @@ function protectedGit(gitDir: string, runner: GitRunner, extra: readonly string[
   return (args, input) => {
     if (checkout === null) return { status: null, stdout: Buffer.alloc(0), refused: "it isn't a checkout's .git folder, which this git can only read through a view" };
     try {
-      const ran = viewedGitSync(checkout, [...base, ...args], { buffer: true, timeoutMs: runner.timeoutMs ?? 300_000, maxBuffer: MAX_BYTES, ...(input === undefined ? {} : { input }), ...(runner.git === undefined ? {} : { git: runner.git }) });
+      const ran = viewedGitSync(checkout, [...base, ...args], { buffer: true, timeoutMs: runner.timeoutMs ?? 300_000, ...(runner.deadline === undefined ? {} : { deadline: runner.deadline }), maxBuffer: MAX_BYTES, ...(input === undefined ? {} : { input }), ...(runner.git === undefined ? {} : { git: runner.git }) });
       return { status: ran.status, stdout: ran.stdout, refused: null };
     } catch (error) { return { status: null, stdout: Buffer.alloc(0), refused: error instanceof Error ? error.message : "it couldn't be read" }; }
   };
@@ -532,10 +535,13 @@ export function verifiedRange(gitDir: string, from: string, to: string, options:
 export function verifiedFirstParentAncestry(gitDir: string, from: string, until: string, options: { deadline: number; now?: () => number; max?: number; callMs?: number }): "yes" | "no" | "unknown" {
   const now = options.now ?? Date.now;
   const left = () => options.deadline - now();
+  // Every answer is checked against the deadline as it is given: nothing past it is ever "yes" or "no".
+  const answer = (value: "yes" | "no"): "yes" | "no" | "unknown" => left() > 0 ? value : "unknown";
   if (left() <= 0) return "unknown";
-  const reader = verifiedReader(gitDir, { timeoutMs: Math.max(1, Math.min(options.callMs ?? 10_000, left())) });
+  // The absolute deadline goes down to every subprocess (setup included); each call is also held to `callMs`.
+  const reader = verifiedReader(gitDir, { timeoutMs: options.callMs ?? 10_000, deadline: options.deadline });
   if (!reader.ok) return "unknown";
-  if (from === until) return readCommitWith(reader.value, until).ok ? "yes" : "unknown";
+  if (from === until) return readCommitWith(reader.value, until).ok ? answer("yes") : "unknown";
   if (left() <= 0 || !readCommitWith(reader.value, until).ok) return "unknown";
   let at = from;
   for (let walked = 0; walked < (options.max ?? 20_000); walked++) {
@@ -543,8 +549,8 @@ export function verifiedFirstParentAncestry(gitDir: string, from: string, until:
     const commit = readCommitWith(reader.value, at);
     if (!commit.ok) return "unknown";
     const parent = commit.value.parents[0];
-    if (parent === undefined) return "no";
-    if (parent === until) return "yes";
+    if (parent === undefined) return answer("no");
+    if (parent === until) return answer("yes");
     at = parent;
   }
   return "unknown";

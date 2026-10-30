@@ -4,7 +4,7 @@
  * network, no gh, no credentials.
  */
 import { afterEach, describe, expect, test } from "vitest";
-import { aliasNightlyLane, githubNightlyStatus, laneIdOf, laneName, nightlyBoundary, nightlyDebtHold, nightlyNeedsYou, nightlyWarning, readGithubNightly, retireNightlyLane, seedLanes } from "./nightly-github.js";
+import { aliasNightlyLane, githubNightlyStatus, laneIdOf, laneName, nightlyBoundary, nightlyDebtHold, nightlyNeedsYou, nightlyWarning, readGithubNightly, retireNightlyLane, seedLanes, settleGithubNightly } from "./nightly-github.js";
 import { releaseViewOf } from "./release-view.js";
 import { addApprover } from "./scope.js";
 import { releaseFixture } from "../test/release-fixture.js";
@@ -396,5 +396,31 @@ describe("Codex round 1", () => {
     await read(w);
     expect(w.store.handle.prepare("SELECT provenance_scope, project, link, push_class FROM notification WHERE kind = 'github-nightly-failed'").get())
       .toEqual({ provenance_scope: "project", project: w.repo, link: "/board", push_class: "attention" });
+  });
+});
+
+describe("Codex round 2", () => {
+  test("finding 5: an ancestry settlement can't read is unresolved: the failure stays, the read isn't whole, the warning stays", async () => {
+    const w = (world = nightlyWorld());
+    w.gh.job(w.gh.run(1, { at: ago(2), head: sha(5) }), 1, LANE_UBUNTU, "failure");
+    w.gh.job(w.gh.run(2, { at: ago(1), head: sha(6) }), 1, LANE_UBUNTU, "success");
+    const deps = { ...w.deps(), mainContains: () => "unknown" as const };
+    expect(await readGithubNightly(w.store, w.repo, deps, 60_000)).toMatchObject({ ok: true, complete: false });
+    expect(openLanes(w.store, w.repo)).toEqual([UBUNTU]);
+    expect(githubNightlyStatus(w.store, w.repo, T0)).toMatchObject({ lastOkAt: null, lastWhy: expect.stringContaining("couldn't be read yet") });
+    // The deadline passing during settlement: incomplete, with a reason.
+    expect(settleGithubNightly(w.store, w.repo, w.main, T0, Date.now() - 1)).toMatchObject({ complete: false, unresolved: expect.stringContaining("ran out of time") });
+    // Read whole: it clears, and the read is whole again.
+    expect(await read(w)).toMatchObject({ ok: true, complete: true });
+    expect(openLanes(w.store, w.repo)).toEqual([]);
+    expect(githubNightlyStatus(w.store, w.repo, T0)).toMatchObject({ lastOkAt: T0.toISOString(), lastWhy: null });
+  });
+
+  test("finding 7: a credential rotated between the password check and the change: the old password changes nothing", () => {
+    const w = (world = nightlyWorld());
+    const transact = w.store.transact.bind(w.store);
+    w.store.transact = (<T>(body: () => T): T => { w.store.transact = transact; w.store.saveApprover("alex", "rotated-credential-hash", T0); return transact(body); }) as typeof w.store.transact;
+    expect(aliasNightlyLane(w.store, { repo: w.repo, laneId: WINDOWS, name: "Windows containment", as: "alex", token: w.password }, T0)).toMatchObject({ ok: false });
+    expect(w.store.handle.prepare("SELECT COUNT(*) AS n FROM nightly_lane_alias").get()?.["n"]).toBe(0);
   });
 });

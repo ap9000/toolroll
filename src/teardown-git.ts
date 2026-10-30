@@ -287,12 +287,19 @@ export function teardownGit(runner: Runner = run, binding: GitBinding = {}, lock
  * git at any file, a pipe that never ends among them. Each file is read only as the regular file it is, bounded; one
  * that can't be read so counts as including.
  */
-export function checkoutIncludes(checkout: string, gitFile = "git"): boolean {
+/** What is left of a caller's deadline, in ms (viewedGitSync's `deadline`): absent, no deadline. */
+type Limit = () => number;
+/** A setup call's time limit: its own five seconds, or less when a caller's deadline leaves less (never below 1 ms;
+ * a caller checks the deadline itself before calling). */
+const setupTimeout = (limit?: Limit): number => limit === undefined ? 5_000 : Math.max(1, Math.min(5_000, limit()));
+
+export function checkoutIncludes(checkout: string, gitFile = "git", limit?: Limit): boolean {
   const dirs = gitDirsOf(checkout);
   if (dirs === null) return true;
   for (const path of [join(dirs.common, "config"), join(dirs.gitdir, "config.worktree")]) {
     if (!existsSync(path) && path.endsWith("config.worktree")) continue;
-    if (includeIn(path, gitFile) !== null) return true;
+    if (limit !== undefined && limit() <= 0) return true;
+    if (includeIn(path, gitFile, limit) !== null) return true;
   }
   return false;
 }
@@ -331,11 +338,12 @@ function gitDirsOf(checkout: string): { gitdir: string; common: string } | null 
 
 /** The include key one config file sets (lowercased, as git names it), "include" when only a plain reading finds one,
  * or "an unreadable file" when it can't be read as a plain file or parsed; null when it includes nothing. */
-function includeIn(path: string, gitFile = "git"): string | null {
+function includeIn(path: string, gitFile = "git", limit?: Limit): string | null {
   const text = regularFile(path);
   if (text === null) return "an unreadable file";
+  if (limit !== undefined && limit() <= 0) return "an unreadable file";
   const parsed = spawnSync(gitFile, ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
-    { cwd: "/", encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL", env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
+    { cwd: "/", encoding: "utf8", timeout: setupTimeout(limit), killSignal: "SIGKILL", env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
   if (parsed.status !== 0) return "an unreadable file";
   const named = parsed.stdout.split("\0").find(name => /^(include\.path|includeif\..*\.path)$/i.test(name));
   if (named !== undefined) return named.toLowerCase();
@@ -434,7 +442,7 @@ type GitView = { env: Record<string, string>; restore: (output: string, args: re
 const ADMIN_LINKED = ["index", "logs", "refs", "reftable"];
 /** What git keeps in a common directory (its path.c common_list, and reftable), linked whether or not it exists yet. */
 const COMMON_NAMES = ["branches", "gc.pid", "logs", "lost-found", "modules", "objects", "packed-refs", "reftable", "refs", "remotes", "rr-cache", "shallow", "svn", "worktrees"];
-function gitView(checkout: string, kind: "read" | "write", binding: GitBinding = {}, gitFile = "git"): GitView {
+function gitView(checkout: string, kind: "read" | "write", binding: GitBinding = {}, gitFile = "git", limit?: Limit): GitView {
   const dirs = boundDirs(checkout, binding);
   const root = ensureGitViewsRoot(realpathSync(homedir()));
   const view = realpathSync(mkdtempSync(join(root, `${kind}-`)));
@@ -447,9 +455,14 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
     if (config === null) throw new Error("the checkout's git config couldn't be read as a plain file");
     const configPath = join(view, "config");
     writeFileSync(configPath, config, { mode: 0o600 });
-    const plain = { cwd: "/", encoding: "utf8" as const, timeout: 5_000, killSignal: "SIGKILL" as const, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } };
+    const base = { cwd: "/", encoding: "utf8" as const, killSignal: "SIGKILL" as const, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } };
+    // Each call's limit is worked out as it starts, from what is left of a caller's deadline.
+    const plainNow = () => {
+      if (limit !== undefined && limit() <= 0) throw new Error("the read's deadline passed");
+      return { ...base, timeout: setupTimeout(limit) };
+    };
     if (/worktreeconfig/i.test(config)) {
-      const flag = spawnSync(gitFile, ["config", "--file", configPath, "--no-includes", "--type=bool", "--get", "extensions.worktreeConfig"], plain);
+      const flag = spawnSync(gitFile, ["config", "--file", configPath, "--no-includes", "--type=bool", "--get", "extensions.worktreeConfig"], plainNow());
       if (flag.status !== 0 && flag.status !== 1) throw new Error("the checkout's git config couldn't be read");
       if (flag.stdout.trim() === "true") {
         // Git would also read the worktree's config.worktree, which the agent can still change: folded in as it is now.
@@ -459,10 +472,10 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
         config = `${config}\n${own}`;
         writeFileSync(configPath, config, { mode: 0o600 });
       }
-      const unset = spawnSync(gitFile, ["config", "--file", configPath, "--unset-all", "extensions.worktreeConfig"], plain);
+      const unset = spawnSync(gitFile, ["config", "--file", configPath, "--unset-all", "extensions.worktreeConfig"], plainNow());
       if (unset.status !== 0 && unset.status !== 5) throw new Error("the checkout's git config couldn't be read");
     }
-    const include = includeIn(configPath, gitFile);
+    const include = includeIn(configPath, gitFile, limit);
     if (include !== null) throw new Error(`the checkout's git config includes another file (${include})`);
     mkdirSync(join(view, "info"));
     // A main checkout's sparse-checkout patterns are in its own (common) info folder; a linked one's in its admin's.
@@ -787,11 +800,12 @@ export const WRITE_VIEW_FLAGS: readonly string[] = ["-c", "worktree.useRelativeP
 /** Whether the checkout's .lfsconfig (read as git parses it, that file only) sets any git-lfs key that could name a
  * program (anything but INERT_LFS). A file that
  * isn't a plain one, or doesn't parse, counts as naming one. */
-export function lfsExtensionIn(checkout: string, gitFile = "git"): boolean {
+export function lfsExtensionIn(checkout: string, gitFile = "git", limit?: Limit): boolean {
   const path = join(checkout, ".lfsconfig");
   try { if (!lstatSync(path).isFile()) return true; } catch { return false; }
+  if (limit !== undefined && limit() <= 0) return true;
   const parsed = spawnSync(gitFile, ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
-    { cwd: "/", encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL", env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
+    { cwd: "/", encoding: "utf8", timeout: setupTimeout(limit), killSignal: "SIGKILL", env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
   return parsed.status !== 0 || parsed.stdout.split("\0").filter(Boolean).some(name => lfsCommand(name) || ["include", "includeif"].includes(keyParts(name).section));
 }
 
@@ -880,18 +894,27 @@ export function checkoutGitSync(cwd: string, args: readonly string[], options: {
  * that changed while git ran, still throws): for reads whose "no" is an exit code (`merge-base --is-ancestor`), and,
  * with `buffer`, for blobs read as bytes (their output is never rewritten).
  */
-export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number; binding?: GitBinding }): { status: number | null; stdout: string };
-export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number; binding?: GitBinding; buffer: true; input?: Buffer; git?: string }): { status: number | null; stdout: Buffer };
-export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number; binding?: GitBinding; buffer?: true; input?: Buffer; git?: string } = {}): { status: number | null; stdout: string | Buffer } {
+export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; deadline?: number; maxBuffer?: number; binding?: GitBinding }): { status: number | null; stdout: string };
+export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; deadline?: number; maxBuffer?: number; binding?: GitBinding; buffer: true; input?: Buffer; git?: string }): { status: number | null; stdout: Buffer };
+export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; deadline?: number; maxBuffer?: number; binding?: GitBinding; buffer?: true; input?: Buffer; git?: string } = {}): { status: number | null; stdout: string | Buffer } {
   const gitFile = options.git ?? "git";
-  if (checkoutIncludes(cwd, gitFile)) throw new Error("the checkout's git config includes another file, or couldn't be read as a plain file");
-  if (lfsExtensionIn(cwd, gitFile)) throw new Error("the checkout's .lfsconfig sets a git-lfs key that can run a command");
+  // `deadline` (absolute, wall-clock ms): every subprocess here, setup included, gets only what is left of it, and an
+  // expired deadline throws before the next one starts or after the last one ran.
+  const deadline = options.deadline;
+  const limit: Limit | undefined = deadline === undefined ? undefined : () => deadline - Date.now();
+  const expire = () => { if (limit !== undefined && limit() <= 0) throw new Error("the read's deadline passed"); };
+  expire();
+  if (checkoutIncludes(cwd, gitFile, limit)) throw new Error("the checkout's git config includes another file, or couldn't be read as a plain file");
+  expire();
+  if (lfsExtensionIn(cwd, gitFile, limit)) throw new Error("the checkout's .lfsconfig sets a git-lfs key that can run a command");
+  expire();
   // Its config and info/attributes as read once, in a folder of the plane's own: neither can change before git runs.
-  const view = gitView(cwd, "read", options.binding, gitFile);
+  const view = gitView(cwd, "read", options.binding, gitFile, limit);
   try {
     const env: NodeJS.ProcessEnv = { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", LANG: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", ...view.env };
-    const bounded = { cwd, env, encoding: "utf8" as const, timeout: options.timeoutMs ?? 60_000, killSignal: "SIGKILL" as const, maxBuffer: options.maxBuffer ?? 1_048_576, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
-    const own = spawnSync(gitFile, ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], bounded);
+    const timeoutNow = () => { expire(); return limit === undefined ? options.timeoutMs ?? 60_000 : Math.max(1, Math.min(options.timeoutMs ?? 60_000, limit())); };
+    const fixed = { cwd, env, encoding: "utf8" as const, killSignal: "SIGKILL" as const, maxBuffer: options.maxBuffer ?? 1_048_576, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+    const own = spawnSync(gitFile, ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], { ...fixed, timeout: timeoutNow() });
     if (own.status !== 0) throw new Error("its config couldn't be read");
     const key = commandSetting(own.stdout, { lfsChecked: true });
     if (key !== null) throw new Error(`the checkout's git config sets ${key}, which can run a command`);
@@ -907,14 +930,16 @@ export function viewedGitSync(cwd: string, args: readonly string[], options: { t
     const argv = [...TEARDOWN_FLAGS, ...readFlags(gitFile), "-c", "diff.ignoreSubmodules=all", ...carried, ...safeArgs];
     if (options.buffer === true) {
       // stdin is the caller's own bytes when given (cat-file --batch), else closed.
-      const ran = spawnSync(gitFile, argv, { ...bounded, encoding: "buffer", ...(options.input === undefined ? {} : { input: options.input, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"] }) });
+      const ran = spawnSync(gitFile, argv, { ...fixed, timeout: timeoutNow(), encoding: "buffer", ...(options.input === undefined ? {} : { input: options.input, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"] }) });
       const why = view.settle();
       if (why !== null) throw new Error(why);
+      expire();
       return { status: ran.error === undefined ? ran.status : null, stdout: ran.stdout };
     }
-    const ran = spawnSync(gitFile, argv, bounded);
+    const ran = spawnSync(gitFile, argv, { ...fixed, timeout: timeoutNow() });
     const why = view.settle();
     if (why !== null) throw new Error(why);
+    expire();
     return { status: ran.error === undefined ? ran.status : null, stdout: view.restore(ran.stdout ?? "", args) };
   } finally { view.dispose(); }
 }

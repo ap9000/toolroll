@@ -136,7 +136,7 @@ export function mainLine(commits: string[]): MainHistory & { commits: string[] }
   return {
     commits,
     onMain: one => commits.includes(one) ? "yes" : "no",
-    mainContains: (one, ancestor) => commits.indexOf(one) >= 0 && commits.indexOf(ancestor) >= 0 && commits.indexOf(one) >= commits.indexOf(ancestor),
+    mainContains: (one, ancestor) => commits.indexOf(one) >= 0 && commits.indexOf(ancestor) >= 0 && commits.indexOf(one) >= commits.indexOf(ancestor) ? "yes" : "no",
   };
 }
 
