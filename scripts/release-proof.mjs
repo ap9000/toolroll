@@ -140,12 +140,34 @@ async function pages(path, key, identity) {
   throw new Error(`${path}: pagination limit; no complete proof`);
 }
 
+/** The current remote tag, peeled without trusting a checkout's cached refs (including annotated tags). */
+async function verifyTag(repo, sha, tag) {
+  if (typeof tag !== "string" || !/^v[0-9A-Za-z][0-9A-Za-z.+_-]*$/.test(tag)) throw new Error("--tag must name a version tag");
+  const ref = await api(`repos/${repo}/git/ref/tags/${encodeURIComponent(tag)}`);
+  if (ref?.ref !== `refs/tags/${tag}`) throw new Error("GitHub didn't describe the exact tag");
+  let object = ref.object;
+  const seen = new Set();
+  while (object?.type === "tag") {
+    if (!SHA.test(object.sha ?? "") || seen.has(object.sha) || seen.size >= 8) throw new Error("unreadable tag chain");
+    seen.add(object.sha);
+    const peeled = await api(`repos/${repo}/git/tags/${object.sha}`);
+    if (peeled?.sha !== object.sha) throw new Error("GitHub described another tag object");
+    object = peeled.object;
+  }
+  if (object?.type !== "commit" || object.sha !== sha) throw new Error(`${tag} no longer names the proven commit ${sha}`);
+}
+
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const [command, ...args] = process.argv.slice(2);
   try {
-    if (command !== "verify") { console.error("usage: release-proof.mjs verify --repo <owner/name> --sha <commit> --required <JSON>"); process.exit(2); }
+    if (command !== "verify" && command !== "tag") { console.error("usage: release-proof.mjs verify|tag --repo <owner/name> --sha <commit> [--required <JSON>] [--tag <version>]"); process.exit(2); }
     const repo = flag(args, "repo") ?? "", sha = flag(args, "sha") ?? "", required = parseRequired(flag(args, "required") ?? "");
     if (!REPO.test(repo) || !SHA.test(sha)) throw new Error("--repo owner/name and --sha <40 hex> are required");
+    if (command === "tag") {
+      await verifyTag(repo, sha, flag(args, "tag"));
+      console.log(`The remote tag still names ${sha}.`);
+      process.exit(0);
+    }
     if (required === null) throw new Error("--required must map each check name to a workflow this proof knows");
     const commit = await api(`repos/${repo}/git/commits/${sha}`);
     const pulls = await pages(`repos/${repo}/commits/${sha}/pulls`, undefined, "number");
@@ -175,6 +197,7 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     }
     const problem = proofProblem({ repo, sha, required, commit, pulls, headCommit, runs: fresh, runsTotal: fresh.length, jobs });
     if (problem !== null) { console.error(`Not proven: ${problem}.`); process.exit(1); }
+    if (args.includes("--tag")) await verifyTag(repo, sha, flag(args, "tag"));
     console.log(`${sha} is pull request #${pr.number}'s head tree (${head}), and every one of its ${Object.keys(required).length} required checks passed there.`);
   } catch (error) { console.error(`Not proven: ${String(error?.message ?? error)}.`); process.exit(1); }
 }

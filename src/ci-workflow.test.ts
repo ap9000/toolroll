@@ -188,7 +188,7 @@ describe("the CI workflows", () => {
     // The list the proof reads is exactly the release gate's, each name from the same workflow.
     expect(parseRequired(String(proof.env?.["REQUIRED_CHECKS"]))).toEqual({ ...REQUIRED_PR_CHECKS_WORKFLOW });
     expect(Object.keys(PROOF_EVENTS).sort()).toEqual([...new Set(Object.values(REQUIRED_PR_CHECKS_WORKFLOW))].sort());
-    expect(runsOf(proof).at(-1)).toBe(`node scripts/release-proof.mjs verify --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --required "$REQUIRED_CHECKS"`);
+    expect(runsOf(proof).at(-1)).toBe(`node scripts/release-proof.mjs verify --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --required "$REQUIRED_CHECKS" --tag "$GITHUB_REF_NAME"`);
     expect(proof.steps?.at(-1)?.env).toEqual({ GITHUB_TOKEN: "${{ github.token }}" });
     expect(runsOf(proof).some(run => run.includes(`git merge-base --is-ancestor "$GITHUB_SHA" origin/main`))).toBe(true);
     // Neither job nor any step may override failure, and the proof installs and runs nothing of the candidate's.
@@ -202,7 +202,14 @@ describe("the CI workflows", () => {
     expect(workflows.flatMap(one => Object.values(one.jobs).flatMap(job => job.steps ?? [])).filter(step => step.run === "npm test")).toEqual([]);
     const publishers = workflows.flatMap(one => Object.entries(one.jobs).filter(([, job]) => job.steps?.some(step => /\bnpm publish\b/.test(step.run ?? ""))).map(([id]) => `${one.file}:${id}`));
     expect(publishers).toEqual(["publish.yml:publish"]);
-    expect(publisher.steps?.some(step => step.run === "npm publish --access public")).toBe(true);
+    for (const job of [proof, publisher]) expect(job.steps?.find(step => step.uses?.startsWith("actions/checkout@"))?.with).toMatchObject({ ref: "${{ github.sha }}", "persist-credentials": false });
+    const publishStep = publisher.steps?.find(step => /\bnpm publish\b/.test(step.run ?? ""));
+    const guard = `node scripts/release-proof.mjs tag --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --tag "$GITHUB_REF_NAME"`;
+    expect(publishStep?.run?.trim()).toBe(`${guard}\nnpm publish --access public --ignore-scripts`);
+    expect(publishStep?.env).toEqual({ GITHUB_TOKEN: "${{ github.token }}" });
+    // Build first, then check the live tag immediately before the write; publish must not run the build again.
+    expect(publisher.steps!.findIndex(step => step.run === "npm run prepublishOnly")).toBeLessThan(publisher.steps!.indexOf(publishStep!));
+    expect(publisher.steps?.find(step => step.name === "GitHub release from the changelog")?.run).toContain(guard);
     expect(reported({ kind: "push", tag: "v0.9.80" }).some(one => /macos/.test(one.runner))).toBe(false);
   });
 
@@ -545,6 +552,23 @@ globalThis.fetch = async (url, options) => {
     const replies = apiWorld(); change(replies);
     const result = cli(replies);
     expect(result.status === 0, result.stderr).toBe(passes);
+  });
+
+  test.each([
+    ["lightweight tag", { type: "commit", sha: TAG }, {}, true],
+    ["annotated tag", { type: "tag", sha: TREE }, { [`git/tags/${TREE}`]: [{ body: { sha: TREE, object: { type: "commit", sha: TAG } } }] }, true],
+    ["moved tag, even to a commit with the same tree", { type: "commit", sha: HEAD }, {}, false],
+    ["moved annotated tag", { type: "tag", sha: TREE }, { [`git/tags/${TREE}`]: [{ body: { sha: TREE, object: { type: "commit", sha: HEAD } } }] }, false],
+    ["tag points at a tree", { type: "tree", sha: TAG }, {}, false],
+    ["unreadable annotated tag", { type: "tag", sha: TREE }, { [`git/tags/${TREE}`]: [{ status: 403 }] }, false],
+    ["tag cycle", { type: "tag", sha: TREE }, { [`git/tags/${TREE}`]: [{ body: { sha: TREE, object: { type: "tag", sha: TREE } } }] }, false],
+  ] as const)("live tag: %s", (_, object, more, passes) => {
+    const replies: Replies = { "git/ref/tags/v0.9.80": [{ body: { ref: "refs/tags/v0.9.80", object } }], ...more };
+    const result = cli(replies, "tag", ["--tag", "v0.9.80"]);
+    expect(result.status === 0, result.stderr).toBe(passes);
+  });
+  test.each([404, 403, 500])("a missing tag or API error (%s) refuses publication", status => {
+    expect(cli({ "git/ref/tags/v0.9.80": [{ status }] }, "tag", ["--tag", "v0.9.80"]).status).not.toBe(0);
   });
 
   test("the required list must name only workflows the proof knows, and be whole", () => {

@@ -54,6 +54,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - name: The tag sits on main
@@ -68,7 +69,7 @@ jobs:
       - name: The tagged tree passed every required check on its pull request
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: node scripts/release-proof.mjs verify --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --required "$REQUIRED_CHECKS"
+        run: node scripts/release-proof.mjs verify --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --required "$REQUIRED_CHECKS" --tag "$GITHUB_REF_NAME"
 
   publish:
     needs: proof
@@ -79,7 +80,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-node@v5
         with:
@@ -105,12 +108,19 @@ jobs:
 
       - run: npm ci
 
-      # prepublishOnly runs the typecheck and the build.
-      - run: npm publish --access public
+      # Build before the final tag read, so no lifecycle script delays the check-to-publish handoff.
+      - run: npm run prepublishOnly
+      - name: Publish the proven commit while the remote tag still names it
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/release-proof.mjs tag --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --tag "$GITHUB_REF_NAME"
+          npm publish --access public --ignore-scripts
 
       - name: GitHub release from the changelog
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           version="${GITHUB_REF_NAME#v}"
           awk -v v="$version" '
@@ -122,4 +132,5 @@ jobs:
             echo
             echo "Install: \`npx toolroll up\` · \`npm i -g toolroll\` · \`brew install ap9000/toolroll/toolroll\` — https://toolroll.dev/install"
           } >> release-notes.md
+          node scripts/release-proof.mjs tag --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --tag "$GITHUB_REF_NAME"
           gh release create "$GITHUB_REF_NAME" --title "Toolroll $version" --notes-file release-notes.md --verify-tag
