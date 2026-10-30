@@ -1,7 +1,7 @@
 # Evals and nightly: GitHub's nightly as release debt, and eval harness phase 2
 
-Status: plan, revision 2, after Codex review round 1 (NO-GO, 16 findings). Every finding is closed or rejected below,
-with evidence ("Review round 1"). Branch `evals-phase2`, off main 360762cb (0.9.81). Owner's ask: "We need to do these
+Status: approved for building (Codex round 2 GO-with-changes folded). Revision 3. Round 1 (NO-GO, 16 findings) and
+round 2 (11 closed, 5 partial plus one new high, all folded in) are in "Review round 1" and "Review round 2" below. Branch `evals-phase2`, off main 360762cb (0.9.81). Owner's ask: "We need to do these
 Evals and nightly stuff." Sources: docs/plans/test-matrix.md ("Nightly", "Not built yet"), docs/plans/eval-harness.md
 (phase 1 shipped 0.9.77–0.9.81; "Phase 2"), and the code cited below. Nothing here uses Tart or a VM.
 
@@ -13,7 +13,7 @@ This is a deliberately small first version. It has four parts:
 |---|---|---|---|
 | A. GitHub nightly → release debt | The plane reads every Nightly run and attempt on main itself. A failing lane becomes debt. Deploy, merge and the last pre-tag check wait until that lane passes on a later nightly, or freshly on the candidate. Shown in Needs you and on the release card | at most 20 s per boundary (one bounded GitHub read at deploy, merge and pre-tag); usually 0 | $0 |
 | B. Eval accounting | Every model call in an eval attempt is tied to that attempt, including lead chat turns. API dollars are kept apart from subscription usage, and unknown is kept as unknown | 0 | $0 |
-| C. Eval set | 25 versioned cases, run 3 times each, in canonical campaigns started by hand. Run by the installed plane in separate world processes, graded by a trusted oracle outside the fence. Compared with an owner-pinned baseline campaign | 0 (on demand, never in a release) | about $23–34 a campaign; at most about $117 reserved |
+| C. Eval set | 25 versioned cases, run 3 times each, in canonical campaigns started by hand. Run by the installed plane in separate world processes, graded by a trusted oracle outside the fence. Compared with an owner-pinned baseline campaign | 0 (on demand, never in a release) | about $23–34 a campaign; at most about $130 reserved |
 | D. Reviewer evals | Person-validated buggy and clean diffs. Recall and false alarms under a pinned provider and exact model | 0 | about $29 a run |
 
 **Deferred** (see "Later"):
@@ -150,11 +150,23 @@ Without one of these, an unknown job name is ignored. A missing known lane shows
 
 ### Reading every run and attempt
 
-`readGithubNightly` keeps a **cursor** per repo, at the creation time of the oldest nightly run not yet fully read.
+`readGithubNightly` keeps two things per repo:
+- a **paging cursor**: how far listing has got through runs not yet seen
+- a **watch list** of every counted run id created in the last **30 days**, which is GitHub's re-run horizon. Each
+  entry carries the highest attempt read so far. Runs that haven't finished stay on the list until they finish and are
+  read, whatever their age.
+
 Each read does the following:
 
-1. **List runs.** It lists `actions/workflows/nightly.yml/runs?branch=main` from the cursor minus a 48 h overlap,
-   every page, at most 10 pages. A truncated or changing list refuses the read, and the cursor stays.
+1. **List runs.** It lists `actions/workflows/nightly.yml/runs?branch=main` from the paging cursor. It reads at most
+   10 pages per read, then saves where it stopped and resumes there on the next read. A large backlog is worked through
+   across reads; it is never refused as a whole. A truncated or changing page refuses only that page, and the cursor
+   stays before it.
+
+   Each read also **revisits the watch list**: every run on it is re-read by id (`actions/runs/{id}`), within the same
+   per-read budget, oldest-checked first. If a run's `run_attempt` has grown since the last read, the new attempts are
+   read (step 3). This is how a re-run of a 3-week-old nightly is seen. A run leaves the list after 30 days, provided it
+   is finished and fully read. Exact-attempt rereading follows scripts/release-proof.mjs:208.
 2. **Keep only real nightly runs.** A run counts only when all of these hold:
    - `path` is exactly `.github/workflows/nightly.yml`, with no `@` suffix
    - the repository and head repository are the project's own
@@ -174,7 +186,8 @@ Each read does the following:
    It does not wait for the whole workflow to finish: a failed lane in a still-running nightly is ingested on the next
    read. It then re-reads the run. If the run's attempt or status changed mid-read, that run is re-read next time; the
    jobs already recorded stay.
-4. **Move the cursor.** The cursor advances only past runs whose every attempt is completed and fully read.
+4. **Move the cursor.** The paging cursor moves past a page once every run on it has been recorded on the watch list.
+   Runs that haven't finished stay on the watch list until they finish and are read.
 
 Nothing read later ever removes a recorded failure: not a cancellation, a skipped or missing job, an unreadable page,
 or a newer attempt.
@@ -185,7 +198,8 @@ or a newer attempt.
 |---|---|---|
 | `success` | passed | no; may clear |
 | `failure` / `timed_out`, own steps ran, not an aggregate | test failure | **yes** |
-| Aggregate lane failed only at "Every shard passed" / "Every shard ran the whole suite" | from its shards in the **same attempt**: if every failed shard `failedBeforeTests`, runner failure; if any shard ran its steps and failed, or any shard is unreadable, test failure | runner failure: no; otherwise **yes** |
+| Aggregate lane failed at "Every shard ran the whole suite" (the coverage verifier, ci.yml:128, scripts/ci-shards.mjs:125-145) | test failure, **always**. That step can fail with every shard green, for example when a test file ran in no shard | **yes** |
+| Aggregate lane failed only at "Every shard passed" (ci.yml:111) | runner failure only when a **positively established, non-empty** chain shows it: at least one shard in the **same attempt** failed, every failed shard is readable, and every failed shard `failedBeforeTests`. Zero failed shards, any shard that ran its steps and failed, or any unreadable shard: test failure | chain established: no; otherwise **yes** |
 | Failed before its own steps (`failedBeforeTests` on the lane job) | runner failure | no |
 | `cancelled`, `skipped`, or missing | didn't run | no |
 | Cause can't be read | test failure (fail closed) | **yes** |
@@ -296,8 +310,18 @@ plane's own records:
    `chat_turn`. Each invocation becomes an `eval_invocation` row tied to its case, attempt and kind.
 2. **Close the gaps (small product changes):**
    - `run.model_reported`: the exact model from the init event (src/provider.ts:595)
-   - `chat_turn.model_reported` and `chat_turn.reported_cost_usd`: subscription chat already reads both and drops them
-     (src/subscription-chat.ts:276)
+   - **Chat metadata, for streamed and buffered calls.** Subscription chat reads the model at :276 and drops it, and
+     `claudeOutput` (src/subscription-chat.ts:184) returns only text and plain tokens. `LeadProviderAnswer`
+     (src/converse.ts:436) has no model or turn fields. Both gain the following, each null when the provider didn't
+     report it (never 0):
+     - `modelReported`
+     - `providerTurns` (`num_turns`)
+     - `reportedCostUsd`
+     - `cacheReadTokens` and `cacheWriteTokens` from the subscription result's `usage`
+
+     They are persisted on `chat_turn` as `model_reported`, `provider_turns`, `reported_cost_usd`, `cache_read_tokens`
+     and `cache_write_tokens`. These are summed over every provider request of the turn; a single unknown makes the
+     sum unknown.
 3. **Keep three amounts apart:**
    - **API dollars**: billing `api` with a reported or priced cost
    - **Subscription usage**: the provider's reported `total_cost_usd` on subscription work, shown as "subscription
@@ -463,10 +487,23 @@ The release card repeats it for a person approving a release.
 
 ### Policy code needs a person (finding 10)
 
-`autoPathProblem` (src/release-auto.ts:195) gains these paths: `evals/`, `src/evals*.ts`, `src/nightly-github.ts`,
-`src/eval-*.ts`, and the contracts they use (`src/contracts/evals*.ts`). That covers the evaluator, oracles, scoring,
-baseline, debt, budget and nightly ingestion. The hook lines in deploy-gate, store, release and release-auto only call
-into those modules. Result-writing authority stays in the installed plane's eval module. World processes get no handle
+`autoPathProblem` (src/release-auto.ts:195; today :212 lets these through) gains these paths:
+- `evals/`
+- `src/evals*.ts`, `src/eval-*.ts`
+- `src/reviewer-evals.ts`
+- `src/nightly-github.ts`
+- the contracts they use (`src/contracts/evals*.ts`)
+
+That covers the evaluator, oracles, reviewer scoring, baseline, debt, budget and nightly ingestion.
+
+**Enforcement call sites are protected too.** The hooks live in src/deploy-gate.ts, scripts/deploy-candidate.mjs, the
+merge reservation in src/store.ts, the pre-tag step in src/release.ts, `sealAutoGreen` in src/release-auto.ts, and the
+lead and review dispatch paths that reserve eval spend. A change that removes or bypasses any of them must need a person.
+
+Rather than protecting those whole large files by path, a manifest in `src/eval-*.ts` lists each required hook call.
+src/release-auto.ts and scripts/deploy-candidate.mjs are already person-only as release and CI policy. A check that
+`autoPathProblem` runs over the candidate's tree proves every listed call is still present, at its named function. If
+any is missing or moved, or the manifest itself changed, the change needs a person. Result-writing authority stays in the installed plane's eval module. World processes get no handle
 on the plane's database.
 
 ### Budget: reservations, not a start-only cap
@@ -478,23 +515,34 @@ The monthly ceiling defaults to **$200 of API dollars plus reserved worst case**
 capped in dollars: plan limits govern it.
 
 **How a reservation works.**
-- **Before each invocation**, the runner atomically reserves that invocation's cap in an `eval_spend_month` row, and
-  passes the cap as `maxBudgetUsd` (src/invoke.ts:851). A provider that can't hold a cap refuses (:327), and the
-  attempt is an error.
-- **Before admitting a campaign**, it reserves the campaign's worst case: per-case cap × max invocations × 3, plus 3
-  replacements.
-- **After each invocation**, it settles the reported cost. Unknown cost settles at the full reservation.
+- **Before admitting a campaign** (eval or reviewer), the runner reserves the campaign's worst case in
+  `eval_spend_month`: the per-dispatch cap × max dispatches × 3, plus 3 replacements. Eval and reviewer campaigns share
+  this ledger.
+- **Every provider dispatch** in an attempt is capped and **carved out of that campaign reservation**. It is never
+  reserved a second time against the month. This covers:
+  - every `invokeAgent` call (builder, planner, repair, reviewer), capped by `maxBudgetUsd` (src/invoke.ts:851)
+  - **every lead request**: lead requests bypass `invokeAgent` (src/lead.ts:543, direct and subscription), and one
+    reply can make several requests
+
+  For lead requests, the world's lead turn is given the attempt's remaining per-dispatch cap through the lead's own
+  existing reservation (`reserved_microusd` on `chat_turn`). Each request counts as one dispatch in the case's
+  max-dispatch limit.
+- **If a dispatch can't be capped, or the case's dispatch limit is reached**, the attempt stops. Not capped is an
+  error; over the limit is a fail. A provider that can't hold a cap refuses (:327).
+- **After each dispatch**, the reported cost is settled back into the campaign reservation. Unknown cost settles at
+  that dispatch's full cap. When the campaign ends, what is left of its reservation is released.
 
 **Worst case per campaign:**
 
-| Case kind | Max invocations × $0.75 cap |
+| Case kind | Max dispatches, at a $0.75 cap each |
 |---|---|
 | builds and stop-and-ask | plan + build = 2 |
 | repair | 3 |
-| planner and lead answers | 1 |
-| lead flows | 2 |
+| planner | 1 |
+| lead answers | 2 lead requests |
+| lead flows | 3 lead requests |
 
-Over 25 cases × 3 that is about 150 invocations ≈ **$112**, plus replacements ≈ **$117 reserved**. A $200 ceiling
+Over 25 cases × 3 that is about 165 dispatches ≈ **$124**, plus replacements ≈ **$130 reserved**. A $200 ceiling
 therefore admits one campaign at a time, never two.
 
 **Expected per campaign:** 75 attempts × $0.30–0.45 = **$22.50–$33.75**.
@@ -536,7 +584,7 @@ Cost: 30 diffs × 3 × about $0.32 (measured Opus review) ≈ **$29**, at most $
 
 | Item | Per run (expected) | Reserved worst case | v1 month (on demand) | If weekly is turned on later |
 |---|---|---|---|---|
-| Eval campaign, 25 × 3 Sonnet | $22.50–$33.75 | about $117 | 2 runs: about $56 | 4.3 runs: about $120 |
+| Eval campaign, 25 × 3 Sonnet | $22.50–$33.75 | about $130 | 2 runs: about $56 | 4.3 runs: about $120 |
 | Reviewer evals, 30 × 3 | about $29 | about $54 | 1 run: about $29 | about $29 (when the pin or brief changes) |
 | Nightly reads, accounting | $0 | — | $0 | $0 |
 | **Total** | | | **about $85** | **about $150** |
@@ -567,8 +615,8 @@ VM isolation.
 
 | Version | Slice | Tables / columns |
 |---|---|---|
-| v139 | A1 | `nightly_lane` (lane_id, repo, workflow, display_name, retired_at, retired_by, retired_proof); `nightly_lane_alias` (repo, lane_id, name, by, proof, at); `github_nightly_cursor` (repo, cursor_created_at, last_ok_at, last_why); `nightly_lane_job` (repo, lane_id, gh_run, attempt, job_id, sha, started_at, completed_at, conclusion, cause; unique (repo, gh_run, attempt, job_id)); `nightly_lane_failure` (id, repo, lane_id, job ref, sha, opened_at, cleared_at, cleared_by_job, closed_why); `nightly_exemption` (task, candidate, failure_id, pr, gh_run, attempt, job_id, started_at, completed_at, read_at; unique (task, candidate, failure_id)). Kept apart from `main_check_failure`, whose `run` is a Toolroll run id, NOT NULL |
-| v140 | B1 | `run.model_reported`; `chat_turn.model_reported`, `chat_turn.reported_cost_usd` |
+| v139 | A1 | `nightly_lane` (lane_id, repo, workflow, display_name, retired_at, retired_by, retired_proof); `nightly_lane_alias` (repo, lane_id, name, by, proof, at); `github_nightly_cursor` (repo, page_cursor, last_ok_at, last_why); `github_nightly_watch` (repo, gh_run, created_at, attempts_read, finished, last_checked_at); `nightly_lane_job` (repo, lane_id, gh_run, attempt, job_id, sha, started_at, completed_at, conclusion, cause; unique (repo, gh_run, attempt, job_id)); `nightly_lane_failure` (id, repo, lane_id, job ref, sha, opened_at, cleared_at, cleared_by_job, closed_why); `nightly_exemption` (task, candidate, failure_id, pr, gh_run, attempt, job_id, started_at, completed_at, read_at; unique (task, candidate, failure_id)). Kept apart from `main_check_failure`, whose `run` is a Toolroll run id, NOT NULL |
+| v140 | B1 | `run.model_reported`; `chat_turn.model_reported`, `provider_turns`, `reported_cost_usd`, `cache_read_tokens`, `cache_write_tokens` (all nullable: null = not reported) |
 | v141 | C1, C2 | `eval_campaign` (id, canonical, manifest_digest, build_digest, version, baseline_campaign, k, admitted_at, finished_at, state, settled_at); `eval_attempt` (id, campaign, case_id, case_version, n, replaces, outcome, error_why, model_pinned, model_reported, api_microusd, subscription_microusd, usage_unknown, turns, tokens_in, cache_read, cache_write, tokens_out, tool_calls, wall_ms; unique (campaign, case_id, n, replaces)); `eval_invocation` (attempt, kind, world_ref, reserved_microusd, settled_microusd, unknown); `eval_spend_month` (month, ceiling_microusd, reserved_microusd, settled_microusd); `eval_baseline_pin` (campaign, by, proof, at, accepted_worse_json); `eval_debt` (id, case_id, case_version, campaign, baseline_campaign, opened_at, cleared_at, cleared_by_campaign, waived_by, waived_proof, waived_why) |
 | v142 | D1 | `build_review.reviewer_model`; `reviewer_eval_attempt` (id, campaign, diff_id, diff_version, n, provider, model_pinned, model_reported, findings_json, proxy_hits_json, adjudication_json, api_microusd, subscription_microusd) |
 
@@ -594,9 +642,13 @@ contracts. There are no copy or markup matrices. Fix rounds run only the affecte
   - a failed earlier attempt with a passing later attempt is still open
   - a completed failed job in a running workflow is ingested
   - a same-run re-run doesn't clear; the next run clears
-  - aggregate cause from shards
+  - "Every shard ran the whole suite" failing with every shard green opens debt (the coverage-verifier regression case)
+  - "Every shard passed" failing with zero failed shards opens debt; with every failed shard before-tests it doesn't
+  - a re-run of a 20-day-old nightly that fails is ingested; one past 30 days isn't
+  - a running nightly stays watched past 30 days until it finishes
+  - a backlog over 10 pages is worked through across reads, never refused whole
   - an unreadable cause is a failure
-  - the cursor survives a truncated page
+  - the paging cursor stays before a truncated page
 - **Attacks** (test/attacks/nightly-github-binding.test.ts): a branch dispatch, a fork, `nightly.yml@x.yml`, a lookalike
   name, a head not on main, the attempt changing mid-read.
 - **Targeted:** those two files, `src/migration-v139-*.test.ts`, src/password-freshness.test.ts.
@@ -628,7 +680,7 @@ contracts. There are no copy or markup matrices. Fix rounds run only the affecte
 ### B1. Accounting gaps (v140)
 - **Changes:** `run.model_reported` and `chat_turn.model_reported` / `reported_cost_usd`, recorded from the init and
   result events.
-- **Tests:** subscription chat keeps both; API vs subscription vs unknown are kept apart; `usageOf` normalization for
+- **Tests:** streamed and buffered subscription chat and the direct lead path keep model, turns, cost and cache tokens, with null for unreported; API vs subscription vs unknown are kept apart; `usageOf` normalization for
   the eval collector; migration.
 - **Targeted:** src/subscription-chat.test.ts, src/provider*.test.ts, `src/migration-v140-*.test.ts`.
 
@@ -644,9 +696,13 @@ contracts. There are no copy or markup matrices. Fix rounds run only the affecte
   - a symlinked input path is refused
   - the oracle runs only after the process group is gone
   - a crash or timeout is a fail and a world-start failure is an error
-  - reservations refuse admission over the ceiling and settle unknown cost at the full reservation
+  - reservations refuse admission over the ceiling and settle unknown cost at the full cap
+  - every lead request is capped and counted against the case's dispatch limit
+  - dispatch reservations are carved from the campaign's, never added to the month twice
+  - reviewer campaigns use the same ledger
   - a build change mid-campaign leaves it incomplete
-  - policy paths need a person
+  - policy paths, including src/reviewer-evals.ts, need a person
+  - a candidate that removes or moves a listed enforcement hook call, or edits the manifest, needs a person
   - a package-contents test: `evals/` is in the tarball
 
   All of these run on a scripted provider: no spend.
@@ -710,6 +766,19 @@ Each claim was checked against the code. All 16 findings are accepted. One part 
 | 11 | Aggregate-lane cause; renamed lanes | **Accepted.** Verified ci.yml:111 | Aggregate cause from shards in the same attempt; stable lane ids; person-approved alias or retire |
 | 12 | Chat turns, subscription cost and model, token normalization | **Accepted, narrowed:** subscription chat does read the exact model (src/subscription-chat.ts:276) but never stores or returns it, so the fix is to persist, not to read | Part B: world per attempt, `chat_turn` columns, three amounts kept apart, `usageOf` |
 | 13 | 13 journeys, wrong runner citation, retry merging | **Accepted.** Counted 7 + 6; verified release-check.mjs:622, e2e-parallel.mjs:187-207, scripted-provider.mjs:190 | Facts corrected; journey ledger moved to Later with the contract requirement |
-| 14 | Cap and arithmetic | **Accepted.** 75 × $0.30–0.45 = $22.50–33.75 (revision 1 said "about $30") | Reservation-backed ceiling, per-invocation caps, worst case $117, one campaign at a time, admission paused during deploys, 20 s / 60 s read deadlines |
+| 14 | Cap and arithmetic | **Accepted.** 75 × $0.30–0.45 = $22.50–33.75 (revision 1 said "about $30") | Reservation-backed ceiling, per-invocation caps, worst case $117 (now $130, see round 2), one campaign at a time, admission paused during deploys, 20 s / 60 s read deadlines |
 | 15 | Reviewer scoring and labels | **Accepted** | Person-validated labels, fixed counterparts, labels kept out, proxy hits + adjudication, per-attempt rates, provider + exact model pin, shared `reviewContextOf` |
 | 16 | Packaging; concurrent `world()`; v1 too big | **Accepted.** Verified package.json `files`, e2e-kit.mjs:260-286 | `evals/` packaged, gate ported to src, a child process per attempt; v1 cut to A + B + C + D; tests limited per docs/testing.md |
+
+## Review round 2 (Codex, GO-with-changes): what changed
+
+11 findings closed. 5 partial findings and one new high issue are folded in here.
+
+| # | Round 2 finding | Change |
+|---|---|---|
+| 3 | A creation-time cursor with a 48 h overlap misses re-runs of older runs; a big backlog was refused | A 30-day watch list of run ids (GitHub's re-run horizon) is re-read for new attempts. Unfinished runs stay watched past 30 days. Paging resumes across reads instead of refusing. Tests added to A1 |
+| 10 | `src/reviewer-evals.ts` and the enforcement call sites were still auto-shippable | `src/reviewer-evals.ts` is added. A hook manifest proves every enforcement call is still present, so removing or moving one (or editing the manifest) needs a person. Test added to C1 |
+| 11 + new high | "Every shard ran the whole suite" can fail with every shard green, and "every failed shard before tests" is vacuously true with zero failed shards | Coverage-verifier failures always open debt. "Every shard passed" is suppressed only on a positively established, non-empty chain of readable before-tests shard failures. The exact regression case is added to A1 |
+| 12 | Subscription cache usage, provider turns and model were dropped (src/subscription-chat.ts:184; `LeadProviderAnswer` at src/converse.ts:436) | Both streamed and buffered chat and the direct lead path carry model, turns, reported cost and cache tokens, with null when not reported. They are persisted on `chat_turn` (v140) |
+| 14 | Lead requests bypass `invokeAgent` (src/lead.ts:543); reservations could double-count | Every provider dispatch, lead requests included, is capped, counted in the case's dispatch limit, and carved from the campaign reservation. Reviewer campaigns use the same ledger. Worst case per campaign is now about $130 |
+
