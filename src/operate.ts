@@ -61,6 +61,9 @@ import { runRequestedUndos, sendSubagentWeeklies } from "./subagent-week.js";
 import { refreshConnections } from "./mcp-connect.js";
 import { releaseCheckPurposeFor, releaseTermsFor } from "./release-carry.js";
 import { refreshTrustedMains, settleReleaseChecks } from "./nightly-check.js";
+import { githubNightlyRepos, readGithubNightlies, type GhRead } from "./nightly-github.js";
+import { exec as releaseExec, githubReads } from "./release-adapters.js";
+import { releaseTools } from "./release-git.js";
 import type { ReleaseCheckPurpose, ReleaseTerms } from "./contracts/release-terms.js";
 import { SECRETS_FIRST, startToolSecrets, toolSecretStorage } from "./project-tools.js";
 import type { StepIo } from "./flow-steps.js";
@@ -6790,6 +6793,9 @@ async function runWatchLoop(args: {
       await refreshTrustedMains(store, context.evidenceRoot, context.clock(), context.gitRunner);
       const settledChecks = settleReleaseChecks(store, context.evidenceRoot, context.clock());
       if (settledChecks > 0) progress(`watch: settled ${settledChecks} release check(s)`);
+      // GitHub's nightly as release debt (nightly-github.ts): each opted-in project at most every 30 minutes, 60 s in
+      // all. A test's injected agent runner means a test: no real gh.
+      if (context.agentRunner === undefined) await refreshGithubNightlies(store, context.clock);
       // A finished check may send a build's card down its failure path: now, not on the next beat.
       if (ran + batched > 0) moveCards(store, repo, context.clock(), context.evidenceRoot);
     },
@@ -12835,4 +12841,12 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
     return EXIT.failed;
   }
   return EXIT.ok;
+}
+
+/** GitHub's nightly as release debt (docs/plans/evals-nightly.md, part A): the watch loop's background read of each
+ * opted-in project's nightly runs, at most every 30 minutes, within a 60 s overall deadline, through the plane's own gh
+ * (release-adapters.ts githubReads). Nothing is read for a project that never opted in. */
+export async function refreshGithubNightlies(store: Store, now: () => Date, reads?: GhRead): Promise<number> {
+  if (githubNightlyRepos(store).length === 0) return 0;
+  return readGithubNightlies(store, { gh: reads ?? githubReads(releaseExec, releaseTools().gh, { retry: true }), now });
 }

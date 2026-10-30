@@ -21,6 +21,7 @@ import { withActor } from "../actor.js";
 import { gateWords } from "../approval-policy.js";
 import { acceptAndCompleteAsOperator,assignmentOf,checkAssignmentAsOperator } from '../assignment.js';
 import { attentionCardForUnverifiedDone,classify } from "../board.js";
+import { nightlyNeedsYou } from "../nightly-github.js";
 import { codingHandoffPreview,createCodingHandoff } from '../coding-handoff.js';
 import { codingShippingHtml } from '../coding-shipping-ui.js';
 import { codingWorkspaceHtml,codingWorkspaceScript } from '../coding-ui.js';
@@ -441,7 +442,13 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         repairChain,
       });
     });
-    const laneCards = [...cards, ...unverifiedCards];
+    // Project-level Needs you (evals-nightly.md, part A3): GitHub's nightly lane failures and the plane's own nightly
+    // check of main, for the projects this board shows.
+    const nightlyCards = nightlyNeedsYou(store, repo => visible(repo) && (all || project === null || repo === project)).map(need => ({
+      lane: "attention" as const, taskId: need.key, title: need.title, repo: need.repo, reason: need.reason, href: need.href, claim: null,
+      stalledSince: need.since, attempt: null, overdue: false, priority: 0, assignedRunner: null,
+    }));
+    const laneCards = [...cards, ...unverifiedCards, ...nightlyCards];
     // The worker strip: the workers this board's work can go to — bound to
     // this project, or (rolled up) to any project the ceiling admits.
     const workers = boardWorkers(store.listRunners(), { all, project, visible });

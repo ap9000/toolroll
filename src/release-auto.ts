@@ -27,6 +27,7 @@ import { autoReleaseApprovalOf, personApprovalOf } from "./scope.js";
 import { releaseOperations, revokeRelease, type Store } from "./store.js";
 import { RELEASE_CI_HELD_ACTION, RELEASE_CI_PASSED_ACTION, RELEASE_CI_RUNNING_WORDS, releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
 import { verificationEvidence } from "./verification-evidence.js";
+import { nightlyDebtHold } from "./nightly-github.js";
 
 export { RELEASE_APPROVAL_ACTION, releaseApprovalSetting, releaseAutoApproves, type ReleaseApprovalSetting };
 
@@ -415,6 +416,9 @@ export function sealAutoGreen(store: Store, input: {
     const changed = changeProblem(facts.repo, base, input.candidate);
     if (changed !== null) return refuse(changed);
     // GitHub CI, as the plane's own gh saw it moments ago, on exactly this commit.
+    // GitHub's nightly lane debt (evals-nightly.md, part A2): dormant while automatic approval is refused, held here too.
+    const nightly = nightlyDebtHold(store, { repo: facts.repo, taskId: input.taskId, candidate: input.candidate, phase: "auto", release: true, now: input.now });
+    if (nightly !== null) return refuse(nightly.why);
     const ci = ciVerdict(input.ci, input.candidate, input.now);
     if (!ci.ok) return refuse(`CI: ${ci.problem}`);
     const observed = input.ci.runs.map(one => ({ id: one.id!, name: one.name, suite: one.suite ?? null }));

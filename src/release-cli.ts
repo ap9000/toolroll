@@ -22,6 +22,7 @@ import { carryRefusalWords, proveCarry, setAskEveryReleaseCommit, setUnsandboxed
 import { authenticateApprover, machineActing, personProof, proveCredential } from "./scope.js";
 import { allowAutoPublish, setReleaseApproval } from "./release-auto.js";
 import { createNightlyCheckFlow } from "./nightly-check.js";
+import { aliasNightlyLane, optInGithubNightly, retireNightlyLane } from "./nightly-github.js";
 import { parseSchedule } from "./flow-schedule.js";
 
 export const RELEASE_HELP = `toolroll release <branch> — release Toolroll itself, from a pushed branch with an open pull request
@@ -59,6 +60,12 @@ toolroll release revoke <release> — stop carrying later commits (before the me
 toolroll release nightly --repo <path> --as <you> --token <password> [--schedule daily:03:00@<zone>] [--start]
   — the full release check of main's head every night, approved once with your password; it never deploys,
   merges or completes, and a failure tells you and holds composed releases until a full check passes
+
+toolroll release nightly --github --repo <path> --as <you> --token <password> — read GitHub's Nightly runs on main
+  for this project (its recorded GitHub remote): a lane that fails its tests holds every deploy of the project, a
+  release's merge and its tag until a later nightly passes it, or the release's own CI re-ran it after the failure and
+  passed. --lane-alias <lane-id> <new name> says a renamed job is the same lane; --lane-retire <lane-id> retires a
+  lane no required check names any more (both with your password)
 
 toolroll release ask-every-commit on|off --repo <path> [--as <you> --token <password>] — this project's releases ask
   for every later commit (on), or carry test-only commits again (off: your password, never the lead's token)
@@ -111,8 +118,8 @@ export type ReleaseCliDeps = {
   now?: () => Date;
 };
 
-const VALUE_FLAGS = new Set(["--repo", "--limit", "--tap", "--release-gate", "--to", "--request", "--as", "--token", "--schedule", "--stage"]);
-const BARE_FLAGS = new Set(["--new", "--json", "--help", "--yes", "--no-carry", "--start", "--recover-deploy"]);
+const VALUE_FLAGS = new Set(["--repo", "--limit", "--tap", "--release-gate", "--to", "--request", "--as", "--token", "--schedule", "--stage", "--lane-retire"]);
+const BARE_FLAGS = new Set(["--new", "--json", "--help", "--yes", "--no-carry", "--start", "--recover-deploy", "--github"]);
 
 export async function runReleaseCommand(args: readonly string[], write: (line: string) => void, deps: ReleaseCliDeps = {}): Promise<number> {
   // The flag, not a secret's value that happens to read "--json".
@@ -125,11 +132,19 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
   };
   const positional: string[] = [];
   const limits: Record<string, number> = {};
-  let stage: string | undefined;
+  let stage: string | undefined, laneRetire: string | undefined, laneAlias: [string, string] | undefined;
   let repo: string | undefined, tap: string | undefined, gate: string | undefined, to: string | undefined, request: string | undefined, as: string | undefined, token: string | undefined, scheduleFlag: string | undefined;
   for (let i = 0; i < args.length; i += 1) {
     const raw = args[i]!;
     if (BARE_FLAGS.has(raw)) continue;
+    // `--lane-alias <lane-id> <new name>`: two values, neither a flag of this command.
+    if (raw === "--lane-alias") {
+      const [id, name] = [args[i + 1], args[i + 2]];
+      if (id === undefined || name === undefined || id.startsWith("--") || name.startsWith("--")) return refuse("usage", "--lane-alias takes <lane-id> <new name>.", 2);
+      laneAlias = [id, name];
+      i += 2;
+      continue;
+    }
     // `--flag=value` for every value flag; a secret (--token) is also the next argument even when it starts with "--".
     const equals = raw.startsWith("--") ? raw.indexOf("=") : -1;
     const arg = equals === -1 ? raw : raw.slice(0, equals);
@@ -148,6 +163,7 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
       else if (arg === "--tap") tap = value;
       else if (arg === "--release-gate") gate = value;
       else if (arg === "--stage") stage = value;
+      else if (arg === "--lane-retire") laneRetire = value;
       else {
         const match = /^([a-z]+)=([0-9]+)$/.exec(value);
         if (match === null || !(match[1]! in RELEASE_LIMITS) || Number(match[2]) < 1) return refuse("usage", `--limit takes <step>=<minutes> for one of: ${Object.keys(RELEASE_LIMITS).join(", ")}.`, 2);
@@ -169,6 +185,11 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
   }
   if (stage !== undefined) return refuse("usage", "--stage goes with --recover-deploy.", 2);
   if (bare.has("--yes")) return refuse("usage", "--yes goes with --release-gate <id> or --recover-deploy; a release needs no confirmation beyond the owner's approval.", 2);
+  if (bare.has("--github") || laneAlias !== undefined || laneRetire !== undefined) {
+    if (positional[0] !== "nightly" || positional.length !== 1) return refuse("usage", "--github, --lane-alias and --lane-retire go with `toolroll release nightly`.", 2);
+    if ([bare.has("--github"), laneAlias !== undefined, laneRetire !== undefined].filter(Boolean).length !== 1 || scheduleFlag !== undefined || bare.has("--start")) return refuse("usage", "Use one of --github, --lane-alias or --lane-retire, without --schedule or --start.", 2);
+    return runGithubNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, alias: laneAlias, retire: laneRetire }, write, json, deps);
+  }
   if (positional[0] === "nightly" && positional.length === 1) return runNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, schedule: scheduleFlag, start: bare.has("--start") }, write, json, deps);
   if (["carry", "revoke", "ask-every-commit", "unsandboxed-carry", "auto-approve", "publish-ok"].includes(positional[0] ?? "") && positional.length === 2) {
     return runAuthorityCommand(positional[0] as "carry" | "revoke" | "ask-every-commit" | "unsandboxed-carry" | "auto-approve" | "publish-ok", positional[1]!, { to, request, as, token, repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo) }, write, json, deps);
@@ -405,5 +426,32 @@ async function runNightlyCommand(flags: { repo: string | undefined; as: string |
     const made = createNightlyCheckFlow(store, { repo: flags.repo, schedule, as: flags.as, token: flags.token, start: flags.start }, (deps.now ?? (() => new Date()))());
     if (!made.ok) return answer(false, { reason: "refused", message: made.message }, made.message, 1);
     return answer(true, { flow: made.flow, trigger: made.trigger, schedule }, `The nightly check of main runs ${schedule}${flags.start ? "" : " once you turn its schedule on"} (flow ${made.flow}).`, 0);
+  } finally { store.close(); }
+}
+
+/** `toolroll release nightly --github | --lane-alias | --lane-retire`: GitHub's nightly as release debt
+ * (nightly-github.ts), each a person's step proved with their password now. */
+async function runGithubNightlyCommand(flags: { repo: string | undefined; as: string | undefined; token: string | undefined; alias: [string, string] | undefined; retire: string | undefined },
+  write: (line: string) => void, json: boolean, deps: ReleaseCliDeps): Promise<number> {
+  const answer = (ok: boolean, fields: Record<string, unknown>, words: string, code: number) => { write(json ? checkedEnvelopeJson({ ok, command: "release nightly", ...fields } as never) : words); return code; };
+  if (flags.repo === undefined) return answer(false, { reason: "usage", message: "Name the project with --repo <path>." }, "Name the project with --repo <path>.", 2);
+  if (flags.as === undefined || flags.token === undefined) return answer(false, { reason: "usage", message: "This needs your password: add --as <you> --token <password>." }, "This needs your password: add --as <you> --token <password>.", 2);
+  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return answer(false, { reason: "person-only", message: "Only a person changes how GitHub's nightly holds releases." }, "Only a person changes how GitHub's nightly holds releases.", 1);
+  const store = openStore(deps.database ?? databasePath(process.env, homedir()));
+  const now = (deps.now ?? (() => new Date()))();
+  try {
+    if (flags.alias !== undefined) {
+      const [laneId, name] = flags.alias;
+      const done = aliasNightlyLane(store, { repo: flags.repo, laneId, name, as: flags.as, token: flags.token }, now);
+      return done.ok ? answer(true, { lane: laneId, name }, `Jobs named "${name}" now count for lane ${laneId}.`, 0) : answer(false, { reason: "refused", message: done.message }, done.message, 1);
+    }
+    if (flags.retire !== undefined) {
+      const done = retireNightlyLane(store, { repo: flags.repo, laneId: flags.retire, as: flags.as, token: flags.token }, now);
+      return done.ok ? answer(true, { lane: flags.retire, closed: done.closed }, `Retired lane ${flags.retire}${done.closed > 0 ? `; ${done.closed} open failure${done.closed === 1 ? "" : "s"} closed` : ""}.`, 0)
+        : answer(false, { reason: "refused", message: done.message }, done.message, 1);
+    }
+    const made = optInGithubNightly(store, { repo: flags.repo, as: flags.as, token: flags.token }, now);
+    return made.ok ? answer(true, { github: made.slug, lanes: made.lanes }, `GitHub's nightly for ${made.slug} now holds this project's deploys, release merges and tags while a lane fails (${made.lanes} lanes).`, 0)
+      : answer(false, { reason: "refused", message: made.message }, made.message, 1);
   } finally { store.close(); }
 }

@@ -302,3 +302,21 @@ test.each([
   expect(refusal(result) !== null).toBe(refusedOne);
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("a config parse that Git doesn't finish in time still refuses, and says so, not 'an unreadable file'", async () => {
+  // Two macOS CI runs (0.9.80, #261) refused a clean release checkout as "includes another file (an unreadable file)":
+  // a loaded runner's `git config --file` ran past its limit. Still a refusal; now named as a slow machine.
+  const dir = mkdtempSync(join(tmpdir(), "so-checkout-slow-parse-"));
+  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: dir });
+  const slow = join(dir, "..", `slow-git-${process.pid}-${Date.now()}`);
+  const real = execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  writeFileSync(slow, `#!/bin/sh\ncase " $* " in *" --name-only "*) sleep 30 ;; esac\nexec "${real}" "$@"\n`, { mode: 0o755 });
+  const seen: string[][] = [];
+  const started = Date.now();
+  const result = await teardownGit(async (file, args, options) => { seen.push([...args]); return run(file, args, options); }, {}, undefined, slow)(dir, ["status"]);
+  expect(refusal(result)).toMatch(/didn't finish reading it in time/);
+  expect(refusal(result)).not.toMatch(/unreadable/);
+  expect(seen).toEqual([]);
+  expect(Date.now() - started).toBeLessThan(25_000);
+  rmSync(dir, { recursive: true, force: true }); rmSync(slow, { force: true });
+}, 40_000);

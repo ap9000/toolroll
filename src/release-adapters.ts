@@ -33,6 +33,9 @@ import { autoPublishHeld, holdAutoPublish, liftCiHold, authorizeAutoCheck, giveU
 import { proveCarry, type BuildRunner } from "./release-carry.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { deploymentGate } from "./deploy-gate.js";
+import { failedBeforeTests, type JobRecord } from "./github-jobs.js";
+import { mainHistoryOf, nightlyBoundary, type GhRead } from "./nightly-github.js";
+export { failedBeforeTests, type JobRecord } from "./github-jobs.js";
 import { extractCommit } from "./commit-extract.js";
 import { teardownGit, refusal as gitRefusal } from "./teardown-git.js";
 import { RELEASE_REMOTE, releaseConfigProblem, releaseGitArgs, releaseGitEnv, releaseRemote, releaseTools, type ReleaseRepo, type ReleaseTools } from "./release-git.js";
@@ -381,7 +384,9 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
       upToDateRequired: () => readUpToDateRequired(reads, ciGh, releaseRepo().slug), evidenceRoot: join(dirname(database), "evidence"),
       // A successful Actions job authenticates the job, not the candidate-writable JSON it uploads. Until the
       // executor protects that reporting channel, production releases must take the person's approval road.
-      reportsProtected: false });
+      reportsProtected: false },
+    // A boundary's one bounded read of GitHub's nightly: plain exec, never the release's long retries (20 s in all).
+    githubReads(run, ciGh));
 
   return {
     ...(existsSync(database) ? { release } : {}),
@@ -813,7 +818,10 @@ function personAnswerOf(value: unknown): { person?: { ok: true; method: string }
 export function storeReleaseAdapter(open: () => Store, done: (store: Store) => void, now: () => Date, runner?: BuildRunner,
   /** Releases that approve themselves (auto-approve-green.md): the plane's own look at CI on a commit, and where the
    * check receipts are kept. Absent: no automatic approval, every release asks a person. */
-  auto?: AutoObservers): NonNullable<ReleaseAdapters["release"]> {
+  auto?: AutoObservers,
+  /** GitHub's nightly (nightly-github.ts): the plane's own gh reads for a boundary's one bounded read. Absent: nothing
+   * is read at the boundary, and the stored debt still holds inside every reservation. */
+  nightlyReads?: GhRead): NonNullable<ReleaseAdapters["release"]> {
   const withStore = <T>(body: (store: Store) => T): T => { const store = open(); try { return body(store); } finally { done(store); } };
   return {
     ...(auto === undefined ? {} : { auto: autoReleaseAdapter(withStore, now, auto) }),
@@ -844,6 +852,17 @@ export function storeReleaseAdapter(open: () => Store, done: (store: Store) => v
     async live(taskId, action) {
       return withStore(store => { const live = liveReleaseOf(store, taskId, action, now()); return live.applies ? { applies: true, ok: live.ok, why: live.ok ? null : live.why } : { applies: false, ok: false, why: null }; });
     },
+    ...(nightlyReads === undefined ? {} : {
+      async nightly(input: { taskId: string; candidate: string; pr: number; phase: "deploy" | "merge" | "tag" }) {
+        const store = open();
+        try {
+          const repo = store.lookupRef(input.taskId)?.repo ?? null;
+          if (repo === null) return { ok: false as const, why: `Task ${input.taskId} is in no project, so GitHub's nightly debt can't be read for it.`, warning: null };
+          return await nightlyBoundary(store, { repo, taskId: input.taskId, candidate: input.candidate, pr: input.pr, phase: input.phase },
+            { ...mainHistoryOf(store, repo, now()), gh: nightlyReads, now });
+        } finally { done(store); }
+      },
+    }),
     async lease(authority, owner) { return withStore(store => takeReleaseLease(store, authority, owner, now())); },
     async renew(authority, owner, epoch) { return withStore(store => renewReleaseLease(store, authority, owner, epoch, now())); },
     async carry(authority, to, requestId, epoch) {
@@ -1023,25 +1042,6 @@ export async function readCheckRuns(run: Exec, gh: string, repo: string, sha: st
   return runs.sort((a, b) => a.id - b.id);
 }
 
-/** One job's step outcomes as GitHub's Actions API reports them. */
-export type JobRecord = { id: number; status: string; conclusion: string | null; steps: { number: number; name: string; status: string; conclusion: string | null }[] };
-
-/**
- * Whether a finished, unsuccessful job ended before any of the workflow's own steps ran: every step after GitHub's own
- * first one ("Set up job", always number 1) never ran (no conclusion, or skipped) — leaving out only GitHub's own
- * closing "Complete job" when it is the last step. Step numbers and outcomes are the runner's records; nothing the
- * candidate prints is read. A job with no steps never reached one. Anything else (a step that ran, even the checkout)
- * is not confirmed infrastructure.
- */
-export function failedBeforeTests(job: JobRecord): boolean {
-  if (job.status !== "completed" || job.conclusion === "success" || job.conclusion === null) return false;
-  const steps = [...job.steps].sort((a, b) => a.number - b.number);
-  if (new Set(steps.map(one => one.number)).size !== steps.length) return false;
-  const last = steps.at(-1);
-  const own = steps.filter(one => one.number > 1 && !(one === last && one.name === "Complete job" && steps.length > 1));
-  return own.every(one => one.status !== "in_progress" && (one.conclusion === null || one.conclusion === "skipped"));
-}
-
 /** GitHub's job record for one check run (its job), read strictly: null when it can't be read whole. */
 export async function readJobBeforeTests(run: Exec, gh: string, repo: string, id: number): Promise<boolean | null> {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !Number.isSafeInteger(id) || id <= 0) return null;
@@ -1056,6 +1056,24 @@ export async function readJobBeforeTests(run: Exec, gh: string, repo: string, id
   if (steps.some(one => !Number.isSafeInteger(one["number"]) || typeof one["status"] !== "string" || typeof one["name"] !== "string")) return null;
   return failedBeforeTests({ id, status: String(job["status"]), conclusion: textOr(job["conclusion"]),
     steps: steps.map(one => ({ number: Number(one["number"]), name: String(one["name"]), status: String(one["status"]), conclusion: textOr(one["conclusion"]) })) });
+}
+
+/**
+ * GitHub's REST API as GitHub's nightly reads it (nightly-github.ts): GET only, github.com only, a repository path, the
+ * plane's own gh with the allowlisted environment, each call bounded by its caller's deadline. A background read rides
+ * out a short network failure (release-net.ts, within that call's own share of the deadline); a boundary's read is
+ * plain exec. Never an answer that isn't GitHub's whole JSON.
+ */
+export function githubReads(run: Exec, gh: string, options: { retry?: boolean } = {}): (path: string, timeoutMs: number) => Promise<{ ok: true; body: unknown } | { ok: false; why: string }> {
+  return async (path, timeoutMs) => {
+    if (!/^repos\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_./?&=%-]+$/.test(path) || timeoutMs <= 0) return { ok: false, why: "not a read this makes" };
+    const exec = options.retry === true ? retryingExec(run, { say: () => {}, sleep, budgetMs: timeoutMs }) : run;
+    let result: ExecResult;
+    try { result = await exec(gh, ["api", "--hostname", "github.com", "--method", "GET", path], { cwd: "/", env: ciEnv(), timeoutMs }); }
+    catch (error) { return { ok: false, why: String((error as Error)?.message ?? error).slice(0, 200) }; }
+    if (result.code !== 0) return { ok: false, why: result.code === 124 ? "GitHub didn't answer in time" : result.code === 127 ? "gh isn't installed" : (result.stderr || result.stdout).trim().split("\n").slice(-1)[0]!.slice(0, 200) || `gh exited ${result.code}` };
+    try { return { ok: true, body: JSON.parse(result.stdout) as unknown }; } catch { return { ok: false, why: "GitHub's answer couldn't be read" }; }
+  };
 }
 
 /** GitHub lists check runs from at most the latest 1000 check suites of a commit: the history is whole only below that. */

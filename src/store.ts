@@ -77,6 +77,7 @@ import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
 import { liveReleaseOf } from "./scope.js";
+import { nightlyDebtHold } from "./nightly-github.js";
 import { releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
 import { APPROVAL_BASES, approvalOf, machineActing, personProof, proofDetailOf, quarantinedAuthor, sealOriginOf, type ScopeAuthor, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
 import { resolveScopeProfile, resolveRouteCandidates, exactPinOf, routeOfTask, agentChoicesFor } from "./agentconfig.js";
@@ -534,6 +535,102 @@ CREATE TABLE IF NOT EXISTS live_backup (
 );
 `;
 
+/** v139 (docs/plans/evals-nightly.md, part A): GitHub's nightly as release debt. New tables only. `nightly_lane` keeps
+ * one stable id per required check (its workflow file and name when it was seeded); `nightly_lane_alias` a person's
+ * rename of one. `github_nightly_cursor` is how far listing has got, `github_nightly_watch` every counted run still
+ * read again for new attempts. `nightly_lane_job` records each completed lane job once; `nightly_lane_failure` each
+ * test failure, open until a later counted nightly run passes that lane (or a person retires it). `nightly_exemption`
+ * is one release candidate's own pull-request job that passed a lane after its failure. Each lane job and failure keeps
+ * its run's creation time: only a run created later clears a failure. Kept apart from
+ * `main_check_failure`, whose `run` is a Toolroll run. */
+export const V139_SCHEMA = `
+CREATE TABLE IF NOT EXISTS nightly_lane (
+  repo          TEXT NOT NULL,
+  lane_id       TEXT NOT NULL,
+  workflow      TEXT NOT NULL,
+  display_name  TEXT NOT NULL,
+  seeded_at     TEXT NOT NULL,
+  retired_at    TEXT,
+  retired_by    TEXT,
+  retired_proof TEXT,
+  PRIMARY KEY (repo, lane_id)
+);
+CREATE TABLE IF NOT EXISTS nightly_lane_alias (
+  id      INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo    TEXT NOT NULL,
+  lane_id TEXT NOT NULL,
+  name    TEXT NOT NULL,
+  by      TEXT NOT NULL,
+  proof   TEXT NOT NULL,
+  at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS nightly_lane_alias_by_name ON nightly_lane_alias (repo, name, id);
+CREATE TABLE IF NOT EXISTS github_nightly_cursor (
+  repo          TEXT PRIMARY KEY,
+  page_cursor   TEXT NOT NULL,
+  last_ok_at    TEXT,
+  last_why      TEXT,
+  last_tried_at TEXT
+);
+CREATE TABLE IF NOT EXISTS github_nightly_watch (
+  repo            TEXT NOT NULL,
+  gh_run          INTEGER NOT NULL,
+  created_at      TEXT NOT NULL,
+  attempts_read   INTEGER NOT NULL DEFAULT 0 CHECK (attempts_read >= 0),
+  finished        INTEGER NOT NULL DEFAULT 0 CHECK (finished IN (0, 1)),
+  last_checked_at TEXT,
+  PRIMARY KEY (repo, gh_run)
+);
+CREATE TABLE IF NOT EXISTS nightly_lane_job (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo         TEXT NOT NULL,
+  lane_id      TEXT NOT NULL,
+  gh_run       INTEGER NOT NULL,
+  run_created_at TEXT NOT NULL,
+  attempt      INTEGER NOT NULL,
+  job_id       INTEGER NOT NULL,
+  sha          TEXT NOT NULL,
+  started_at   TEXT,
+  completed_at TEXT,
+  conclusion   TEXT,
+  cause        TEXT NOT NULL CHECK (cause IN ('passed','test-failure','runner-failure','not-run')),
+  read_at      TEXT NOT NULL,
+  UNIQUE (repo, gh_run, attempt, job_id)
+);
+CREATE INDEX IF NOT EXISTS nightly_lane_job_passes ON nightly_lane_job (repo, lane_id, started_at) WHERE cause = 'passed';
+CREATE TABLE IF NOT EXISTS nightly_lane_failure (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo           TEXT NOT NULL,
+  lane_id        TEXT NOT NULL,
+  gh_run         INTEGER NOT NULL,
+  run_created_at TEXT NOT NULL,
+  attempt        INTEGER NOT NULL,
+  job_id         INTEGER NOT NULL,
+  sha            TEXT NOT NULL,
+  completed_at   TEXT NOT NULL,
+  opened_at      TEXT NOT NULL,
+  cleared_at     TEXT,
+  cleared_by_job TEXT,
+  closed_why     TEXT,
+  UNIQUE (repo, gh_run, attempt, job_id)
+);
+CREATE INDEX IF NOT EXISTS nightly_lane_failure_open ON nightly_lane_failure (repo, id) WHERE cleared_at IS NULL;
+CREATE TABLE IF NOT EXISTS nightly_exemption (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  task         TEXT NOT NULL,
+  candidate    TEXT NOT NULL,
+  failure_id   INTEGER NOT NULL REFERENCES nightly_lane_failure(id),
+  pr           INTEGER NOT NULL,
+  gh_run       INTEGER NOT NULL,
+  attempt      INTEGER NOT NULL,
+  job_id       INTEGER NOT NULL,
+  started_at   TEXT NOT NULL,
+  completed_at TEXT NOT NULL,
+  read_at      TEXT NOT NULL,
+  UNIQUE (task, candidate, failure_id)
+);
+`;
+
 /** A project's "Show commands in the live view" (live-detail.ts): absent means off. */
 export const LIVE_DETAIL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS live_detail_setting (
@@ -858,7 +955,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v138 adds, and changes no saved row: a release check's purpose (task_scope.release_check_json; docs/plans/
 // pipeline-speed.md, P0) — this exact candidate is a release's check, for a release that can't carry. Saved rows read
 // NULL: no purpose (a termsless release task stays exactly as it was approved).
-export const SCHEMA_VERSION = 138;
+// v139 adds, and changes no saved row: GitHub's nightly as release debt (docs/plans/evals-nightly.md, part A) — stable
+// lanes and a person's aliases, the read cursor and watch list, each lane job read, open lane failures and a release
+// candidate's exemptions (V139_SCHEMA, new tables only).
+export const SCHEMA_VERSION = 139;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -996,7 +1096,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -5402,6 +5502,8 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   for (const [table, columns] of Object.entries(V138_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   }
+  // v139: GitHub's nightly as release debt (new tables only).
+  db.exec(V139_SCHEMA);
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -24472,6 +24574,9 @@ export function reserveRelease(store: Store, input: { authority: number; kind: "
     // standing and access, the grant and the sandbox, the generation and the tip, and open main-check debt.
     const live = liveReleaseOf(store, input.taskId, input.kind, input.now);
     if (!live.applies || !live.ok) return { ok: false as const, why: `The release can't ${input.kind}: ${live.applies && !live.ok ? live.why : "the task isn't part of it"}.` };
+    // GitHub's nightly lane debt, in this same transaction (evals-nightly.md, part A2).
+    const nightly = releaseNightlyProblem(store, { repo: a.repo, taskId: input.taskId, candidate: input.candidate, kind: input.kind, now: input.now });
+    if (nightly !== null) return { ok: false as const, why: nightly };
     const next = input.kind === "deploy"
       ? a.state === "open" || a.state === "deploying" ? "deploying" : null
       : a.state === "deploying" || a.state === "merge-reserved" ? "merge-reserved" : null;
@@ -24506,6 +24611,7 @@ export function runReleaseOperation(store: Store, id: string, epoch: number, now
     if (direct ? leased : !leased) return false;
     const live = liveReleaseOf(store, op.taskId, op.kind, now);
     if (!live.applies || !live.ok) return false;
+    if (releaseNightlyProblem(store, { repo: a.repo, taskId: op.taskId, candidate: op.candidate, kind: op.kind, now }) !== null) return false;
     const changed = store.handle.prepare("UPDATE release_operation SET state = 'running', issuer_pid = ?, issuer_started = ?, issued_at = ? WHERE id = ? AND state = 'reserved' AND epoch = ?")
       .run(issuer.pid, issuer.started, issuer.at, id, epoch);
     if (Number(changed.changes) === 1) store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: op.taskId, runId: null, action: `release ${op.kind} started`, outcome: "running", source: "work", detail: `operation ${id}` });
@@ -24966,4 +25072,11 @@ export function recordLiveBackup(store: Store, outcome: { ok: true; copy: LiveBa
   } else {
     store.handle.prepare("UPDATE live_backup SET tried_at = ?, problem = ? WHERE id = 1").run(now.toISOString(), plainText(outcome.problem, 300));
   }
+}
+
+/** GitHub's nightly lane debt at a release's deploy or merge reservation and at its start (docs/plans/evals-nightly.md,
+ * part A2): the stored open failures less this exact task and candidate's fresh exemptions, read inside the caller's
+ * transaction (nightly-github.ts nightlyDebtHold). Null when nothing holds. */
+export function releaseNightlyProblem(store: Store, input: { repo: string; taskId: string; candidate: string; kind: "deploy" | "merge"; now: Date }): string | null {
+  return nightlyDebtHold(store, { repo: input.repo, taskId: input.taskId, candidate: input.candidate, phase: input.kind, release: true, now: input.now })?.why ?? null;
 }

@@ -1,6 +1,6 @@
 // Deployment uses a real passing project check and the lead/user's decision
 // about that exact result. It never schedules or depends on a model reviewer.
-export function deploymentCandidate(store, { runId, head, evidenceRoot, now, releaseFlow = false }, { assignmentOf, verificationEvidence, installedScope }) {
+export function deploymentCandidate(store, { runId, head, evidenceRoot, now, releaseFlow = false, nightlyRefreshed = false }, { assignmentOf, verificationEvidence, installedScope, installedNightly }) {
   const requireFact = (value, message) => { if (!value) throw Error(message); };
   const run = store.getRun(runId);
   const ref = run ? store.refById(run.taskRef) : null;
@@ -36,6 +36,15 @@ export function deploymentCandidate(store, { runId, head, evidenceRoot, now, rel
     : releaseFromRecords(store, ref.externalId);
   requireFact(release?.applies === false || release?.ok === true, `This release can't deploy: ${release?.why ?? 'its release record cannot be read'}.`);
   const approvedTask = release?.applies === true ? release.authority.anchorTask : ref.externalId;
+  // GitHub's nightly lane debt (docs/plans/evals-nightly.md, part A2) holds every deploy of the project, a person's
+  // approval or not, unless this exact candidate holds a fresh exemption. Read by the INSTALLED runtime; one too old to
+  // read the debt refuses while any is open rather than reinterpret what it can't read. An exemption counts only after
+  // THIS deployment re-read it (`nightlyRefreshed`: the installed runtime's refreshNightlyForDeploy ran just now);
+  // otherwise every open failure holds, exemption or not (Codex round 2, finding 3).
+  const nightly = typeof installedNightly?.nightlyDebtHold === 'function'
+    ? installedNightly.nightlyDebtHold(store, { repo: ref.repo, taskId: nightlyRefreshed === true ? ref.externalId : null, candidate: scope.candidate ?? head, phase: 'deploy', release: release?.applies === true, now })
+    : nightlyDebtFromRecords(store, ref.repo);
+  requireFact(nightly === null, nightly?.why);
   // A release's own automatic approval (docs/plans/auto-approve-green.md) stands only inside `toolroll release`: the
   // deploy it reserved (--operation, whose secret this run proves before staging anything), read by the INSTALLED
   // runtime. A direct deploy, or a runtime too old to read it, needs a person's approval.
@@ -82,6 +91,18 @@ export function releaseFromRecords(store, taskId) {
   if (table === undefined) return { applies: false };
   const belongs = db.prepare("SELECT 1 AS hit FROM release_authority WHERE anchor_task = ? UNION ALL SELECT 1 FROM release_carry WHERE task_id = ? LIMIT 1").get(taskId, taskId);
   return belongs === undefined ? { applies: false } : { applies: true, ok: false, why: 'it belongs to a release this Toolroll can\'t read; update Toolroll first' };
+}
+
+/**
+ * For an installed runtime that predates GitHub's nightly debt (src/nightly-github.ts): an open lane failure on record
+ * for the project refuses with "update Toolroll first"; none (or no such table) holds nothing.
+ */
+export function nightlyDebtFromRecords(store, repo) {
+  const db = store.handle;
+  const table = db.prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = 'nightly_lane_failure'").get();
+  if (table === undefined) return null;
+  const open = db.prepare("SELECT 1 AS hit FROM nightly_lane_failure WHERE repo = ? AND cleared_at IS NULL LIMIT 1").get(repo);
+  return open === undefined ? null : { why: "GitHub's nightly has an open lane failure this Toolroll can't read; update Toolroll first" };
 }
 
 /** The proofs a person gives (src/person-proof.ts), for a plane whose installed runtime predates personApprovalOf. */

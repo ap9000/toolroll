@@ -29,6 +29,7 @@ import { RELEASE_CI_RUNNING_WORDS, releaseCiRunningOf } from "./release-ci-hold.
 import { RELEASE_PATH, releaseConfigProblem, releaseGitEnv, releaseRemote, releaseTools } from "./release-git.js";
 import type { Scope } from "./scope.js";
 import type { Store } from "./store.js";
+import { nightlyReleaseLines } from "./nightly-github.js";
 
 /** One signed term as the card says it. `key` names the scope field or the release term's path. */
 export type TermLine = { key: string; label: string; value: string };
@@ -280,6 +281,8 @@ export function releaseCardOf(store: Store, scope: Scope, formDigest: string, wo
     ...(terms !== null && terms.policy.carry && terms.access !== "sandboxed" ? ["This project's checks don't run in the sandbox: later test-only commits will run outside the sandbox without being shown to you first."] : []),
     // Filed while CI runs (Alex, 2026-10-29): a person may approve now, and is told plainly what still waits.
     ...(releaseCiRunningOf(store, scope.taskId) === null ? [] : [RELEASE_CI_RUNNING_WORDS]),
+    // GitHub's nightly (nightly-github.ts): what holds this release, or why it can't be read. Not a signed term.
+    ...(terms === null ? [] : nightlyReleaseLines(store, { repo: terms.repo, taskId: scope.taskId, candidate: scope.candidate ?? null, now: new Date() })),
     "",
     ...changeWords(changes, terms, 5),
     "",

@@ -1940,3 +1940,29 @@ describe("toolroll release: approve automatically when checks pass", () => {
     });
   });
 });
+
+describe("toolroll release: GitHub's nightly lane debt (evals-nightly.md, part A2)", () => {
+  test.each([
+    { phase: "deploy" as const, before: [] as string[], never: ["deploy", "merge", "createTag"] },
+    { phase: "merge" as const, before: ["deploy"], never: ["merge", "createTag"] },
+    { phase: "tag" as const, before: ["deploy", "merge"], never: ["createTag"] },
+  ])("debt at the $phase stops the release there, before anything is done; a later pass lets the rerun go on", async ({ phase, before, never }) => {
+    const dir = stateDir();
+    const { s, adapters } = releaseWorld();
+    const asked: string[] = [];
+    let held = true;
+    adapters.release!.nightly = async input => {
+      asked.push(input.phase);
+      expect(input).toMatchObject({ candidate: s.pr.head, pr: s.pr.number });
+      return held && input.phase === phase ? { ok: false, why: `GitHub's nightly failed "node 24 · macos-latest" on main at abc1234 (Oct 30, 06:17 UTC).`, warning: null } : { ok: true, warning: "GitHub nightly: couldn't be read (offline), last read 3 h ago. Not holding the release." };
+    };
+    const outcome = await runRelease(options(dir), adapters);
+    expect(outcome).toMatchObject({ ok: false, reason: "nightly-debt", step: phase });
+    for (const call of before) expect(s.calls).toContain(call);
+    for (const call of never) expect(s.calls).not.toContain(call);
+    held = false;
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true });
+    expect(asked).toEqual(expect.arrayContaining(["deploy", "merge", "tag"]));
+    expect(s.said.join("\n")).toContain("GitHub nightly: couldn't be read (offline)");
+  });
+});
