@@ -227,8 +227,15 @@ export function parseHandshake(text) {
   if (!Array.isArray(owed) || owed.some(one => !CHECK_PART_NAMES.includes(one))) return null;
   const ciSubstitute = value.ciSubstitute === undefined ? true : value.ciSubstitute;
   if (typeof ciSubstitute !== "boolean") return null;
-  return { nonce: value.nonce, mode: value.mode, plan, watch, limitMs, owed, ciSubstitute, planDigest: plan === null ? null : createHash("sha256").update(JSON.stringify(plan)).digest("hex") };
+  // The largest report the plane reads back once sealed. A plane that doesn't say (0.9.77 and older) seals up to 256 KiB
+  // but reads only 64 KiB back, and a sealed report it can't read makes its whole check unavailable.
+  const reportBytes = value.reportBytes === undefined ? OLDER_PLANE_REPORT_BYTES : value.reportBytes;
+  if (!Number.isSafeInteger(reportBytes) || reportBytes <= 0) return null;
+  return { nonce: value.nonce, mode: value.mode, plan, watch, limitMs, owed, ciSubstitute, reportBytes, planDigest: plan === null ? null : createHash("sha256").update(JSON.stringify(plan)).digest("hex") };
 }
+
+/** What a plane whose handshake names no `reportBytes` reads back of a sealed report (0.9.77's structured-output cap). */
+export const OLDER_PLANE_REPORT_BYTES = 64 * 1024;
 
 /** Every part a check can have (src/contracts/release-check.ts CHECK_PARTS). */
 const CHECK_PART_NAMES = ["typecheck", "build", "unit", "flows", "app", "flows-real", "app-real", "upgrade"];
@@ -305,10 +312,12 @@ export function buildReport({ handshake, exitCode, parts, unitLines, reusedFromC
 }
 
 /** The report's line: the last thing the check prints. Null when it would be over 256 KiB (no report is better than a
- * cut one). */
-export function reportLine(report) {
-  const line = `TOOLROLL_CHECK_REPORT ${JSON.stringify(report)}`;
-  return Buffer.byteLength(line) > 256 * 1024 ? null : line;
+ * cut one), or when the plane would seal it larger than it reads back (`readable`, the handshake's reportBytes): an older
+ * plane reads such a report as missing everywhere but its receipt check, where it makes the whole check unavailable. */
+export function reportLine(report, readable = 256 * 1024) {
+  const json = JSON.stringify(report);
+  const line = `TOOLROLL_CHECK_REPORT ${json}`;
+  return Buffer.byteLength(line) > 256 * 1024 || Buffer.byteLength(json) > readable ? null : line;
 }
 
 /**
@@ -675,8 +684,8 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
       unitLines: byLabel.has("unit") && direct ? unitLines : null, reusedFromCI: ci.passed,
       journeyRuns: ranJourneys.map(one => ({ script: one.script, kind: one.kind, lines: journeyLines.get(one.label) })),
       upgradeLines: byLabel.has("upgrade") ? upgradeLines : null });
-    const line = reportLine(report);
-    if (line === null) console.log("The check's report is over 256 KiB, so none is given.");
+    const line = reportLine(report, handshake.reportBytes);
+    if (line === null) console.log(`The check's report is over ${Math.round(Math.min(256 * 1024, handshake.reportBytes) / 1024)} KiB, more than this plane reads back, so none is given.`);
     else process.stdout.write(`${line}\n`);
   }
 }

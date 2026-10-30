@@ -240,7 +240,9 @@ export function prepareCheckAttempt(store: Store, root: string, input: {
     inventoryDigest: payloadDigest(inventory), contextDigest: payloadDigest(context), nonceHash: sha256(nonce),
   }, now);
   // The command's own limit rides along, so the check ends itself (logs and report printed) before the plane stops it.
-  const stdin = JSON.stringify({ nonce, mode, plan, watch: [...(input.watch ?? [])], limitMs: input.command.timeoutMs, ...(plan === null ? { owed, ciSubstitute } : {}) });
+  // `reportBytes`: the largest report this plane reads back once sealed. A plane that doesn't say (0.9.77 and older) reads
+  // only 64 KiB, so the check gives it no larger report rather than one that poisons the receipt (scripts/release-check.mjs).
+  const stdin = JSON.stringify({ nonce, mode, plan, watch: [...(input.watch ?? [])], limitMs: input.command.timeoutMs, reportBytes: CHECK_ARTIFACT_CAP, ...(plan === null ? { owed, ciSubstitute } : {}) });
   return { runId: input.runId, nonce, stdin, mode, inventory, context, plan, snapshot, watch: [...(input.watch ?? [])] };
 }
 

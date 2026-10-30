@@ -11,10 +11,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, checkAttemptOf, type Store } from "./store.js";
 import {
-  CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, CheckBaselineUnverifiable, payloadDigest, prepareCheckAttempt, readSealedJson,
+  CHECK_ARTIFACT_CAP, CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE, CheckBaselineUnverifiable, payloadDigest, prepareCheckAttempt, readSealedJson,
   fullCheckProblem, fullObligationsOf, reportFromOutput, sealCheckOutcome, treeFactsOf, projectGitDir, MODEL_PATHS, NOTHING_PATHS,
 } from "./check-report.js";
-import { MODEL, NOTHING, owedSelection, parseHandshake, versionOnly } from "../scripts/release-check.mjs";
+import { MODEL, NOTHING, OLDER_PLANE_REPORT_BYTES, owedSelection, parseHandshake, reportLine, versionOnly } from "../scripts/release-check.mjs";
+import { evidenceReadCap, verifyArtifact } from "./evidence.js";
+import { readCheckReport } from "./contracts/release-check.js";
 
 const NOW = new Date("2026-10-25T10:00:00.000Z");
 const git = (dir: string, ...argv: string[]) => execFileSync("git", ["-C", dir, "-c", "user.name=T", "-c", "user.email=t@example.invalid", ...argv], { encoding: "utf8" }).trim();
@@ -70,7 +72,7 @@ describe("the check attempt, sealed before the check runs", () => {
     const handshake = JSON.parse(prepared.stdin) as { nonce: string; mode: string; plan: unknown };
     // No release recorded: everything the tree can run is owed (no journey scripts or upgrade path here). Not said to be
     // anything else, it is sealed as a release's check: CI never stands in (fail closed).
-    expect(handshake).toEqual({ nonce: prepared.nonce, mode: "full", plan: null, watch: [], limitMs: 60_000, owed: ["typecheck", "build", "unit"], ciSubstitute: false });
+    expect(handshake).toEqual({ nonce: prepared.nonce, mode: "full", plan: null, watch: [], limitMs: 60_000, reportBytes: 256 * 1024, owed: ["typecheck", "build", "unit"], ciSubstitute: false });
     expect(prepared.inventory).toMatchObject({ parts: ["typecheck", "build", "unit"], ciSubstitute: false, release: true });
     const row = checkAttemptOf(store, runId)!;
     expect(row).toMatchObject({ mode: "full", baseRun: null, planDigest: null, inventoryDigest: payloadDigest(prepared.inventory), contextDigest: payloadDigest(prepared.context) });
@@ -195,6 +197,54 @@ describe("the report, read from the check's output", () => {
     expect(readSealedJson(store, root, runId, CHECK_INVENTORY_CAPTURE)!.value).toEqual({ version: 1, sealed: prepared.inventory,
       declared: { groups: [{ script: "app", kind: "scripted", groups: ["alpha"] }], versions: ["0.9.1"] } });
     store.close();
+  });
+});
+
+// Release 0.9.78, run 3270: a Full check's report for a 585-file suite is ~85 KiB. 0.9.77 sealed reports up to 256 KiB
+// but read structured output back only to 64 KiB, so the receipt's byte check failed and the check read "unavailable".
+describe("a report the plane seals is one it can read back (run 3270)", () => {
+  /** A full report past 64 KiB, as the real suite's is (585 files, 85 KiB with journeys and identities). */
+  const fullSized = (nonce: string) => ({ version: 1, nonce, mode: "full", planDigest: null, exitCode: 0, parts: [],
+    units: { reusedFromCI: false, finished: true, runErrors: 0, identities: [],
+      files: Array.from({ length: 800 }, (_, i) => ({ file: `src/some-feature-area-${i}.test.ts`, state: "passed", passed: 12, failed: 0, skipped: 0, flaky: false })) },
+    journeys: [], upgrades: null });
+  /** What a plane seals for a printed report line: the contract's parse of it, serialized (check-report.ts sealJson). */
+  const sealedBytes = (line: string) => {
+    const read = readCheckReport(JSON.parse(line.slice("TOOLROLL_CHECK_REPORT ".length)));
+    expect(read.ok).toBe(true);
+    return Buffer.byteLength(JSON.stringify(read.ok ? read.value : null));
+  };
+
+  test("this plane reads back every check artifact it may seal, and says so on the handshake", () => {
+    expect(evidenceReadCap("structured-output")).toBeGreaterThanOrEqual(CHECK_ARTIFACT_CAP);
+    const { repo, head, store, runId, root } = setup();
+    const command = store.setVerifyCommand({ repo, command: "true", timeoutMs: 60_000, approvedBy: "alex" }, NOW);
+    const prepared = prepareCheckAttempt(store, root, { runId, repo, head, command, access: "sandboxed" }, NOW)!;
+    const handshake = parseHandshake(prepared.stdin)!;
+    expect(handshake.reportBytes).toBe(CHECK_ARTIFACT_CAP);
+    const line = reportLine(fullSized(prepared.nonce), handshake.reportBytes)!;
+    expect(line).not.toBeNull();
+    expect(sealedBytes(line)).toBeGreaterThan(OLDER_PLANE_REPORT_BYTES);
+    expect(sealCheckOutcome(store, root, prepared, { stdout: `${line}\n`, exitCode: 0 }, NOW)).not.toBeNull();
+    const sealed = store.artifactsFor(runId).find(one => one.capture === CHECK_REPORT_CAPTURE)!;
+    expect(sealed.bytesStored).toBeGreaterThan(64 * 1024);
+    expect(verifyArtifact(root, sealed)).toEqual({ ok: true });
+    expect(readSealedJson(store, root, runId, CHECK_REPORT_CAPTURE)!.value).toMatchObject({ nonce: prepared.nonce });
+    store.close();
+  });
+
+  test("an older plane (no reportBytes on its handshake) is given no report larger than it reads back", () => {
+    const nonce = "c".repeat(64);
+    const older = parseHandshake(JSON.stringify({ nonce, mode: "full", plan: null, watch: [], owed: ["typecheck", "build", "unit"], ciSubstitute: false }))!;
+    expect(older.reportBytes).toBe(OLDER_PLANE_REPORT_BYTES);
+    // Full-sized: none, which an older plane reads exactly as it reads the report it couldn't verify (run 3269 passed so).
+    expect(reportLine(fullSized(nonce), older.reportBytes)).toBeNull();
+    expect(reportFromOutput("The check's report is over 64 KiB, more than this plane reads back, so none is given.\n", nonce).ok).toBe(false);
+    // Small enough: given, and sealed within what the older plane reads.
+    const small = reportLine({ ...fullSized(nonce), units: { ...fullSized(nonce).units, files: fullSized(nonce).units.files.slice(0, 50) } }, older.reportBytes)!;
+    expect(small).not.toBeNull();
+    expect(sealedBytes(small)).toBeLessThanOrEqual(OLDER_PLANE_REPORT_BYTES);
+    for (const bad of [0, -1, 1.5, "262144", null]) expect(parseHandshake(JSON.stringify({ nonce, mode: "full", plan: null, watch: [], reportBytes: bad })), String(bad)).toBeNull();
   });
 });
 
