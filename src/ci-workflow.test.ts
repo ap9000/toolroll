@@ -173,6 +173,11 @@ describe("the CI workflows", () => {
   });
 
   test("each required check comes from exactly the workflow the release gate maps it to, and no other workflow names it", () => {
+    for (const file of ["ci.yml", "release-candidate.yml"]) {
+      // Candidate code must not inherit a repository's permissive default GITHUB_TOKEN.
+      expect(workflow(file).permissions, file).toEqual({ contents: "read" });
+      expect(Object.values(workflow(file).jobs).flatMap(job => Object.values(job.permissions ?? {}))).not.toContain("write");
+    }
     expect(Object.keys(REQUIRED_PR_CHECKS_WORKFLOW).sort()).toEqual([...REQUIRED_PR_CHECKS].sort());
     for (const event of [pr(["src/release.ts"], "release-1"), { kind: "push", branch: "main" } as Event, { kind: "schedule" } as Event, { kind: "workflow_dispatch" } as Event]) {
       for (const name of REQUIRED_PR_CHECKS) {

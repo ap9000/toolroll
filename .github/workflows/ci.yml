@@ -24,6 +24,9 @@ on:
   # main-push.yml (a merge commit not proven tested) and nightly.yml run this workflow whole.
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   # The unit suite (`npm run test:all`) in shards: four on Node 24, run side by side (docs/plans/pipeline-speed.md: one
   # job ran it in 14–21 minutes; a shard runs a quarter). Each shard records the files it ran on the tested commit.

@@ -15,6 +15,9 @@ on:
   pull_request:
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   # The unit suite on Node 22, Linux: four shards, exactly as ci.yml runs Node 24's.
   test-shard:
