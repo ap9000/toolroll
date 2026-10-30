@@ -82,8 +82,8 @@ function gitSubcommand(args: readonly string[]): string | null {
 
 /**
  * Whether a call only reads (and so may be asked again blindly): `git ls-remote` and `git fetch` (which only moves the
- * coordinator's own remote-tracking refs); `gh api` with no method other than GET and no fields or input (gh turns
- * fields into a POST); `gh pr list|view|checks`, `gh release view`, `gh repo view`. Anything else is a write, or
+ * coordinator's own remote-tracking refs); REST repository `gh api` reads with only the flags below (gh turns
+ * fields or input into a POST); `gh pr list|view|checks`, `gh release view`, `gh repo view`. Anything else is a write, or
  * unknown, and is never retried by `retryingExec`.
  */
 export function readOnlyCall(command: string, args: readonly string[]): { kind: "git" | "gh-api" | "gh"; jsonBody: boolean } | null {
@@ -94,16 +94,24 @@ export function readOnlyCall(command: string, args: readonly string[]): { kind: 
   }
   if (name !== "gh") return null;
   if (args[0] === "api") {
+    let endpoint: string | null = null, shaped = false;
     for (let at = 1; at < args.length; at++) {
       const arg = args[at]!;
-      if (arg === "-X" || arg === "--method") { if ((args[at + 1] ?? "").toUpperCase() !== "GET") return null; at++; continue; }
-      if (/^--method=/.test(arg) && arg.slice(9).toUpperCase() !== "GET") return null;
-      if (/^-X./.test(arg) && arg.slice(2).toUpperCase() !== "GET") return null;
-      if (["-f", "-F", "--field", "--raw-field", "--input"].includes(arg) || /^--(?:field|raw-field|input)=/.test(arg) || /^-[fF]./.test(arg)) return null;
+      // Parse only spellings we know. In particular, pflag accepts -iXPOST and -ifbody=...;
+      // a blacklist of tokens beginning with -X/-f cannot prove those calls read-only.
+      if (arg === "--paginate" || arg === "--slurp") { shaped = true; continue; }
+      const flag = /^(--(?:method|hostname|jq|template))(?:=(.*))?$/.exec(arg) ?? /^(-[Xqt])(.*)$/.exec(arg);
+      if (flag !== null) {
+        const value = flag[2] || args[++at];
+        if (value === undefined || value.startsWith("-")) return null;
+        if (flag[1] === "-X" || flag[1] === "--method") { if (value !== "GET") return null; }
+        else if (flag[1] !== "--hostname") shaped = true;
+        continue;
+      }
+      if (arg.startsWith("-") || endpoint !== null || !/^\/?repos\/[^\s]+$/.test(arg)) return null;
+      endpoint = arg;
     }
-    // A plain JSON body (no --jq, --template or --paginate): an answer that doesn't parse was cut short.
-    const shaped = args.some(arg => arg === "--jq" || arg === "-q" || arg === "--template" || arg === "-t" || arg === "--paginate" || /^--(?:jq|template)=/.test(arg));
-    return { kind: "gh-api", jsonBody: !shaped };
+    return endpoint === null ? null : { kind: "gh-api", jsonBody: !shaped };
   }
   const pair = `${args[0] ?? ""} ${args[1] ?? ""}`;
   if (!["pr list", "pr view", "pr checks", "release view", "repo view"].includes(pair)) return null;
