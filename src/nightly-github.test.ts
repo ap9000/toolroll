@@ -4,8 +4,9 @@
  * network, no gh, no credentials.
  */
 import { afterEach, describe, expect, test } from "vitest";
-import { aliasNightlyLane, laneIdOf, laneName, nightlyBoundary, nightlyDebtHold, nightlyNeedsYou, readGithubNightly, retireNightlyLane, seedLanes } from "./nightly-github.js";
+import { aliasNightlyLane, githubNightlyStatus, laneIdOf, laneName, nightlyBoundary, nightlyDebtHold, nightlyNeedsYou, nightlyWarning, readGithubNightly, retireNightlyLane, seedLanes } from "./nightly-github.js";
 import { releaseViewOf } from "./release-view.js";
+import { addApprover } from "./scope.js";
 import { releaseFixture } from "../test/release-fixture.js";
 import { runReleaseCommand } from "./release-cli.js";
 import { aggregateSteps, beforeTests, LANE_UBUNTU, LANE_WINDOWS, nightlyWorld, openLanes, sha, shardName, T0, type FakeRun, type NightlyWorld } from "../test/github-nightly-fake.js";
@@ -305,7 +306,7 @@ describe("what people see", () => {
     const f = releaseFixture();
     try {
       seedLanes(f.store, f.repo, T0);
-      const failure = Number(f.store.handle.prepare("INSERT INTO nightly_lane_failure (repo, lane_id, gh_run, attempt, job_id, sha, completed_at, opened_at) VALUES (?, ?, 7, 1, 70, ?, ?, ?)")
+      const failure = Number(f.store.handle.prepare("INSERT INTO nightly_lane_failure (repo, lane_id, gh_run, run_created_at, attempt, job_id, sha, completed_at, opened_at) VALUES (?, ?, 7, '2026-10-25T00:00:00.000Z', 1, 70, ?, ?, ?)")
         .run(f.repo, UBUNTU, f.base, "2026-10-30T06:17:00.000Z", T0.toISOString()).lastInsertRowid);
       const lines = () => releaseViewOf(f.store, f.taskId, T0)!.githubNightly;
       expect(lines()).toEqual(["GitHub nightly: failed node 24 · ubuntu-latest (Oct 30, 06:17 UTC). This release waits until it passes again."]);
@@ -313,5 +314,87 @@ describe("what people see", () => {
         .run(f.taskId, f.approved, failure, T0.toISOString(), T0.toISOString(), T0.toISOString());
       expect(lines()).toEqual(["GitHub nightly: failed node 24 · ubuntu-latest (Oct 30, 06:17 UTC). This release re-ran it after the failure and passed."]);
     } finally { f.close(); }
+  });
+});
+
+describe("Codex round 1", () => {
+  test("finding 2: a rerun of an older run never clears newer debt; a run created later does", async () => {
+    const w = (world = nightlyWorld());
+    const older = w.gh.run(1, { at: ago(2), head: sha(5) });
+    w.gh.job(older, 1, LANE_UBUNTU, "success");
+    w.gh.job(w.gh.run(2, { at: ago(1), head: sha(5) }), 1, LANE_UBUNTU, "failure");
+    await read(w);
+    const attempt = w.gh.rerun(older);
+    w.gh.job(older, attempt, LANE_UBUNTU, "success", { minutes: 2 * 24 * 60 });
+    older.status = "completed";
+    await read(w);
+    expect(openLanes(w.store, w.repo)).toEqual([UBUNTU]);
+    w.gh.job(w.gh.run(3, { at: ago(0.5), head: sha(6) }), 1, LANE_UBUNTU, "success");
+    await read(w);
+    expect(openLanes(w.store, w.repo)).toEqual([]);
+  });
+
+  test("finding 4: unfinished runs never starve a finished run whose rerun failed", async () => {
+    const w = (world = nightlyWorld());
+    const done = w.gh.run(1, { at: ago(3) });
+    w.gh.job(done, 1, LANE_UBUNTU, "success");
+    for (let id = 2; id <= 5; id++) w.gh.run(id, { at: ago(2), status: "in_progress" });
+    await read(w);
+    const attempt = w.gh.rerun(done);
+    w.gh.job(done, attempt, LANE_UBUNTU, "failure", { minutes: 4 * 24 * 60 });
+    done.status = "completed";
+    // Every call takes 10 s of a 60 s budget: about six calls a read.
+    w.gh.before = () => { w.clock.now = new Date(w.clock.now.getTime() + 10_000); };
+    for (let poll = 0; poll < 6 && openLanes(w.store, w.repo).length === 0; poll++) await read(w, 60_000);
+    expect(openLanes(w.store, w.repo)).toEqual([UBUNTU]);
+  });
+
+  test("finding 5: a run whose commit can't be placed on main is a stated unresolved read, never a fresh whole one", async () => {
+    const w = (world = nightlyWorld());
+    w.gh.job(w.gh.run(1, { at: ago(1), head: sha(900) }), 1, LANE_UBUNTU, "failure");
+    const deps = { ...w.deps(), onMain: () => "unknown" as const };
+    expect(await readGithubNightly(w.store, w.repo, deps, 60_000)).toMatchObject({ ok: true, complete: false });
+    const status = githubNightlyStatus(w.store, w.repo, T0);
+    expect(status).toMatchObject({ lastOkAt: null, lastWhy: expect.stringContaining("couldn't be placed on main's history yet") });
+    expect(nightlyWarning(status, T0)).toContain("GitHub nightly: couldn't be read (nightly run 1's commit");
+    expect(w.store.handle.prepare("SELECT gh_run FROM github_nightly_watch").all()).toHaveLength(1);
+  });
+
+  test("finding 3: a re-read that fails takes the stored exemption away from every later stored check", async () => {
+    const w = (world = nightlyWorld());
+    const candidate = "c".repeat(40);
+    w.gh.job(w.gh.run(1, { at: ago(1) }), 1, LANE_UBUNTU, "failure");
+    await read(w);
+    w.gh.job(w.gh.prRun(501, candidate, { at: ago(0.5) }), 1, "node 24 · ubuntu-latest", "success");
+    const boundary = () => nightlyBoundary(w.store, { repo: w.repo, taskId: "release-0.9.82", candidate, pr: 240, phase: "deploy" }, w.deps());
+    const stored = () => nightlyDebtHold(w.store, { repo: w.repo, taskId: "release-0.9.82", candidate, phase: "deploy", release: true, now: T0 });
+    expect(await boundary()).toMatchObject({ ok: true });
+    expect(stored()).toBeNull();
+    w.gh.fail = path => path.includes("event=pull_request");
+    expect(await boundary()).toMatchObject({ ok: false });
+    expect(stored()).not.toBeNull();
+    // Read whole again, it stands again.
+    w.gh.fail = () => false;
+    expect(await boundary()).toMatchObject({ ok: true });
+    expect(stored()).toBeNull();
+  });
+
+  test("finding 7: a person's authority is proved again inside the change, not only before it", () => {
+    const w = (world = nightlyWorld());
+    const robin = addApprover(w.store, "robin", T0, { name: "alex", token: w.password }, () => "fixture-password-robin-7Hd3");
+    if (!robin.ok) throw new Error("robin");
+    const transact = w.store.transact.bind(w.store);
+    // Another process revokes alex between the password check and this change's transaction.
+    w.store.transact = (<T>(body: () => T): T => { w.store.transact = transact; expect(w.store.revokeAccount("alex", "robin", T0)).toMatchObject({ ok: true }); return transact(body); }) as typeof w.store.transact;
+    expect(aliasNightlyLane(w.store, { repo: w.repo, laneId: WINDOWS, name: "Windows containment", as: "alex", token: w.password }, T0)).toMatchObject({ ok: false });
+    expect(w.store.handle.prepare("SELECT COUNT(*) AS n FROM nightly_lane_alias").get()?.["n"]).toBe(0);
+  });
+
+  test("finding 8: the failure notice carries its project, so a project's chats may deliver it", async () => {
+    const w = (world = nightlyWorld());
+    w.gh.job(w.gh.run(1, { at: ago(1) }), 1, LANE_UBUNTU, "failure");
+    await read(w);
+    expect(w.store.handle.prepare("SELECT provenance_scope, project, link, push_class FROM notification WHERE kind = 'github-nightly-failed'").get())
+      .toEqual({ provenance_scope: "project", project: w.repo, link: "/board", push_class: "attention" });
   });
 });

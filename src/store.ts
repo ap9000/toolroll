@@ -540,7 +540,8 @@ CREATE TABLE IF NOT EXISTS live_backup (
  * rename of one. `github_nightly_cursor` is how far listing has got, `github_nightly_watch` every counted run still
  * read again for new attempts. `nightly_lane_job` records each completed lane job once; `nightly_lane_failure` each
  * test failure, open until a later counted nightly run passes that lane (or a person retires it). `nightly_exemption`
- * is one release candidate's own pull-request job that passed a lane after its failure. Kept apart from
+ * is one release candidate's own pull-request job that passed a lane after its failure. Each lane job and failure keeps
+ * its run's creation time: only a run created later clears a failure. Kept apart from
  * `main_check_failure`, whose `run` is a Toolroll run. */
 export const V139_SCHEMA = `
 CREATE TABLE IF NOT EXISTS nightly_lane (
@@ -585,6 +586,7 @@ CREATE TABLE IF NOT EXISTS nightly_lane_job (
   repo         TEXT NOT NULL,
   lane_id      TEXT NOT NULL,
   gh_run       INTEGER NOT NULL,
+  run_created_at TEXT NOT NULL,
   attempt      INTEGER NOT NULL,
   job_id       INTEGER NOT NULL,
   sha          TEXT NOT NULL,
@@ -601,6 +603,7 @@ CREATE TABLE IF NOT EXISTS nightly_lane_failure (
   repo           TEXT NOT NULL,
   lane_id        TEXT NOT NULL,
   gh_run         INTEGER NOT NULL,
+  run_created_at TEXT NOT NULL,
   attempt        INTEGER NOT NULL,
   job_id         INTEGER NOT NULL,
   sha            TEXT NOT NULL,

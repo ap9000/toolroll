@@ -5,7 +5,9 @@
  */
 import { afterEach, describe, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { verifiedFirstParentAncestry } from "../../src/commit-extract.js";
 import { laneIdOf, mainHistoryOf, readGithubNightly } from "../../src/nightly-github.js";
 import { recordTrustedMain } from "../../src/store.js";
 import { LANE_UBUNTU, nightlyWorld, openLanes, REMOTE, T0, type FakeRun, type NightlyWorld } from "../github-nightly-fake.js";
@@ -84,6 +86,37 @@ describe("a stale read of main never drops a run", () => {
     expect(recordTrustedMain(w.store, w.repo, landed, REMOTE, T0)).toBe(true);
     await readGithubNightly(w.store, w.repo, { ...w.deps(), ...mainHistoryOf(w.store, w.repo, T0) }, 60_000);
     expect(openLanes(w.store, w.repo)).toEqual([UBUNTU]);
+  });
+});
+
+describe("Codex round 1, findings 1 and 6: only proven history drops a run, within the read's deadline", () => {
+  test("a missing object between main and the run's commit is unknown, never \"not on main\": the run stays watched", async () => {
+    const w = (world = nightlyWorld());
+    mkdirSync(w.repo, { recursive: true });
+    const git = (...args: string[]) => execFileSync("git", ["-C", w.repo, "-c", "user.name=T", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", ...args], { encoding: "utf8" }).trim();
+    git("init", "-q", "-b", "main");
+    git("commit", "-q", "--allow-empty", "-m", "a");
+    const failed = git("rev-parse", "HEAD");
+    git("commit", "-q", "--allow-empty", "-m", "b");
+    const between = git("rev-parse", "HEAD");
+    git("commit", "-q", "--allow-empty", "-m", "c");
+    const head = git("rev-parse", "HEAD");
+    expect(recordTrustedMain(w.store, w.repo, head, REMOTE, T0)).toBe(true);
+    // The object between them goes missing from the build-writable store.
+    rmSync(join(w.repo, ".git", "objects", between.slice(0, 2), between.slice(2)));
+    w.gh.job(w.gh.run(1, { at: yesterday, head: failed }), 1, LANE_UBUNTU, "failure");
+    expect(await readGithubNightly(w.store, w.repo, { ...w.deps(), ...mainHistoryOf(w.store, w.repo, T0) }, 60_000)).toMatchObject({ ok: true, complete: false });
+    expect(w.store.handle.prepare("SELECT gh_run FROM github_nightly_watch").all().map(row => Number(row["gh_run"]))).toEqual([1]);
+    expect(String(w.store.handle.prepare("SELECT last_why FROM github_nightly_cursor").get()?.["last_why"])).toContain("couldn't be placed on main's history yet");
+    // Proven: every commit to the root read, and the commit isn't among them. Past the deadline: unknown.
+    git("checkout", "-q", "-b", "side", failed);
+    git("commit", "-q", "--allow-empty", "-m", "side");
+    const side = git("rev-parse", "HEAD");
+    const gitDir = join(realpathSync(w.repo), ".git");
+    expect(verifiedFirstParentAncestry(gitDir, failed, side, { deadline: Date.now() + 30_000 })).toBe("no");
+    expect(verifiedFirstParentAncestry(gitDir, head, failed, { deadline: Date.now() + 30_000 })).toBe("unknown");
+    expect(verifiedFirstParentAncestry(gitDir, side, failed, { deadline: Date.now() - 1 })).toBe("unknown");
+    expect(verifiedFirstParentAncestry(gitDir, side, failed, { deadline: Date.now() + 30_000 })).toBe("yes");
   });
 });
 

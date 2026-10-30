@@ -11,7 +11,7 @@ import { deploymentCandidate } from "../../scripts/deploy-candidate.mjs";
 import * as installedNightly from "../../src/nightly-github.js";
 import { laneIdOf, nightlyBoundary, seedLanes } from "../../src/nightly-github.js";
 import { runReleaseCommand } from "../../src/release-cli.js";
-import { approve, propose } from "../../src/scope.js";
+import { approve, liveReleaseOf, personApprovalOf, propose } from "../../src/scope.js";
 import { finishReleaseOperation, reserveRelease, runReleaseOperation, takeReleaseLease } from "../../src/store.js";
 
 let fixture: ReleaseFixture | null = null;
@@ -30,7 +30,7 @@ async function optedIn(): Promise<{ f: ReleaseFixture; said: string }> {
 /** An open ubuntu lane failure on main, as the reader records one. */
 function openFailure(f: ReleaseFixture): number {
   seedLanes(f.store, f.repo, RELEASE_NOW);
-  return Number(f.store.handle.prepare(`INSERT INTO nightly_lane_failure (repo, lane_id, gh_run, attempt, job_id, sha, completed_at, opened_at) VALUES (?, ?, 7, 1, 70, ?, ?, ?)`)
+  return Number(f.store.handle.prepare(`INSERT INTO nightly_lane_failure (repo, lane_id, gh_run, run_created_at, attempt, job_id, sha, completed_at, opened_at) VALUES (?, ?, 7, '2026-10-25T00:00:00.000Z', 1, 70, ?, ?, ?)`)
     .run(f.repo, UBUNTU, f.base, RELEASE_NOW.toISOString(), RELEASE_NOW.toISOString()).lastInsertRowid);
 }
 const exempt = (f: ReleaseFixture, failure: number, at = NOW) => f.store.handle.prepare(`INSERT INTO nightly_exemption (task, candidate, failure_id, pr, gh_run, attempt, job_id, started_at, completed_at, read_at)
@@ -96,5 +96,20 @@ describe("the merge, inside its reservation transaction", () => {
     // Debt that stands again between the reservation and the start: the merge never starts.
     f.store.handle.prepare("DELETE FROM nightly_exemption").run();
     expect(runReleaseOperation(f.store, "m1", lease.epoch, NOW)).toBe(false);
+  });
+});
+
+describe("Codex round 1, finding 3: a deploy started by hand reads again before its stored check", () => {
+  test("an exemption its own re-read can't confirm is taken away, and the deploy is held", async () => {
+    const { f } = await optedIn();
+    const failure = openFailure(f);
+    exempt(f, failure);
+    const run = builtRun(f.store, f.taskId, f.approved);
+    const deps = { assignmentOf: () => null, verificationEvidence: () => ({ ok: false, problem: "none" }), installedNightly, installedScope: { liveReleaseOf, personApprovalOf } };
+    // Before the refresh the fresh exemption gets past the nightly rule (and stops later, for its missing check)…
+    expect(() => deploymentCandidate(f.store, { runId: run, head: f.approved, evidenceRoot: EVIDENCE(f), now: NOW }, deps)).toThrow(/^Native check unavailable/);
+    // …the deploy's own bounded read can't re-read the candidate's CI: it no longer does.
+    await installedNightly.refreshNightlyForDeploy(f.store, { runId: run, now: () => NOW, gh: async () => ({ ok: false, why: "offline" }) });
+    expect(() => deploymentCandidate(f.store, { runId: run, head: f.approved, evidenceRoot: EVIDENCE(f), now: NOW }, deps)).toThrow(/GitHub's nightly failed/);
   });
 });

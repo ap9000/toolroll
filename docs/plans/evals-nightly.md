@@ -845,3 +845,26 @@ Where the build took the safer or more concrete reading of this plan, recorded a
 - The release card's GitHub lines are status, not signed terms: they are shown on the console card and the chat card
   but are not part of the card digest.
 - The notice `github-nightly-failed` (attention) is sent when a failure is first recorded, once per failure.
+
+**Codex round 1 on A1–A3 (NO-GO, 8 findings, all fixed).**
+1. "Not on main" is now proven only: `verifiedFirstParentAncestry` (src/commit-extract.ts) says "no" only after reading
+   and verifying every commit back to the root without meeting the run's (itself readable) commit; a missing or
+   unreadable object, the walk's limit or the deadline is "unknown", the run stays watched and the read says so.
+2. Lane jobs and failures keep their run's creation time (`run_created_at`, in the unreleased v139 tables); a failure
+   clears only by a pass in a run created after the failed run, started after the failure completed, on a commit
+   that contains it. A rerun of an older run never clears newer debt.
+3. A failed re-read now takes the stored exemption away (its read time is set to one no stored check accepts; the row
+   stays so a later whole re-read, the tag's included, can restore it). A deploy started by hand reads again first:
+   scripts/deploy-browser.mjs calls the installed runtime's `refreshNightlyForDeploy` (the same bounded read as the
+   coordinator's) before the stored check.
+4. The watch list rotates strictly by the oldest check (never-checked first), so unfinished runs can't starve a
+   finished run whose rerun is waiting.
+5. A read that leaves anything unresolved (a run not yet placed on main, a backlog still to list, settlement left for
+   later) records why and keeps the last whole read's time: the warning stays until a whole read.
+6. Local history work is bounded by the read's deadline on the wall clock: every git call of the ancestry walk is
+   limited by what is left (at most 10 s each; `GitRunner.timeoutMs`), and settlement stops at the deadline and
+   resumes on the next read.
+7. Opt-in, alias and retire re-check the person's standing and account generation inside their own transaction;
+   opt-in reads the recorded remote there too.
+8. The failure notice names its project (`source: { project }`) and links to the board, so a project's chats may
+   deliver it.

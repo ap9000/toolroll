@@ -114,6 +114,14 @@ oldRt.coding = await loadCodingDeploymentRuntime(priorDist);
 // GitHub's nightly lane debt (evals-nightly.md, A2): the installed runtime's own reader, when it has one.
 oldRt.nightly = existsSync(join(priorDist, "nightly-github.js")) ? await load(priorDist, "nightly-github.js") : null;
 // The candidate is proven here, on every entry but recovery, before anything of its own runs.
+// GitHub's nightly lane debt (evals-nightly.md, A2): this deploy's own bounded read, through the installed runtime,
+// before the stored check — a deploy started here re-reads its exemptions and sees a new failure (Codex round 1, 3).
+if (phaseWanted !== "recover" && typeof oldRt.nightly?.refreshNightlyForDeploy === "function") {
+  const db = openDeploymentDatabase(database);
+  try { await oldRt.nightly.refreshNightlyForDeploy(new oldRt.store.Store(db), { runId, now: () => new Date() }); }
+  catch { /* the stored check below decides; a refresh that failed already took away what it couldn't re-read */ }
+  finally { db.close(); }
+}
 const early = phaseWanted === "recover" ? null : (() => { const db = openDeploymentDatabase(database, { readOnly: true }); try { return facts(db); } finally { db.close(); } })();
 // A stage made before the rename installed the runtime under the older name; resuming it keeps that path.
 const stagedRuntime = stagedRuntimePaths(stageDir, packageName, names);

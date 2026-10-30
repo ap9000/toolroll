@@ -205,7 +205,9 @@ export type Verified<T> = { ok: true; value: T } | { ok: false; message: string 
 
 /** Which Git runs and with what environment: the release path's fixed absolute Git and its own environment, or by
  * default the checkout Git environment's. The hardening settings are added over either. */
-export type GitRunner = { git?: string; env?: NodeJS.ProcessEnv };
+export type GitRunner = { git?: string; env?: NodeJS.ProcessEnv;
+  /** Each git call's time limit (default five minutes): a caller with a deadline bounds every call by it. */
+  timeoutMs?: number };
 
 /** One protected git run: its exit (null when it didn't end on its own), its output, and why it was refused before it
  * ran (a frozen view's refusal), else null. */
@@ -226,7 +228,7 @@ function protectedGit(gitDir: string, runner: GitRunner, extra: readonly string[
   return (args, input) => {
     if (checkout === null) return { status: null, stdout: Buffer.alloc(0), refused: "it isn't a checkout's .git folder, which this git can only read through a view" };
     try {
-      const ran = viewedGitSync(checkout, [...base, ...args], { buffer: true, timeoutMs: 300_000, maxBuffer: MAX_BYTES, ...(input === undefined ? {} : { input }), ...(runner.git === undefined ? {} : { git: runner.git }) });
+      const ran = viewedGitSync(checkout, [...base, ...args], { buffer: true, timeoutMs: runner.timeoutMs ?? 300_000, maxBuffer: MAX_BYTES, ...(input === undefined ? {} : { input }), ...(runner.git === undefined ? {} : { git: runner.git }) });
       return { status: ran.status, stdout: ran.stdout, refused: null };
     } catch (error) { return { status: null, stdout: Buffer.alloc(0), refused: error instanceof Error ? error.message : "it couldn't be read" }; }
   };
@@ -518,4 +520,32 @@ export function verifiedRange(gitDir: string, from: string, to: string, options:
   }
   const unreached = wanted.find(one => !reached.has(one));
   return unreached === undefined ? { ok: true, value: commits } : { ok: false, message: `${unreached.slice(0, 7)} isn't verified as part of the last release's history.` };
+}
+
+/**
+ * Whether `until` lies on `from`'s first-parent history, within a deadline (nightly-github.ts): "yes" when the walk
+ * reaches it; "no" only when it is PROVEN not to — `until` is itself a readable, verified commit and every commit from
+ * `from` back to the root was read and verified without meeting it; "unknown" for anything less certain (an object
+ * missing or unreadable, `max` commits walked, the deadline reached). Every git call is bounded by what is left of
+ * the deadline, at most `callMs`.
+ */
+export function verifiedFirstParentAncestry(gitDir: string, from: string, until: string, options: { deadline: number; now?: () => number; max?: number; callMs?: number }): "yes" | "no" | "unknown" {
+  const now = options.now ?? Date.now;
+  const left = () => options.deadline - now();
+  if (left() <= 0) return "unknown";
+  const reader = verifiedReader(gitDir, { timeoutMs: Math.max(1, Math.min(options.callMs ?? 10_000, left())) });
+  if (!reader.ok) return "unknown";
+  if (from === until) return readCommitWith(reader.value, until).ok ? "yes" : "unknown";
+  if (left() <= 0 || !readCommitWith(reader.value, until).ok) return "unknown";
+  let at = from;
+  for (let walked = 0; walked < (options.max ?? 20_000); walked++) {
+    if (left() <= 0) return "unknown";
+    const commit = readCommitWith(reader.value, at);
+    if (!commit.ok) return "unknown";
+    const parent = commit.value.parents[0];
+    if (parent === undefined) return "no";
+    if (parent === until) return "yes";
+    at = parent;
+  }
+  return "unknown";
 }
