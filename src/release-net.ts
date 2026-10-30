@@ -30,7 +30,7 @@ export type RetryOptions = {
 /** Secondary rate limit or 429: transient, and GitHub may say how long to wait. */
 const RATE_LIMITED = /secondary rate limit|abuse detection|HTTP 429|Too Many Requests/i;
 /** A definitive answer: GitHub (or git) answered, and the answer is no. Checked before the transient phrases. */
-const DEFINITIVE = /HTTP 4\d\d|\b40[0-9] (?:Not Found|Unauthorized|Forbidden|Bad Request)|Not Found|Bad credentials|Requires authentication|authentication required|Authentication failed|Permission denied|Repository not found|Resource not accessible|Must have admin rights|could not read Username|not protected|not enabled|Reference already exists|Validation Failed|Head branch was modified|not mergeable|API rate limit exceeded/i;
+const DEFINITIVE = /Not Found|Unauthorized|Forbidden|Bad Request|Bad credentials|Requires authentication|authentication required|Authentication failed|Permission denied|Repository not found|Resource not accessible|Must have admin rights|could not read Username|not protected|not enabled|Reference already exists|Validation Failed|Head branch was modified|not mergeable|API rate limit exceeded|GH00[136]|protected branch update failed|\[rejected\]|updates were rejected|stale info|required status check|repository rule violations/i;
 /** Transport failures and server-side trouble: nothing was answered yet. */
 const TRANSIENT = new RegExp([
   "error connecting to", "Could not resolve host", "no such host", "Temporary failure in name resolution", "nodename nor servname",
@@ -48,12 +48,16 @@ const TRANSIENT = new RegExp([
  */
 export function transientFailure(text: string, code?: number): { words: string; retryAfterMs: number | null } | null {
   if (code === 127) return null;
+  if (DEFINITIVE.test(text)) return null;
   const limited = RATE_LIMITED.exec(text);
+  // A rate-limit hint never overrides an independent refusal. Only 403/429 may
+  // describe a secondary limit; git prints HTTP errors differently from gh.
+  const statuses = [...text.matchAll(/(?:HTTP(?:\/[\d.]+)?\s+|returned error:\s*)(4\d\d)\b/gi)].map(match => Number(match[1]));
+  if (statuses.some(status => limited === null || (status !== 403 && status !== 429))) return null;
   if (limited !== null) {
     const after = /Retry-After:\s*(\d{1,4})/i.exec(text) ?? /(?:try again|retry) in (\d{1,4}) ?s(?:econds?)?/i.exec(text);
     return { words: limited[0], retryAfterMs: after === null ? null : Number(after[1]) * 1000 };
   }
-  if (DEFINITIVE.test(text)) return null;
   const found = TRANSIENT.exec(text);
   // The phrase and the rest of its line ("Could not resolve host: github.com"), kept short.
   if (found !== null) return { words: text.slice(found.index).split("\n")[0]!.trim().slice(0, 80), retryAfterMs: null };
@@ -195,7 +199,7 @@ export async function writeWithRecheck<T>(label: string, options: RetryOptions, 
         why = { words: "an answer cut short", retryAfterMs: null };
       }
     }
-    if (why === null) return steps.refuse(first ?? result);
+    if (why === null) return steps.refuse(result);
     first ??= result.code !== 0 ? result : { code: 1, stdout: result.stdout, stderr: "unexpected end of JSON input (GitHub's answer was cut short)" };
     if (attempt === 0) options.say(`  GitHub didn't answer ${label} (${why.words}); reading GitHub to learn whether it happened.`);
     let state: Awaited<ReturnType<typeof steps.recheck>>;
