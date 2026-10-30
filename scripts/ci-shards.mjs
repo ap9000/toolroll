@@ -7,7 +7,11 @@
  * elsewhere, every report's counts consistent and tests actually executed.
  *
  *   node <trusted copy>/scripts/ci-shards.mjs verify <shards-folder> --root <candidate checkout> --base <trusted checkout>
- *     --sha <sha> --node <n> --shards <K>
+ *     --sha <sha> --node <n> --shards <K> [--native linux|darwin]
+ *
+ * `--native <platform>` (docs/plans/test-matrix.md): the shards ran with TOOLROLL_REQUIRE_NATIVE=<platform>, so that
+ * platform's native fence attacks run or fail. The skip policy agrees: a file whose base copy can skip only through a
+ * native probe of that platform (NATIVE_PROBES) may not report a skipped test at all.
  *
  * Trust (Codex review round 1, finding 1): the join never runs the candidate's code. It runs THIS file as the trusted
  * base revision has it (the pull request's base, or main itself on a push; ci.yml checks it out apart) and only reads
@@ -27,6 +31,17 @@ export const INCLUDE = ["src/**/*.test.ts", "test/attacks/**/*.test.ts"];
 /** A construct that can skip a test (or leave one to do): `.skip`, `.skipIf`, `.runIf`, `.todo`, `ctx.skip(…)`, a `skip:` option, and the
  * attack harness's `needs(ctx, probe)`. */
 export const SKIP_CONSTRUCT = /\.(skip|skipIf|runIf|todo)\b|\bskip\(|\bskip\s*:|\bneeds\(/;
+/**
+ * The attack harness's native probes each platform requires (test/attacks/harness.ts needs(): with
+ * TOOLROLL_REQUIRE_NATIVE set, an unavailable probe of that platform fails the test instead of skipping it). On that
+ * platform these calls give a file no permission to skip: Seatbelt and the OS fence on macOS, the OS fence (bubblewrap)
+ * on Linux. Seatbelt on Linux is "not macOS", a skip it may still take. Hosted runners can run all of them (the macOS and
+ * Linux shards' reports on 0.9.79 skip none), so no file is exempt; an exemption would be named here and reviewed.
+ */
+export const NATIVE_PROBES = {
+  darwin: /\bneeds\(\s*ctx\s*,\s*(?:seatbelt|osFence)\(\)\s*\)/g,
+  linux: /\bneeds\(\s*ctx\s*,\s*osFence\(\)\s*\)/g,
+};
 /** Assertion states that mean a test didn't run. */
 const NOT_RUN = new Set(["skipped", "pending", "todo", "disabled"]);
 
@@ -49,19 +64,24 @@ export function inventory(root) {
 /**
  * Whether a file may report tests that didn't run: only when the trusted base revision's copy of it can skip one, or
  * the file is new in the candidate (it takes no coverage the base had). A test the base always ran can't start
- * skipping unseen.
+ * skipping unseen. With `native`, the platform's required native probes don't count as a way to skip.
  */
-export function skipPermitted(file, base) {
+export function skipPermitted(file, base, native) {
   const at = join(base, file);
   if (!existsSync(at)) return true;
-  try { return lstatSync(at).isFile() && SKIP_CONSTRUCT.test(readFileSync(at, "utf8")); } catch { return false; }
+  try {
+    if (!lstatSync(at).isFile()) return false;
+    let text = readFileSync(at, "utf8");
+    if (native !== undefined) text = text.replace(NATIVE_PROBES[native], "");
+    return SKIP_CONSTRUCT.test(text);
+  } catch { return false; }
 }
 
 /**
  * One shard's Vitest JSON report, checked: it passed, its counts agree with its own test results, it executed tests,
  * and every file is under `root`. Returns the files it ran (relative) and its counts, or why it can't stand.
  */
-export function readReport(report, { root, base }) {
+export function readReport(report, { root, base, native }) {
   const no = problem => ({ ok: false, problem });
   if (report === null || typeof report !== "object" || !Array.isArray(report.testResults)) return no("isn't a Vitest JSON report");
   if (report.success !== true) return no("didn't pass");
@@ -81,7 +101,9 @@ export function readReport(report, { root, base }) {
       else return no(`${file} has a test that ${String(test?.status)}`);
     }
     if (!(passed > 0 ? ["passed"] : ["passed", "skipped"]).includes(one.status)) return no(`${file} is ${String(one.status)}`);
-    if (notRun > 0 && !skipPermitted(file, base)) return no(`${file} skipped ${notRun} test${notRun === 1 ? "" : "s"}, and the base revision's copy of it never skips one`);
+    if (notRun > 0 && !skipPermitted(file, base, native)) {
+      return no(`${file} skipped ${notRun} test${notRun === 1 ? "" : "s"}, and the base revision's copy of it never skips one${native === undefined ? "" : ` but through a native ${native} probe, which this lane requires`}`);
+    }
     counts.total += one.assertionResults.length; counts.passed += passed; counts.notRun += notRun;
     files.push(file);
   }
@@ -98,15 +120,16 @@ export function readReport(report, { root, base }) {
  * each one report that stands (readReport), and the files they ran together exactly the inventory, each once.
  * `reports` maps a shard index to its parsed report (null when unreadable).
  */
-export function shardsProblem(reports, listed, { shards, root, base }) {
+export function shardsProblem(reports, listed, { shards, root, base, native }) {
   if (!Number.isSafeInteger(shards) || shards < 1) return "no shard count";
+  if (native !== undefined && !Object.hasOwn(NATIVE_PROBES, native)) return `no native policy for ${String(native)}`;
   if (!Array.isArray(listed) || listed.length === 0) return "the include policy finds no test files";
   for (let at = 1; at <= shards; at++) if (!reports.has(at)) return `shard ${at}/${shards} gave no report`;
   for (const at of reports.keys()) if (!Number.isSafeInteger(at) || at < 1 || at > shards) return `a report for shard ${at} of ${shards}`;
   const ran = new Map();
   for (const [at, report] of [...reports.entries()].sort((a, b) => a[0] - b[0])) {
     if (report === null) return `shard ${at}'s report can't be read`;
-    const read = readReport(report, { root, base });
+    const read = readReport(report, { root, base, native });
     if (!read.ok) return `shard ${at}'s report ${read.problem}`;
     for (const file of read.files) {
       if (ran.has(file)) return `${file} ran in shards ${ran.get(file)} and ${at}`;
@@ -144,13 +167,14 @@ export function reportsIn(folder, node) {
 if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
   const [command, folder, ...args] = process.argv.slice(2);
   try {
-    if (command !== "verify") { console.error("usage: ci-shards.mjs verify <shards-folder> --root <checkout> --base <trusted checkout> --sha <sha> --node <n> --shards <K>"); process.exit(2); }
-    const shards = Number(flag(args, "shards")), sha = flag(args, "sha"), node = flag(args, "node"), root = flag(args, "root"), base = flag(args, "base");
+    if (command !== "verify") { console.error("usage: ci-shards.mjs verify <shards-folder> --root <checkout> --base <trusted checkout> --sha <sha> --node <n> --shards <K> [--native linux|darwin]"); process.exit(2); }
+    const shards = Number(flag(args, "shards")), sha = flag(args, "sha"), node = flag(args, "node"), root = flag(args, "root"), base = flag(args, "base"), native = flag(args, "native");
     if (!SHA.test(sha ?? "")) throw new Error("no tested commit");
     if (typeof root !== "string" || typeof base !== "string") throw new Error("--root and --base are required");
     const listed = inventory(root);
     const reports = reportsIn(folder, node);
-    const problem = shardsProblem(reports, listed, { shards, root, base });
+    if (args.includes("--native") && !Object.hasOwn(NATIVE_PROBES, native ?? "")) throw new Error(`--native takes ${Object.keys(NATIVE_PROBES).join(" or ")}`);
+    const problem = shardsProblem(reports, listed, { shards, root, base, native });
     if (problem !== null) { console.error(`node ${node}: ${problem}`); process.exit(1); }
     const executed = [...reports.values()].reduce((n, one) => n + one.numPassedTests, 0);
     console.log(`node ${node}: ${shards} shards passed on ${sha}, ${listed.length} test files, ${executed} tests executed`);

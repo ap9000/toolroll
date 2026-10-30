@@ -13,7 +13,7 @@ import { openStore, type Store } from "../../src/store.js";
 import { APPROVAL_PROOF, addApprover, approvalProofDetail, personApprovalOf, propose } from "../../src/scope.js";
 import { noteCiRunning } from "../../src/release-ci-hold.js";
 import { liftCiHold } from "../../src/release-auto.js";
-import { REQUIRED_PR_CHECKS } from "../../src/release.js";
+import { REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW } from "../../src/release.js";
 import { deploymentGate } from "../../src/deploy-gate.js";
 // @ts-expect-error plain ESM script without declarations
 import { deploymentCandidate } from "../../scripts/deploy-candidate.mjs";
@@ -60,7 +60,7 @@ describe("attack: the candidate's own scope.js approves its deployment", () => {
       }
       expect(liftCiHold(store, { taskId: "early-approval", candidate: HEAD, now: NOW, ask: false, ci: {
         head: HEAD, observedAt: NOW.toISOString(), complete: true,
-        runs: REQUIRED_PR_CHECKS.map((name, i) => ({ id: i + 1, suite: 1, name, status: "completed", conclusion: "success", head: HEAD, app: "github-actions", workflowPath: ".github/workflows/ci.yml" })),
+        runs: REQUIRED_PR_CHECKS.map((name, i) => ({ id: i + 1, suite: 1, name, status: "completed", conclusion: "success", head: HEAD, app: "github-actions", workflowPath: REQUIRED_PR_CHECKS_WORKFLOW[name] })),
       } })).toEqual({ ok: true });
       expect(deploymentGate(store, input)).toMatchObject({ ok: false, message: expect.stringContaining("Native check") });
       expect(() => deploymentCandidate(store, input, deps)).toThrow("Native check");

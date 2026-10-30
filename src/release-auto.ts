@@ -37,7 +37,7 @@ export const CI_OBSERVATION_MS = 5 * 60_000;
 
 /** One check run on the candidate as the plane's own `gh` reported it (oldest first). */
 export type ObservedCheckRun = { id: number | null; name: string; status: string; conclusion: string | null; app: string | null; suite?: number | null; head?: string | null; workflow?: number | null;
-  /** The workflow's file (GitHub's workflow-run `path`): a required check counts only from ci.yml. */
+  /** The workflow's file (GitHub's workflow-run `path`): a required check counts only from its own (REQUIRED_PR_CHECKS_WORKFLOW). */
   workflowPath?: string | null;
   /** GitHub's job record shows this unsuccessful attempt ended before any workflow step ran (release-adapters.ts). */
   beforeTests?: boolean | null };

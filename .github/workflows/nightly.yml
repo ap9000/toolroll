@@ -1,0 +1,22 @@
+name: Nightly
+
+# Everything, every night, on main (docs/plans/test-matrix.md): ci.yml whole (Node 24 on Linux and macOS, every area
+# lane) and the release candidate workflow (Node 22 on Linux and macOS). Its checks carry this workflow's job name in
+# front ("nightly / …"), so none stands in for a pull request's required check. A red nightly is seen here; carrying
+# its failures into the plane's release debt is a follow-up, not built yet.
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: nightly
+    uses: ./.github/workflows/ci.yml
+  release-candidate:
+    name: nightly floor
+    uses: ./.github/workflows/release-candidate.yml

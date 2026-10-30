@@ -489,20 +489,23 @@ with a time limit.
    saved first; if either name doesn't answer as the new build, both go
    back. It goes on only when the console, worker and both names run the
    gated commit. A rerun relinks without deploying again.
-8. **ci**: waits for every pull-request check on the gated commit:
-   Ubuntu on Node 22 and 24, Linux and Windows containment. Pending,
-   missing, skipped, cancelled or failed never merges.
+8. **ci**: waits for every pull-request check on the gated commit: Node 24
+   on Ubuntu and macOS, the area lanes (Linux cgroup and fence, Windows,
+   git 2.41 and 2.47), and Node 22 on Ubuntu and macOS, which runs on a
+   release-* branch's pull request.
+   Pending, missing, skipped, cancelled or failed never merges, and main's
+   protection must require every one of them.
 9. **merge**: squash-merges with the head pinned to the gated commit,
    once main has nothing the branch lacks, then deletes the remote branch
    only if its head still matches. A resumed merge also finishes this cleanup.
 10. **tree**: main's merge commit must have exactly the gated tree, or
    nothing is tagged.
-11. **tag**: pushes \`v<version>\` on that merge commit. In publish.yml,
-    macOS Node 22 and 24 must both pass before npm and GitHub publication
-    (the candidate's macOS checks already passed in ci.yml before the merge).
-    macos.yml keeps the nightly matrix.
-12. **publish**: waits for npm, the GitHub release and the tag's publish
-    job (which needs the macOS legs); not main's own CI on the merge commit.
+11. **tag**: pushes \`v<version>\` on that merge commit. The tag runs no
+    tests again: publish.yml's release proof reads GitHub's record that the
+    tagged tree is the merged pull request's head tree and passed every
+    required check there, and npm and GitHub publication need it.
+12. **publish**: waits for npm, the GitHub release and the tag's release
+    proof and publish jobs; not main's own push run on the merge commit.
 13. **homebrew**: the release is published once npm and the GitHub release
     are verified. It proposes the tap's formula change (checksum from npm's
     tarball) and looks at its checks once: \`Published; Homebrew pending\`

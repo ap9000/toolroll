@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- **Each test runs once, where it adds something** (docs/plans/test-matrix.md).
+  Pull requests run the unit suite on Node 24 (Linux and macOS) and every
+  area lane (Windows, Linux fence and cgroup, git 2.41 and 2.47); a pull
+  request that only changes Markdown under `docs/`, the changelog or the
+  README skips the area lanes. Node 22 runs on Linux and macOS once per
+  release, on the `release-*` branch's pull request, in the new
+  Release candidate workflow. Release tags no longer rerun the macOS suites:
+  a release proof reads GitHub's record that the tagged tree passed every
+  required check on its pull request before npm publication. A push to main
+  typechecks and builds, and runs the full CI only when it can't prove the
+  merge commit was tested. The nightly runs everything. A release now needs
+  every required check executed, never skipped, and refuses to merge while
+  main's branch protection doesn't require all of them. Hosted unit shards
+  require their platform's native fence attacks to run.
+
 ## 0.9.79 — 2026-10-29
 
 - **`toolroll release` rides out a short network failure instead of

@@ -481,8 +481,8 @@ describe("release check speed without weakening checks", () => {
 
   test("CI requires every workflow job on exactly the candidate, with no skipped or pending jobs", () => {
     const expected = ciJobNames(readFileSync(resolve(import.meta.dirname, "../.github/workflows/ci.yml"), "utf8"));
-    expect(expected).toContain("node 22 · ubuntu-latest");
     expect(expected).toContain("node 24 · ubuntu-latest");
+    expect(expected).toContain("node 24 · macos-latest");
     const sha = "a".repeat(40);
     const run = { event: "push", head_sha: sha, path: ".github/workflows/ci.yml", status: "completed", conclusion: "success" };
     const jobs = expected.map(name => ({ name, head_sha: sha, status: "completed", conclusion: "success" }));
