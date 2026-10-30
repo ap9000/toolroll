@@ -19,13 +19,38 @@ export const NET_RETRY_MAX_ATTEMPTS = 12;
 const BACKOFF_MS = [2_000, 4_000, 8_000, 16_000, 30_000] as const;
 export const netBackoff = (retry: number): number => BACKOFF_MS[Math.min(retry, BACKOFF_MS.length - 1)]!;
 
+type RetryBudget = { remaining: () => number; sleep: (ms: number) => Promise<void> };
+const sharedBudget = Symbol("release retry budget");
 export type RetryOptions = {
   say: (line: string) => void;
   sleep: (ms: number) => Promise<void>;
   now?: () => Date;
   budgetMs?: number;
   maxAttempts?: number;
+  /** Recovery reads inherit their write's budget, including under an injected clock. */
+  [sharedBudget]?: RetryBudget;
 };
+
+function retryBudget(options: RetryOptions): RetryBudget {
+  if (options[sharedBudget] !== undefined) return options[sharedBudget];
+  const now = () => (options.now ?? (() => new Date()))().getTime();
+  let last = now(), left = Math.max(0, options.budgetMs ?? NET_RETRY_BUDGET_MS);
+  const remaining = () => {
+    const at = now();
+    left = Math.max(0, left - Math.max(0, at - last));
+    last = at;
+    return left;
+  };
+  return { remaining, sleep: async ms => {
+    const before = remaining();
+    await options.sleep(ms);
+    // A frozen/backward fake clock must not grant more backoff than a real clock.
+    const elapsed = before - remaining();
+    left = Math.max(0, left - Math.max(0, ms - elapsed));
+  } };
+}
+
+const exhausted = (): ExecResult => ({ code: 124, stdout: "", stderr: "the network retry budget ran out" });
 
 /** Secondary rate limit or 429: transient, and GitHub may say how long to wait. */
 const RATE_LIMITED = /secondary rate limit|abuse detection|HTTP 429|Too Many Requests/i;
@@ -144,7 +169,9 @@ export function retryingExec(run: Exec, options: RetryOptions): Exec {
   return async (command, args, execOptions) => {
     const read = readOnlyCall(command, args);
     if (read === null) return run(command, args, execOptions);
-    return retryCall(() => run(command, args, execOptions), callLabel(command, args), options, read.jsonBody);
+    return retryCall(remainingMs => run(command, args, { ...execOptions,
+      timeoutMs: Math.min((execOptions?.timeoutMs ?? 0) > 0 ? execOptions!.timeoutMs! : 120_000, remainingMs),
+    }), callLabel(command, args), options, read.jsonBody);
   };
 }
 
@@ -153,22 +180,23 @@ const bodyParses = (stdout: string): boolean => { try { JSON.parse(stdout); retu
 
 /** One read, asked again as retryingExec describes. `call` may do more than the read itself (the release's Git
  * re-checks the checkout's config first); anything it throws ends the read at once. */
-export async function retryCall(call: () => Promise<ExecResult>, label: string, options: RetryOptions, jsonBody = false): Promise<ExecResult> {
-  const now = () => (options.now ?? (() => new Date()))().getTime();
-  const deadline = now() + (options.budgetMs ?? NET_RETRY_BUDGET_MS);
+export async function retryCall(call: (remainingMs: number) => Promise<ExecResult>, label: string, options: RetryOptions, jsonBody = false): Promise<ExecResult> {
+  const budget = retryBudget(options);
   const maxAttempts = options.maxAttempts ?? NET_RETRY_MAX_ATTEMPTS;
   let first: ExecResult | null = null;
   for (let attempt = 0; ; attempt++) {
-    const result = await call();
+    const remaining = budget.remaining();
+    if (remaining <= 0) return first ?? exhausted();
+    const result = await call(remaining);
     let why = transientResult(result);
     if (why === null && result.code === 0 && jsonBody && !bodyParses(result.stdout)) why = { words: "an answer cut short", retryAfterMs: null };
     if (why === null) return result;
     // The original failure is what the caller sees; a truncated 0-exit body becomes an explicit failure.
     first ??= result.code !== 0 ? result : { code: 1, stdout: result.stdout, stderr: "unexpected end of JSON input (GitHub's answer was cut short)" };
     const wait = why.retryAfterMs ?? netBackoff(attempt);
-    if (attempt + 1 >= maxAttempts || now() + wait > deadline) return first;
+    if (attempt + 1 >= maxAttempts || wait >= budget.remaining()) return first;
     if (attempt === 0) options.say(`  GitHub didn't answer ${label} (${why.words}); asking again for up to ${Math.round((options.budgetMs ?? NET_RETRY_BUDGET_MS) / 60_000)} min.`);
-    await options.sleep(wait);
+    await budget.sleep(wait);
   }
 }
 
@@ -180,17 +208,18 @@ export async function retryCall(call: () => Promise<ExecResult>, label: string, 
  * anything else — or a recheck that can't read — stops with the write's original error.
  */
 export async function writeWithRecheck<T>(label: string, options: RetryOptions, steps: {
-  write: () => Promise<ExecResult>;
+  write: (remainingMs: number) => Promise<ExecResult>;
   accept: (result: ExecResult) => T;
   refuse: (result: ExecResult) => never;
-  recheck: () => Promise<{ state: "done"; value: T } | { state: "not-done" } | { state: "other"; why: string }>;
+  recheck: (options: RetryOptions) => Promise<{ state: "done"; value: T } | { state: "not-done" } | { state: "other"; why: string }>;
 }): Promise<T> {
-  const now = () => (options.now ?? (() => new Date()))().getTime();
-  const deadline = now() + (options.budgetMs ?? NET_RETRY_BUDGET_MS);
+  const budget = retryBudget(options);
   const maxAttempts = options.maxAttempts ?? NET_RETRY_MAX_ATTEMPTS;
   let first: ExecResult | null = null;
   for (let attempt = 0; ; attempt++) {
-    const result = await steps.write();
+    const remaining = budget.remaining();
+    if (remaining <= 0) return steps.refuse(first ?? exhausted());
+    const result = await steps.write(remaining);
     let why = transientResult(result);
     if (result.code === 0) {
       try { return steps.accept(result); }
@@ -201,14 +230,15 @@ export async function writeWithRecheck<T>(label: string, options: RetryOptions, 
     }
     if (why === null) return steps.refuse(result);
     first ??= result.code !== 0 ? result : { code: 1, stdout: result.stdout, stderr: "unexpected end of JSON input (GitHub's answer was cut short)" };
+    if (budget.remaining() <= 0) return steps.refuse(first);
     if (attempt === 0) options.say(`  GitHub didn't answer ${label} (${why.words}); reading GitHub to learn whether it happened.`);
     let state: Awaited<ReturnType<typeof steps.recheck>>;
-    try { state = await steps.recheck(); }
+    try { state = await steps.recheck({ ...options, maxAttempts: NET_RETRY_MAX_ATTEMPTS, [sharedBudget]: budget }); }
     catch (error) { return steps.refuse({ ...first, stderr: `${first.stderr.trim()} (and whether it happened couldn't be read: ${String((error as Error)?.message ?? error).slice(0, 200)})` }); }
     if (state.state === "done") return state.value;
     if (state.state === "other") return steps.refuse({ ...first, stderr: `${first.stderr.trim()} (${state.why})` });
     const wait = why.retryAfterMs ?? netBackoff(attempt);
-    if (attempt + 1 >= maxAttempts || now() + wait > deadline) return steps.refuse(first);
-    await options.sleep(wait);
+    if (attempt + 1 >= maxAttempts || wait >= budget.remaining()) return steps.refuse(first);
+    await budget.sleep(wait);
   }
 }

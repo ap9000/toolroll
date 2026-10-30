@@ -243,7 +243,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   // Reads ride out a short network failure; anything that isn't provably a read passes straight through (readOnlyCall).
   const gh = (...args: string[]) => reads(tools.gh, args, { cwd: "/", env: gitEnv });
   /** A write by gh, never retried by itself. */
-  const ghWrite = (...args: string[]) => run(tools.gh, args, { cwd: "/", env: gitEnv });
+  const ghWrite = (remainingMs: number, ...args: string[]) => run(tools.gh, args, { cwd: "/", env: gitEnv, timeoutMs: Math.min(120_000, remainingMs) });
   const ghJson = async (what: string, ...args: string[]) => JSON.parse(await must(gh(...args), what)) as unknown;
   const toolroll = async (...args: string[]): Promise<Json> => {
     const result = await run("toolroll", [...args, "--json"], { env: cleanEnv(), timeoutMs: 120_000 });
@@ -273,13 +273,18 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
     const full = [...releaseGitArgs(repo, tools), ...args];
     const stop = (why: string) => new Error(`Toolroll won't run Git in ${repo.checkout} for a release: ${why}. Remove it from the project's Git config, then rerun.`);
     // The checkout's config is read again right before EVERY attempt, a retried one included (checked at the moment of use).
-    const once = async () => {
+    const once = async (remainingMs = 120_000) => {
+      const now = () => (options.now ?? (() => new Date()))().getTime();
+      const started = now();
+      const left = () => Math.min(120_000, remainingMs - Math.max(0, now() - started));
       if (options.releaseRepo === undefined && checkoutIncludes(repo.checkout)) throw stop("its Git config includes another file, or couldn't be read as a plain file");
-      const listing = await run(tools.git, [`--git-dir=${repo.gitDir}`, "--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], { cwd: "/", env: gitEnv });
+      if (left() <= 0) return { code: 124, stdout: "", stderr: "the network retry budget ran out" };
+      const listing = await run(tools.git, [`--git-dir=${repo.gitDir}`, "--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], { cwd: "/", env: gitEnv, timeoutMs: left() });
       if (listing.code !== 0) throw stop("its Git config couldn't be read");
       const setting = releaseConfigProblem(listing.stdout);
       if (setting !== null) throw stop(`its Git config sets ${setting}, which a release doesn't run with (it could run a command, or change where Git connects or what it sends)`);
-      return run(tools.git, full, { cwd: repo.checkout, env: gitEnv });
+      if (left() <= 0) return { code: 124, stdout: "", stderr: "the network retry budget ran out" };
+      return run(tools.git, full, { cwd: repo.checkout, env: gitEnv, timeoutMs: left() });
     };
     // ls-remote and fetch ride out a short network failure; a push or a local command is never retried (readOnlyCall).
     return readOnlyCall(tools.git, full) === null ? once() : retryCall(once, callLabel(tools.git, full), net);
@@ -520,7 +525,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         // again under stale approval/lease/CI checks: reconcile a lost answer, but another write needs a fresh
         // coordinator pass through those guards. A PR still being open proves none of them.
         return writeWithRecheck(`merging #${pr}`, { ...net, maxAttempts: 1 }, {
-          write: () => ghWrite("api", "-X", "PUT", `repos/${repo}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`,
+          write: remaining => ghWrite(remaining, "api", "-X", "PUT", `repos/${repo}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`,
             ...(message === undefined ? [] : ["-f", `commit_message=${message}`])),
           accept: result => {
             const merged = object(JSON.parse(result.stdout));
@@ -528,17 +533,17 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
             return merged["sha"];
           },
           refuse: result => { throw failed(result, "gh api pulls merge"); },
-          recheck: () => pullMergedAt(repo, pr, head, "main", message),
+          recheck: bounded => pullMergedAt(repo, pr, head, "main", bounded, message),
         });
       },
       async tag(repo, tag) { return readTag(repo, tag); },
       async createTag(repo, tag, sha) {
         await writeWithRecheck(`creating ${tag}`, net, {
-          write: () => ghWrite("api", "-X", "POST", `repos/${repo}/git/refs`, "-f", `ref=refs/tags/${tag}`, "-f", `sha=${sha}`),
+          write: remaining => ghWrite(remaining, "api", "-X", "POST", `repos/${repo}/git/refs`, "-f", `ref=refs/tags/${tag}`, "-f", `sha=${sha}`),
           accept: () => undefined,
           refuse: result => { throw failed(result, `creating ${tag}`); },
-          recheck: async () => {
-            const at = await readTag(repo, tag);
+          recheck: async bounded => {
+            const at = await readTag(repo, tag, bounded);
             return at === sha ? { state: "done", value: undefined } : at === null ? { state: "not-done" } : { state: "other", why: `${tag} now points at ${at.slice(0, 7)}` };
           },
         });
@@ -642,39 +647,41 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
       async merge(pr, head) {
         const base = await defaultBranch();
         await writeWithRecheck(`merging ${tap} #${pr}`, { ...net, maxAttempts: 1 }, {
-          write: () => ghWrite("api", "-X", "PUT", `repos/${tap}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`),
+          write: remaining => ghWrite(remaining, "api", "-X", "PUT", `repos/${tap}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`),
           accept: result => {
             const merged = object(JSON.parse(result.stdout));
             if (merged["merged"] !== true || typeof merged["sha"] !== "string" || !/^[0-9a-f]{40}$/.test(merged["sha"])) throw new Error(`GitHub did not merge ${tap} #${pr}: ${String(merged["message"] ?? "no merge commit")}`);
           },
           refuse: result => { throw failed(result, `merging ${tap} #${pr}`); },
-          recheck: async () => { const state = await pullMergedAt(tap, pr, head, base); return state.state === "done" ? { state: "done", value: undefined } : state; },
+          recheck: async bounded => { const state = await pullMergedAt(tap, pr, head, base, bounded); return state.state === "done" ? { state: "done", value: undefined } : state; },
         });
       },
     },
   };
 
   /** A tag's commit as GitHub answers now (an annotated tag: the commit it names), or null when there is no such tag. */
-  async function readTag(repo: string, tag: string): Promise<string | null> {
-    const result = await gh("api", `repos/${repo}/git/ref/tags/${tag}`);
+  async function readTag(repo: string, tag: string, bounded = net): Promise<string | null> {
+    const read = (path: string) => retryingExec(run, bounded)(tools.gh, ["api", path], { cwd: "/", env: gitEnv });
+    const result = await read(`repos/${repo}/git/ref/tags/${tag}`);
     if (result.code !== 0) {
       if (/Not Found|HTTP 404/.test(result.stderr + result.stdout)) return null;
       throw new Error(`gh api git/ref/tags/${tag} failed: ${result.stderr.trim()}`);
     }
     const target = object(object(JSON.parse(result.stdout))["object"]);
     if (target["type"] !== "tag") return String(target["sha"]);
-    return String(object(object(await ghJson("gh api git/tags", "api", `repos/${repo}/git/tags/${String(target["sha"])}`))["object"])["sha"]);
+    return String(object(object(JSON.parse(await must(read(`repos/${repo}/git/tags/${String(target["sha"])}`), "gh api git/tags")))["object"])["sha"]);
   }
   /** Whether a pull request is merged from exactly `head` (its merge commit), still open at `head` (not merged), or
    * anything else — read after a merge's answer was lost. */
-  async function pullMergedAt(repo: string, pr: number, head: string, base: string, message?: string): Promise<{ state: "done"; value: string } | { state: "not-done" } | { state: "other"; why: string }> {
-    const pull = object(await ghJson("gh api pulls", "api", `repos/${repo}/pulls/${pr}`));
+  async function pullMergedAt(repo: string, pr: number, head: string, base: string, bounded: RetryOptions, message?: string): Promise<{ state: "done"; value: string } | { state: "not-done" } | { state: "other"; why: string }> {
+    const read = async (path: string) => object(JSON.parse(await must(retryingExec(run, bounded)(tools.gh, ["api", path], { cwd: "/", env: gitEnv }), "gh api merge recovery")));
+    const pull = await read(`repos/${repo}/pulls/${pr}`);
     const at = object(pull["head"])["sha"], commit = pull["merge_commit_sha"];
     if (at !== head || object(pull["base"])["ref"] !== base) return { state: "other", why: `#${pr} is no longer open at ${head.slice(0, 7)} into ${base}` };
     if (pull["merged"] === true && pull["state"] === "closed" && typeof commit === "string" && /^[0-9a-f]{40}$/.test(commit)) {
       // Another caller may have merged it. Only the same squash result counts, never merely "merged=true".
-      const source = object(await ghJson("gh api git/commits", "api", `repos/${repo}/git/commits/${head}`));
-      const merged = object(await ghJson("gh api git/commits", "api", `repos/${repo}/git/commits/${commit}`));
+      const source = await read(`repos/${repo}/git/commits/${head}`);
+      const merged = await read(`repos/${repo}/git/commits/${commit}`);
       const tree = object(source["tree"])["sha"], parents = merged["parents"];
       if (typeof tree === "string" && /^[0-9a-f]{40}$/.test(tree) && object(merged["tree"])["sha"] === tree
         && Array.isArray(parents) && parents.length === 1

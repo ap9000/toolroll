@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { readOnlyCall, retryingExec, transientFailure, writeWithRecheck, NET_RETRY_BUDGET_MS, type ExecResult } from "./release-net.js";
+import { readOnlyCall, retryCall, retryingExec, transientFailure, writeWithRecheck, NET_RETRY_BUDGET_MS, type ExecResult } from "./release-net.js";
 import { readMainProtection, readUpToDateRequired, releaseAdapters, ProtectionUnreadable, type Exec, type ReleaseRepo, type ReleaseTools } from "./release-adapters.js";
 import { PROTECTION_MINIMUM_CHECKS } from "./release.js";
 
@@ -278,5 +278,53 @@ describe("main's protection: couldn't read is never doesn't hold", () => {
 
   test("one layer holding is enough even when another couldn't be read", async () => {
     expect(await readMainProtection(gh(() => ok(JSON.stringify(live)), () => fail("HTTP 502")), "/opt/homebrew/bin/gh", "ap9000/toolroll")).toMatchObject({ effective: true });
+  });
+});
+
+
+describe("retry time is bounded even when the clock or scheduler misbehaves", () => {
+  test.each(["fixed", "backward"])("a %s clock still charges every backoff against the budget", async clock => {
+    let at = 0, slept = 0;
+    await retryCall(async () => fail("HTTP 502"), "read", {
+      say: () => {}, now: () => new Date(at), sleep: async ms => { slept += ms; if (clock === "backward") at -= ms; },
+    });
+    expect(slept).toBeLessThanOrEqual(NET_RETRY_BUDGET_MS);
+  });
+
+  test("no new call starts after an oversleep", async () => {
+    let at = 0, calls = 0;
+    await retryCall(async () => { calls++; return fail("HTTP 502"); }, "read", {
+      budgetMs: 3_000, say: () => {}, now: () => new Date(at), sleep: async () => { at += 4_000; },
+    });
+    expect(calls).toBe(1);
+  });
+
+  test("each child timeout fits the remaining budget, including call execution", async () => {
+    let at = 0;
+    const timeouts: number[] = [];
+    const run: Exec = async (_command, _args, options) => {
+      const timeout = options?.timeoutMs ?? 120_000;
+      timeouts.push(timeout); at += Math.min(1_000, timeout);
+      return fail("HTTP 502");
+    };
+    await retryingExec(run, { budgetMs: 3_500, say: () => {}, now: () => new Date(at), sleep: async ms => { at += ms; } })("gh", ["api", "repos/a/b"]);
+    expect(at).toBeLessThanOrEqual(3_500);
+    expect(timeouts).toEqual([3_500, 500]);
+  });
+
+  test("a write and all its recovery reads share one budget even with a frozen clock", async () => {
+    let slept = 0, writes = 0, reads = 0;
+    const options = { budgetMs: 8_000, say: () => {}, now: () => new Date(0), sleep: async (ms: number) => { slept += ms; } };
+    await expect(writeWithRecheck("tag", options, {
+      write: async () => { writes++; return fail("HTTP 502"); }, accept: () => true,
+      refuse: result => { throw new Error(result.stderr); },
+      recheck: async bounded => {
+        await retryCall(async () => { reads++; return fail("HTTP 502"); }, "recover", bounded ?? options);
+        return { state: "not-done" };
+      },
+    })).rejects.toThrow();
+    expect(slept).toBeLessThanOrEqual(8_000);
+    expect(writes).toBe(1);
+    expect(reads).toBeLessThanOrEqual(3);
   });
 });
