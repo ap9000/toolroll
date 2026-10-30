@@ -216,6 +216,11 @@ jobs:
             name="$(basename "$folder")"
             case "$name" in macos-shard-*) mv "$folder" "$RUNNER_TEMP/shards/${name#macos-}" ;; *) echo "unexpected $name among the macOS shards' reports" >&2; exit 1 ;; esac
           done
+          # The shards ran on macOS runners, whose checkout is /Users/runner/work/<repo>/<repo>; this join runs on Linux.
+          # Their reports name files under the macOS checkout: map exactly that prefix onto this checkout, so the
+          # (trusted) verifier judges the same relative paths. Nothing else in the reports changes.
+          mac_root="/Users/runner/work/${GITHUB_REPOSITORY#*/}/${GITHUB_REPOSITORY#*/}/"
+          find "$RUNNER_TEMP/shards" -type f -name '*.json' -print0 | xargs -0 sed -i "s#\"${mac_root}#\"${GITHUB_WORKSPACE}/#g"
       - name: Every shard ran the whole suite
         shell: bash
         run: |
