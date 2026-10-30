@@ -7,7 +7,7 @@
  * are held here too: each way to get around them is one row.
  */
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
@@ -144,6 +144,18 @@ describe("the CI workflows", () => {
     expect(decide?.run).toContain(`node "$classifier" decide --event "$EVENT" --head-ref "$HEAD_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --root "$GITHUB_WORKSPACE" | tee -a "$GITHUB_OUTPUT"`);
     expect(decide as unknown as { shell?: string }).toMatchObject({ shell: "bash" });
     expect(runsOf(scope).filter(run => /\$\{\{/.test(run))).toEqual([]);
+    // Run the actual workflow step against a malicious candidate and no base classifier. It must run every lane.
+    const scratch = mkdtempSync(join(tmpdir(), "scope-bootstrap-"));
+    try {
+      mkdirSync(join(scratch, "scripts"));
+      writeFileSync(join(scratch, "scripts/ci-scope.mjs"), "console.log('areas=docs-only');\n");
+      const output = join(scratch, "output");
+      const result = spawnSync("bash", ["--noprofile", "--norc", "-e", "-o", "pipefail", "-c", String(decide?.run)], {
+        cwd: scratch, encoding: "utf8", env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: scratch, XDG_CONFIG_HOME: scratch, GITHUB_OUTPUT: output, EVENT: "pull_request", HEAD_REF: "release-1", BASE_SHA: "a".repeat(40), TESTED_SHA: "b".repeat(40), GITHUB_WORKSPACE: scratch },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(readFileSync(output, "utf8").trim()).toBe("areas=run");
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
   });
 
   test("only the listed jobs carry a condition, each one these tests can read", () => {
@@ -400,6 +412,23 @@ describe("test-matrix: the documentation-only classifier (scripts/ci-scope.mjs)"
     expect(decide(git("rev-parse", "HEAD"))).toMatchObject({ run: true, why: expect.stringContaining("deleted") });
     expect(areaLanes({ event: "pull_request", headRef: "fix-x", entries: diffEntries(dir, "f".repeat(40), git("rev-parse", "HEAD")) })).toMatchObject({ run: true, why: "the diff couldn't be read whole" });
     expect(diffEntries(dir, "not-a-sha", base)).toBeNull();
+    // A plain copy must be identified even when its source was not edited.
+    git("reset", "-q", "--hard", base);
+    mkdirSync(join(dir, "docs"));
+    writeFileSync(join(dir, "docs/copied.md"), log);
+    git("add", "-A"); git("commit", "-qm", "copy");
+    expect.soft(decide(git("rev-parse", "HEAD"))).toMatchObject({ run: true, why: expect.stringContaining("copied") });
+    // A real code edit cannot become docs-only through a replacement commit in the checkout's Git metadata.
+    git("reset", "-q", "--hard", base);
+    writeFileSync(join(dir, "code.js"), "export const changed = true;\n");
+    git("add", "-A"); git("commit", "-qm", "code");
+    const code = git("rev-parse", "HEAD");
+    expect(decide(code)).toMatchObject({ run: true });
+    git("reset", "-q", "--hard", base);
+    writeFileSync(join(dir, "README.md"), "documentation only\n");
+    git("commit", "-qam", "replacement");
+    git("replace", code, git("rev-parse", "HEAD"));
+    expect(decide(code)).toMatchObject({ run: true });
   });
 });
 

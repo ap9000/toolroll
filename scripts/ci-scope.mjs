@@ -15,7 +15,7 @@
  * Trust: ci.yml runs the trusted base revision's copy of this file, as it does the shard verifier. Git runs with no
  * system or global config, no hooks, no external diff or text conversion.
  */
-import { spawnSync } from "node:child_process";
+import { readGit } from "./deploy-git.mjs";
 
 const SHA = /^[0-9a-f]{40}$/;
 
@@ -64,18 +64,15 @@ export function areaLanes({ event, headRef, entries }) {
   return { run: false, why: `${entries.length} documentation file${entries.length === 1 ? "" : "s"} only` };
 }
 
-const GIT_ENV = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: "/nonexistent", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", LC_ALL: "C" };
-const git = (root, args) => spawnSync("git", ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "core.quotePath=false", ...args],
-  { cwd: root, encoding: "utf8", env: GIT_ENV, maxBuffer: 64 * 1024 * 1024 });
-
 /** The pull request's changes from its merge base to its head, or null when git can't give them whole. */
 export function diffEntries(root, base, head) {
   if (!SHA.test(base ?? "") || !SHA.test(head ?? "")) return null;
-  const mergeBase = git(root, ["merge-base", base, head]);
-  const from = mergeBase.status === 0 ? mergeBase.stdout.trim() : "";
-  if (!SHA.test(from)) return null;
-  const diff = git(root, ["diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--find-copies", "--name-status", "-z", from, head, "--"]);
-  return diff.status === 0 && diff.error === undefined ? parseNameStatus(diff.stdout) : null;
+  try {
+    const git = args => readGit(["-C", root], args, { PATH: process.env.PATH ?? "/usr/bin:/bin" });
+    const from = git(["merge-base", base, head]).trim();
+    if (!SHA.test(from)) return null;
+    return parseNameStatus(git(["diff", "--no-ext-diff", "--no-textconv", "--ignore-submodules=none", "--find-renames", "--find-copies-harder", "--name-status", "-z", from, head, "--"]));
+  } catch { return null; }
 }
 
 const flag = (args, name) => { const at = args.indexOf(`--${name}`); return at === -1 ? undefined : args[at + 1]; };

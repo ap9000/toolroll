@@ -239,8 +239,7 @@ jobs:
   # Whether the area lanes below apply (docs/plans/test-matrix.md): every pull request runs them except a narrow
   # documentation-only change (scripts/ci-scope.mjs says exactly which), and every release-* branch and every run that
   # isn't a pull request runs them. The decision is the trusted base revision's classifier over the pull request's diff
-  # from its merge base, never the candidate's test output. Until the base has a classifier the candidate's own is used
-  # and said; that change touches scripts/, which an automatic release never approves.
+  # from its merge base, never the candidate's test output. A base without the classifier runs every lane.
   scope:
     name: area lanes · scope
     runs-on: ubuntu-24.04
@@ -277,7 +276,11 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           classifier=.trusted-base/scripts/ci-scope.mjs
-          if [ ! -f "$classifier" ]; then echo "::warning::the base revision has no scope classifier yet; using this change's own (a person approves it)"; classifier=scripts/ci-scope.mjs; fi
+          if [ ! -f "$classifier" ]; then
+            echo "::notice::the base revision has no scope classifier; running every lane"
+            echo "areas=run" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           node "$classifier" decide --event "$EVENT" --head-ref "$HEAD_REF" --base "$BASE_SHA" --head "$TESTED_SHA" --root "$GITHUB_WORKSPACE" | tee -a "$GITHUB_OUTPUT"
 
   # The native containment backend, EXECUTED: a cgroup v2 leaf is delegated
