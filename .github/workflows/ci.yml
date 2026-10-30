@@ -403,8 +403,11 @@ jobs:
   # the floor lane also proves a partial clone is refused for protected reads. The tests run as the image's unprivileged user (root passes
   # permission checks an operator's git can't), and a skipped test fails the job: a skip is not evidence. The only
   # skips allowed are the "native …" OS-fence attacks, which need bubblewrap/Seatbelt and run in the linux fence job.
-  git:
-    name: git ${{ matrix.git }} · debian trixie
+  # Two jobs, no matrix: GitHub doesn't expand a matrix for a job its `if:` skips (a docs-only pull request reported
+  # "git ${{ matrix.git }} · …") and appends the values of a matrix a name doesn't mention ("… (2.41)"); either way the
+  # required checks never arrive.
+  git-floor:
+    name: git 2.41 · debian trixie
     needs: scope
     # Skipped only on a documentation-only pull request, by a scope job that succeeded; otherwise it runs.
     if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}
@@ -415,10 +418,6 @@ jobs:
       options: --init
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-    strategy:
-      fail-fast: false
-      matrix:
-        git: ["2.41", "2.47"]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -429,9 +428,9 @@ jobs:
           head="$(runuser -u node -- git rev-parse HEAD)"
           test "$head" = "$TESTED_SHA" || { echo "checked out $head, expected $TESTED_SHA" >&2; exit 1; }
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
-      - run: scripts/ci-git.sh ${{ matrix.git }}
-      - name: The tests' git is git ${{ matrix.git }}
-        run: runuser -u node -- git --version | tee /dev/stderr | grep -qF "git version ${{ matrix.git }}."
+      - run: scripts/ci-git.sh 2.41
+      - name: The tests' git is git 2.41
+        run: runuser -u node -- git --version | tee /dev/stderr | grep -qF "git version 2.41."
       - run: runuser -u node -- npm ci
       - run: runuser -u node -- npm run test:git -- --reporter=default --reporter=json --outputFile.json=git-lane.json
         env:
@@ -439,7 +438,38 @@ jobs:
       - name: Every git test ran
         run: runuser -u node -- node scripts/ci-no-skips.mjs git-lane.json
       - name: Partial clones are refused on the floor's git
-        if: matrix.git == '2.41'
         run: runuser -u node -- npx vitest run test/attacks/checkout-git-partial-clone.test.ts --reporter=default --reporter=json --outputFile.json=partial-clone.json && runuser -u node -- node scripts/ci-no-skips.mjs partial-clone.json
         env:
           CI: "true"
+
+  git-247:
+    name: git 2.47 · debian trixie
+    needs: scope
+    # Skipped only on a documentation-only pull request, by a scope job that succeeded; otherwise it runs.
+    if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}
+    runs-on: ubuntu-24.04
+    # --init: an init process reaps orphaned children, as a real machine's PID 1 does (the pool's orphaned-group test).
+    container:
+      image: node:22-trixie
+      options: --init
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+      - run: chown -R node:node "$GITHUB_WORKSPACE"
+      - name: Tested commit
+        run: |
+          head="$(runuser -u node -- git rev-parse HEAD)"
+          test "$head" = "$TESTED_SHA" || { echo "checked out $head, expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: scripts/ci-git.sh 2.47
+      - name: The tests' git is git 2.47
+        run: runuser -u node -- git --version | tee /dev/stderr | grep -qF "git version 2.47."
+      - run: runuser -u node -- npm ci
+      - run: runuser -u node -- npm run test:git -- --reporter=default --reporter=json --outputFile.json=git-lane.json
+        env:
+          CI: "true"
+      - name: Every git test ran
+        run: runuser -u node -- node scripts/ci-no-skips.mjs git-lane.json

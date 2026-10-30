@@ -10,6 +10,10 @@ name: Release candidate
 # pull request). On any other pull request every job is skipped: main's protection reads a skipped job as passing, so ordinary pull requests merge without it,
 # and the release gate never accepts a skipped check, so no release proceeds without it executed on its exact head. The
 # shards' joins run whenever their shards were meant to (a failed shard fails them).
+#
+# Node 22 is written out, never a matrix value: GitHub doesn't expand a matrix for a job its `if:` skips (a skipped job
+# would report "node ${{ matrix.node }} · …"), and it appends the values of a matrix a name doesn't mention ("… (22)").
+# Either way the required check would never arrive.
 
 on:
   pull_request:
@@ -21,7 +25,7 @@ permissions:
 jobs:
   # The unit suite on Node 22, Linux: four shards, exactly as ci.yml runs Node 24's.
   test-shard:
-    name: node ${{ matrix.node }} · shard ${{ matrix.shard }}/4
+    name: node 22 · shard ${{ matrix.shard }}/4
     # Pinned: ubuntu-latest moved to 26.04 (2026-10-21), where bubblewrap runs
     # unprivileged, so the agent-fence and ACP tests take the Linux fence road
     # they were never written for.
@@ -32,7 +36,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["22"]
         shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v5
@@ -47,7 +50,7 @@ jobs:
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-node@v5
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22
           cache: npm
       # The sandbox runtime's tools, and unprivileged user namespaces (ubuntu-24.04's AppArmor default refuses them),
       # as the linux fence job sets them up: flows' scripts and tools' servers run in the real Linux fence here.
@@ -65,7 +68,7 @@ jobs:
           TOOLROLL_REQUIRE_NATIVE: linux
       - uses: actions/upload-artifact@v4
         with:
-          name: shard-${{ matrix.node }}-${{ matrix.shard }}
+          name: shard-22-${{ matrix.shard }}
           path: ${{ runner.temp }}/shard-report.json
           if-no-files-found: error
           overwrite: true
@@ -80,16 +83,12 @@ jobs:
   # verifier (the change that introduces it) the candidate's own is used and said; that change touches scripts/, which
   # an automatic release never approves.
   test:
-    name: node ${{ matrix.node }} · ubuntu-latest
+    name: node 22 · ubuntu-latest
     needs: test-shard
     if: ${{ always() && (github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-')) }}
     runs-on: ubuntu-24.04
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-    strategy:
-      fail-fast: false
-      matrix:
-        node: ["22"]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -111,22 +110,22 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v5
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22
       - uses: actions/download-artifact@v4
         with:
-          pattern: shard-${{ matrix.node }}-*
+          pattern: shard-22-*
           path: ${{ runner.temp }}/shards
       - name: Every shard ran the whole suite
         shell: bash
         run: |
           verifier=.trusted-base/scripts/ci-shards.mjs
           if [ ! -f "$verifier" ]; then echo "::warning::the base revision has no shard verifier yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
-          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 4 --native linux
+          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node 22 --shards 4 --native linux
 
   # The unit suite on macOS (docs/plans/pipeline-speed.md, item 3a): it runs on the candidate itself, before anything
   # merges, sharded like the Linux suite, beside it; the release tag no longer runs it again (test-matrix.md). Each shard records the files it ran on the tested commit.
   macos-shard:
-    name: node ${{ matrix.node }} · macos shard ${{ matrix.shard }}/4
+    name: node 22 · macos shard ${{ matrix.shard }}/4
     if: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-') }}
     runs-on: macos-latest
     env:
@@ -134,7 +133,6 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: ["22"]
         shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v5
@@ -149,7 +147,7 @@ jobs:
           echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-node@v5
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22
           cache: npm
       - run: npm ci
       - run: npm run typecheck
@@ -163,7 +161,7 @@ jobs:
           TOOLROLL_REQUIRE_NATIVE: darwin
       - uses: actions/upload-artifact@v4
         with:
-          name: macos-shard-${{ matrix.node }}-${{ matrix.shard }}
+          name: macos-shard-22-${{ matrix.shard }}
           path: ${{ runner.temp }}/shard-report.json
           if-no-files-found: error
           overwrite: true
@@ -174,16 +172,12 @@ jobs:
   # revision's verifier. `toolroll release` waits for it (REQUIRED_PR_CHECKS) and refuses to merge while main's
   # protection doesn't require it.
   macos:
-    name: node ${{ matrix.node }} · macos-latest
+    name: node 22 · macos-latest
     needs: macos-shard
     if: ${{ always() && (github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-')) }}
     runs-on: ubuntu-24.04
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-    strategy:
-      fail-fast: false
-      matrix:
-        node: ["22"]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -205,10 +199,10 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v5
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22
       - uses: actions/download-artifact@v4
         with:
-          pattern: macos-shard-${{ matrix.node }}-*
+          pattern: macos-shard-22-*
           path: ${{ runner.temp }}/macos-downloads
       # The verifier reads shard-<node>-<i> folders; macOS artifacts carry a prefix so their names differ from Linux's.
       - name: The macOS shards' reports, under the verifier's names
@@ -229,4 +223,4 @@ jobs:
         run: |
           verifier=.trusted-base/scripts/ci-shards.mjs
           if [ ! -f "$verifier" ]; then echo "::warning::the base revision has no shard verifier yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
-          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 4 --native darwin
+          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node 22 --shards 4 --native darwin
