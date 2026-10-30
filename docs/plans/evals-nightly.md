@@ -1,635 +1,715 @@
 # Evals and nightly: GitHub's nightly as release debt, and eval harness phase 2
 
-Status: plan, for the owner's decisions (marked **Decision**) and a Codex round. Branch `evals-phase2`, off main
-360762cb (0.9.81). Owner's ask: "We need to do these Evals and nightly stuff." Sources: docs/plans/test-matrix.md
-("Nightly", "Not built yet"), docs/plans/eval-harness.md (phase 1 shipped 0.9.77–0.9.81; "Phase 2"), and the code cited
-below. Nothing here touches Tart or VM isolation.
+Status: plan, revision 2, after Codex review round 1 (NO-GO, 16 findings). Every finding is closed or rejected below,
+with evidence ("Review round 1"). Branch `evals-phase2`, off main 360762cb (0.9.81). Owner's ask: "We need to do these
+Evals and nightly stuff." Sources: docs/plans/test-matrix.md ("Nightly", "Not built yet"), docs/plans/eval-harness.md
+(phase 1 shipped 0.9.77–0.9.81; "Phase 2"), and the code cited below. Nothing here uses Tart or a VM.
 
 ## In one screen
 
+This is a deliberately small first version. It has four parts:
+
 | Part | What it adds | Release wall clock | API spend |
 |---|---|---|---|
-| A. GitHub nightly → release debt | The plane reads GitHub's Nightly runs itself. A failed lane on main becomes debt. Deploy, merge and publish wait until that lane passes again, on a later nightly or freshly on the candidate. Shown in Needs you and on the release card | 0 when the last read is under 2 h old; otherwise one GitHub read (about 5 s) at each of deploy, merge and publish | $0 |
-| B. Run ledger | Cost per finished task, tool-call counts, and "this took 3× the turns of similar work" flags, from the plane's own run records | 0 | $0 |
-| C. Journey ledger | Each release check's real-model journeys: pass/fail, cost, turns, tokens, tool calls, wall time, kept per release | under 1 s per journey | $0 extra |
-| D. Eval set | 25 versioned cases, run 3 times each by the installed plane after a release ships. Compared with the last good release: fixed / regressed / newly flaky / still failing. Only "always passed, now always fails" holds anything: the next automatic approval | 0 (runs after deploy, in the background) | about $30 a run |
-| E. Reviewer evals | Labelled past diffs, real bugs and clean ones. Recall and false-alarm rate per pinned reviewer model | 0 | about $30 a run |
-| Later | Delta-review coverage in sealAutoGreen | — | — |
+| A. GitHub nightly → release debt | The plane reads every Nightly run and attempt on main itself. A failing lane becomes debt. Deploy, merge and the last pre-tag check wait until that lane passes on a later nightly, or freshly on the candidate. Shown in Needs you and on the release card | at most 20 s per boundary (one bounded GitHub read at deploy, merge and pre-tag); usually 0 | $0 |
+| B. Eval accounting | Every model call in an eval attempt is tied to that attempt, including lead chat turns. API dollars are kept apart from subscription usage, and unknown is kept as unknown | 0 | $0 |
+| C. Eval set | 25 versioned cases, run 3 times each, in canonical campaigns started by hand. Run by the installed plane in separate world processes, graded by a trusted oracle outside the fence. Compared with an owner-pinned baseline campaign | 0 (on demand, never in a release) | about $23–34 a campaign; at most about $117 reserved |
+| D. Reviewer evals | Person-validated buggy and clean diffs. Recall and false alarms under a pinned provider and exact model | 0 | about $29 a run |
 
-Estimated monthly API spend with the recommended schedule: **about $170** (range $130–$330). See "Budget".
+**Deferred** (see "Later"):
+- bloat flags on production runs
+- the per-release journey ledger and its trend UI
+- automatic baseline promotion
+- weekly and release-triggered eval runs (they wait for measured cost)
+- delta-review coverage in sealAutoGreen
+
+Estimated API spend: **about $85 in the first month** (two campaigns and one reviewer run, all started by hand). If
+weekly runs are switched on after measurement, **about $150 a month**. See "Budget".
+
+**What the eval gate does today: nothing automatic.** Production automatic approval is already refused, because CI
+reports are not protected from candidate writes (`reportsProtected: false`, src/release-adapters.ts:381-383; refusal
+words at :875-876). The eval debt that would hold automatic approval is therefore dormant. It becomes live only when
+that refusal is lifted. Until then, eval debt is a Needs-you item and a release-card line that a person reads.
 
 ## Facts the design stands on (with citations)
 
-**The plane's own nightly (03:00).** src/nightly-check.ts:1-16. A scheduled flow files a check-only task at main's
-head. That head is read by the plane from the recorded remote (`trustedMainOf`, :83), never from a shared ref. Failures
-become `main_check_failure` rows (src/store.ts:1234-1245). They are opened in `settleReleaseChecks` (:247-266) and
-cleared only by a full pass that covers the exact item (`coversItem`, :219; clearing loop :270-311). Debt is consulted
-in three places:
-- `mainDebtProblem` (src/scope.ts:1990-1999) blocks deploy and merge, but only when the newest check was **targeted**
-  (`liveReleaseOf`, :1979-1982).
-- `planTargetedRecheck` forces a full check (src/release-recheck.ts:237-253).
-- The console card shows a count only (src/server/render-tasks.ts:3036; src/server/task-views.ts `releaseViewOf`).
+**The plane's own nightly (03:00).** src/nightly-check.ts:1-16.
+- A scheduled flow files a check-only task at main's head, as read from the recorded remote (`trustedMainOf`, :83).
+- Failures become `main_check_failure` rows (src/store.ts:1234-1245). They are opened in `settleReleaseChecks`
+  (:247-266) and cleared only by a full pass that covers the exact item (`coversItem` :219; clearing :270-311).
+- `mainDebtProblem` (src/scope.ts:1990-1999) holds deploy and merge only when the newest check was targeted. It is
+  reached through `liveReleaseOf` (:1979-1982).
+- `refreshTrustedMains` reads main only for repos with local nightly approvals or local debt (src/nightly-check.ts:99-103).
+- There is no Needs-you item for this debt.
 
-There is no Needs-you item for it.
+**GitHub's nightly.** .github/workflows/nightly.yml, cron `17 6 * * *`.
+- It calls ci.yml (jobs `nightly / <job>`) and release-candidate.yml (`nightly floor / <job>`).
+- Its lanes are the `REQUIRED_PR_CHECKS` names (src/release.ts:46-62), each tied to a workflow
+  (`REQUIRED_PR_CHECKS_WORKFLOW`, :66-76).
+- The aggregate lanes fail through an "Every shard passed" step (.github/workflows/ci.yml:111).
+- Nothing in the plane reads these runs today.
 
-**GitHub's nightly.** .github/workflows/nightly.yml runs on cron `17 6 * * *` and calls ci.yml (jobs named
-`nightly / <job>`) and release-candidate.yml (jobs `nightly floor / <job>`). The lanes are exactly `REQUIRED_PR_CHECKS`
-(src/release.ts:46-62), and each lane's workflow is in `REQUIRED_PR_CHECKS_WORKFLOW` (:66-76). Nothing reads its runs
-today. The header of nightly.yml says so.
+**Readers.**
+- `readCheckRuns` (src/release-adapters.ts:965-1024) binds runs to workflow path and event, and refuses retargeted PRs.
+  Its `CheckRun` has no run-attempt identity and no start or completion times (src/release.ts:106-118).
+- `failedBeforeTests` / `readJobBeforeTests` (src/release-adapters.ts:1036-1060) read GitHub's step records.
+- `retryingExec` retries reads for up to 180 s (src/release-net.ts:17, :173). That is too long for an optional
+  pre-boundary read.
+- scripts/release-proof.mjs:186-223 reads the newest run's exact attempt's jobs, then re-reads the run so that a change
+  mid-read refuses. :91 refuses jobs that finished after the merge.
 
-**Readers to reuse.** In src/release-adapters.ts:
-- `readCheckRuns` (:965-1024) binds runs to workflow path and event and refuses retargeted PRs.
-- `readJobBeforeTests`/`failedBeforeTests` (:1036-1060) tell a runner failure from a test failure, using GitHub's own
-  step records.
-- `ciEnv()` (:955) sets gh's environment; `retryingExec` (src/release-net.ts:173) retries reads only.
+**Entry points that deploy, merge or tag.**
+- `deploymentGate` (src/deploy-gate.ts:17-48) serves the person-approved road too. It calls `liveReleaseOf`, which
+  returns `applies: false` for a task with no release authority (src/scope.ts:1940-1942).
+- The installed runtime's scripts/deploy-candidate.mjs:34-37 proves the same predicate.
+- The merge goes through `reserveRelease` / `runReleaseOperation` (src/store.ts:24456, :24493).
+- The tag is created at src/release.ts:1227. The tag push starts publish.yml (.github/workflows/publish.yml:16), and the
+  coordinator's later "publish" step (:1232) only waits for it.
 
-scripts/release-proof.mjs:186-223 has the pattern for reading the newest run's exact attempt's jobs, then re-reading the
-run so a change mid-read refuses.
+**Watch loop.** `followUpChecks` runs every 5 s (src/operate.ts:6777). It calls `refreshTrustedMains` and
+`settleReleaseChecks` (:6789-6792). Each throttles itself.
 
-**Periodic hook.** The watch loop's `followUpChecks` runs every 5 s (src/operate.ts:6777). It calls
-`refreshTrustedMains` and then `settleReleaseChecks` (:6789-6792). Each does its own throttling.
+**Accounting.**
+- **`run` rows** (src/store.ts:3666-3741) hold provider, model alias, times, tokens, `cost_usd`, `usage_json` and
+  `agent_turns`. They are written by `recordUsage` (:15806) from Claude's `result` event (src/provider.ts:480-540;
+  src/invoke.ts:856-863).
+- **Lead chat** settles into `chat_turn` (src/store.ts:3084; `finalizeLeadTurn`, src/lead.ts:700). It does not use `run`.
+- **Subscription chat** reads the init event's exact model into `seen.model` (src/subscription-chat.ts:276) and never
+  uses or stores it. It keeps no reported cost.
+- **`run_spend`** prices subscription work at $0 (src/spend.ts:100-101).
+- **Tokens** need provider-aware, cache-aware normalization (`usageOf`, src/run-efficiency.ts:51).
+- **Dollar cap.** `invokeAgent` takes `maxBudgetUsd` (src/invoke.ts:851) and refuses capped work on a provider that
+  can't hold a cap (:327). The build review passes no cap (src/build-review.ts:189).
 
-**Release steps.** Coordinator steps are at src/release.ts:100: deploy :1079, merge :1168, tag :1222, publish :1232.
-`deploymentGate` is at src/deploy-gate.ts:17-41. `sealAutoGreen` is at src/release-auto.ts:338-434.
+**Real-model journeys.** There are **13**: 7 in scripts/flows-e2e.mjs (:91, :100, :120, :141, :238, :337, :525) and 6
+in scripts/app-e2e.mjs (:680, :776, :792, :805, :1516, :1661).
+- The release check runs them through scripts/e2e-parallel.mjs (scripts/release-check.mjs:622).
+- e2e-parallel merges a retry's outcomes over the first run's and keeps only a group `retried` flag
+  (scripts/e2e-parallel.mjs:187-207).
+- The shim's `modelCalls` counts CLI invocations, not agent turns (scripts/fixtures/scripted-provider.mjs:190-193).
+- `world()` mutates process-wide environment (scripts/e2e-kit.mjs:260-286, e.g. `PATH`, `XDG_CONFIG_HOME`).
 
-**Run evidence.** The `run` table (src/store.ts:3666-3741) holds:
-- `provider`, `model` (alias, e.g. `opus`), `started_at`, `finished_at`
-- `tokens_in`, `tokens_out`, `cost_usd`, `usage_json`
-- `agent_turns` (v129, :1113)
+**Packaging.** package.json `files` (:107-) ships dist and a few scripts. It ships neither an `evals/` folder nor
+scripts/provider-gate.mjs. The provider gate defaults to 4 concurrent turns and is shared per gate directory
+(scripts/provider-gate.mjs:30-34).
 
-It is written by `recordUsage` (:15806), from Claude's stream-json `result` event (src/provider.ts:480-540;
-src/invoke.ts:856-863). There is no tool-call column. `run_efficiency` (:1303-1311, src/run-efficiency.ts:24-110) holds
-step counts by kind. It is derived on first view from step records that are kept only 24 hours. Its payload is display
-only.
+**Reviewer.**
+- The build review is queued at src/build-review.ts:66, run by `buildReviewPass` (:220), briefed at :137, and invoked at
+  :189.
+- Its model comes from the route review leg or the project's review agent (:252-259). It is not pinned.
+- Findings follow src/contracts/review-findings.ts:21-: severity, file, line, and a one-sentence failure scenario.
+- The reviewer `run` row holds the model alias (src/store.ts:11559-11567).
 
-**Real-model journeys.** These are defined with `journey(group, REAL_MODEL, …)` in scripts/flows-e2e.mjs and
-scripts/app-e2e.mjs. There are 12 today: 6 in flows (build, lead, steps/OpenRouter, triggers) and 6 in app (builds, lead,
-maya, rosa). They use `claude --model sonnet` (scripts/e2e-kit.mjs:373) and the lead on `claude-subscription`/sonnet.
-- The release check runs them when a path in `MODEL` changes (scripts/release-check.mjs:73-78, `planFor` :115-120;
-  the plane's copy is `MODEL_PATHS`, src/check-report.ts:112-117) or on a full check.
-- Their sealed report holds `{name, state}` per journey (src/contracts/release-check.ts:77-92).
-- report.json has `seconds` and `modelCalls` (turn counts from the shim journal, scripts/fixtures/scripted-provider.mjs:191),
-  but no cost or tokens.
-- A failed real group is classified `agent-behaviour` (src/check-failure.ts:83-86).
+**Policy paths.** `autoPathProblem` (src/release-auto.ts:195-215) lets `src/` product files ship without a person
+unless they are test helpers.
 
-**Reviewer.** The automatic build review is in src/build-review.ts:
-- queued at :66
-- run by `buildReviewPass` (:220)
-- model from the task's route review leg or the project's review agent (:252-259)
+**Schema.** `SCHEMA_VERSION = 138` (src/store.ts:861). Migrations are inline (:5393-5404) and listed in
+`UPDATE_SAFE_MIGRATIONS` (:999). This plan needs **v139–v142**. Take the next free numbers if another branch lands
+first.
 
-Findings go to `build_review.findings_json` (src/review-switch.ts:20-33). The reviewer's run row records provider and
-model alias (`admitReview`, src/store.ts:11559-11567). No model is pinned. The exact model id Claude reports in its
-`system/init` event (src/provider.ts:595) is not stored.
+**Placement rule.** src/password-freshness.test.ts pins function ordinals in src/operate.ts, src/store.ts and
+src/server/tasks.ts. New functions go at the end of those files. In tasks.ts that means after the last inner function of
+`createTasksHandlers`. All new logic otherwise lives in new modules.
 
-**Schema.** `SCHEMA_VERSION = 138` (src/store.ts:861). Migrations are inline in `initializeStore` (last steps
-:5393-5404) and listed in `UPDATE_SAFE_MIGRATIONS` (:999). Tests are named `src/migration-v1NN-*.test.ts`. This plan
-needs **v139–v142**, one per slice that adds tables. If another branch lands first, take the next free numbers.
+**Owner's measured costs** (runs since 2026-09-15, read-only query of the plane database): Opus builder $7.10 (315
+runs), Opus planner $0.90, Opus reviewer $0.32 (131), Sonnet builder $0.27 (10 runs: a thin sample).
 
-**Placement rule.** src/password-freshness.test.ts pins function ordinals in src/operate.ts (12,838 lines),
-src/store.ts and src/server/tasks.ts. New functions go at the end of each file. In tasks.ts that means after the last
-inner function of `createTasksHandlers`. New logic otherwise goes in new modules.
+## Trust, stated plainly
 
-**Real costs (owner's plane, runs since 2026-09-15, read-only query):**
-
-| Run | Count | Average cost |
+| Evidence | What it is | What it is not |
 |---|---|---|
-| Opus builder | 315 | $7.10 |
-| Opus planner | 119 | $0.90 (8.6 turns) |
-| Opus reviewer | 131 | $0.32 |
-| Sonnet builder | 10 | $0.27 |
+| A GitHub lane conclusion | **Recorded**: GitHub authenticates that this job of this workflow concluded `success` or `failure` | **Not independent**: the tests that decided it are the repository's code, and a candidate's tests could report green. A recorded pass can clear a nightly hold or exempt a candidate. That is the same trust the existing required-checks gate already places in the same records (src/release.ts `prChecksVerdict`). Nightly debt adds holds and never trusts more than that gate does |
+| A sealed release-check report | **Recorded** bytes the candidate's check wrote (src/check-report.ts:281) | Not independent assertions |
+| Eval pass/fail | **Plane-graded**: a trusted oracle process from the installed release, outside the fence, decides from bounded output it requested | Not proof against a later privileged runtime: the installed plane writes the rows, so a future release with database authority could rewrite them. "Append-only" is an application invariant enforced by the eval module and by person-approved policy paths, not a cryptographic guarantee |
+| Eval usage numbers | **Plane-recorded** from provider `result`/init events by installed code | API dollars and subscription usage are different things, and unknown stays unknown |
+
+Automatic approval stays refused (src/release-adapters.ts:381-383). Nothing in this plan turns it on.
 
 ---
 
 ## Part A. GitHub's nightly as release debt
 
-### What is read, and how it is trusted
+### Opting in
 
-The plane reads GitHub with its own gh (`ciEnv`, system-folder gh). It never reads a file, artifact, log or summary the
-tests wrote. Only GitHub's run and job records count: status, conclusion, name, run id, attempt, head SHA, step
-outcomes.
+`toolroll release nightly --github`, proved as a person, as `createNightlyCheckFlow` does (src/nightly-check.ts:122).
+It records the GitHub repository from the recorded remote (`trustedRemoteIdentity`). The workflow path is fixed at
+`.github/workflows/nightly.yml`. Opted-in repos join `refreshTrustedMains`'s repo set (src/nightly-check.ts:99-103), so
+main's head stays fresh for the ancestry checks. Without opting in, nothing is read and nothing holds.
 
-A run counts as **the nightly** only when all of these hold:
-- its `path` is exactly `.github/workflows/nightly.yml` (no `@ref` suffix)
-- its repository and head repository are the project's own (no fork)
-- `head_branch` is `main`
-- its event is `schedule`, or `workflow_dispatch` on main
-- its `head_sha` is on main's first-parent history as the plane read it (`trustedMainOf` +
-  `verifiedFirstParentWalk`, as nightly-check.ts does)
+### Lanes have stable identities
 
-A run started by hand on a branch shows `nightly / …` names too. It never counts.
+A table `nightly_lane` seeds one stable id per required check: workflow file plus the lane's REQUIRED_PR_CHECKS name at
+seeding, for example `ci.yml:node 24 · macos-latest`. Display names map to ids.
 
-The jobs come from the newest completed run's **exact latest attempt**. The run is re-read after paging its jobs; if
-the run or its attempt changed, the read is refused (as in release-proof.mjs:214-219).
+| Change | What it takes |
+|---|---|
+| A **rename** or equivalent replacement | A person-approved alias: `toolroll release nightly --lane-alias <old-id> <new name>`, with a password. Open debt moves to the new name. A lane is never matched by a guess |
+| **Retiring** a lane | Only when its name is no longer in the installed plane's `REQUIRED_PR_CHECKS`, and only by a person with a password. Its open debt closes as "retired by <person>", recorded |
 
-Each lane is matched by exact name: `nightly / X` where X is a `REQUIRED_PR_CHECKS` name mapped to ci.yml, or
-`nightly floor / X` mapped to release-candidate.yml. Shard jobs are kept as detail. Their aggregate lane fails with them
-("Every shard passed").
+Without one of these, an unknown job name is ignored. A missing known lane shows as "didn't run".
 
-What the candidate could forge, and why it doesn't matter here:
-- Test code on main decides its own pass. That is true of all CI, and nightly only ever adds holds. A forged pass can't
-  remove a hold this plan adds, except by being a real later pass on the same lane.
-- A workflow edit (renaming or dropping a lane, changing the cron) is a CI change. `autoPathProblem` already sends those
-  to a person (src/release-auto.ts:195-215).
-- A lane missing from a completed nightly is shown as "didn't run" (below). It is never read as passing.
+### Reading every run and attempt
 
-### Lane outcomes
+`readGithubNightly` keeps a **cursor** per repo, at the creation time of the oldest nightly run not yet fully read.
+Each read does the following:
 
-| GitHub says | Plane records | Holds releases? |
+1. **List runs.** It lists `actions/workflows/nightly.yml/runs?branch=main` from the cursor minus a 48 h overlap,
+   every page, at most 10 pages. A truncated or changing list refuses the read, and the cursor stays.
+2. **Keep only real nightly runs.** A run counts only when all of these hold:
+   - `path` is exactly `.github/workflows/nightly.yml`, with no `@` suffix
+   - the repository and head repository are the project's own
+   - `head_branch` is `main`
+   - the event is `schedule` or `workflow_dispatch`
+   - `head_sha` is on main's first-parent history as the plane read it (`trustedMainOf` + `verifiedFirstParentWalk`)
+
+   A hand-started run on a branch never counts.
+3. **Read every attempt's jobs.** For each counted run, it reads every attempt from 1 to `run_attempt`
+   (`actions/runs/{id}/attempts/{n}/jobs`, all pages). It records each **completed** job, idempotently, with:
+   - lane id, run, attempt and job id
+   - sha
+   - `started_at` and `completed_at`
+   - conclusion
+   - cause (below)
+
+   It does not wait for the whole workflow to finish: a failed lane in a still-running nightly is ingested on the next
+   read. It then re-reads the run. If the run's attempt or status changed mid-read, that run is re-read next time; the
+   jobs already recorded stay.
+4. **Move the cursor.** The cursor advances only past runs whose every attempt is completed and fully read.
+
+Nothing read later ever removes a recorded failure: not a cancellation, a skipped or missing job, an unreadable page,
+or a newer attempt.
+
+### Cause of a failure
+
+| Lane job | Recorded cause | Opens debt? |
 |---|---|---|
-| `success` | passed | no; may clear debt |
-| `failure`, `timed_out`, and not "failed before tests" | **failed → debt** | yes |
-| failed before any of the workflow's own steps ran (`failedBeforeTests`) | runner failure | no; shown as a warning |
-| `cancelled`, `skipped`, missing from the run, or still running at the next read | didn't run | no; shown as a warning |
+| `success` | passed | no; may clear |
+| `failure` / `timed_out`, own steps ran, not an aggregate | test failure | **yes** |
+| Aggregate lane failed only at "Every shard passed" / "Every shard ran the whole suite" | from its shards in the **same attempt**: if every failed shard `failedBeforeTests`, runner failure; if any shard ran its steps and failed, or any shard is unreadable, test failure | runner failure: no; otherwise **yes** |
+| Failed before its own steps (`failedBeforeTests` on the lane job) | runner failure | no |
+| `cancelled`, `skipped`, or missing | didn't run | no |
+| Cause can't be read | test failure (fail closed) | **yes** |
 
-A runner failure or a cancellation is not a test result. Making it debt would hold releases on GitHub's outages.
-Showing it keeps it visible. This is phase 1's rule: unknown is never a pass, and only an observed failure opens debt.
+Runner failures and "didn't run" show as warnings. They never erase a failure already recorded.
 
 ### Clearing
 
-A failed lane (repo, lane, failed run, failed SHA) clears only when a **later nightly run** shows the **same lane**
-concluded `success`, and all of these hold:
-- the run was created after the failed run completed
-- its head contains the failed SHA
-- it was read by the same rules
+An open lane failure (lane id, run, attempt, job, sha, `completed_at`) clears only when a **different, later counted
+nightly run** shows the same lane id `success`, and all of these hold:
+- that job's `started_at` is after the failed job's `completed_at`
+- its sha contains the failed sha
 
-Nothing else clears it. A person can't wave it away. A passing run of a different lane never counts.
+A re-run attempt inside the same nightly run does not clear: that would be rerun-to-pass. A person dispatching Nightly
+on main makes a new run. That is allowed and recorded.
 
-**The candidate's exemption.** A release passes the hold for one specific failed lane when the release's own pull-request
-run of that same required check (already read by `readCheckRuns` / `prChecksVerdict`) passes all of these:
-- it concluded `success` on the candidate head
-- it came from that lane's own workflow
-- the job started after the failed nightly job completed
-- the candidate head contains the failed SHA (containsMain already requires main's head)
+### The candidate's exemption
 
-This exempts that candidate only. The row stays open until a nightly on main passes. A branch that fixes the lane but
-never merges must not clear main's debt.
+A release may pass one specific open failure when its own pull-request CI ran that lane after the failure and passed.
 
-So when a nightly fails, a release can still go out the same day by re-running its CI. "Started after the failure" is
-what stops an older green run from answering a newer red one (for example, a runner image change overnight). A full
-workflow re-run is needed, because publish's release proof refuses partial re-runs (test-matrix.md).
+`readLaneJobs(repo, pr, head)` is a new reader, modelled on release-proof.mjs:186-223. For each lane's workflow it takes
+the newest run on the PR head from that PR's `pull_request` event, then that run's latest attempt's jobs, with their
+`started_at` and `completed_at`. It then re-reads the run.
 
-### Freshness
+An exemption is stored per **(task, candidate sha, failure id)** with the exact PR, run, attempt, job, timestamps and
+read time. It holds only if all of these do:
+- the job concluded `success` on the candidate head, from the lane's own workflow
+- the job's `started_at` is after the failed job's `completed_at`
+- the candidate contains the failed sha (containsMain already requires main's head)
 
-**Throttle.** The read runs in `followUpChecks` (src/operate.ts:6789), next to `refreshTrustedMains`. At most one read
-every 30 minutes per project. A project is read only once it has opted in (below). Each read writes a ledger row (ok or
-why not), as trusted-main reads do.
+It is re-checked at every boundary by reading the newest run and attempt again. If the newest run or attempt differs,
+is pending, or holds a failure for that lane, the exemption is void. An unreadable re-read never counts as an exemption.
 
-**Before deploy, merge and publish**, the coordinator calls `nightlyLaneHold(...)` with a fresh-enough read:
-- If the last good read is over **2 hours** old, it reads now (about 5 s, 3–6 API calls).
-- If it can't read now, it uses the stale state (below).
+The exemption covers that candidate only. The row stays open until a main nightly passes.
 
-**Stale or unreadable.** **Decision 1** (recommended: a **warning, not a block**):
-- **Never read / unreadable**: gh missing or signed out, or GitHub not answering. Shown as "GitHub's nightly couldn't be
-  read: <why>".
-- **Stale**: the newest counted nightly was created more than **36 hours** ago. This covers a disabled schedule (GitHub
-  turns schedules off after 60 days with no repository activity) and a deleted workflow. Shown as "GitHub's nightly
-  hasn't run since <date>".
-- Both are visible states on the release card and in Needs you. Neither holds a release, whether a person's or an
-  automatic one.
-- Why not block: the release candidate's own pull request runs every lane on the exact head (test-matrix.md). The nightly
-  is a supplement that "can't stop a regression shipping the same day" (test-matrix.md, Nightly). Blocking on
-  GitHub's availability would add owner blockers ("minimal blockers by me") for no added coverage.
-- Alternative: block only automatic approvals when stale. That is one line in sealAutoGreen, if the owner wants it.
+### Where the hold applies
 
-### What it holds
+All in the new module src/nightly-github.ts; the call sites only call into it.
 
-**Decision 2** (recommended): an open lane failure without the candidate's exemption holds **deploy, merge and
-publish** of every release, person-approved or automatic. Reason `nightly-debt`. Words:
+| Boundary | Call site | Notes |
+|---|---|---|
+| **Every deploy** of an opted-in project's task | `deploymentGate` (src/deploy-gate.ts) and scripts/deploy-candidate.mjs (installed runtime) | Independent of release authority, so the person-approved road is covered (`liveReleaseOf` returns `applies: false` there) |
+| **Merge** | inside `reserveRelease`'s / `runReleaseOperation`'s transaction (src/store.ts:24456, :24493), via a new store function at the end of src/store.ts | Reads the stored debt and exemptions |
+| **Pre-tag authorization** | the coordinator just before `createTag` (src/release.ts:1227) | This is the final point the plane can stop publication |
+| Automatic approval | `sealAutoGreen` (src/release-auto.ts:418) | Dormant today (auto-approval is already refused) |
+
+**Freshness.**
+- **Background reads** run every 30 minutes in `followUpChecks`, with a 60 s overall deadline.
+- **At each boundary**, the coordinator, `deploymentGate`'s caller and the pre-tag step first do one **bounded read**:
+  plain exec (not `retryingExec`), at most 20 s overall. Then the stored debt and exemptions are checked inside the
+  reservation or start transaction.
+- **If the bounded read fails**, the boundary uses the stored state.
+
+**Stated limitation.** A failure GitHub records after the plane's last good read can be missed. Normally that gap is
+seconds, because of the boundary read. When GitHub can't be read, the gap is up to the age of the last good read, which
+the release card shows. After the tag is pushed, publish.yml runs on GitHub with no plane check. A nightly failure
+recorded after pre-tag authorization can't stop that npm publication. Holding the npm step itself would need a trusted
+authorization inside publish.yml. That is out of scope.
+
+**Recovery after merge.** If new debt appears between merge and tag, the release waits at the tag step. Re-running the
+pull request's CI won't help: the release proof refuses jobs finished after the merge (scripts/release-proof.mjs:91).
+The way out is a main nightly passing the lane: tonight's, or a person dispatching Nightly on main. The other way out is
+abandoning the release for a new one. An exemption obtained before the merge still stands at the tag.
+
+**Stale or unreadable: Decision 1** (recommended: **warning, not a block**). "Couldn't be read: <why>" and "hasn't run
+since <date>" (more than 36 h) are visible states. Existing recorded debt stays enforced from the store. Reasons:
+- the release's own PR runs every lane on the exact head (test-matrix.md)
+- the nightly "can't stop a regression shipping the same day"
+- blocking on GitHub's availability adds owner blockers for no coverage
+
+**What it holds: Decision 2** (recommended): deploy, merge and pre-tag authorization of every opted-in project's
+release, whether person-approved or automatic, unless exempted. Reason `nightly-debt`. Words:
 
 > GitHub's nightly failed "node 24 · macos-latest" on main at abc1234 (Oct 30, 06:17). This release can't deploy until
 > that lane passes again: re-run this release's CI, or wait for tonight's nightly.
 
-This differs on purpose from `mainDebtProblem`, which holds only targeted releases. That debt is cleared by the release's
-own full check. This one is cleared by the release's own fresh lane run. Every candidate can produce that, so it's
-cheap to satisfy and never a dead end.
-
-**Where it is enforced:**
-
-| Step | Where |
-|---|---|
-| deploy | `liveReleaseOf` for `deploy`/`merge` (src/scope.ts:1979), which reaches `deploymentGate`, `reserveRelease`, `runReleaseOperation` and the coordinator's `identity()` |
-| publish | the coordinator's tag/publish step (src/release.ts:1222/1232), next to `publishHold` |
-| auto-approval | `sealAutoGreen` refuses while the hold stands (src/release-auto.ts:418, beside `ciVerdict`) |
-
-`liveReleaseOf` is synchronous and store-only. It reads the stored lane rows and the stored exemption. The coordinator
-does the network read just before it, so the store is fresh. The installed `scripts/deploy-candidate.mjs:35` path picks
-it up through `liveReleaseOf` with no change.
+After the merge, the words drop "re-run this release's CI".
 
 ### Console words
 
-**Needs you** (board lane, src/server/render-pages.ts:609): one project-level item per open lane failure.
+**Needs you.** One project-level item per open failure, in the board lane (src/server/render-pages.ts:609):
 
-> GitHub's nightly failed: node 24 · macos-latest on main at abc1234. Releases wait until it passes again. — [Open the
-> run on GitHub]
+> GitHub's nightly failed: node 24 · macos-latest on main at abc1234. Releases wait until it passes again. [Open the run
+> on GitHub]
 
-**Release card** (src/server/render-tasks.ts:3024 and chat card src/release-card.ts:266): one line per lane state that
-matters:
+The plane's own `main_check_failure` debt gets the same treatment; today it has no Needs-you item.
 
-> GitHub nightly: failed node 24 · macos-latest (Oct 30) — this release re-ran it and passed.
+**Release card** (src/server/render-tasks.ts:3024; src/release-card.ts:266). One line per state that matters:
 
-> GitHub nightly: failed node 22 · ubuntu-latest (Oct 30) — re-run this release's CI.
+> GitHub nightly: failed node 24 · macos-latest (Oct 30). This release re-ran it after the failure and passed.
 
-> GitHub nightly: couldn't be read (gh isn't signed in). Not holding the release.
+> GitHub nightly: couldn't be read (gh isn't signed in), last read 3 h ago. Not holding the release.
 
-> GitHub nightly: hasn't run since Oct 27. Not holding the release.
-
-**Notification**: kind `github-nightly-failed`, push class `attention`, deduplicated per run.
-
-### Opting in
-
-`toolroll release nightly --github` sets this up for a project. The person must prove themselves, as
-`createNightlyCheckFlow` does (src/nightly-check.ts:122). It records the repository on GitHub, read from the recorded
-remote (`trustedRemoteIdentity`), and the workflow path (fixed). Without it nothing is read and nothing holds.
-ap9000/toolroll is set up once by the owner.
+**Notification.** `github-nightly-failed`, attention class, one per failure.
 
 ---
 
-## Part B. Run ledger: cost per finished task and bloat flags (no API spend)
+## Part B. Eval accounting
 
-The plane already records cost, tokens, turns and wall time for every run, from the provider's own `result` event (not
-from anything the agent writes). This part adds what is missing and two views.
+The eval ledger is the trusted one, so its numbers must cover every model call an attempt makes. They come from the
+plane's own records:
 
-1. **Tool calls.** At disposition, write `run.tool_calls`: the total of `stepsOf(...)` counts (src/run-efficiency.ts:75)
-   from the run's own step records, read once while they still exist (they expire after 24 h). Null when steps were
-   truncated or absent. Never guessed. v140 column.
-2. **Exact model.** `run.model_reported`: the `model` field of Claude's `system/init` event (src/provider.ts:595), next
-   to the alias in `run.model`. v140 column. Part E needs this, and every run gains it.
-3. **Cost per finished task** (per project, per week and per release):
-   - total spend of every run of tasks that reached done, divided by the number of those tasks
-   - plus "spent on tasks that didn't finish", shown separately
+1. **One world per attempt.** Each eval attempt runs in its own world process (Part C), with its own database. Every
+   `run` row and every `chat_turn` row in that database belongs to that attempt, so the identity needs no new tagging
+   inside the product.
 
-   Shown on the usage page. Read-only SQL over `run` + `run_spend` (src/spend.ts:111).
-4. **Bloat flags.** A finished run is compared with the last 20 finished runs that share project, role, provider + model
-   alias, and task size class (src/task-sizing.ts `heuristicSizing`). It is flagged only if **both** hold:
-   - it is over **2.5× their median** in turns, cost or tool calls
-   - it is over an **absolute floor**: 30 turns, $3, or 80 tool calls
+   The runner collects, by role: builder, planner, repair and reviewer runs from `run`, and lead turns from
+   `chat_turn`. Each invocation becomes an `eval_invocation` row tied to its case, attempt and kind.
+2. **Close the gaps (small product changes):**
+   - `run.model_reported`: the exact model from the init event (src/provider.ts:595)
+   - `chat_turn.model_reported` and `chat_turn.reported_cost_usd`: subscription chat already reads both and drops them
+     (src/subscription-chat.ts:276)
+3. **Keep three amounts apart:**
+   - **API dollars**: billing `api` with a reported or priced cost
+   - **Subscription usage**: the provider's reported `total_cost_usd` on subscription work, shown as "subscription
+     usage, not billed"
+   - **Unknown**
 
-   With fewer than 8 similar runs, there is no flag. Words on the task page's "How it ran": "This build took 3.1× the
-   turns of similar builds (41 vs a typical 13)." Display only. It holds nothing.
+   `run_spend`'s $0 for subscriptions (src/spend.ts:100) stays as it is for spend limits. The eval report never sums the
+   three into one number.
+4. **Tokens** use `usageOf`'s cache-aware split (src/run-efficiency.ts:51): input, cache read, cache write, output.
+   **Turns** are the provider's `num_turns`. **Tool calls** are `stepsOf` counts read while the step records exist,
+   otherwise unknown.
+5. **Cost per successful task** for a campaign: API dollars over all attempts ÷ passing attempts, with subscription
+   usage shown the same way beside it.
 
----
-
-## Part C. Journey ledger (per release, from the release check)
-
-This keeps, for each real-model journey in each release check, these fields:
-- pass/fail
-- wall time
-- turns
-- cost
-- tokens in/out
-- tool calls
-
-Source and trust: pass/fail comes from the **sealed** report the plane already uses (`sealCheckOutcome`,
-src/check-report.ts:281). The numbers are new optional fields on the journey result line:
-`usage: {costUsd, turns, tokensIn, tokensOut, toolCalls, seconds}`. e2e-kit.mjs fills them at journey end by summing the
-throwaway world's own `run` rows over the journey's time window.
-
-That world is started by the candidate's scripts. So these numbers are **reported by the checked code**, and the ledger
-stores them with `trust = 'reported'`. They are used only for trends on the release card ("real-model journeys: 12
-passed · $3.10 · 214 turns (last release $2.40 · 180)") and for flags. They never pass, clear or hold anything. A
-candidate could under-report its cost. The plane-measured eval set (Part D) is the trusted number.
-
-The journey's pass^k stays as phase 1 set it: a pass only on retry is not a pass for auto-approval
-(`releaseCheckStanding`). The ledger records each attempt, so a journey that "passed on the second try" is counted flaky.
-scripts/flows/real-model-journeys.mjs:98-146 retries a failed suite once. Its ledger rows keep both attempts. It is not
-changed to stop retrying, because its retry is for diagnosis, and the ledger and gate never count a retry as a pass.
+No production-run views (bloat flags, cost per finished task across projects) in v1.
 
 ---
 
-## Part D. The eval set
+## Part C. The eval set
 
-### Where it runs, and why there
+### Where it runs
 
-Each case runs in a **throwaway Toolroll world started by the installed plane, from its own installed runtime**. That
-runtime is the release that was gated, deployed and is now running. It does not run from a candidate's checkout. The
-runner is `toolroll evals run`. It reuses e2e-kit's world-making approach, ported into src/evals.ts so that it runs from
-dist.
+`toolroll evals run`, from the **installed** plane:
+- The installed release is the one that was gated and deployed. The campaign records its build digest (version plus a
+  digest of the installed dist).
+- Each attempt runs as a **separate child process**, `toolroll evals attempt <campaign> <case> <n>`, from that same
+  installed binary. So `world()`-style environment changes stay inside one process (finding 16).
+- If the installed build changes mid-campaign (a deploy), the campaign stops as **incomplete**. An incomplete campaign is
+  never canonical.
+- **Admission pauses** while a release operation is reserved or a deploy is draining. Only one campaign runs at a time.
+  It has its own concurrency limit: 2 attempts at once.
 
-What it reads, and who wrote it:
+**Packaging.**
+- An `evals/` folder joins package.json `files`: a manifest, small fixture bundles, and oracles. Budget: under 2 MB.
+- The provider-gate logic needed at runtime is ported into src, so it ships in dist. scripts/provider-gate.mjs is not
+  shipped.
 
-| Number | Written by | Trusted because |
+### Grading: a trusted oracle outside the fence
+
+The case's code (the fixture repository as the agent left it) is never run in the grader's process.
+
+1. **When the agent's run ends**, the runner proves the run's process group is gone, using the fence's existing
+   process-group accounting.
+2. **The oracle** is a separate process from the installed release (`evals/cases/<id>/oracle.mjs`, zero dependencies,
+   the installed node binary). It owns the grading. It:
+   - copies in the case's hidden test inputs, reading paths with lstat/O_NOFOLLOW and refusing links
+   - starts the exercised program **inside the existing native fence**: the same sandbox the release check uses
+     (Seatbelt / bubblewrap via the agent fence), no network, no access to the oracle's or the plane's state, a time
+     limit
+3. **The exercised program** is run with a fixed argv and the installed node. Fixtures have no dependencies, and the
+   oracle ignores package.json scripts.
+4. **The oracle sends a fresh nonce and inputs**, and reads at most 64 KiB of output. It passes the attempt only if the
+   output holds the values it computed itself for those inputs. An exit code alone never passes.
+
+   That defeats `process.exit(0)`, edited launchers and tampered imports: an early exit produces no answer.
+5. **Lead and planner cases** are graded from plane state: rows that the world's installed code wrote (the filed card's
+   fields, the plan's steps, a decision row). The agent's text is never parsed as a verdict.
+6. **Outcomes:**
+
+   | Outcome | When |
+   |---|---|
+   | pass | the oracle got the right answer |
+   | fail | wrong answer, or the exercised code crashed, timed out or hit its budget cap |
+   | error | the evaluator or provider failed independently of the agent (below) |
+   | unevaluated | the reported exact model differs from the case's pin |
+
+   An **error** counts only when the plane recorded it: the world failed before the agent started, the provider refused
+   or was down (a plane-side provider event), or the oracle process itself failed. Exercised-code crashes and timeouts
+   are **fails**.
+
+No VM. The fence is the same one every build already runs in.
+
+### The cases (25, versioned)
+
+- **Folder.** Each case lives in `evals/cases/<id>/`: `case.json` (id, kind, words, pinned provider + exact model,
+  per-invocation cap, max invocations, timeout), `repo.bundle`, `oracle.mjs`, `source.md`.
+- **Version.** A case's version is the sha256 of its folder. A changed case starts a new history.
+- **Who decides.** Cases are added by a person in a reviewed release, never filled automatically.
+
+Mix:
+
+| Kind | Count | From |
 |---|---|---|
-| pass/fail | the plane's own hidden check, run after the agent finishes | the check comes from the installed release's `evals/cases/<id>/check`, copied in after the build, so the agent can't edit it. It runs in the plane's fence with no network. Output is an exit code only |
-| cost, tokens, turns | the world's `run` rows, written by installed code from the provider's `result` event | same code path as every real run |
-| tool calls, wall time | the world's step records and run timestamps | same |
-| model | `model_reported` from the init event | provider's own word |
+| Small build | 8 | builds that failed a check and were fixed; clean representative builds |
+| Build that must stop and ask | 3 | app-e2e "stops to ask" (:680) |
+| Repair after a failing check | 3 | the 0.9.1 "lead no longer sends a failing check back" class |
+| Planner | 3 | plans sent back for missing steps |
+| Lead files a task / draws a flow | 5 | flows-e2e and app-e2e lead journeys |
+| Lead answers from project files | 3 | app-e2e :776 |
 
-What could be forged:
-- **The agent** can write anything into its workspace: claims, test files, edited tests. None of it is read. The hidden
-  check replaces any test file it names before running.
-- **A release** can edit `evals/` itself. That would weaken its own cases. So:
-  - `evals/` joins the paths that need a person (`autoPathProblem`, src/release-auto.ts:198).
-  - Each case has a **version = sha256 of its folder**. A changed case starts a new history. It is never compared with
-    its old baseline, and it never clears old debt.
-- **A deployed release** writes its own eval rows. It is the plane by then, approved through the gate. Rows are
-  append-only, and a later release can't rewrite earlier rows. Each row carries the Toolroll version that wrote it.
-  Evals are a quality signal, not a security boundary. Phase 1's boundary (sealed checks, CI) is unchanged.
+**Model: Decision 3** (recommended: Sonnet, pinned as provider + exact model id). Opus builders cost about 15–20× as
+much on real work.
 
-Why after the deploy and not on the candidate: running candidate code pre-release would make its numbers
-candidate-written (Part C's problem). The cost is that a regression is seen one release late. Hence the gate below holds
-the **next** automatic approval, not the release that caused it.
+### Campaigns
 
-### The cases (25, versioned, `evals/cases/<id>/`)
+- **Canonical:** `toolroll evals run`, with no flags. At admission it seals:
+  - the manifest digest, and every case id and version
+  - the pinned models
+  - k = 3
+  - the baseline campaign id
+  - the build digest
 
-Each case folder holds:
-- `case.json`: id, kind, goal, out-of-scope, acceptance, model, per-run budget cap, timeout
-- `repo.bundle`: a tiny fixture repository at a commit
-- `check`: the hidden check
-- `source.md`: where it came from: a run id, an issue, a release note
+  Each attempt has a unique identity: (campaign, case, attempt number, replaces).
+- **Diagnostic:** `--case`, `--k`, or anything else. It is a report only. It never settles debt and never becomes a
+  baseline.
+- **Complete** means every sealed attempt reached pass, fail, error or unevaluated. An errored attempt gets one
+  replacement only when a plane-side signal confirms the error; there are at most 3 replacements per campaign, and the
+  replaced attempt stays recorded.
+- **Settlement happens once, atomically, when a canonical campaign completes.** A campaign settles only if no
+  later-admitted canonical campaign has already settled. An older campaign that finishes late reports and settles
+  nothing.
 
-Mix (owner can edit the list):
+### Statuses per case
 
-| Kind | Count | Example source | Oracle (no LLM judge) |
-|---|---|---|---|
-| Small build | 8 | builds that failed a check then got fixed; representative clean builds | hidden tests pass |
-| Build that should stop and ask | 3 | app-e2e builds group "stops to ask" (:680) | a decision row exists, no commit past it |
-| Repair after a failing check | 3 | 0.9.1 "lead no longer sends a failing check back" | second run's hidden tests pass |
-| Planner | 3 | plans sent back for missing steps | plan's steps include named required items |
-| Lead files a task / draws a flow from plain words | 5 | flows-e2e lead and build groups | plane state: card/flow with the required fields |
-| Lead answers from project files | 3 | app-e2e lead :776 | answer contains the fixture's exact fact strings |
-
-Real failures come from the plane's history: `run.outcome` failed, `build_review.sent_back_as` not null, check-failed
-then fixed. Each candidate case is reviewed by a person before it joins. The set is a release-reviewed folder, never
-filled automatically.
-
-### Model and runs
-
-- Every case pins its model. **Decision 3** (recommended: **Sonnet** for all eval builds, at about $0.30–0.45 a case run).
-  Opus builders average $7.10 on real work, which is 15–20× more. The set measures Toolroll's prompts and harness, and a
-  cheaper model shows harness regressions more readily. A separate tiny Opus subset (3 cases) can be added later if the
-  owner wants model-change coverage.
-- **k = 3** attempts per case, each in a fresh world.
-- Per-run budget cap $1.50, using the existing `budgetPerRunMicrousd`. A case over its cap is a **fail**, not an error.
-- **Concurrency**: 3 worlds at once, through scripts/provider-gate.mjs's cap. Expect 75 runs × about 3 minutes ÷ 3 ≈
-  **75 minutes**, in the background.
-
-### Statuses per case (k = 3)
-
-| Attempts | Status |
+| Status | Meaning |
 |---|---|
-| 3 pass | always-pass |
-| 0 pass, 3 fail | always-fail |
-| mixed pass/fail | flaky |
-| any attempt that errored | error |
+| always-pass | 3 passes |
+| always-fail | 3 fails |
+| flaky | mixed passes and fails, no error |
+| error | any error left after replacement |
+| unevaluated | any attempt unevaluated |
 
-An **error** is infrastructure: the world couldn't start, the provider refused or was out (a plane-observed event), or
-the hidden check couldn't run. It is never agent behaviour.
+Nothing is re-run to pass.
 
-Nothing is ever re-run to pass. The one exception is an error confirmed by an independent signal (phase 1's rule): one
-replacement attempt per errored attempt, at most 3 per eval run. The replaced attempt stays in the ledger.
+### Baseline: owner-pinned and immutable
 
-### Report vs the pinned baseline
+`toolroll evals baseline <campaign-id>`, with a password (**Decision 6**). The campaign must be complete and canonical.
+Each campaign freezes its baseline id at admission.
 
-The **baseline** is chosen automatically by the plane: the newest released version whose eval run finished with no
-"regressed" cases and errors on at most 3 cases. **Decision 6**: the owner can pin a version instead with
-`toolroll evals baseline <version>`, a person's proof (it changes what holds releases). Each case is compared with its
-**own** baseline result, at the same case version.
+There is no automatic promotion in v1. So 3/3 → 1/3 → 0/3 reports **regressed** at the third step, because every
+campaign is compared with the same pinned campaign.
 
-| Baseline | Now | Reported as | Holds? |
+When re-pinning, the command lists every case whose result in the new pin is worse than in the old pin, and those whose
+known-good result would be lost. It requires `--accept-worse` to go ahead.
+
+### Report and debt
+
+Each case is compared with **its own result in the baseline**, at the same case version:
+
+| Baseline | Now | Reported as | Opens debt |
 |---|---|---|---|
-| always-fail or flaky | always-pass | **fixed** | no |
-| always-pass | always-fail | **regressed** | **yes** (below) |
-| always-pass | flaky | **newly flaky** | no |
-| flaky | always-fail | worse | no |
-| always-fail | always-fail | **still failing** | no |
-| none / other version | any | new | no |
-| any | error | couldn't tell | no |
+| always-fail or flaky | always-pass | fixed | no |
+| always-pass | always-fail | **regressed** | **yes** |
+| always-pass | flaky | newly flaky | no |
+| always-fail | always-fail | still failing | no |
+| any | error / unevaluated | couldn't tell | no |
+| missing or other version | any | new | no |
 
-Small numbers are noise:
-- Cost, turns and tool calls are compared per case, median of 3 vs the baseline's median of 3.
-- They are flagged only over **2×** and over a floor ($0.50 or 15 turns).
-- Totals are shown, never judged.
+Small numbers are noise. Per case, median cost and turns are shown beside the baseline's. They are flagged only over 2×
+and over a floor ($0.50 API or 15 turns), and nothing is held on them.
 
-### The gate
+**Debt** is one `eval_debt` row per regressed case (case, version, campaign, baseline campaign). It clears only when a
+later, complete canonical campaign has that case at the same version with **at least 2 passes, no error and nothing
+unevaluated**. Error, unevaluated, an incomplete campaign or a diagnostic run never clear it, and neither does editing
+the case. A person can waive a row with a password, recording why.
 
-A **regressed** case opens one `eval_debt` row: case, version, eval run, baseline version. **Decision 5**
-(recommended): while a row is open, **`sealAutoGreen` refuses**. It is next to `ciVerdict` (src/release-auto.ts:418):
+**What debt holds: Decision 5.** `sealAutoGreen` refuses, which is dormant today (see the top of this plan). It never
+holds deploy, merge or tag, because a person-approved fix must be able to ship. Needs you shows:
 
-> An eval case that always passed now always fails (lead-files-task-4, since 0.9.83). A person approves this release.
+> An eval case regressed: lead-files-task-4 passed 3/3 in the baseline and fails 3/3 on 0.9.83.
 
-It does **not** hold deploy, merge or publish. The fix for a regression must itself ship, be deployed and then be
-evaluated. Holding deploys would block the fix.
+The release card repeats it for a person approving a release.
 
-A row clears only by one of two things:
-- a later eval run, on a newer installed version, where the same case at the same version is not always-fail
-- a person's waiver with their password, which records who and why
+### Policy code needs a person (finding 10)
 
-Changing the case never clears a row.
+`autoPathProblem` (src/release-auto.ts:195) gains these paths: `evals/`, `src/evals*.ts`, `src/nightly-github.ts`,
+`src/eval-*.ts`, and the contracts they use (`src/contracts/evals*.ts`). That covers the evaluator, oracles, scoring,
+baseline, debt, budget and nightly ingestion. The hook lines in deploy-gate, store, release and release-auto only call
+into those modules. Result-writing authority stays in the installed plane's eval module. World processes get no handle
+on the plane's database.
 
-Needs you: "An eval case regressed: lead-files-task-4 passed 3/3 on 0.9.82, fails 3/3 on 0.9.83. Automatic releases
-wait for a person." The eval report page lists the full table.
+### Budget: reservations, not a start-only cap
 
-### When it runs
+**Decision 4** (recommended): **on demand only** at first. After two measured campaigns the owner decides whether to
+turn on weekly runs.
 
-**Decision 4** (recommended): three triggers, plus a cap.
+The monthly ceiling defaults to **$200 of API dollars plus reserved worst case**. Subscription usage is shown but not
+capped in dollars: plan limits govern it.
 
-- **Weekly**, Sunday 04:00, as a scheduled flow with the nightly's shape (approved once with a password).
-- **After a release deploys whose diff touched `MODEL` paths** (scripts/release-check.mjs:73). At most one a day; later
-  releases that day roll into the next.
-- **On demand**: `toolroll evals run`.
-- **Monthly spend cap**, default **$200**, a setting. At the cap no new eval run starts, and Needs you says so. A run
-  in progress finishes.
+**How a reservation works.**
+- **Before each invocation**, the runner atomically reserves that invocation's cap in an `eval_spend_month` row, and
+  passes the cap as `maxBudgetUsd` (src/invoke.ts:851). A provider that can't hold a cap refuses (:327), and the
+  attempt is an error.
+- **Before admitting a campaign**, it reserves the campaign's worst case: per-case cap × max invocations × 3, plus 3
+  replacements.
+- **After each invocation**, it settles the reported cost. Unknown cost settles at the full reservation.
 
-### Budget
+**Worst case per campaign:**
 
-| Item | Per run | Runs a month (recommended) | Monthly |
-|---|---|---|---|
-| Eval set, 25 × 3 Sonnet | about $30 (75 × $0.30–0.45) | 4–5 weekly + about 3 release-triggered (most releases don't touch model paths; deduped per day) | about $130–$240 |
-| Reviewer evals, 30 diffs × 3 (Part E) | about $30 (90 × $0.32, the owner's measured Opus review average) | when the reviewer brief or pinned model changes, else monthly: about 1 | about $30 |
-| Nightly reading, run ledger, journey ledger | $0 | — | $0 |
-| **Total** | | | **about $170 typical; $130 weekly-only; $330 worst case under the cap's default** |
+| Case kind | Max invocations × $0.75 cap |
+|---|---|
+| builds and stop-and-ask | plan + build = 2 |
+| repair | 3 |
+| planner and lead answers | 1 |
+| lead flows | 2 |
 
-If the evals use the owner's Claude subscription login (the e2e worlds do today), these are plan-limit usage rather than
-dollars. The cap counts the provider's reported `total_cost_usd` either way.
+Over 25 cases × 3 that is about 150 invocations ≈ **$112**, plus replacements ≈ **$117 reserved**. A $200 ceiling
+therefore admits one campaign at a time, never two.
 
----
+**Expected per campaign:** 75 attempts × $0.30–0.45 = **$22.50–$33.75**.
 
-## Part E. Reviewer evals and a pinned reviewer model
-
-1. **Pin.** A project setting, `review model`: an exact model id such as `claude-opus-…`, not an alias. It requires a
-   person's proof to change. `buildReviewPass` passes it to the review invocation (src/build-review.ts:252-259) over the
-   route and agent defaults. Each review records `reviewer_model` (the init event's exact id, from Part B) on
-   `build_review`.
-   - If the provider reports a different model than the pin, the review still counts, the mismatch is shown, and its
-     evals don't compare.
-   - **Decision 7** (recommended: pin, change by person).
-2. **Labelled diffs** (`evals/reviewer/<id>/`): `diff.patch`, the pre-change files the reviewer needs, and `labels.json`.
-   About 30 of them:
-   - **15 with real bugs**, from Codex-round findings that led to fix commits (the arcs' review notes name them), and
-     from `build_review` HIGH findings that were sent back and fixed. Each label gives file, line range and a one-line
-     description.
-   - **15 clean**: merged changes with no later fix touching those lines for 30 days, and no HIGH finding by anyone.
-3. **Run**: `toolroll evals reviewer`. It uses the installed plane's own reviewer brief and invocation (phase `review`,
-   permission `plan`), 3 times per diff with the pinned model, in a throwaway world.
-4. **Scoring is deterministic, with no judge.** A HIGH finding "hits" a labelled bug when it names the same file and its
-   line is within ±8 lines of the labelled range.
-   - **Recall** = labelled bugs hit in at least 2 of 3 attempts ÷ labelled bugs.
-   - **False-alarm rate** = clean diffs with a HIGH finding in at least 2 of 3 attempts ÷ clean diffs.
-   - Each is reported per model id, against that model's previous result. A change of 2 diffs or fewer (out of 15) is
-     reported as "no clear change".
-5. It holds nothing. It informs the choice of pin.
+**Wall time:** about 75 attempts × about 3–4 minutes ÷ 2 at once ≈ **2–2.5 hours**, in the background, never inside a
+release.
 
 ---
 
-## Later (not in this arc)
+## Part D. Reviewer evals
 
-**Delta-review coverage in sealAutoGreen.** This would record a reviewed SHA per security-sensitive change after the
-last Codex round, and refuse auto-approval when the candidate's security paths changed after it. It is not small:
-- Codex rounds happen outside the plane, so it needs a way to record a review.
-- It needs a definition of "security-sensitive paths".
-- It needs a person-proved record.
+1. **The pin.** A project setting `review model` = **provider + exact model id** (**Decision 7**). It requires a person's
+   proof to change. `buildReviewPass` uses it over the route and agent defaults (src/build-review.ts:252-259).
+   `build_review.reviewer_model` records the init event's exact id. If the reported model differs from the pin, that
+   review is **not evaluated under the pin** and is never compared.
+2. **Labels.** `evals/reviewer/<id>/`: `diff.patch`, the files the review needs, and `labels.json`.
+   - About 15 buggy diffs come from Codex-round findings with fix commits, and from `build_review` HIGH findings that
+     were sent back and fixed. Their fixed counterparts serve as clean diffs where possible. The other clean diffs are
+     ones a person checked.
+   - **Every label is validated by a person** (`validatedBy` in labels.json; the folder needs a person under finding 10).
+   - Labels never enter the reviewer's workspace: only the patch and files are copied in.
+3. **Same context as production.** Build-review's brief and patch preparation (:137, `REVIEW_PATCH_NAME`) are extracted
+   into one exported `reviewContextOf(...)` that both production and the eval call. Each invocation is capped (about
+   $0.60 via `maxBudgetUsd`). Production review stays uncapped as it is today.
+4. **Scoring.** 3 attempts per diff.
+   - A HIGH finding at the labelled file and within ±8 lines is a **proxy hit**.
+   - Every finding (with its scenario sentence) is kept for a person to adjudicate on the report page. An adjudication
+     replaces the proxy.
+   - The report shows per-attempt recall and false-alarm rate, which is production's one-shot behaviour, and beside it
+     majority-of-3 repeatability.
+   - A change of 2 diffs or fewer out of 15 reads "no clear change".
+5. It holds nothing. It informs the pin.
 
-Phase 1's process note (eval-harness.md F) stands meanwhile. It becomes a small slice once Part E's `reviewer_model` and
-a `review_record` exist.
-
-**Not building**: an eval platform, online evals or shadow deploys, simulated users, judge councils, LLM-graded
-outcomes, VM isolation.
+Cost: 30 diffs × 3 × about $0.32 (measured Opus review) ≈ **$29**, at most $54 reserved.
 
 ---
+
+## Budget
+
+| Item | Per run (expected) | Reserved worst case | v1 month (on demand) | If weekly is turned on later |
+|---|---|---|---|---|
+| Eval campaign, 25 × 3 Sonnet | $22.50–$33.75 | about $117 | 2 runs: about $56 | 4.3 runs: about $120 |
+| Reviewer evals, 30 × 3 | about $29 | about $54 | 1 run: about $29 | about $29 (when the pin or brief changes) |
+| Nightly reads, accounting | $0 | — | $0 | $0 |
+| **Total** | | | **about $85** | **about $150** |
+
+If attempts run under a Claude subscription login, they use plan limits rather than API dollars. The report shows that
+as subscription usage, separately.
+
+---
+
+## Later (not in v1)
+
+- **Production bloat flags** and cost per finished task across projects.
+- **Journey ledger and trend UI.** This needs the release-check contract to carry each attempt, which
+  scripts/e2e-parallel.mjs:187-207 discards today. It also needs `modelCalls` treated as CLI invocations. All of it
+  would be recorded data, never trusted.
+- **Automatic baseline promotion.** It must keep each case's known-good reference, and flaky or error results never
+  replace it.
+- **Weekly and release-triggered runs**, after measured cost.
+- **A small Opus subset** for model-change coverage.
+- **Delta-review coverage in sealAutoGreen.** Codex rounds are out-of-band, so it needs a person-proved review record.
+  Phase 1 F's process note stands meanwhile.
+- **Trusted authorization inside publish.yml**, to hold the npm step itself.
+
+Not building: an eval platform, online evals or shadow deploys, simulated users, judge councils, LLM-graded outcomes,
+VM isolation.
 
 ## Schema
 
 | Version | Slice | Tables / columns |
 |---|---|---|
-| v139 | A1 | `github_nightly_read` (id, repo, at, ok, why, run_id, attempt, head_sha, created_at, conclusion); `nightly_lane_failure` (id, repo, lane, workflow, gh_run, attempt, job_id, sha, conclusion, html_url, failed_at, opened_at, cleared_at, cleared_by_gh_run, cleared_by_job; unique (repo, lane, gh_run, attempt)); `nightly_lane_note` (repo, lane, gh_run, state runner-failure/didnt-run, at). Kept apart from `main_check_failure`, whose `run` is a Toolroll run id, NOT NULL (src/store.ts:1234) |
-| v140 | B1, C1 | `run.tool_calls INTEGER`, `run.model_reported TEXT`; `journey_result` (id, repo, task_ref, run, release_version, script, kind, group, name, attempt, state, seconds, cost_usd, turns, tokens_in, tokens_out, tool_calls, trust CHECK IN ('reported')) |
-| v141 | D1, D2 | `eval_run` (id, toolroll_version, set_digest, trigger, started_at, finished_at, state, spend_microusd); `eval_result` (id, eval_run, case_id, case_version, attempt, outcome pass/fail/error, error_why, replaced_by, cost_usd, turns, tokens_in, tokens_out, tool_calls, wall_ms, model_reported); `eval_baseline_pin` (repo-free, version, by, proof, at); `eval_debt` (id, case_id, case_version, opened_by_eval_run, baseline_version, opened_at, cleared_at, cleared_by_eval_run, waived_by, waived_proof, waived_why) |
-| v142 | E1 | `build_review.reviewer_model TEXT`; `reviewer_eval_result` (id, eval_run, diff_id, diff_version, attempt, model_reported, hits_json, high_count, cost_usd) |
+| v139 | A1 | `nightly_lane` (lane_id, repo, workflow, display_name, retired_at, retired_by, retired_proof); `nightly_lane_alias` (repo, lane_id, name, by, proof, at); `github_nightly_cursor` (repo, cursor_created_at, last_ok_at, last_why); `nightly_lane_job` (repo, lane_id, gh_run, attempt, job_id, sha, started_at, completed_at, conclusion, cause; unique (repo, gh_run, attempt, job_id)); `nightly_lane_failure` (id, repo, lane_id, job ref, sha, opened_at, cleared_at, cleared_by_job, closed_why); `nightly_exemption` (task, candidate, failure_id, pr, gh_run, attempt, job_id, started_at, completed_at, read_at; unique (task, candidate, failure_id)). Kept apart from `main_check_failure`, whose `run` is a Toolroll run id, NOT NULL |
+| v140 | B1 | `run.model_reported`; `chat_turn.model_reported`, `chat_turn.reported_cost_usd` |
+| v141 | C1, C2 | `eval_campaign` (id, canonical, manifest_digest, build_digest, version, baseline_campaign, k, admitted_at, finished_at, state, settled_at); `eval_attempt` (id, campaign, case_id, case_version, n, replaces, outcome, error_why, model_pinned, model_reported, api_microusd, subscription_microusd, usage_unknown, turns, tokens_in, cache_read, cache_write, tokens_out, tool_calls, wall_ms; unique (campaign, case_id, n, replaces)); `eval_invocation` (attempt, kind, world_ref, reserved_microusd, settled_microusd, unknown); `eval_spend_month` (month, ceiling_microusd, reserved_microusd, settled_microusd); `eval_baseline_pin` (campaign, by, proof, at, accepted_worse_json); `eval_debt` (id, case_id, case_version, campaign, baseline_campaign, opened_at, cleared_at, cleared_by_campaign, waived_by, waived_proof, waived_why) |
+| v142 | D1 | `build_review.reviewer_model`; `reviewer_eval_attempt` (id, campaign, diff_id, diff_version, n, provider, model_pinned, model_reported, findings_json, proxy_hits_json, adjudication_json, api_microusd, subscription_microusd) |
 
-Each version gets a `src/migration-v1NN-*.test.ts` and an entry in `UPDATE_SAFE_MIGRATIONS` (src/store.ts:999). All
-changes are additive.
-
----
+Each version is additive, with a `src/migration-v1NN-*.test.ts` and an `UPDATE_SAFE_MIGRATIONS` entry.
 
 ## Slices (ordered; each ships alone)
 
-Targeted runs only, per fix round (feedback: the full suite is GitHub CI plus the release check).
+Tests are kept to the kinds docs/testing.md:228- allows: security and attack tests, accounting, migrations and
+contracts. There are no copy or markup matrices. Fix rounds run only the affected files.
 
-### A1. Read GitHub's nightly (v139)
+### A1. Ingest GitHub's nightly (v139)
 - **New module** src/nightly-github.ts:
-  - `readGithubNightly(run, gh, repo)`: the binding rules above
-  - `laneOutcomesOf(jobs)`
-  - `settleGithubNightly(store, repo, read, now)`: opens failures, notes, and clears from later passes
+  - reader: cursor, every attempt, bounded deadline
+  - binding, cause classification (aggregate from shards), stable lanes and aliases
+  - settlement: open and clear
 - **Hooks**:
-  - `refreshGithubNightlies(store, now)` at the end of src/operate.ts, called from `followUpChecks` (:6789), 30-minute
-    throttle
-  - store accessors at the end of src/store.ts
-  - `toolroll release nightly --github` setup (src/release-cli.ts)
+  - `refreshGithubNightlies` at the end of src/operate.ts, called from `followUpChecks`
+  - opted-in repos added to `refreshTrustedMains`
+  - store functions at the end of src/store.ts
+  - `--github`, `--lane-alias`, `--lane-retire` in src/release-cli.ts
 - **Tests** (src/nightly-github.test.ts, fake gh):
-  - a failed lane opens one row
-  - the same lane passing on a later run clears it
-  - another lane passing doesn't clear it
-  - before-tests, cancelled and missing lanes give notes, not rows
-- **Attacks** (test/attacks/nightly-github-binding.test.ts):
-  - a `workflow_dispatch` run from a branch
-  - a fork's run
-  - `nightly.yml@evil.yml`
-  - a lookalike `nightly / node 24 · ubuntu-latest ` (trailing space) from another workflow
-  - the attempt changing mid-read
-  - head not on main's history
-  - a truncated page
-- Migration test v139.
-- **Targeted**: `npx vitest run src/nightly-github.test.ts test/attacks/nightly-github-binding.test.ts src/migration-v139-*.test.ts src/password-freshness.test.ts`
+  - a failure followed by a cancelled run is still open
+  - a failed earlier attempt with a passing later attempt is still open
+  - a completed failed job in a running workflow is ingested
+  - a same-run re-run doesn't clear; the next run clears
+  - aggregate cause from shards
+  - an unreadable cause is a failure
+  - the cursor survives a truncated page
+- **Attacks** (test/attacks/nightly-github-binding.test.ts): a branch dispatch, a fork, `nightly.yml@x.yml`, a lookalike
+  name, a head not on main, the attempt changing mid-read.
+- **Targeted:** those two files, `src/migration-v139-*.test.ts`, src/password-freshness.test.ts.
 
-### A2. Hold deploy, merge, publish and auto-approval
-- **New functions**:
-  - `nightlyLaneHold(store, repo, taskId, ciRuns)` in src/nightly-github.ts
-  - `githubNightlyProblem(...)` at the end of src/scope.ts, called in `liveReleaseOf`'s deploy/merge arm (:1979) next to
-    `mainDebtProblem`
-- **Call sites**:
-  - publish: in src/release.ts tag/publish (:1222/1232)
-  - auto-approval: `sealAutoGreen` (src/release-auto.ts:418)
-  - the coordinator: a fresh read before deploy, merge and publish when the last read is over 2 h old. The exemption is
-    stored from the `readCheckRuns` result it already has.
-- **Tests**:
-  - src/release.slow.test.ts cases: debt holds deploy; the candidate's re-run after the failure exempts it; an older
-    green run does not; unreadable reads warn only; stale warns only
-  - sealAutoGreen refusal in src/release-auto.test.ts
-- **Targeted**: those two files + src/scope*.test.ts + password-freshness
+### A2. Hold every boundary
+- **Calls into the module from:**
+  - `deploymentGate`
+  - scripts/deploy-candidate.mjs (through the installed runtime's exported function, as it does `liveReleaseOf`)
+  - the merge reservation transaction
+  - the pre-tag check before `createTag`
+  - `sealAutoGreen`
+- **Adds** `readLaneJobs` (the exemption reader), stored exemptions, and the 20 s bounded boundary read.
+- **Tests** (src/nightly-github.test.ts and src/release.slow.test.ts):
+  - a person-approved deploy is held
+  - an exemption needs a job started after the failure
+  - a re-run that is pending or failed voids the exemption
+  - an unreadable re-read isn't permission
+  - merge is held inside the transaction
+  - pre-merge exemption stands at the tag; new post-merge debt waits at the tag
+  - an unreadable read warns and keeps recorded debt
+- **Targeted:** those files, src/deploy-gate.test.ts, password-freshness.
 
-### A3. Say it in the console
-- **Surfaces**:
-  - Needs-you board item (src/server/render-pages.ts:609 `boardBody`)
-  - release card lines (src/server/render-tasks.ts:3024, src/server/task-views.ts `releaseViewOf`, src/release-card.ts:266)
-  - notification `github-nightly-failed`
-  - also show the plane's own `main_check_failure` debt in Needs you, which has no item today
-- **Tests**: render tests for each state (failed, exempted, unreadable, stale); words reviewed against plain-label rules.
-- **Targeted**: src/server/render-*.test.ts for the touched renders
+### A3. Words
+- **Changes:** Needs-you items (GitHub debt and the existing `main_check_failure` debt), release-card lines, notification.
+- **Tests:** one data-level test that open debt yields one Needs-you item and that an exemption shows on the card's
+  view model. No markup tests.
+- **Targeted:** that file.
 
-### B1. Run ledger: tool calls, exact model, cost per finished task, bloat flags (v140 part)
-- **Writes**: `run.tool_calls` at disposition (src/dispose.ts, from `stepsOf`); `run.model_reported` from the init event
-  (src/provider.ts:595 → src/invoke.ts:856 `recordUsage`).
-- **New module** src/run-ledger.ts: `costPerFinishedTask`, `bloatOf`.
-- **Pages**: usage page and the task page's How it ran (new handler code at the end of src/server/tasks.ts).
-- **Tests**:
-  - bloat needs 8 similar runs, and both the ratio and the floor
-  - cost excludes unfinished tasks and shows them apart
-- Migration test v140.
-- **Targeted**: src/run-ledger.test.ts, src/run-efficiency.test.ts, src/migration-v140-*.test.ts, password-freshness
+### B1. Accounting gaps (v140)
+- **Changes:** `run.model_reported` and `chat_turn.model_reported` / `reported_cost_usd`, recorded from the init and
+  result events.
+- **Tests:** subscription chat keeps both; API vs subscription vs unknown are kept apart; `usageOf` normalization for
+  the eval collector; migration.
+- **Targeted:** src/subscription-chat.test.ts, src/provider*.test.ts, `src/migration-v140-*.test.ts`.
 
-### C1. Journey ledger (v140 part)
-- **Report data**:
-  - optional `usage` on journey lines (src/contracts/release-check.ts:190-200)
-  - e2e-kit.mjs sums the world's run rows per journey window
-  - release-check.mjs `buildReport` carries them (:284-297)
-- **Plane side**: copies them into `journey_result` with `trust='reported'` when it settles a release check
-  (`settleReleaseChecks`, src/nightly-check.ts:270). The release card shows totals vs the last release.
-- **Tests**: contract accepts with and without `usage`; malformed `usage` is dropped, not trusted; a retry's attempts are
-  both kept.
-- **Targeted**: src/contracts/release-check.test.ts, src/check-report.test.ts, scripts/release-check tests
+### C1. Runner, oracle, packaging, budget, first 10 cases (v141)
+- **New code:** src/evals.ts (campaign, attempt child process, collector, reservations) and src/eval-oracle.ts (oracle
+  harness).
+- **Files:** `evals/` (manifest + 10 cases) added to package.json `files`; the provider gate ported into src; policy
+  paths added to `autoPathProblem`.
+- **CLI:** `toolroll evals run|attempt` at the end of src/operate.ts.
+- **Tests:**
+  - the oracle refuses an early exit
+  - an edited launcher or import can't pass
+  - a symlinked input path is refused
+  - the oracle runs only after the process group is gone
+  - a crash or timeout is a fail and a world-start failure is an error
+  - reservations refuse admission over the ceiling and settle unknown cost at the full reservation
+  - a build change mid-campaign leaves it incomplete
+  - policy paths need a person
+  - a package-contents test: `evals/` is in the tarball
 
-### D1. Eval runner and cases (v141 part)
-- **Cases**: `evals/cases/` with the first 10 cases, so the runner proves itself on a small set first.
-- **Runner**:
-  - `toolroll evals run [--case id] [--k 3]` (at the end of src/operate.ts)
-  - src/evals.ts: world from the installed runtime, hidden-check copy-in, k attempts, rows, error-only replacement,
-    spend cap
-- **Path rule**: `evals/` added to `autoPathProblem`.
-- **Tests**:
-  - the runner on a scripted provider (no spend): pass, fail, error, and over-cap = fail
-  - the hidden check replaces agent-edited tests
-  - a changed case gets a new version
-- **Targeted**: src/evals.test.ts, src/release-auto.test.ts (path rule), password-freshness
+  All of these run on a scripted provider: no spend.
+- **Targeted:** src/evals.test.ts, src/eval-oracle.test.ts, src/release-auto.test.ts, password-freshness.
 
-### D2. Baseline, report, gate, schedule (v141 part)
-- **Logic**: statuses and comparison (`evalReport`), automatic baseline and pin, `eval_debt` + `sealAutoGreen` refusal
-  + waiver.
-- **Triggers**: weekly flow; post-deploy trigger for MODEL paths (deduped per day).
-- **Surfaces**: Needs-you item; eval report page.
-- **Remaining cases**: 15, to reach 25.
-- **Tests**:
-  - every row of the comparison table
-  - debt opens only on always-pass → always-fail
+### C2. Campaigns, baseline pin, report, debt, last 15 cases (v141)
+- **Changes:** canonical vs diagnostic campaigns, atomic settlement order, statuses, comparison, the
+  `toolroll evals baseline` pin, `eval_debt` + waiver, Needs-you item, report page.
+- **Tests:**
+  - only complete canonical campaigns settle
+  - a late older campaign settles nothing
+  - 3/3 → 1/3 → 0/3 against the pin is regressed
+  - error and unevaluated never clear
+  - clearing needs 2 passes
   - a case edit doesn't clear
-  - the waiver needs a person
-- **Targeted**: src/evals-report.test.ts, src/release-auto.test.ts, render tests
+  - the pin needs a person and `--accept-worse`
+- **Targeted:** src/evals-report.test.ts.
 
-### E1. Reviewer evals and the pin (v142)
-- **Pin**: setting + `buildReviewPass` override; `build_review.reviewer_model`.
-- **Data and runner**: `evals/reviewer/` with 30 labelled diffs; `toolroll evals reviewer`; deterministic hit scoring.
-- **Tests**: scoring (hit window, 2-of-3, clean false alarm); the pin overrides the route; a mismatch is recorded.
-- **Targeted**: src/build-review.test.ts, src/reviewer-evals.test.ts, src/migration-v142-*.test.ts
+### D1. Reviewer evals and the pin (v142)
+- **Changes:** `reviewContextOf` extracted from build-review, the provider + exact model pin, `reviewer_model`, the
+  reviewer eval runner (capped), scoring with adjudication, 30 person-validated diffs.
+- **Tests:**
+  - production and eval use the same context function
+  - a model mismatch is unevaluated
+  - labels never reach the workspace
+  - per-attempt and majority scoring
+- **Targeted:** src/build-review.test.ts, src/reviewer-evals.test.ts, `src/migration-v142-*.test.ts`.
 
-Order rationale:
-- **A1–A3** close the test-matrix follow-up and cost nothing to run.
-- **B1 and C1** give the numbers D needs, again at no spend.
-- **D1 before D2**, so the runner's honesty is reviewed before anything can hold a release.
-- **E1** is last. It is the most independent.
-
-Codex review: one round on this plan, then one round per pair (A1–A3, B1–C1, D1–D2, E1), within the two-round limit.
-
----
+Codex: one round per pair (A1–A3, B1–C1, C2–D1), at most two each.
 
 ## Open decisions for the owner
 
 | # | Question | Recommendation |
 |---|---|---|
-| 1 | Stale (36 h) or unreadable GitHub nightly: warning or block? | **Warning**, everywhere. Optional: block only automatic approvals |
-| 2 | What open nightly lane debt holds | **Deploy, merge, publish and auto-approval of every release**, unless the release re-ran that lane after the failure and it passed |
-| 3 | Eval model | **Sonnet**, pinned per case (about $30 a run). Opus would be about $400+ a run |
-| 4 | When evals run | **Weekly + after a release that touched model-facing code (max one a day) + on demand; $200 monthly cap** |
-| 5 | What an eval regression holds | **Automatic approval only**; never deploy (the fix must ship) |
-| 6 | Baseline | **Automatic "last good release"**; owner may pin a version with a password |
-| 7 | Reviewer model | **Pin an exact model id**; changing it needs a person; every review records the exact model |
-| 8 | Delta-review coverage | **Later**, after E1 (not small) |
-| 9 | Cancelled or runner-failed nightly lanes | **Shown, not debt** |
+| 1 | Stale (36 h) or unreadable GitHub nightly | **Warning**; recorded debt stays enforced; the observation gap is shown |
+| 2 | What open nightly lane debt holds | **Every deploy, the merge and pre-tag authorization** of opted-in projects, unless the candidate re-ran that lane after the failure and passed. Post-tag publication is not covered (disclosed) |
+| 3 | Eval model | **Sonnet**, pinned as provider + exact model |
+| 4 | When evals run | **On demand** first; weekly only after two measured campaigns; release-triggered runs later |
+| 5 | What eval debt holds | **Automatic approval only**, dormant while auto-approval stays refused; never deploy, merge or tag |
+| 6 | Baseline | **An owner-pinned campaign id**, with a password; no automatic promotion in v1 |
+| 7 | Reviewer model | **Pin provider + exact model**; a mismatch is not evaluated |
+| 8 | Monthly ceiling | **$200** of API dollars, reservation-backed (admits one campaign at a time) |
+| 9 | Delta-review coverage | **Later** |
+
+## Review round 1 (Codex, NO-GO): what changed
+
+Each claim was checked against the code. All 16 findings are accepted. One part of finding 12 is narrowed.
+
+| # | Finding | Verdict | Where closed |
+|---|---|---|---|
+| 1 | GitHub success isn't independent; auto-approval already refused | **Accepted.** Verified src/release-adapters.ts:381-383, :875-876 | "Trust, stated plainly"; eval gate called dormant |
+| 2 | Copied hidden tests don't protect the grader | **Accepted** | Part C "Grading": oracle outside the fence, nonce answers, O_NOFOLLOW, process group proven gone |
+| 3 | Newest-run-only reading loses debt | **Accepted** | Part A cursor, every attempt, completed failed jobs ingested early, nothing erases |
+| 4 | 2 h freshness; person-approved deploys and trusted-main refresh uncovered | **Accepted.** Verified src/scope.ts:1942 `applies: false`, src/deploy-gate.ts:41, src/nightly-check.ts:99-103 | Hold in `deploymentGate`/deploy-candidate independent of authority; checked in the transaction; 20 s boundary read; limitation stated; opted-in repos refreshed |
+| 5 | `CheckRun` lacks attempt and times; no stored exemption | **Accepted.** Verified src/release.ts:106-118 | `readLaneJobs`, `nightly_exemption` per task + candidate + failure, re-read at each boundary |
+| 6 | Publish step is after the tag; post-merge rerun trap | **Accepted.** Verified src/release.ts:1227, publish.yml:16, release-proof.mjs:91 | Pre-tag authorization; post-tag race and post-merge recovery stated |
+| 7 | An error cleared debt | **Accepted** | Clearing needs a complete canonical campaign, ≥2 passes, no error or unevaluated; crashes and timeouts are fails |
+| 8 | Automatic baseline normalizes a regression | **Accepted** | Owner-pinned campaign id, frozen per campaign, no promotion in v1 |
+| 9 | Partial or concurrent runs | **Accepted** | Canonical vs diagnostic, sealed at admission, unique attempts, atomic ordered settlement |
+| 10 | Policy in `src/` stays auto-shippable | **Accepted.** Verified src/release-auto.ts:198-213 | Policy paths added to `autoPathProblem`; append-only called an application invariant |
+| 11 | Aggregate-lane cause; renamed lanes | **Accepted.** Verified ci.yml:111 | Aggregate cause from shards in the same attempt; stable lane ids; person-approved alias or retire |
+| 12 | Chat turns, subscription cost and model, token normalization | **Accepted, narrowed:** subscription chat does read the exact model (src/subscription-chat.ts:276) but never stores or returns it, so the fix is to persist, not to read | Part B: world per attempt, `chat_turn` columns, three amounts kept apart, `usageOf` |
+| 13 | 13 journeys, wrong runner citation, retry merging | **Accepted.** Counted 7 + 6; verified release-check.mjs:622, e2e-parallel.mjs:187-207, scripted-provider.mjs:190 | Facts corrected; journey ledger moved to Later with the contract requirement |
+| 14 | Cap and arithmetic | **Accepted.** 75 × $0.30–0.45 = $22.50–33.75 (revision 1 said "about $30") | Reservation-backed ceiling, per-invocation caps, worst case $117, one campaign at a time, admission paused during deploys, 20 s / 60 s read deadlines |
+| 15 | Reviewer scoring and labels | **Accepted** | Person-validated labels, fixed counterparts, labels kept out, proxy hits + adjudication, per-attempt rates, provider + exact model pin, shared `reviewContextOf` |
+| 16 | Packaging; concurrent `world()`; v1 too big | **Accepted.** Verified package.json `files`, e2e-kit.mjs:260-286 | `evals/` packaged, gate ported to src, a child process per attempt; v1 cut to A + B + C + D; tests limited per docs/testing.md |
