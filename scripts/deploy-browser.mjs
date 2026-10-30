@@ -26,7 +26,8 @@ import { deployStateDir, loadNames, stagedRuntimePaths } from "./deploy-paths.mj
 import { blobAt, extractTree, headOf, trackedChanges } from "./deploy-git.mjs";
 import { loadCodingDeploymentRuntime } from "./deploy-coding.mjs";
 import { recoverOnExit } from "./deploy-recovery.mjs";
-import { browserDeployment, openDeploymentDatabase, sha, snapshot } from "./deploy-phases.mjs";
+import { activeWorkRefusal, browserDeployment, openDeploymentDatabase, sha, snapshot } from "./deploy-phases.mjs";
+import { serviceStopper } from "./deploy-stop.mjs";
 
 const args = process.argv.slice(2);
 // git on the candidate's repository (AGENTS.md trust boundary) runs only through deploy-git.mjs: a Git directory of the
@@ -129,7 +130,7 @@ function facts(db) {
 }
 function quiet(db) {
   const work = oldRt.gate.activeUpdateWork(db);
-  requireTrue(Object.values(work).every(n => n === 0), `Current work must finish first: ${JSON.stringify(work)}.`);
+  requireTrue(Object.values(work).every(n => n === 0), activeWorkRefusal(work));
   const store = new oldRt.store.Store(db);
   for (const row of db.prepare("SELECT DISTINCT run FROM run_process WHERE exited_at IS NULL").all()) {
     const problem = store.stopQuiescenceProblem(row.run);
@@ -162,24 +163,11 @@ function service(dist) {
   return { supervisor: pid, children, command, commands, roles };
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function verifyServiceStopped(pids, dist) {
-  const gone = () => pids.every(pid => spawnSync("/bin/ps", ["-p", String(pid), "-o", "pid="], { encoding: "utf8" }).status === 1) && leftFrom(dist).length === 0;
-  for (let i = 0; i < 60; i++) { signal.throwIfAborted(); if (gone()) break; await sleep(1000); }
-  for (const pid of pids) requireTrue(spawnSync("/bin/ps", ["-p", String(pid), "-o", "pid="], { encoding: "utf8" }).status === 1, `Service process has not exited: ${pid}`);
-  // Belt to the recorded pids (round 1, finding 3): no `up` of this database and no role child of this runtime is left,
-  // whatever pid a restarted role got after the record was taken.
-  const left = leftFrom(dist);
-  requireTrue(left.length === 0, `Service process has not exited: ${left.join(", ")}`);
-  requireTrue(spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status !== 0, "The service is still loaded.");
-}
-/** Processes still running this runtime's `up` on this database or its role children; unreadable is a process left. */
-function leftFrom(dist) {
-  if (typeof dist !== "string" || dist === "") return ["(the runtime is unknown)"];
-  const listed = spawnSync("/bin/ps", ["-A", "-o", "pid=,command="], { encoding: "utf8" });
-  if (listed.status !== 0) return ["(the process list couldn't be read)"];
-  return listed.stdout.split("\n").map(line => /^\s*(\d+)\s+(.*)$/.exec(line)).filter(match => match !== null)
-    .filter(([, , command]) => command.includes(`${dist}/up-role-child.js `) || command.includes(`${dist}/cli.js up --db ${database}`)).map(([, pid]) => Number(pid));
-}
+// Proving the old service's processes gone, and stopping what it left once each is proved its own (deploy-stop.mjs).
+const { verifyServiceStopped, leftFrom, processes, stopProcesses } = serviceStopper({
+  database, spawnSync, kill: (pid, name) => process.kill(pid, name), sleep, signal, say,
+  loaded: () => spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status === 0,
+});
 const schemaDigest = db => sha(JSON.stringify(db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name").all()));
 const list = (root, prefix = "") => readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(e => e.isDirectory() ? list(root, join(prefix, e.name)) : [join(prefix, e.name)]).sort();
 
@@ -337,6 +325,7 @@ async function pruneStaged(keep) {
 const { save, loadPhase, assertPreserved, assertMigrated, ensureCodingBackup, prepare, swap, finish, recoverJournal } = browserDeployment({
   database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script: fileURLToPath(import.meta.url), oldRt, deploymentLock, signal,
   facts, quiet, service, proveStaged, verifyServiceStopped, leftFrom, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
+  processes, stopProcesses,
 });
 recover = recoverJournal;
 

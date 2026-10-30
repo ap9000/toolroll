@@ -50,6 +50,10 @@ export const REQUIRED_PR_CHECKS = [
   // The git lanes (ci.yml job "git"): the declared floor (git-floor.ts) and Debian trixie's 2.47.
   "git 2.41 · debian trixie",
   "git 2.47 · debian trixie",
+  // The unit suite on macOS (ci.yml jobs "macos-shard" and "macos"; pipeline-speed.md, item 3a): tested on the candidate
+  // before it merges, no longer only on the tag after.
+  "node 22 · macos-latest",
+  "node 24 · macos-latest",
 ] as const;
 /** The workflow file every REQUIRED_PR_CHECKS job belongs to: a job of that name from any other workflow (a lookalike
  * added beside it) never stands for it (Codex review round 1, inherited CI limitation). */
@@ -59,7 +63,7 @@ export const REQUIRED_PR_CHECKS_WORKFLOW = ".github/workflows/ci.yml";
  * git lanes join main's protection once they have run there, so a protection without them is reported, never refused.
  * A later release empties this list; from then on main's protection must name every REQUIRED_PR_CHECKS check.
  */
-export const PROTECTION_REPORT_ONLY_CHECKS: readonly string[] = ["git 2.41 · debian trixie", "git 2.47 · debian trixie"];
+export const PROTECTION_REPORT_ONLY_CHECKS: readonly string[] = ["git 2.41 · debian trixie", "git 2.47 · debian trixie", "node 22 · macos-latest", "node 24 · macos-latest"];
 /** The checks main's protection must require at minimum: every required check that isn't report-only. */
 export const PROTECTION_MINIMUM_CHECKS: readonly string[] = REQUIRED_PR_CHECKS.filter(name => !PROTECTION_REPORT_ONLY_CHECKS.includes(name));
 /**
@@ -69,8 +73,11 @@ export const PROTECTION_MINIMUM_CHECKS: readonly string[] = REQUIRED_PR_CHECKS.f
  * checks the effective layer doesn't name.
  */
 export type MainProtection = { effective: boolean; missing: string[]; notYetRequired: string[] };
-/** The checks a release tag runs (.github/workflows/publish.yml), awaited before Homebrew moves. */
-export const RELEASE_TAG_CHECKS = ["node 22 · macos-latest", "node 24 · macos-latest", "publish"] as const;
+/** The checks a release's publication waits for on its tag (.github/workflows/publish.yml, pipeline-speed.md item 3):
+ * the publish job and the macOS legs it needs, each named. Nothing else reported on the merge commit (main's own CI push
+ * run) holds publication. */
+export const RELEASE_TAG_CHECKS = ["publish", "tag macOS · node 22", "tag macOS · node 24"] as const;
+export const RELEASE_TAG_WORKFLOW = ".github/workflows/publish.yml";
 
 export const RELEASE_STEPS = ["gate", "approval", "check", "complete", "quiet", "deploy", "link", "ci", "merge", "tree", "tag", "publish", "homebrew", "done"] as const;
 export type ReleaseStep = typeof RELEASE_STEPS[number];
@@ -127,7 +134,13 @@ export type Installed = { services: string[]; clis: { name: string; runtime: str
 export type SavedLink = { name: string; path: string; before: string | null; foreign?: true };
 /** A deployment that stopped and couldn't recover. `gate`: the update pause it left, when its journal is before the swap. */
 export type DeployStop = { ok: false; message: string; gate?: { id: string; phase: string } };
-export type HomebrewState = { kind: "current" } | { kind: "proposed"; pr: number; head: string } | { kind: "missing" };
+/** The tap's formula for a version: current, a proposal open, missing — or `newer`: the tap's default branch already
+ * names a later version, which an older release must never overwrite. */
+export type HomebrewState = { kind: "current" } | { kind: "proposed"; pr: number; head: string } | { kind: "missing" } | { kind: "newer"; version: string };
+/** Homebrew after publication (pipeline-speed.md, P1): its own durable state, finished by `toolroll release <branch>`.
+ * `pending`: a change proposed or its checks still running; `failed`: its checks failed (a later run reads them again);
+ * `current`: merged, or already on the tap; `superseded`: the tap already names a newer version, so nothing was changed. */
+export type HomebrewProgress = "pending" | "failed" | "current" | "superseded";
 
 /** One commit that landed after the approval, with its files and line counts (release_carry). */
 export type LandedCommit = { sha: string; files: { path: string; added: number; deleted: number }[] };
@@ -249,7 +262,8 @@ export type ReleaseAdapters = {
   github: {
     authenticated(): Promise<boolean>;
     pullRequest(repo: string, branch: string): Promise<PullRequest | null>;
-    checks(repo: string, sha: string): Promise<CheckRun[]>;
+    /** `tag`: a release tag's push binds its workflow file too (only that exact tag's push). */
+    checks(repo: string, sha: string, options?: { tag?: string }): Promise<CheckRun[]>;
     /** Whether GitHub's check history of this commit can be read whole (fewer check suites than the check-runs
      * endpoint's ceiling). Absent or false: an automatic release fails closed; a person's is unaffected. */
     complete?(repo: string, sha: string): Promise<boolean>;
@@ -274,6 +288,9 @@ export type ReleaseAdapters = {
     statuses(head: string): Promise<CheckRun[]>;
     state(version: string): Promise<HomebrewState>;
     propose(version: string): Promise<{ pr: number; head: string }>;
+    /** Right before the merge: the change is the tap's own open pull request at exactly `head`, and its formula is
+     * exactly the tap's formula with npm's published tarball for `version` and that tarball's own sha256. */
+    verified(pr: number, head: string, version: string): Promise<{ ok: true } | { ok: false; why: string }>;
     merge(pr: number, head: string): Promise<void>;
   };
 };
@@ -305,7 +322,9 @@ export type ReleaseJournal = {
   merge: { sha: string; tree: string | null } | null;
   tagged: { sha: string } | null;
   published: { at: string } | null;
-  homebrew: { pr: number | null; head: string | null; merged: boolean } | null;
+  homebrew: { pr: number | null; head: string | null; merged: boolean;
+    /** Absent in a journal from before Homebrew was finished apart: read from `merged`. */
+    state?: HomebrewProgress; why?: string | null } | null;
   /** The release's authority record (release-once.md), once a person approved terms: the id and generation. */
   authority?: { id: number; generation: number } | null;
   /** Commits that landed after the approval, carried under it: each with its files and line counts. */
@@ -356,6 +375,8 @@ class Stop extends Error {
   /** `build`: the release build itself failed before its check (not a failed check). */
   constructor(readonly reason: string, message: string, readonly build = false) { super(message); }
 }
+/** The tap change's checks failed: Homebrew's own state, never a stop of a published release. */
+class HomebrewFailed extends Error {}
 /** The branch moved before the deploy reservation: carry the approval to the new head, or file it for a person. */
 class Restart extends Error {
   constructor(readonly head: string) { super(`restart at ${head}`); }
@@ -427,6 +448,19 @@ export function checksVerdict(runs: readonly CheckRun[], required: readonly stri
   return waiting.length > 0 ? { state: "pending", waiting } : { state: "passed" };
 }
 
+/**
+ * Publication's verdict on the tag commit (pipeline-speed.md, item 3): only RELEASE_TAG_CHECKS, from GitHub Actions
+ * runs of publish.yml bound to the tag's push, each by its newest attempt. Every other check on the merge commit — main's
+ * own CI run — is not waited for: the candidate's checks already passed on its exact head before the merge, and the
+ * merged tree was proved equal to it.
+ */
+export function tagChecksVerdict(runs: readonly CheckRun[]): ReturnType<typeof checksVerdict> {
+  const names: readonly string[] = RELEASE_TAG_CHECKS;
+  // Only GitHub Actions runs of publish.yml bound to the tag's own push (release-adapters.ts readCheckRuns): a check of
+  // the same name from another workflow, an unbound run or another app is never counted (security scan).
+  return checksVerdict(runs.filter(run => names.includes(run.name) && run.app === "github-actions" && workflowIs(run.workflowPath, RELEASE_TAG_WORKFLOW)), RELEASE_TAG_CHECKS);
+}
+
 /** Run the release from wherever its journal stopped. */
 export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapters): Promise<ReleaseOutcome> {
   const file = journalFile(options.stateDir, options.branch);
@@ -491,6 +525,8 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       say(`Released ${journal.tag} (${journal.candidate.sha.slice(0, 7)}) — nothing left to do.`);
       return { ok: true, journal, file };
     }
+    // Published, with Homebrew still to finish: this run finishes it, waiting for the tap's checks within its limit.
+    const finishingHomebrew = journal !== null && journal.step === "homebrew" && journal.published !== null && options.fresh !== true;
 
     if (!await adapters.github.authenticated()) throw new Stop("github-auth", "GitHub CLI is not signed in: run `gh auth login`, then rerun.");
     if (journal === null) {
@@ -525,6 +561,69 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       const pr = await adapters.github.pullRequest(j.github, j.branch);
       if (pr === null || pr.number !== j.pr || (pr.state === "open" && pr.head !== j.candidate.sha)) throw new Stop("drift", `Pull request #${j.pr} no longer has ${j.candidate.sha.slice(0, 7)} at its head.`);
       return pr;
+    };
+    // ---- Homebrew, finished apart from publication (pipeline-speed.md, P1) ------------------------------------------
+    let homebrewLeft: { state: "pending" | "failed"; why: string | null } | null = null;
+    /**
+     * One look at the tap: propose the formula change when it's missing, judge its checks (once, or within the Homebrew
+     * limit when `wait`), and merge exactly the proposed head once every check passed. A tap that already names a newer
+     * version is never overwritten, checked again right before the merge. Checksums come from npm's own tarball
+     * (release-adapters.ts propose), unchanged.
+     */
+    const homebrewPass = async (wait: boolean): Promise<{ state: HomebrewProgress; why: string | null }> => {
+      const brew = adapters.homebrew;
+      let state = await brew.state(j.packageVersion);
+      if (state.kind === "newer") return { state: "superseded", why: `the tap already names ${state.version}` };
+      if (state.kind === "current") return { state: "current", why: null };
+      // A change this release already proposed is the only one it ever merges (security scan): another pull request for
+      // the same version, a moved head or a closed change is failed, never adopted or merged.
+      const journaled = j.homebrew?.pr != null && j.homebrew.head != null ? { pr: j.homebrew.pr, head: j.homebrew.head } : null;
+      if (journaled !== null && state.kind === "missing") return { state: "failed", why: `${brew.repo} #${journaled.pr} was closed before it merged` };
+      if (journaled !== null && state.kind === "proposed" && (state.pr !== journaled.pr || state.head !== journaled.head)) {
+        return { state: "failed", why: `${brew.repo}'s change for ${j.packageVersion} is now #${state.pr} at ${state.head.slice(0, 7)}, not the #${journaled.pr} at ${journaled.head.slice(0, 7)} this release proposed` };
+      }
+      if (state.kind === "missing") { intend("homebrew"); const proposed = await brew.propose(j.packageVersion); state = { kind: "proposed", ...proposed }; }
+      const proposed = state;
+      j.homebrew = { pr: proposed.pr, head: proposed.head, merged: false, state: "pending", why: null };
+      save();
+      // Whatever checks do register are always judged; an empty set passes only for a tap whose workflows never run
+      // on a change, and only when it's still empty a poll later.
+      const checked = await brew.checked(proposed.head);
+      let emptyLooks = 0;
+      const probe = async (): Promise<true | null> => {
+        // Check runs and commit statuses are judged apart, so neither stands in for the other or hides its failure.
+        // Two apps may name a check alike; each app's attempts stand for themselves.
+        const runs = (await adapters.github.checks(brew.repo, proposed.head)).map(run => ({ ...run, name: `${run.app ?? "unknown app"}: ${run.name}` }));
+        const statuses = await brew.statuses(proposed.head);
+        const verdicts = [runs, statuses].filter(one => one.length > 0).map(one => checksVerdict(one, [...new Set(one.map(run => run.name))]));
+        const failed = verdicts.flatMap(one => one.state === "failed" ? one.failed : []);
+        if (failed.length > 0) throw new HomebrewFailed(`the tap change's checks failed: ${failed.join(", ")}`);
+        if (verdicts.some(one => one.state === "pending")) return null;
+        // GitHub registers checks asynchronously; an empty set says nothing about success.
+        // A workflow is owed: only its own run counts, not another app's green check.
+        if (checked && !runs.some(run => run.app === "github-actions")) return null;
+        if (runs.length === 0 && statuses.length === 0) return ++emptyLooks >= 2 ? true : null;
+        return true;
+      };
+      try {
+        const passed = wait ? await waitFor("homebrew", `the Homebrew change's checks (${brew.repo} #${proposed.pr})`, probe) : await probe();
+        if (passed === null) return { state: "pending", why: `${brew.repo} #${proposed.pr}'s checks are still running` };
+      } catch (error) {
+        if (error instanceof HomebrewFailed) return { state: "failed", why: `${brew.repo} #${proposed.pr}: ${error.message}` };
+        // Waiting ran out: still pending, never a stop of a published release.
+        if (error instanceof Stop && error.reason === "timeout") return { state: "pending", why: error.message };
+        throw error;
+      }
+      // Ordering, once more right before the merge: a newer formula landed meanwhile is never overwritten.
+      const now = await brew.state(j.packageVersion);
+      if (now.kind === "newer") return { state: "superseded", why: `the tap already names ${now.version}` };
+      if (now.kind === "missing") return { state: "failed", why: `${brew.repo} #${proposed.pr} was closed before it merged` };
+      if (now.kind === "proposed" && now.head !== proposed.head) return { state: "failed", why: `${brew.repo} #${proposed.pr} moved to ${now.head.slice(0, 7)} after its checks were read` };
+      if (now.kind === "current") return { state: "current", why: null };
+      const verified = await brew.verified(proposed.pr, proposed.head, j.packageVersion);
+      if (!verified.ok) return { state: "failed", why: verified.why };
+      await brew.merge(proposed.pr, proposed.head);
+      return { state: "current", why: null };
     };
     // ---- one approval per release (release-once.md) -------------------------------------------------------------
     const rel = adapters.release;
@@ -755,7 +854,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
     if (j.needsApproval === true) throw new Stop("ci-failed", `A pull request check failed after the deploy, so ${j.candidate.sha.slice(0, 7)} needs a person's approval again: run \`toolroll release ${j.branch} --repo ${j.checkout} --new\`.`);
     // A resumed release that already has an authority takes its lease and settles every open operation first.
     await hold();
-    while (j.step !== "done") {
+    while (j.step !== "done" && homebrewLeft === null) {
       step = j.step;
       say(`• ${j.step}`);
       try {
@@ -1117,7 +1216,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           if (j.intents.publish === undefined) intend("publish");
           await waitFor("publish", `npm, the GitHub release and the tag's checks for ${j.tag}`, async () => {
             if (await adapters.github.tag(j.github, j.tag) !== j.tagged!.sha) throw new Stop("conflict", `${j.tag} no longer points at the verified merge commit. Homebrew was not updated.`);
-            const verdict = checksVerdict(await adapters.github.checks(j.github, j.tagged!.sha), RELEASE_TAG_CHECKS);
+            const verdict = tagChecksVerdict(await adapters.github.checks(j.github, j.tagged!.sha, { tag: j.tag }));
             if (verdict.state === "failed") throw new Stop("publish-failed", `The release tag's checks failed: ${verdict.failed.join(", ")}. Homebrew was not updated.`);
             if (verdict.state === "pending") return null;
             return await adapters.registry.published(j.packageName, j.packageVersion) && await adapters.github.release(j.github, j.tag) ? true : null;
@@ -1128,35 +1227,13 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
         }
         case "homebrew": {
           await publishHold();
-          const brew = adapters.homebrew;
-          let state = await brew.state(j.packageVersion);
-          if (state.kind === "missing") { intend("homebrew"); const proposed = await brew.propose(j.packageVersion); state = { kind: "proposed", ...proposed }; }
-          if (state.kind === "proposed") {
-            const proposed = state;
-            j.homebrew = { pr: proposed.pr, head: proposed.head, merged: false };
-            save();
-            // Whatever checks do register are always judged; an empty set passes only for a tap whose workflows never run
-            // on a change, and only when it's still empty a poll later.
-            const checked = await brew.checked(proposed.head);
-            let emptyLooks = 0;
-            await waitFor("homebrew", `the Homebrew change's checks (${brew.repo} #${proposed.pr})`, async () => {
-              // Check runs and commit statuses are judged apart, so neither stands in for the other or hides its failure.
-              // Two apps may name a check alike; each app's attempts stand for themselves.
-              const runs = (await adapters.github.checks(brew.repo, proposed.head)).map(run => ({ ...run, name: `${run.app ?? "unknown app"}: ${run.name}` }));
-              const statuses = await brew.statuses(proposed.head);
-              const verdicts = [runs, statuses].filter(one => one.length > 0).map(one => checksVerdict(one, [...new Set(one.map(run => run.name))]));
-              const failed = verdicts.flatMap(one => one.state === "failed" ? one.failed : []);
-              if (failed.length > 0) throw new Stop("homebrew-failed", `The Homebrew change's checks failed: ${failed.join(", ")}.`);
-              if (verdicts.some(one => one.state === "pending")) return null;
-              // GitHub registers checks asynchronously; an empty set says nothing about success.
-              // A workflow is owed: only its own run counts, not another app's green check.
-              if (checked && !runs.some(run => run.app === "github-actions")) return null;
-              if (runs.length === 0 && statuses.length === 0) return ++emptyLooks >= 2 ? true : null;
-              return true;
-            });
-            await brew.merge(proposed.pr, proposed.head);
-          }
-          j.homebrew = { pr: j.homebrew?.pr ?? null, head: j.homebrew?.head ?? null, merged: true };
+          // Homebrew is finished apart from publication (pipeline-speed.md, P1): npm and the GitHub release are verified,
+          // so the release is published. This run proposes the tap's change and reads its checks once; only a run that
+          // resumes to finish Homebrew waits for them. Pending or failed, the state is kept and the run ends published.
+          const progress = await homebrewPass(finishingHomebrew);
+          j.homebrew = { pr: j.homebrew?.pr ?? null, head: j.homebrew?.head ?? null, merged: progress.state === "current" && j.homebrew?.head != null ? true : j.homebrew?.merged ?? false, state: progress.state, why: progress.why };
+          save();
+          if (progress.state === "pending" || progress.state === "failed") { homebrewLeft = { state: progress.state, why: progress.why }; break; }
           advance("done");
           break;
         }
@@ -1166,8 +1243,11 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
         await restart(error.head);
       }
     }
-    say(`Released ${j.tag}: deployed, merged as ${j.merge!.sha.slice(0, 7)}, tagged, published and on Homebrew.`);
-    if (j.auto?.state === "approved") { try { await rel?.auto?.released(j.task.id, j.tag); } catch { /* the release is done; the note is best effort */ } }
+    const left = homebrewLeft as { state: "pending" | "failed"; why: string | null } | null;
+    if (left === null) say(`Released ${j.tag}: deployed, merged as ${j.merge!.sha.slice(0, 7)}, tagged, published and ${j.homebrew?.state === "superseded" ? `left Homebrew as it is (${j.homebrew.why ?? "the tap names a newer version"})` : "on Homebrew"}.`);
+    else say(`Published ${j.tag} (deployed, merged as ${j.merge!.sha.slice(0, 7)}, tagged, on npm and GitHub); Homebrew ${left.state}${left.why === null ? "" : `: ${left.why}`}. Finish it with \`${resume}\`.`);
+    // The automatic road's note, once: when this run published (a run that only finishes Homebrew already said it).
+    if (j.auto?.state === "approved" && !finishingHomebrew) { try { await rel?.auto?.released(j.task.id, j.tag); } catch { /* the release is done; the note is best effort */ } }
     for (const line of landedWords(j.landed ?? [])) say(line);
     return { ok: true, journal: j, file };
   } catch (error) {

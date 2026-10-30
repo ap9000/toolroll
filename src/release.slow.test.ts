@@ -15,6 +15,8 @@ const DIGEST = "scope-digest-1", RECEIPT = "receipt-1";
 const T0 = Date.parse("2026-10-08T09:00:00.000Z");
 // GitHub's workflow-run path of each job: a required check counts only from ci.yml (codex round 1, inherited CI limitation).
 const passing = (names: readonly string[]): CheckRun[] => names.map(name => ({ name, status: "completed", conclusion: "success", workflowPath: ".github/workflows/ci.yml" }));
+/** The tag's checks, from publish.yml. */
+const tagPassing = (names: readonly string[]): CheckRun[] => names.map(name => ({ name, status: "completed", conclusion: "success", workflowPath: ".github/workflows/publish.yml" }));
 const MUTATIONS = ["fileGate", "complete", "deploy", "merge", "deleteBranch", "createTag", "propose", "brewMerge"] as const;
 type Mutation = typeof MUTATIONS[number];
 
@@ -57,6 +59,8 @@ function world(options: { crashAfter?: Mutation } = {}) {
     brew: { kind: "missing" } as HomebrewState,
     brewChecked: true,
     brewStatuses: [] as CheckRun[],
+    /** What the adapter's check of the change at its exact head says (its own branch, npm's tarball and sha256). */
+    brewVerified: { ok: true } as { ok: true } | { ok: false; why: string },
     /** Whether GitHub's check history reads whole (fewer than 1000 suites). */
     ciComplete: true,
     calls: [] as string[],
@@ -142,7 +146,7 @@ function world(options: { crashAfter?: Mutation } = {}) {
       createTag: async (_repo, tag, sha) => {
         s.tags.set(tag, sha);
         s.published = true; s.released = true;
-        s.checks.set(sha, passing(RELEASE_TAG_CHECKS));
+        s.checks.set(sha, tagPassing(RELEASE_TAG_CHECKS));
         landed("createTag");
       },
       release: async () => s.released,
@@ -154,13 +158,26 @@ function world(options: { crashAfter?: Mutation } = {}) {
       statuses: async () => structuredClone(s.brewStatuses),
       state: async () => structuredClone(s.brew),
       propose: async () => { s.brew = { kind: "proposed", pr: 12, head: OTHER }; landed("propose"); return { pr: 12, head: OTHER }; },
+      verified: async () => structuredClone(s.brewVerified),
       merge: async () => { s.brew = { kind: "current" }; landed("brewMerge"); },
     },
   };
   return { s, adapters };
 }
 
+type World = ReturnType<typeof world>["s"];
 const stateDir = () => mkdtempSync(join(tmpdir(), "so-release-"));
+const state = <T>(s: T): T => s;
+
+/** Homebrew after publication (pipeline-speed.md, P1): the release run publishes and leaves Homebrew in `expected`;
+ * a later run that finishes it (waiting within the limit) leaves it there too, still published and never merged. */
+async function expectHomebrew(adapters: Parameters<typeof runRelease>[1], expected: "pending" | "failed", extra: Partial<Parameters<typeof runRelease>[0]> = {}) {
+  const dir = stateDir();
+  for (let run = 0; run < 2; run++) {
+    const outcome = await runRelease(options(dir, extra), adapters);
+    expect(outcome).toMatchObject({ ok: true, journal: { step: "homebrew", published: expect.anything(), homebrew: { state: expected, merged: false } } });
+  }
+}
 const options = (dir: string, extra: Partial<Parameters<typeof runRelease>[0]> = {}) => ({ branch: "toolroll/simplify-release", checkout: "/rv", stateDir: dir, pollMs: 15_000, ...extra });
 
 describe("toolroll release", () => {
@@ -565,7 +582,7 @@ describe("toolroll release", () => {
     const held = world();
     held.s.protection = { effective: true, missing: [], notYetRequired: [...PROTECTION_REPORT_ONLY_CHECKS] };
     expect(await runRelease(options(stateDir()), held.adapters)).toMatchObject({ ok: true });
-    expect(held.s.said).toContainEqual(expect.stringContaining("main's protection doesn't require git 2.41 · debian trixie, git 2.47 · debian trixie yet"));
+    expect(held.s.said).toContainEqual(expect.stringContaining("main's protection doesn't require git 2.41 · debian trixie, git 2.47 · debian trixie, node 22 · macos-latest, node 24 · macos-latest yet"));
     expect(held.s.said.some(line => line.includes("Warning:"))).toBe(false);
   });
 
@@ -613,7 +630,7 @@ describe("toolroll release", () => {
     const tag = adapters.github.createTag;
     adapters.github.createTag = async (...args) => {
       await tag(...args);
-      s.checks.set(MERGE, [...passing(RELEASE_TAG_CHECKS.filter(one => one !== name)), { name, status: "completed", conclusion: "failure" }]);
+      s.checks.set(MERGE, [...tagPassing(RELEASE_TAG_CHECKS.filter(one => one !== name)), { name, status: "completed", conclusion: "failure", workflowPath: ".github/workflows/publish.yml" }]);
     };
     const result = await runRelease(options(stateDir()), adapters);
     expect(result).toMatchObject({ ok: false, step: "publish", reason: "publish-failed" });
@@ -643,14 +660,82 @@ describe("toolroll release", () => {
         ? [...passing(["lint"]), { name: "brew test", status: "in_progress", conclusion: null, app: "github-actions" }]
         : passing(["lint", "brew test"]).map(run => ({ ...run, app: "github-actions" })));
     });
-    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
+    // The release is published at once; Homebrew is left pending, and the next run finishes it, waiting for the checks.
+    const dir = stateDir();
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true, journal: { step: "homebrew", published: expect.anything(), homebrew: { state: "pending", merged: false } } });
+    expect(state(s).calls).not.toContain("brewMerge");
+    expect(waits).toBe(0);
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true, journal: { step: "done", homebrew: { state: "current", merged: true } } });
     expect(waits).toBe(2);
+  });
+
+  test("an older release never overwrites a newer formula: before proposing, and right before merging", async () => {
+    const before = world();
+    before.s.brew = { kind: "newer", version: "0.9.60" };
+    expect(await runRelease(options(stateDir()), before.adapters)).toMatchObject({ ok: true, journal: { step: "done", homebrew: { state: "superseded", merged: false } } });
+    expect(before.s.calls).not.toContain("propose");
+    expect(before.s.calls).not.toContain("brewMerge");
+    // A newer formula lands while the change's checks run: the change is never merged over it.
+    const during = world();
+    during.adapters.homebrew.statuses = async () => { if (during.s.brew.kind === "proposed") during.s.brew = { kind: "newer", version: "0.9.60" }; return []; };
+    expect(await runRelease(options(stateDir()), during.adapters)).toMatchObject({ ok: true, journal: { homebrew: { state: "superseded" } } });
+    expect(during.s.calls).toContain("propose");
+    expect(during.s.calls).not.toContain("brewMerge");
+  });
+
+  test.each([
+    ["another pull request for the same version", (s: World) => { s.brew = { kind: "proposed", pr: 99, head: OTHER }; }],
+    ["the proposed change's head moved", (s: World) => { s.brew = { kind: "proposed", pr: 12, head: "f".repeat(40) }; }],
+    ["the proposed change was closed (a fork's of the same name never counts as it)", (s: World) => { s.brew = { kind: "missing" }; }],
+  ] as const)("security scan: finishing Homebrew never merges when %s", async (_name, change) => {
+    const { s, adapters } = world();
+    s.checks.set(`brew:${OTHER}`, []);
+    const dir = stateDir();
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true, journal: { homebrew: { state: "pending", pr: 12, head: OTHER } } });
+    change(s);
+    s.checks.set(`brew:${OTHER}`, passing(["brew test"]).map(run => ({ ...run, app: "github-actions" })));
+    expect(await runRelease(options(dir), adapters)).toMatchObject({ ok: true, journal: { step: "homebrew", homebrew: { state: "failed", merged: false } } });
+    expect(s.calls).not.toContain("brewMerge");
+    expect(s.calls.filter(one => one === "propose")).toHaveLength(1);
+  });
+
+  test("security scan: a change whose formula isn't npm's tarball with its sha256 (or isn't the tap's own) is never merged", async () => {
+    const { s, adapters } = world();
+    s.brewVerified = { ok: false, why: "ap9000/homebrew-toolroll #12's formula isn't npm's 0.9.52 tarball with its sha256 aaaaaaaaaaaa" };
+    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true, journal: { homebrew: { state: "failed", why: expect.stringContaining("sha256") } } });
+    expect(s.calls).not.toContain("brewMerge");
+  });
+
+  test("pipeline-speed item 3: publication waits for publish.yml's named jobs only, never main's own CI on the merge commit", async () => {
+    const { tagChecksVerdict } = await import("./release.js");
+    const PUBLISH = ".github/workflows/publish.yml";
+    const one = (name: string, workflowPath: string | null, conclusion = "success", status = "completed", app: string | null = "github-actions") => ({ name, status, conclusion: status === "completed" ? conclusion : null, workflowPath, app });
+    const tag = RELEASE_TAG_CHECKS.map(name => one(name, PUBLISH));
+    // main's push CI still running (or failed) on the merge commit doesn't hold the published release.
+    expect(tagChecksVerdict([...tag, one("node 22 · macos-latest", ".github/workflows/ci.yml", "", "in_progress"), one("node 24 · ubuntu-latest", ".github/workflows/ci.yml", "failure")])).toEqual({ state: "passed" });
+    // The publish job skipped (a macOS leg failed) or failed is a failed publication; not started yet is pending.
+    expect(tagChecksVerdict([...tag.filter(run => run.name !== "publish"), one("publish", PUBLISH, "skipped")])).toMatchObject({ state: "failed" });
+    expect(tagChecksVerdict([])).toMatchObject({ state: "pending" });
+    // Security scan: a check of the same name from another workflow, from a run with no bound path, or from another app
+    // never stands in for it.
+    for (const fake of [one("publish", ".github/workflows/other.yml"), one("publish", null), one("publish", PUBLISH, "success", "completed", "vercel")]) {
+      expect(tagChecksVerdict([...tag.filter(run => run.name !== "publish"), fake])).toMatchObject({ state: "pending" });
+    }
+  });
+
+  test("the CLI says the release is published and Homebrew pending, and how to finish it", async () => {
+    const { s, adapters } = world();
+    s.checks.set(`brew:${OTHER}`, []);
+    const lines: string[] = [];
+    const dir = stateDir();
+    expect(await runRelease(options(dir), { ...adapters, say: line => lines.push(line) })).toMatchObject({ ok: true });
+    expect(lines.at(-1)).toMatch(/^Published v0\.9\.52 .*; Homebrew pending: .*Finish it with `toolroll release toolroll\/simplify-release --repo \/rv`\.$/);
   });
 
   test("Homebrew with no registered checks times out without merging", async () => {
     const { s, adapters } = world();
     s.checks.set(`brew:${OTHER}`, []);
-    expect(await runRelease(options(stateDir(), { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "timeout" });
+    await expectHomebrew(adapters, "pending", { limits: { homebrew: 1 } });
     expect(s.calls).not.toContain("brewMerge");
   });
 
@@ -658,7 +743,9 @@ describe("toolroll release", () => {
     const { s, adapters } = world();
     s.brewChecked = false;
     s.checks.set(`brew:${OTHER}`, []);
-    expect(await runRelease(options(stateDir(), { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: true });
+    const dir = stateDir();
+    expect(await runRelease(options(dir, { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: true, journal: { step: "homebrew" } });
+    expect(await runRelease(options(dir, { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: true, journal: { step: "done" } });
     expect(s.calls).toContain("brewMerge");
   });
 
@@ -667,7 +754,7 @@ describe("toolroll release", () => {
     s.brewChecked = false;
     s.checks.set(`brew:${OTHER}`, []);
     s.brewStatuses = [{ name: "status: external", status: "completed", conclusion: "failure" }];
-    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "homebrew-failed" });
+    await expectHomebrew(adapters, "failed");
     expect(s.calls).not.toContain("brewMerge");
   });
 
@@ -675,14 +762,14 @@ describe("toolroll release", () => {
     const { s, adapters } = world();
     s.checks.set(`brew:${OTHER}`, []);
     s.brewStatuses = [{ name: "status: lint", status: "completed", conclusion: "success" }];
-    expect(await runRelease(options(stateDir(), { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "timeout" });
+    await expectHomebrew(adapters, "pending", { limits: { homebrew: 1 } });
     expect(s.calls).not.toContain("brewMerge");
   });
 
   test("another app's green check doesn't stand in for the tap's own workflow", async () => {
     const { s, adapters } = world();
     s.checks.set(`brew:${OTHER}`, [{ name: "Vercel", status: "completed", conclusion: "success", app: "vercel" }]);
-    expect(await runRelease(options(stateDir(), { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "timeout" });
+    await expectHomebrew(adapters, "pending", { limits: { homebrew: 1 } });
     expect(s.calls).not.toContain("brewMerge");
   });
 
@@ -692,7 +779,7 @@ describe("toolroll release", () => {
       { name: "brew test", status: "completed", conclusion: "failure", app: "github-actions" },
       { name: "brew test", status: "completed", conclusion: "success", app: "vercel" },
     ]);
-    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "homebrew-failed" });
+    await expectHomebrew(adapters, "failed");
     expect(s.calls).not.toContain("brewMerge");
   });
 
@@ -700,14 +787,14 @@ describe("toolroll release", () => {
     const { s, adapters } = world();
     s.checks.set(`brew:${OTHER}`, [{ name: "status: external", status: "completed", conclusion: "failure" }]);
     s.brewStatuses = [{ name: "status: external", status: "completed", conclusion: "success" }];
-    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "homebrew-failed" });
+    await expectHomebrew(adapters, "failed");
     expect(s.calls).not.toContain("brewMerge");
   });
 
   test("a pending status holds the merge even when the checks passed", async () => {
     const { s, adapters } = world();
     s.brewStatuses = [{ name: "status: external", status: "in_progress", conclusion: null }];
-    expect(await runRelease(options(stateDir(), { limits: { homebrew: 1 } }), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "timeout" });
+    await expectHomebrew(adapters, "pending", { limits: { homebrew: 1 } });
     expect(s.calls).not.toContain("brewMerge");
   });
 
@@ -715,14 +802,14 @@ describe("toolroll release", () => {
     const { s, adapters } = world();
     s.brewChecked = false;
     s.checks.set(`brew:${OTHER}`, [{ name: "external CI", status: "completed", conclusion: "failure" }]);
-    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "homebrew-failed" });
+    await expectHomebrew(adapters, "failed");
     expect(s.calls).not.toContain("brewMerge");
   });
 
   test.each(["failure", "skipped", "cancelled", "timed_out"])("Homebrew refuses a %s check", async conclusion => {
     const { s, adapters } = world();
     s.checks.set(`brew:${OTHER}`, [...passing(["lint"]), { name: "brew test", status: "completed", conclusion }]);
-    expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "homebrew", reason: "homebrew-failed" });
+    await expectHomebrew(adapters, "failed");
     expect(s.calls).not.toContain("brewMerge");
   });
 
@@ -1622,8 +1709,8 @@ describe("toolroll release: approve automatically when checks pass", () => {
       // The PR workflow (workflow 1), matrix names and all, green.
       ...(await ci(repo, sha)).map(run => ({ ...run, workflow: 1 })),
       // macos.yml run by hand twice on this commit: the first run failed, the second (a newer suite) passed.
-      { id: 500, name: "node 22 · macos-latest", status: "completed", conclusion: "failure", app: "github-actions", suite: 20, head: sha, workflow: 9 },
-      { id: 600, name: "node 22 · macos-latest", status: "completed", conclusion: "success", app: "github-actions", suite: 21, head: sha, workflow: 9 },
+      { id: 500, name: "nightly macOS · node 22", status: "completed", conclusion: "failure", app: "github-actions", suite: 20, head: sha, workflow: 9 },
+      { id: 600, name: "nightly macOS · node 22", status: "completed", conclusion: "success", app: "github-actions", suite: 21, head: sha, workflow: 9 },
     ];
     expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: true });
     expect(s.calls).toContain("merge");

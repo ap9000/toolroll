@@ -84,7 +84,7 @@ describe("what the agent did last", () => {
     register(store, { name: "builder-1", host: "here", capacity: 1, now: T0, newToken: () => "tok" });
     const run = startRun("t-3");
     const of = (runner: string, now: Date) => runActivityOf(store, { id: run, runner, startedAt: T0.toISOString() }, now).worker;
-    expect(of("builder-1", at(60))).toBe("online");
+    expect(of("builder-1", at(30))).toBe("online");
     expect(of("builder-1", at(4 * 60))).toBe("offline");
     expect(of("somewhere-else", at(4 * 60))).toBe("online");
   });

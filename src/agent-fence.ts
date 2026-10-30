@@ -33,6 +33,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import { readMonitoring } from "./monitoring-settings.js";
 import { existingFolders } from "./names.js";
 import { ensureGitViewsRoot, gitViewsRoot } from "./git-views.js";
+import { ensureRunnerProcessFolder, RUNNER_PROCESS_DIR } from "./runner-process.js";
 import { DEPS_FOLDER, linkedKey, readyCopy, sharedCopies } from "./shared-deps.js";
 import type { LoopbackMode } from "./egress.js";
 import type { ExecutionProfile } from "./scope.js";
@@ -145,6 +146,15 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
     const present = (): boolean => { try { lstatSync(runFolder!); return true; } catch { return false; } };
     if (!present()) { try { mkdirSync(runFolder, { mode: 0o700 }); } catch { /* fenced below either way */ } }
     fence.add(runFolder);
+    const runnerFolder = join(state, RUNNER_PROCESS_DIR);
+    try { ensureRunnerProcessFolder(runnerFolder); } catch { /* both the name and its target stay denied */ }
+    fence.add(runnerFolder);
+    fence.add(real(runnerFolder));
+    // A copy may first appear after launch. Fence its permanent namespace even when empty.
+    const backups = join(state, "backups");
+    try { mkdirSync(backups, { mode: 0o700 }); } catch { /* name and target remain denied */ }
+    fence.add(backups);
+    fence.add(real(backups));
     // Only a folder that is Toolroll's own (~/.config/toolroll or an older name,
     // the desktop app's "Toolroll") is fenced whole: a database kept
     // in a shared folder (a projects folder, a test's temp folder) must not
@@ -177,7 +187,7 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   for (const path of options.extra ?? []) fence.add(real(path));
   // Secret, state, database, explicit-extra and home-config denies are never exemptible.
   for (const path of options.boundary?.protectedShell ?? []) fence.add(real(path));
-  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder ? [path, real(path)] : [real(path)]));
+  const protectedPaths = new Set([...fence].flatMap(path => path === runFolder || [RUNNER_PROCESS_DIR, "backups"].includes(basename(path)) ? [path, real(path)] : [real(path)]));
   // Protected storage (chat apps, browser profiles, password managers): every launch, every policy, never exemptible,
   // kept by the name it was resolved under as well as where it leads.
   const storage = options.protectedStorage ?? protectedStorageDenies(home);
@@ -185,7 +195,7 @@ export function agentFence(options: { databaseFile: string | null; worktree: str
   for (const path of options.boundary?.shell ?? []) fence.add(path);
   const binding = options.binding;
   const needed = binding === undefined || binding === null ? [] : [binding.gitdir, real(join(binding.main, ".git"))];
-  return [...new Set([...[...fence].flatMap(path => path === runFolder ? [path, real(path)] : [real(path)]), ...storage.flatMap(path => [path, real(path)])])].filter(path => {
+  return [...new Set([...[...fence].flatMap(path => path === runFolder || [RUNNER_PROCESS_DIR, "backups"].includes(basename(path)) ? [path, real(path)] : [real(path)]), ...storage.flatMap(path => [path, real(path)])])].filter(path => {
     if (protectedPaths.has(path) || !needed.some(target => target === path || inside(target, path))) return true;
     console.warn(`Dropped build fence entry covering this checkout's own Git data: ${path}`);
     return false;

@@ -107,6 +107,7 @@ import { prepareWorkspaceRevision,WorkspaceValidatorCache } from "./workspace-re
  */
 
 import { createHash,randomBytes } from "node:crypto";
+import { keepSlowRequest, Timeline } from "./latency-timeline.js";
 import { readFileSync } from "node:fs";
 import { createServer,type IncomingMessage,type Server,type ServerResponse } from "node:http";
 import { homedir,hostname } from "node:os";
@@ -768,6 +769,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // uses the address it reached), reads one row, and says nothing else about the installation.
     const method = request.method ?? "GET";
     const matchedRoute = matchRoute(method, hook.pathname);
+    // Where a slow answer's time went (latency-timeline.ts): milestones by route id only, kept when it took a second.
+    const timeline = new Timeline();
+    timeline.mark("route matched");
     const edgeRoute = matchedRoute?.stage === 'edge' ? matchedRoute : null;
     const wrongMethodEdge = edgeRoute === null ? ROUTES.find(row => row.stage === 'edge' && new RegExp(row.pattern).test(hook.pathname)) ?? null : null;
     // D7: a password on a request still signs in this release, announced on every answer and named in every refusal;
@@ -823,6 +827,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (refuseBudget(admitPasswordSource(request))) return;
     const refusedToken: { principal?: Principal } = {};
     const who = identify(request, touch, edgeRoute?.domain === 'live', refusedToken);
+    timeline.mark("signed in");
     if (refusedToken.principal !== undefined) {
       if (refuseBudget(requestBudget.admit(refusedToken.principal.tokenId, "api"))) return;
       if (method === "POST") {
@@ -869,7 +874,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       freshWork: ["request", "task", "result"].some(name => url.searchParams.has(name)),
       ...(workspaceRead && typeof request.headers['if-none-match'] === 'string' ? { workspaceIfNoneMatch: request.headers['if-none-match'] } : {}),
       workspaceRequest: url.searchParams.get('request'),
+      timeline,
     };
+    response.once("finish", () => keepSlowRequest(store, timeline, matchedRoute?.id ?? "unmatched", response.statusCode, clock()));
     if (method === "GET" || method === "POST") return freshFacts.run(fresh, () => provenPasswordAccount.run(passwordProof, () => requestContext.run(requestFacts, async () => {
       if (edgeRoute?.domain === 'live') return dispatchEdge(edgeRoute, { url, who, request, response, method });
       const body = method === "POST" ? await form(request, (matchedRoute?.stage === "console" ? matchedRoute.bodyCap : undefined) ?? BODY_CAP) : null;
@@ -919,6 +926,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
               etag: '"' + createHash('sha256').update(`${key}:${revision}:${expiresAt}`).digest('hex') + '"' };
           }
           await prefetchChrome(route, url, who);
+          timeline.mark("chrome and worker reads");
           // The worker wait lets a sign-out, credential/access change or console ceiling change land. Prove the
           // cookie and route again before rendering protected content or answering with a content validator.
           if (who.via === 'cookie') {
@@ -1418,6 +1426,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * are what sensitivity strips.
    */
   function sendScreen(response: ServerResponse, status: number, s: Screen): void {
+    requestContext.getStore()?.timeline?.mark("handler done; rendering");
     // Sensitivity is the page as authored (cockpit §2, R14): its own explicit word, else a password field it was written
     // with — judged before an identity-provider sign-in replaces that field, so an SSO step-up page stays sensitive.
     const authored = s.sensitive ?? (
@@ -1448,6 +1457,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const notices = [...(extras.notices ?? [])];
       if (s.chrome.modeBanner) notices.push(s.chrome.modeBanner.words);
       if (s.chrome.updateWaiting) notices.push(s.chrome.updateWaiting.words);
+      if (options.draining?.() === true) notices.push('Toolroll is restarting (draining). Saved work is kept; new builds start once it is back.');
       let crew: Pick<BrowserWorkspace, 'crew' | 'crewTruncated'> = { crew: [], crewTruncated: false };
       try {
         const project = s.chrome.active === 'chat' ? null : s.chrome.project;

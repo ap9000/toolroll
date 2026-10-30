@@ -672,6 +672,22 @@ describe("codex r1 #3: the cap counts every attempt GitHub holds, read through t
     expect(env?.["GH_CONFIG_DIR"]).toBeUndefined();
   });
 
+  test("security scan (pipeline-speed item 3): only the release tag's own push binds a workflow path; another branch's push never does", async () => {
+    const sha = "a".repeat(40);
+    const fake = (runs: Record<string, unknown>[]): Exec => async (_cmd, args) => {
+      const url = args.find(arg => arg.startsWith("repos/")) ?? "";
+      if (url.includes("/check-runs")) return { code: 0, stdout: runs.map((_, i) => JSON.stringify({ id: i + 1, name: "publish", status: "completed", conclusion: "success", app: "github-actions", suite: 10 + i, head: sha })).join("\n") + "\n", stderr: "" };
+      if (url.includes("/actions/runs")) return { code: 0, stdout: runs.map((run, i) => JSON.stringify({ suite: 10 + i, workflow: 7, path: ".github/workflows/publish.yml", head: sha, bases: [], prs: [], ...run })).join("\n") + "\n", stderr: "" };
+      return { code: 1, stdout: "", stderr: "unexpected" };
+    };
+    const runs = [{ event: "push", branch: "v0.9.78" }, { event: "push", branch: "v0.9.79" }, { event: "push", branch: "feature" }, { event: "workflow_dispatch", branch: "v0.9.78" }, { event: "push", branch: "main" }];
+    const read = await readCheckRuns(fake(runs), "/usr/bin/gh", "ap9000/toolroll", sha, { tag: "v0.9.78" });
+    expect(read.map(one => one.workflowPath)).toEqual([".github/workflows/publish.yml", null, null, null, null]);
+    // A normal main-check read binds main alone; a tag that is not a release tag is refused.
+    expect((await readCheckRuns(fake(runs), "/usr/bin/gh", "ap9000/toolroll", sha)).map(one => one.workflowPath)).toEqual([null, null, null, null, ".github/workflows/publish.yml"]);
+    await expect(readCheckRuns(fake(runs), "/usr/bin/gh", "ap9000/toolroll", sha, { tag: "main" })).rejects.toThrow();
+  });
+
   test("a row GitHub answers that can't be read, or the same run twice, stops the read", async () => {
     const bad: Exec = async () => ({ code: 0, stdout: `{"id":"x","name":"a","status":"completed"}\n`, stderr: "" });
     await expect(readCheckRuns(bad, "/usr/bin/gh", "ap9000/toolroll", "a".repeat(40))).rejects.toThrow();

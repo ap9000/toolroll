@@ -8,7 +8,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
-import { recoverFailedDeployment, recoverOnExit, waitUntilHealthy } from '../scripts/deploy-recovery.mjs';
+import { HEALTH_WAIT_MS, RUNNER_LIVENESS_MS, recoverFailedDeployment, recoverOnExit, waitUntilHealthy } from '../scripts/deploy-recovery.mjs';
+import { DEFAULT_LIVENESS_MS } from './runner.js';
 import { codingBackupBeforeSwap, processTree, recordedServicePids, restoreDeploymentBackup, stopProved } from '../scripts/deploy-phases.mjs';
 import { releaseStaleCodingOwner } from './coding-update.js';
 import { fakePid } from '../test/fake-pid.js';
@@ -88,6 +89,29 @@ test('a refusal before the swap only lifts the pause; an unproven stop or a star
   const proven = effects(true);
   expect(recoverFailedDeployment('stopping', proven)).toMatch(/running again/);
   expect(proven.done).toEqual(['prove stop', 'restore service', 'mark restored', 'remove gate', 'mark released']);
+});
+
+test('recovery never stops a current service on the authority of a historical journal', () => {
+  for (const phase of ['stopping', 'rehearsed', 'restored', 'starting', 'started', 'released']) {
+    let asked = false;
+    const e = { ...effects(false), forceStop: () => { asked = true; return true; } };
+    const result = recoverFailedDeployment(phase, e);
+    expect(asked).toBe(false);
+    if (phase === 'stopping') {
+      expect(result).toBeNull();
+      expect(e.done).toEqual(['prove stop']);
+    }
+  }
+  const proven = effects(true);
+  expect(recoverFailedDeployment('stopping', proven)).toMatch(/running again/);
+  expect(proven.done).toEqual(['prove stop', 'restore service', 'mark restored', 'remove gate', 'mark released']);
+});
+
+test('the health wait outlasts a stale worker heartbeat', () => {
+  // A restarted `up` is refused while its predecessor's heartbeat holds the name (runner.ts DEFAULT_LIVENESS_MS).
+  expect(RUNNER_LIVENESS_MS).toBe(DEFAULT_LIVENESS_MS);
+  expect(HEALTH_WAIT_MS).toBeGreaterThanOrEqual(DEFAULT_LIVENESS_MS + 30_000);
+  expect(HEALTH_WAIT_MS).toBeGreaterThanOrEqual(90_000);
 });
 
 test('a deploy that fails while preparing lifts only a pause it holds, and otherwise stays resumable', () => {

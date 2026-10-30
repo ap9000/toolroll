@@ -99,7 +99,7 @@ import type { ProgressSnapshot } from "./plan.js";
 import { parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-progress.js";
 
 import { authorityStandsSql } from "./approval-authority.js";
-import { releasePolicyDigest, storedReleaseTerms, readReleaseTerms, readReleasePolicy, type ReleaseTerms, type ReleasePolicy } from "./contracts/release-terms.js";
+import { releasePolicyDigest, serializeReleaseCheckPurpose, storedReleaseCheckPurpose, storedReleaseTerms, readReleaseTerms, readReleasePolicy, type ReleaseCheckPurpose, type ReleaseTerms, type ReleasePolicy } from "./contracts/release-terms.js";
 import { accountReachesSql, normalizeProjectAccess, projectAccessAllows, readProjectAccess, type ProjectAccess } from "./project-access.js";
 import { LEDGER_COLUMNS, LEDGER_SCHEMA, LEDGER_TABLE, LEDGER_V99_TABLE, installLedgerTriggers, type LedgerEntry } from "./action-ledger.js";
 import { PLAN_AUTO_SCHEMA } from "./plan-auto.js";
@@ -490,6 +490,50 @@ CREATE INDEX IF NOT EXISTS run_live_open ON run (id) WHERE outcome IS NULL AND i
 CREATE INDEX IF NOT EXISTS run_live_recent ON run (finished_at) WHERE outcome IS NOT NULL AND id > 0;
 `;
 
+/** v137 (docs/plans/actors-lessons.md): explicit lifecycle, latency timelines and the continuous database copy. New
+ * tables only. A lifecycle row's `holder` binds it to one registration (a worker's registered_at) or one console
+ * process; a row whose holder no longer matches says nothing. Timelines are bounded and pruned as they are written. */
+export const V137_SCHEMA = `
+CREATE TABLE IF NOT EXISTS service_lifecycle (
+  component   TEXT PRIMARY KEY,
+  state       TEXT NOT NULL CHECK (state IN ('started','draining','stopped')),
+  holder      TEXT NOT NULL,
+  pid         INTEGER,
+  changed_at  TEXT NOT NULL,
+  beat_at     TEXT NOT NULL,
+  drain_until TEXT
+);
+CREATE TABLE IF NOT EXISTS latency_timeline (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind            TEXT NOT NULL CHECK (kind IN ('console','release-check','deploy')),
+  subject         TEXT NOT NULL,
+  task_id         TEXT,
+  run_id          INTEGER,
+  started_at      TEXT NOT NULL,
+  total_ms        INTEGER NOT NULL,
+  milestones_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS latency_timeline_by_kind ON latency_timeline (kind, id);
+CREATE INDEX IF NOT EXISTS latency_timeline_by_run ON latency_timeline (run_id) WHERE run_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS latency_timeline_by_task ON latency_timeline (task_id) WHERE task_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS live_backup (
+  id            INTEGER PRIMARY KEY CHECK (id = 1),
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  every_minutes INTEGER NOT NULL DEFAULT 5,
+  keep          INTEGER NOT NULL DEFAULT 24,
+  folder        TEXT,
+  holder        TEXT,
+  held_until    TEXT,
+  latest_file   TEXT,
+  latest_sha256 TEXT,
+  latest_at     TEXT,
+  latest_schema INTEGER,
+  latest_bytes  INTEGER,
+  tried_at      TEXT,
+  problem       TEXT
+);
+`;
+
 /** A project's "Show commands in the live view" (live-detail.ts): absent means off. */
 export const LIVE_DETAIL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS live_detail_setting (
@@ -807,7 +851,14 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v136 adds, and changes no saved row: each run's own "Show commands in the live view" answer, captured once before its
 // live file opens (run_live_detail; docs/plans/agents-view.md §2.4). Saved runs have none, which every reader takes as
 // commands off: permission is never recovered from a transcript or the project's current setting.
-export const SCHEMA_VERSION = 136;
+// v137 adds, and changes no saved row (docs/plans/actors-lessons.md): each service component's lifecycle
+// (service_lifecycle: started, draining or stopped, with a short heartbeat), bounded per-operation latency timelines
+// (latency_timeline: slow console requests, release check parts, deploy phases) and the continuous database copy's
+// settings and latest verified copy (live_backup, one row; absent reads every 5 minutes, keep 24, beside the database).
+// v138 adds, and changes no saved row: a release check's purpose (task_scope.release_check_json; docs/plans/
+// pipeline-speed.md, P0) — this exact candidate is a release's check, for a release that can't carry. Saved rows read
+// NULL: no purpose (a termsless release task stays exactly as it was approved).
+export const SCHEMA_VERSION = 138;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -945,7 +996,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -1074,6 +1125,11 @@ export const V134_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
 /** v135 (docs/plans/release-once.md): a scope's release terms, part of its digest when present. Saved rows read NULL. */
 export const V135_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
   task_scope: { release_terms_json: { definition: "TEXT", saved: "NULL" } },
+});
+/** v138 (docs/plans/pipeline-speed.md, P0): a scope's release check purpose, part of its digest when present. Saved
+ * rows read NULL. */
+export const V138_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  task_scope: { release_check_json: { definition: "TEXT", saved: "NULL" } },
 });
 /**
  * v135: one approval per release (docs/plans/release-once.md). `release_authority` is the single source of truth for a
@@ -5340,6 +5396,12 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   }
   // v136: each run's own live-view answer (a new table only; saved runs have none: commands off).
   db.exec(RUN_LIVE_DETAIL_SCHEMA);
+  // v137: lifecycle, latency timelines and the continuous copy (new tables only).
+  db.exec(V137_SCHEMA);
+  // v138: a scope's release check purpose (V138_ADDED_COLUMNS: saved rows NULL, no purpose).
+  for (const [table, columns] of Object.entries(V138_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -8064,11 +8126,13 @@ export class Store {
       proposedVia?: ScopeAuthor | null;
       /** v135: release terms (release-once.md); undefined keeps the ones the scope carries, null removes them. */
       releaseTerms?: ReleaseTerms | null;
+      /** v138: a release check's purpose; undefined keeps the scope's, null removes it. Never beside terms. */
+      releaseCheck?: ReleaseCheckPurpose | null;
     } = {},
   ): void {
     this.once(mutation, "saveScope", () => this.transact(() => {
       // The text's current author mark, read before this write (approval policy §1.4).
-      const prior = this.db.prepare("SELECT proposed_via, release_terms_json FROM task_scope WHERE task_id = ?").get(scope.taskId);
+      const prior = this.db.prepare("SELECT proposed_via, release_terms_json, release_check_json FROM task_scope WHERE task_id = ?").get(scope.taskId);
       // THE filing invariant (foundations findings 5/13/19): every scope
       // row leaves this method either RESOLVED (working profile stamped,
       // digest recomputed to bind it, version 2) or UNRESOLVED with its
@@ -8230,6 +8294,11 @@ export class Store {
       // v135: release terms the caller names, else the ones this scope already carries (a refile keeps them bound).
       const priorTerms = storedReleaseTerms(prior?.["release_terms_json"]);
       const releaseTerms = options.releaseTerms !== undefined ? options.releaseTerms : priorTerms.ok ? priorTerms.terms : null;
+      // v138: the release check purpose likewise; terms named now replace a kept purpose (a scope carries one or the other).
+      const priorPurpose = storedReleaseCheckPurpose(prior?.["release_check_json"]);
+      const releaseCheck = options.releaseCheck !== undefined ? options.releaseCheck
+        : options.releaseTerms != null ? null : priorPurpose.ok ? priorPurpose.purpose : null;
+      if (releaseTerms !== null && releaseCheck !== null) throw new Error("A scope carries release terms or a release check purpose, never both.");
       const digestInput = {
         goal: scope.goal,
         outOfScope: scope.outOfScope,
@@ -8239,6 +8308,7 @@ export class Store {
         qualityMode,
         candidate: scope.candidate ?? null,
         releaseTerms,
+        releaseCheck,
       };
       // EVERY route filed since v47 binds into the digest — routine-shaped
       // ones included — so approval freezes exactly which agent runs each
@@ -8270,8 +8340,8 @@ export class Store {
           `INSERT INTO task_scope
              (task_id, goal, out_of_scope, touches, budget_microusd, proposed_at, digest, approved_at, approved_by, approved_digest,
               profile_json, profile_state, unresolved_reason, digest_version, profile_provenance, proposed_chain_json, acceptance_json, quality_mode,
-              risk_level, proposed_route_json, route_era, candidate, release_terms_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              risk_level, proposed_route_json, route_era, candidate, release_terms_json, release_check_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (task_id) DO UPDATE SET
              goal = excluded.goal, out_of_scope = excluded.out_of_scope,
              touches = excluded.touches, budget_microusd = excluded.budget_microusd,
@@ -8283,7 +8353,7 @@ export class Store {
              profile_provenance = excluded.profile_provenance, proposed_chain_json = excluded.proposed_chain_json,
              acceptance_json = excluded.acceptance_json, quality_mode = excluded.quality_mode,
              risk_level = excluded.risk_level, proposed_route_json = excluded.proposed_route_json, route_era = excluded.route_era,
-             candidate = excluded.candidate, release_terms_json = excluded.release_terms_json`,
+             candidate = excluded.candidate, release_terms_json = excluded.release_terms_json, release_check_json = excluded.release_check_json`,
         )
         .run(
           scope.taskId,
@@ -8313,6 +8383,7 @@ export class Store {
           ROUTE_ERA,
           scope.candidate ?? null,
           releaseTerms === null ? null : serializeReleaseTerms(releaseTerms),
+          releaseCheck === null ? null : serializeReleaseCheckPurpose(releaseCheck),
         );
       // Who wrote THIS text (mate arc, ruling 2): set per write, so a human
       // rewrite clears the lead's mark and a mate rewrite sets it — but only a
@@ -8431,7 +8502,12 @@ export class Store {
         // A DEPLOY GATE FROM CHAT (chat-management.md §0a.5): a signed candidate or release terms seal from chat only
         // with the release card's evidence (its act and card digest), never through the plain plan card or a generic
         // one. Read from the raw row, so a terms column that doesn't parse is a deploy gate too.
-        const deployGate = (typeof working["candidate"] === "string" && working["candidate"] !== "") || working["release_terms_json"] != null;
+        const deployGate = (typeof working["candidate"] === "string" && working["candidate"] !== "") || working["release_terms_json"] != null || working["release_check_json"] != null;
+        // A RELEASE CHECK PURPOSE (v138) seals, like terms, only on a person's own yes: the ceremony or a paired-chat tap
+        // through the release card — never a mode, a grant, a carry or an automatic seal (those need terms).
+        const purpose = storedReleaseCheckPurpose(working["release_check_json"]);
+        if (!purpose.ok) return false;
+        if (purpose.purpose !== null && basis !== undefined && basis.kind !== "chat") return false;
         if (deployGate && basis?.kind === "chat" && !(basis.card === "release" && typeof basis.cardDigest === "string" && /^[0-9a-f]{64}$/.test(basis.cardDigest))) return false;
         // AUTOMATIC RELEASE SEALS (auto-approve-green.md): only on a release task (a candidate and release terms signed
         // in), only naming the evidence row the plane wrote for exactly this task, kind, digest and candidate.
@@ -13675,7 +13751,7 @@ export class Store {
     if (route === null) {
       return { ok: false, reason: "unreadable", detail: scope.approvedRouteJson == null ? "the approval sealed no agent route — re-file the scope and approve it again" : "the approval's sealed agent route cannot be read — re-file the scope and approve it again" };
     }
-    const fields = { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default", releaseTerms: scope.releaseTerms ?? null };
+    const fields = { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default", releaseTerms: scope.releaseTerms ?? null, releaseCheck: scope.releaseCheck ?? null };
     const chain = scope.approvalKind === "chain" ? chainFromJson(scope.approvedChainJson ?? null) : null;
     const target = chain !== null ? { chain } : (scope.approvedProfile ?? null);
     if (target === null) return { ok: false, reason: "unreadable", detail: "the approval sealed no agent profile — re-file the scope and approve it again" };
@@ -20745,7 +20821,8 @@ export class Store {
     | { ok: false; reason: "watch-busy"; holder: string; until: string } {
     return this.transact(() => {
       const stamp = now.toISOString();
-      const expires = new Date(now.getTime() + ttlMs).toISOString();
+      // Never longer than MAX_WATCH_LEASE_MS, whatever a caller asks: a crashed holder's project is free within a minute.
+      const expires = new Date(now.getTime() + Math.min(ttlMs, MAX_WATCH_LEASE_MS)).toISOString();
       const row = this.db
         .prepare("SELECT * FROM watch_lease WHERE runner = ? AND repo = ?")
         .get(runner, repo);
@@ -20790,7 +20867,7 @@ export class Store {
           WHERE runner = ? AND repo = ? AND owner = ? AND expires_at > ?`,
       )
       .run(
-        new Date(now.getTime() + ttlMs).toISOString(),
+        new Date(now.getTime() + Math.min(ttlMs, MAX_WATCH_LEASE_MS)).toISOString(),
         now.toISOString(),
         runner,
         repo,
@@ -20804,6 +20881,13 @@ export class Store {
     this.db
       .prepare("UPDATE watch_lease SET expires_at = ? WHERE runner = ? AND repo = ? AND owner = ?")
       .run(now.toISOString(), runner, repo, owner);
+  }
+
+  /** Lapse every watch lease a runner holds now: its holder was proved gone (runner.ts registerRunnerIfIdle). The rows
+   * stay, so the next acquire takes them over and recovers the superseded incarnation as after any crash. */
+  expireWatchLeasesOf(runner: string, now: Date): number {
+    const stamp = now.toISOString();
+    return Number(this.db.prepare("UPDATE watch_lease SET expires_at = ? WHERE runner = ? AND expires_at > ?").run(stamp, runner, stamp).changes);
   }
 
   /** The first still-unexpired watch lease this runner holds, if any (arc 2:
@@ -23961,6 +24045,12 @@ export function scopeTermsProblem(row: Record<string, unknown>): string | null {
     const terms = storedReleaseTerms(row["release_terms_json"]);
     if (!terms.ok) return terms.problem;
   }
+  // v138: likewise the release check purpose, and never beside terms.
+  if ("release_check_json" in row) {
+    const purpose = storedReleaseCheckPurpose(row["release_check_json"]);
+    if (!purpose.ok) return purpose.problem;
+    if (purpose.purpose !== null && row["release_terms_json"] != null) return "the scope carries both release terms and a release check purpose";
+  }
   for (const column of ["approved_at", "approved_by", "approved_digest", "profile_json", "approved_profile_json", "proposed_chain_json", "approved_chain_json", "proposed_route_json", "approved_route_json", "unresolved_reason"]) {
     if (row[column] !== null && row[column] !== undefined && typeof row[column] !== "string") return `${column.replace(/_/g, " ")} is not stored as text`;
   }
@@ -24013,6 +24103,7 @@ function readScope(row: Record<string, unknown>): Scope {
     routeEra: row["route_era"] === null || row["route_era"] === undefined ? null : Number(row["route_era"]),
     candidate: typeof row["candidate"] === "string" && row["candidate"] !== "" ? row["candidate"] : null,
     releaseTerms: (() => { const read = storedReleaseTerms(row["release_terms_json"]); return read.ok ? read.terms : null; })(),
+    releaseCheck: (() => { const read = storedReleaseCheckPurpose(row["release_check_json"]); return read.ok ? read.purpose : null; })(),
     proposedVia: row["proposed_via"] === "mate" || row["proposed_via"] === "coordinator" || row["proposed_via"] === "scout" || row["proposed_via"] === "lead" ? row["proposed_via"] : null,
   };
 }
@@ -24715,4 +24806,164 @@ export function predecessorWatches(store: Store, runner: string, now: Date): { r
           AND (c.released_at IS NULL OR EXISTS (SELECT 1 FROM run r WHERE r.lease_id = c.lease_id AND r.outcome IS NULL))))
       ORDER BY w.repo`,
   ).all(runner, now.toISOString()).map(row => ({ repo: String(row["repo"]), owner: String(row["owner"]) }));
+}
+
+// ---- v137: lifecycle, latency timelines, the continuous copy (docs/plans/actors-lessons.md) ----------------------
+
+/** The longest a watch lease is taken or renewed for (durable-actors' MAX_HOST_LEASE_DURATION_MS). */
+export const MAX_WATCH_LEASE_MS = 60_000;
+
+/** A service component's lifecycle (durable-actors' host lifecycle reports): started, then heartbeats, then draining
+ * (no new admission; its own drain ends by drain_until), then stopped (retired). */
+export type LifecycleState = "started" | "draining" | "stopped";
+export type LifecycleRow = { component: string; state: LifecycleState; holder: string; pid: number | null; changedAt: string; beatAt: string; drainUntil: string | null };
+
+function lifecycleRowOf(row: Record<string, unknown>): LifecycleRow {
+  return { component: String(row["component"]), state: String(row["state"]) as LifecycleState, holder: String(row["holder"]), pid: row["pid"] == null ? null : Number(row["pid"]),
+    changedAt: String(row["changed_at"]), beatAt: String(row["beat_at"]), drainUntil: row["drain_until"] == null ? null : String(row["drain_until"]) };
+}
+
+/** One component's lifecycle row, or null (never reported: a component from before v137 says nothing). */
+export function lifecycleOf(store: Store, component: string): LifecycleRow | null {
+  const row = store.handle.prepare("SELECT * FROM service_lifecycle WHERE component = ?").get(component);
+  return row === undefined ? null : lifecycleRowOf(row);
+}
+
+/** Every reported component, by name. */
+export function lifecycles(store: Store): LifecycleRow[] {
+  return store.handle.prepare("SELECT * FROM service_lifecycle ORDER BY component").all().map(lifecycleRowOf);
+}
+
+/**
+ * Report a component's state. `started` replaces whatever an earlier holder left; `draining` and `stopped` only move the
+ * current holder's row (a stale process can't mark its successor draining), and never back from stopped. Returns
+ * whether the row now says what was asked.
+ */
+export function reportLifecycle(store: Store, component: string, state: LifecycleState, holder: string, now: Date, extra: { pid?: number | null; drainUntil?: Date | null } = {}): boolean {
+  const stamp = now.toISOString();
+  const until = extra.drainUntil == null ? null : extra.drainUntil.toISOString();
+  if (state === "started") {
+    store.handle.prepare(`INSERT INTO service_lifecycle (component, state, holder, pid, changed_at, beat_at, drain_until) VALUES (?, 'started', ?, ?, ?, ?, NULL)
+      ON CONFLICT(component) DO UPDATE SET state = 'started', holder = excluded.holder, pid = excluded.pid, changed_at = excluded.changed_at, beat_at = excluded.beat_at, drain_until = NULL`)
+      .run(component, holder, extra.pid ?? null, stamp, stamp);
+    return true;
+  }
+  const changed = store.handle.prepare(`UPDATE service_lifecycle SET state = ?, changed_at = ?, beat_at = ?, drain_until = CASE WHEN ? = 'draining' THEN ? ELSE drain_until END
+    WHERE component = ? AND holder = ? AND state <> 'stopped'`).run(state, stamp, stamp, state, until, component, holder).changes;
+  return Number(changed) === 1;
+}
+
+/** The short heartbeat: the current holder's row, while it is not stopped. False means another holder took it. */
+export function beatLifecycle(store: Store, component: string, holder: string, now: Date): boolean {
+  return Number(store.handle.prepare("UPDATE service_lifecycle SET beat_at = ? WHERE component = ? AND holder = ? AND state <> 'stopped'")
+    .run(now.toISOString(), component, holder).changes) === 1;
+}
+
+/** A milestone in a latency timeline: what happened, how long after the operation began (ms), and an optional short
+ * reason. Never a secret: route ids, phase and part names, fixed reason words. */
+export type Milestone = { name: string; ms: number; detail?: string };
+export type LatencyKind = "console" | "release-check" | "deploy";
+export type LatencyTimeline = { id: number; kind: LatencyKind; subject: string; taskId: string | null; runId: number | null; startedAt: string; totalMs: number; milestones: Milestone[] };
+/** At most this many milestones per timeline (the rest are dropped, the last kept), and timelines kept per kind. */
+export const MAX_MILESTONES = 40;
+export const TIMELINES_KEPT = 200;
+/** Timelines older than this go whatever their count. */
+export const TIMELINE_DAYS = 14;
+
+const plainText = (value: string, max: number): string => value.replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, max);
+
+/** Milestones made safe to keep: bounded in number and length, offsets whole non-negative milliseconds, in order. */
+export function boundedMilestones(milestones: readonly Milestone[]): Milestone[] {
+  const clean = milestones.filter(one => typeof one.name === "string" && Number.isFinite(one.ms)).map(one => ({
+    name: plainText(one.name, 80), ms: Math.max(0, Math.round(one.ms)),
+    ...(typeof one.detail === "string" && one.detail.trim() !== "" ? { detail: plainText(one.detail, 160) } : {}),
+  })).filter(one => one.name !== "");
+  return clean.length <= MAX_MILESTONES ? clean : [...clean.slice(0, MAX_MILESTONES - 1), clean[clean.length - 1]!];
+}
+
+/** Keep one timeline, then prune its kind to the newest TIMELINES_KEPT within TIMELINE_DAYS. */
+export function recordLatencyTimeline(store: Store, entry: { kind: LatencyKind; subject: string; taskId?: string | null; runId?: number | null; startedAt: Date; totalMs: number; milestones: readonly Milestone[] }, now: Date): number {
+  return store.transact(() => {
+    const id = Number(store.handle.prepare(`INSERT INTO latency_timeline (kind, subject, task_id, run_id, started_at, total_ms, milestones_json) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(entry.kind, plainText(entry.subject, 120), entry.taskId ?? null, entry.runId ?? null, entry.startedAt.toISOString(), Math.max(0, Math.round(entry.totalMs)),
+        JSON.stringify(boundedMilestones(entry.milestones))).lastInsertRowid);
+    const cutoff = new Date(now.getTime() - TIMELINE_DAYS * 86_400_000).toISOString();
+    store.handle.prepare(`DELETE FROM latency_timeline WHERE kind = ? AND (started_at < ? OR id <= (SELECT id FROM latency_timeline WHERE kind = ? ORDER BY id DESC LIMIT 1 OFFSET ?))`)
+      .run(entry.kind, cutoff, entry.kind, TIMELINES_KEPT);
+    return id;
+  });
+}
+
+/** Timelines, newest first: of one kind, one run's, or one task's. A row that doesn't read is left out. */
+export function latencyTimelines(store: Store, filter: { kind?: LatencyKind; runId?: number; taskId?: string; limit?: number }): LatencyTimeline[] {
+  const where: string[] = [], args: (string | number)[] = [];
+  if (filter.kind !== undefined) { where.push("kind = ?"); args.push(filter.kind); }
+  if (filter.runId !== undefined && filter.taskId !== undefined) { where.push("(run_id = ? OR task_id = ?)"); args.push(filter.runId, filter.taskId); }
+  else if (filter.runId !== undefined) { where.push("run_id = ?"); args.push(filter.runId); }
+  else if (filter.taskId !== undefined) { where.push("task_id = ?"); args.push(filter.taskId); }
+  const rows = store.handle.prepare(`SELECT * FROM latency_timeline${where.length === 0 ? "" : ` WHERE ${where.join(" AND ")}`} ORDER BY id DESC LIMIT ?`).all(...args, Math.min(200, Math.max(1, filter.limit ?? 20)));
+  return rows.flatMap(row => {
+    let milestones: Milestone[];
+    try { const parsed: unknown = JSON.parse(String(row["milestones_json"])); milestones = Array.isArray(parsed) ? boundedMilestones(parsed as Milestone[]) : []; } catch { return []; }
+    return [{ id: Number(row["id"]), kind: String(row["kind"]) as LatencyKind, subject: String(row["subject"]), taskId: row["task_id"] == null ? null : String(row["task_id"]),
+      runId: row["run_id"] == null ? null : Number(row["run_id"]), startedAt: String(row["started_at"]), totalMs: Number(row["total_ms"]), milestones }];
+  });
+}
+
+/** The continuous copy (live-backup.ts): how often, how many, where (null: `backups/live` beside the database). */
+export type LiveBackupSettings = { enabled: boolean; everyMinutes: number; keep: number; folder: string | null };
+export const DEFAULT_LIVE_BACKUP: LiveBackupSettings = { enabled: true, everyMinutes: 5, keep: 24, folder: null };
+/** The latest copy that passed its integrity check, as it was when it was made. */
+export type LiveBackupCopy = { file: string; sha256: string; madeAt: string; schemaVersion: number; bytes: number };
+export type LiveBackupState = { settings: LiveBackupSettings; latest: LiveBackupCopy | null; triedAt: string | null; problem: string | null };
+
+export function liveBackupState(store: Store): LiveBackupState {
+  const row = store.handle.prepare("SELECT * FROM live_backup WHERE id = 1").get();
+  if (row === undefined) return { settings: { ...DEFAULT_LIVE_BACKUP }, latest: null, triedAt: null, problem: null };
+  const latest = row["latest_file"] == null || row["latest_sha256"] == null || row["latest_at"] == null || row["latest_schema"] == null ? null
+    : { file: String(row["latest_file"]), sha256: String(row["latest_sha256"]), madeAt: String(row["latest_at"]), schemaVersion: Number(row["latest_schema"]), bytes: Number(row["latest_bytes"] ?? 0) };
+  return { settings: { enabled: Number(row["enabled"]) === 1, everyMinutes: Number(row["every_minutes"]), keep: Number(row["keep"]), folder: row["folder"] == null ? null : String(row["folder"]) },
+    latest, triedAt: row["tried_at"] == null ? null : String(row["tried_at"]), problem: row["problem"] == null ? null : String(row["problem"]) };
+}
+
+const liveBackupWords = (one: LiveBackupSettings): string => `${one.enabled ? `every ${one.everyMinutes} min` : "off"}, keep ${one.keep}, ${one.folder ?? "the default folder"}`;
+
+/** Change the continuous copy's settings; the ledger keeps before → after. A new folder forgets the latest copy (it is
+ * in the old one). */
+export function setLiveBackupSettings(store: Store, next: LiveBackupSettings, by: string, now: Date): LiveBackupSettings {
+  return store.transact(() => {
+    const before = liveBackupState(store).settings;
+    store.handle.prepare(`INSERT INTO live_backup (id, enabled, every_minutes, keep, folder) VALUES (1, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET enabled = excluded.enabled, every_minutes = excluded.every_minutes, keep = excluded.keep, folder = excluded.folder`)
+      .run(next.enabled ? 1 : 0, next.everyMinutes, next.keep, next.folder);
+    if (before.folder !== next.folder) store.handle.prepare("UPDATE live_backup SET latest_file = NULL, latest_sha256 = NULL, latest_at = NULL, latest_schema = NULL, latest_bytes = NULL WHERE id = 1").run();
+    if (liveBackupWords(before) !== liveBackupWords(next)) {
+      store.recordAction({ at: now.toISOString(), actor: by, repo: null, taskId: null, runId: null, action: "continuous backup settings changed", outcome: "changed", source: "policy", detail: `${liveBackupWords(before)} → ${liveBackupWords(next)}` });
+    }
+    return liveBackupState(store).settings;
+  });
+}
+
+/** Take (or keep) the continuous copy's lease until `until`: one process copies at a time. */
+export function holdLiveBackup(store: Store, holder: string, now: Date, until: Date): boolean {
+  return store.transact(() => {
+    store.handle.prepare("INSERT OR IGNORE INTO live_backup (id) VALUES (1)").run();
+    return Number(store.handle.prepare("UPDATE live_backup SET holder = ?, held_until = ? WHERE id = 1 AND (holder IS NULL OR holder = ? OR held_until IS NULL OR held_until < ?)")
+      .run(holder, until.toISOString(), holder, now.toISOString()).changes) === 1;
+  });
+}
+
+export function releaseLiveBackup(store: Store, holder: string): void {
+  store.handle.prepare("UPDATE live_backup SET holder = NULL, held_until = NULL WHERE id = 1 AND holder = ?").run(holder);
+}
+
+/** A copy's outcome: a verified copy becomes the latest; a failure is kept as the problem (the latest stays). */
+export function recordLiveBackup(store: Store, outcome: { ok: true; copy: LiveBackupCopy } | { ok: false; problem: string }, now: Date): void {
+  store.handle.prepare("INSERT OR IGNORE INTO live_backup (id) VALUES (1)").run();
+  if (outcome.ok) {
+    store.handle.prepare("UPDATE live_backup SET latest_file = ?, latest_sha256 = ?, latest_at = ?, latest_schema = ?, latest_bytes = ?, tried_at = ?, problem = NULL WHERE id = 1")
+      .run(outcome.copy.file, outcome.copy.sha256, outcome.copy.madeAt, outcome.copy.schemaVersion, outcome.copy.bytes, now.toISOString());
+  } else {
+    store.handle.prepare("UPDATE live_backup SET tried_at = ?, problem = ? WHERE id = 1").run(now.toISOString(), plainText(outcome.problem, 300));
+  }
 }

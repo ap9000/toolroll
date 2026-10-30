@@ -51,6 +51,7 @@ import { tally } from "../summary.js";
 import type { EdgeContext,HandlerContext } from './handler-context.js';
 import { serveInstallAsset } from "./pages-assets.js";
 import { healthz } from "./remote-hooks.js";
+import { slowRequestLines, SLOW_REQUEST_MS } from "../latency-timeline.js";
 import type { ServerRuntime } from './runtime.js';
 import { leadsStillAdmitted, leadTilesFor } from './agents-live-lead.js';
 import { refuse, regionScript, screen, settingsRows, WORKSPACE_STYLE, workToolRows, type NavRow } from "./chrome.js";
@@ -660,9 +661,12 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   async function health(ctx: HandlerContext): Promise<void> {
     const { request, response } = ctx;
     const health = store.telemetry.snapshot();
+    // Beside /healthz, for an instance operator: where the slowest recent console answers spent their time (route ids
+    // and milestones only).
+    const slow = slowRequestLines(store);
     return request.headers.accept?.includes('application/json')
-      ? respond(response, 200, 'application/json; charset=utf-8', JSON.stringify(health))
-      : respond(response, 200, 'text/plain; charset=utf-8', `${healthWords(health)}\n`);
+      ? respond(response, 200, 'application/json; charset=utf-8', JSON.stringify({ ...health, slowRequests: slow }))
+      : respond(response, 200, 'text/plain; charset=utf-8', `${healthWords(health)}\n${slow.length === 0 ? "" : `\nSlow console requests (over ${SLOW_REQUEST_MS} ms), newest first:\n${slow.join("\n")}\n`}`);
   }
 
   // v104: Prometheus metrics, for an instance operator (a scraper sends one's API token).
@@ -1015,7 +1019,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
 
   async function healthzEdge(ctx: EdgeContext): Promise<void> {
     const { response, method } = ctx;
-    return healthz(store, response, method === 'HEAD');
+    return healthz(store, response, method === 'HEAD', options.draining?.() === true);
   }
 
   async function browserAsset(ctx: EdgeContext): Promise<void> {

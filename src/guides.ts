@@ -498,13 +498,17 @@ with a time limit.
 10. **tree**: main's merge commit must have exactly the gated tree, or
    nothing is tagged.
 11. **tag**: pushes \`v<version>\` on that merge commit. In publish.yml,
-    macOS Node 22 and 24 must both pass before npm and GitHub publication.
+    macOS Node 22 and 24 must both pass before npm and GitHub publication
+    (the candidate's macOS checks already passed in ci.yml before the merge).
     macos.yml keeps the nightly matrix.
-12. **publish**: waits for npm, the GitHub release and the tag's macOS
-    and publish checks.
-13. **homebrew**: updates the tap's formula, waits for checks to register
-    and every registered check to pass, then merges. No checks means waiting,
-    within the Homebrew time limit; a failed or skipped check stops the release.
+12. **publish**: waits for npm, the GitHub release and the tag's publish
+    job (which needs the macOS legs); not main's own CI on the merge commit.
+13. **homebrew**: the release is published once npm and the GitHub release
+    are verified. It proposes the tap's formula change (checksum from npm's
+    tarball) and looks at its checks once: \`Published; Homebrew pending\`
+    (or failed) ends the run, and the same command finishes it later, waiting
+    for checks to register and every one to pass, then merging exactly that
+    change. A tap already on a newer version is never moved back.
 
 ## When it stops
 
@@ -524,8 +528,10 @@ instead of making them twice.
   A stop at the gate comes before the task is filed, so nothing was filed
   either: a fix pushed as a new commit is released with \`--new\`; after
   rerunning the failed job on GitHub, run the same command again.
-- \`publish-failed\` / \`homebrew-failed\`: fix the failed workflow before
-  resuming. A failed tag check cannot finish publication or update Homebrew.
+- \`publish-failed\`: fix the failed workflow before resuming. A failed tag
+  check cannot finish publication or update Homebrew.
+- Homebrew failed: the release is still published. Fix or rerun the tap's
+  check, then run the same command to finish Homebrew.
 - \`base-moved\`: the branch is behind main (it doesn't contain main's
   head), so the merge wouldn't be the tree CI tested. Checked at the gate
   (nothing filed) and again right before merging (nothing merged): update
@@ -537,6 +543,10 @@ instead of making them twice.
 - An interrupted deployment resumes with \`deploy-browser.mjs --stage <saved
   path> --phase recover\` before any new attempt, including \`--new\`.
   Failed recovery stops there; the original deployment journal remains available.
+  \`toolroll release --recover-deploy\` shows what that recovery will do for
+  the one unfinished deployment, and \`--yes\` runs it: when the old service
+  isn't proved stopped it stops only processes proved to be that service's
+  own, restarts the previous service and lifts the pause. Safe to rerun.
 - \`link\`: a CLI name didn't answer as the new build, so both were put
   back. The service already runs the new build; fix the name and rerun.
 - \`gate-held\`: the deployment stopped before its swap but left new work

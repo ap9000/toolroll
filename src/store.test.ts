@@ -1168,6 +1168,7 @@ describe("the watch foundations", () => {
     store.createTask({ id: "t-1", title: "w" }, T0);
     const ref = store.refFor(BUILT_IN, "t-1").id;
     store.placeTask(ref, REPO);
+    store.acquireWatchLease("builder-1", REPO, "inc-a", 60_000, T0);
     // The dead incarnation's claim, task mid-flight, run open, worktree leased.
     acquire(store, ref, "builder-1", { token: tok("builder-1"), now: T0, ttlMs: 60 * 60_000, newLeaseId: () => "lease-a", incarnation: "inc-a" });
     store.setTaskState("t-1", "running", T0);
@@ -1202,7 +1203,10 @@ describe("the watch foundations", () => {
     const two = store.refFor(BUILT_IN, "t-2").id;
     store.placeTask(one, REPO);
     store.placeTask(two, REPO);
+    store.acquireWatchLease("builder-1", REPO, "inc-a", 60_000, T0);
     acquire(store, one, "builder-1", { token: tok("builder-1"), now: T0, newLeaseId: () => "lease-old", incarnation: "inc-a" });
+    store.releaseWatchLease("builder-1", REPO, "inc-a", T0);
+    store.acquireWatchLease("builder-1", REPO, "inc-b", 60_000, T0);
     acquire(store, two, "builder-1", { token: tok("builder-1"), now: T0, newLeaseId: () => "lease-live", incarnation: "inc-b" });
 
     expect(store.recoverIncarnation("builder-1", "inc-a", later(1_000))).toBe(1);

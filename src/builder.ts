@@ -62,12 +62,13 @@ import { runWithIsolatedDatabase } from "./child-database.js";
 import { recordWorktreeProcess, saveWorkPatch } from "./worktree.js";
 import type { Decision, RunCheckSuite, SteerNote, Store } from "./store.js";
 import { launchSandboxOf, protectedChanges, protectedLinks } from "./agent-fence.js";
-import { approvalOf, digestOf, idleClock, isAcpProfile, profileDigestOf, routeParityProblem, watchdogsOf, type ExecutionProfile, type Scope } from "./scope.js";
+import { approvalOf, digestOf, idleClock, isAcpProfile, profileDigestOf, releaseCheckScope, routeParityProblem, watchdogsOf, type ExecutionProfile, type Scope } from "./scope.js";
 import { legOf, routeDigestOf, routeFromJson, type RouteStamp } from "./phase-routing.js";
 import { execFileSync } from "node:child_process";
 import { currentClaim, heartbeat, SYNC_MAX_AGE_MS, finalize } from "./claim.js";
 import { missingCapability } from "./dispatch.js";
-import { heartbeat as runnerHeartbeat } from "./runner.js";
+import { heartbeat as runnerHeartbeat, RUNNER_HEARTBEAT_MS } from "./runner.js";
+import { keepCheckTimeline } from "./latency-timeline.js";
 import { MARKER as LEASE_MARKER } from "./worktree.js";
 import { parseDecision, parseHandoff, repairPrompt, HEADLESS_RULE, HANDOFF_CONCLUSION_CAP, HANDOFF_ITEM_CAP, HANDOFF_LIST_CAP, HANDOFF_PAYLOAD_CAP, type ParsedDecision, type Problem } from "./decision.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -407,10 +408,11 @@ export const REPAIR_MAX_TURNS = 4;
 export const REPAIR_TIMEOUT_MS = 5 * 60_000;
 /**
  * How often a running build says "still here" — extending its lease and its
- * runner's liveness in one beat. A minute against a three-minute liveness
- * window means two beats can be lost to load before anything looks dead.
+ * runner's liveness in one beat. Every 15 s against a one-minute liveness
+ * window (runner.ts) means three beats can be lost to load before anything
+ * looks dead.
  */
-export const DEFAULT_PULSE_MS = 60_000;
+export const DEFAULT_PULSE_MS = RUNNER_HEARTBEAT_MS;
 
 /** Branches an unattended agent may never commit to, whatever it was asked. */
 export const PROTECTED = new Set(["main", "master", "trunk", "develop", "release"]);
@@ -615,6 +617,7 @@ export function proveApprovedProfile(
               acceptance: scope.acceptance, candidate: scope.candidate ?? null,
               qualityMode: scope.qualityMode ?? "default",
               releaseTerms: scope.releaseTerms ?? null,
+              releaseCheck: scope.releaseCheck ?? null,
             },
             snapshot,
             // v47: the SEALED route is part of the signed bytes whenever it
@@ -622,7 +625,7 @@ export function proveApprovedProfile(
             // the seal's own snapshot, never from mutable configuration.
             routeFromJson(scope.approvedRouteJson ?? null),
           )
-        : digestOf({ goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, releaseTerms: scope.releaseTerms ?? null });
+        : digestOf({ goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, releaseTerms: scope.releaseTerms ?? null, releaseCheck: scope.releaseCheck ?? null });
     if (rederived !== scope.approvedDigest) {
       return { ok: false, message: "the approval record does not verify against the stored terms — re-approve (stale-approval)" };
     }
@@ -2703,7 +2706,8 @@ async function settleProof(
       const access = checkLaunchOf(store, runId, captured.effective.profile).access;
       const decision = planTargetedRecheck(store, root, { runId, taskId: request.taskId, repo, head: sealedHead, command: configured, access, now: now() });
       // A release's check (signed terms or an open authority): CI never stands in for its unit suite.
-      const release = decision.authority !== null || (store.getScope(request.taskId)?.releaseTerms ?? null) !== null;
+      // A release's check: signed terms, a release check purpose (pipeline-speed.md, P0) or an open authority.
+      const release = decision.authority !== null || releaseCheckScope(store.getScope(request.taskId));
       try {
         checkAttempt = prepareCheckAttempt(store, root, { runId, repo, head: sealedHead, command: configured, access, authority: decision.authority,
           ...(decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch, release }, now());
@@ -2912,6 +2916,8 @@ async function settleProof(
     let sealedReport: CheckReport | null = null;
     if (checkAttempt !== null && last !== null && !last.notFound) {
       sealedReport = sealCheckOutcome(store, root, checkAttempt, { stdout: last.stdout, exitCode: last.timedOut ? null : last.code }, now());
+      // Where the check's time went (latency-timeline.ts): each part's start and end, display only.
+      keepCheckTimeline(store, { runId, taskId: request.taskId, report: sealedReport, stdout: last.stdout, now: now() });
     }
     // What the check covered (receipt version 3): full, composed from the release's last full check, partial, or
     // identity-removed (which stops the release carrying).
@@ -2924,7 +2930,7 @@ async function settleProof(
       const effective = effectiveCheckFacts(verifyCommand, { coverage: settled.coverage, check: { attempt: checkAttempt.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE), retried: retriedInside(sealedReport) }, composed: settled.composed });
       verifyCommand = effective.result;
       releaseFacts = effective.facts;
-    } else if (verifyCommand.configured && verifyCommand.ran && chosenCheck?.level === "full" && (store.getScope(request.taskId)?.releaseTerms ?? null) !== null) {
+    } else if (verifyCommand.configured && verifyCommand.ran && chosenCheck?.level === "full" && releaseCheckScope(store.getScope(request.taskId))) {
       // A release's Full check that couldn't be sealed before it ran (no nonce, no inventory) has no result it can count.
       verifyCommand = { configured: true, ran: false, attemptFailed: true, failure: "no-result" };
       recordCheckNote("The release check ran without a sealed attempt (its commit couldn't be read before it ran), so it has no result that can count.");

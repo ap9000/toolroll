@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, releaseAuthorityOfTask, type ReleaseAuthority, type Store } from "../src/store.js";
 import { addApprover, approve, propose } from "../src/scope.js";
-import { releaseTermsFor, carriedTaskId } from "../src/release-carry.js";
+import { releaseCheckPurposeFor, releaseTermsFor, carriedTaskId } from "../src/release-carry.js";
 
 export const RELEASE_NOW = new Date("2026-10-25T12:00:00.000Z");
 export const VERSION = "0.9.71";
@@ -53,7 +53,10 @@ export function releaseFixture(options: { files?: Record<string, string>; protec
   /** A commit between the base and the candidate (a branch's earlier commit). */
   intermediate?: Record<string, string | null>;
   /** alex's password (default FIXTURE_PASSWORD). */
-  password?: string } = {}): ReleaseFixture {
+  password?: string;
+  /** The project's checks run outside the sandbox, so the release files without terms: its scope carries a release check
+   * purpose instead (pipeline-speed.md, P0), as `task scope --release` files it. */
+  termsless?: true } = {}): ReleaseFixture {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-release-once-")));
   const repo = join(dir, "project");
   mkdirSync(repo);
@@ -103,9 +106,12 @@ export function releaseFixture(options: { files?: Record<string, string>; protec
   const taskId = carriedTaskId(VERSION, approved);
   store.createTask({ id: taskId, title: `Release ${VERSION}` }, RELEASE_NOW);
   store.placeTask(store.refFor("built-in", taskId).id, repo, {}, RELEASE_NOW);
+  if (options.termsless === true && store.setProjectCheckAccess(repo, "unsandboxed", "alex", RELEASE_NOW, { may: "widen" }) === null) throw new Error("check access");
   const terms = releaseTermsFor(store, { repo, version: VERSION, branch: "release-0.9.71", pr: 240, candidate: approved, now: RELEASE_NOW });
-  if (!terms.ok) throw new Error(terms.why);
-  const scope = propose(store, { taskId, goal: `Verify ${VERSION}`, candidate: approved, acceptance: [{ id: "c1", statement: "The release check passes", how: null, evidence: ["check"] }], releaseTerms: terms.terms, now: RELEASE_NOW });
+  const purpose = options.termsless === true ? releaseCheckPurposeFor(store, { repo, version: VERSION, branch: "release-0.9.71", pr: 240, candidate: approved }) : null;
+  if (options.termsless === true ? terms.ok || purpose === null || !purpose.ok : !terms.ok) throw new Error(terms.ok ? "terms were made for a termsless release" : terms.why);
+  const sealed = purpose !== null && purpose.ok ? { releaseCheck: purpose.purpose } : { releaseTerms: (terms as Extract<typeof terms, { ok: true }>).terms };
+  const scope = propose(store, { taskId, goal: `Verify ${VERSION}`, candidate: approved, acceptance: [{ id: "c1", statement: "The release check passes", how: null, evidence: ["check"] }], ...sealed, now: RELEASE_NOW });
   if (options.approve !== false) {
     const yes = approve(store, taskId, "alex", RELEASE_NOW, scope.digest, added.token);
     if (!yes.ok) throw new Error(`approve: ${yes.reason}`);

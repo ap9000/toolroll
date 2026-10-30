@@ -28,7 +28,7 @@ import {
 } from "./contracts/release-check.js";
 import { parseContract } from "./contracts/contract.js";
 import { releaseAuthority, releaseAuthorityOfTask, releaseCarries } from "./release-authority.js";
-import { liveReleaseOf } from "./scope.js";
+import { liveReleaseOf, releaseCheckScope } from "./scope.js";
 import { checkAttemptOf, type CheckAttempt, type Store, type VerifyCommand } from "./store.js";
 
 /** The sanity pass every targeted check runs beside its plan: a few fast tests of the core rules, when the tree has them. */
@@ -412,7 +412,8 @@ export function settleCoverage(store: Store, root: string, input: { runId: numbe
     }
     // A release's Full check (its task carries signed release terms, before or after its authority opens — an automatic
     // approval's check runs before) counts only with a complete, valid result (check-report.ts): anything less is no result.
-    const release = b.attempt.authority !== null || (store.getScope(input.taskId)?.releaseTerms ?? null) !== null;
+    // A release check purpose (pipeline-speed.md, P0) counts too: a termsless release is held to the same rules.
+    const release = b.attempt.authority !== null || releaseCheckScope(store.getScope(input.taskId));
     if (release && fullCheckProblem({ report: b.report, inventory: b.inventory, exitCode: input.exitCode }) !== null) return { coverage: "no-result", composed: null };
     return { coverage: "full", composed: null };
   }

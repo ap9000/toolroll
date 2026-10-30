@@ -407,3 +407,53 @@ function projectAt(stage: string): { project: string; head: string } {
   git("commit", "-q", "-m", "approved");
   return { project, head: git("rev-parse", "HEAD") };
 }
+
+describe("the tap's formula version (pipeline-speed.md, P1: an older release never overwrites a newer formula)", () => {
+  test("reads the version the formula's tarball names, and orders versions numerically", async () => {
+    const { formulaVersion, versionAfter } = await import("./release-adapters.js");
+    expect(formulaVersion('class Toolroll < Formula\n  url "https://registry.npmjs.org/toolroll/-/toolroll-0.9.78.tgz"\n  sha256 "' + "a".repeat(64) + '"\n')).toBe("0.9.78");
+    expect(formulaVersion("no url here")).toBeNull();
+    expect(versionAfter("0.9.10", "0.9.9")).toBe(true);
+    expect(versionAfter("0.9.9", "0.9.10")).toBe(false);
+    expect(versionAfter("0.9.77", "0.9.77")).toBe(false);
+    expect(versionAfter("1.0.0", "0.99.99")).toBe(true);
+  });
+});
+
+describe("security scan: only the tap's own branch is a Homebrew change", () => {
+  test("a fork's pull request of the same branch name never counts", async () => {
+    const { tapOwnHead } = await import("./release-adapters.js");
+    const own = { isCrossRepository: false, headRepository: { name: "homebrew-toolroll" }, headRepositoryOwner: { login: "ap9000" } };
+    expect(tapOwnHead(own, "ap9000/homebrew-toolroll")).toBe(true);
+    expect(tapOwnHead({ ...own, isCrossRepository: true }, "ap9000/homebrew-toolroll")).toBe(false);
+    expect(tapOwnHead({ ...own, headRepositoryOwner: { login: "mallory" } }, "ap9000/homebrew-toolroll")).toBe(false);
+    expect(tapOwnHead({ ...own, headRepository: { name: "homebrew-other" } }, "ap9000/homebrew-toolroll")).toBe(false);
+    expect(tapOwnHead({ number: 1 }, "ap9000/homebrew-toolroll")).toBe(false);
+  });
+});
+
+describe("security scan: only exactly the formula bump is ever merged into the tap", () => {
+  const base = "b".repeat(40), head = "c".repeat(40), sha256 = "d".repeat(64);
+  const formula = "Formula/toolroll.rb";
+  const expected = `url "https://registry.npmjs.org/toolroll/-/toolroll-0.9.78.tgz"\nsha256 "${sha256}"\n`;
+  const view = { number: 12, headRefOid: head, headRefName: "toolroll-0.9.78", baseRefName: "main", state: "OPEN", isCrossRepository: false, headRepository: { name: "homebrew-toolroll" }, headRepositoryOwner: { login: "ap9000" } };
+  const compare = { status: "ahead", ahead_by: 1, behind_by: 0, merge_base_commit: { sha: base }, files: [{ filename: formula, status: "modified" }] };
+  const input = { tap: "ap9000/homebrew-toolroll", pr: 12, head, version: "0.9.78", formula, defaultBranch: "main", baseHead: base, baseVersion: "0.9.77", view, compare, expected, atHead: expected, sha256 };
+
+  test.each([
+    ["exactly the bump", {}, null],
+    ["a newer version landed since the state check", { baseVersion: "0.9.79" }, /already names newer/],
+    ["an unreadable current formula version", { baseVersion: null }, /current version/],
+    ["a change that also touches another file", { compare: { ...compare, files: [...compare.files, { filename: ".github/workflows/x.yml", status: "added" }] } }, /changes more than/],
+    ["a branch with an extra commit", { compare: { ...compare, ahead_by: 2 } }, /exactly one commit/],
+    ["a branch not on the default branch's head", { compare: { ...compare, merge_base_commit: { sha: "e".repeat(40) } } }, /isn't on main's head/],
+    ["a pull request into another base", { view: { ...view, baseRefName: "release" } }, /merges into release/],
+    ["a fork's pull request", { view: { ...view, isCrossRepository: true } }, /isn't the tap's own/],
+    ["a moved head", { view: { ...view, headRefOid: "f".repeat(40) } }, /isn't the tap's own/],
+    ["a formula with another sha256", { atHead: expected.replace(sha256, "a".repeat(64)) }, /sha256/],
+  ] as const)("%s", async (_name, over, why) => {
+    const { tapChangeProblem } = await import("./release-adapters.js");
+    const problem = tapChangeProblem({ ...input, ...over } as typeof input);
+    if (why === null) expect(problem).toBeNull(); else expect(problem).toMatch(why);
+  });
+});

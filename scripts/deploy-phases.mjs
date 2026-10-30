@@ -2,11 +2,12 @@
 // tests run the same ordered steps against temporary journals and databases with recorded effects. The
 // command line passes the real ones: launchd, the installed and staged runtimes, and the plane's records.
 import { DatabaseSync, backup } from "node:sqlite";
-import { chmodSync, closeSync, copyFileSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, copyFileSync, existsSync, fsyncSync, lstatSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { observeCodingDeployment, backupCodingDeployment, verifyCodingDeploymentBackup, assertCodingDeploymentStopped, releaseStaleCodingDeployment, ledgerStaleCodingRelease } from "./deploy-coding.mjs";
-import { recoverFailedDeployment, waitUntilHealthy } from "./deploy-recovery.mjs";
+import { HEALTH_WAIT_MS, RUNNER_LIVENESS_MS, recoverFailedDeployment, waitUntilHealthy } from "./deploy-recovery.mjs";
+import { recordedStillRunning } from "./deploy-stop.mjs";
 
 export const sha = bytes => createHash("sha256").update(bytes).digest("hex");
 const quote = s => '"' + s.replaceAll('"', '""') + '"';
@@ -101,13 +102,34 @@ export function codingBackupBeforeSwap(r, database) {
   return existsSync(`${database}.coding.sqlite`) ? undefined : null;
 }
 
+/** What is still running that a deployment must wait for, in words a person can act on (desktop-update-gate.ts
+ * activeUpdateWork's counts). */
+export function activeWorkWords(work) {
+  const words = {
+    runs: n => `${n} task run${n === 1 ? "" : "s"} still running`,
+    claims: n => `${n} claimed task${n === 1 ? "" : "s"}`,
+    conversations: n => `${n} chat or helper conversation${n === 1 ? "" : "s"} still answering`,
+    stopping: n => `${n} task stop${n === 1 ? "" : "s"} still settling`,
+    coding: n => `${n} coding session${n === 1 ? "" : "s"} open`,
+    codingDeliveries: n => `${n} coding submission${n === 1 ? "" : "s"} being delivered`,
+    terminals: n => `${n} live terminal${n === 1 ? "" : "s"} open`,
+  };
+  return Object.entries(work).filter(([, n]) => n > 0).map(([key, n]) => words[key]?.(n) ?? `${key} ${n}`).join(", ");
+}
+/** The refusal when work is still running: what it is, that the deployment doesn't wait, and what to do. */
+export function activeWorkRefusal(work) {
+  return `Current work must finish first: ${activeWorkWords(work)}. The deployment checks once and doesn't wait: let it finish, or stop or close it in the console, then run the deployment again (\`toolroll release\` waits for running work within its quiet limit).`;
+}
+
 /** The journaled phases of one deployment. The paths, runtimes and records are the command line's; the effects are
  * the plane's records (facts, quiet), the services (service, verifyServiceStopped, spawnSync for launchctl, ps,
  * pgrep and curl), the staged runtime (proveStaged, load, loadCodingDeploymentRuntime), fetch, sleep, say,
- * requireTrue (which ends the deployment) and pruneStaged. */
+ * requireTrue (which ends the deployment) and pruneStaged. processes() lists every process (deploy-stop.mjs
+ * listProcesses). Recovery observes exit but never signals processes from historical journal data. */
 export function browserDeployment({
   database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script, oldRt, deploymentLock, signal,
   facts, quiet, service, proveStaged, verifyServiceStopped, leftFrom, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
+  processes,
 }) {
   const short = candidateHead.slice(0, 7);
   const assertLocked = () => deploymentLock.assertHeld(journalFile);
@@ -115,7 +137,7 @@ export function browserDeployment({
   // Await settlement, never race an open SQLite backup against cancellation.
   const settle = async promise => { const result = await promise; checkpoint(); return result; };
   const readJournal = () => { assertLocked(); return JSON.parse(readFileSync(journalFile, "utf8")); };
-  const save = (r, phase) => { assertLocked(); r.phase = phase; r.updatedAt = new Date().toISOString(); oldRt.update.durableJson(journalFile, r); say(`• ${phase}`); };
+  const save = (r, phase) => { assertLocked(); r.phase = phase; r.updatedAt = new Date().toISOString(); noteMilestone(r, phase); oldRt.update.durableJson(journalFile, r); say(`• ${phase}`); };
   const loadPhase = phase => {
     checkpoint();
     // The plane's records are re-read before every phase, not only at entry:
@@ -156,13 +178,18 @@ export function browserDeployment({
     let r;
     try { r = readJournal(); } catch { return false; }
     try {
+      const dists = [...new Set([priorDist, r.priorRuntime, r.nextRuntime].filter(one => typeof one === "string" && one !== ""))];
+      // Re-prove at every destructive recovery use, even if a historical journal already says "stopped".
+      const stopped = () => stopProved(r, { alive: pid => aliveAsService(pid, dists),
+        remaining: () => dists.flatMap(dist => leftFrom?.(dist) ?? ["unreadable runtime processes"]),
+        loaded: () => spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status !== 113 });
+      const requireStopped = () => { if (!stopped()) throw Error("The service is not proved stopped; its database and definition were left in place."); };
       const words = recoverFailedDeployment(r.phase, {
-        // A replacement can have started after the recorded snapshot. Recovery needs the same runtime scan as
-        // normal shutdown; absent or unreadable process evidence leaves the pause and the service untouched.
-        stopProved: () => stopProved(r, { alive, remaining: () => leftFrom?.(priorDist),
-          loaded: () => spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status === 0 }),
-        restoreBackup: () => restoreDeploymentBackup(r, { database, stageDir }),
-        restoreService: () => restorePriorService(r),
+        stopProved: stopped,
+        // A stale journal cannot authorize stopping a newly healthy service, even at the same runtime path.
+        // Recovery observes exit only; normal shutdown belongs to the current service owner.
+        restoreBackup: () => { requireStopped(); return restoreDeploymentBackup(r, { database, stageDir }); },
+        restoreService: () => { requireStopped(); restorePriorService(r); },
         removeGate: () => {
           const db = openDeploymentDatabase(database);
           try {
@@ -173,19 +200,28 @@ export function browserDeployment({
             return true;
           } finally { db.close(); }
         },
-        mark: phase => { r.phase = phase; r.updatedAt = new Date().toISOString(); oldRt.update.durableJson(journalFile, r); },
+        mark: phase => { r.phase = phase; r.updatedAt = new Date().toISOString(); noteMilestone(r, phase); oldRt.update.durableJson(journalFile, r); },
       }, { previousRuntimeCompatible: r.schema === r.nextSchema && r.rehearsal?.previousRuntimeCompatible === true });
+      keepDeployTimeline(database, r);
       if (words) console.error(words);
       else if (r.phase === "preparing") console.error(`The deployment stopped while preparing, before it paused new work (update ${r.id}); nothing was paused. Rerun --phase prepare with --stage ${stageDir} to resume it.`);
-      else if (!["released", "deployed"].includes(r.phase)) console.error(`The deployment stopped at ${r.phase}, where the old service is not proved stopped or the new one may be running. New work stays paused (update ${r.id}); inspect ${journalFile}.`);
-      return words !== null || ["preparing", "released", "deployed"].includes(r.phase);
+      else if (!["released", "deployed"].includes(r.phase)) console.error(`The deployment stopped at ${r.phase}, where the old service is not proved stopped or the new one may be running. New work stays paused (update ${r.id}); inspect ${journalFile}. \`toolroll release --recover-deploy\` shows what recovery can still do.`);
+      const done = words !== null || ["preparing", "released", "deployed"].includes(r.phase);
+      // Only a finished recovery latches: a refused one (old processes still running) may be retried in this process.
+      if (!done) recoveryAttempted = false;
+      return done;
     } catch (error) {
       console.error(`✗ The previous service was not started again (update ${r.id}, at ${r.phase}): ${error.message}`);
-      console.error(`  The previous service is not confirmed running and new work stays paused. Once the cause is fixed, run: node ${script} --run ${runId} --stage ${stageDir} --phase recover`);
+      console.error(`  The previous service is not confirmed running and new work stays paused. Once the cause is fixed, run \`toolroll release --recover-deploy --yes\` (or: node ${script} --run ${runId} --stage ${stageDir} --phase recover).`);
       return false;
     }
   }
-  const alive = pid => spawnSync("/bin/ps", ["-p", String(pid), "-o", "pid="], { encoding: "utf8" }).status !== 1;
+  // A journal has no process birth identity. A present PID is ambiguous, regardless of mutable argv.
+  const aliveAsService = (pid, dists) => {
+    const rows = typeof processes === "function" ? processes() : null;
+    if (rows === null || rows === undefined) return spawnSync("/bin/ps", ["-p", String(pid), "-o", "pid="], { encoding: "utf8" }).status !== 1;
+    return recordedStillRunning(rows, pid, { dists, database });
+  };
   /** The previous definition, loaded again once its processes were proved gone, and only on the schema it runs.
    * Restored means it runs from its runtime and answers /healthz. */
   function restorePriorService(r) {
@@ -193,18 +229,39 @@ export function browserDeployment({
     let version;
     try { version = check.prepare("SELECT version FROM schema_version").get().version; } finally { check.close(); }
     if (version !== r.schema) throw Error(`the live database is at schema ${version} and the previous runtime runs schema ${r.schema}; it was not started on it`);
-    spawnSync("/bin/launchctl", ["bootout", `gui/${uid}/${label}`], { encoding: "utf8" });
+    // bootstrap refuses an existing label atomically; never boot out a replacement found during recovery.
+    if (spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status !== 113) throw Error("The service label is loaded or unreadable; recovery did not replace it.");
     writeFileSync(plist, livePlist);
     const booted = spawnSync("/bin/launchctl", ["bootstrap", `gui/${uid}`, plist], { encoding: "utf8" });
     if (booted.status !== 0) throw Error(`launchctl bootstrap failed: ${booted.stderr}`);
+    let why = "it has not started yet";
     const answers = () => {
       try {
-        if (service(priorDist) === null) return false;
+        if (service(priorDist) === null) { why = "its processes are not all running yet"; return false; }
         const health = spawnSync("/usr/bin/curl", ["-fsS", "-m", "2", `http://127.0.0.1:${servicePort}/healthz`], { encoding: "utf8" });
-        return health.status === 0 && JSON.parse(health.stdout).status === "ok";
-      } catch { return false; }
+        if (health.status === 0 && JSON.parse(health.stdout).status === "ok") return true;
+        why = "its console is not answering yet";
+        return false;
+      } catch { why = "its console is not answering yet"; return false; }
     };
-    if (!waitUntilHealthy(answers)) throw Error(`the previous service was loaded but did not answer http://127.0.0.1:${servicePort}/healthz within 90 seconds`);
+    const seconds = Math.round(HEALTH_WAIT_MS / 1000);
+    if (!waitUntilHealthy(answers, { onWait: (waited, attempts) => { noteMilestone(r, "waiting for the previous service", why); console.error(`  waiting for the previous service (${waited} s of up to ${attempts} s): ${why}${heldWorkers()}`); } })) {
+      throw Error(`the previous service was loaded but did not answer http://127.0.0.1:${servicePort}/healthz within ${seconds} seconds (${why}${heldWorkers()})`);
+    }
+  }
+
+  /** Why a restarted service may not be up yet, from the plane's records: a worker whose last heartbeat still holds its
+   * name refuses a fresh start until it lapses (src/runner.ts DEFAULT_LIVENESS_MS), unless its processes were recorded
+   * and proved gone. Empty when none is held or the records can't be read. */
+  function heldWorkers() {
+    try {
+      const db = openDeploymentDatabase(database, { readOnly: true });
+      try {
+        const since = new Date(Date.now() - RUNNER_LIVENESS_MS).toISOString();
+        const held = db.prepare("SELECT name, heartbeat_at FROM runner WHERE retired_at IS NULL AND heartbeat_at > ? ORDER BY name").all(since);
+        return held.map(one => `; worker ${one.name} is held by its last heartbeat until ${new Date(Date.parse(String(one.heartbeat_at)) + RUNNER_LIVENESS_MS).toISOString()}, then a fresh start takes it over`).join("");
+      } finally { db.close(); }
+    } catch { return ""; }
   }
 
   // Persist newly observed custody before the async SQLite snapshot. Every final
@@ -278,12 +335,17 @@ export function browserDeployment({
       quiet(db); observeCodingDeployment(oldRt.coding, database, r); save(r, "frozen");
       // Gate installation/freezing above commits its short write transaction.
       // Do not hold a writer reservation while scanning, copying or hashing.
-      const original = openDeploymentDatabase(database, { readOnly: true });
-      let before;
-      try { before = await settle(snapshotBackup(original, r.backup, view => verifyPreparedDatabase(view, r))); } finally { original.close(); }
-      chmodSync(r.backup, 0o600);
-      const copied = openDeploymentDatabase(r.backup, { readOnly: true });
-      try { assertPreserved(copied, before); } finally { copied.close(); }
+      // The worker's latest verified continuous copy (src/live-backup.ts) stands in for a new one only when it is fresh,
+      // its schema matches and its content proves equal to this frozen database, liveness rows aside; else as before.
+      let before = liveCopyBackup(database, r, view => verifyPreparedDatabase(view, r));
+      if (before !== null) say(`• using the continuous copy made ${r.liveCopy.madeAt}: it matches the paused database`);
+      else {
+        const original = openDeploymentDatabase(database, { readOnly: true });
+        try { before = await settle(snapshotBackup(original, r.backup, view => verifyPreparedDatabase(view, r))); } finally { original.close(); }
+        chmodSync(r.backup, 0o600);
+        const copied = openDeploymentDatabase(r.backup, { readOnly: true });
+        try { assertPreserved(copied, before); } finally { copied.close(); }
+      }
       await ensureCodingBackup(oldRt.coding, r);
       const fd = openSync(r.backup, "r"); try { fsyncSync(fd); } finally { closeSync(fd); }
       r.backupSha256 = sha(readFileSync(r.backup)); r.snapshotSha256 = sha(JSON.stringify(before));
@@ -344,7 +406,12 @@ export function browserDeployment({
     requireTrue(booted.status === 0, `launchctl bootstrap failed: ${booted.stderr}`);
     save(r, "starting");
     let live = null;
-    for (let i = 0; i < 90 && live === null; i++) { await settle(sleep(1000)); live = service(nextDist); }
+    // As long as the restore would wait: a start refused while a stale worker heartbeat lapses is restarted by its
+    // supervisor within the window (deploy-recovery.mjs HEALTH_WAIT_MS).
+    for (let i = 0; i < HEALTH_WAIT_MS / 1000 && live === null; i++) {
+      if (i === 5) noteMilestone(r, "waiting for the new service to start", heldWorkers().replace(/^; /, "") || "its processes are not all running yet");
+      await settle(sleep(1000)); live = service(nextDist);
+    }
     if (live === null) {
       // A failed health check does not establish process exit. Capture the
       // service's remaining processes before stopping it, and check native
@@ -398,9 +465,11 @@ export function browserDeployment({
     try {
       requireTrue(db.prepare("SELECT version FROM schema_version").get().version === r.nextSchema && oldRt.gate.updateGateOwned(db, r.id), "Unexpected live schema or update owner.");
       let leases = [];
-      for (let i = 0; i < 90; i++) {
+      for (let i = 0; i < HEALTH_WAIT_MS / 1000; i++) {
         leases = repos.map(repo => db.prepare("SELECT repo,heartbeat_at,expires_at FROM watch_lease WHERE runner=? AND repo=?").get(runner, repo));
         if (leases.every(l => l && Date.parse(l.expires_at) > Date.now() && Date.parse(l.heartbeat_at) > Date.now() - 60_000)) break;
+        // Said every 30 s: what the new worker is waiting for (a lapsing heartbeat or lease of the stopped one).
+        if (i % 30 === 15) { noteMilestone(r, "waiting for the new worker's project leases", heldWorkers().replace(/^; /, "") || "not all fresh yet"); say(`  waiting for the new worker's project leases (${i} s of up to ${HEALTH_WAIT_MS / 1000} s)${heldWorkers()}`); }
         await settle(sleep(1000));
       }
       requireTrue(leases.every(l => l && Date.parse(l.expires_at) > Date.now()), "Project worker leases did not come up fresh.");
@@ -411,6 +480,7 @@ export function browserDeployment({
       verifyCodingBackup(coding, r);
       save(r, "healthy"); oldRt.gate.removeUpdateGate(db, r.id); r.deployedAt = new Date().toISOString(); save(r, "deployed");
     } finally { db.close(); }
+    keepDeployTimeline(database, r);
     const stagedRemoved = await pruneStaged([nextDist, priorDist, r.priorRuntime]);
     say({ deployed: candidateHead, runtime: nextDist, at: r.deployedAt, projects: r.leases.length, remote, stagedRemoved: stagedRemoved.length });
   }
@@ -433,4 +503,113 @@ export function processTree(root, spawnSync) {
     level = next;
   }
   return level.length === 0 ? all : null;
+}
+
+/** A deployment's milestones (its latency timeline, docs/plans/actors-lessons.md): each phase the first time it is
+ * reached and each health wait with its reason, kept in the journal as wall-clock times (phases run in separate
+ * processes). Bounded: at most 40, a repeated wait reason is noted once. Phase names and reasons only, never a secret. */
+export function noteMilestone(r, name, detail) {
+  const marks = Array.isArray(r.timeline) ? r.timeline : (r.timeline = []);
+  const last = marks[marks.length - 1];
+  if (detail === undefined ? last?.name === name : marks.some(one => one.name === name && one.detail === String(detail).slice(0, 160))) return;
+  if (marks.length >= 40) return;
+  marks.push({ name, at: new Date().toISOString(), ...(detail === undefined ? {} : { detail: String(detail).slice(0, 160) }) });
+}
+
+/** The journal's milestones into the plane's latency_timeline (kind deploy, by task), when its schema has one: the task
+ * page's "Where the time went". Best effort: a deployment never fails over its own timeline. */
+export function keepDeployTimeline(database, r) {
+  try {
+    const marks = Array.isArray(r.timeline) ? r.timeline : [];
+    const start = Date.parse(r.createdAt);
+    if (marks.length === 0 || !Number.isFinite(start) || typeof r.task !== "string") return;
+    const milestones = marks.map(one => ({ name: String(one.name).slice(0, 80), ms: Math.max(0, Date.parse(one.at) - start), ...(one.detail === undefined ? {} : { detail: String(one.detail).slice(0, 160) }) }))
+      .filter(one => Number.isFinite(one.ms));
+    const db = openDeploymentDatabase(database);
+    try {
+      if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='latency_timeline'").get()) return;
+      const total = Math.max(0, ...milestones.map(one => one.ms));
+      db.prepare("DELETE FROM latency_timeline WHERE kind = 'deploy' AND subject = ? AND task_id = ? AND started_at = ?").run(String(r.candidate).slice(0, 7), r.task, new Date(start).toISOString());
+      db.prepare("INSERT INTO latency_timeline (kind, subject, task_id, run_id, started_at, total_ms, milestones_json) VALUES ('deploy', ?, ?, NULL, ?, ?, ?)")
+        .run(String(r.candidate).slice(0, 7), r.task, new Date(start).toISOString(), Math.round(total), JSON.stringify(milestones));
+      db.prepare("DELETE FROM latency_timeline WHERE kind = 'deploy' AND id <= (SELECT id FROM latency_timeline WHERE kind = 'deploy' ORDER BY id DESC LIMIT 1 OFFSET 200)").run();
+    } finally { db.close(); }
+  } catch { /* display only */ }
+}
+
+/** Rows a running service rewrites by the second (liveness and display records): their listed columns (null: the
+ * whole table) may differ between the continuous copy and the paused database. Every other table and column must be
+ * equal, row for row, or the copy isn't used. Restoring such a copy only puts back older heartbeats and sign-in times. */
+export const LIVENESS_ROWS = Object.freeze({ runner: ["heartbeat_at"], watch_lease: ["heartbeat_at", "expires_at"], backup_lease: ["holder", "held_until"],
+  web_session: ["last_seen"], service_lifecycle: null, latency_timeline: null, live_backup: null });
+/** Rows of a table that are a cache's counter, not state: the console's workspace revision (src/workspace-revision.ts). */
+const LIVENESS_KEYS = Object.freeze({ service_cursor: ["workspace-content:v1"] });
+
+/** Each table's digest with its liveness columns left out (sqlite_sequence without the liveness tables' counters). */
+function comparable(db) {
+  return db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND (name NOT LIKE 'sqlite_%' OR name='sqlite_sequence') ORDER BY name").all().flatMap(({ name }) => {
+    const skip = Object.hasOwn(LIVENESS_ROWS, name) ? LIVENESS_ROWS[name] : [];
+    if (skip === null) return [];
+    if (name === "sqlite_sequence") {
+      const rows = db.prepare("SELECT name, seq FROM sqlite_sequence ORDER BY name").all().filter(row => !(Object.hasOwn(LIVENESS_ROWS, row.name) && LIVENESS_ROWS[row.name] === null));
+      return [{ name, rows: sha(JSON.stringify(rows)) }];
+    }
+    const columns = db.prepare("PRAGMA table_info(" + quote(name) + ")").all().map(r => r.name).filter(column => !skip.includes(column));
+    if (Object.hasOwn(LIVENESS_KEYS, name)) {
+      const keys = new Set(LIVENESS_KEYS[name]);
+      const rows = db.prepare("SELECT " + columns.map(quote).join(",") + " FROM " + quote(name)).all().filter(row => !keys.has(row.key)).map(r => JSON.stringify(r)).sort();
+      return [{ name, columns, count: rows.length, hash: sha(rows.join("\n")) }];
+    }
+    return [{ name, columns, ...digest(db, name, columns) }];
+  });
+}
+
+/**
+ * The deployment's backup from the worker's latest verified continuous copy, instead of a new one: only when the plane
+ * records one (live_backup), made within its own schedule (≤ every_minutes old), on this schema, a plain file whose
+ * bytes still hash to what was verified, and — read in one view with the paused database, after `verify` — equal to it
+ * table by table (LIVENESS_ROWS aside) once the database's own triggers (the update pause) are added. Returns the
+ * copy's snapshot, or null (nothing left behind) so the caller copies as it always did.
+ */
+export function liveCopyBackup(database, r, verify, now = Date.now()) {
+  let placed = false;
+  try {
+    let latest;
+    const live = openDeploymentDatabase(database, { readOnly: true });
+    try {
+      if (!live.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='live_backup'").get()) return null;
+      latest = live.prepare("SELECT enabled, every_minutes, latest_file, latest_sha256, latest_at, latest_schema FROM live_backup WHERE id = 1").get();
+    } finally { live.close(); }
+    if (!latest || Number(latest.enabled) !== 1 || typeof latest.latest_file !== "string" || !/^[a-f0-9]{64}$/.test(String(latest.latest_sha256))) return null;
+    const age = now - Date.parse(String(latest.latest_at));
+    if (!(age >= 0 && age <= Number(latest.every_minutes) * 60_000) || Number(latest.latest_schema) !== r.schema) return null;
+    if (!lstatSync(latest.latest_file).isFile()) return null;
+    copyFileSync(latest.latest_file, r.backup, constants.COPYFILE_EXCL);
+    placed = true;
+    chmodSync(r.backup, 0o600);
+    if (sha(readFileSync(r.backup)) !== latest.latest_sha256) throw Error("the copy changed since it was verified");
+    const copy = openDeploymentDatabase(r.backup), original = openDeploymentDatabase(database, { readOnly: true });
+    let before;
+    try {
+      original.exec("BEGIN");
+      try {
+        verify(original);
+        for (const trigger of original.prepare("SELECT name, sql FROM sqlite_master WHERE type='trigger' AND sql IS NOT NULL ORDER BY name").all()) {
+          if (!copy.prepare("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name=?").get(trigger.name)) copy.exec(trigger.sql);
+        }
+        const shape = db => JSON.stringify(db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all());
+        if (shape(original) !== shape(copy)) throw Error("its schema differs");
+        const mine = comparable(copy), theirs = comparable(original);
+        if (JSON.stringify(theirs) !== JSON.stringify(mine)) throw Error(`its rows differ (${theirs.filter((one, at) => JSON.stringify(one) !== JSON.stringify(mine[at])).map(one => one.name).slice(0, 5).join(", ")})`);
+      } finally { original.exec("ROLLBACK"); }
+      before = snapshot(copy, true);
+    } finally { original.close(); copy.close(); }
+    const fd = openSync(r.backup, "r"); try { fsyncSync(fd); } finally { closeSync(fd); }
+    r.liveCopy = { file: latest.latest_file, sha256: latest.latest_sha256, madeAt: String(latest.latest_at) };
+    return before;
+  } catch {
+    if (placed) for (const suffix of ["", "-wal", "-shm", "-journal"]) rmSync(r.backup + suffix, { force: true });
+    delete r.liveCopy;
+    return null;
+  }
 }

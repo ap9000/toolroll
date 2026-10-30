@@ -16,7 +16,7 @@ export const PAUSED_BEFORE_SWAP = Object.freeze(["admission-paused", "frozen", "
 export const MIGRATION_STARTED = Object.freeze(["migrating", "migrated", "start-failed"]);
 const RESTARTABLE = Object.freeze(["stopped", "backup-restored", ...MIGRATION_STARTED]);
 
-/** effects: stopProved() says whether every old process is gone (asked only at "stopping"),
+/** effects: stopProved() says whether every old process is gone (asked only at "stopping");
  * restoreBackup() puts the verified backup in place of the live database and returns where the
  * live one was kept, restoreService() starts the previous definition and waits until it answers,
  * removeGate() lifts this deployment's own pause and says whether it held one, mark(phase) journals the outcome.
@@ -34,6 +34,7 @@ export function recoverFailedDeployment(phase, effects, { previousRuntimeCompati
     effects.mark("released");
     return "New work resumed: the deployment stopped before the swap and lifted its pause.";
   }
+  // A historical journal cannot authorize stopping a current service, even at the same runtime path.
   if (phase === "stopping" && effects.stopProved()) phase = "stopped";
   let kept = null;
   if (MIGRATION_STARTED.includes(phase) && !previousRuntimeCompatible) {
@@ -53,11 +54,21 @@ export function recoverFailedDeployment(phase, effects, { previousRuntimeCompati
     (kept ? ` Its database was put back from the backup taken before the update; what the live database held is kept at ${kept}.` : "");
 }
 
-/** Asks probe() until it says yes, pausing between tries. Synchronous, so a deployment that is
- * exiting can still wait for the service it started. */
-export function waitUntilHealthy(probe, { attempts = 90, pause = () => sleepSync(1000) } = {}) {
+/** How long a runner's heartbeat keeps its name held after its process died (src/runner.ts DEFAULT_LIVENESS_MS): a
+ * service restarted within this window may refuse to start ("runner-alive") until it lapses. A worker that signed
+ * off cleanly, or whose credential holders are proved gone, can be replaced sooner. */
+export const RUNNER_LIVENESS_MS = 60_000;
+/** How long a deployment waits for a service to answer: past the liveness window with a margin for launchd's restart
+ * backoff (controller-service restarts within 30 s), and never under the 90 s it always waited. */
+export const HEALTH_WAIT_MS = Math.max(RUNNER_LIVENESS_MS + 60_000, 90_000);
+
+/** Asks probe() until it says yes, pausing a second between tries, for HEALTH_WAIT_MS by default. Synchronous, so a
+ * deployment that is exiting can still wait for the service it started. onWait(tries, attempts) is called every 30
+ * tries (first after 10) so the deployment says why it is still waiting. */
+export function waitUntilHealthy(probe, { attempts = HEALTH_WAIT_MS / 1000, pause = () => sleepSync(1000), onWait = () => {} } = {}) {
   for (let i = 0; i < attempts; i++) {
     if (probe()) return true;
+    if (i % 30 === 10) onWait(i, attempts);
     if (i < attempts - 1) pause();
   }
   return false;

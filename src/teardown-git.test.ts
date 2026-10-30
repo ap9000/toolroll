@@ -162,24 +162,23 @@ describe("the plane's git on a build's checkout (checkoutGit)", () => {
   });
 });
 
-// Skipped inside the Mac release check only (owner's decision, 2026-10-29): it hung for 90 s in release checks 3267 and
-// 3268 while passing alone every time; GitHub CI still runs it on every commit. Root cause under investigation (branch
-// fix-sub-hang); remove this skip with that fix.
-test.skipIf(process.env["TOOLROLL_RELEASE_BUILD"] !== undefined)("checkoutGit's status never enters a submodule whose config would run a command", async () => {
+test("checkoutGit's status never enters a submodule whose config would run a command", async () => {
   const dir = mkdtempSync(join(tmpdir(), "so-checkout-sub-"));
   const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+  // Each setup step bounded: one that stalls fails here, naming its command, instead of as the test's own timeout.
+  const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env, timeout: 30_000, killSignal: "SIGKILL" });
   const inner = join(dir, "inner");
   mkdirSync(inner);
-  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: inner, env });
+  git(inner, "init", "-q", "-b", "main");
   writeFileSync(join(inner, "f"), "x\n");
-  execFileSync("git", ["add", "f"], { cwd: inner, env });
-  execFileSync("git", ["commit", "-q", "-m", "x"], { cwd: inner, env });
+  git(inner, "add", "f");
+  git(inner, "commit", "-q", "-m", "x");
   const outer = join(dir, "outer");
   mkdirSync(outer);
-  execFileSync("git", ["init", "-q", "-b", "main"], { cwd: outer, env });
-  execFileSync("git", ["-c", "protocol.file.allow=always", "submodule", "add", "-q", inner, "sub"], { cwd: outer, env });
+  git(outer, "init", "-q", "-b", "main");
+  git(outer, "-c", "protocol.file.allow=always", "submodule", "add", "-q", inner, "sub");
   const marker = join(dir, "ran");
-  execFileSync("git", ["config", "core.fsmonitor", `touch ${marker}; true`], { cwd: join(outer, "sub") });
+  git(join(outer, "sub"), "config", "core.fsmonitor", `touch ${marker}; true`);
   writeFileSync(join(outer, "sub", "f"), "changed\n");
   const status = await checkoutGit()("git", ["status", "--porcelain"], { cwd: outer, env });
   expect(status.code).toBe(0);

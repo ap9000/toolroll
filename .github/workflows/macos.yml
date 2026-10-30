@@ -1,8 +1,8 @@
 name: macOS
 
-# The nightly macOS full suite. Release tags run the same matrix in
-# publish.yml, where both legs must pass before npm publication. Pull
-# requests run Ubuntu plus containment (ci.yml).
+# The nightly macOS full suite. Pull requests and main pushes run it sharded
+# (ci.yml), and release tags run the same matrix in publish.yml, where both
+# legs must pass before npm publication.
 
 on:
   schedule:
@@ -11,7 +11,9 @@ on:
 
 jobs:
   test:
-    name: node ${{ matrix.node }} · macos-latest
+    # Not "node N · macos-latest": that name is ci.yml's required check, and a required name from another workflow on
+    # a candidate (this one dispatched by hand) fails the release's CI verdict rather than stand in for it.
+    name: nightly macOS · node ${{ matrix.node }}
     runs-on: macos-latest
     strategy:
       fail-fast: false

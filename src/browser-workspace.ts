@@ -424,6 +424,8 @@ export type BrowserResultView = {
     efficiency?: import("./run-efficiency.js").RunEfficiency | null;
     /** What its network was and what its proxy saw (egress.ts): display only. */
     network?: import("./egress.js").RunNetworkRecord | null;
+    /** Where the time went: its release check's parts and the task's deploys (latency-timeline.ts), display only. */
+    timing?: import("./latency-timeline.js").TimingView | null;
     /** Words for the result's Accept: Accept and finish when offered, else the Needs you acceptance. */
     decision: BrowserResultDecision | null;
     checks: { detail: string; problem: boolean; logHref: string | null } | null;

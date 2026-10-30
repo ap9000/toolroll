@@ -125,7 +125,9 @@ import { sweepSchedule } from "../storage-sweep-schedule.js";
 import { storageHtml } from "../storage-ui.js";
 import { landedSummary } from "../landed-cleanup.js";
 import { bytesWords,parseCleanup } from "../storage.js";
-import { isDigestTime,RESULT_SCREENSHOTS,type ResultScreenshots } from "../store.js";
+import { isDigestTime,liveBackupState,RESULT_SCREENSHOTS,setLiveBackupSettings,type ResultScreenshots } from "../store.js";
+import { defaultLiveFolder,liveFolderOf,liveFolderProblem } from "../live-backup.js";
+import { LIVE_EVERY } from "../backup-ui.js";
 import { checkTeamsCredentials,clearTeamsCredentials,loadTeamsCredentials,saveTeamsCredentials,TeamsError } from "../teams-api.js";
 import { teamsSettingsHtml } from "../teams-settings.js";
 import { telegramSettingsHtml } from "../telegram-settings.js";
@@ -495,7 +497,9 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return refuse(response, who, 403, "An instance operator looks after backups.", "/settings");
     const settings = store.backupSettings();
-    const view = { settings, folder: backupFolderOf(settings, databaseFile), defaultFolder: defaultBackupFolder(databaseFile), runs: store.backupRuns(20), csrf: who.session.csrf, now };
+    const live = liveBackupState(store);
+    const view = { settings, folder: backupFolderOf(settings, databaseFile), defaultFolder: defaultBackupFolder(databaseFile), runs: store.backupRuns(20), csrf: who.session.csrf, now,
+      live: { state: live, folder: liveFolderOf(live.settings, databaseFile), defaultFolder: defaultLiveFolder(databaseFile) } };
     return sendScreen(response, 200, screen("Backups", html`<p><a href="/settings">Settings</a></p><h1>Backups</h1>${(backupHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`,
       { chrome: chromeFor(project, "settings") }));
   }
@@ -1167,8 +1171,22 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       const problem = checkBackupFolder(folder, [...new Set([...managedRepos(), ...store.knownRepos(), ...(options.poolRoot === undefined ? [] : [options.poolRoot])])]);
       if (problem !== null) return back("problem", problem);
     }
+    // The continuous copy (live-backup.ts): how often, and a folder that is a plain, private folder of this user's
+    // outside every project and checkout. A form without these fields leaves it as it is.
+    const liveBefore = liveBackupState(store).settings;
+    const liveEvery = body.get("live_every") ?? null;
+    const liveMinutes = Number(liveEvery);
+    if (liveEvery !== null && liveEvery !== "off" && !(LIVE_EVERY as readonly number[]).includes(liveMinutes)) return back("problem", "Choose how often to copy continuously.");
+    const liveTyped = body.get("live_folder") === null ? liveBefore.folder ?? "" : (body.get("live_folder") ?? "").trim();
+    const liveFolder = liveTyped === "" || liveTyped === defaultLiveFolder(databaseFile) ? null : liveTyped;
+    if (liveFolder !== null) {
+      const problem = liveFolderProblem(liveFolder, [...new Set([...managedRepos(), ...store.knownRepos(), ...(options.poolRoot === undefined ? [] : [options.poolRoot])])]);
+      if (problem !== null) return back("problem", problem);
+    }
     const before = store.backupSettings();
     store.setBackupSettings({ enabled: every !== "off", everyHours: every === "off" ? before.everyHours : hours, keep, folder }, who.name, now);
+    setLiveBackupSettings(store, { enabled: liveEvery === null ? liveBefore.enabled : liveEvery !== "off", everyMinutes: liveEvery === null || liveEvery === "off" ? liveBefore.everyMinutes : liveMinutes,
+      keep: liveBefore.keep, folder: liveFolder }, who.name, now);
     return back("said", every === "off" ? "Saved. Scheduled backups are off." : "Saved.");
   }
   // v105: download everything as a .zip. An instance operator, with a step-up; the ledger records it.

@@ -79,6 +79,9 @@ describe("run", () => {
 
     expect(result.timedOut).toBe(true);
     expect(result.notFound).toBe(false);
+    // One that survives SIGTERM is killed outright after the grace: its caller never waits forever.
+    const stubborn = await run(NODE, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { timeoutMs: 500 });
+    expect(stubborn.timedOut).toBe(true);
   });
 
   test("passes arguments verbatim, without shell interpretation", async () => {

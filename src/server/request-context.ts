@@ -16,6 +16,8 @@ export type RequestFacts = {
   returnTo: string;
   actor?: string;
   createdTask?: string;
+  /** This request's latency timeline (latency-timeline.ts): kept when the answer was slow. */
+  timeline?: import("../latency-timeline.js").Timeline;
   browser?: boolean;
   workspaceRead?: boolean;
   /** Receipt reconciliation, task and result reads (`request`, `task`, `result`): work is read afresh, never cached. */

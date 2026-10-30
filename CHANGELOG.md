@@ -1,5 +1,86 @@
 # Changelog
 
+## 0.9.78 — 2026-10-29
+
+- **Toolroll says when it is restarting.** The worker and console now record
+  when they start, keep a heartbeat every 15 seconds, and record when they
+  begin stopping and when they have stopped. While one is stopping it takes no
+  new work, `/healthz` answers "draining" at once, pages say "Toolroll is
+  restarting", and a new start waits only until the old one has finished
+  stopping instead of a fixed window. A worker that stopped cleanly never
+  holds its projects. A second live `up` is still refused.
+- **The database is copied every few minutes.** Besides scheduled backups,
+  the worker copies the database online every 5 minutes (change it, or the
+  folder, in Settings → Backups), checks each copy and keeps the newest 24
+  and one a day for a week. It never holds up the console or the worker. A
+  deploy uses the latest copy when it is recent and matches the database
+  exactly, instead of making a new one. Restoring stays a manual
+  `toolroll restore`.
+- **See where the time went.** A task's page has a "Where the time went"
+  section under Details: when each part of its release check started and
+  ended, and each step of its deploys, including what a deploy waited for.
+  Console pages that take over a second keep a short record of where the
+  time went, which an instance operator reads on `/health`. Only page names,
+  step names and reasons are kept, never addresses or form contents.
+- **A crashed worker is noticed in a minute, not three.** Workers check in
+  every 15 seconds and are treated as gone after a minute of silence. A
+  project lease is never taken for longer than a minute.
+- **A release's version bump alone no longer owes the upgrade path.** Toolroll
+  now decides from both commits' verified files that package.json and
+  package-lock.json changed only in the project's own version (the check's
+  own rule); any other change to them still owes it.
+- **The macOS suite runs on the candidate before it merges.** Pull requests
+  and main pushes now run the unit suite on hosted macOS with Node 22 and 24,
+  in four shards each, joined into `node 22 · macos-latest` and
+  `node 24 · macos-latest` exactly like the Linux checks. `toolroll release`
+  waits for them; main's protection not requiring them yet is reported, not
+  refused. After the merge, publication waits only for the tag's publish job,
+  no longer for main's own CI run on the merge commit. The nightly and tag
+  macOS jobs are renamed so no other workflow shares a required name.
+- **A release is published without waiting for Homebrew.** `toolroll release`
+  ends with "Published; Homebrew pending" once npm and the GitHub release are
+  verified, instead of waiting up to 45 minutes for the tap's checks. Homebrew
+  is its own state in the release journal (pending, failed or current), and
+  running the same command again finishes it: it waits for the tap change's
+  checks, then merges exactly that change, with the checksum still taken from
+  npm's tarball. A tap already on a newer version is never moved back, checked
+  again right before the merge.
+- **A release whose checks run outside the sandbox now reruns its own check
+  after Toolroll's machine fails.** Such a release can't carry later commits,
+  so it used to file without release terms, and a check stopped by Toolroll's
+  own shutdown, a lost build or a command that never started waited for a
+  person. Its approval now seals a release check purpose instead: the check
+  is held to the release's rules (a complete report, no CI standing in for
+  its units), and only a failure Toolroll itself confirmed as its own
+  infrastructure reruns, on the same commit under the same approval, at most
+  twice. Another commit, a changed scope, release check or check access, or
+  an approval that no longer stands never reruns. It never carries a later
+  commit. (Schema v138 adds the column; saved scopes are unchanged.)
+- **A deploy no longer gets stuck behind an `up` that won't stop.** When the
+  old service's processes outlive their stop (a supervisor that exited while
+  its `up` ignored SIGTERM), the deployment stops them itself, but only
+  processes proved, by exact runtime path and arguments, to be that service's
+  supervisor, `up` or console and worker. Anything it can't prove refuses and
+  nothing is signalled.
+- **A killed `up` no longer blocks the next start for three minutes.** `up`
+  records each process it gives its worker credential to. A new start that
+  proves every one of them has exited signs the old worker off and takes over
+  at once; a second live `up` is still refused.
+- **`up` signs off however it is stopped.** SIGTERM, Ctrl-C, its supervisor
+  dying or its channel closing all end with the worker retired. A stop that
+  hangs past the worker's grace stops the console and worker outright
+  instead of waiting for launchd to kill it.
+- **Deployments wait long enough, and say why.** Restoring the previous
+  service, starting the new one and waiting for its project leases now allow
+  two minutes (past a stale worker heartbeat's one) and name what they are
+  waiting for. "Current work must finish first" now says what is running and
+  what to do.
+- **One command puts back a deployment that stopped half way.**
+  `toolroll release --recover-deploy` shows what recovery will do for the
+  unfinished deployment; `--yes` does it: stops only that service's proved
+  leftovers, starts the previous service again and lifts the update pause.
+  It is safe to run again.
+
 ## 0.9.77 — 2026-10-29
 
 - **CI finishes in about a third of the time.** The unit suite runs in four

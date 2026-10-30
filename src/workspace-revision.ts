@@ -22,7 +22,9 @@ const OMIT = new Set(['schema_version', 'service_cursor', 'wake', 'notification_
   // Who is watching an agent right now: renewed by every open page's keep-alive, never news.
   'agent_view',
   // A run's How it ran, derived from its own records on first view (run-efficiency.ts): a cache, never news.
-  'run_efficiency']);
+  'run_efficiency',
+  // v137: lifecycle heartbeats, latency timelines and the continuous copy's record are bookkeeping, never news.
+  'service_lifecycle', 'latency_timeline', 'live_backup']);
 const QUIET: Record<string, readonly string[]> = {
   runner: ['heartbeat_at'], claim: ['heartbeat_at', 'expires_at'], watch_lease: ['heartbeat_at', 'expires_at'],
   watch_episode: ['ticks'], provider_readiness: ['observed_at'],

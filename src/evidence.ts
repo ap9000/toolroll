@@ -141,6 +141,19 @@ export const EVIDENCE_CAPS: Record<Artifact["kind"], number> = {
   "review-context": 200 * 1024 * 1024,
 };
 
+/**
+ * The bound a writer may seal a kind at with storeEvidence's `cap`, above its default: a release check's sealed report and
+ * inventory (check-report.ts CHECK_ARTIFACT_CAP, 256 KiB). Readers accept exactly what writers may seal: 0.9.77 sealed
+ * reports up to 256 KiB but read structured output back only to 64 KiB, so every full report over that (~85 KiB for a
+ * 585-file suite) read as "no longer verifies" and the release's check as unavailable.
+ */
+export const SEALED_EVIDENCE_CAPS: Partial<Record<Artifact["kind"], number>> = { "structured-output": 256 * 1024 };
+
+/** The most a stored artifact of this kind may hold: its default cap, or the larger bound a sealed payload may use. */
+export function evidenceReadCap(kind: Artifact["kind"]): number {
+  return Math.max(EVIDENCE_CAPS[kind], SEALED_EVIDENCE_CAPS[kind] ?? 0);
+}
+
 export function evidenceRoot(home: string): string {
   // Same continuity rule as the database: evidence recorded under an older
   // name keeps verifying until a new-name root exists.
@@ -458,8 +471,9 @@ export function storeEvidence(
   now: Date,
   options: { redacted?: boolean; captureStatus?: "ok" | "failed"; sourceBytesOriginal?: number; cap?: number } = {},
 ): number {
-  // `cap`: a sealed structured payload with its own documented bound (a release check's report: 256 KiB), never above 1 MiB.
-  const cap = options.cap === undefined ? EVIDENCE_CAPS[kind] : Math.min(options.cap, 1024 * 1024);
+  // `cap`: a sealed structured payload with its own documented bound (a release check's report: 256 KiB), never above what
+  // a reader of this kind accepts (evidenceReadCap): a record written larger would never verify again.
+  const cap = options.cap === undefined ? EVIDENCE_CAPS[kind] : Math.min(options.cap, evidenceReadCap(kind));
   const stored = content.subarray(0, cap);
   // Some callers that deliberately summarize/bound a source before storage
   // may still report its true original size. This keeps `truncated` honest
@@ -547,7 +561,7 @@ function withArtifactFile<T extends { ok: boolean }>(
     );
   if (!wellFormed) return { ok: false, problem: "the key is not a normalized relative path" };
 
-  const cap = EVIDENCE_CAPS[artifact.kind];
+  const cap = evidenceReadCap(artifact.kind);
   if (artifact.bytesStored > cap) {
     return { ok: false, problem: "the record claims more bytes than its kind may store" };
   }

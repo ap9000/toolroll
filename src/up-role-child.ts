@@ -35,8 +35,12 @@ const port: RolePort = {
 // stop on the second), so a role never acts on SIGINT itself. SIGTERM (the supervisor's stop) drains, once.
 process.on("SIGINT", () => {});
 process.on("SIGTERM", () => stop(false));
-// The parent gone (its channel closed): drain, as a stop would. The worker's own grace timer bounds it.
-process.once("disconnect", () => stop(false));
+// The parent gone (its channel closed): drain, as a stop would. The worker's own grace timer bounds it; past a minute
+// with nobody left to stop it, the role stops its work outright and ends, never running on as an orphan.
+process.once("disconnect", () => {
+  stop(false);
+  setTimeout(() => { stop(true); setTimeout(() => process.exit(1), 5_000).unref(); }, 60_000).unref();
+});
 
 const start = await new Promise<unknown>(resolve => {
   const timer = setTimeout(() => resolve(null), 60_000);
