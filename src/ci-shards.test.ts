@@ -69,6 +69,28 @@ describe("pipeline-speed A: the shards' join", () => {
     expect(readReport(report([file("src/native.test.ts", 1, 5)]), { root, base })).toMatchObject({ ok: true });
   });
 
+  test("test-matrix: on a lane that requires its platform's native attacks, a native probe gives a file no permission to skip", () => {
+    // The base's attack files: one that skips only through Seatbelt, one through the OS fence or Codex's sandbox, one
+    // through the OS fence and a plain platform skip.
+    write(base, "test/attacks/seatbelt.test.ts", "test('native', ctx => { needs(ctx, seatbelt()); });\n");
+    write(base, "test/attacks/fence.test.ts", "test('native', ctx => { needs( ctx , osFence() ); });\ntest('codex', ctx => { needs(ctx, codexSandbox()); });\n");
+    write(base, "test/attacks/linux.test.ts", "test('native', ctx => { ctx.skip(process.platform !== 'linux', 'not Linux'); needs(ctx, osFence()); });\n");
+    const read = (name: string, native?: string) => readReport(report([file(name, 1, 1)]), { root, base, native });
+    // Without a native policy every one of them may skip, as before.
+    for (const name of ["test/attacks/seatbelt.test.ts", "test/attacks/fence.test.ts", "test/attacks/linux.test.ts"]) expect(read(name), name).toMatchObject({ ok: true });
+    // On macOS: Seatbelt is required; a file that can still skip some other way (Codex, a platform skip) may.
+    expect(read("test/attacks/seatbelt.test.ts", "darwin")).toMatchObject({ ok: false, problem: expect.stringContaining("but through a native darwin probe, which this lane requires") });
+    expect(read("test/attacks/fence.test.ts", "darwin")).toMatchObject({ ok: true });
+    expect(read("test/attacks/linux.test.ts", "darwin")).toMatchObject({ ok: true });
+    // On Linux: Seatbelt there is "not macOS", a skip it may take; the OS fence is required.
+    expect(read("test/attacks/seatbelt.test.ts", "linux")).toMatchObject({ ok: true });
+    write(base, "test/attacks/bwrap.test.ts", "test('native', ctx => { needs(ctx, osFence()); });\n");
+    expect(read("test/attacks/bwrap.test.ts", "linux")).toMatchObject({ ok: false, problem: expect.stringContaining("native linux probe") });
+    // An unknown platform is no policy at all: the join fails.
+    expect(shardsProblem(good(), listed, { shards: 2, root, base, native: "win32" })).toMatch(/no native policy for win32/);
+    expect(shardsProblem(good(), listed, { shards: 2, root, base, native: "darwin" })).toBeNull();
+  });
+
   test("no shard count or an empty inventory: the join fails", () => {
     expect(shardsProblem(good(), listed, { shards: 0, root, base })).toMatch(/no shard count/);
     expect(problem(good(), [])).toMatch(/finds no test files/);

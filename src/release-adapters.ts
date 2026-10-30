@@ -1122,7 +1122,7 @@ export async function readMainProtection(run: Exec, gh: string, repo: string, br
     if (checks.length === 0) own.push(`${where}: no required status checks`);
     else {
       const lacking = PROTECTION_MINIMUM_CHECKS.filter(name => !checks.includes(name));
-      if (lacking.length > 0) own.push(`${where}: required checks lack ${lacking.join(", ")}`);
+      if (lacking.length > 0) own.push(`${where}: required checks lack ${lacking.join(", ")} (add ${lacking.length === 1 ? "it" : "them"} to main's required status checks: a release's proof trusts what main required)`);
       const unbound = PROTECTION_MINIMUM_CHECKS.filter(name => checks.includes(name) && !bound.includes(name));
       if (unbound.length > 0) own.push(`${where}: required checks must require GitHub Actions (app 15368) as their source: ${unbound.join(", ")}`);
     }

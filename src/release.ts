@@ -40,31 +40,47 @@ import { personProof } from "./person-proof.js";
 import { RELEASE_CI_RUNNING_WORDS as CI_RUNNING_WORDS } from "./release-ci-hold.js";
 import { transientFailure } from "./release-net.js";
 
-/** The pull-request checks a release waits for, by exact job name (.github/workflows/ci.yml). Every one must have
- * concluded `success` on the gated commit; src/ci-workflow.test.ts holds the workflow to this list. */
+/** The pull-request checks a release waits for, by exact job name (docs/plans/test-matrix.md). Every one must have
+ * concluded `success` — executed, never skipped — on the gated commit; src/ci-workflow.test.ts holds the workflows to
+ * this list, and publish.yml's release proof to the same list. */
 export const REQUIRED_PR_CHECKS = [
-  "node 22 · ubuntu-latest",
+  // The unit suite on Node 24 (ci.yml "test-shard" and "test"), on every pull request.
   "node 24 · ubuntu-latest",
+  // The area lanes (ci.yml), on every pull request except a documentation-only one (scripts/ci-scope.mjs), where they
+  // are skipped; a release's pull request runs them.
   "linux native containment · delegated cgroup v2",
   "linux fence · sandbox-runtime",
   "Windows Job Object containment",
   // The git lanes (ci.yml job "git"): the declared floor (git-floor.ts) and Debian trixie's 2.47.
   "git 2.41 · debian trixie",
   "git 2.47 · debian trixie",
-  // The unit suite on macOS (ci.yml jobs "macos-shard" and "macos"; pipeline-speed.md, item 3a): tested on the candidate
-  // before it merges, no longer only on the tag after.
-  "node 22 · macos-latest",
+  // The unit suite on macOS (ci.yml jobs "macos-shard" and "macos"; pipeline-speed.md, item 3a), Node 24.
   "node 24 · macos-latest",
+  // Node 22, the engines floor, on Linux and macOS (release-candidate.yml): on a release-* branch's pull request,
+  // skipped on every other pull request.
+  "node 22 · ubuntu-latest",
+  "node 22 · macos-latest",
 ] as const;
-/** The workflow file every REQUIRED_PR_CHECKS job belongs to: a job of that name from any other workflow (a lookalike
+/** The workflow file each REQUIRED_PR_CHECKS job belongs to: a job of that name from any other workflow (a lookalike
  * added beside it) never stands for it (Codex review round 1, inherited CI limitation). */
-export const REQUIRED_PR_CHECKS_WORKFLOW = ".github/workflows/ci.yml";
+export const REQUIRED_PR_CHECKS_WORKFLOW: Readonly<Record<typeof REQUIRED_PR_CHECKS[number], string>> = {
+  "node 24 · ubuntu-latest": ".github/workflows/ci.yml",
+  "linux native containment · delegated cgroup v2": ".github/workflows/ci.yml",
+  "linux fence · sandbox-runtime": ".github/workflows/ci.yml",
+  "Windows Job Object containment": ".github/workflows/ci.yml",
+  "git 2.41 · debian trixie": ".github/workflows/ci.yml",
+  "git 2.47 · debian trixie": ".github/workflows/ci.yml",
+  "node 24 · macos-latest": ".github/workflows/ci.yml",
+  "node 22 · ubuntu-latest": ".github/workflows/release-candidate.yml",
+  "node 22 · macos-latest": ".github/workflows/release-candidate.yml",
+};
 /**
- * The pull-request checks main's GitHub protection is not yet required to name (eval-harness review 2, finding 1): the
- * git lanes join main's protection once they have run there, so a protection without them is reported, never refused.
- * A later release empties this list; from then on main's protection must name every REQUIRED_PR_CHECKS check.
+ * The pull-request checks main's GitHub protection is not yet required to name (eval-harness review 2, finding 1).
+ * Empty since the test matrix (docs/plans/test-matrix.md): publication's release proof trusts what main's protection
+ * required at the merge, so main's protection must name every REQUIRED_PR_CHECKS check, and a release refuses to merge
+ * (and so to publish) until it does.
  */
-export const PROTECTION_REPORT_ONLY_CHECKS: readonly string[] = ["git 2.41 · debian trixie", "git 2.47 · debian trixie", "node 22 · macos-latest", "node 24 · macos-latest"];
+export const PROTECTION_REPORT_ONLY_CHECKS: readonly string[] = [];
 /** The checks main's protection must require at minimum: every required check that isn't report-only. */
 export const PROTECTION_MINIMUM_CHECKS: readonly string[] = REQUIRED_PR_CHECKS.filter(name => !PROTECTION_REPORT_ONLY_CHECKS.includes(name));
 /**
@@ -74,10 +90,11 @@ export const PROTECTION_MINIMUM_CHECKS: readonly string[] = REQUIRED_PR_CHECKS.f
  * checks the effective layer doesn't name.
  */
 export type MainProtection = { effective: boolean; missing: string[]; notYetRequired: string[] };
-/** The checks a release's publication waits for on its tag (.github/workflows/publish.yml, pipeline-speed.md item 3):
- * the publish job and the macOS legs it needs, each named. Nothing else reported on the merge commit (main's own CI push
- * run) holds publication. */
-export const RELEASE_TAG_CHECKS = ["publish", "tag macOS · node 22", "tag macOS · node 24"] as const;
+/** The checks a release's publication waits for on its tag (.github/workflows/publish.yml, docs/plans/test-matrix.md):
+ * the release proof (the tagged tree passed every REQUIRED_PR_CHECKS check on its pull request, read from GitHub) and
+ * the publish job that needs it. The tag runs no tests again. Nothing else reported on the merge commit (main-push.yml)
+ * holds publication. */
+export const RELEASE_TAG_CHECKS = ["release proof", "publish"] as const;
 export const RELEASE_TAG_WORKFLOW = ".github/workflows/publish.yml";
 
 export const RELEASE_STEPS = ["gate", "approval", "check", "complete", "quiet", "deploy", "link", "ci", "merge", "tree", "tag", "publish", "homebrew", "done"] as const;
@@ -450,10 +467,10 @@ export function checksVerdict(runs: readonly CheckRun[], required: readonly stri
 }
 
 /**
- * Publication's verdict on the tag commit (pipeline-speed.md, item 3): only RELEASE_TAG_CHECKS, from GitHub Actions
- * runs of publish.yml bound to the tag's push, each by its newest attempt. Every other check on the merge commit — main's
- * own CI run — is not waited for: the candidate's checks already passed on its exact head before the merge, and the
- * merged tree was proved equal to it.
+ * Publication's verdict on the tag commit (test-matrix.md): only RELEASE_TAG_CHECKS, from GitHub Actions runs of
+ * publish.yml bound to the tag's push, each by its newest attempt. Every other check on the merge commit — main's own
+ * push run — is not waited for: the candidate's checks already passed on its exact head before the merge, the merged
+ * tree was proved equal to it, and publish.yml's release proof checks both again from GitHub's record.
  */
 export function tagChecksVerdict(runs: readonly CheckRun[]): ReturnType<typeof checksVerdict> {
   const names: readonly string[] = RELEASE_TAG_CHECKS;
@@ -1417,7 +1434,7 @@ function networkWords(error: unknown): string {
  * infrastructure), and at most INFRA_RERUNS_PER_CANDIDATE of them on the commit; any other earlier failure — a test,
  * a typecheck, or one nothing explains — fails the verdict, so a person decides. The failures it tolerated are returned.
  */
-export function prChecksVerdict(runs: readonly CheckRun[], head: string, required: readonly string[], options: { auto?: true; workflow?: string } = {}):
+export function prChecksVerdict(runs: readonly CheckRun[], head: string, required: readonly string[], options: { auto?: true; workflow?: string | Readonly<Record<string, string>> } = {}):
   { state: "passed"; failures: CheckFailure[] } | { state: "pending"; waiting: string[] } | { state: "failed"; failed: string[] } {
   const failed: string[] = [], waiting: string[] = [], failures: CheckFailure[] = [];
   const valid: CheckRun[] = [];
@@ -1427,8 +1444,11 @@ export function prChecksVerdict(runs: readonly CheckRun[], head: string, require
     if (required.includes(run.name) && run.app !== "github-actions") { failed.push(`${run.name} (reported by ${run.app ?? "an unknown app"}, not GitHub Actions)`); continue; }
     // A required name counts only from the workflow that defines it: a job of the same name in another workflow (or
     // one whose workflow GitHub doesn't name) fails the verdict rather than stand in for it.
-    if (options.workflow !== undefined && required.includes(run.name) && !workflowIs(run.workflowPath, options.workflow)) {
-      failed.push(`${run.name} (from ${run.workflowPath ?? "a workflow GitHub doesn't name"}, not ${options.workflow})`); continue;
+    if (options.workflow !== undefined && required.includes(run.name)) {
+      const want = typeof options.workflow === "string" ? options.workflow : options.workflow[run.name];
+      if (want === undefined || !workflowIs(run.workflowPath, want)) {
+        failed.push(`${run.name} (from ${run.workflowPath ?? "a workflow GitHub doesn't name"}, not ${want ?? "a workflow this release knows for it"})`); continue;
+      }
     }
     if (run.app === "github-actions" && (typeof run.suite !== "number" || !Number.isSafeInteger(run.suite))) { failed.push(`${run.name} (no workflow run)`); continue; }
     valid.push(run);
@@ -1457,6 +1477,10 @@ export function prChecksVerdict(runs: readonly CheckRun[], head: string, require
     judged.add(name);
     standing.add(latest);
     if (latest.status !== "completed") { waiting.push(`${name} (${latest.status})`); continue; }
+    // Skipped is never success (test-matrix.md): GitHub's protection reads a skipped job as passing a merge, a release
+    // never does. A documentation-only pull request skips the area lanes, and any pull request but a release-* branch's
+    // skips Node 22, so a release needs every lane executed on its exact head.
+    if (latest.conclusion === "skipped" && required.includes(name)) { failed.push(`${name} (skipped: a release needs it run on this exact commit; release from a branch named release-*, whose pull request runs every lane)`); continue; }
     if (latest.conclusion !== "success") { failed.push(`${name} (${latest.conclusion ?? "no conclusion"})`); continue; }
   }
   // Every failed attempt on the commit that no current job stands on — an earlier attempt of a job, a job a newer run
@@ -1504,5 +1528,10 @@ export function checkFailedWords(input: { sha: string; run: number; class: Failu
 
 /** Whether GitHub's workflow-run `path` names exactly `file` (it may carry the ref it ran from, after an `@`). */
 export function workflowIs(path: string | null | undefined, file: string): boolean {
-  return typeof path === "string" && (path === file || path.startsWith(`${file}@`));
+  if (typeof path !== "string") return false;
+  if (path === file) return true;
+  // GitHub may append @ref, but ci.yml@evil.yml is also a valid *different* workflow filename. Multiple @ signs
+  // likewise cannot distinguish that filename from a ref. Refuse ambiguous suffixes instead of granting its checks.
+  const ref = path.startsWith(`${file}@`) ? path.slice(file.length + 1) : "";
+  return /^[A-Za-z0-9._+/-]+$/.test(ref) && !/\.ya?ml$/i.test(ref);
 }

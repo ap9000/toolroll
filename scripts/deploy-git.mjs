@@ -158,6 +158,11 @@ function withView(repo, env, fn) {
   try { return fn(view, git); } finally { view.dispose(); }
 }
 
+/** Plumbing reads for standalone trusted scripts, through the same isolated config and transport policy. */
+export function readGit(repo, args, env) {
+  return withView(repo, env, (view, git) => viewRun(view, git, args, env).toString("utf8"));
+}
+
 /** The commit `repo`'s HEAD names, read through a view (nothing of the repository's config applies). */
 export function headOf(repo, env) {
   return withView(repo, env, (view, git) => {

@@ -1,0 +1,232 @@
+name: Release candidate
+
+# The unit suite on Node 22, the engines floor, on Linux and macOS (docs/plans/test-matrix.md): once per release, on the
+# exact candidate, rather than on every pull request. Sharded and joined exactly as ci.yml runs Node 24, under the
+# required names `toolroll release` waits for (src/release.ts REQUIRED_PR_CHECKS maps each to this file).
+#
+# It runs on a pull request from a release-* branch (how `toolroll release` candidates are named) and when nightly.yml
+# calls it (run Nightly by hand for it on demand: its checks carry "nightly floor / " in front, so they never stand in
+# for these, and a run by hand of this file would report required names from a run the release gate doesn't bind to a
+# pull request). On any other pull request every job is skipped: main's protection reads a skipped job as passing, so ordinary pull requests merge without it,
+# and the release gate never accepts a skipped check, so no release proceeds without it executed on its exact head. The
+# shards' joins run whenever their shards were meant to (a failed shard fails them).
+
+on:
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  # The unit suite on Node 22, Linux: four shards, exactly as ci.yml runs Node 24's.
+  test-shard:
+    name: node ${{ matrix.node }} · shard ${{ matrix.shard }}/4
+    # Pinned: ubuntu-latest moved to 26.04 (2026-10-21), where bubblewrap runs
+    # unprivileged, so the agent-fence and ACP tests take the Linux fence road
+    # they were never written for.
+    if: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-') }}
+    runs-on: ubuntu-24.04
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22"]
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+          # Migration tests build old releases from git history (git archive <old commit>).
+          fetch-depth: 0
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      # The sandbox runtime's tools, and unprivileged user namespaces (ubuntu-24.04's AppArmor default refuses them),
+      # as the linux fence job sets them up: flows' scripts and tools' servers run in the real Linux fence here.
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      # Vitest's own JSON report, written outside the checkout and uploaded as it is: no candidate script summarizes it.
+      # TOOLROLL_REQUIRE_NATIVE: a Linux fence attack that can't run here fails instead of skipping (a skip is not
+      # evidence); the join's verifier runs with the same --native policy.
+      - run: npm run test:all -- --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"
+        env:
+          CI: "true"
+          TOOLROLL_REQUIRE_NATIVE: linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shard-${{ matrix.node }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/shard-report.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  # The required Linux check, under the name `toolroll release` and main's protection wait for. It
+  # always runs (a job skipped because a shard failed would read as passing to a required check) and fails unless
+  # every shard passed and, together, the shards ran every test file the include policy finds in the tested commit,
+  # each once, with consistent counts, tests executed and only the skips the base allows. It runs none of the
+  # candidate's code: no install, and the verifier (with its inventory and skip policy) is the trusted base revision's
+  # copy — the pull request's base, or main itself when called (Codex review round 1, finding 1). Until the base has a
+  # verifier (the change that introduces it) the candidate's own is used and said; that change touches scripts/, which
+  # an automatic release never approves.
+  test:
+    name: node ${{ matrix.node }} · ubuntu-latest
+    needs: test-shard
+    if: ${{ always() && (github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-')) }}
+    runs-on: ubuntu-24.04
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Every shard passed
+        shell: bash
+        env:
+          SHARDS: ${{ needs.test-shard.result }}
+        run: test "$SHARDS" = success || { echo "the unit suite's shards ended $SHARDS" >&2; exit 1; }
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}
+          path: .trusted-base
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: shard-${{ matrix.node }}-*
+          path: ${{ runner.temp }}/shards
+      - name: Every shard ran the whole suite
+        shell: bash
+        run: |
+          verifier=.trusted-base/scripts/ci-shards.mjs
+          if [ ! -f "$verifier" ]; then echo "::warning::the base revision has no shard verifier yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
+          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 4 --native linux
+
+  # The unit suite on macOS (docs/plans/pipeline-speed.md, item 3a): it runs on the candidate itself, before anything
+  # merges, sharded like the Linux suite, beside it; the release tag no longer runs it again (test-matrix.md). Each shard records the files it ran on the tested commit.
+  macos-shard:
+    name: node ${{ matrix.node }} · macos shard ${{ matrix.shard }}/4
+    if: ${{ github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-') }}
+    runs-on: macos-latest
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22"]
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+          # Migration tests build old releases from git history (git archive <old commit>).
+          fetch-depth: 0
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      # Vitest's own JSON report, written outside the checkout and uploaded as it is: no candidate script summarizes it.
+      # TOOLROLL_REQUIRE_NATIVE: a Seatbelt attack that can't run on the hosted Mac fails instead of skipping; the join's
+      # verifier runs with the same --native policy.
+      - run: npm run test:all -- --shard=${{ matrix.shard }}/4 --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/shard-report.json"
+        env:
+          CI: "true"
+          TOOLROLL_REQUIRE_NATIVE: darwin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-shard-${{ matrix.node }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/shard-report.json
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 7
+
+  # The required macOS check, joined exactly as the Linux one: it always runs, and fails unless every
+  # macOS shard passed and together they ran every test file of the tested commit once, judged by the trusted base
+  # revision's verifier. `toolroll release` waits for it (REQUIRED_PR_CHECKS) and refuses to merge while main's
+  # protection doesn't require it.
+  macos:
+    name: node ${{ matrix.node }} · macos-latest
+    needs: macos-shard
+    if: ${{ always() && (github.event_name != 'pull_request' || startsWith(github.head_ref, 'release-')) }}
+    runs-on: ubuntu-24.04
+    env:
+      TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ["22"]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ env.TESTED_SHA }}
+      - name: Tested commit
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$TESTED_SHA" || { echo "checked out $(git rev-parse HEAD), expected $TESTED_SHA" >&2; exit 1; }
+          echo "tested commit: $TESTED_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Every shard passed
+        shell: bash
+        env:
+          SHARDS: ${{ needs.macos-shard.result }}
+        run: test "$SHARDS" = success || { echo "the macOS unit suite's shards ended $SHARDS" >&2; exit 1; }
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha || (github.event_name == 'workflow_dispatch' && 'main') || github.sha }}
+          path: .trusted-base
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-shard-${{ matrix.node }}-*
+          path: ${{ runner.temp }}/macos-downloads
+      # The verifier reads shard-<node>-<i> folders; macOS artifacts carry a prefix so their names differ from Linux's.
+      - name: The macOS shards' reports, under the verifier's names
+        shell: bash
+        run: |
+          mkdir "$RUNNER_TEMP/shards"
+          for folder in "$RUNNER_TEMP"/macos-downloads/*; do
+            name="$(basename "$folder")"
+            case "$name" in macos-shard-*) mv "$folder" "$RUNNER_TEMP/shards/${name#macos-}" ;; *) echo "unexpected $name among the macOS shards' reports" >&2; exit 1 ;; esac
+          done
+          # The shards ran on macOS runners, whose checkout is /Users/runner/work/<repo>/<repo>; this join runs on Linux.
+          # Their reports name files under the macOS checkout: map exactly that prefix onto this checkout, so the
+          # (trusted) verifier judges the same relative paths. Nothing else in the reports changes.
+          mac_root="/Users/runner/work/${GITHUB_REPOSITORY#*/}/${GITHUB_REPOSITORY#*/}/"
+          find "$RUNNER_TEMP/shards" -type f -name '*.json' -print0 | xargs -0 sed -i "s#\"${mac_root}#\"${GITHUB_WORKSPACE}/#g"
+      - name: Every shard ran the whole suite
+        shell: bash
+        run: |
+          verifier=.trusted-base/scripts/ci-shards.mjs
+          if [ ! -f "$verifier" ]; then echo "::warning::the base revision has no shard verifier yet; using this change's own (a person approves it)"; verifier=scripts/ci-shards.mjs; fi
+          node "$verifier" verify "$RUNNER_TEMP/shards" --root "$GITHUB_WORKSPACE" --base "$GITHUB_WORKSPACE/.trusted-base" --sha "$TESTED_SHA" --node ${{ matrix.node }} --shards 4 --native darwin

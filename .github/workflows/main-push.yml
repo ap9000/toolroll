@@ -1,0 +1,75 @@
+name: Main push
+
+# A push to main (docs/plans/test-matrix.md): typecheck and build, and the full CI only when the merge commit can't be
+# proven tested. Proven means scripts/release-proof.mjs found it the squash merge of exactly one merged pull request
+# whose head commit has the same tree and passed every ci.yml check listed below in its pull request's newest ci.yml run.
+# Not proven, or the proof job failed: ci.yml runs whole, called from here. A workflow of its own, so its runs never
+# supersede or stand in for ci.yml's on a pull request; nothing a release waits for comes from here.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    name: main · tested on its pull request
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+    outputs:
+      proven: ${{ steps.prove.outputs.proven }}
+    env:
+      # src/release.ts REQUIRED_PR_CHECKS that come from ci.yml (src/ci-workflow.test.ts holds them equal).
+      REQUIRED_CHECKS: >-
+        {"node 24 · ubuntu-latest": ".github/workflows/ci.yml",
+        "node 24 · macos-latest": ".github/workflows/ci.yml",
+        "linux native containment · delegated cgroup v2": ".github/workflows/ci.yml",
+        "linux fence · sandbox-runtime": ".github/workflows/ci.yml",
+        "Windows Job Object containment": ".github/workflows/ci.yml",
+        "git 2.41 · debian trixie": ".github/workflows/ci.yml",
+        "git 2.47 · debian trixie": ".github/workflows/ci.yml"}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+      - name: The merge commit's tree passed every ci.yml check on its pull request
+        id: prove
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if node scripts/release-proof.mjs verify --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --required "$REQUIRED_CHECKS"; then
+            echo "proven=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "proven=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::not proven tested on its pull request; the full CI runs"
+          fi
+
+  build:
+    name: main · typecheck and build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+
+  full:
+    name: main · full CI
+    needs: proof
+    # Runs unless the proof job succeeded and said proven: a failed or missing proof runs everything.
+    if: ${{ always() && !(needs.proof.result == 'success' && needs.proof.outputs.proven == 'true') }}
+    uses: ./.github/workflows/ci.yml

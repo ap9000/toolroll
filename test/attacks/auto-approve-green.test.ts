@@ -17,7 +17,7 @@ import { deploymentGate } from "../../src/deploy-gate.js";
 import { mergePullRequest } from "../../src/pull-request-flow.js";
 import { assignmentOf } from "../../src/assignment.js";
 import { runReleaseCommand } from "../../src/release-cli.js";
-import { REQUIRED_PR_CHECKS } from "../../src/release.js";
+import { REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW } from "../../src/release.js";
 import { RELEASE_RECHECK_ACTION, retriedOfRun, SETUP_REPLAY_RETRY, setupReplayWords } from "../../src/check-failure.js";
 import { launchFailedBeforeCheck } from "../../src/builder.js";
 import { CHECK_REPORT_CAPTURE, CheckBaselineUnverifiable } from "../../src/check-report.js";
@@ -44,7 +44,7 @@ function open(options: Parameters<typeof releaseFixture>[0] = {}) {
 const digestOf = (f: ReleaseFixture) => f.store.getScope(f.taskId)!.digest;
 const ref = (f: ReleaseFixture) => f.store.refFor("built-in", f.taskId).id;
 const green = (head: string, at = LATER): CiObservation => ({ head, observedAt: at.toISOString(),
-  runs: REQUIRED_PR_CHECKS.map((name, i) => ({ id: 1000 + i, name, status: "completed", conclusion: "success", app: "github-actions", suite: 7, head, workflowPath: ".github/workflows/ci.yml" })), complete: true });
+  runs: REQUIRED_PR_CHECKS.map((name, i) => ({ id: 1000 + i, name, status: "completed", conclusion: "success", app: "github-actions", suite: 7, head, workflowPath: REQUIRED_PR_CHECKS_WORKFLOW[name] })), complete: true });
 /** The plane's auto-check, with the base GitHub names for the candidate (the main commit the branch left). */
 const authorize = (f: ReleaseFixture, base = f.base) => authorizeAutoCheck(f.store, { taskId: f.taskId, digest: digestOf(f), candidate: f.approved, base, now: LATER });
 /** The release check of the candidate, sealed as the builder seals it, on the build's real base. */
@@ -703,9 +703,10 @@ describe("codex r1 #3: the cap counts every attempt GitHub holds, read through t
     const attempts = [
       // A step the candidate named like GitHub's own "Set up job" still counts as a step that ran: numbers, not names.
       ...Array.from({ length: failed }, (_, i) => ({ id: 10 + i, name: REQUIRED_PR_CHECKS[0], conclusion: "failure", steps: [...steps] })),
-      ...REQUIRED_PR_CHECKS.map((name, i) => ({ id: 100 + i, name, conclusion: "success" })),
+      // Node 22 comes from the release candidate workflow's own run (its suite 8), the rest from ci.yml's (suite 7).
+      ...REQUIRED_PR_CHECKS.map((name, i) => ({ id: 100 + i, name, conclusion: "success", ...(REQUIRED_PR_CHECKS_WORKFLOW[name] === ".github/workflows/ci.yml" ? {} : { suite: 8 }) })),
     ];
-    const gh = fakeGitHub(attempts, f.approved);
+    const gh = fakeGitHub(attempts, f.approved, [{ suite: 7, workflow: 3, path: ".github/workflows/ci.yml" }, { suite: 8, workflow: 4, path: ".github/workflows/release-candidate.yml" }]);
     const rel = storeReleaseAdapter(() => f.store, () => {}, () => LATER, undefined, {
       observe: async sha => ({ head: sha, observedAt: LATER.toISOString(), complete: true, runs: (await readCheckRuns(gh.run, "/usr/bin/gh", "ap9000/toolroll", sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, workflowPath: one.workflowPath ?? null, beforeTests: one.beforeTests ?? null })) }),
       mergeBase: async () => f.base, upToDateRequired: async () => true, evidenceRoot: EVIDENCE(f), reportsProtected: true,
@@ -1038,7 +1039,7 @@ describe("codex r2 #6: GitHub's 1000-suite ceiling fails an automatic approval c
     holdApprovalForCi(f.store, { taskId: f.taskId, candidate: f.approved, now: RELEASE_NOW });
     expect(liftCiHold(f.store, { taskId: f.taskId, candidate: f.approved, ci, ask: true, now: LATER })).toMatchObject({ ok: false, why: expect.stringContaining("lookalike.yml") });
     // With the job in ci.yml it stands.
-    expect(ciProblem({ ...ci, runs: runs.map(one => ({ ...one, workflowPath: ".github/workflows/ci.yml" })) }, f.approved, LATER)).toBeNull();
+    expect(ciProblem({ ...ci, runs: runs.map(one => ({ ...one, workflowPath: (REQUIRED_PR_CHECKS_WORKFLOW as Record<string, string>)[one.name] ?? ".github/workflows/ci.yml" })) }, f.approved, LATER)).toBeNull();
   });
 });
 
@@ -1121,11 +1122,15 @@ describe("codex r2 #1: main's protection holds only when it is effective and nob
   const read = (exec: Exec) => readMainProtection(exec, "/usr/bin/gh", "ap9000/toolroll");
   const P = protectionWorld();
 
-  test("the live settings (classic, strict, the five checks, no bypassing) hold, and the git lanes not yet required are named", async () => {
-    expect(await read(P.exec())).toEqual({ effective: true, missing: [], notYetRequired: [...PROTECTION_REPORT_ONLY_CHECKS] });
-    const all = { ...P.live(), required_status_checks: { strict: true, contexts: [...REQUIRED_PR_CHECKS], checks: REQUIRED_PR_CHECKS.map(context => ({ context, app_id: 15368 })) } };
-    expect(await read(P.exec({ classic: P.json(all) }))).toEqual({ effective: true, missing: [], notYetRequired: [] });
-    expect(PROTECTION_MINIMUM_CHECKS).toHaveLength(5);
+  test("test-matrix: settings that require every required check hold; the five checks main required before no longer do, and what it lacks is named", async () => {
+    expect(PROTECTION_REPORT_ONLY_CHECKS).toEqual([]);
+    expect([...PROTECTION_MINIMUM_CHECKS].sort()).toEqual([...REQUIRED_PR_CHECKS].sort());
+    expect(await read(P.exec())).toEqual({ effective: true, missing: [], notYetRequired: [] });
+    // main's protection before the test matrix: the Linux units, cgroup, fence and Windows lanes, not git or macOS.
+    const before = ["node 22 · ubuntu-latest", "node 24 · ubuntu-latest", "linux native containment · delegated cgroup v2", "linux fence · sandbox-runtime", "Windows Job Object containment"];
+    const old = { ...P.live(), required_status_checks: { strict: true, contexts: before, checks: before.map(context => ({ context, app_id: 15368 })) } };
+    expect(await read(P.exec({ classic: P.json(old) }))).toEqual({ effective: false, notYetRequired: [],
+      missing: ["classic protection: required checks lack git 2.41 · debian trixie, git 2.47 · debian trixie, node 24 · macos-latest, node 22 · macos-latest (add them to main's required status checks: a release's proof trusts what main required)"] });
   });
 
   test.each([
@@ -1136,7 +1141,7 @@ describe("codex r2 #1: main's protection holds only when it is effective and nob
       /must require GitHub Actions/,
     ] as const),
     ["context names without app bindings", (l: ReturnType<typeof P.live>) => ({ ...l, required_status_checks: { ...l.required_status_checks, checks: [] } }), /must require GitHub Actions/],
-    ["a minimum check missing", (l: ReturnType<typeof P.live>) => ({ ...l, required_status_checks: { strict: true, contexts: PROTECTION_MINIMUM_CHECKS.slice(1), checks: [] } }), /required checks lack node 22 · ubuntu-latest/],
+    ["a minimum check missing", (l: ReturnType<typeof P.live>) => ({ ...l, required_status_checks: { strict: true, contexts: PROTECTION_MINIMUM_CHECKS.slice(1), checks: [] } }), new RegExp(`required checks lack ${PROTECTION_MINIMUM_CHECKS[0]}`)],
     ["administrators exempt", (l: ReturnType<typeof P.live>) => ({ ...l, enforce_admins: { enabled: false } }), /"Do not allow bypassing the above settings" is off/],
     ["not up to date", (l: ReturnType<typeof P.live>) => ({ ...l, required_status_checks: { ...l.required_status_checks, strict: false } }), /"Require branches to be up to date before merging" is off/],
     ["status checks off", (l: ReturnType<typeof P.live>) => ({ ...l, required_status_checks: null }), /"Require status checks to pass before merging" is off/],

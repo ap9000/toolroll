@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import {
-  checksVerdict, gateTaskId, journalFile, ownerApproval, prChecksVerdict, readJournal, writeJournal, PROTECTION_REPORT_ONLY_CHECKS, REQUIRED_PR_CHECKS, RELEASE_TAG_CHECKS, runRelease, transientNetworkError,
+  checksVerdict, gateTaskId, journalFile, ownerApproval, prChecksVerdict, readJournal, writeJournal, PROTECTION_MINIMUM_CHECKS, PROTECTION_REPORT_ONLY_CHECKS, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW, RELEASE_TAG_CHECKS, runRelease, transientNetworkError,
   type CheckRun, type GateState, type HomebrewState, type MainProtection, type ReleaseAdapters, type ReleaseJournal,
 } from "./release.js";
 
@@ -14,7 +14,7 @@ const NEW = "/state/staged-upgrades/browser-new/runtime/node_modules/toolroll/di
 const DIGEST = "scope-digest-1", RECEIPT = "receipt-1";
 const T0 = Date.parse("2026-10-08T09:00:00.000Z");
 // GitHub's workflow-run path of each job: a required check counts only from ci.yml (codex round 1, inherited CI limitation).
-const passing = (names: readonly string[]): CheckRun[] => names.map(name => ({ name, status: "completed", conclusion: "success", workflowPath: ".github/workflows/ci.yml" }));
+const passing = (names: readonly string[]): CheckRun[] => names.map(name => ({ name, status: "completed", conclusion: "success", workflowPath: (REQUIRED_PR_CHECKS_WORKFLOW as Record<string, string>)[name] ?? ".github/workflows/ci.yml" }));
 /** The tag's checks, from publish.yml. */
 const tagPassing = (names: readonly string[]): CheckRun[] => names.map(name => ({ name, status: "completed", conclusion: "success", workflowPath: ".github/workflows/publish.yml" }));
 const MUTATIONS = ["fileGate", "complete", "deploy", "merge", "deleteBranch", "createTag", "propose", "brewMerge"] as const;
@@ -134,7 +134,7 @@ function world(options: { crashAfter?: Mutation } = {}) {
       pullRequest: async () => ({ ...s.pr }),
       // As the real adapter answers: every attempt, with its id, app, check suite and commit (a test's own fields win).
       checks: async (repo, sha) => (!s.gateSeesChecks && repo !== "ap9000/homebrew-toolroll" && (s.step === "gate" || (s.step === "deploy" && s.gate.approval?.basis !== "auto-green")) && sha !== MERGE ? passing(REQUIRED_PR_CHECKS)
-        : structuredClone(s.checks.get(`${repo === "ap9000/homebrew-toolroll" ? "brew:" : ""}${sha}`) ?? [])).map((run, i) => ({ id: i + 1, app: "github-actions", suite: 1, head: sha, workflowPath: ".github/workflows/ci.yml", ...run })),
+        : structuredClone(s.checks.get(`${repo === "ap9000/homebrew-toolroll" ? "brew:" : ""}${sha}`) ?? [])).map((run, i) => ({ id: i + 1, app: "github-actions", suite: 1, head: sha, workflowPath: (REQUIRED_PR_CHECKS_WORKFLOW as Record<string, string>)[run.name] ?? ".github/workflows/ci.yml", ...run })),
       merge: async (_repo, _pr, head) => {
         if (head !== s.pr.head) throw new Error("Head branch was modified");
         s.pr = { ...s.pr, state: "merged", mergeCommit: MERGE };
@@ -575,16 +575,19 @@ describe("toolroll release", () => {
     }
   });
 
-  test("eval review 2 #1: a person's release names exactly what main's protection lacks, and the git lanes it doesn't require yet", async () => {
+  test("eval review 2 #1, test-matrix: a person's release names exactly what main's protection lacks, and every required check must be in it", async () => {
     const { s, adapters } = world();
     s.protection = { effective: false, missing: ["classic protection: \"Do not allow bypassing the above settings\" is off, so administrators can merge past it"], notYetRequired: [] };
     expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, reason: "base-unprotected", message: expect.stringContaining(s.protection.missing[0]!) });
     expect(s.calls).not.toContain("merge");
-    const held = world();
-    held.s.protection = { effective: true, missing: [], notYetRequired: [...PROTECTION_REPORT_ONLY_CHECKS] };
-    expect(await runRelease(options(stateDir()), held.adapters)).toMatchObject({ ok: true });
-    expect(held.s.said).toContainEqual(expect.stringContaining("main's protection doesn't require git 2.41 · debian trixie, git 2.47 · debian trixie, node 22 · macos-latest, node 24 · macos-latest yet"));
-    expect(held.s.said.some(line => line.includes("Warning:"))).toBe(false);
+    // Publication's release proof trusts what main's protection required at the merge: no required check is report-only.
+    expect(PROTECTION_REPORT_ONLY_CHECKS).toEqual([]);
+    expect(PROTECTION_MINIMUM_CHECKS).toEqual([...REQUIRED_PR_CHECKS]);
+    const lacking = world();
+    lacking.s.protection = { effective: false, missing: ["classic protection: required checks lack node 22 · ubuntu-latest, node 22 · macos-latest (add them to main's required status checks: a release's proof trusts what main required)"], notYetRequired: [] };
+    expect(await runRelease(options(stateDir()), lacking.adapters)).toMatchObject({ ok: false, reason: "base-unprotected", message: expect.stringContaining("required checks lack node 22 · ubuntu-latest, node 22 · macos-latest (add them") });
+    expect(lacking.s.calls).not.toContain("merge");
+    expect(lacking.s.calls).not.toContain("createTag");
   });
 
   test("attack: main moving after the gate is refused right before the merge", async () => {
@@ -1605,6 +1608,36 @@ describe("toolroll release: approve automatically when checks pass", () => {
     expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, step: "check", reason: "check-failed" });
     expect(plane.checkFailed).toEqual([]);
     expect(plane.gaveUp).toEqual([expect.stringContaining("release build")]);
+  });
+
+  test("test-matrix: a skipped required check never passes a release, and each name counts only from its own workflow", () => {
+    const CI_YML = ".github/workflows/ci.yml", RC_YML = ".github/workflows/release-candidate.yml";
+    // ci.yml's run is workflow 1 (suite 5); the release candidate workflow's pull request run is workflow 2 (suite 6).
+    const all = (extra: (name: string) => Partial<CheckRun> = () => ({})): CheckRun[] => REQUIRED_PR_CHECKS.map((name, i) => {
+      const rc = REQUIRED_PR_CHECKS_WORKFLOW[name] === RC_YML;
+      return { id: 100 + i, name, status: "completed", conclusion: "success", app: "github-actions", head: SHA, suite: rc ? 6 : 5, workflow: rc ? 2 : 1, workflowPath: rc ? RC_YML : CI_YML, ...extra(name) };
+    });
+    for (const auto of [{}, { auto: true as const }]) {
+      expect(prChecksVerdict(all(), SHA, REQUIRED_PR_CHECKS, { ...auto, workflow: REQUIRED_PR_CHECKS_WORKFLOW })).toMatchObject({ state: "passed" });
+      // An ordinary branch's pull request: Node 22 skipped. A documentation-only one: the area lanes skipped.
+      for (const skipped of ["node 22 · ubuntu-latest", "Windows Job Object containment", "git 2.41 · debian trixie"]) {
+        expect(prChecksVerdict(all(name => name === skipped ? { conclusion: "skipped" } : {}), SHA, REQUIRED_PR_CHECKS, { ...auto, workflow: REQUIRED_PR_CHECKS_WORKFLOW }), skipped)
+          .toMatchObject({ state: "failed", failed: [expect.stringContaining(`${skipped} (skipped: a release needs it run on this exact commit; release from a branch named release-*, whose pull request runs every lane)`)] });
+      }
+      // A required name from the other workflow (Node 22 reported by ci.yml, Node 24 by the release candidate workflow) never stands for it.
+      expect(prChecksVerdict(all(name => name === "node 22 · macos-latest" ? { workflowPath: CI_YML, workflow: 1, suite: 5 } : {}), SHA, REQUIRED_PR_CHECKS, { ...auto, workflow: REQUIRED_PR_CHECKS_WORKFLOW }))
+        .toMatchObject({ state: "failed", failed: [expect.stringContaining("node 22 · macos-latest (from .github/workflows/ci.yml, not .github/workflows/release-candidate.yml)")] });
+      expect(prChecksVerdict(all(name => name === "node 24 · macos-latest" ? { workflowPath: RC_YML, workflow: 2, suite: 6 } : {}), SHA, REQUIRED_PR_CHECKS, { ...auto, workflow: REQUIRED_PR_CHECKS_WORKFLOW }))
+        .toMatchObject({ state: "failed" });
+      for (const suffix of ["@evil.yml", "@evil.yaml", "@evil.yml@main", "@evil.yml@refs/pull/258/merge", "@"]) {
+        expect(prChecksVerdict(all(name => name === "node 22 · macos-latest" ? { workflowPath: `${RC_YML}${suffix}` } : {}), SHA, REQUIRED_PR_CHECKS, { ...auto, workflow: REQUIRED_PR_CHECKS_WORKFLOW }), suffix)
+          .toMatchObject({ state: "failed" });
+      }
+      // A name the map doesn't know refuses rather than passing unchecked.
+      expect(prChecksVerdict(all(), SHA, [...REQUIRED_PR_CHECKS, "extra"], { ...auto, workflow: REQUIRED_PR_CHECKS_WORKFLOW })).toMatchObject({ state: "pending" });
+      expect(prChecksVerdict([...all(), { id: 300, name: "extra", status: "completed", conclusion: "success", app: "github-actions", head: SHA, suite: 5, workflow: 1, workflowPath: CI_YML }], SHA, [...REQUIRED_PR_CHECKS, "extra"], { ...auto, workflow: REQUIRED_PR_CHECKS_WORKFLOW }))
+        .toMatchObject({ state: "failed", failed: [expect.stringContaining("extra (from .github/workflows/ci.yml, not a workflow this release knows for it)")] });
+    }
   });
 
   test("prChecksVerdict: jobs by app, suite and name, judged by the latest attempt; failure classes only for an automatic approval", () => {

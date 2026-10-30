@@ -73,8 +73,9 @@ journey suites run; upgrades use the separate comparison below. Tags come from t
 `node scripts/release-check.mjs --plan` shows the baseline and selected checks.
 Units normally run in full. Before starting, the check queries GitHub through
 `gh api` for `ci.yml` on the exact candidate SHA. Only a clean checkout and
-the latest completed successful push-event run, with every workflow job (including both
-unit matrix legs) concluded `success` on that SHA, can replace the unit suite.
+the latest completed successful push-event run, with every workflow job
+concluded `success` on that SHA, can replace the unit suite; `ci.yml` no longer
+runs on a push, so a release check runs its own units.
 Skipped, pending, missing, failed, unreadable or unknown results run it locally.
 The latest run attempt is used; an older green attempt cannot hide a failure.
 All test files mentioning macOS, Darwin, sandbox-exec or launchctl still run
@@ -152,18 +153,30 @@ The summary reports observed concurrency and waits.
 
 ## CI
 
-Every pull request and push to main runs `.github/workflows/ci.yml`: the full
-suite on Ubuntu and on macOS with Node 22 and 24 (four shards each, joined by
-the required `node N · ubuntu-latest` and `node N · macos-latest` checks), the
-Linux cgroup containment job and the Windows Job Object containment job. The
-macOS checks are report-only in main's protection until the owner requires
-them; `toolroll release` waits for them. macOS also runs nightly in
-`macos.yml` and on release tags in `publish.yml`, whose publish job uses
-`needs: macos`, so both tag legs must pass before npm publication; the release
-waits for that publish job only, not main's own CI on the merge commit.
-No job runs behind an `if:` (except the shard joins, which always run), because GitHub reports a
-skipped job as passing a required check; `src/ci-workflow.test.ts` holds the
-workflows to the check names `toolroll release` waits for.
+The matrix is in `docs/plans/test-matrix.md`. Every pull request runs
+`.github/workflows/ci.yml`: the full suite on Ubuntu and macOS with Node 24
+(four shards each, joined by the required `node 24 · ubuntu-latest` and
+`node 24 · macos-latest` checks), and the area lanes: Linux cgroup
+containment, the Linux fence, Windows Job Object containment and the git
+2.41/2.47 lanes. A documentation-only pull request (only Markdown under
+`docs/`, `CHANGELOG.md` or `README.md`, added or modified; see
+`scripts/ci-scope.mjs`) skips the area lanes. Node 22, the engines floor,
+runs in `release-candidate.yml` on a pull request from a `release-*` branch
+(and in the nightly); on any other pull request its jobs are skipped. Main's
+protection reads a skipped job as passing, so ordinary pull requests merge;
+`toolroll release` never accepts a skipped check, so a release needs every
+lane executed on its exact head, and main's protection must require every
+one of `REQUIRED_PR_CHECKS`. The hosted unit shards run with
+`TOOLROLL_REQUIRE_NATIVE` (linux or darwin), so a native fence attack runs or
+fails, and the shards' verifier refuses a skip that only a native probe
+allows. A push to main (`main-push.yml`) typechecks and builds, and runs
+`ci.yml` whole only when it can't prove the merge commit is a tested pull
+request's head tree. Release tags run no tests: `publish.yml`'s release proof
+(`scripts/release-proof.mjs`) reads GitHub's record that the tagged tree
+passed every required check on its pull request before npm publication.
+`nightly.yml` runs everything on main every night. Only the jobs listed in
+`src/ci-workflow.test.ts` carry an `if:`, and that test holds the workflows
+to the check names `toolroll release` waits for.
 
 ## Releasing
 
