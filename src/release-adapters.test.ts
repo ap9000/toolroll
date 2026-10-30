@@ -249,7 +249,7 @@ describe("the release adapters", () => {
     const run: Exec = async (command, args) => {
       calls.push([command, ...args]);
       const joined = args.join(" ");
-      if (joined.includes("/pulls/170/merge")) return { code: 0, stdout: JSON.stringify({ sha: "m".repeat(40), merged: true }), stderr: "" };
+      if (joined.includes("/pulls/170/merge")) return { code: 0, stdout: JSON.stringify({ sha: "b".repeat(40), merged: true }), stderr: "" };
       // Which workflow each suite is a run of (the CI reader asks): none here.
       if (joined.includes("/actions/runs")) return { code: 0, stdout: "", stderr: "" };
       if (joined.includes("check-runs")) return { code: 0, stdout: `{"id":9,"name":"x","status":"completed","conclusion":"success","app":"github-actions"}\n{"id":3,"name":"x","status":"completed","conclusion":"failure","app":null}\n`, stderr: "" };
@@ -257,7 +257,7 @@ describe("the release adapters", () => {
       return { code: 1, stdout: "", stderr: "unexpected" };
     };
     const adapters = releaseAdapters({ checkout: "/rv", run, tools: TOOLS });
-    expect(await adapters.github.merge("ap9000/toolroll", 170, SHA)).toBe("m".repeat(40));
+    expect(await adapters.github.merge("ap9000/toolroll", 170, SHA)).toBe("b".repeat(40));
     expect(calls[0]).toEqual([TOOLS.gh, "api", "-X", "PUT", "repos/ap9000/toolroll/pulls/170/merge", "-f", "merge_method=squash", "-f", `sha=${SHA}`]);
     expect((await adapters.github.checks("ap9000/toolroll", SHA)).map(one => [one.conclusion, one.app])).toEqual([["failure", null], ["success", "github-actions"]]);
     expect(await adapters.github.tag("ap9000/toolroll", "v0.9.52")).toBeNull();

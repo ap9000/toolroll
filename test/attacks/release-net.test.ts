@@ -44,3 +44,54 @@ describe("a refusal cannot become transient through accompanying network or rate
     expect([reads, writes, rechecks]).toEqual([1, 1, 0]);
   });
 });
+
+import { releaseAdapters, type Exec } from "../../src/release-adapters.js";
+const HEAD = "a".repeat(40), MERGE = "b".repeat(40), TREE = "c".repeat(40);
+const ok = (body: unknown) => ({ code: 0, stdout: JSON.stringify(body), stderr: "" });
+const lost = { code: 1, stdout: "", stderr: "HTTP 502: Bad Gateway" };
+const adapters = (run: Exec) => releaseAdapters({ checkout: "/unused", database: "/nonexistent/toolroll.db", run,
+  tools: { git: "/usr/bin/git", gh: "/opt/homebrew/bin/gh", ssh: "/usr/bin/ssh" },
+  now: () => new Date(0), sleep: async () => {}, say: () => {} });
+
+describe("a merge result must still be the approved change", () => {
+  test.each(["release", "tap"] as const)("%s: an open PR cannot authorize a second merge under stale coordinator checks", async kind => {
+    let writes = 0;
+    const run: Exec = async (_command, args) => {
+      if (args.includes("PUT")) return ++writes === 1 ? lost : ok({ merged: true, sha: MERGE });
+      if (args.includes(".default_branch")) return { code: 0, stdout: "main", stderr: "" };
+      return ok({ merged: false, state: "open", head: { sha: HEAD }, base: { ref: "main" } });
+    };
+    const a = adapters(run);
+    await expect(kind === "release" ? a.github.merge("a/b", 7, HEAD) : a.homebrew.merge(7, HEAD)).rejects.toThrow();
+    expect(writes).toBe(1);
+  });
+
+  test.each([
+    ["another head", { head: { sha: TREE } }, {}],
+    ["another base", { base: { ref: "unprotected" } }, {}],
+    ["non-squash merge", {}, { parents: [{ sha: HEAD }, { sha: TREE }] }],
+    ["different tree", {}, { tree: { sha: MERGE } }],
+  ])("a merge by another caller at %s is not adopted", async (_name, pull, commit) => {
+    const run: Exec = async (_command, args) => {
+      if (args.includes("PUT")) return lost;
+      const path = args.find(arg => arg.startsWith("repos/")) ?? "";
+      if (path.endsWith(`/git/commits/${HEAD}`)) return ok({ tree: { sha: TREE } });
+      if (path.endsWith(`/git/commits/${MERGE}`)) return ok({ tree: { sha: TREE }, parents: [{ sha: TREE }], ...commit });
+      return ok({ merged: true, state: "closed", head: { sha: HEAD }, base: { ref: "main" }, merge_commit_sha: MERGE, ...pull });
+    };
+    await expect(adapters(run).github.merge("a/b", 7, HEAD)).rejects.toThrow();
+  });
+
+  test.each([false, undefined])("a successful HTTP response with merged=%s is a refusal", async merged => {
+    await expect(adapters(async () => ok({ merged, sha: MERGE })).github.merge("a/b", 7, HEAD)).rejects.toThrow();
+  });
+
+  test("an existing tag at another commit is never accepted or rewritten", async () => {
+    let writes = 0;
+    await expect(adapters(async (_command, args) => {
+      if (args.includes("POST")) { writes++; return lost; }
+      return ok({ object: { type: "commit", sha: HEAD } });
+    }).github.createTag("a/b", "v1", MERGE)).rejects.toThrow();
+    expect(writes).toBe(1);
+  });
+});

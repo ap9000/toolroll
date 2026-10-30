@@ -517,17 +517,18 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
       async upToDateRequired(repo) { return readMainProtection(reads, ciGh, repo); },
       async merge(repo, pr, head, message) {
         // The squash commit's message lists every commit that landed after the approval (release-once.md). Never asked
-        // again blindly: after a short network failure GitHub is read to learn whether it merged (writeWithRecheck).
-        return writeWithRecheck(`merging #${pr}`, net, {
+        // again under stale approval/lease/CI checks: reconcile a lost answer, but another write needs a fresh
+        // coordinator pass through those guards. A PR still being open proves none of them.
+        return writeWithRecheck(`merging #${pr}`, { ...net, maxAttempts: 1 }, {
           write: () => ghWrite("api", "-X", "PUT", `repos/${repo}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`,
             ...(message === undefined ? [] : ["-f", `commit_message=${message}`])),
           accept: result => {
             const merged = object(JSON.parse(result.stdout));
-            if (typeof merged["sha"] !== "string") throw new Error(`GitHub did not merge #${pr}: ${String(merged["message"] ?? "no merge commit")}`);
+            if (merged["merged"] !== true || typeof merged["sha"] !== "string" || !/^[0-9a-f]{40}$/.test(merged["sha"])) throw new Error(`GitHub did not merge #${pr}: ${String(merged["message"] ?? "no merge commit")}`);
             return merged["sha"];
           },
           refuse: result => { throw failed(result, "gh api pulls merge"); },
-          recheck: () => pullMergedAt(repo, pr, head),
+          recheck: () => pullMergedAt(repo, pr, head, "main", message),
         });
       },
       async tag(repo, tag) { return readTag(repo, tag); },
@@ -639,14 +640,15 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         return problem === null ? { ok: true } : { ok: false, why: problem };
       },
       async merge(pr, head) {
-        await writeWithRecheck(`merging ${tap} #${pr}`, net, {
+        const base = await defaultBranch();
+        await writeWithRecheck(`merging ${tap} #${pr}`, { ...net, maxAttempts: 1 }, {
           write: () => ghWrite("api", "-X", "PUT", `repos/${tap}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`),
           accept: result => {
             const merged = object(JSON.parse(result.stdout));
-            if (merged["merged"] !== true || typeof merged["sha"] !== "string") throw new Error(`GitHub did not merge ${tap} #${pr}: ${String(merged["message"] ?? "no merge commit")}`);
+            if (merged["merged"] !== true || typeof merged["sha"] !== "string" || !/^[0-9a-f]{40}$/.test(merged["sha"])) throw new Error(`GitHub did not merge ${tap} #${pr}: ${String(merged["message"] ?? "no merge commit")}`);
           },
           refuse: result => { throw failed(result, `merging ${tap} #${pr}`); },
-          recheck: async () => { const state = await pullMergedAt(tap, pr, head); return state.state === "done" ? { state: "done", value: undefined } : state; },
+          recheck: async () => { const state = await pullMergedAt(tap, pr, head, base); return state.state === "done" ? { state: "done", value: undefined } : state; },
         });
       },
     },
@@ -665,11 +667,21 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   }
   /** Whether a pull request is merged from exactly `head` (its merge commit), still open at `head` (not merged), or
    * anything else — read after a merge's answer was lost. */
-  async function pullMergedAt(repo: string, pr: number, head: string): Promise<{ state: "done"; value: string } | { state: "not-done" } | { state: "other"; why: string }> {
+  async function pullMergedAt(repo: string, pr: number, head: string, base: string, message?: string): Promise<{ state: "done"; value: string } | { state: "not-done" } | { state: "other"; why: string }> {
     const pull = object(await ghJson("gh api pulls", "api", `repos/${repo}/pulls/${pr}`));
     const at = object(pull["head"])["sha"], commit = pull["merge_commit_sha"];
-    if (pull["merged"] === true && at === head && typeof commit === "string" && /^[0-9a-f]{40}$/.test(commit)) return { state: "done", value: commit };
-    if (pull["merged"] === false && pull["state"] === "open" && at === head) return { state: "not-done" };
+    if (at !== head || object(pull["base"])["ref"] !== base) return { state: "other", why: `#${pr} is no longer open at ${head.slice(0, 7)} into ${base}` };
+    if (pull["merged"] === true && pull["state"] === "closed" && typeof commit === "string" && /^[0-9a-f]{40}$/.test(commit)) {
+      // Another caller may have merged it. Only the same squash result counts, never merely "merged=true".
+      const source = object(await ghJson("gh api git/commits", "api", `repos/${repo}/git/commits/${head}`));
+      const merged = object(await ghJson("gh api git/commits", "api", `repos/${repo}/git/commits/${commit}`));
+      const tree = object(source["tree"])["sha"], parents = merged["parents"];
+      if (typeof tree === "string" && /^[0-9a-f]{40}$/.test(tree) && object(merged["tree"])["sha"] === tree
+        && Array.isArray(parents) && parents.length === 1
+        && (message === undefined || (typeof merged["message"] === "string" && merged["message"].endsWith(`\n\n${message}`)))) return { state: "done", value: commit };
+      return { state: "other", why: `#${pr}'s merge is not the approved squash result` };
+    }
+    if (pull["merged"] === false && pull["state"] === "open") return { state: "not-done" };
     return { state: "other", why: `#${pr} is no longer open at ${head.slice(0, 7)}` };
   }
   async function defaultBranch(): Promise<string> {

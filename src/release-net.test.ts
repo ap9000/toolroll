@@ -162,8 +162,9 @@ describe("release network retries: writes learn whether they happened first", ()
         calls.push("read");
         if (o.pullUnreadable === true) return fail("error connecting to api.github.com");
         if (o.happens === "other") return ok(JSON.stringify({ state: "closed", merged: false, head: { sha: SHA } }));
-        return ok(JSON.stringify({ state: merged ? "closed" : "open", merged, head: { sha: SHA }, merge_commit_sha: merged ? MERGE : null }));
+        return ok(JSON.stringify({ state: merged ? "closed" : "open", merged, head: { sha: SHA }, base: { ref: "main" }, merge_commit_sha: merged ? MERGE : null }));
       }
+      if (path.includes("/git/commits/")) return ok(JSON.stringify({ tree: { sha: SHA }, parents: [{ sha: SHA }] }));
       throw new Error(`unexpected ${args.join(" ")}`);
     };
     return { run, calls };
@@ -176,10 +177,10 @@ describe("release network retries: writes learn whether they happened first", ()
     expect(calls).toEqual(["merge", "read"]);
   });
 
-  test("a merge that provably didn't happen is asked again", async () => {
+  test("an open PR requires a fresh coordinator pass before another merge", async () => {
     const { run, calls } = mergeWorld({ failures: 2, happens: "never" });
-    expect(await adapters(run).github.merge("ap9000/toolroll", 7, SHA)).toBe(MERGE);
-    expect(calls).toEqual(["merge", "read", "merge", "read", "merge"]);
+    await expect(adapters(run).github.merge("ap9000/toolroll", 7, SHA)).rejects.toThrow(/error connecting/);
+    expect(calls).toEqual(["merge", "read"]);
   });
 
   test("a merge whose pull request moved on, or whose state can't be read, stops with the original error", async () => {
