@@ -203,6 +203,10 @@ export type ReleaseAuthorityAdapter = {
   /** Releases that approve themselves when green (docs/plans/auto-approve-green.md): the plane's own seals, each proven
    * again inside the plane. Absent: a plane that can't, and every release asks a person as before. */
   auto?: AutoReleaseAdapter;
+  /** GitHub's nightly lane debt (nightly-github.ts, docs/plans/evals-nightly.md part A) right before a deploy, the merge
+   * and the tag: one bounded read of GitHub (20 s), this candidate's exemptions read again, then the plane's stored
+   * debt. A warning never holds; a hold stops the release. Absent: a plane that can't read it. */
+  nightly?(input: { taskId: string; candidate: string; pr: number; phase: "deploy" | "merge" | "tag" }): Promise<{ ok: true; warning: string | null } | { ok: false; why: string; warning: string | null }>;
 };
 
 /** The plane's automatic release approval, as the coordinator asks it. Every answer is the plane's own: the coordinator
@@ -759,6 +763,13 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
       const held = rel?.auto === undefined ? null : await rel.auto.publishHeld(j.task.id);
       if (held !== null) throw new Stop("approval", `${held}. It was merged; nothing more is tagged, published or sent to Homebrew until a person lets it go on: \`toolroll release publish-ok ${j.task.id} --as <you> --token <password>\`, then rerun.`);
     };
+    /** GitHub's nightly lane debt before a deploy, the merge or the tag (evals-nightly.md, part A2). */
+    const nightlyHolds = async (phase: "deploy" | "merge" | "tag") => {
+      if (rel?.nightly === undefined) return;
+      const answer = await rel.nightly({ taskId: j.task.id, candidate: j.candidate.sha, pr: j.pr, phase });
+      if (answer.warning !== null) say(`  ${answer.warning}`);
+      if (!answer.ok) throw new Stop("nightly-debt", `${answer.why} Nothing was ${phase === "deploy" ? "deployed" : phase === "merge" ? "merged" : "tagged or published"}; rerun the release once it passes.`);
+    };
     /** identity(), on a plane that keeps release authority; a legacy plane keeps the old rules. */
     const watch = async (action: ReleaseAction) => { if (rel !== undefined) await identity(action, true); };
     const restart = async (head: string) => {
@@ -1091,6 +1102,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
               await watch("deploy");
               // Every deploy reservation, whatever the journal saved: CI must still be green on the exact commit.
               await autoCiHolds("the deploy");
+              await nightlyHolds("deploy");
               const reserved = await rel.reserve({ authority: j.authority.id, kind: "deploy", taskId: j.task.id, candidate: j.candidate.sha, epoch });
               if (!reserved.ok) throw new Stop("release", `The deploy couldn't be reserved: ${reserved.why}`);
               if (!await rel.start(reserved.operation, epoch)) throw new Stop("lease", "Another release coordinator took over this release.");
@@ -1106,6 +1118,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             await pinned();
             // Every deploy issued, whatever the journal saved (a retry after a rollback included): CI still green.
             await autoCiHolds("the deploy");
+            await nightlyHolds("deploy");
             let operation: string | undefined, secret = "";
             if (rel !== undefined && j.authority && epoch !== null) {
               const reserved = await rel.reserve({ authority: j.authority.id, kind: "deploy", taskId: j.task.id, candidate: j.candidate.sha, epoch });
@@ -1182,6 +1195,9 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
             // The checks again, at the moment of merging: a rerun that failed since must not merge.
             const verdict = prChecksVerdict(await adapters.github.checks(j.github, j.candidate.sha), j.candidate.sha, REQUIRED_PR_CHECKS, { ...autoCap(), workflow: REQUIRED_PR_CHECKS_WORKFLOW });
             if (verdict.state !== "passed") await ciFailedAfterDeploy(`Pull request checks are no longer all passing on ${j.candidate.sha.slice(0, 7)}`);
+            // GitHub's nightly lane debt (a bounded read), before main's last read so it doesn't widen that window; the
+            // reservation below checks the stored debt again in its own transaction.
+            await nightlyHolds("merge");
             // Main once more, from GitHub, the last thing before the merge is reserved: moved since the comparison, it
             // stops here (finding 4). GitHub's own up-to-date rule refuses the rest of the window.
             const now = await adapters.github.mainHead(j.github);
@@ -1224,7 +1240,7 @@ export async function runRelease(options: ReleaseOptions, adapters: ReleaseAdapt
           await publishHold();
           const at = await adapters.github.tag(j.github, j.tag);
           if (at !== null && at !== merge.sha) throw new Stop("conflict", `${j.tag} already points at ${at.slice(0, 7)}, not the merge ${merge.sha.slice(0, 7)}.`);
-          if (at === null) { await autoCiHolds("the tag"); intend("tag"); await adapters.github.createTag(j.github, j.tag, merge.sha); }
+          if (at === null) { await autoCiHolds("the tag"); await nightlyHolds("tag"); intend("tag"); await adapters.github.createTag(j.github, j.tag, merge.sha); }
           j.tagged = { sha: merge.sha };
           advance("publish");
           break;

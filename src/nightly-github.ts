@@ -567,3 +567,239 @@ export async function readGithubNightlies(store: Store, deps: { gh: GhRead; now:
   }
   return read;
 }
+
+// ---- holding every boundary (A2) -----------------------------------------------------------------------------------
+
+/** What a hold stops: a deploy, the merge, the tag (pre-tag authorization), or an automatic approval (sealAutoGreen). */
+export type NightlyPhase = "deploy" | "merge" | "tag" | "auto";
+/** How long a boundary's re-read of a candidate's exemption stands for the stored checks inside the reservation, the
+ * deployment gate and the installed runtime's deploy check after it. */
+export const EXEMPTION_FRESH_MS = 10 * 60_000;
+
+const STAMP = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "UTC" });
+/** "Oct 30, 06:17 UTC". */
+export const nightlyStamp = (iso: string): string => `${STAMP.format(new Date(iso))} UTC`;
+
+/** The words of a nightly hold: the first open failure, how many more, and the way out at this point. */
+export function nightlyDebtWords(store: Store, held: readonly LaneFailure[], phase: NightlyPhase, release: boolean): string {
+  const first = held[0]!;
+  const more = held.length - 1;
+  const lanes = `GitHub's nightly failed "${laneName(store, first.repo, first.laneId)}" on main at ${first.sha.slice(0, 7)} (${nightlyStamp(first.completedAt)})${more > 0 ? `, and ${more} more lane${more === 1 ? "" : "s"}` : ""}.`;
+  const who = release ? "This release" : "This candidate";
+  const what = phase === "deploy" ? "can't deploy" : phase === "merge" ? "can't merge" : phase === "tag" ? "can't be tagged or published" : "can't be approved automatically";
+  // After the merge the release's own CI can't help (the release proof refuses jobs finished after the merge).
+  const way = release && phase !== "tag" ? "re-run this release's CI, or wait for tonight's nightly" : "wait for tonight's nightly, or dispatch Nightly on main";
+  return `${lanes} ${who} ${what} until ${more > 0 ? "those lanes pass" : "that lane passes"} again: ${way}.`;
+}
+
+/** Whether this exact candidate of this task holds a fresh exemption for one failure. */
+function exempted(store: Store, taskId: string, candidate: string, failure: number, now: Date): boolean {
+  const row = store.handle.prepare("SELECT read_at FROM nightly_exemption WHERE task = ? AND candidate = ? AND failure_id = ?").get(taskId, candidate, failure);
+  return row !== undefined && Date.parse(String(row["read_at"])) >= now.getTime() - EXEMPTION_FRESH_MS && Date.parse(String(row["read_at"])) <= now.getTime() + 60_000;
+}
+
+/**
+ * The stored check every boundary makes, inside the caller's own transaction where it has one (the deployment gate, the
+ * deploy and merge reservations, the pre-tag step, an automatic approval): the project's open lane failures, less those
+ * this exact task and candidate hold a fresh exemption for. Null when nothing holds. A project that never opted in has
+ * no lane failures.
+ */
+export function nightlyDebtHold(store: Store, input: { repo: string; taskId: string | null; candidate: string | null; phase: NightlyPhase; release: boolean; now: Date }): { why: string; failures: LaneFailure[] } | null {
+  const held = openFailures(store, input.repo).filter(failure => input.taskId === null || input.candidate === null || !exempted(store, input.taskId, input.candidate, failure.id, input.now));
+  return held.length === 0 ? null : { why: nightlyDebtWords(store, held, input.phase, input.release), failures: held };
+}
+
+/** How the project's GitHub nightly stands: whether it is on, when it was last read (and why not), when it last ran. */
+export type NightlyStatus = { on: boolean; lastOkAt: string | null; lastWhy: string | null; lastRunAt: string | null; stale: boolean };
+/** No nightly run seen for this long reads "hasn't run since". */
+export const NIGHTLY_STALE_MS = 36 * 60 * 60_000;
+export function githubNightlyStatus(store: Store, repo: string, now: Date): NightlyStatus {
+  const on = githubNightlyOf(store, repo);
+  const cursor = store.handle.prepare("SELECT last_ok_at, last_why FROM github_nightly_cursor WHERE repo = ?").get(repo);
+  const ran = store.handle.prepare(`SELECT MAX(at) AS at FROM (SELECT MAX(created_at) AS at FROM github_nightly_watch WHERE repo = ?
+    UNION ALL SELECT MAX(started_at) FROM nightly_lane_job WHERE repo = ?)`).get(repo, repo);
+  const lastRunAt = ran?.["at"] == null ? null : String(ran["at"]);
+  const since = lastRunAt ?? on?.at ?? null;
+  return { on: on !== null, lastOkAt: cursor?.["last_ok_at"] == null ? null : String(cursor["last_ok_at"]), lastWhy: cursor?.["last_why"] == null ? null : String(cursor["last_why"]),
+    lastRunAt, stale: on !== null && since !== null && now.getTime() - Date.parse(since) > NIGHTLY_STALE_MS };
+}
+
+const agoWords = (iso: string | null, now: Date): string => {
+  if (iso === null) return "never read";
+  const minutes = Math.max(0, Math.round((now.getTime() - Date.parse(iso)) / 60_000));
+  return minutes < 60 ? `last read ${minutes} min ago` : minutes < 48 * 60 ? `last read ${Math.round(minutes / 60)} h ago` : `last read ${Math.round(minutes / 1440)} days ago`;
+};
+
+/** A warning that never holds anything (Decision 1): GitHub couldn't be read, or the nightly hasn't run lately. */
+export function nightlyWarning(status: NightlyStatus, now: Date): string | null {
+  if (!status.on) return null;
+  if (status.lastWhy !== null) return `GitHub nightly: couldn't be read (${status.lastWhy}), ${agoWords(status.lastOkAt, now)}. Not holding the release.`;
+  if (status.stale) return status.lastRunAt === null ? "GitHub nightly: hasn't run since it was turned on. Not holding the release." : `GitHub nightly: hasn't run since ${nightlyStamp(status.lastRunAt)}. Not holding the release.`;
+  return null;
+}
+
+/** One workflow's newest pull-request run on a candidate head, as an exemption reads it. */
+export type LaneJobs = { run: number; attempt: number; status: string; jobs: GhJob[] };
+
+/**
+ * A release candidate's own pull-request CI, as an exemption needs it (modelled on scripts/release-proof.mjs): for each
+ * workflow, the newest run on `head` from that pull request's `pull_request` event, that run's latest attempt's jobs
+ * with their times, then the run read again. The newest run is chosen first: one that doesn't bind to this pull
+ * request never lets an older run stand. `null` for a workflow with no such run; "unreadable" when anything can't be
+ * read whole or changed during the read.
+ */
+export async function readLaneJobs(get: Get, slug: string, pr: number, head: string, workflows: readonly string[]): Promise<Map<string, LaneJobs | null> | "unreadable"> {
+  const listed: GhRun[] = [];
+  const raw = new Map<number, Json>();
+  let total: number | null = null;
+  for (let page = 1; page <= 10; page++) {
+    const got = await get(`repos/${slug}/actions/runs?head_sha=${head}&event=pull_request&per_page=${PAGE}&page=${page}`);
+    if (!got.ok) return "unreadable";
+    const body = object(got.body);
+    const rows = body === null ? null : body["workflow_runs"];
+    const count = body === null ? null : body["total_count"];
+    if (!Array.isArray(rows) || rows.length > PAGE || !Number.isSafeInteger(count) || (total !== null && total !== count)) return "unreadable";
+    total = Number(count);
+    for (const row of rows) {
+      const run = runOf(row);
+      if (run === null || raw.has(run.id)) return "unreadable";
+      listed.push(run);
+      raw.set(run.id, object(row)!);
+    }
+    if (rows.length < PAGE || listed.length >= total) break;
+  }
+  if (total === null || listed.length !== total) return "unreadable";
+  const found = new Map<string, LaneJobs | null>();
+  for (const workflow of new Set(workflows)) {
+    const newest = listed.filter(run => run.path === workflow && run.headSha === head && run.event === "pull_request").sort((a, b) => b.id - a.id)[0];
+    if (newest === undefined) { found.set(workflow, null); continue; }
+    const bound = raw.get(newest.id)!["pull_requests"];
+    const binds = newest.repository === slug && newest.headRepository === slug && Array.isArray(bound) && bound.length === 1 && (() => {
+      const one = object(bound[0]), base = object(one?.["base"]), baseRepo = object(base?.["repo"]), headRef = object(one?.["head"]);
+      return one?.["number"] === pr && base?.["ref"] === "main" && baseRepo?.["url"] === `https://api.github.com/repos/${slug}` && headRef?.["sha"] === head;
+    })();
+    if (!binds) { found.set(workflow, null); continue; }
+    if (newest.status !== "completed") { found.set(workflow, { run: newest.id, attempt: newest.runAttempt, status: newest.status, jobs: [] }); continue; }
+    const jobs = await readAttemptJobs(get, slug, newest.id, newest.runAttempt, head);
+    if (jobs === null) return "unreadable";
+    const again = await readRun(get, slug, newest.id);
+    if (again === null || again.runAttempt !== newest.runAttempt || again.status !== newest.status) return "unreadable";
+    found.set(workflow, { run: newest.id, attempt: newest.runAttempt, status: newest.status, jobs });
+  }
+  // The runs again: a newer run or attempt that appeared mid-read voids the read.
+  const relisted = await get(`repos/${slug}/actions/runs?head_sha=${head}&event=pull_request&per_page=${PAGE}&page=1`);
+  const relistedBody = relisted.ok ? object(relisted.body) : null;
+  const relistedRows = relistedBody === null ? null : relistedBody["workflow_runs"];
+  if (!Array.isArray(relistedRows) || relistedBody!["total_count"] !== total) return "unreadable";
+  if (total <= PAGE) {
+    const newestOf = (runs: readonly (GhRun | null)[], workflow: string) => runs.filter((run): run is GhRun => run !== null && run.path === workflow && run.headSha === head && run.event === "pull_request").sort((a, b) => b.id - a.id)[0];
+    for (const workflow of found.keys()) {
+      const before = newestOf(listed, workflow), after = newestOf(relistedRows.map(runOf), workflow);
+      if (before?.id !== after?.id || before?.runAttempt !== after?.runAttempt || before?.status !== after?.status) return "unreadable";
+    }
+  }
+  return found;
+}
+
+/** The files a lane's job runs that the candidate could otherwise rewrite to make a job of that name pass: its workflow
+ * file and the CI scripts the workflows call. An exemption stands only when each is byte-identical (the same Git
+ * blob) on the candidate and at the failed commit. The tests themselves are the candidate's, as for every required
+ * check (the trust the required-checks gate already places in them). */
+export const LANE_PINNED_FILES = ["scripts/ci-shards.mjs", "scripts/ci-scope.mjs", "scripts/ci-git.sh", "scripts/ci-no-skips.mjs"] as const;
+
+/** Whether every pinned file of a lane's workflow is the same blob on `candidate` as at `failed`, by GitHub's own
+ * contents API; null when any can't be read. */
+async function lanePinned(get: Get, slug: string, workflow: string, candidate: string, failed: string): Promise<{ same: true } | { same: false; path: string } | null> {
+  for (const path of [workflow, ...LANE_PINNED_FILES]) {
+    const blobs: string[] = [];
+    for (const ref of [candidate, failed]) {
+      const got = await get(`repos/${slug}/contents/${path}?ref=${ref}`);
+      const body = got.ok ? object(got.body) : null;
+      if (body === null || body["type"] !== "file" || typeof body["sha"] !== "string" || !/^[0-9a-f]{40,64}$/.test(body["sha"])) return null;
+      blobs.push(body["sha"]);
+    }
+    if (blobs[0] !== blobs[1]) return { same: false, path };
+  }
+  return { same: true };
+}
+
+/** Whether `candidate` contains `ancestor`, by GitHub's own comparison; null when it can't be read. */
+async function candidateContains(get: Get, slug: string, candidate: string, ancestor: string): Promise<boolean | null> {
+  if (candidate === ancestor) return true;
+  const got = await get(`repos/${slug}/compare/${ancestor}...${candidate}`);
+  if (!got.ok) return null;
+  const body = object(got.body);
+  if (body === null || typeof body["status"] !== "string" || !Number.isSafeInteger(body["behind_by"])) return null;
+  return body["behind_by"] === 0 && (body["status"] === "ahead" || body["status"] === "identical");
+}
+
+export type NightlyBoundary = { ok: true; warning: string | null } | { ok: false; why: string; warning: string | null };
+
+/**
+ * A boundary (the coordinator's deploy, merge and pre-tag steps): one bounded read of GitHub's nightly, then this
+ * candidate's exemptions read again from its own pull-request CI — minted only before the merge (`deploy`, `merge`);
+ * at the tag an exemption obtained before the merge is re-read, never made — then the stored debt. A read that fails is
+ * a warning and the stored debt still holds; an exemption that can't be re-read is no exemption here.
+ */
+export async function nightlyBoundary(store: Store, input: { repo: string; taskId: string; candidate: string; pr: number; phase: Exclude<NightlyPhase, "auto"> },
+  deps: NightlyDeps, budgetMs = NIGHTLY_BOUNDARY_READ_MS): Promise<NightlyBoundary> {
+  const started = deps.now().getTime();
+  const deadline = started + budgetMs;
+  if (githubNightlyOf(store, input.repo) === null && openFailures(store, input.repo).length === 0) return { ok: true, warning: null };
+  const get: Get = async path => {
+    const left = deadline - deps.now().getTime();
+    if (left <= 0) return { ok: false, why: "the read ran out of time" };
+    try { return await deps.gh(path, Math.min(left, CALL_MS)); } catch (error) { return { ok: false, why: String((error as Error)?.message ?? error).slice(0, 200) }; }
+  };
+  // The nightly itself, within about two thirds of the budget; the rest is the candidate's own CI.
+  if (githubNightlyOf(store, input.repo) !== null) await readGithubNightly(store, input.repo, deps, Math.max(0, Math.floor(budgetMs * 2 / 3) - (deps.now().getTime() - started)));
+  const warning = nightlyWarning(githubNightlyStatus(store, input.repo, deps.now()), deps.now());
+  const open = openFailures(store, input.repo);
+  const unverified = new Set<number>();
+  /** Failures this candidate can't be exempted from: it changes how the lane runs (the path that differs). */
+  const changed = new Map<number, string>();
+  const slug = githubNightlyOf(store, input.repo)?.slug ?? null;
+  if (open.length > 0 && slug !== null && SHA.test(input.candidate) && positive(input.pr)) {
+    const lanes = new Map(open.map(failure => [failure.id, store.handle.prepare("SELECT workflow FROM nightly_lane WHERE repo = ? AND lane_id = ?").get(input.repo, failure.laneId)?.["workflow"]]));
+    const read = await readLaneJobs(get, slug, input.pr, input.candidate, [...new Set([...lanes.values()].filter((one): one is string => typeof one === "string"))]);
+    for (const failure of open) {
+      const workflow = lanes.get(failure.id);
+      const row = store.handle.prepare("SELECT gh_run, attempt, job_id FROM nightly_exemption WHERE task = ? AND candidate = ? AND failure_id = ?").get(input.taskId, input.candidate, failure.id);
+      if (read === "unreadable" || typeof workflow !== "string") { unverified.add(failure.id); continue; }
+      const found = read.get(workflow) ?? null;
+      const names = laneNames(store, input.repo, failure.laneId);
+      const named = found === null ? [] : found.jobs.filter(job => names.includes(job.name));
+      const job = named.length === 1 ? named[0]! : null;
+      const valid = found !== null && found.status === "completed" && job !== null && job.status === "completed" && job.conclusion === "success" && job.headSha === input.candidate
+        && job.startedAt !== null && job.completedAt !== null && job.startedAt > failure.completedAt;
+      const same = row !== undefined && found !== null && job !== null && Number(row["gh_run"]) === found.run && Number(row["attempt"]) === found.attempt && Number(row["job_id"]) === job.id;
+      const at = deps.now().toISOString();
+      // The newest run or attempt differs, is pending, or holds a failure for that lane: the exemption is void.
+      if (row !== undefined && !(same && valid)) store.handle.prepare("DELETE FROM nightly_exemption WHERE task = ? AND candidate = ? AND failure_id = ?").run(input.taskId, input.candidate, failure.id);
+      if (!valid) continue;
+      if (same) { store.handle.prepare("UPDATE nightly_exemption SET read_at = ? WHERE task = ? AND candidate = ? AND failure_id = ?").run(at, input.taskId, input.candidate, failure.id); continue; }
+      if (input.phase === "tag") continue;
+      const contains = await candidateContains(get, slug, input.candidate, failure.sha);
+      if (contains !== true) { if (contains === null) unverified.add(failure.id); continue; }
+      // A job named like the lane proves nothing if the candidate rewrote what that job runs.
+      const pinned = await lanePinned(get, slug, workflow, input.candidate, failure.sha);
+      if (pinned === null) { unverified.add(failure.id); continue; }
+      if (!pinned.same) { changed.set(failure.id, pinned.path); continue; }
+      store.handle.prepare(`INSERT INTO nightly_exemption (task, candidate, failure_id, pr, gh_run, attempt, job_id, started_at, completed_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (task, candidate, failure_id) DO UPDATE SET pr = excluded.pr, gh_run = excluded.gh_run, attempt = excluded.attempt, job_id = excluded.job_id,
+          started_at = excluded.started_at, completed_at = excluded.completed_at, read_at = excluded.read_at`)
+        .run(input.taskId, input.candidate, failure.id, input.pr, found!.run, found!.attempt, job!.id, job!.startedAt, job!.completedAt, at);
+    }
+  }
+  const now = deps.now();
+  const hold = store.transact(() => {
+    const stored = nightlyDebtHold(store, { repo: input.repo, taskId: input.taskId, candidate: input.candidate, phase: input.phase, release: true, now });
+    // An exemption that couldn't be re-read now never counts at this boundary, whatever is stored.
+    const held = openFailures(store, input.repo).filter(failure => unverified.has(failure.id) || stored?.failures.some(one => one.id === failure.id) === true);
+    if (held.length === 0) return null;
+    const rewrote = held.map(failure => changed.get(failure.id)).find((path): path is string => path !== undefined);
+    return rewrote === undefined ? nightlyDebtWords(store, held, input.phase, true)
+      : `${nightlyDebtWords(store, held, input.phase, true)} This release changes ${rewrote}, which that lane runs, so its own CI can't stand in for the nightly: wait for tonight's nightly, or dispatch Nightly on main.`;
+  });
+  return hold === null ? { ok: true, warning } : { ok: false, why: hold, warning };
+}

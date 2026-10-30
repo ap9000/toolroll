@@ -811,3 +811,28 @@ Where the build took the safer or more concrete reading of this plan, recorded a
   seeded as its own lane on the next read, and the old lane's open debt ends only by a later pass or by a person
   retiring the old lane (allowed once no required check names it). A retired lane whose name becomes required again
   is opened again.
+
+**A2.**
+- Every stored check is `nightlyDebtHold` (src/nightly-github.ts): the deployment gate (src/deploy-gate.ts), the
+  installed runtime's deploy check (scripts/deploy-candidate.mjs, through the installed `nightly-github.js`; a runtime
+  too old to have it refuses while any lane failure is open), the deploy and merge reservations and their start
+  (`releaseNightlyProblem` at the end of src/store.ts, called inside `reserveRelease` and `runReleaseOperation`), and
+  `sealAutoGreen` (dormant). The coordinator's deploy, merge and pre-tag steps call `nightlyBoundary` through the
+  store adapter: one bounded read (about two thirds of 20 s for the nightly, the rest for the candidate's own CI),
+  plain exec, then the stored debt.
+- An exemption counts in a stored check only while its boundary re-read is under 10 minutes old (`EXEMPTION_FRESH_MS`),
+  so a deploy run by hand with no coordinator read in front of it is held by any open failure. A boundary whose
+  re-read can't be read holds that failure at that boundary whatever is stored; a re-read that shows a different or
+  pending newest run or attempt, or a failure, deletes the exemption.
+- Exemptions are made only at the deploy and merge boundaries; at the tag one made before the merge is re-read, never
+  made (the release proof refuses jobs finished after the merge).
+- "Candidate contains the failed commit" is GitHub's own comparison (`compare`), read by the plane's gh.
+- Words name the time of the failure in UTC ("Oct 30, 06:17 UTC"); a task no release covers says "This candidate" and
+  its way out is tonight's nightly or a dispatch of Nightly on main.
+- An exemption also needs the lane's workflow file and the CI scripts the workflows call (`LANE_PINNED_FILES`:
+  scripts/ci-shards.mjs, ci-scope.mjs, ci-git.sh, ci-no-skips.mjs) to be the same Git blob on the candidate as at the
+  failed commit, by GitHub's contents API (security scan of A2: the candidate controls its own workflow, so a job
+  merely named like the lane proves nothing if it rewrote what the job runs). A changed or unreadable file is no
+  exemption, and the words say the release's own CI can't stand in. There is no waiver path in v1; the hold lasts
+  until a main nightly passes the lane. The tests themselves and package.json stay the candidate's, as for every
+  required check.

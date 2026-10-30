@@ -62,8 +62,9 @@ toolroll release nightly --repo <path> --as <you> --token <password> [--schedule
   merges or completes, and a failure tells you and holds composed releases until a full check passes
 
 toolroll release nightly --github --repo <path> --as <you> --token <password> — read GitHub's Nightly runs on main
-  for this project (its recorded GitHub remote) and record each lane that fails its tests, until a later nightly
-  passes it. --lane-alias <lane-id> <new name> says a renamed job is the same lane; --lane-retire <lane-id> retires a
+  for this project (its recorded GitHub remote): a lane that fails its tests holds every deploy of the project, a
+  release's merge and its tag until a later nightly passes it, or the release's own CI re-ran it after the failure and
+  passed. --lane-alias <lane-id> <new name> says a renamed job is the same lane; --lane-retire <lane-id> retires a
   lane no required check names any more (both with your password)
 
 toolroll release ask-every-commit on|off --repo <path> [--as <you> --token <password>] — this project's releases ask
@@ -450,7 +451,7 @@ async function runGithubNightlyCommand(flags: { repo: string | undefined; as: st
         : answer(false, { reason: "refused", message: done.message }, done.message, 1);
     }
     const made = optInGithubNightly(store, { repo: flags.repo, as: flags.as, token: flags.token }, now);
-    return made.ok ? answer(true, { github: made.slug, lanes: made.lanes }, `GitHub's nightly for ${made.slug} is read for this project: each failing lane is recorded (${made.lanes} lanes).`, 0)
+    return made.ok ? answer(true, { github: made.slug, lanes: made.lanes }, `GitHub's nightly for ${made.slug} now holds this project's deploys, release merges and tags while a lane fails (${made.lanes} lanes).`, 0)
       : answer(false, { reason: "refused", message: made.message }, made.message, 1);
   } finally { store.close(); }
 }

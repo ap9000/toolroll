@@ -34,6 +34,7 @@ import { proveCarry, type BuildRunner } from "./release-carry.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { deploymentGate } from "./deploy-gate.js";
 import { failedBeforeTests, type JobRecord } from "./github-jobs.js";
+import { mainHistoryOf, nightlyBoundary, type GhRead } from "./nightly-github.js";
 export { failedBeforeTests, type JobRecord } from "./github-jobs.js";
 import { extractCommit } from "./commit-extract.js";
 import { teardownGit, refusal as gitRefusal } from "./teardown-git.js";
@@ -383,7 +384,9 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
       upToDateRequired: () => readUpToDateRequired(reads, ciGh, releaseRepo().slug), evidenceRoot: join(dirname(database), "evidence"),
       // A successful Actions job authenticates the job, not the candidate-writable JSON it uploads. Until the
       // executor protects that reporting channel, production releases must take the person's approval road.
-      reportsProtected: false });
+      reportsProtected: false },
+    // A boundary's one bounded read of GitHub's nightly: plain exec, never the release's long retries (20 s in all).
+    githubReads(run, ciGh));
 
   return {
     ...(existsSync(database) ? { release } : {}),
@@ -815,7 +818,10 @@ function personAnswerOf(value: unknown): { person?: { ok: true; method: string }
 export function storeReleaseAdapter(open: () => Store, done: (store: Store) => void, now: () => Date, runner?: BuildRunner,
   /** Releases that approve themselves (auto-approve-green.md): the plane's own look at CI on a commit, and where the
    * check receipts are kept. Absent: no automatic approval, every release asks a person. */
-  auto?: AutoObservers): NonNullable<ReleaseAdapters["release"]> {
+  auto?: AutoObservers,
+  /** GitHub's nightly (nightly-github.ts): the plane's own gh reads for a boundary's one bounded read. Absent: nothing
+   * is read at the boundary, and the stored debt still holds inside every reservation. */
+  nightlyReads?: GhRead): NonNullable<ReleaseAdapters["release"]> {
   const withStore = <T>(body: (store: Store) => T): T => { const store = open(); try { return body(store); } finally { done(store); } };
   return {
     ...(auto === undefined ? {} : { auto: autoReleaseAdapter(withStore, now, auto) }),
@@ -846,6 +852,17 @@ export function storeReleaseAdapter(open: () => Store, done: (store: Store) => v
     async live(taskId, action) {
       return withStore(store => { const live = liveReleaseOf(store, taskId, action, now()); return live.applies ? { applies: true, ok: live.ok, why: live.ok ? null : live.why } : { applies: false, ok: false, why: null }; });
     },
+    ...(nightlyReads === undefined ? {} : {
+      async nightly(input: { taskId: string; candidate: string; pr: number; phase: "deploy" | "merge" | "tag" }) {
+        const store = open();
+        try {
+          const repo = store.lookupRef(input.taskId)?.repo ?? null;
+          if (repo === null) return { ok: false as const, why: `Task ${input.taskId} is in no project, so GitHub's nightly debt can't be read for it.`, warning: null };
+          return await nightlyBoundary(store, { repo, taskId: input.taskId, candidate: input.candidate, pr: input.pr, phase: input.phase },
+            { ...mainHistoryOf(store, repo, now()), gh: nightlyReads, now });
+        } finally { done(store); }
+      },
+    }),
     async lease(authority, owner) { return withStore(store => takeReleaseLease(store, authority, owner, now())); },
     async renew(authority, owner, epoch) { return withStore(store => renewReleaseLease(store, authority, owner, epoch, now())); },
     async carry(authority, to, requestId, epoch) {

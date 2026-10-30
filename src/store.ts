@@ -77,6 +77,7 @@ import { hasDisguisedText, hasForbiddenControls, validateNote } from "./decision
 import { parseReviewContext, reviewContextCustodyProblem } from "./review-context.js";
 import { foldReview, manualReviewOnly, type CriterionMatrixRow, type CriterionJudgement, type CriterionJudgementWord } from "./proof.js";
 import { liveReleaseOf } from "./scope.js";
+import { nightlyDebtHold } from "./nightly-github.js";
 import { releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
 import { APPROVAL_BASES, approvalOf, machineActing, personProof, proofDetailOf, quarantinedAuthor, sealOriginOf, type ScopeAuthor, digestOf, canonicalProfileJson, chainFromJson, profileDigestOf, profileFromJson, scopeAuthorityOf, routeParityProblem, parseAcceptanceCriteria, exactAcceptance, exactStringList, exactSafeIntegerOrNull, type ExecutionProfile, type UnattendedPermissionMode, type AcceptanceCriterion } from "./scope.js";
 import { resolveScopeProfile, resolveRouteCandidates, exactPinOf, routeOfTask, agentChoicesFor } from "./agentconfig.js";
@@ -24570,6 +24571,9 @@ export function reserveRelease(store: Store, input: { authority: number; kind: "
     // standing and access, the grant and the sandbox, the generation and the tip, and open main-check debt.
     const live = liveReleaseOf(store, input.taskId, input.kind, input.now);
     if (!live.applies || !live.ok) return { ok: false as const, why: `The release can't ${input.kind}: ${live.applies && !live.ok ? live.why : "the task isn't part of it"}.` };
+    // GitHub's nightly lane debt, in this same transaction (evals-nightly.md, part A2).
+    const nightly = releaseNightlyProblem(store, { repo: a.repo, taskId: input.taskId, candidate: input.candidate, kind: input.kind, now: input.now });
+    if (nightly !== null) return { ok: false as const, why: nightly };
     const next = input.kind === "deploy"
       ? a.state === "open" || a.state === "deploying" ? "deploying" : null
       : a.state === "deploying" || a.state === "merge-reserved" ? "merge-reserved" : null;
@@ -24604,6 +24608,7 @@ export function runReleaseOperation(store: Store, id: string, epoch: number, now
     if (direct ? leased : !leased) return false;
     const live = liveReleaseOf(store, op.taskId, op.kind, now);
     if (!live.applies || !live.ok) return false;
+    if (releaseNightlyProblem(store, { repo: a.repo, taskId: op.taskId, candidate: op.candidate, kind: op.kind, now }) !== null) return false;
     const changed = store.handle.prepare("UPDATE release_operation SET state = 'running', issuer_pid = ?, issuer_started = ?, issued_at = ? WHERE id = ? AND state = 'reserved' AND epoch = ?")
       .run(issuer.pid, issuer.started, issuer.at, id, epoch);
     if (Number(changed.changes) === 1) store.recordAction({ at: now.toISOString(), actor: "toolroll", repo: a.repo, taskId: op.taskId, runId: null, action: `release ${op.kind} started`, outcome: "running", source: "work", detail: `operation ${id}` });
@@ -25064,4 +25069,11 @@ export function recordLiveBackup(store: Store, outcome: { ok: true; copy: LiveBa
   } else {
     store.handle.prepare("UPDATE live_backup SET tried_at = ?, problem = ? WHERE id = 1").run(now.toISOString(), plainText(outcome.problem, 300));
   }
+}
+
+/** GitHub's nightly lane debt at a release's deploy or merge reservation and at its start (docs/plans/evals-nightly.md,
+ * part A2): the stored open failures less this exact task and candidate's fresh exemptions, read inside the caller's
+ * transaction (nightly-github.ts nightlyDebtHold). Null when nothing holds. */
+export function releaseNightlyProblem(store: Store, input: { repo: string; taskId: string; candidate: string; kind: "deploy" | "merge"; now: Date }): string | null {
+  return nightlyDebtHold(store, { repo: input.repo, taskId: input.taskId, candidate: input.candidate, phase: input.kind, release: true, now: input.now })?.why ?? null;
 }

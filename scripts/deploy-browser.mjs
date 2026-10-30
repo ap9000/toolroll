@@ -111,6 +111,8 @@ const load = async (root, name) => {
 };
 const oldRt = { scope: await load(priorDist, "scope.js"), assignment: await load(priorDist, "assignment.js"), store: await load(priorDist, "store.js"), gate: await load(priorDist, "desktop-update-gate.js"), evidence: await load(priorDist, "verification-evidence.js"), update: await load(priorDist, "desktop-update.js") };
 oldRt.coding = await loadCodingDeploymentRuntime(priorDist);
+// GitHub's nightly lane debt (evals-nightly.md, A2): the installed runtime's own reader, when it has one.
+oldRt.nightly = existsSync(join(priorDist, "nightly-github.js")) ? await load(priorDist, "nightly-github.js") : null;
 // The candidate is proven here, on every entry but recovery, before anything of its own runs.
 const early = phaseWanted === "recover" ? null : (() => { const db = openDeploymentDatabase(database, { readOnly: true }); try { return facts(db); } finally { db.close(); } })();
 // A stage made before the rename installed the runtime under the older name; resuming it keeps that path.
@@ -124,6 +126,7 @@ function facts(db) {
   // then may a release's own automatic approval stand.
   const result = deploymentCandidate(store, { runId, head: candidateHead, evidenceRoot, now: new Date(), releaseFlow: flag("operation") !== undefined }, {
     assignmentOf: oldRt.assignment.assignmentOf, verificationEvidence: oldRt.evidence.verificationEvidence, installedScope: oldRt.scope,
+    installedNightly: oldRt.nightly,
   });
   requireTrue(resolve(result.worktree) === source || headOf(["-C", result.worktree], SAFE_GIT_ENV) === candidateHead, "Run this from the builder's worktree for this run.");
   return result;

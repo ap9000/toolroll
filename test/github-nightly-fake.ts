@@ -18,7 +18,7 @@ export const sha = (n: number): string => n.toString(16).padStart(40, "0");
 
 type Step = { number: number; name: string; status: string; conclusion: string | null };
 export type FakeJob = { id: number; name: string; status: string; conclusion: string | null; started_at: string | null; completed_at: string | null; head_sha: string; run_id: number; run_attempt: number; steps: Step[] | null };
-export type FakeRun = { id: number; path: string; head_branch: string; head_sha: string; event: string; status: string; run_attempt: number; created_at: string;
+export type FakeRun = { pull_requests?: unknown[]; id: number; path: string; head_branch: string; head_sha: string; event: string; status: string; run_attempt: number; created_at: string;
   repository: { full_name: string }; head_repository: { full_name: string }; attempts: FakeJob[][] };
 
 let nextJob = 1000;
@@ -55,6 +55,16 @@ export class FakeGithub {
     this.runs.set(id, made);
     return made;
   }
+  /** A file's Git blob at a commit: the same at every commit by default. */
+  blob: (path: string, ref: string) => string = path => Buffer.from(path).toString("hex").padEnd(40, "0").slice(0, 40);
+  /** GitHub's comparison of two commits: ahead of `ancestor` by default. */
+  compare: (ancestor: string, head: string) => { status: string; behind_by: number } = () => ({ status: "ahead", behind_by: 0 });
+  /** A pull request's CI run of `workflow` on `head` (a release candidate's own CI). */
+  prRun(id: number, head: string, over: Partial<Omit<FakeRun, "attempts">> & { at?: Date; pr?: number; workflow?: string } = {}): FakeRun {
+    const { pr = 240, workflow = ".github/workflows/ci.yml", ...rest } = over;
+    return this.run(id, { head, event: "pull_request", head_branch: "release-0.9.82", path: workflow,
+      pull_requests: [{ number: pr, base: { ref: "main", repo: { url: `https://api.github.com/repos/${SLUG}` } }, head: { sha: head, ref: "release-0.9.82", repo: { url: `https://api.github.com/repos/${SLUG}` } } }], ...rest });
+  }
   /** A job in `run`'s attempt (1-based), completed unless said otherwise. */
   job(run: FakeRun, attempt: number, name: string, conclusion: string | null, over: Partial<FakeJob> & { minutes?: number } = {}): FakeJob {
     const { minutes = 0, ...rest } = over;
@@ -85,12 +95,27 @@ export class FakeGithub {
     if (parts[3] === "actions" && parts[4] === "workflows" && parts[5] === "nightly.yml" && parts[6] === "runs") {
       const created = query.get("created");
       const below = created === null ? null : created.replace(/^<=/, "");
-      const all = [...this.runs.values()].filter(one => below === null || one.created_at <= below).sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id);
+      // A pull request's CI is another workflow's run: never in nightly.yml's listing.
+      const all = [...this.runs.values()].filter(one => one.event !== "pull_request" && (below === null || one.created_at <= below)).sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id);
       const capped = all.slice(0, 1000);
       const page = Number(query.get("page") ?? "1"), per = Number(query.get("per_page") ?? "30");
       let rows = capped.slice((page - 1) * per, page * per).map(rawRun);
       if (this.truncate(path)) rows = rows.slice(0, -1);
       return { ok: true, body: { total_count: all.length, workflow_runs: rows } };
+    }
+    if (parts[3] === "contents") {
+      const file = parts.slice(4).join("/"), ref = query.get("ref") ?? "";
+      return { ok: true, body: { type: "file", path: file, sha: this.blob(file, ref) } };
+    }
+    if (parts[3] === "compare") {
+      const [ancestor, head] = parts[4]!.split("...");
+      return { ok: true, body: this.compare(ancestor!, head!) };
+    }
+    if (parts[3] === "actions" && parts[4] === "runs" && parts.length === 5) {
+      const head = query.get("head_sha"), event = query.get("event");
+      const all = [...this.runs.values()].filter(one => one.head_sha === head && (event === null || one.event === event)).sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id - a.id);
+      const page = Number(query.get("page") ?? "1"), per = Number(query.get("per_page") ?? "30");
+      return { ok: true, body: { total_count: all.length, workflow_runs: all.slice((page - 1) * per, page * per).map(rawRun) } };
     }
     if (parts[3] === "actions" && parts[4] === "runs") {
       const one = this.runs.get(Number(parts[5]));

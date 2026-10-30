@@ -10,6 +10,7 @@ import { liveReleaseOf, personApprovalOf, releaseApprovalOf } from "./scope.js";
 import { verificationEvidence } from "./verification-evidence.js";
 import type { Store } from "./store.js";
 import { releaseCiRunningOf } from "./release-ci-hold.js";
+import { nightlyDebtHold } from "./nightly-github.js";
 
 export type DeploymentGate = { ok: true; taskId: string; head: string; repo: string; approvedBy: string } | { ok: false; message: string };
 
@@ -42,6 +43,12 @@ export function deploymentGate(store: Store, input: { runId: number; evidenceRoo
   if (release.applies && !release.ok) return refuse(`This release can't deploy: ${release.why}.`);
   const anchorPerson = release.applies && release.ok
     ? (input.releaseFlow === true ? releaseApprovalOf(store, release.authority.anchorTask, input.now) : personApprovalOf(store, release.authority.anchorTask)) : null;
+  // GitHub's nightly lane debt (nightly-github.ts) holds every deploy of the project, a person's approval or not,
+  // unless this exact candidate re-ran that lane after the failure and passed (an exemption read at the boundary).
+  if (ref.repo !== null) {
+    const nightly = nightlyDebtHold(store, { repo: ref.repo, taskId: ref.externalId, candidate: scope?.candidate ?? head, phase: "deploy", release: release.applies, now: input.now });
+    if (nightly !== null) return refuse(nightly.why);
+  }
   const person = anchorPerson ?? personApprovalOf(store, ref.externalId);
   if (!person.ok) return refuse(`A person has to approve this candidate's scope: ${person.why}.`);
   const evidence = verificationEvidence(store, input.evidenceRoot, input.runId);

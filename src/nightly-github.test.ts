@@ -4,9 +4,9 @@
  * network, no gh, no credentials.
  */
 import { afterEach, describe, expect, test } from "vitest";
-import { aliasNightlyLane, laneIdOf, laneName, readGithubNightly, retireNightlyLane } from "./nightly-github.js";
+import { aliasNightlyLane, laneIdOf, laneName, nightlyBoundary, nightlyDebtHold, readGithubNightly, retireNightlyLane } from "./nightly-github.js";
 import { runReleaseCommand } from "./release-cli.js";
-import { aggregateSteps, beforeTests, LANE_UBUNTU, LANE_WINDOWS, nightlyWorld, openLanes, sha, shardName, T0, type NightlyWorld } from "../test/github-nightly-fake.js";
+import { aggregateSteps, beforeTests, LANE_UBUNTU, LANE_WINDOWS, nightlyWorld, openLanes, sha, shardName, T0, type FakeRun, type NightlyWorld } from "../test/github-nightly-fake.js";
 
 let world: NightlyWorld | null = null;
 afterEach(() => { world?.close(); world = null; });
@@ -196,5 +196,95 @@ describe("turning it on, renaming and retiring lanes are a person's steps", () =
       expect(aliasNightlyLane(w.store, { repo: w.repo, laneId: WINDOWS, name, as: "alex", token: w.password }, T0), name).toMatchObject({ ok: false });
     }
     expect(w.store.handle.prepare("SELECT COUNT(*) AS n FROM nightly_lane_alias").get()?.["n"]).toBe(1);
+  });
+});
+
+describe("a release candidate's exemption, read at each boundary", () => {
+  const CANDIDATE = "c".repeat(40);
+  /** An open ubuntu failure (yesterday's nightly, completed 10 minutes after it started). */
+  async function failing() {
+    const w = (world = nightlyWorld());
+    w.gh.job(w.gh.run(1, { at: ago(1) }), 1, LANE_UBUNTU, "failure");
+    await read(w);
+    expect(openLanes(w.store, w.repo)).toEqual([UBUNTU]);
+    return w;
+  }
+  const boundary = (w: NightlyWorld, phase: "deploy" | "merge" | "tag", budget = 20_000) =>
+    nightlyBoundary(w.store, { repo: w.repo, taskId: "release-0.9.82", candidate: CANDIDATE, pr: 240, phase }, w.deps(), budget);
+  const exemptions = (w: NightlyWorld) => Number(w.store.handle.prepare("SELECT COUNT(*) AS n FROM nightly_exemption").get()?.["n"]);
+
+  test("an exemption needs the candidate's own job started after the failure completed", async () => {
+    const w = await failing();
+    // Started 5 minutes into the failed nightly: before its failure completed.
+    w.gh.job(w.gh.prRun(500, CANDIDATE, { at: ago(1) }), 1, "node 24 · ubuntu-latest", "success", { minutes: 5 });
+    expect(await boundary(w, "deploy")).toMatchObject({ ok: false, why: expect.stringContaining('GitHub\'s nightly failed "node 24 · ubuntu-latest"') });
+    expect(exemptions(w)).toBe(0);
+    w.gh.job(w.gh.prRun(501, CANDIDATE, { at: ago(0.5) }), 1, "node 24 · ubuntu-latest", "success");
+    expect(await boundary(w, "deploy")).toEqual({ ok: true, warning: null });
+    expect(exemptions(w)).toBe(1);
+    // The stored check inside a reservation sees it while fresh, and not after.
+    expect(nightlyDebtHold(w.store, { repo: w.repo, taskId: "release-0.9.82", candidate: CANDIDATE, phase: "merge", release: true, now: T0 })).toBeNull();
+    expect(nightlyDebtHold(w.store, { repo: w.repo, taskId: "release-0.9.82", candidate: CANDIDATE, phase: "merge", release: true, now: new Date(T0.getTime() + 11 * 60_000) })).not.toBeNull();
+    expect(nightlyDebtHold(w.store, { repo: w.repo, taskId: "release-0.9.82", candidate: "d".repeat(40), phase: "merge", release: true, now: T0 })).not.toBeNull();
+  });
+
+  test.each([".github/workflows/ci.yml", "scripts/ci-shards.mjs"])("a candidate that changes %s, which the lane runs, gets no exemption from a green job of that name", async path => {
+    const w = await failing();
+    w.gh.job(w.gh.prRun(501, CANDIDATE, { at: ago(0.5) }), 1, "node 24 · ubuntu-latest", "success");
+    w.gh.blob = (file, ref) => (file === path && ref === CANDIDATE ? "e" : "a").repeat(40);
+    expect(await boundary(w, "deploy")).toMatchObject({ ok: false, why: expect.stringContaining(`This release changes ${path}, which that lane runs, so its own CI can't stand in for the nightly`) });
+    expect(exemptions(w)).toBe(0);
+    // Unreadable is no exemption either.
+    w.gh.blob = () => "a".repeat(40);
+    w.gh.fail = p => p.includes("/contents/");
+    expect(await boundary(w, "deploy")).toMatchObject({ ok: false });
+    w.gh.fail = () => false;
+    expect(await boundary(w, "deploy")).toMatchObject({ ok: true });
+  });
+
+  test.each([
+    { name: "a re-run that is pending", change: (run: FakeRun, w: NightlyWorld) => { w.gh.rerun(run); } },
+    { name: "a re-run that failed", change: (run: FakeRun, w: NightlyWorld) => { const attempt = w.gh.rerun(run); w.gh.job(run, attempt, "node 24 · ubuntu-latest", "failure", { minutes: 60 }); run.status = "completed"; } },
+    { name: "a newer run that is pending", change: (_run: FakeRun, w: NightlyWorld) => { w.gh.prRun(502, CANDIDATE, { at: ago(0.1), status: "in_progress" }); } },
+  ])("$name voids the exemption", async ({ change }) => {
+    const w = await failing();
+    const run = w.gh.prRun(501, CANDIDATE, { at: ago(0.5) });
+    w.gh.job(run, 1, "node 24 · ubuntu-latest", "success");
+    expect(await boundary(w, "deploy")).toMatchObject({ ok: true });
+    change(run, w);
+    expect(await boundary(w, "merge")).toMatchObject({ ok: false });
+    expect(exemptions(w)).toBe(0);
+  });
+
+  test("an unreadable re-read isn't permission, whatever is stored", async () => {
+    const w = await failing();
+    w.gh.job(w.gh.prRun(501, CANDIDATE, { at: ago(0.5) }), 1, "node 24 · ubuntu-latest", "success");
+    expect(await boundary(w, "deploy")).toMatchObject({ ok: true });
+    w.gh.fail = path => path.includes("event=pull_request");
+    expect(await boundary(w, "merge")).toMatchObject({ ok: false });
+  });
+
+  test("an exemption obtained before the merge stands at the tag; new debt after the merge waits there", async () => {
+    const w = await failing();
+    const run = w.gh.prRun(501, CANDIDATE, { at: ago(0.5) });
+    w.gh.job(run, 1, "node 24 · ubuntu-latest", "success");
+    w.gh.job(run, 1, "Windows Job Object containment", "success", { minutes: 30 });
+    expect(await boundary(w, "merge")).toMatchObject({ ok: true });
+    expect(await boundary(w, "tag")).toMatchObject({ ok: true });
+    // After the merge, tonight's nightly fails Windows. The candidate's Windows job ran after that failure: at the tag
+    // no exemption is made (the release proof refuses jobs finished after the merge).
+    w.gh.job(w.gh.run(600, { at: ago(0.6), head: sha(2) }), 1, LANE_WINDOWS, "failure");
+    expect(await boundary(w, "tag")).toMatchObject({ ok: false, why: expect.stringContaining("can't be tagged or published until that lane passes again: wait for tonight's nightly, or dispatch Nightly on main") });
+  });
+
+  test("an unreadable read warns and keeps the recorded debt", async () => {
+    const w = await failing();
+    w.gh.job(w.gh.prRun(501, CANDIDATE, { at: ago(0.5) }), 1, "node 24 · ubuntu-latest", "success");
+    w.gh.fail = () => true;
+    const answer = await boundary(w, "deploy");
+    expect(answer).toMatchObject({ ok: false, warning: expect.stringMatching(/^GitHub nightly: couldn't be read \(.+\), last read 0 min ago\. Not holding the release\.$/) });
+    // No recorded debt: the same warning, nothing held.
+    w.store.handle.prepare("UPDATE nightly_lane_failure SET cleared_at = ?").run(T0.toISOString());
+    expect(await boundary(w, "deploy")).toMatchObject({ ok: true, warning: expect.stringContaining("couldn't be read") });
   });
 });
