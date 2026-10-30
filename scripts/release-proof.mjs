@@ -33,6 +33,14 @@ const workflowIs = (path, file) => {
   return /^[A-Za-z0-9._+/-]+$/.test(ref) && !/\.ya?ml$/i.test(ref);
 };
 const mergedPulls = (pulls, repo, sha) => (Array.isArray(pulls) ? pulls : []).filter(pr => pr?.merged_at != null && pr?.merge_commit_sha === sha && pr?.base?.ref === "main" && pr?.base?.repo?.full_name === repo);
+/**
+ * GitHub empties a run's pull_requests once its pull request has merged and the branch is gone, so an empty binding stands
+ * only when the branch has had exactly one pull request in this repository, ever: `number`, into main. A pull_request run
+ * on that branch, from this repository, can then only be that pull request's.
+ */
+const onlyPullFrom = (branchPulls, number, { repo, branch }) => Array.isArray(branchPulls) && branchPulls.length === 1
+  && branchPulls[0]?.number === number && branchPulls[0]?.base?.ref === "main" && branchPulls[0]?.base?.repo?.full_name === repo
+  && branchPulls[0]?.head?.ref === branch && branchPulls[0]?.head?.repo?.full_name === repo;
 const timestamp = value => typeof value === "string" ? Date.parse(value) : NaN;
 
 /** The `required` list, checked: a non-empty object of distinct check names, each mapped to a workflow PROOF_EVENTS knows. */
@@ -57,9 +65,9 @@ export function provingRun(runs, file, { repo, head, branch }) {
 /**
  * Why `sha` isn't proven, or null when it is. Every input is GitHub's own answer: `commit` and `headCommit` from
  * git/commits, `pulls` from commits/{sha}/pulls, `runs` from actions/runs?head_sha (with its total_count), `jobs` maps a
- * run id to its latest attempt's jobs.
+ * run id to its latest attempt's jobs, `branchPulls` from pulls?state=all&head={owner}:{branch}.
  */
-export function proofProblem({ repo, sha, required, commit, pulls, headCommit, runs, runsTotal, jobs }) {
+export function proofProblem({ repo, sha, required, commit, pulls, headCommit, runs, runsTotal, jobs, branchPulls }) {
   if (!REPO.test(repo ?? "") || !SHA.test(sha ?? "")) return "no repository or commit to prove";
   if (parseRequired(JSON.stringify(required)) === null) return "no list of required checks";
   if (commit?.sha !== sha || !SHA.test(commit?.tree?.sha ?? "")) return `GitHub doesn't describe ${sha.slice(0, 7)}`;
@@ -84,9 +92,9 @@ export function proofProblem({ repo, sha, required, commit, pulls, headCommit, r
     if (newest === undefined) return `no ${file} run on pull request #${pr.number}'s head ${head.slice(0, 7)}`;
     // Select the newest run first: an invalid binding on it must not resurrect an older green run.
     const bound = newest.pull_requests;
-    if (!Array.isArray(bound) || bound.length !== 1 || bound[0]?.number !== pr.number
-      || bound[0]?.base?.ref !== "main" || bound[0]?.base?.repo?.url !== `https://api.github.com/repos/${repo}`
-      || bound[0]?.head?.sha !== head || bound[0]?.head?.ref !== branch || bound[0]?.head?.repo?.url !== `https://api.github.com/repos/${repo}`) return `${file} run ${newest.id}: invalid pull request binding`;
+    if (!Array.isArray(bound) || !(bound.length === 0 ? onlyPullFrom(branchPulls, pr.number, { repo, branch }) : bound.length === 1 && bound[0]?.number === pr.number
+      && bound[0]?.base?.ref === "main" && bound[0]?.base?.repo?.url === `https://api.github.com/repos/${repo}`
+      && bound[0]?.head?.sha === head && bound[0]?.head?.ref === branch && bound[0]?.head?.repo?.url === `https://api.github.com/repos/${repo}`)) return `${file} run ${newest.id}: invalid pull request binding`;
     if (!Number.isSafeInteger(newest.run_attempt) || newest.run_attempt < 1) return `${file} run ${newest.id}: no latest attempt`;
     if (newest.status !== "completed") return `${file} run ${newest.id} on ${head.slice(0, 7)} hasn't finished`;
     const ran = jobs?.get?.(newest.id);
@@ -189,6 +197,8 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     if (comparison?.base_commit?.sha !== head || comparison?.ahead_by !== 1
       || !SHA.test(commit?.parents?.[0]?.sha ?? "") || comparison?.merge_base_commit?.sha !== commit.parents[0].sha
       || !Array.isArray(comparison.commits) || comparison.commits.length !== 1 || comparison.commits[0]?.sha !== sha) throw new Error("not a single squash commit on the tested head's ancestry");
+    const owner = repo.split("/")[0];
+    const branchPulls = await pages(`repos/${repo}/pulls?state=all&head=${encodeURIComponent(`${owner}:${pr?.head?.ref ?? ""}`)}`, undefined, "number");
     const runsPath = `repos/${repo}/actions/runs?head_sha=${head}`;
     const runs = await pages(runsPath, "workflow_runs", "id");
     const jobs = new Map();
@@ -207,7 +217,7 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
       const after = provingRun(fresh, file, { repo, head, branch: pr.head.ref });
       if (before?.id !== after?.id || before?.run_attempt !== after?.run_attempt || before?.status !== after?.status) throw new Error(`${file}: newest run or attempt changed during proof`);
     }
-    const problem = proofProblem({ repo, sha, required, commit, pulls, headCommit, runs: fresh, runsTotal: fresh.length, jobs });
+    const problem = proofProblem({ repo, sha, required, commit, pulls, headCommit, runs: fresh, runsTotal: fresh.length, jobs, branchPulls });
     if (problem !== null) { console.error(`Not proven: ${problem}.`); process.exit(1); }
     if (args.includes("--tag")) await verifyTag(repo, sha, flag(args, "tag"));
     console.log(`${sha} is pull request #${pr.number}'s head tree (${head}), and every one of its ${Object.keys(required).length} required checks passed there.`);
