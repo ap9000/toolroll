@@ -399,11 +399,12 @@ describe("test-matrix: the documentation-only classifier (scripts/ci-scope.mjs)"
 describe("test-matrix: the release proof (scripts/release-proof.mjs)", () => {
   const REPO = "ap9000/toolroll", TAG = "a".repeat(40), HEAD = "b".repeat(40), TREE = "c".repeat(40), BRANCH = "release-0.9.80";
   const required = { ...REQUIRED_PR_CHECKS_WORKFLOW } as Record<string, string>;
-  type Run = { id: number; path: string; head_sha: string; head_branch: string; event: string; status: string; run_attempt: number; repository: { full_name: string }; head_repository: { full_name: string } };
+  const binding = () => ({ number: 258, base: { ref: "main", repo: { url: `https://api.github.com/repos/${REPO}` } }, head: { sha: HEAD, ref: BRANCH, repo: { url: `https://api.github.com/repos/${REPO}` } } });
+  type Run = { id: number; path: string; head_sha: string; head_branch: string; event: string; status: string; run_attempt: number; repository: { full_name: string }; head_repository: { full_name: string }; pull_requests: ReturnType<typeof binding>[] };
   const run = (id: number, path: string, extra: Partial<Run> = {}): Run => ({ id, path, head_sha: HEAD, head_branch: BRANCH, event: "pull_request", status: "completed", run_attempt: 1,
-    repository: { full_name: REPO }, head_repository: { full_name: REPO }, ...extra });
-  type JobRecord = { name: string; run_id: number; head_sha: string; status: string; conclusion: string | null };
-  const jobsFor = (id: number, path: string): JobRecord[] => Object.entries(required).filter(([, file]) => file === path).map(([name]) => ({ name, run_id: id, head_sha: HEAD, status: "completed", conclusion: "success" }));
+    repository: { full_name: REPO }, head_repository: { full_name: REPO }, pull_requests: [binding()], ...extra });
+  type JobRecord = { name: string; run_id: number; head_sha: string; status: string; conclusion: string | null; completed_at?: string | null };
+  const jobsFor = (id: number, path: string): JobRecord[] => Object.entries(required).filter(([, file]) => file === path).map(([name]) => ({ name, run_id: id, head_sha: HEAD, status: "completed", conclusion: "success", completed_at: "2026-10-29T23:59:00Z" }));
   const world = () => {
     const runs = [run(10, CI), run(11, RC)];
     return {
@@ -424,6 +425,19 @@ describe("test-matrix: the release proof (scripts/release-proof.mjs)", () => {
   });
 
   test.each([
+    ["a run belongs to another PR on the same head and branch", (w: World) => { w.runs[0]!.pull_requests[0]!.number = 259; }, /pull request binding/],
+    ["a run has no PR binding", (w: World) => { w.runs[0]!.pull_requests = []; }, /pull request binding/],
+    ["a run belongs to a PR into an untrusted base", (w: World) => { w.runs[0]!.pull_requests[0]!.base.ref = "attacker-base"; }, /pull request binding/],
+    ["a run's PR binding names another repository", (w: World) => { w.runs[0]!.pull_requests[0]!.base.repo.url = "https://api.github.com/repos/evil/toolroll"; }, /pull request binding/],
+    ["a run's PR binding names another head", (w: World) => { w.runs[0]!.pull_requests[0]!.head.sha = "9".repeat(40); }, /pull request binding/],
+    ["newest run has an invalid PR binding; older green must not stand", (w: World) => { addRun(w, run(20, CI, { pull_requests: [] }), jobsFor(20, CI)); }, /pull request binding/],
+    ["checks first passed after an unchecked merge", (w: World) => { setJob(w, 10, "node 24 · ubuntu-latest", { completed_at: "2026-10-30T00:00:01Z" }); }, /before.*merged/],
+    ["GitHub omitted when a check passed", (w: World) => { setJob(w, 10, "node 24 · ubuntu-latest", { completed_at: null }); }, /before.*merged/],
+    ["no valid merge time", (w: World) => { w.pulls[0]!.merged_at = "not a date"; }, /merge time/],
+    ["an empty required map", (w: World) => { w.required = {}; }, /no list/],
+    ["duplicate run ids hide an incomplete list", (w: World) => { w.runs.push({ ...w.runs[0]! }); w.runsTotal++; }, /can't be read whole/],
+    ["a malformed newest workflow run", (w: World) => { addRun(w, run(Number.NaN, CI), jobsFor(20, CI)); }, /can't be read whole/],
+    ["no latest attempt number", (w: World) => { w.runs[0]!.run_attempt = 0; }, /attempt/],
     ["the tag isn't a squash merge", (w: World) => { w.commit.parents.push({ sha: "e".repeat(40) }); }, /isn't a squash merge/],
     ["GitHub describes another commit", (w: World) => { w.commit.sha = HEAD; }, /doesn't describe/],
     ["no merged pull request made it", (w: World) => { w.pulls = []; }, /no merged pull request/],
@@ -436,7 +450,7 @@ describe("test-matrix: the release proof (scripts/release-proof.mjs)", () => {
     ["the head tree differs", (w: World) => { w.headCommit.tree.sha = "9".repeat(40); }, /isn't pull request #258's head tree/],
     ["the run list is cut short", (w: World) => { w.runsTotal = 101; }, /can't be read whole/],
     ["no ci.yml run", (w: World) => { w.runs = w.runs.filter(one => one.path !== CI); w.runsTotal = w.runs.length; }, /no \.github\/workflows\/ci\.yml run/],
-    ["a ci.yml run on another commit only", (w: World) => { w.runs[0]!.head_sha = "9".repeat(40); }, /no \.github\/workflows\/ci\.yml run/],
+    ["a ci.yml run on another commit only", (w: World) => { w.runs[0]!.head_sha = "9".repeat(40); }, /can't be read whole/],
     ["a ci.yml run for another branch only", (w: World) => { w.runs[0]!.head_branch = "elsewhere"; }, /no \.github\/workflows\/ci\.yml run/],
     ["a ci.yml run from a push only", (w: World) => { w.runs[0]!.event = "push"; }, /no \.github\/workflows\/ci\.yml run/],
     ["a ci.yml run by hand", (w: World) => { w.runs[0]!.event = "workflow_dispatch"; }, /no \.github\/workflows\/ci\.yml run/],
@@ -462,10 +476,89 @@ describe("test-matrix: the release proof (scripts/release-proof.mjs)", () => {
     expect(proofProblem(w)).toMatch(problem);
   });
 
+  // Exercise the real CLI and HTTP adapter, without a token, network or the person's GitHub setup.
+  const apiScratch = mkdtempSync(join(tmpdir(), "release-proof-api-"));
+  afterAll(() => rmSync(apiScratch, { recursive: true, force: true }));
+  type Reply = { body?: unknown; status?: number; error?: string };
+  type Replies = Record<string, Reply[]>;
+  const apiWorld = (): Replies => {
+    const w = world();
+    return {
+      [`git/commits/${TAG}`]: [{ body: w.commit }],
+      [`commits/${TAG}/pulls?page=1`]: [{ body: w.pulls }],
+      [`git/commits/${HEAD}`]: [{ body: w.headCommit }],
+      ["issues/258/timeline?page=1"]: [{ body: [] }],
+      [`actions/runs?page=1`]: [{ body: { total_count: w.runs.length, workflow_runs: w.runs } }],
+      ...Object.fromEntries([...w.jobs].map(([id, jobs]) => [`actions/runs/${id}/attempts/1/jobs?page=1`, [{ body: { total_count: jobs.length, jobs: jobs.map((job, at) => ({ id: id * 100 + at, ...job })) } }]])),
+    };
+  };
+  const cli = (replies: Replies, command = "verify", extra: string[] = []) => {
+    const fixture = join(apiScratch, "replies.json"), loader = join(apiScratch, "fetch.mjs");
+    writeFileSync(fixture, JSON.stringify(replies));
+    writeFileSync(loader, `import { readFileSync } from 'node:fs';
+const replies = JSON.parse(readFileSync(process.env.PROOF_FIXTURE, 'utf8'));
+globalThis.fetch = async (url, options) => {
+  const u = new URL(url);
+  if (u.origin !== 'https://api.github.com' || options.redirect !== 'error') throw new Error('unsafe API request');
+  let key = u.pathname.replace('/repos/ap9000/toolroll/', '');
+  if (u.searchParams.has('per_page')) key += '?page=' + (u.searchParams.get('page') || '1');
+  const queue = replies[key];
+  if (!queue?.length) throw new Error('unexpected API request: ' + key);
+  const reply = queue.length > 1 ? queue.shift() : queue[0];
+  if (reply.error) throw new Error(reply.error);
+  return new Response(JSON.stringify(reply.body), { status: reply.status || 200, headers: { 'content-type': 'application/json' } });
+};`);
+    return spawnSync(process.execPath, ["--import", loader, "scripts/release-proof.mjs", command, "--repo", REPO, "--sha", TAG, "--required", JSON.stringify(required), ...extra], {
+      cwd: join(import.meta.dirname, ".."), encoding: "utf8", env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", HOME: apiScratch, XDG_CONFIG_HOME: apiScratch, PROOF_FIXTURE: fixture, GITHUB_TOKEN: "synthetic-token" },
+    });
+  };
+  test.each([
+    ["all required jobs on the newest attempt", (_: Replies) => {}, true],
+    ["a retargeted PR can expose a weaker base verifier", (r: Replies) => { r["issues/258/timeline?page=1"] = [{ body: [{ event: "base_ref_changed" }] }]; }, false],
+    ["the PR timeline is unreadable", (r: Replies) => { r["issues/258/timeline?page=1"] = [{ status: 403 }]; }, false],
+    ["the run list errors", (r: Replies) => { r["actions/runs?page=1"] = [{ status: 500 }]; }, false],
+    ["jobs cannot be read", (r: Replies) => { r["actions/runs/10/attempts/1/jobs?page=1"] = [{ error: "network unavailable" }]; }, false],
+    ["a retry starts while jobs are read", (r: Replies) => {
+      r["actions/runs?page=1"]!.push({ body: { total_count: 2, workflow_runs: [run(10, CI, { run_attempt: 2, status: "in_progress" }), run(11, RC)] } });
+    }, false],
+    ["a newer run starts while jobs are read", (r: Replies) => {
+      r["actions/runs?page=1"]!.push({ body: { total_count: 3, workflow_runs: [...world().runs, run(12, CI, { status: "queued" })] } });
+    }, false],
+    ["an ambiguous merge hidden on page two", (r: Replies) => {
+      const pull = world().pulls[0]!;
+      r[`commits/${TAG}/pulls?page=1`] = [{ body: [pull, ...Array.from({ length: 99 }, (_, i) => ({ ...pull, number: 1000 + i, merge_commit_sha: HEAD }))] }];
+      r[`commits/${TAG}/pulls?page=2`] = [{ body: [{ ...pull, number: 259 }] }];
+    }, false],
+    ["multiple pages of runs", (r: Replies) => {
+      const runs = [...Array.from({ length: 99 }, (_, i) => run(1000 + i, ".github/workflows/other.yml")), ...world().runs];
+      for (const page of [1, 2]) r[`actions/runs?page=${page}`] = [{ body: { total_count: runs.length, workflow_runs: runs.slice((page - 1) * 100, page * 100) } }];
+    }, true],
+    ["multiple pages of jobs", (r: Replies) => {
+      const jobs = [...jobsFor(10, CI), ...Array.from({ length: 100 }, (_, i) => ({ ...jobsFor(10, CI)[0]!, name: `extra ${i}` }))].map((job, i) => ({ ...job, id: 1000 + i }));
+      for (const page of [1, 2]) r[`actions/runs/10/attempts/1/jobs?page=${page}`] = [{ body: { total_count: jobs.length, jobs: jobs.slice((page - 1) * 100, page * 100) } }];
+    }, true],
+    ["a duplicate page cannot replace missing runs", (r: Replies) => {
+      const runs = Array.from({ length: 100 }, (_, i) => run(1000 + i, CI));
+      for (const page of [1, 2]) r[`actions/runs?page=${page}`] = [{ body: { total_count: 200, workflow_runs: runs } }];
+    }, false],
+  ] as const)("HTTP proof: %s", (_, change, passes) => {
+    const replies = apiWorld(); change(replies);
+    const result = cli(replies);
+    expect(result.status === 0, result.stderr).toBe(passes);
+  });
+
   test("the required list must name only workflows the proof knows, and be whole", () => {
     expect(parseRequired(JSON.stringify(required))).toEqual(required);
     for (const text of ["", "[]", "{}", "null", JSON.stringify({ "node 24 · ubuntu-latest": ".github/workflows/other.yml" }), JSON.stringify({ " ": CI }), JSON.stringify({ x: 1 })]) expect(parseRequired(text), text).toBeNull();
     expect(proofProblem({ ...world(), required: null as unknown as Record<string, string> })).toMatch(/no list/);
     expect(proofProblem({ ...world(), sha: "nope" })).toMatch(/no repository or commit/);
+  });
+
+  test("GitHub's workflow path may include its ref; a filename prefix is never enough", () => {
+    const w = world();
+    w.runs[0]!.path += "@refs/pull/258/merge";
+    expect(proofProblem(w)).toBeNull();
+    w.runs[0]!.path = `${CI}.untrusted@main`;
+    expect(proofProblem(w)).not.toBeNull();
   });
 });
