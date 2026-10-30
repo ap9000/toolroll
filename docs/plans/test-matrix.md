@@ -33,6 +33,9 @@ only adds or modifies Markdown files under `docs/`, `CHANGELOG.md` or `README.md
 change, any other file, an empty diff, or a diff that can't be read whole runs every lane. The trusted base revision's
 `scripts/ci-scope.mjs` decides, in the always-running `area lanes · scope` job; each lane runs unless that job succeeded
 and said `docs-only`, so a failed decision runs everything.
+If the base has no classifier, every lane runs; the candidate never supplies that decision. The classifier reads
+through the shared hardened Git view (no repository config or replacement objects) and detects copies from unchanged
+files too.
 
 A spared lane reports **skipped**. GitHub's branch protection reads a skipped job as passing, so the pull request can
 merge. The release gate never accepts a skipped check (`prChecksVerdict`), so a skipped lane can never count for a
@@ -65,12 +68,29 @@ other-platform cases still skip, as before.
 The tag's macOS legs are removed only together with a proof step that gates publication. The `release proof` job in
 `publish.yml` reads GitHub's API with its own read-only token and refuses unless:
 
-- the tagged commit is on main, and is the squash merge (one parent) of exactly one merged pull request into main;
+- the tagged commit is on main, is the recorded merge of exactly one pull request into main, and has the squash
+  shape: one parent already in the tested head's history, with exactly one new commit beyond that history;
 - that pull request's head commit has the same tree;
 - for each required check, the newest GitHub Actions run of its workflow on that head, for that branch in this
   repository, from its pull request (`ci.yml`, and `release-candidate.yml` on the `release-*` branch), is complete and
-  shows exactly one job of that name that concluded `success`. Skipped, failed, cancelled, missing, duplicated or
-  unreadable: no publish.
+  shows exactly one job of that name that concluded `success` no later than the merge. The run's PR binding must name
+  that exact PR, head and main repository, and its timeline must show no base retargeting. Skipped, failed, cancelled,
+  missing, duplicated or unreadable: no publish.
+
+The proof reads every page of PRs, workflow runs, jobs and timeline events, and re-reads the newest runs after reading
+their jobs: a changed run or attempt refuses the proof. Jobs come only from the newest run's exact latest attempt;
+a partial rerun that omits a required lane is refused, so rerun the full workflow when necessary. A workflow path may
+include GitHub's `@ref` suffix. Main-push uses the same proof and runs full CI on any refusal.
+
+Both publishing checkouts explicitly pin the event SHA. The proof checks the current remote tag, and the publisher
+checks it again after building, immediately before npm publication and again before creating the GitHub release.
+Annotated tags are peeled to their commit; a missing, moved or unreadable tag refuses publication. GitHub and npm
+cannot participate in one atomic transaction: immutable release-tag rules are still needed to prevent someone moving
+a tag after the last read. The workflow and proof source remain repository policy; an actor allowed to replace those
+guards or bypass their review is outside the proof's trust boundary.
+This attests the commit graph and tested tree, not which merge button was clicked: a one-commit rebase producing the
+same graph cannot be distinguished from a squash by these records. CI and release-candidate tokens explicitly have
+only `contents: read`; only the publish job receives write and OIDC permissions.
 
 The list it checks is in `publish.yml` and must equal `REQUIRED_PR_CHECKS` and its workflows (`src/ci-workflow.test.ts`
 pins them equal). `RELEASE_TAG_CHECKS` is now `release proof` and `publish`.
