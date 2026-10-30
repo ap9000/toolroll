@@ -614,7 +614,9 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       return fail("over-reservation", LEAD_FAILURE_COPY.overReserved, true);
     }
     finishStep({ state: "answered", tokensIn: answer.tokensIn, tokensOut: answer.tokensOut, settledMicrousd: stepSettled, replyBytes: Buffer.byteLength(answer.text, "utf8"),
-      cacheReadTokens: answer.cacheReadTokens ?? null, cacheWriteTokens: answer.cacheWriteTokens ?? null });
+      cacheReadTokens: answer.cacheReadTokens ?? null, cacheWriteTokens: answer.cacheWriteTokens ?? null,
+      // v140: what the provider itself reported for this request (absent: unreported, kept NULL).
+      modelReported: answer.modelReported ?? null, providerTurns: answer.providerTurns ?? null, reportedCostUsd: answer.reportedCostUsd ?? null });
     tokensIn += answer.tokensIn;
     tokensOut += answer.tokensOut;
     if (answer.cacheReadTokens === undefined) cacheKnown = false; else cacheRead += answer.cacheReadTokens;

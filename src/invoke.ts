@@ -27,7 +27,7 @@ import { attestProvider, type VersionProbe } from "./attest.js";
 import { run as runCommand, runOwnerTag, streamsInput } from "./exec.js";
 import { spawnSync } from "node:child_process";
 import { currentContainment } from "./containment.js";
-import type { Store } from "./store.js";
+import { recordRunModelReported, type Store } from "./store.js";
 import type { RunOptions } from "./exec.js";
 import { witnessedRunner } from "./process-custody.js";
 import { underStopWatch } from "./task-control.js";
@@ -861,6 +861,8 @@ export async function invokeAgent(
     // How many agent turns it took, where the provider reports it (docs/plans/run-efficiency.md); unknown stays NULL.
     ...(envelope.ending?.turns == null ? {} : { agentTurns: envelope.ending.turns + (options.accumulateUsage ? run.agentTurns ?? 0 : 0) }),
   });
+  // v140: the exact model the provider's own events named (null: not reported); a resumed turn adds its own to the run's.
+  recordRunModelReported(store, runId, envelope.modelReported ?? null, options.accumulateUsage === true);
 
   // How the attempt ended, classified HERE where the structural terminal
   // still exists; a sign-in that no longer works pauses its provider.

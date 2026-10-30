@@ -244,12 +244,21 @@ describe("the invocation gateway", () => {
     expect(store.getRun(runId)).toMatchObject({ tokensIn: 41_000, tokensOut: 2_500, costUsd: 0.4321 });
   });
 
+  test("v140: the run keeps the exact model its session's own init reported, never the agent's words", async () => {
+    const stdout = [
+      { type: "system", subtype: "init", session_id: "s-model", model: "claude-sonnet-4-5-20250929" },
+      { type: "result", subtype: "success", session_id: "s-model", result: "I ran on claude-opus-9", num_turns: 3, total_cost_usd: 0.2, usage: { input_tokens: 10, output_tokens: 5 } },
+    ].map(line => JSON.stringify(line)).join("\n");
+    await invokeAgent(store, runId, CLAUDE, ASK, { runner: async () => ({ ...OK, stdout }) });
+    expect(store.getRun(runId)).toMatchObject({ modelReported: "claude-sonnet-4-5-20250929", agentTurns: 3, costUsd: 0.2 });
+  });
+
   test("what was not measured stays NULL — never a fabricated zero", async () => {
     await invokeRan(store, runId, CLAUDE, ASK, {
       runner: async () => ({ ...OK, stdout: "not json at all" }),
     });
 
-    expect(store.getRun(runId)).toMatchObject({ tokensIn: null, tokensOut: null, costUsd: null });
+    expect(store.getRun(runId)).toMatchObject({ tokensIn: null, tokensOut: null, costUsd: null, modelReported: null });
     // But the spawn itself is on the record regardless.
     expect(store.getRun(runId)?.providerStartedAt).not.toBeNull();
   });

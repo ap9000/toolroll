@@ -616,7 +616,7 @@ VM isolation.
 | Version | Slice | Tables / columns |
 |---|---|---|
 | v139 | A1 | `nightly_lane` (lane_id, repo, workflow, display_name, retired_at, retired_by, retired_proof); `nightly_lane_alias` (repo, lane_id, name, by, proof, at); `github_nightly_cursor` (repo, page_cursor, last_ok_at, last_why); `github_nightly_watch` (repo, gh_run, created_at, attempts_read, finished, last_checked_at); `nightly_lane_job` (repo, lane_id, gh_run, attempt, job_id, sha, started_at, completed_at, conclusion, cause; unique (repo, gh_run, attempt, job_id)); `nightly_lane_failure` (id, repo, lane_id, job ref, sha, opened_at, cleared_at, cleared_by_job, closed_why); `nightly_exemption` (task, candidate, failure_id, pr, gh_run, attempt, job_id, started_at, completed_at, read_at; unique (task, candidate, failure_id)). Kept apart from `main_check_failure`, whose `run` is a Toolroll run id, NOT NULL |
-| v140 | B1 | `run.model_reported`; `chat_turn.model_reported`, `provider_turns`, `reported_cost_usd`, `cache_read_tokens`, `cache_write_tokens` (all nullable: null = not reported) |
+| v140 | B1 | `run.model_reported`; `chat_turn.model_reported`, `provider_turns`, `reported_cost_usd` (all nullable: null = not reported; `chat_turn.cache_read_tokens` and `cache_write_tokens` already exist from v129, see Build notes) |
 | v141 | C1, C2 | `eval_campaign` (id, canonical, manifest_digest, build_digest, version, baseline_campaign, k, admitted_at, finished_at, state, settled_at); `eval_attempt` (id, campaign, case_id, case_version, n, replaces, outcome, error_why, model_pinned, model_reported, api_microusd, subscription_microusd, usage_unknown, turns, tokens_in, cache_read, cache_write, tokens_out, tool_calls, wall_ms; unique (campaign, case_id, n, replaces)); `eval_invocation` (attempt, kind, world_ref, reserved_microusd, settled_microusd, unknown); `eval_spend_month` (month, ceiling_microusd, reserved_microusd, settled_microusd); `eval_baseline_pin` (campaign, by, proof, at, accepted_worse_json); `eval_debt` (id, case_id, case_version, campaign, baseline_campaign, opened_at, cleared_at, cleared_by_campaign, waived_by, waived_proof, waived_why) |
 | v142 | D1 | `build_review.reviewer_model`; `reviewer_eval_attempt` (id, campaign, diff_id, diff_version, n, provider, model_pinned, model_reported, findings_json, proxy_hits_json, adjudication_json, api_microusd, subscription_microusd) |
 
@@ -883,3 +883,30 @@ Where the build took the safer or more concrete reading of this plan, recorded a
   probe (5 s, cached) is left as it is.
 - 7: opt-in, alias and retire now check the password inside their own transaction (`provePerson` runs under the lock
   with the write), so neither a revocation nor a credential rotation can land between the proof and the change.
+
+**B1 (v140).**
+- `chat_turn.cache_read_tokens` and `cache_write_tokens` already exist (v129), so v140 adds only `run.model_reported`
+  and `chat_turn.model_reported`, `provider_turns` and `reported_cost_usd` (all nullable, saved rows NULL). The
+  subscription chat now fills the v129 cache columns too (it reported none before).
+- `chat_turn` is one row per provider request (a lead turn's steps are its rows), so each row keeps its own request's
+  report and nothing is summed there; a sum over a turn or an attempt is the collector's (C1), unknown if any part is.
+- The readings live in the new src/reported-usage.ts: a model id is printable ASCII without spaces, at most 200
+  characters, or unknown (never trimmed into another id). Claude: the session's own `system`/`init` model (a subagent's
+  never counts); inits that disagree leave it unknown, never chosen; with no init naming one (the buffered
+  `--output-format json` chat, legacy fixtures) the result's `modelUsage` counts only when it names exactly one model.
+  Turns are the result's `num_turns`, cost its `total_cost_usd`, tokens `usageOf`'s cache-aware split (input = input +
+  cache read + cache write when all three are reported, else the plain count as before). Codex `exec --json` reports no
+  model, turns or cost (unknown); its cache reads are `cached_input_tokens`, its cache writes unknown. The direct API
+  path reads the response body's `model`; OpenRouter's `usage.cost` is its reported cost (a null cost stays unknown,
+  where `Number(null)` would have read 0); Anthropic reports none. Fleet chat's `chat_turn` rows get the same.
+- A subscription's reported cost goes only to `reportedCostUsd` / `reported_cost_usd`, never `reportedCostMicrousd`,
+  which stays API money (lead settlement reads it).
+- A resumed turn that adds to its run's usage (a review resume) adds its model too: unknown if either turn's is, the
+  model when they agree, otherwise every model named, sorted and joined by " + " (never equal to one model, so a pinned
+  comparison reads it as a mismatch).
+- `runAccounting` and `chatTurnAccounting` (end of src/store.ts) are the collector's reads: the reported fields, the
+  normalized tokens, and the amount kept as API dollars (billing `api-key` with a reported or priced spend; an API chat's
+  settled charge), subscription usage (the provider's reported cost of subscription work; null when unreported), or
+  unknown (no billing, unpriced, or a chat request with unknown spend). They are never added together.
+- Not covered, and unknown: a failed chat request keeps no report (the harness's answer is never parsed when the
+  request fails); Codex, Gemini and ACP runs report no exact model, so a run on them is never evaluated under a pin.
