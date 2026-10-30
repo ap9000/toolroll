@@ -1629,6 +1629,10 @@ describe("toolroll release: approve automatically when checks pass", () => {
         .toMatchObject({ state: "failed", failed: [expect.stringContaining("node 22 · macos-latest (from .github/workflows/ci.yml, not .github/workflows/release-candidate.yml)")] });
       expect(prChecksVerdict(all(name => name === "node 24 · macos-latest" ? { workflowPath: RC_YML, workflow: 2, suite: 6 } : {}), SHA, REQUIRED_PR_CHECKS, { ...auto, workflow: REQUIRED_PR_CHECKS_WORKFLOW }))
         .toMatchObject({ state: "failed" });
+      for (const suffix of ["@evil.yml", "@evil.yaml", "@evil.yml@main", "@evil.yml@refs/pull/258/merge", "@"]) {
+        expect(prChecksVerdict(all(name => name === "node 22 · macos-latest" ? { workflowPath: `${RC_YML}${suffix}` } : {}), SHA, REQUIRED_PR_CHECKS, { ...auto, workflow: REQUIRED_PR_CHECKS_WORKFLOW }), suffix)
+          .toMatchObject({ state: "failed" });
+      }
       // A name the map doesn't know refuses rather than passing unchecked.
       expect(prChecksVerdict(all(), SHA, [...REQUIRED_PR_CHECKS, "extra"], { ...auto, workflow: REQUIRED_PR_CHECKS_WORKFLOW })).toMatchObject({ state: "pending" });
       expect(prChecksVerdict([...all(), { id: 300, name: "extra", status: "completed", conclusion: "success", app: "github-actions", head: SHA, suite: 5, workflow: 1, workflowPath: CI_YML }], SHA, [...REQUIRED_PR_CHECKS, "extra"], { ...auto, workflow: REQUIRED_PR_CHECKS_WORKFLOW }))

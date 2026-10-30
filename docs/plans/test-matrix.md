@@ -80,7 +80,8 @@ The tag's macOS legs are removed only together with a proof step that gates publ
 The proof reads every page of PRs, workflow runs, jobs and timeline events, and re-reads the newest runs after reading
 their jobs: a changed run or attempt refuses the proof. Jobs come only from the newest run's exact latest attempt;
 a partial rerun that omits a required lane is refused, so rerun the full workflow when necessary. A workflow path may
-include GitHub's `@ref` suffix. Main-push uses the same proof and runs full CI on any refusal.
+include an unambiguous GitHub `@ref` suffix. A suffix containing another `@` or ending in `.yml`/`.yaml` is refused:
+it could name a different workflow such as `ci.yml@evil.yml`. Main-push uses the same proof and runs full CI on any refusal.
 
 Both publishing checkouts explicitly pin the event SHA. The proof checks the current remote tag, and the publisher
 checks it again after building, immediately before npm publication and again before creating the GitHub release.

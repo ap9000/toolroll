@@ -25,7 +25,13 @@ export const PROOF_EVENTS = {
   ".github/workflows/ci.yml": ["pull_request"],
   ".github/workflows/release-candidate.yml": ["pull_request"],
 };
-const workflowIs = (path, file) => typeof path === "string" && (path === file || path.startsWith(`${file}@`));
+const workflowIs = (path, file) => {
+  if (typeof path !== "string") return false;
+  if (path === file) return true;
+  // Same rule as release.ts: ci.yml@evil.yml (also with @ref appended) is another workflow, not ci.yml's ref.
+  const ref = path.startsWith(`${file}@`) ? path.slice(file.length + 1) : "";
+  return /^[A-Za-z0-9._+/-]+$/.test(ref) && !/\.ya?ml$/i.test(ref);
+};
 const mergedPulls = (pulls, repo, sha) => (Array.isArray(pulls) ? pulls : []).filter(pr => pr?.merged_at != null && pr?.merge_commit_sha === sha && pr?.base?.ref === "main" && pr?.base?.repo?.full_name === repo);
 const timestamp = value => typeof value === "string" ? Date.parse(value) : NaN;
 

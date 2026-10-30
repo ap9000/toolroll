@@ -1528,5 +1528,10 @@ export function checkFailedWords(input: { sha: string; run: number; class: Failu
 
 /** Whether GitHub's workflow-run `path` names exactly `file` (it may carry the ref it ran from, after an `@`). */
 export function workflowIs(path: string | null | undefined, file: string): boolean {
-  return typeof path === "string" && (path === file || path.startsWith(`${file}@`));
+  if (typeof path !== "string") return false;
+  if (path === file) return true;
+  // GitHub may append @ref, but ci.yml@evil.yml is also a valid *different* workflow filename. Multiple @ signs
+  // likewise cannot distinguish that filename from a ref. Refuse ambiguous suffixes instead of granting its checks.
+  const ref = path.startsWith(`${file}@`) ? path.slice(file.length + 1) : "";
+  return /^[A-Za-z0-9._+/-]+$/.test(ref) && !/\.ya?ml$/i.test(ref);
 }

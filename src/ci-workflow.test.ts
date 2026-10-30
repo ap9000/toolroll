@@ -620,11 +620,11 @@ globalThis.fetch = async (url, options) => {
     expect(proofProblem({ ...world(), sha: "nope" })).toMatch(/no repository or commit/);
   });
 
-  test("GitHub's workflow path may include its ref; a filename prefix is never enough", () => {
+  test.each(["@evil.yml", "@evil.yaml", "@evil.yml@main", "@evil.yml@refs/pull/258/merge", "@"])("GitHub's workflow path may include its ref; reject ambiguous filename suffix %s", suffix => {
     const w = world();
     w.runs[0]!.path += "@refs/pull/258/merge";
     expect(proofProblem(w)).toBeNull();
-    w.runs[0]!.path = `${CI}.untrusted@main`;
+    w.runs[0]!.path = `${CI}${suffix}`;
     expect(proofProblem(w)).not.toBeNull();
   });
 });
