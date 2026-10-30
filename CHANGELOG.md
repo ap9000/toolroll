@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.80 — 2026-10-30
 
 - **Each test runs once, where it adds something** (docs/plans/test-matrix.md).
   Pull requests run the unit suite on Node 24 (Linux and macOS) and every
