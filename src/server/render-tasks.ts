@@ -3034,6 +3034,7 @@ export function releaseCardHtml(taskId: string, release: ReleaseView | null, can
     html`<details><summary>Later commits (${release.landed.length})</summary>${landed}</details>`,
     release.obligations.length === 0 ? "" : html`<details><summary>Still to pass (${release.obligations.length})</summary><ul>${joinHtml(release.obligations.map(one => html`<li>${one}</li>`), "")}</ul></details>`,
     release.nightly === null ? "" : html`<p class="meta">Nightly check of main: ${release.nightly.outcome ?? "running"} at ${release.nightly.sha.slice(0, 7)}${release.openMainFailures > 0 ? ` · ${release.openMainFailures} open failure${release.openMainFailures === 1 ? "" : "s"}` : ""}</p>`,
+    ...release.githubNightly.map(line => html`<p class="meta">${line}</p>`),
     release.carrying && canStop ? postForm(`${taskHref(taskId)}/stop-carrying`, html`<button type="submit" class="secondary">Stop carrying later commits</button>`, { attrs: { class: "inline" } }) : "",
     html`</div>`,
   ], "\n");

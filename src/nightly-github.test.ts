@@ -4,7 +4,9 @@
  * network, no gh, no credentials.
  */
 import { afterEach, describe, expect, test } from "vitest";
-import { aliasNightlyLane, laneIdOf, laneName, nightlyBoundary, nightlyDebtHold, readGithubNightly, retireNightlyLane } from "./nightly-github.js";
+import { aliasNightlyLane, laneIdOf, laneName, nightlyBoundary, nightlyDebtHold, nightlyNeedsYou, readGithubNightly, retireNightlyLane, seedLanes } from "./nightly-github.js";
+import { releaseViewOf } from "./release-view.js";
+import { releaseFixture } from "../test/release-fixture.js";
 import { runReleaseCommand } from "./release-cli.js";
 import { aggregateSteps, beforeTests, LANE_UBUNTU, LANE_WINDOWS, nightlyWorld, openLanes, sha, shardName, T0, type FakeRun, type NightlyWorld } from "../test/github-nightly-fake.js";
 
@@ -286,5 +288,30 @@ describe("a release candidate's exemption, read at each boundary", () => {
     // No recorded debt: the same warning, nothing held.
     w.store.handle.prepare("UPDATE nightly_lane_failure SET cleared_at = ?").run(T0.toISOString());
     expect(await boundary(w, "deploy")).toMatchObject({ ok: true, warning: expect.stringContaining("couldn't be read") });
+  });
+});
+
+describe("what people see", () => {
+  test("open debt is one Needs-you item and one notice; an exemption shows on the release card's view model", async () => {
+    const w = (world = nightlyWorld());
+    w.gh.job(w.gh.run(1, { at: ago(1) }), 1, LANE_UBUNTU, "failure");
+    await read(w);
+    await read(w);
+    expect(nightlyNeedsYou(w.store, () => true)).toEqual([expect.objectContaining({ title: "Nightly checks failed: node 24 · ubuntu-latest",
+      reason: `On main at ${sha(1).slice(0, 7)}. Releases wait until it passes again.`, href: expect.stringMatching(/^https:\/\/github\.com\/acme\/app\/actions\/runs\/1\/job\/\d+$/) })]);
+    expect(nightlyNeedsYou(w.store, () => false)).toEqual([]);
+    expect(w.store.handle.prepare("SELECT COUNT(*) AS n FROM notification WHERE kind = 'github-nightly-failed'").get()?.["n"]).toBe(1);
+
+    const f = releaseFixture();
+    try {
+      seedLanes(f.store, f.repo, T0);
+      const failure = Number(f.store.handle.prepare("INSERT INTO nightly_lane_failure (repo, lane_id, gh_run, attempt, job_id, sha, completed_at, opened_at) VALUES (?, ?, 7, 1, 70, ?, ?, ?)")
+        .run(f.repo, UBUNTU, f.base, "2026-10-30T06:17:00.000Z", T0.toISOString()).lastInsertRowid);
+      const lines = () => releaseViewOf(f.store, f.taskId, T0)!.githubNightly;
+      expect(lines()).toEqual(["GitHub nightly: failed node 24 · ubuntu-latest (Oct 30, 06:17 UTC). This release waits until it passes again."]);
+      f.store.handle.prepare("INSERT INTO nightly_exemption (task, candidate, failure_id, pr, gh_run, attempt, job_id, started_at, completed_at, read_at) VALUES (?, ?, ?, 240, 9, 1, 90, ?, ?, ?)")
+        .run(f.taskId, f.approved, failure, T0.toISOString(), T0.toISOString(), T0.toISOString());
+      expect(lines()).toEqual(["GitHub nightly: failed node 24 · ubuntu-latest (Oct 30, 06:17 UTC). This release re-ran it after the failure and passed."]);
+    } finally { f.close(); }
   });
 });

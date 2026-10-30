@@ -836,3 +836,12 @@ Where the build took the safer or more concrete reading of this plan, recorded a
   exemption, and the words say the release's own CI can't stand in. There is no waiver path in v1; the hold lasts
   until a main nightly passes the lane. The tests themselves and package.json stay the candidate's, as for every
   required check.
+
+**A3.**
+- Needs you uses the plain words "Nightly checks failed: <lane>" with "On main at abc1234. Releases wait until it passes
+  again." and links to the failed job on GitHub (the repository the plane recorded at opt-in). The plane's own nightly
+  check of main gets one item per failed check (its open items summed up, linking to its task) rather than one per
+  failed test, so a red nightly with many failing tests is one item.
+- The release card's GitHub lines are status, not signed terms: they are shown on the console card and the chat card
+  but are not part of the card digest.
+- The notice `github-nightly-failed` (attention) is sent when a failure is first recorded, once per failure.

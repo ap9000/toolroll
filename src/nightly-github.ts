@@ -25,7 +25,7 @@ import { authenticateApprover, personProof } from "./scope.js";
 import { readVerifiedCommit, verifiedFirstParentWalk } from "./commit-extract.js";
 import { projectGitDir } from "./check-report.js";
 import { failedBeforeTests } from "./github-jobs.js";
-import { GITHUB_NIGHTLY_ON, TRUSTED_MAIN_CLEAR_MS, trustedMainOf } from "./nightly-check.js";
+import { GITHUB_NIGHTLY_ON, TRUSTED_MAIN_CLEAR_MS, failureSummary, trustedMainOf } from "./nightly-check.js";
 import { REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW } from "./release.js";
 import { releaseRemote } from "./release-git.js";
 import { TRUSTED_MAIN_ACTION, trustedRemoteIdentity, type Store } from "./store.js";
@@ -485,8 +485,14 @@ function recordAttempt(store: Store, repo: string, attempt: { run: number; attem
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(repo, laneId, attempt.run, attempt.attempt, job.id, attempt.sha, job.startedAt, job.completedAt, job.conclusion, cause, at);
       if (cause !== "test-failure") continue;
       // No completion time on record: the failure counts as completed now, so only a pass started later clears it.
-      store.handle.prepare(`INSERT OR IGNORE INTO nightly_lane_failure (repo, lane_id, gh_run, attempt, job_id, sha, completed_at, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      const opened = store.handle.prepare(`INSERT OR IGNORE INTO nightly_lane_failure (repo, lane_id, gh_run, attempt, job_id, sha, completed_at, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(repo, laneId, attempt.run, attempt.attempt, job.id, attempt.sha, job.completedAt ?? at, at);
+      // One attention notice per failure, when it is first recorded.
+      if (Number(opened.changes) === 1) {
+        const lane = laneName(store, repo, laneId);
+        store.enqueueNotification({ dedupeKey: `github-nightly-failed:${Number(opened.lastInsertRowid)}`, kind: "github-nightly-failed", subject: "GitHub's nightly failed on main",
+          body: `Nightly checks failed: ${lane}, on main at ${attempt.sha.slice(0, 7)}. Releases wait until it passes again.`, pushClass: "attention" }, now);
+      }
     }
   });
 }
@@ -802,4 +808,52 @@ export async function nightlyBoundary(store: Store, input: { repo: string; taskI
       : `${nightlyDebtWords(store, held, input.phase, true)} This release changes ${rewrote}, which that lane runs, so its own CI can't stand in for the nightly: wait for tonight's nightly, or dispatch Nightly on main.`;
   });
   return hold === null ? { ok: true, warning } : { ok: false, why: hold, warning };
+}
+
+// ---- words (A3) ----------------------------------------------------------------------------------------------------
+
+/** One project-level Needs-you item: an open GitHub nightly lane failure, or a nightly check of main that failed. */
+export type NightlyNeed = { key: string; repo: string; title: string; reason: string; href: string; since: string };
+
+/**
+ * Needs you, for the projects `shown` admits: one item per open GitHub nightly lane failure (linking to its job on
+ * GitHub, under the opted-in repository the plane recorded), and one per nightly check of main with open failures
+ * (linking to its task). Oldest first.
+ */
+export function nightlyNeedsYou(store: Store, shown: (repo: string) => boolean): NightlyNeed[] {
+  const needs: NightlyNeed[] = [];
+  const failed = store.handle.prepare("SELECT DISTINCT repo FROM nightly_lane_failure WHERE cleared_at IS NULL").all().map(row => String(row["repo"])).filter(shown);
+  for (const repo of failed) {
+    const slug = githubNightlyOf(store, repo)?.slug ?? null;
+    for (const failure of openFailures(store, repo)) {
+      needs.push({ key: `github-nightly-${failure.id}`, repo, title: `Nightly checks failed: ${laneName(store, repo, failure.laneId)}`,
+        reason: `On main at ${failure.sha.slice(0, 7)}. Releases wait until it passes again.`,
+        href: slug === null ? "/board" : `https://github.com/${slug}/actions/runs/${failure.ghRun}/job/${failure.jobId}`, since: failure.openedAt });
+    }
+  }
+  // The plane's own nightly check of main (nightly-check.ts): one item per failed check, its items summed up.
+  const rows = store.handle.prepare("SELECT repo, run, sha, MIN(opened_at) AS since, COUNT(*) AS n FROM main_check_failure WHERE cleared_at IS NULL GROUP BY repo, run, sha ORDER BY since").all();
+  for (const row of rows) {
+    const repo = String(row["repo"]);
+    if (!shown(repo)) continue;
+    const run = store.getRun(Number(row["run"]));
+    const task = run === null ? null : store.refById(run.taskRef)?.externalId ?? null;
+    const items = store.handle.prepare("SELECT item FROM main_check_failure WHERE repo = ? AND run = ? AND cleared_at IS NULL ORDER BY item").all(repo, Number(row["run"])).map(one => String(one["item"]));
+    needs.push({ key: `main-check-${Number(row["run"])}`, repo, title: `Nightly check of main failed: ${failureSummary(items)}`,
+      reason: `On main at ${String(row["sha"]).slice(0, 7)}. Composed releases wait until a full check passes.`,
+      href: task === null ? "/board" : `/t/${encodeURIComponent(task)}`, since: String(row["since"]) });
+  }
+  return needs.sort((a, b) => a.since.localeCompare(b.since));
+}
+
+/** The release card's GitHub nightly lines: each open lane failure (held, or exempted for this candidate), then a
+ * warning when GitHub couldn't be read or the nightly hasn't run lately. Empty when there is nothing to say. */
+export function nightlyReleaseLines(store: Store, input: { repo: string; taskId: string; candidate: string | null; now: Date }): string[] {
+  const lines = openFailures(store, input.repo).map(failure => {
+    const lane = `GitHub nightly: failed ${laneName(store, input.repo, failure.laneId)} (${nightlyStamp(failure.completedAt)}).`;
+    return input.candidate !== null && exempted(store, input.taskId, input.candidate, failure.id, input.now)
+      ? `${lane} This release re-ran it after the failure and passed.` : `${lane} This release waits until it passes again.`;
+  });
+  const warning = nightlyWarning(githubNightlyStatus(store, input.repo, input.now), input.now);
+  return warning === null ? lines : [...lines, warning];
 }
