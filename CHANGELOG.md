@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.79 — 2026-10-29
 
 - **`toolroll release` rides out a short network failure instead of
   stopping.** A read from GitHub or git (`gh api`, `gh pr list`,
