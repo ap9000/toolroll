@@ -13,6 +13,7 @@ import { basename, delimiter, dirname, join } from "node:path";
 import { createRequire } from "node:module";
 import { parse as parseYaml } from "yaml";
 import { sleep } from "./sleep.js";
+import { callLabel, readOnlyCall, retryCall, retryingExec, writeWithRecheck, type ExecResult, type RetryOptions } from "./release-net.js";
 // Loaded on first use, like the store: a static import prints Node's SQLite warning before the CLI can quiet it.
 const sqlite = (): typeof import("node:sqlite") => createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
 import type { CheckRun, DeployStop, GateState, HomebrewState, Installed, MainProtection, PullRequest, ReleaseAdapters } from "./release.js";
@@ -60,9 +61,12 @@ const cleanEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => {
   return env;
 };
 
+/** A failed call, in the words every release stop uses: what, its exit code and the last lines it printed. */
+const failed = (result: ExecResult, what: string): Error => new Error(`${what} failed (exit ${result.code}): ${(result.stderr || result.stdout).trim().split("\n").slice(-3).join(" ")}`);
+
 const must = async (run: Promise<{ code: number; stdout: string; stderr: string }>, what: string): Promise<string> => {
   const result = await run;
-  if (result.code !== 0) throw new Error(`${what} failed (exit ${result.code}): ${(result.stderr || result.stdout).trim().split("\n").slice(-3).join(" ")}`);
+  if (result.code !== 0) throw failed(result, what);
   return result.stdout;
 };
 
@@ -230,8 +234,16 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   const pause = options.sleep ?? ((ms: number) => new Promise<void>(done => setTimeout(done, ms)));
   const tools = options.tools ?? releaseTools();
   const gitEnv = releaseGitEnv();
+  const say = options.say ?? ((line: string) => { process.stdout.write(`${line}\n`); });
+  /** A short network failure on the way to GitHub (release-net.ts): reads are asked again for up to ~3 minutes; a
+   * write never is, unless GitHub says it didn't happen (writeWithRecheck). */
+  const net: RetryOptions = { say, sleep: options.sleep ?? sleep, ...(options.now === undefined ? {} : { now: options.now }) };
+  const reads = retryingExec(run, net);
   // Never a PATH lookup or the checkout's Git config: gh by its absolute path, from a neutral folder, naming the repo.
-  const gh = (...args: string[]) => run(tools.gh, args, { cwd: "/", env: gitEnv });
+  // Reads ride out a short network failure; anything that isn't provably a read passes straight through (readOnlyCall).
+  const gh = (...args: string[]) => reads(tools.gh, args, { cwd: "/", env: gitEnv });
+  /** A write by gh, never retried by itself. */
+  const ghWrite = (...args: string[]) => run(tools.gh, args, { cwd: "/", env: gitEnv });
   const ghJson = async (what: string, ...args: string[]) => JSON.parse(await must(gh(...args), what)) as unknown;
   const toolroll = async (...args: string[]): Promise<Json> => {
     const result = await run("toolroll", [...args, "--json"], { env: cleanEnv(), timeoutMs: 120_000 });
@@ -243,9 +255,9 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   const ciGh = options.tools?.gh ?? releaseTools("").gh;
   const observeCi = async (sha: string): Promise<CiObservation> => {
     const observedAt = (options.now ?? (() => new Date()))().toISOString();
-    const runs = (await readCheckRuns(run, ciGh, releaseRepo().slug, sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, workflow: one.workflow ?? null, workflowPath: one.workflowPath ?? null,
+    const runs = (await readCheckRuns(reads, ciGh, releaseRepo().slug, sha)).map(one => ({ id: one.id ?? null, name: one.name, status: one.status, conclusion: one.conclusion, app: one.app ?? null, suite: one.suite ?? null, head: one.head ?? null, workflow: one.workflow ?? null, workflowPath: one.workflowPath ?? null,
       ...(one.beforeTests === undefined ? {} : { beforeTests: one.beforeTests }) }));
-    return { head: sha, observedAt, runs, complete: await readSuitesComplete(run, ciGh, releaseRepo().slug, sha) };
+    return { head: sha, observedAt, runs, complete: await readSuitesComplete(reads, ciGh, releaseRepo().slug, sha) };
   };
   const database = options.database ?? databasePath(process.env, homedir());
   let recorded: ReleaseRepo | null = options.releaseRepo ?? null;
@@ -258,13 +270,19 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
    */
   const git = async (...args: string[]) => {
     const repo = releaseRepo();
+    const full = [...releaseGitArgs(repo, tools), ...args];
     const stop = (why: string) => new Error(`Toolroll won't run Git in ${repo.checkout} for a release: ${why}. Remove it from the project's Git config, then rerun.`);
-    if (options.releaseRepo === undefined && checkoutIncludes(repo.checkout)) throw stop("its Git config includes another file, or couldn't be read as a plain file");
-    const listing = await run(tools.git, [`--git-dir=${repo.gitDir}`, "--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], { cwd: "/", env: gitEnv });
-    if (listing.code !== 0) throw stop("its Git config couldn't be read");
-    const setting = releaseConfigProblem(listing.stdout);
-    if (setting !== null) throw stop(`its Git config sets ${setting}, which a release doesn't run with (it could run a command, or change where Git connects or what it sends)`);
-    return run(tools.git, [...releaseGitArgs(repo, tools), ...args], { cwd: repo.checkout, env: gitEnv });
+    // The checkout's config is read again right before EVERY attempt, a retried one included (checked at the moment of use).
+    const once = async () => {
+      if (options.releaseRepo === undefined && checkoutIncludes(repo.checkout)) throw stop("its Git config includes another file, or couldn't be read as a plain file");
+      const listing = await run(tools.git, [`--git-dir=${repo.gitDir}`, "--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], { cwd: "/", env: gitEnv });
+      if (listing.code !== 0) throw stop("its Git config couldn't be read");
+      const setting = releaseConfigProblem(listing.stdout);
+      if (setting !== null) throw stop(`its Git config sets ${setting}, which a release doesn't run with (it could run a command, or change where Git connects or what it sends)`);
+      return run(tools.git, full, { cwd: repo.checkout, env: gitEnv });
+    };
+    // ls-remote and fetch ride out a short network failure; a push or a local command is never retried (readOnlyCall).
+    return readOnlyCall(tools.git, full) === null ? once() : retryCall(once, callLabel(tools.git, full), net);
   };
   /** The remote every fetch, look and push names: the recorded URL, defined only on the command line. */
   const remoteUrl = () => RELEASE_REMOTE;
@@ -335,8 +353,8 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   };
 
   const release = storeReleaseAdapter(() => openStore(database), store => store.close(), options.now ?? (() => new Date()), undefined,
-    { observe: sha => observeCi(sha), mergeBase: (base, sha) => readMergeBase(run, ciGh, releaseRepo().slug, base, sha),
-      upToDateRequired: () => readUpToDateRequired(run, ciGh, releaseRepo().slug), evidenceRoot: join(dirname(database), "evidence"),
+    { observe: sha => observeCi(sha), mergeBase: (base, sha) => readMergeBase(reads, ciGh, releaseRepo().slug, base, sha),
+      upToDateRequired: () => readUpToDateRequired(reads, ciGh, releaseRepo().slug), evidenceRoot: join(dirname(database), "evidence"),
       // A successful Actions job authenticates the job, not the candidate-writable JSON it uploads. Until the
       // executor protects that reporting channel, production releases must take the person's approval road.
       reportsProtected: false });
@@ -345,7 +363,7 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
     ...(existsSync(database) ? { release } : {}),
     now: options.now ?? (() => new Date()),
     sleep: options.sleep ?? sleep,
-    say: options.say ?? (line => process.stdout.write(`${line}\n`)),
+    say,
     repo: {
       // The recorded owner/name, never the checkout's origin.
       async github() { return releaseRepo().slug; },
@@ -492,31 +510,37 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         return prs.find(one => one.state === "open") ?? prs.filter(one => one.state === "merged").sort((a, b) => b.number - a.number)[0] ?? null;
       },
       // Every attempt (filter=all), with its app, check suite and commit: the release judges each job by its latest attempt.
-      async checks(repo, sha, options) { return readCheckRuns(run, ciGh, repo, sha, options); },
-      async complete(repo, sha) { return readSuitesComplete(run, ciGh, repo, sha); },
-      async mainHead(repo) { return readMainHead(run, ciGh, repo); },
-      async contains(repo, sha, ancestor) { return readContains(run, ciGh, repo, sha, ancestor); },
-      async upToDateRequired(repo) { return readMainProtection(run, ciGh, repo); },
+      async checks(repo, sha, options) { return readCheckRuns(reads, ciGh, repo, sha, options); },
+      async complete(repo, sha) { return readSuitesComplete(reads, ciGh, repo, sha); },
+      async mainHead(repo) { return readMainHead(reads, ciGh, repo); },
+      async contains(repo, sha, ancestor) { return readContains(reads, ciGh, repo, sha, ancestor); },
+      async upToDateRequired(repo) { return readMainProtection(reads, ciGh, repo); },
       async merge(repo, pr, head, message) {
-        // The squash commit's message lists every commit that landed after the approval (release-once.md).
-        const merged = object(await ghJson("gh api pulls merge", "api", "-X", "PUT", `repos/${repo}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`,
-          ...(message === undefined ? [] : ["-f", `commit_message=${message}`])));
-        if (typeof merged["sha"] !== "string") throw new Error(`GitHub did not merge #${pr}: ${String(merged["message"] ?? "no merge commit")}`);
-        return merged["sha"];
+        // The squash commit's message lists every commit that landed after the approval (release-once.md). Never asked
+        // again blindly: after a short network failure GitHub is read to learn whether it merged (writeWithRecheck).
+        return writeWithRecheck(`merging #${pr}`, net, {
+          write: () => ghWrite("api", "-X", "PUT", `repos/${repo}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`,
+            ...(message === undefined ? [] : ["-f", `commit_message=${message}`])),
+          accept: result => {
+            const merged = object(JSON.parse(result.stdout));
+            if (typeof merged["sha"] !== "string") throw new Error(`GitHub did not merge #${pr}: ${String(merged["message"] ?? "no merge commit")}`);
+            return merged["sha"];
+          },
+          refuse: result => { throw failed(result, "gh api pulls merge"); },
+          recheck: () => pullMergedAt(repo, pr, head),
+        });
       },
-      async tag(repo, tag) {
-        const result = await gh("api", `repos/${repo}/git/ref/tags/${tag}`);
-        if (result.code !== 0) {
-          if (/Not Found|HTTP 404/.test(result.stderr + result.stdout)) return null;
-          throw new Error(`gh api git/ref/tags/${tag} failed: ${result.stderr.trim()}`);
-        }
-        const target = object(object(JSON.parse(result.stdout))["object"]);
-        if (target["type"] !== "tag") return String(target["sha"]);
-        // An annotated tag: the commit it names.
-        return String(object(object(await ghJson("gh api git/tags", "api", `repos/${repo}/git/tags/${String(target["sha"])}`))["object"])["sha"]);
-      },
+      async tag(repo, tag) { return readTag(repo, tag); },
       async createTag(repo, tag, sha) {
-        await must(gh("api", "-X", "POST", `repos/${repo}/git/refs`, "-f", `ref=refs/tags/${tag}`, "-f", `sha=${sha}`), `creating ${tag}`);
+        await writeWithRecheck(`creating ${tag}`, net, {
+          write: () => ghWrite("api", "-X", "POST", `repos/${repo}/git/refs`, "-f", `ref=refs/tags/${tag}`, "-f", `sha=${sha}`),
+          accept: () => undefined,
+          refuse: result => { throw failed(result, `creating ${tag}`); },
+          recheck: async () => {
+            const at = await readTag(repo, tag);
+            return at === sha ? { state: "done", value: undefined } : at === null ? { state: "not-done" } : { state: "other", why: `${tag} now points at ${at.slice(0, 7)}` };
+          },
+        });
       },
       async release(repo, tag) { return (await gh("release", "view", tag, "--repo", repo, "--json", "tagName")).code === 0; },
     },
@@ -615,12 +639,39 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
         return problem === null ? { ok: true } : { ok: false, why: problem };
       },
       async merge(pr, head) {
-        const merged = object(await ghJson(`merging ${tap} #${pr}`, "api", "-X", "PUT", `repos/${tap}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`));
-        if (merged["merged"] !== true || typeof merged["sha"] !== "string") throw new Error(`GitHub did not merge ${tap} #${pr}: ${String(merged["message"] ?? "no merge commit")}`);
+        await writeWithRecheck(`merging ${tap} #${pr}`, net, {
+          write: () => ghWrite("api", "-X", "PUT", `repos/${tap}/pulls/${pr}/merge`, "-f", "merge_method=squash", "-f", `sha=${head}`),
+          accept: result => {
+            const merged = object(JSON.parse(result.stdout));
+            if (merged["merged"] !== true || typeof merged["sha"] !== "string") throw new Error(`GitHub did not merge ${tap} #${pr}: ${String(merged["message"] ?? "no merge commit")}`);
+          },
+          refuse: result => { throw failed(result, `merging ${tap} #${pr}`); },
+          recheck: async () => { const state = await pullMergedAt(tap, pr, head); return state.state === "done" ? { state: "done", value: undefined } : state; },
+        });
       },
     },
   };
 
+  /** A tag's commit as GitHub answers now (an annotated tag: the commit it names), or null when there is no such tag. */
+  async function readTag(repo: string, tag: string): Promise<string | null> {
+    const result = await gh("api", `repos/${repo}/git/ref/tags/${tag}`);
+    if (result.code !== 0) {
+      if (/Not Found|HTTP 404/.test(result.stderr + result.stdout)) return null;
+      throw new Error(`gh api git/ref/tags/${tag} failed: ${result.stderr.trim()}`);
+    }
+    const target = object(object(JSON.parse(result.stdout))["object"]);
+    if (target["type"] !== "tag") return String(target["sha"]);
+    return String(object(object(await ghJson("gh api git/tags", "api", `repos/${repo}/git/tags/${String(target["sha"])}`))["object"])["sha"]);
+  }
+  /** Whether a pull request is merged from exactly `head` (its merge commit), still open at `head` (not merged), or
+   * anything else — read after a merge's answer was lost. */
+  async function pullMergedAt(repo: string, pr: number, head: string): Promise<{ state: "done"; value: string } | { state: "not-done" } | { state: "other"; why: string }> {
+    const pull = object(await ghJson("gh api pulls", "api", `repos/${repo}/pulls/${pr}`));
+    const at = object(pull["head"])["sha"], commit = pull["merge_commit_sha"];
+    if (pull["merged"] === true && at === head && typeof commit === "string" && /^[0-9a-f]{40}$/.test(commit)) return { state: "done", value: commit };
+    if (pull["merged"] === false && pull["state"] === "open" && at === head) return { state: "not-done" };
+    return { state: "other", why: `#${pr} is no longer open at ${head.slice(0, 7)}` };
+  }
   async function defaultBranch(): Promise<string> {
     return (await must(gh("api", `repos/${tap}`, "--jq", ".default_branch"), `gh api repos/${tap}`)).trim();
   }
@@ -1015,14 +1066,18 @@ export async function readContains(run: Exec, gh: string, repo: string, sha: str
  * can't be bypassed by that account:
  * classic protection with "Do not allow bypassing the above settings" (`enforce_admins`); an active ruleset whose
  * bypass list reads whole, names no role, team or organization admin, and says this account never bypasses it. Read
- * only — Toolroll never changes a repository's settings. A layer that can't be read never holds; null only when nothing
- * could be read at all.
+ * only — Toolroll never changes a repository's settings. A layer that can't be read never holds. When no layer holds
+ * and one couldn't be read (gh failed for a reason other than "not protected", or its answer didn't parse), the read
+ * throws ProtectionUnreadable: "couldn't read GitHub" is never reported as "protection doesn't hold", and never as
+ * holding. Null only for a repository or branch name GitHub can't be asked about.
  */
 export async function readMainProtection(run: Exec, gh: string, repo: string, branch = "main"): Promise<MainProtection | null> {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || !/^[A-Za-z0-9._/-]+$/.test(branch) || branch.includes("..")) return null;
   const missing: string[] = [];
   const held: string[][] = [];
-  let read = 0;
+  /** What couldn't be read at all, and the words gh gave. */
+  const unread: string[] = [];
+  const words = (out: { code: number; stdout: string; stderr: string }) => (out.stderr || out.stdout).trim().split("\n").slice(-1)[0]?.slice(0, 160) || `exit ${out.code}`;
   const judge = (where: string, strict: boolean, checks: string[], bound: string[], bypass: string[]): void => {
     const own: string[] = [];
     if (!strict) own.push(`${where}: "Require branches to be up to date before merging" is off`);
@@ -1055,37 +1110,35 @@ export async function readMainProtection(run: Exec, gh: string, repo: string, br
     let answer: unknown = null;
     try { answer = JSON.parse(classic.stdout); } catch { /* unreadable below */ }
     const p = object(answer), checks = p["required_status_checks"];
-    if (answer === null || typeof answer !== "object" || Array.isArray(answer)) missing.push("classic protection couldn't be read");
-    else if (checks === undefined || checks === null) { read++; missing.push("classic protection: \"Require status checks to pass before merging\" is off"); }
+    if (answer === null || typeof answer !== "object" || Array.isArray(answer)) unread.push("classic protection (its answer didn't parse)");
+    else if (checks === undefined || checks === null) missing.push("classic protection: \"Require status checks to pass before merging\" is off");
     else {
       const rsc = object(checks), contexts = names(rsc["contexts"] ?? [], ""), apps = names(rsc["checks"] ?? [], "context");
       const admins = p["enforce_admins"];
-      if (contexts === null || apps === null || typeof rsc["strict"] !== "boolean" || admins === undefined || admins === null || typeof object(admins)["enabled"] !== "boolean") missing.push("classic protection couldn't be read");
+      // GitHub answered, but without the settings this judges: read, and not holding.
+      if (contexts === null || apps === null || typeof rsc["strict"] !== "boolean" || admins === undefined || admins === null || typeof object(admins)["enabled"] !== "boolean") missing.push("classic protection: GitHub's answer doesn't say which checks it requires or whether administrators can bypass it");
       else {
-        read++;
         judge("classic protection", rsc["strict"] === true, [...new Set([...contexts, ...apps])], actionsChecks(rsc["checks"], "app_id"),
           object(admins)["enabled"] === true ? [] : ["\"Do not allow bypassing the above settings\" is off, so administrators can merge past it"]);
       }
     }
-  } else if (notProtected(classic)) read++;
-  else missing.push("classic protection couldn't be read");
+  } else if (!notProtected(classic)) unread.push(`classic protection (${words(classic)})`);
   // Rulesets: every active rule requiring status checks on the branch, then its ruleset's enforcement and bypass list.
   const rules = await run(gh, ["api", "--hostname", "github.com", "--paginate", `repos/${repo}/rules/branches/${branch}`,
     "--jq", ".[] | select(.type == \"required_status_checks\") | @json"], { cwd: "/", env: ciEnv() });
-  if (rules.code !== 0) missing.push("main's rulesets couldn't be read");
+  if (rules.code !== 0) unread.push(`main's rulesets (${words(rules)})`);
   else {
-    read++;
     for (const line of rules.stdout.split("\n").filter(one => one.trim() !== "")) {
       let rule: Json;
-      try { rule = object(JSON.parse(line)); } catch { missing.push("a ruleset rule couldn't be read"); continue; }
+      try { rule = object(JSON.parse(line)); } catch { unread.push("a ruleset rule (its answer didn't parse)"); continue; }
       const id = rule["ruleset_id"], params = object(rule["parameters"]);
       const checks = names(params["required_status_checks"], "context");
-      if (!Number.isSafeInteger(id) || Number(id) <= 0 || checks === null) { missing.push("a ruleset rule couldn't be read"); continue; }
+      if (!Number.isSafeInteger(id) || Number(id) <= 0 || checks === null) { missing.push("a ruleset rule doesn't name its ruleset or required checks"); continue; }
       const where = `ruleset ${id}`;
       const got = await run(gh, ["api", "--hostname", "github.com", `repos/${repo}/rulesets/${id}`, "--jq", "{enforcement, target, current_user_can_bypass, bypass_actors} | @json"], { cwd: "/", env: ciEnv() });
       let set: Json | null = null;
       try { if (got.code === 0) set = object(JSON.parse(got.stdout)); } catch { set = null; }
-      if (set === null) { missing.push(`${where}: its settings couldn't be read`); continue; }
+      if (set === null) { unread.push(`${where}: its settings (${got.code === 0 ? "its answer didn't parse" : words(got)})`); continue; }
       const bypass: string[] = [];
       if (set["enforcement"] !== "active") bypass.push("it isn't active");
       if (set["target"] !== "branch") bypass.push("it doesn't target branches");
@@ -1102,14 +1155,20 @@ export async function readMainProtection(run: Exec, gh: string, repo: string, br
     const required = new Set(held.flat());
     return { effective: true, missing: [], notYetRequired: PROTECTION_REPORT_ONLY_CHECKS.filter(name => !required.has(name)) };
   }
-  if (read === 0) return null;
+  if (unread.length > 0) throw new ProtectionUnreadable(unread);
   if (missing.length === 0) missing.push("main has no branch protection or ruleset requiring status checks");
   return { effective: false, missing, notYetRequired: [] };
 }
 
+/** Main's protection couldn't be read from GitHub (after the network retries): not "doesn't hold", and never "holds". */
+export class ProtectionUnreadable extends Error {
+  constructor(readonly unread: readonly string[]) { super(`couldn't read GitHub's branch protection for main: ${unread.join("; ")}`); }
+}
+
 /** Whether main's protection holds, as a yes/no (release-auto.ts sealAutoGreen): null when it can't be read. */
 export async function readUpToDateRequired(run: Exec, gh: string, repo: string, branch = "main"): Promise<boolean | null> {
-  const protection = await readMainProtection(run, gh, repo, branch);
+  let protection: MainProtection | null;
+  try { protection = await readMainProtection(run, gh, repo, branch); } catch (error) { if (error instanceof ProtectionUnreadable) return null; throw error; }
   return protection === null ? null : protection.effective;
 }
 

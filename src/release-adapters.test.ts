@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { installUpdateGate } from "./desktop-update-gate.js";
-import { BRANCH_GONE_LOOKS, BRANCH_GONE_PAUSE_MS, bumpFormula, cliRuntimes, deployedRuntime, gateStateOf, githubSlug, releaseAdapters, serviceRuntimes, stageGate, workflowRunsOnChange, type Exec, type ReleaseRepo, type ReleaseTools } from "./release-adapters.js";
+import { BRANCH_GONE_LOOKS, BRANCH_GONE_PAUSE_MS, bumpFormula, cliRuntimes, deployedRuntime, gateStateOf, githubSlug, releaseAdapters, releaseAdapters as quietAdapters, serviceRuntimes, stageGate, workflowRunsOnChange, type Exec, type ReleaseRepo, type ReleaseTools } from "./release-adapters.js";
 import { openStore, type Database } from "./store.js";
 import { fakePid } from "../test/fake-pid.js";
 
@@ -356,6 +356,8 @@ describe("the release adapters", () => {
   });
 
   test("a tap whose workflows can't be listed stops; one it can't read counts as checked", async () => {
+    // A 5xx is asked again (release-net.ts) before it stops; no real pauses here.
+    const releaseAdapters = (options: Parameters<typeof quietAdapters>[0]) => quietAdapters({ ...options, sleep: async () => {} });
     const unlisted: Exec = async (_command, args) => args.includes("repos/ap9000/homebrew-toolroll") ? { code: 0, stderr: "", stdout: "main\n" } : { code: 1, stderr: "HTTP 502", stdout: "" };
     await expect(releaseAdapters({ checkout: "/rv", run: unlisted }).homebrew.checked(SHA)).rejects.toThrow(/listing .*workflows at/);
     const unreadable: Exec = async (_command, args) => {
