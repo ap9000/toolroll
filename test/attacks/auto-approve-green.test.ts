@@ -1140,7 +1140,8 @@ describe("codex r2 #1: main's protection holds only when it is effective and nob
     ["administrators exempt", (l: ReturnType<typeof P.live>) => ({ ...l, enforce_admins: { enabled: false } }), /"Do not allow bypassing the above settings" is off/],
     ["not up to date", (l: ReturnType<typeof P.live>) => ({ ...l, required_status_checks: { ...l.required_status_checks, strict: false } }), /"Require branches to be up to date before merging" is off/],
     ["status checks off", (l: ReturnType<typeof P.live>) => ({ ...l, required_status_checks: null }), /"Require status checks to pass before merging" is off/],
-    ["the bypass setting unreadable", (l: ReturnType<typeof P.live>) => ({ required_status_checks: l.required_status_checks }), /classic protection couldn't be read/],
+    // GitHub answered without the bypass setting: read, and not holding (a transport failure is ProtectionUnreadable, below).
+    ["the bypass setting missing from GitHub's answer", (l: ReturnType<typeof P.live>) => ({ required_status_checks: l.required_status_checks }), /classic protection: GitHub's answer doesn't say/],
   ])("classic: %s doesn't hold, and says exactly what", async (_name, change, words) => {
     const answer = await read(P.exec({ classic: P.json(change(P.live())) }));
     expect(answer?.effective).toBe(false);
@@ -1162,7 +1163,6 @@ describe("codex r2 #1: main's protection holds only when it is effective and nob
     ["its bypass list unreadable", () => P.rule(7, REQUIRED_PR_CHECKS), () => { const r = P.ruleset(); delete (r as Record<string, unknown>)["bypass_actors"]; return r; }, /bypass list couldn't be read/],
     ["whether the account bypasses unreadable", () => P.rule(7, REQUIRED_PR_CHECKS), () => P.ruleset({ current_user_can_bypass: undefined }), /couldn't be read/],
     ["evaluate mode", () => P.rule(7, REQUIRED_PR_CHECKS), () => P.ruleset({ enforcement: "evaluate" }), /isn't active/],
-    ["its settings unreadable", () => P.rule(7, REQUIRED_PR_CHECKS), null, /ruleset 7: its settings couldn't be read/],
   ])("ruleset (no classic protection): %s doesn't hold", async (_name, rule, set, words) => {
     const answer = await read(P.exec({ classic: P.notProtected, rules: { code: 0, stdout: `${rule()}\n` }, ruleset: id => set === null ? { code: 1, stdout: "", stderr: "HTTP 403" } : P.json({ ...set(), id }) }));
     expect(answer?.effective).toBe(false);
@@ -1175,11 +1175,13 @@ describe("codex r2 #1: main's protection holds only when it is effective and nob
     expect(answer).toEqual({ effective: true, missing: [], notYetRequired: [...PROTECTION_REPORT_ONLY_CHECKS] });
   });
 
-  test("no protection at all doesn't hold; nothing readable is null; a classic error never counts as unprotected", async () => {
+  test("no protection at all doesn't hold; a layer that couldn't be read is 'couldn't read GitHub', never unprotected and never holding", async () => {
     expect(await read(P.exec({ classic: P.notProtected }))).toEqual({ effective: false, missing: ["main has no branch protection or ruleset requiring status checks"], notYetRequired: [] });
-    expect(await read(P.exec({ classic: { code: 1, stdout: "", stderr: "HTTP 403" }, rules: { code: 1, stdout: "", stderr: "HTTP 500" } }))).toBeNull();
-    expect((await read(P.exec({ classic: { code: 1, stdout: "", stderr: "HTTP 403" } })))?.missing).toEqual(["classic protection couldn't be read"]);
-    expect((await read(P.exec({ classic: { code: 0, stdout: "not json" } })))?.effective).toBe(false);
+    await expect(read(P.exec({ classic: { code: 1, stdout: "", stderr: "HTTP 403" }, rules: { code: 1, stdout: "", stderr: "HTTP 500" } }))).rejects.toThrow(/couldn't read GitHub's branch protection for main: classic protection \(HTTP 403\); main's rulesets \(HTTP 500\)/);
+    await expect(read(P.exec({ classic: { code: 1, stdout: "", stderr: "HTTP 403" } }))).rejects.toThrow(/classic protection \(HTTP 403\)/);
+    await expect(read(P.exec({ classic: { code: 0, stdout: "not json" } }))).rejects.toThrow(/classic protection \(its answer didn't parse\)/);
+    // A ruleset's own settings that can't be read: couldn't read, not "doesn't hold".
+    await expect(read(P.exec({ classic: P.notProtected, rules: { code: 0, stdout: `${P.rule(7, REQUIRED_PR_CHECKS)}\n` }, ruleset: () => ({ code: 1, stdout: "", stderr: "HTTP 403" }) }))).rejects.toThrow(/ruleset 7: its settings \(HTTP 403\)/);
   });
 });
 

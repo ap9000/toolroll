@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.9.79 — 2026-10-29
+
+- **`toolroll release` rides out a short network failure instead of
+  stopping.** A read from GitHub or git (`gh api`, `gh pr list`,
+  `git ls-remote`, `git fetch`) that fails for a passing reason (no
+  connection, a name that didn't resolve, a timeout, a 5xx, an answer cut
+  short, GitHub's secondary rate limit) is asked again with backoff for up
+  to about three minutes, saying why once; then it stops with the original
+  error. A definitive answer (404, 401/403) is never asked again. A merge or
+  a tag is never sent twice blindly: after a lost answer the release reads
+  GitHub to learn whether it happened, and asks again only when it didn't.
+  When main's branch protection can't be read, the release now says
+  "Couldn't read GitHub's branch protection" instead of "main's protection
+  doesn't hold", and still stops.
+
 ## 0.9.78 — 2026-10-29
 
 - **Toolroll says when it is restarting.** The worker and console now record

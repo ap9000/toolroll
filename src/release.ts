@@ -38,6 +38,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { personProof } from "./person-proof.js";
 import { RELEASE_CI_RUNNING_WORDS as CI_RUNNING_WORDS } from "./release-ci-hold.js";
+import { transientFailure } from "./release-net.js";
 
 /** The pull-request checks a release waits for, by exact job name (.github/workflows/ci.yml). Every one must have
  * concluded `success` on the gated commit; src/ci-workflow.test.ts holds the workflow to this list. */
@@ -1345,13 +1346,16 @@ async function containsMain(adapters: ReleaseAdapters, j: ReleaseJournal, nothin
  * cannot make the final main read and merge atomic, so absent or unreadable protection stops that release too.
  */
 async function mainProtection(adapters: ReleaseAdapters, j: ReleaseJournal, auto: boolean, nothing: string): Promise<void> {
-  let protection: MainProtection | null;
-  try { protection = await adapters.github.upToDateRequired(j.github); } catch { protection = null; }
+  let protection: MainProtection | null, unread: string | null = null;
+  // Couldn't read (after the adapter's network retries) is its own stop, never "doesn't hold" and never "holds".
+  try { protection = await adapters.github.upToDateRequired(j.github); } catch (error) { protection = null; unread = String((error as Error)?.message ?? error).slice(0, 400); }
   // The git lanes main's protection doesn't name yet are said, never refused (PROTECTION_REPORT_ONLY_CHECKS).
   if (protection !== null && protection.notYetRequired.length > 0) adapters.say(`  Note: main's protection doesn't require ${protection.notYetRequired.join(", ")} yet; add ${protection.notYetRequired.length === 1 ? "it" : "them"} to its required checks.`);
   if (protection?.effective === true) return;
-  const lacking = protection === null ? "GitHub's branch protection for main couldn't be read" : `main's protection doesn't hold: ${protection.missing.join("; ")}`;
-  throw new Stop("base-unprotected", `${lacking}, so this release can't merge${auto ? " automatically" : ""}. ${nothing}. Restore effective main protection and try again.`);
+  if (protection === null) {
+    throw new Stop("github-unreadable", `Couldn't read GitHub's branch protection for main${unread === null ? "" : ` (${unread.replace(/^couldn't read GitHub's branch protection for main: /, "")})`}, so this release can't merge${auto ? " automatically" : ""}. ${nothing}. Run the release again once GitHub answers.`);
+  }
+  throw new Stop("base-unprotected", `main's protection doesn't hold: ${protection.missing.join("; ")}, so this release can't merge${auto ? " automatically" : ""}. ${nothing}. Restore effective main protection and try again.`);
 }
 
 /**
@@ -1390,18 +1394,17 @@ async function earlyChecks(adapters: ReleaseAdapters, j: ReleaseJournal, wait: <
   }
 }
 
-/** The network failures a release's waits ride out: git or gh timing out (or cut off) on the way to GitHub. */
-const TRANSIENT_NETWORK = /Recv failure: (?:Operation timed out|Connection reset by peer)|TLS handshake timeout|Operation timed out|Connection timed out|i\/o timeout|Connection reset by peer|Failed to connect to [^\s]*github\.com port \d+/i;
-
-/** A probe's failure that is only the network to GitHub being slow, never a decision (a Stop) or another error. */
+/** A probe's failure that is only the network to GitHub failing for now (release-net.ts transientFailure: a timeout, a
+ * connection or name failure, a 5xx, an answer cut short, a secondary rate limit), never a decision (a Stop), a
+ * definitive answer or another error. */
 export function transientNetworkError(error: unknown): boolean {
   if (error instanceof Stop || error instanceof Restart) return false;
-  return TRANSIENT_NETWORK.test(String((error as Error)?.message ?? error));
+  return transientFailure(String((error as Error)?.message ?? error)) !== null;
 }
 
 /** The part of a network failure worth saying: its matching phrase. */
 function networkWords(error: unknown): string {
-  return TRANSIENT_NETWORK.exec(String((error as Error)?.message ?? error))?.[0] ?? "a network failure";
+  return transientFailure(String((error as Error)?.message ?? error))?.words ?? "a network failure";
 }
 
 /**

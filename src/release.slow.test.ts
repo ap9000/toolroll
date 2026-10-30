@@ -565,10 +565,11 @@ describe("toolroll release", () => {
   });
 
   test("eval review 1 #4: a person's release also refuses absent or unreadable protection", async () => {
-    for (const upToDate of [false, null] as const) {
+    // Unreadable is its own stop ("couldn't read GitHub"), never "doesn't hold"; both stop before anything is filed.
+    for (const [upToDate, reason] of [[false, "base-unprotected"], [null, "github-unreadable"]] as const) {
       const { s, adapters } = world();
       s.upToDate = upToDate;
-      expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, reason: "base-unprotected" });
+      expect(await runRelease(options(stateDir()), adapters)).toMatchObject({ ok: false, reason, message: upToDate === null ? expect.stringMatching(/^Couldn't read GitHub's branch protection for main/) : expect.stringMatching(/^main's protection doesn't hold/) });
       expect(s.calls).not.toContain("fileGate");
       expect(s.calls).not.toContain("merge");
     }
