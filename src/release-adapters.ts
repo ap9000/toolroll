@@ -34,7 +34,7 @@ import { proveCarry, type BuildRunner } from "./release-carry.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { deploymentGate } from "./deploy-gate.js";
 import { extractCommit } from "./commit-extract.js";
-import { checkoutIncludes } from "./teardown-git.js";
+import { teardownGit, refusal as gitRefusal } from "./teardown-git.js";
 import { RELEASE_REMOTE, releaseConfigProblem, releaseGitArgs, releaseGitEnv, releaseRemote, releaseTools, type ReleaseRepo, type ReleaseTools } from "./release-git.js";
 export { RELEASE_PATH, RELEASE_REMOTE, releaseConfigProblem, releaseGitArgs, releaseGitEnv, releaseRemote, releaseTools, type ReleaseRepo, type ReleaseTools } from "./release-git.js";
 
@@ -265,8 +265,8 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
   const releaseRepo = (): ReleaseRepo => recorded ??= recordedReleaseRepo(database, checkout);
   /**
    * The coordinator's one way to run Git (§0a.2): on the recorded Git directory, hardened, with an allowlisted
-   * environment and the absolute Git. Before every command the checkout's own config is read with includes off and
-   * as plain files; one that includes a file, names a command or redirects a remote stops the release, naming it.
+   * environment and the absolute Git. Every attempt uses the shared runner's private view: the audited config is
+   * the exact copy Git reads, so a build cannot redirect a command after its config was checked.
    */
   const git = async (...args: string[]) => {
     const repo = releaseRepo();
@@ -277,12 +277,31 @@ export function releaseAdapters(options: AdapterOptions): ReleaseAdapters {
       const now = () => (options.now ?? (() => new Date()))().getTime();
       const started = now();
       const left = () => Math.min(120_000, remainingMs - Math.max(0, now() - started));
-      if (options.releaseRepo === undefined && checkoutIncludes(repo.checkout)) throw stop("its Git config includes another file, or couldn't be read as a plain file");
+      const checkConfig = (listing: ExecResult) => {
+        if (listing.code !== 0) throw stop("its Git config couldn't be read");
+        const setting = releaseConfigProblem(listing.stdout);
+        if (setting !== null) throw stop(`its Git config sets ${setting}, which a release doesn't run with (it could run a command, or change where Git connects or what it sends)`);
+      };
+      if (options.releaseRepo === undefined) {
+        // The shared runner pins both Git directories and freezes config/info in the plane's fenced view folder.
+        // Its private paths replace releaseGitArgs' first two directory flags; the recorded remote stays fixed.
+        const viewed = teardownGit(async (_command, argv, runOptions) => {
+          const timeoutMs = left();
+          if (timeoutMs <= 0) return { code: 124, stdout: "", stderr: "the network retry budget ran out", timedOut: true, notFound: false };
+          const env = { ...gitEnv, ...Object.fromEntries(["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE"].map(key => [key, runOptions?.env?.[key]])) };
+          const result = await run(tools.git, argv, { cwd: repo.checkout, env, timeoutMs });
+          if (argv.includes("config")) checkConfig(result);
+          return { ...result, timedOut: result.code === 124, notFound: result.code === 127 };
+        }, { repo: repo.checkout }, Math.max(0, left()), tools.git);
+        const result = await viewed(repo.checkout, full.slice(2));
+        const why = gitRefusal(result);
+        if (why !== null) throw stop(why);
+        return result;
+      }
+      // Injected repository/exec fixtures have no on-disk checkout, but exercise the same config policy per attempt.
       if (left() <= 0) return { code: 124, stdout: "", stderr: "the network retry budget ran out" };
       const listing = await run(tools.git, [`--git-dir=${repo.gitDir}`, "--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], { cwd: "/", env: gitEnv, timeoutMs: left() });
-      if (listing.code !== 0) throw stop("its Git config couldn't be read");
-      const setting = releaseConfigProblem(listing.stdout);
-      if (setting !== null) throw stop(`its Git config sets ${setting}, which a release doesn't run with (it could run a command, or change where Git connects or what it sends)`);
+      checkConfig(listing);
       if (left() <= 0) return { code: 124, stdout: "", stderr: "the network retry budget ran out" };
       return run(tools.git, full, { cwd: repo.checkout, env: gitEnv, timeoutMs: left() });
     };

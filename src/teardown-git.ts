@@ -200,7 +200,7 @@ function nestedRepository(path: string): boolean {
  * repository (boundDirs; `binding.repo` when the caller has the project's), is refused; so is a command whose
  * repository changed under it while git ran.
  */
-async function inView(cwd: string, binding: GitBinding, work: (view: GitView, restore: (result: ExecResult, args: readonly string[]) => ExecResult) => Promise<ExecResult>, after = true): Promise<ExecResult> {
+async function inView(cwd: string, binding: GitBinding, work: (view: GitView, restore: (result: ExecResult, args: readonly string[]) => ExecResult) => Promise<ExecResult>, after = true, lockTimeoutMs?: number, gitFile = "git"): Promise<ExecResult> {
   const root = checkoutRootOf(cwd);
   if (root === null) return NOT_A_REPOSITORY;
   // One plane git command at a time on a checkout (git-views.ts withCheckoutLock: re-entrant along one call chain).
@@ -209,14 +209,14 @@ async function inView(cwd: string, binding: GitBinding, work: (view: GitView, re
   try {
     return await withCheckoutLock(realpathSync(homedir()), key, async () => {
       let view: GitView;
-      try { view = gitView(root, "write", binding); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
+      try { view = gitView(root, "write", binding, gitFile); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
       try {
         const result = await work(view, (result, args) => ({ ...result, stdout: view.restore(result.stdout, args), stderr: view.restore(result.stderr, args) }));
         if (!after) return result;
         const why = view.settle();
         return why === null ? result : refused(why);
       } finally { view.dispose(); }
-    });
+    }, lockTimeoutMs);
   } catch (error) { return refused(error instanceof Error ? error.message : "the checkout is busy"); }
 }
 
@@ -227,11 +227,11 @@ async function inView(cwd: string, binding: GitBinding, work: (view: GitView, re
  * target is bound to the same repository as the folder it is removed from. A removal without --force runs under the
  * target's own view (its own config.worktree folded in), so git's last check of whether it is clean reads it as the
  * target itself would. `binding.repo`: the project's main checkout, from the plane's records, when the caller has it. */
-export function teardownGit(runner: Runner = run, binding: GitBinding = {}): Git {
+export function teardownGit(runner: Runner = run, binding: GitBinding = {}, lockTimeoutMs?: number, gitFile = "git"): Git {
   const options = (cwd: string, env: Record<string, string>) => ({ cwd, envAllowlist: ENV_ALLOWLIST, env: { ...ENV, ...env }, timeoutMs: WORKTREE_TIMEOUT_MS, maxBuffer: 512 * 1024 * 1024 });
   const configProblem = async (cwd: string, env: Record<string, string>): Promise<ExecResult | null> => {
     // git-lfs's own filters may stand only beside a .lfsconfig that names no extension (commandSetting's lfsChecked).
-    if (lfsExtensionIn(env["GIT_WORK_TREE"] ?? cwd)) return refused("the checkout's .lfsconfig sets a git-lfs key that can run a command");
+    if (lfsExtensionIn(env["GIT_WORK_TREE"] ?? cwd, gitFile)) return refused("the checkout's .lfsconfig sets a git-lfs key that can run a command");
     const config = await runner("git", ["--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], options(cwd, env));
     if (config.code !== 0) return refused("its config couldn't be read");
     const key = commandSetting(config.stdout, { lfsChecked: true });
@@ -269,8 +269,8 @@ export function teardownGit(runner: Runner = run, binding: GitBinding = {}): Git
       // the target's view, inspected above, so it judges the target by the target's own settings.
       return ran(removal && !forced ? { ...view.env, GIT_COMMON_DIR: targetView.env["GIT_COMMON_DIR"]! } : view.env);
       // A removed target has no git directory left to prove: the folder it was removed from is proven instead.
-    }, !removal);
-  });
+    }, !removal, lockTimeoutMs, gitFile);
+  }, true, lockTimeoutMs, gitFile);
 }
 
 /**
