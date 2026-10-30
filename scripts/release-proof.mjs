@@ -177,6 +177,12 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
     const head = pr?.head?.sha;
     const headCommit = SHA.test(head ?? "") ? await api(`repos/${repo}/git/commits/${head}`) : null;
     if (!SHA.test(head ?? "") || !Number.isSafeInteger(pr.number) || pr.number < 1) throw new Error("no pull request head or number");
+    // One parent alone also describes the last commit of a multi-commit rebase. A squash adds exactly one commit,
+    // whose parent was already in the tested head's history (the release coordinator requires an up-to-date head).
+    const comparison = await api(`repos/${repo}/compare/${head}...${sha}`);
+    if (comparison?.base_commit?.sha !== head || comparison?.ahead_by !== 1
+      || !SHA.test(commit?.parents?.[0]?.sha ?? "") || comparison?.merge_base_commit?.sha !== commit.parents[0].sha
+      || !Array.isArray(comparison.commits) || comparison.commits.length !== 1 || comparison.commits[0]?.sha !== sha) throw new Error("not a single squash commit on the tested head's ancestry");
     const runsPath = `repos/${repo}/actions/runs?head_sha=${head}`;
     const runs = await pages(runsPath, "workflow_runs", "id");
     const jobs = new Map();

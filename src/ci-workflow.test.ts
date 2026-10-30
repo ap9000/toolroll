@@ -528,6 +528,7 @@ describe("test-matrix: the release proof (scripts/release-proof.mjs)", () => {
       [`git/commits/${TAG}`]: [{ body: w.commit }],
       [`commits/${TAG}/pulls?page=1`]: [{ body: w.pulls }],
       [`git/commits/${HEAD}`]: [{ body: w.headCommit }],
+      [`compare/${HEAD}...${TAG}`]: [{ body: { base_commit: { sha: HEAD }, merge_base_commit: { sha: w.commit.parents[0]!.sha }, ahead_by: 1, commits: [{ sha: TAG }] } }],
       ["issues/258/timeline?page=1"]: [{ body: [] }],
       [`actions/runs?page=1`]: [{ body: { total_count: w.runs.length, workflow_runs: w.runs } }],
       ...Object.fromEntries([...w.jobs].map(([id, jobs]) => [`actions/runs/${id}/attempts/1/jobs?page=1`, [{ body: { total_count: jobs.length, jobs: jobs.map((job, at) => ({ id: id * 100 + at, ...job })) } }]])),
@@ -555,6 +556,13 @@ globalThis.fetch = async (url, options) => {
   };
   test.each([
     ["all required jobs on the newest attempt", (_: Replies) => {}, true],
+    ["a rebase introduced several commits on main, not one squash", (r: Replies) => {
+      r[`compare/${HEAD}...${TAG}`] = [{ body: { base_commit: { sha: HEAD }, merge_base_commit: { sha: "d".repeat(40) }, ahead_by: 2, commits: [{ sha: TREE }, { sha: TAG }] } }];
+    }, false],
+    ["the tested head did not contain the merge's parent", (r: Replies) => {
+      r[`compare/${HEAD}...${TAG}`] = [{ body: { base_commit: { sha: HEAD }, merge_base_commit: { sha: TREE }, ahead_by: 1, commits: [{ sha: TAG }] } }];
+    }, false],
+    ["the ancestry API errors", (r: Replies) => { r[`compare/${HEAD}...${TAG}`] = [{ status: 500 }]; }, false],
     ["a retargeted PR can expose a weaker base verifier", (r: Replies) => { r["issues/258/timeline?page=1"] = [{ body: [{ event: "base_ref_changed" }] }]; }, false],
     ["the PR timeline is unreadable", (r: Replies) => { r["issues/258/timeline?page=1"] = [{ status: 403 }]; }, false],
     ["the run list errors", (r: Replies) => { r["actions/runs?page=1"] = [{ status: 500 }]; }, false],
