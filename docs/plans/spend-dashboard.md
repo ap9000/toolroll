@@ -480,3 +480,17 @@ and phone journey with its failure states.
 | D1–D8 | Codex's views | D1, D2, D6, D7, D8 agreed; D3 changed to the matrix; D4 simplified to operator-only; D5 given to the owner with both options | Owner decisions table |
 
 No findings were rejected.
+
+## Review round 2 (Codex, GO-with-changes): what slice 1 folded in
+
+| # | Finding (slice 1 part) | Where |
+|---|---|---|
+| 1 | Disclosures ship with slice 1 | "Not counted here" on the Spend page: task sizing (Claude and OpenRouter), memory checks, coding sessions in Code, failed flow drafts, Sort steps that failed before saving an answer |
+| 3 | A guessed-subscription zero is no evidence of zero spend | `spendRows` derives chat charges from billing evidence: a harness request's reported cost when its events say key or say nothing; a direct request's settlement |
+| 10 | A run with `cost_unknown` holds its cap as `cost_usd`, settled as "reported" | Its saved charge reads **estimated**, whatever `run_spend.source` says |
+| N1 | Auth mode is not billing evidence | A run's billing is proved only by `billing_basis = evidence`; a chat's by `billing_reported`; machine-default stamps and the login mode are **not proved**, never subscription |
+| N3 | A lead turn's held reservation | Each request keeps its own charge; whatever the turn settled beyond them is one more row, an estimate on the turn, counted once |
+
+Slice 1 reads only. `spendItems`, `budgetStates`, the gate and the alerts are unchanged: moving them onto `spendRows`
+changes what a limit counts, so it ships with slice 2 and its matrix. The command line's `spend --csv` keeps its
+columns; the page's CSV is the new one.
