@@ -1,0 +1,24 @@
+{
+  "id": "math-multiply",
+  "kind": "build",
+  "title": "Add multiply, keep subtract",
+  "goal": "Add multiply(a, b) to src/math.js with its own test in test/math.test.js. Keep add and subtract exactly as they work now.",
+  "touches": [
+    "src/math.js",
+    "test/math.test.js"
+  ],
+  "pin": {
+    "provider": "claude",
+    "model": "claude-sonnet-4-5-20250929"
+  },
+  "capUsd": 0.75,
+  "maxDispatches": 2,
+  "timeoutMinutes": 15,
+  "grade": {
+    "files": [
+      "src/math.js"
+    ]
+  },
+  "expected": "pass",
+  "validatedBy": null
+}

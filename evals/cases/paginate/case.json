@@ -1,0 +1,24 @@
+{
+  "id": "paginate",
+  "kind": "build",
+  "title": "Fix paginate",
+  "goal": "Fix paginate(items, offset, limit) in paginate.js: offset defaults to 0 and limit defaults to 10, a zero limit returns [], a negative offset is clamped to zero, and it returns a slice without mutating items.",
+  "touches": [
+    "paginate.js",
+    "test/paginate.test.mjs"
+  ],
+  "pin": {
+    "provider": "claude",
+    "model": "claude-sonnet-4-5-20250929"
+  },
+  "capUsd": 0.75,
+  "maxDispatches": 2,
+  "timeoutMinutes": 15,
+  "grade": {
+    "files": [
+      "paginate.js"
+    ]
+  },
+  "expected": "pass",
+  "validatedBy": null
+}

@@ -10,6 +10,7 @@
  * are still interpreted and executed by lead.ts, where every act remains a
  * proposal that needs a human confirmation card.
  */
+import { takeEvalDispatch } from "./eval-gate.js";
 import { Buffer } from "node:buffer";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -243,6 +244,12 @@ export async function performSubscriptionLeadRequest(
   request: SubscriptionLeadRequest,
   runner: CommandRunner = run,
 ): Promise<{ ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string }> {
+  // An eval world (eval-gate.ts): each request takes one of the attempt's dispatch slots and runs under its cap; Codex
+  // can't hold a dollar cap there, and past the limit nothing is sent ("status-": nothing billed).
+  const evalSlot = takeEvalDispatch(`chat:${request.provider}`);
+  if (evalSlot.active && !evalSlot.ok) return { ok: false, problem: "status-eval-dispatch-limit" };
+  if (evalSlot.active && request.provider === "codex-subscription") return { ok: false, problem: "status-eval-uncapped" };
+  const evalCap = evalSlot.active && evalSlot.ok ? ["--max-budget-usd", String(evalSlot.capUsd)] : [];
   const dir = mkdtempSync(join(tmpdir(), "standing-orders-mate-"));
   try {
     const prompt = composeSubscriptionLeadPrompt(request);
@@ -270,7 +277,7 @@ export async function performSubscriptionLeadRequest(
         // Streaming (someone is watching): the same answer, delivered as
         // events whose final `result` line is the whole structured reply.
         "-p", ...(streaming ? ["--output-format", "stream-json", "--verbose", "--include-partial-messages"] : ["--output-format", "json"]), "--json-schema", JSON.stringify(schema),
-        ...CLAUDE_NO_TOOLS_ARGS, ...claudeModelArgs(request.model),
+        ...CLAUDE_NO_TOOLS_ARGS, ...claudeModelArgs(request.model), ...evalCap,
       ];
     }
     const result = await runner(command, args, {

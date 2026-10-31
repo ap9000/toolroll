@@ -156,6 +156,7 @@ export function parseArgs(argv: readonly string[]): ParseResult {
 /** The commands that operate the queue rather than report on the world. */
 export const OPERATE_COMMANDS = new Set([
   "up",
+  "evals",
   // Only `lead token` reaches here; the central service's lead verbs answer first.
   "lead",
   "onboard",

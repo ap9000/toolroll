@@ -106,6 +106,7 @@
   },
   "files": [
     "dist",
+    "evals",
     "CHANGELOG.md",
     "scripts/provider-canary.mjs",
     "scripts/canary-assertions.mjs",

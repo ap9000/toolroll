@@ -1,0 +1,26 @@
+{
+  "id": "catalog",
+  "kind": "build",
+  "title": "Add slug and catalog",
+  "goal": "Add slug.js exporting slug(text): trim and lowercase ASCII text and collapse every run of non-alphanumeric characters to one hyphen, with no hyphen at either end. Add catalog.js exporting catalog(titles): return { title, slug } records in order, and throw an Error when two titles give the same slug.",
+  "touches": [
+    "slug.js",
+    "catalog.js",
+    "test/catalog.test.mjs"
+  ],
+  "pin": {
+    "provider": "claude",
+    "model": "claude-sonnet-4-5-20250929"
+  },
+  "capUsd": 0.75,
+  "maxDispatches": 2,
+  "timeoutMinutes": 15,
+  "grade": {
+    "files": [
+      "slug.js",
+      "catalog.js"
+    ]
+  },
+  "expected": "pass",
+  "validatedBy": null
+}

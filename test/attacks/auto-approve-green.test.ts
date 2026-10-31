@@ -600,6 +600,16 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
     [".npmrc", "registry=https://example.invalid\n"],
     ["CLAUDE.md", "# anything\n"],
     ["Makefile", "all:\n"],
+    // The eval set's and GitHub nightly's policy code (evals-nightly.md, C1): cases, oracles, the evaluator, reviewer
+    // scoring, nightly ingestion and their contracts.
+    ["evals/manifest.json", "{}\n"],
+    ["evals/cases/paginate/oracle.mjs", "export const files = [];\n"],
+    ["src/evals.ts", "export {};\n"],
+    ["src/eval-oracle.ts", "export {};\n"],
+    ["src/eval-hooks.ts", "export const EVAL_HOOKS = [];\n"],
+    ["src/reviewer-evals.ts", "export {};\n"],
+    ["src/nightly-github.ts", "export {};\n"],
+    ["src/contracts/evals-report.ts", "export {};\n"],
   ])("%s changed: a person approves", (path, text) => {
     const f = open({ candidate: { [path]: text } });
     authorize(f);
@@ -614,6 +624,29 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
     const f = open({ candidate: files });
     authorize(f);
     expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("beyond its version") });
+  });
+
+  // The calls into eval and nightly policy (eval-hooks.ts): a candidate that drops or moves one the base holds needs a
+  // person; one that keeps it ships. A project whose base holds none is held to none.
+  const leadRequest = (body: string) => `export async function performLeadRequest(request) {\n${body}\n  return request;\n}\nexport function other() {\n  return 1;\n}\n`;
+  test.each([
+    ["the call removed", leadRequest("  const kept = 1;")],
+    ["the call left only in a comment", leadRequest("  // takeEvalDispatch(`lead`);")],
+    ["the call left only in a string", leadRequest("  const words = \"takeEvalDispatch(`lead`)\";")],
+    ["the call moved to another function", "export async function performLeadRequest(request) {\n  return request;\n}\nexport function other() {\n  takeEvalDispatch(`lead`);\n}\n"],
+    ["the function renamed", leadRequest("  takeEvalDispatch(`lead`);").replace("performLeadRequest", "performRequest")],
+    ["the file deleted", null],
+  ])("an enforcement hook with %s: a person approves", (_name, text) => {
+    const f = open({ files: { "src/converse.ts": leadRequest("  takeEvalDispatch(`lead`);") }, candidate: { "src/converse.ts": text } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("src/converse.ts") });
+  });
+
+  test("an enforcement hook kept in place ships with the change around it", () => {
+    const f = open({ files: { "src/converse.ts": leadRequest("  takeEvalDispatch(`lead`);") }, candidate: { "src/converse.ts": leadRequest("  takeEvalDispatch(`lead`);\n  const more = 2;") } });
+    authorize(f);
+    const sealed = seal(f, check(f));
+    expect(sealed.ok ? "" : sealed.why).toBe("");
   });
 
   test("a version bump of package.json and the lockfile, product code, its tests and docs ship", () => {

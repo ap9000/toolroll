@@ -17,7 +17,8 @@
  * `invokeAgent`.
  */
 
-import { adapterFor, auditOf, claudePluginEnv, isolationUnsupported, ALL_CREDENTIAL_ENV, type AgentSpec, type Invocation, type ProviderRunner, type AgentEnding } from "./provider.js";
+import { takeEvalDispatch } from "./eval-gate.js";
+import { adapterFor, auditOf, claudePluginEnv, isolationUnsupported, MONEY_CAPABILITIES, ALL_CREDENTIAL_ENV, type AgentSpec, type Invocation, type ProviderRunner, type AgentEnding } from "./provider.js";
 import { readProviderKey, readAuthModeStrict, PROVIDER_KEY_ENV, OWN_KEY_ENV, type AuthMode } from "./keys.js";
 import { ACP_AGENTS, isAcpProvider, isKeyedProvider, type AcpProviderId } from "./acp-agents.js";
 import { launchFromJson, verifyLaunch } from "./acp-attest.js";
@@ -250,6 +251,18 @@ export async function invokeAgent(
     throw new Error(
       `run ${runId} already records session ${recordedSessionId} but this invocation neither resumes nor starts under it`,
     );
+  }
+
+  // An eval world (eval-gate.ts, docs/plans/evals-nightly.md part C): every dispatch takes one of the attempt's slots
+  // and runs under its cap, carved from the campaign's reservation; past the limit, or on a provider that can't hold a
+  // dollar cap, nothing spawns. Outside an eval world this changes nothing.
+  const evalSlot = takeEvalDispatch(`run:${runId}`);
+  if (evalSlot.active) {
+    if (!evalSlot.ok) return { kind: "refused", reason: "containment", providerVersion: null, diagnostic: evalSlot.why };
+    if (MONEY_CAPABILITIES[spec.provider].nativeDollarCapFlag === null) {
+      return { kind: "refused", reason: "containment", providerVersion: null, diagnostic: `${spec.provider} can't hold a dollar cap, so it doesn't run in an eval world (budget-unenforceable)` };
+    }
+    invocation = { ...invocation, maxBudgetUsd: Math.min(invocation.maxBudgetUsd ?? evalSlot.capUsd, evalSlot.capUsd) };
   }
 
   const adapter = adapterFor(spec.provider);

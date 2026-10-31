@@ -20,6 +20,7 @@
  * cannot be spoken to — the reservation math would be fiction.
  */
 
+import { takeEvalDispatch } from "./eval-gate.js";
 import { TASK_TEXT_LIMITS } from "./task-text.js";
 import { createHash } from "node:crypto";
 import { hasForbiddenControls, hasDisguisedText } from "./decision.js";
@@ -653,6 +654,10 @@ export async function performLeadRequest(
   signal: AbortSignal,
   fetcher: typeof fetch = fetch,
 ): Promise<{ ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string }> {
+  // An eval world (eval-gate.ts): each request takes one of the attempt's dispatch slots; its dollars are bounded by the
+  // lead turn's reservation, which lead.ts holds to the slots left × the cap. Past the limit nothing is sent.
+  const evalSlot = takeEvalDispatch(`lead:${provider}`);
+  if (evalSlot.active && !evalSlot.ok) return { ok: false, problem: "status-eval-dispatch-limit" };
   let response: Response;
   try {
     response = await fetcher(request.url, { method: "POST", headers: request.headers, body: request.body, redirect: "error", signal });

@@ -910,3 +910,60 @@ Where the build took the safer or more concrete reading of this plan, recorded a
   unknown (no billing, unpriced, or a chat request with unknown spend). They are never added together.
 - Not covered, and unknown: a failed chat request keeps no report (the harness's answer is never parsed when the
   request fails); Codex, Gemini and ACP runs report no exact model, so a run on them is never evaluated under a pin.
+
+**C1 (v141).**
+- Schema: v141 makes all six tables the plan names for C1 and C2 at once (they share the version). Beyond the plan's
+  columns: `eval_campaign.kind` (eval or reviewer: one shared ledger), `sealed_json`, `started_by`/`started_proof`,
+  `why`, `month`, `reserved_microusd`/`carved_microusd`/`settled_microusd`, `released`; `eval_attempt.carved_microusd`,
+  `started_at`/`finished_at`; `eval_invocation` unique per (attempt, world_ref). `eval_attempt.replaces` is NOT NULL,
+  0 for an original: SQLite treats NULLs as distinct, so a nullable column would let two originals land under the
+  unique identity. One running campaign per kind (a partial unique index).
+- Validation (the plan names no record for it): `case.json` carries `expected` and `validatedBy` (null: a draft), the
+  same shape as part D's `labels.json`. A person sets it in a release they approve (`evals/` needs a person). A
+  canonical campaign is refused while any case is a draft; a diagnostic one runs drafts. Setting it changes the case's
+  version, so a validated case starts its own history. **All ten C1 cases ship as drafts**: no canonical campaign can
+  run until the owner validates them.
+- Every campaign, diagnostic too, needs exact model pins (claude only: the one provider here that holds a dollar cap
+  and reports its exact model). The drafted pin is `claude-sonnet-4-5-20250929` (Decision 3), for the owner to confirm.
+  Starting a campaign needs a person's password (it spends money); a lead token or remote run is refused.
+- Fixtures are plain files (`fixture/`), not a git bundle: they read in the diff a person approves, and the world makes
+  its own repository from them as the pilot does (scripts/pilot.mjs). Sources: the real-model pilot's fixed assignments
+  (scripts/fixtures/pilot-scenarios.mjs) and the app-e2e journeys. The plane database's own failure history wasn't read
+  in this build. The first ten are nine small builds and one stop-and-ask; repair, planner and lead cases (their world
+  drivers and plane-state grading) come with C2.
+- Oracle: the case's `oracle.mjs` holds the hidden inputs and answers (pure functions); the harness (src/eval-oracle.ts,
+  run as its own process from src/eval-oracle-main.ts) copies in, fences, sends the nonce and compares. The launcher is
+  the case's `probe.mjs`, copied from the installed case. The fence is the release check's (`fenceFor("check")`,
+  writes only the grading folder, a proxy that allows no host) and also denies the installed `evals/`. A world's builds
+  can't read the hidden checks either: the world's project read-denies the installed `evals/` and the plane's state
+  folder.
+- Process tree: the attempt child runs in its own process group; the runner waits for its exit, its group and every
+  descendant the process-tree observer saw (30 s). A tree that won't end is stopped and the attempt is an error, never
+  graded. Not covered: a descendant that leaves for a new session within one 500 ms observation is not seen.
+- Errors only where the plane recorded them: the world failed before the agent started (the child says so AND the
+  world's database shows no provider started), a refused run before any start, the oracle failing, the world's records
+  unreadable, processes that wouldn't end, a dispatch without a gate slot. Crash, timeout and asking past the limit are
+  fails.
+- The dispatch gate (src/eval-gate.ts): TOOLROLL_EVAL_GATE names a folder beside the world's database (which agents'
+  fences deny); slots are exclusive creates; asking past the limit is remembered. invokeAgent refuses past the limit or
+  on a provider that can't hold a cap as `containment` (no new refusal reason); subscription lead requests run with
+  `--max-budget-usd` (Codex refused); direct lead requests take a slot, and lead.ts holds the turn's reservation to the
+  slots left × the cap; task sizing, flow drafts and subagent turns, which keep no record, refuse in an eval world.
+- Settlement: each attempt carves its dispatch limit × cap from the campaign's reservation (never the month again);
+  each dispatch settles at its API cost (subscription work: 0 API dollars, its reported cost kept apart as usage),
+  unknown, unrecorded or ungated ones at the cap; the rest of the carve, and at the end the rest of the campaign's
+  reservation, is released. The $200 ceiling is a constant in src/evals.ts (changing it needs a person).
+- The hook manifest (src/eval-hooks.ts) is checked by release-auto.ts `changeProblem` over verified blobs. Only hooks the
+  base holds are required, so other projects are held to none and a candidate can't opt out by deleting a file (the
+  base is the plane's record). It proves the call is in its function, not that it is reached (dead code passes); a
+  person reviewing these files stays the backstop. `src/evals*.ts` as a policy path includes its tests.
+- The provider gate's runtime part is ported as `limiter` and the slot folder; the pgrep session count isn't (nothing at
+  run time uses it).
+- Worlds are made beside the plane's state folder (`toolroll-eval-worlds/<campaign>/`), never inside it, since a world's
+  builds read-deny the plane's state. A world's own state folder is named `toolroll`, so every agent fence in the world
+  denies it whole (its database, its worker's token and the dispatch gate).
+- Open: the world driver (src/eval-world.ts) follows the pilot's CLI choreography. A by-hand smoke run with a stub
+  `claude` that refuses everything (no model call) got through the whole world start to the builder's dispatch, which
+  took a gate slot and was refused before any spawn (an error, as it should be). A build all the way through needs the
+  scripted-provider journey or a first diagnostic campaign; whether a world's standard mode adds an automatic review
+  dispatch (past a build's limit of 2) shows there.

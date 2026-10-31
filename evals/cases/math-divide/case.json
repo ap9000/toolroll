@@ -1,0 +1,24 @@
+{
+  "id": "math-divide",
+  "kind": "build",
+  "title": "Add a divide function",
+  "goal": "Add divide(a, b) to src/math.js, keeping add: it returns a divided by b and throws an Error on division by zero. Add tests for both in test/math.test.js.",
+  "touches": [
+    "src/math.js",
+    "test/math.test.js"
+  ],
+  "pin": {
+    "provider": "claude",
+    "model": "claude-sonnet-4-5-20250929"
+  },
+  "capUsd": 0.75,
+  "maxDispatches": 2,
+  "timeoutMinutes": 15,
+  "grade": {
+    "files": [
+      "src/math.js"
+    ]
+  },
+  "expected": "pass",
+  "validatedBy": null
+}

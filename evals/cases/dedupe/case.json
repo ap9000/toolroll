@@ -1,0 +1,24 @@
+{
+  "id": "dedupe",
+  "kind": "build",
+  "title": "Fix dedupe",
+  "goal": "Fix dedupe(rows) in dedupe.js: keep the first row for each exact id, preserve first-occurrence order, treat numeric and string ids as different, return a new array and never mutate the input.",
+  "touches": [
+    "dedupe.js",
+    "test/dedupe.test.mjs"
+  ],
+  "pin": {
+    "provider": "claude",
+    "model": "claude-sonnet-4-5-20250929"
+  },
+  "capUsd": 0.75,
+  "maxDispatches": 2,
+  "timeoutMinutes": 15,
+  "grade": {
+    "files": [
+      "dedupe.js"
+    ]
+  },
+  "expected": "pass",
+  "validatedBy": null
+}

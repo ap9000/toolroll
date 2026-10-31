@@ -1,0 +1,24 @@
+{
+  "id": "merge-config",
+  "kind": "build",
+  "title": "Fix mergeConfig",
+  "goal": "Revise mergeConfig(base, overrides) in config.js: start from a shallow copy of base, apply every defined override including 0 and false, delete each key whose override is null, ignore overrides that are undefined, and never mutate either argument. Keep the mergeConfig export.",
+  "touches": [
+    "config.js",
+    "test/config.test.mjs"
+  ],
+  "pin": {
+    "provider": "claude",
+    "model": "claude-sonnet-4-5-20250929"
+  },
+  "capUsd": 0.75,
+  "maxDispatches": 2,
+  "timeoutMinutes": 15,
+  "grade": {
+    "files": [
+      "config.js"
+    ]
+  },
+  "expected": "pass",
+  "validatedBy": null
+}
