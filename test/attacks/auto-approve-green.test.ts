@@ -700,8 +700,14 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
     ["the store's prototype swapped", "Object.setPrototypeOf(store, {});"],
     ["reached through __proto__", "const proto = store.__proto__;"],
     ["reached through an aliased class", "const methods = StoreAlias.prototype;"],
+    // Security scan round 2: renamed or wrapped tools, a subclass, and a member of a pinned name.
+    ["defined through a destructured, renamed defineProperty", "const { defineProperty: d } = Object;\nd(target, key, { value() {} });"],
+    ["set through an alias of Reflect", "const R = Reflect;\nR.set(target, key, () => undefined);"],
+    ["wrapped in a Proxy", "return new Proxy(store, { get: (t, k) => (k === key ? () => undefined : t[k]) });"],
+    ["replaced by a subclass", "class Quiet extends Store {}\nreturn Quiet;"],
+    ["shadowed by an object member of a pinned name", "return { ...store, settleRunSpend() {} };"],
   ])("a pinned Store method %s from another file: a person approves", (_name, code) => {
-    const f = open({ candidate: { "src/hijack.ts": `export function hijack(store, target) {\n${code}\n}\n` } });
+    const f = open({ candidate: { "src/hijack.ts": `export function hijack(store, target, key, Store) {\n${code}\n}\n` } });
     authorize(f);
     expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("src/hijack.ts could write over a pinned Store method") });
   });

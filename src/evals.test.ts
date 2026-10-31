@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { performChatRequest, performLeadRequest } from "./converse.js";
 import { defaultAnalyzer } from "./memory-pass.js";
-import { evalHookProblem } from "./eval-hooks.js";
+import { evalHookProblem, storeRewriteProblem } from "./eval-hooks.js";
 import { EVAL_GATE_ENV, evalGateSlots, inEvalWorld, openEvalGate, takeEvalDispatch } from "./eval-gate.js";
 import {
   abandonEvalCampaign, admitEvalCampaign, campaignSpending, EVALS_ROOT, exactModelProblem, installedBuildDigest, loadEvalSet, planCampaign, processStartOf, recoverEvalCampaigns, runEvalAttempt,
@@ -71,6 +71,21 @@ describe("the shipped eval set", () => {
   test("every listed enforcement hook is in place in this tree (a release that drops one needs a person)", () => {
     const root = join(EVALS_ROOT, "..");
     expect(evalHookProblem(file => { try { return readFileSync(join(root, file)); } catch { return null; } })).toBeNull();
+  });
+
+  test("a changed file's Store rewrites are compared whole, and a read that fails is never a deletion (PR #263 security scan)", () => {
+    const file = (text: string) => (path: string) => path === "src/a.ts" ? Buffer.from(text) : null;
+    const long = "k".repeat(240);
+    const write = (suffix: string) => `export function f(store) {\n  store[${long}${suffix}] = 1;\n}\n`;
+    // The same rewrite the base already had ships; one alike in its first 200 characters but not after needs a person.
+    expect(storeRewriteProblem(["src/a.ts"], file(write("1")), file(write("1")))).toBeNull();
+    expect(storeRewriteProblem(["src/a.ts"], file(write("2")), file(write("1")))).toMatch(/could write over a pinned Store method/);
+    // A tree that couldn't be read, or a changed file with no bytes, is a problem: a person decides.
+    expect(storeRewriteProblem(["src/a.ts"], null, file(write("1")))).toMatch(/can't be read/);
+    expect(storeRewriteProblem(["src/a.ts"], file(write("1")), null)).toMatch(/can't be read/);
+    expect(storeRewriteProblem(["src/b.ts"], file(write("1")), file(write("1")))).toMatch(/src\/b\.ts can't be read/);
+    // Nothing scanned (no JavaScript or TypeScript changed): nothing to read.
+    expect(storeRewriteProblem(["docs/a.md"], null, null)).toBeNull();
   });
 
   test("a link or an unlisted folder in the eval set refuses the whole set", () => {

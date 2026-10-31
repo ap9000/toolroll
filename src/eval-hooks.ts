@@ -21,6 +21,7 @@
  * the call is in its function, not that it is reached (a call behind `if (false)` still reads as present); a person
  * reviewing a change to these files remains the backstop.
  */
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import type ts from "typescript-parser";
 
@@ -288,6 +289,8 @@ export const EVAL_HOOK_FILES: readonly string[] = Object.freeze([...new Set([...
 const BUILTIN_CLASSES = new Set(["Object", "Array", "Function", "String", "Number", "Boolean", "Symbol", "BigInt", "Map", "Set", "WeakMap", "WeakSet", "Promise",
   "Error", "TypeError", "RangeError", "RegExp", "Date", "Buffer", "Uint8Array", "ArrayBuffer", "DataView", "URL", "Headers", "Response", "Request", "EventTarget"]);
 const STOREISH = /(^|[^a-z])store|Store|prototype|__proto__/;
+/** Names whose every new mention in a changed file needs a person: the ways to define, reflect on or wrap an object. */
+const REFLECTIVE = new Set(["defineProperty", "defineProperties", "setPrototypeOf", "getPrototypeOf", "__proto__", "__defineGetter__", "__defineSetter__", "Reflect", "Proxy"]);
 
 /** The ways `source` could write over a pinned Store method from anywhere, each as its text (PR #263 security scan): an
  * assignment to a property of a pinned name; a computed-key write on something named like the store or a prototype;
@@ -295,11 +298,16 @@ const STOREISH = /(^|[^a-z])store|Store|prototype|__proto__/;
  * property-defining call (defineProperty, defineProperties, Reflect.set or defineProperty, Object.assign onto an existing
  * object, __defineGetter__/__defineSetter__) that names a pinned method, the store or a prototype, or takes its key
  * computed. Syntax, not types: an alias of the store instance written through a computed key is a person's to catch. */
-function storeRewrites(source: ts.SourceFile, pinned: readonly string[]): string[] {
+function storeRewrites(source: ts.SourceFile, pinned: readonly string[], inStore: boolean): string[] {
   const compiler = typescript();
   const names = new Set(pinned);
   const found: string[] = [];
-  const say = (node: ts.Node): void => { found.push(node.getText(source).replace(/\s+/g, " ").slice(0, 200)); };
+  // The whole normalized text is the comparison key; only the message a person reads is shortened.
+  const say = (node: ts.Node): void => { found.push(node.getText(source).replace(/\s+/g, " ")); };
+  const memberName = (one: ts.Node): string | null => {
+    const name = (one as { name?: ts.Node }).name;
+    return name !== undefined && (compiler.isIdentifier(name) || compiler.isStringLiteralLike(name) || compiler.isPrivateIdentifier(name)) ? name.text : null;
+  };
   const literal = (node: ts.Node | undefined): string | null => node !== undefined && compiler.isStringLiteralLike(node) ? node.text : null;
   const mentions = (node: ts.Node): boolean => {
     if ((compiler.isIdentifier(node) || compiler.isPrivateIdentifier(node) || compiler.isStringLiteralLike(node)) && (names.has(node.text) || STOREISH.test(node.text))) return true;
@@ -310,6 +318,15 @@ function storeRewrites(source: ts.SourceFile, pinned: readonly string[]): string
   const writesPinned = (left: ts.Node): boolean => (compiler.isPropertyAccessExpression(left) && names.has(left.name.text))
     || (compiler.isElementAccessExpression(left) && (literal(left.argumentExpression) === null ? STOREISH.test(left.expression.getText(source)) : names.has(literal(left.argumentExpression)!)));
   const visit = (one: ts.Node): void => {
+    // Blanket (PR #263 security scan, round 2): any reference to a reflective or property-defining tool, however it is
+    // reached or renamed, a class extending the store, or a member of a pinned name declared outside store.ts.
+    if ((compiler.isIdentifier(one) || compiler.isStringLiteralLike(one) || compiler.isPrivateIdentifier(one)) && REFLECTIVE.has(one.text)) say(one);
+    if ((compiler.isClassDeclaration(one) || compiler.isClassExpression(one)) && one.heritageClauses?.some(clause => clause.token === compiler.SyntaxKind.ExtendsKeyword && /Store/.test(clause.getText(source)))) found.push(`class extends ${one.heritageClauses.map(clause => clause.getText(source)).join(" ")}`);
+    if (!inStore && (compiler.isMethodDeclaration(one) || compiler.isPropertyDeclaration(one) || compiler.isPropertyAssignment(one) || compiler.isShorthandPropertyAssignment(one)
+      || compiler.isGetAccessorDeclaration(one) || compiler.isSetAccessorDeclaration(one) || compiler.isPropertySignature(one) || compiler.isMethodSignature(one))) {
+      const name = memberName(one);
+      if (name !== null && names.has(name)) say(one);
+    }
     if (compiler.isBinaryExpression(one) && isAssignment(one.operatorToken.kind) && writesPinned(one.left)) say(one);
     else if ((compiler.isPrefixUnaryExpression(one) || compiler.isPostfixUnaryExpression(one)) && writesPinned(one.operand)) say(one);
     else if (compiler.isPropertyAccessExpression(one) && one.name.text === "prototype" && !(compiler.isIdentifier(one.expression) && BUILTIN_CLASSES.has(one.expression.text))) say(one);
@@ -336,21 +353,27 @@ function storeRewrites(source: ts.SourceFile, pinned: readonly string[]): string
  * rewriting one (storeRewrites) the base's copy of that file didn't already have needs a person. A file that can't be
  * read or parsed needs one too.
  */
-export function storeRewriteProblem(paths: readonly string[], candidate: (file: string) => Buffer | null, base: (file: string) => Buffer | null,
+export function storeRewriteProblem(paths: readonly string[], candidate: ((file: string) => Buffer | null) | null, base: ((file: string) => Buffer | null) | null,
   pinned: readonly string[] = PINNED_STORE_METHODS): string | null {
-  for (const path of paths) {
-    if (!/\.(?:[cm]?[jt]sx?)$/.test(path) || path.startsWith("node_modules/") || path.includes("/node_modules/")) continue;
+  const scanned = paths.filter(path => /\.(?:[cm]?[jt]sx?)$/.test(path) && !path.startsWith("node_modules/") && !path.includes("/node_modules/"));
+  if (scanned.length === 0) return null;
+  // A tree that couldn't be read whole says nothing about what changed: a person decides.
+  if (candidate === null || base === null) return "the changed files can't be read, so whether one rewrites a pinned Store method is unknown";
+  for (const path of scanned) {
+    // `paths` are the files the verified diff says exist at the candidate: no bytes is a failed read, never a deletion.
     const bytes = candidate(path);
-    if (bytes === null) continue; // Deleted: it writes nothing.
+    if (bytes === null) return `${path} can't be read, so whether it rewrites a pinned Store method is unknown`;
     const now = parse(path, bytes);
     if ("problem" in now) return `${now.problem}, so whether it rewrites a pinned Store method can't be read`;
     const before = base(path);
     const was = before === null ? null : parse(path, before);
+    const inStore = path === "src/store.ts";
     const kept = new Map<string, number>();
-    if (was !== null && !("problem" in was)) for (const one of storeRewrites(was.source, pinned)) kept.set(one, (kept.get(one) ?? 0) + 1);
-    for (const one of storeRewrites(now.source, pinned)) {
-      const left = kept.get(one) ?? 0;
-      if (left > 0) { kept.set(one, left - 1); continue; }
+    const key = (text: string): string => createHash("sha256").update(text).digest("hex");
+    if (was !== null && !("problem" in was)) for (const one of storeRewrites(was.source, pinned, inStore)) kept.set(key(one), (kept.get(key(one)) ?? 0) + 1);
+    for (const one of storeRewrites(now.source, pinned, inStore)) {
+      const left = kept.get(key(one)) ?? 0;
+      if (left > 0) { kept.set(key(one), left - 1); continue; }
       return `${path} could write over a pinned Store method (${one.slice(0, 120)}), which needs a person`;
     }
   }

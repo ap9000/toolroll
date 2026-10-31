@@ -1012,3 +1012,8 @@ collapsed into a false match to the pin.
   property-defining call naming a pinned method, the store or a prototype, or taking a computed key, needs a person.
   Ways the base's copy of the file already had don't count. Tests' instance spies (`vi.spyOn(store, …)`) still work.
   Residual: an alias of the store instance written through a computed key, which a person reviewing catches.
+- Security scan round 2: any new mention in a changed file of `defineProperty`, `defineProperties`, `setPrototypeOf`,
+  `getPrototypeOf`, `__proto__`, `__defineGetter__`, `__defineSetter__`, `Reflect` or `Proxy` (renamed or aliased
+  uses included), a class extending something named Store, or a member of a pinned name outside store.ts needs a
+  person. Rewrites are compared by their whole normalized text (sha256), not a shortened one. A changed-file read that
+  fails is a problem, never a deletion: only files the verified diff says are gone are skipped.

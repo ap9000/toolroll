@@ -311,7 +311,8 @@ function changeProblem(repo: string, base: string | null, candidate: string): st
   if (hooks !== null) return `${hooks}: a person decides`;
   // No changed file may write over a pinned Store method from outside store.ts (eval-hooks.ts storeRewriteProblem).
   const changed = diff.value.filter(change => change.after !== null).map(change => change.path);
-  const changedAt = (tree: string) => { const blobs = verifiedBlobs(gitDir, tree, changed); return (file: string): Buffer | null => blobs.ok ? blobs.value.get(file)?.bytes ?? null : null; };
+  // A failed read is no reader at all (a person decides), never files that read as absent.
+  const changedAt = (tree: string) => { const blobs = verifiedBlobs(gitDir, tree, changed); return blobs.ok ? (file: string): Buffer | null => blobs.value.get(file)?.bytes ?? null : null; };
   const rewrites = storeRewriteProblem(changed, changedAt(after.value.tree), changedAt(before.value.tree));
   if (rewrites !== null) return `${rewrites}: a person decides`;
   for (const change of diff.value) {
