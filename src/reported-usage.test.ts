@@ -4,7 +4,7 @@
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { parseLeadProviderWrapper, parseProviderWrapper } from "./converse.js";
-import { chatTurnAccounting, openStore, recordRunBillingBasis, recordRunCostUnknown, recordRunModelReported, runAccounting, type Store } from "./store.js";
+import { chatTurnAccounting, openStore, recordRunBillingBasis, recordRunCostUnknown, recordRunModelReported, runAccounting, sealStoreMoneyMethods, Store } from "./store.js";
 import { MODELS_JOIN, chatTurnAmountOf, combineReportedModels, runAmountOf } from "./reported-usage.js";
 
 const T0 = new Date("2026-10-30T12:00:00.000Z");
@@ -84,6 +84,18 @@ test("a run's accounting keeps API dollars, subscription usage and unknown apart
     expect(() => Object.defineProperty(proto, name, { value: () => undefined })).toThrow(TypeError);
     expect(Reflect.set(proto, name, () => undefined)).toBe(false);
   }
+  // Nor shadowed on an instance, by any means: each instance holds them as its own locked properties.
+  const key = ["settle", "RunSpend"].join("");
+  const shadow = store as unknown as Record<string, unknown>;
+  expect(() => { shadow[key] = () => undefined; }).toThrow(TypeError);
+  expect(() => Object.defineProperty(store, key, { value: () => undefined })).toThrow(TypeError);
+  expect(() => Object.assign(store, { recordUsage: () => undefined })).toThrow(TypeError);
+  expect(Reflect.defineProperty(store, "finalizeChatTurn", { value: () => true })).toBe(false);
+  expect(store.recordUsage).toBe(Store.prototype.recordUsage);
+  // A prototype whose method was already replaced, or already sealed, refuses to load: the seal never seals a stand-in.
+  const replaced = { recordUsage: function evil() { return undefined; }, settleRunSpend() {}, fixRunBilling() {}, finalizeChatTurn() {} };
+  expect(() => sealStoreMoneyMethods(replaced)).toThrow(/recordUsage isn't the class's own method/);
+  expect(() => sealStoreMoneyMethods(Store.prototype)).toThrow(/isn't the class's own method/);
   // Billed by use with nothing reported or priced, and a run with no billing at all: unknown, never $0.
   const blank = run("t-blank");
   store.fixRunBilling(blank, "api-key", T0);

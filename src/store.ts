@@ -6854,12 +6854,17 @@ export class ReviewBindingError extends Error {
 }
 
 export class Store {
+  // PR #263: the money methods eval accounting pins are sealed on the prototype the moment the class is defined, before
+  // any other code can reach it (the class's first static element; pinned with sealStoreMoneyMethods).
+  static { sealStoreMoneyMethods(Store.prototype); }
   readonly telemetry: ServerTelemetry;
   private readonly db: Database;
   constructor(db: Database) {
     this.telemetry = new ServerTelemetry();
     // Outside in: telemetry, then the workspace revision (one bump per committed meaningful write), then SQLite.
     this.db = instrumentDatabase(trackWorkspaceWrites(db), this.telemetry);
+    // And on each instance: the sealed methods as its own locked properties, so nothing shadows one later.
+    lockStoreMoneyMethods(this);
   }
 
   /** TESTS ONLY: raw database access for migration fixtures. Production
@@ -25314,14 +25319,24 @@ export function recordRunCostUnknown(store: Store, runId: number, unknown: boole
   store.handle.prepare("UPDATE run SET cost_unknown = 1 WHERE id = ?").run(runId);
 }
 
-/** PR #263 security scan: the Store methods eval accounting pins by body (eval-hooks.ts PINNED_STORE_METHODS) are made
- * unwritable and unconfigurable on the class as this module loads, so no other module replaces one on the prototype
- * at run time, however it reaches it. Called below, a hook: a release that drops the call needs a person. */
-export function sealStoreMoneyMethods(): void {
+/** PR #263 security scan: the Store methods eval accounting pins by body (eval-hooks.ts PINNED_STORE_METHODS) made
+ * unwritable and unconfigurable on the prototype, from the class's own first static block, so no code runs between the
+ * class's definition and the seal. Each must still be the class's own plain method (a writable, configurable function),
+ * or loading refuses. */
+export function sealStoreMoneyMethods(prototype: object): void {
   for (const name of ["recordUsage", "settleRunSpend", "fixRunBilling", "finalizeChatTurn"] as const) {
-    const held = Object.getOwnPropertyDescriptor(Store.prototype, name);
-    if (held === undefined || typeof held.value !== "function") throw new Error(`Store.${name} is missing`);
-    Object.defineProperty(Store.prototype, name, { value: held.value, writable: false, configurable: false, enumerable: false });
+    const held = Object.getOwnPropertyDescriptor(prototype, name);
+    if (held === undefined || typeof held.value !== "function" || held.writable !== true || held.configurable !== true || held.value.name !== name) throw new Error(`Store.${name} isn't the class's own method`);
+    Object.defineProperty(prototype, name, { value: held.value, writable: false, configurable: false, enumerable: false });
   }
 }
-sealStoreMoneyMethods();
+
+/** PR #263 security scan: each Store instance holds the sealed money methods as its own unwritable, unconfigurable
+ * properties (the constructor's last step), so shadowing one on an instance, by any means, throws. */
+export function lockStoreMoneyMethods(store: Store): void {
+  for (const name of ["recordUsage", "settleRunSpend", "fixRunBilling", "finalizeChatTurn"] as const) {
+    const sealed = Object.getOwnPropertyDescriptor(Store.prototype, name);
+    if (sealed === undefined || sealed.writable !== false || sealed.configurable !== false) throw new Error(`Store.${name} isn't sealed`);
+    Object.defineProperty(store, name, { value: sealed.value, writable: false, configurable: false, enumerable: false });
+  }
+}

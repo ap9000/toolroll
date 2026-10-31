@@ -1024,3 +1024,10 @@ collapsed into a false match to the pin.
   `__defineSetter__`, `Reflect`, `Proxy`, `constructor`), an `extends` that isn't a plain identifier or names a store,
   or anything named like a pinned method other than a call of it, needs a person. Ordinary code that adds a computed
   write now needs a person too (accepted). The runtime seal in store.ts stays.
+- Security scan round 4 (runtime): the seal now runs from Store's first static block (pinned as `Store#static`, the
+  class's first static element that runs code), so nothing runs between the class's definition and the seal; it
+  refuses to load if a method isn't still the class's own plain method. The constructor (pinned) locks the four
+  methods as each instance's own unwritable, unconfigurable properties (`lockStoreMoneyMethods`, pinned), so shadowing
+  one on an instance throws however it's done. store.ts is scanned by the blunt rule too, its class's own method
+  declarations exempt. Tests that faked a crash through `vi.spyOn(store, "finalizeChatTurn")` now fail its database
+  statement instead.

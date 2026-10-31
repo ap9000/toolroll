@@ -28,8 +28,7 @@ import type ts from "typescript-parser";
 let compiler: typeof ts | undefined;
 const typescript = (): typeof ts => compiler ??= createRequire(import.meta.url)("typescript-parser") as typeof ts;
 
-/** One required call: in this file, inside this top-level function (`<module>`: a statement of the file's own top
- * level, unconditional), a call to this name, the name bound as `from`
+/** One required call: in this file, inside this top-level function, a call to this name, the name bound as `from`
  * says (a module specifier its un-renamed named import comes from; `self`: the file's own top-level function; `local`:
  * declared inside `inside`). `args`: the call's arguments, as text, must stay as the base has them. */
 export type EvalHook = { file: string; inside: string; calls: string; from: string; args?: true; why: string };
@@ -48,8 +47,6 @@ export const EVAL_HOOKS: readonly EvalHook[] = Object.freeze([
   { file: "src/release-auto.ts", inside: "changeProblem", calls: "evalHookProblem", from: "./eval-hooks.js", why: "this check itself" },
   { file: "src/release-auto.ts", inside: "changeProblem", calls: "autoPathProblem", from: "self", why: "policy paths need a person" },
   { file: "src/release-auto.ts", inside: "changeProblem", calls: "storeRewriteProblem", from: "./eval-hooks.js", why: "no changed file rewrites a pinned Store method" },
-  // The pinned Store methods are made unwritable on the class itself as store.ts loads (PR #263 security scan).
-  { file: "src/store.ts", inside: "<module>", calls: "sealStoreMoneyMethods", from: "self", why: "the pinned Store methods can't be replaced at run time" },
   // The invocation gateway (invoke.ts): every agent run an eval world spawns takes a slot.
   { file: "src/invoke.ts", inside: "invokeAgent", calls: "takeEvalDispatch", from: "./eval-gate.js", why: "every agent dispatch in an eval world takes a slot" },
   // PR #263 review: what the run's billing basis and its unknown cost are computed from is held too, not only the call.
@@ -76,11 +73,17 @@ export const EVAL_PINNED: readonly EvalPinned[] = Object.freeze([
   { file: "src/store.ts", fn: "Store#settleRunSpend", why: "how a run's spending is priced" },
   { file: "src/store.ts", fn: "Store#fixRunBilling", why: "how a run was billed" },
   { file: "src/store.ts", fn: "Store#finalizeChatTurn", why: "what a chat request spent and how it was billed" },
+  // PR #263 security scan: sealed on the prototype from the class's first static block (before any other code reaches
+  // it), and locked on every instance by the constructor.
+  { file: "src/store.ts", fn: "Store#static", why: "the pinned Store methods are sealed as the class is defined" },
+  { file: "src/store.ts", fn: "Store#constructor", why: "each Store instance locks the pinned methods" },
   { file: "src/store.ts", fn: "sealStoreMoneyMethods", why: "the pinned Store methods can't be replaced at run time" },
+  { file: "src/store.ts", fn: "lockStoreMoneyMethods", why: "the pinned Store methods can't be shadowed on an instance" },
 ]);
 
 /** The Store methods pinned by body, which no file may write over (storeRewriteProblem, store.ts sealStoreMoneyMethods). */
-export const PINNED_STORE_METHODS: readonly string[] = Object.freeze(EVAL_PINNED.filter(pin => pin.fn.startsWith("Store#")).map(pin => pin.fn.slice("Store#".length)));
+export const PINNED_STORE_METHODS: readonly string[] = Object.freeze(EVAL_PINNED.filter(pin => pin.fn.startsWith("Store#") && pin.fn !== "Store#static" && pin.fn !== "Store#constructor")
+  .map(pin => pin.fn.slice("Store#".length)));
 
 type Parsed = { source: ts.SourceFile } | { problem: string };
 
@@ -101,12 +104,24 @@ function topFunction(source: ts.SourceFile, name: string): ts.FunctionDeclaratio
 }
 
 /** `Class#method`: the top-level class's one method of that name (no overload, accessor or property of it either),
- * never assigned or redefined by name anywhere in the file; null otherwise. */
-function classMethod(source: ts.SourceFile, spec: string): ts.MethodDeclaration | null {
+ * never assigned or redefined by name anywhere in the file; null otherwise. `Class#constructor` is its one
+ * constructor; `Class#static` its one static block, which must be the first of its static elements that runs code
+ * (no static field initializer or other block runs before it). */
+function classMethod(source: ts.SourceFile, spec: string): ts.Node | null {
   const compiler = typescript();
   const [className, method] = spec.split("#") as [string, string];
   const classes = source.statements.filter((one): one is ts.ClassDeclaration => compiler.isClassDeclaration(one) && one.name?.text === className);
   if (classes.length !== 1) return null;
+  if (method === "constructor") {
+    const made = classes[0]!.members.filter(member => compiler.isConstructorDeclaration(member));
+    return made.length === 1 && (made[0] as ts.ConstructorDeclaration).body !== undefined ? made[0]! : null;
+  }
+  if (method === "static") {
+    const runs = classes[0]!.members.filter(member => compiler.isClassStaticBlockDeclaration(member)
+      || (compiler.isPropertyDeclaration(member) && member.initializer !== undefined && (compiler.getModifiers(member) ?? []).some(one => one.kind === compiler.SyntaxKind.StaticKeyword)));
+    const blocks = runs.filter(member => compiler.isClassStaticBlockDeclaration(member));
+    return blocks.length === 1 && runs[0] === blocks[0] ? blocks[0]! : null;
+  }
   const named = classes[0]!.members.filter(member => member.name !== undefined && (compiler.isIdentifier(member.name) || compiler.isStringLiteral(member.name)) && member.name.text === method);
   if (named.length !== 1 || !compiler.isMethodDeclaration(named[0]!) || named[0].body === undefined) return null;
   return memberRewritten(source, method) ? null : named[0];
@@ -230,15 +245,6 @@ function parser(read: (file: string) => Buffer | null): (file: string) => Parsed
 function hookIn(tree: (file: string) => Parsed, hook: EvalHook): { args: string[] } | { missing: string } {
   const parsed = tree(hook.file);
   if ("problem" in parsed) return { missing: `${parsed.problem}, and it holds a required call (${hook.why})` };
-  if (hook.inside === "<module>") {
-    // A bare call statement of the file's own top level: run once, as the module loads, never behind a condition.
-    const compiler = typescript();
-    const found = parsed.source.statements.filter((one): one is ts.ExpressionStatement => compiler.isExpressionStatement(one) && compiler.isCallExpression(one.expression)
-      && compiler.isIdentifier(one.expression.expression) && one.expression.expression.text === hook.calls);
-    const fn = topFunction(parsed.source, hook.calls);
-    if (found.length === 0 || fn === null || boundAs(parsed.source, hook.calls, "self", fn) !== null) return { missing: `${hook.file} no longer calls its own ${hook.calls} as it loads (${hook.why})` };
-    return { args: found.map(one => one.getText(parsed.source)).sort() };
-  }
   const fn = heldFunction(parsed.source, hook.inside);
   if (fn === null || fn.body === undefined) return { missing: `${hook.file} no longer has ${hook.inside} as one function, which must call ${hook.calls} (${hook.why})` };
   const found = callsOf(fn.body, hook.calls);
@@ -300,7 +306,7 @@ const GLOBAL_HOLDERS = new Set(["Object", "Reflect", "globalThis", "Store"]);
  * whose `extends` isn't a plain identifier or names a store; and any member, property or string named like a pinned
  * method that isn't a call of it.
  */
-function storeRewrites(source: ts.SourceFile, pinned: readonly string[]): string[] {
+function storeRewrites(source: ts.SourceFile, pinned: readonly string[], ownClass: string | null): string[] {
   const compiler = typescript();
   const names = new Set(pinned);
   const found: string[] = [];
@@ -337,6 +343,10 @@ function storeRewrites(source: ts.SourceFile, pinned: readonly string[]): string
     // Named like a pinned method: anything but calling it (`store.recordUsage(…)`) or referring to it.
     if ((compiler.isIdentifier(one) || compiler.isPrivateIdentifier(one) || compiler.isStringLiteralLike(one)) && names.has(one.text)) {
       const parent = one.parent;
+      // store.ts's own declaration of the method (its body is pinned) is the one exempt construct.
+      const own = ownClass !== null && compiler.isMethodDeclaration(parent) && parent.name === one && compiler.isClassDeclaration(parent.parent) && parent.parent.name?.text === ownClass
+        && compiler.isSourceFile(parent.parent.parent);
+      if (own) { compiler.forEachChild(one, visit); return; }
       const reference = compiler.isPropertyAccessExpression(parent) && parent.name === one
         && !(compiler.isBinaryExpression(parent.parent) && isAssignment(parent.parent.operatorToken.kind) && parent.parent.left === parent)
         && !((compiler.isPrefixUnaryExpression(parent.parent) || compiler.isPostfixUnaryExpression(parent.parent) || compiler.isDeleteExpression(parent.parent)));
@@ -350,14 +360,14 @@ function storeRewrites(source: ts.SourceFile, pinned: readonly string[]): string
 
 /**
  * Why a changed file could write over a pinned Store method, or null (PR #263 security scan). Each changed JavaScript
- * or TypeScript file other than store.ts (whose methods are pinned by body and sealed as it loads) is held to
+ * or TypeScript file, store.ts included (its class's own method declarations exempt; their bodies are pinned), is held to
  * storeRewrites: a construct the base's copy of that file didn't already have (counted, by the sha256 of its whole
  * text) needs a person. A tree or file that can't be read, or a file that doesn't parse, needs one too; `paths` are the
  * files the verified diff says exist at the candidate, so no bytes is a failed read, never a deletion.
  */
 export function storeRewriteProblem(paths: readonly string[], candidate: ((file: string) => Buffer | null) | null, base: ((file: string) => Buffer | null) | null,
   pinned: readonly string[] = PINNED_STORE_METHODS): string | null {
-  const scanned = paths.filter(path => /\.(?:[cm]?[jt]sx?)$/.test(path) && path !== "src/store.ts" && !path.startsWith("node_modules/") && !path.includes("/node_modules/"));
+  const scanned = paths.filter(path => /\.(?:[cm]?[jt]sx?)$/.test(path) && !path.startsWith("node_modules/") && !path.includes("/node_modules/"));
   if (scanned.length === 0) return null;
   if (candidate === null || base === null) return "the changed files can't be read";
   const key = (text: string): string => createHash("sha256").update(text).digest("hex");
@@ -369,8 +379,10 @@ export function storeRewriteProblem(paths: readonly string[], candidate: ((file:
     const before = base(path);
     const was = before === null ? null : parse(path, before);
     const kept = new Map<string, number>();
-    if (was !== null && !("problem" in was)) for (const one of storeRewrites(was.source, pinned)) kept.set(key(one), (kept.get(key(one)) ?? 0) + 1);
-    for (const one of storeRewrites(now.source, pinned)) {
+    // store.ts is scanned too (its own method declarations exempt): nothing added there may reach a pinned method.
+    const ownClass = path === "src/store.ts" ? "Store" : null;
+    if (was !== null && !("problem" in was)) for (const one of storeRewrites(was.source, pinned, ownClass)) kept.set(key(one), (kept.get(key(one)) ?? 0) + 1);
+    for (const one of storeRewrites(now.source, pinned, ownClass)) {
       const left = kept.get(key(one)) ?? 0;
       if (left > 0) { kept.set(key(one), left - 1); continue; }
       return `${path} adds \`${one.slice(0, 80)}\`, which could reach a pinned Store method`;

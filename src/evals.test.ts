@@ -83,8 +83,12 @@ describe("the shipped eval set", () => {
     // A construct the base already had still ships beside an ordinary change; a plain change with none ships too.
     expect(storeRewriteProblem(["src/a.ts"], file(`${write("1")}export const more = 2;\n`), file(write("1")))).toBeNull();
     expect(storeRewriteProblem(["src/a.ts"], file("export const answer = (items) => items.map(one => one.id);\n"), file(""))).toBeNull();
-    // store.ts itself is held by its pins and its seal, not this rule.
-    expect(storeRewriteProblem(["src/store.ts"], () => Buffer.from("x[k] = 1;\n"), () => null)).toBeNull();
+    // store.ts is held to it too (PR #263 scan): only its class's own method declarations are exempt.
+    expect(storeRewriteProblem(["src/store.ts"], () => Buffer.from("x[k] = 1;\n"), () => null)).toMatch(/src\/store\.ts adds/);
+    const storeFile = (after: string) => () => Buffer.from(`export class Store {\n  recordUsage(id) {\n    return id;\n  }\n}\n${after}`);
+    expect(storeRewriteProblem(["src/store.ts"], storeFile(""), storeFile(""))).toBeNull();
+    expect(storeRewriteProblem(["src/store.ts"], storeFile(""), () => Buffer.from(""))).toBeNull();
+    expect(storeRewriteProblem(["src/store.ts"], storeFile("Store.prototype.recordUsage = () => 0;\n"), storeFile(""))).toMatch(/src\/store\.ts adds/);
     // A tree that couldn't be read, or a changed file with no bytes, is a problem: a person decides.
     expect(storeRewriteProblem(["src/a.ts"], null, file(write("1")))).toMatch(/can't be read/);
     expect(storeRewriteProblem(["src/a.ts"], file(write("1")), null)).toMatch(/can't be read/);
