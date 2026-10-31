@@ -10,6 +10,8 @@ import { HEALTH_WAIT_MS, RUNNER_LIVENESS_MS, recoverFailedDeployment, waitUntilH
 import { recordedStillRunning } from "./deploy-stop.mjs";
 
 export const sha = bytes => createHash("sha256").update(bytes).digest("hex");
+/** How long finish asks the started console's own port before giving up, a second apart. */
+const LOCAL_ANSWER_TRIES = 30;
 const quote = s => '"' + s.replaceAll('"', '""') + '"';
 
 // Every direct connection waits at the same bounded lock boundary as Store.
@@ -450,8 +452,15 @@ export function browserDeployment({
     const live = service(nextDist);
     requireTrue(live, "The new service is not running from the new runtime.");
     requireTrue(live.commands.some(c => c.includes("--host 127.0.0.1 --port 4180")) || !livePlist.includes("--host 127.0.0.1"), "The backend must remain on its configured loopback address.");
-    const local = await fetch(`http://127.0.0.1:4180/t/${encodeURIComponent(r.task)}`, { redirect: "manual" }).catch(() => null);
-    requireTrue(local && (local.ok || local.status === 303 || local.status === 302), "The local console does not answer.");
+    // The console answers as soon as it listens (project folders are resolved after, src/operate.ts startConsole); a
+    // started service is still given a short while to open its port, and each ask has its own bound.
+    const answered = response => response && (response.ok || response.status === 303 || response.status === 302);
+    let local = null;
+    for (let i = 0; i < LOCAL_ANSWER_TRIES && !answered(local); i++) {
+      if (i > 0) await settle(sleep(1000));
+      local = await fetch(`http://127.0.0.1:4180/t/${encodeURIComponent(r.task)}`, { redirect: "manual", signal: AbortSignal.timeout(5_000) }).catch(() => null);
+    }
+    requireTrue(answered(local), `The local console does not answer (asked for ${LOCAL_ANSWER_TRIES} s).`);
     let remote = "not configured";
     if (r.publicUrl) {
       const response = await fetch(`${r.publicUrl}/t/${encodeURIComponent(r.task)}`, { redirect: "manual", signal: AbortSignal.timeout(10_000) }).catch(() => null);

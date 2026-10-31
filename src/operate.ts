@@ -216,7 +216,7 @@ import {
   type TelegramTransport,
 } from "./telegram.js";
 import type { TelegramConversationOptions } from "./telegram-lead.js";
-import { projectIdentities } from "./project-identity.js";
+import { projectIdentities, type ProjectIdentities } from "./project-identity.js";
 import { lookIdentities, type FolderLookOptions } from "./folder-look.js";
 import { scanRepo } from "./capscan.js";
 import { computeGaps, describeCapability, type Gap } from "./gaps.js";
@@ -403,6 +403,8 @@ export type OperateOptions = {
   filingSizer?: Sizer;
   /** Set only by up-role-child.ts: this process is one role of a `toolroll up` (the console or the worker). */
   upRole?: UpRoleHost;
+  /** Injected by tests: how the console looks at project folders off its thread (folder-look.ts). */
+  folderLook?: FolderLookOptions;
 };
 
 export type OnboardSeams = Partial<Pick<OnboardIo, "home" | "env" | "cwd" | "interactive" | "confirm" | "findRepo" | "checkConnection" | "pullRequests">>;
@@ -1146,6 +1148,7 @@ async function dispatchOn(
       ...(options.onboardSeams === undefined ? {} : { onboardSeams: options.onboardSeams }),
       ...(options.upSeams === undefined ? {} : { upSeams: options.upSeams }),
       ...(options.upRole === undefined ? {} : { upRole: options.upRole }),
+      ...(options.folderLook === undefined ? {} : { folderLook: options.folderLook }),
       ...(upNeedsOneProcess(options) ? { upOneProcess: true } : {}),
       ...(activeRemote() === null ? {} : { principal: activeRemote()! }),
     });
@@ -1259,6 +1262,8 @@ function remoteFile(remote: RemoteRun, path: string): string {
 const LEAD_COMMANDS: ReadonlySet<string> = new Set(["task", "assignment", "status", "ready", "brief", "peek", "check-progress", "notifications", "lead"]);
 
 type Context = {
+  /** Injected by tests: how the console looks at project folders off its thread. */
+  folderLook?: FolderLookOptions;
   /** A remote run's person (runOperateAs): every credential check resolves to them. Absent for every local command. */
   principal?: RemoteRun;
   /** The lead token this command runs under: it signs in as its owner. */
@@ -4341,11 +4346,11 @@ async function startConsole(options: {
   const { context } = options;
   // A git incident (teardown-git.ts) raises an attention notification in this console's outbox.
   noticeGitIncidents(context.store, context.clock);
-  // Every project folder this console starts with is resolved off its thread, under a deadline: one that doesn't
-  // answer (a drive away, an iCloud folder macOS is holding) stays unresolved, kept restrictive, and is looked at again
-  // by the background pass; the console starts and answers either way (project-identity.ts).
-  const identities = projectIdentities();
-  await identities.refresh([...options.repos ?? [], ...options.projectRoots ?? [], ...context.store.listProjects().map(one => one.path), ...context.store.knownRepos()]);
+  // Every project folder this console starts with is resolved off its thread, under a deadline, after it is listening
+  // (consoleIdentitiesInBackground): the console answers at once, and a project shows up once its folder answers. Until
+  // then it is unresolved and kept restrictive; one that doesn't answer (a drive away, an iCloud folder macOS is
+  // holding) is looked at again by the background pass (project-identity.ts).
+  const identities = projectIdentities(context.folderLook);
   const server = createDecisionServer({
     identities,
     store: context.store,
@@ -4382,6 +4387,7 @@ async function startConsole(options: {
   }).catch(error => {
     throw new Error(`could not listen on ${options.host}:${options.port} — ${describe(error)}`);
   });
+  consoleIdentitiesInBackground(identities, [...options.repos ?? [], ...options.projectRoots ?? [], ...context.store.listProjects().map(one => one.path), ...context.store.knownRepos()]);
   // v104: monitoring runs beside the console (every setup has one): one loop sends the audit stream and traces where
   // Settings → Monitoring says, and stops when the console does. A lease keeps a second process from sending too.
   const stopMonitoring = startMonitoring({
@@ -12253,7 +12259,7 @@ function upNeedsOneProcess(options: OperateOptions): boolean {
     options.flowEveryMs !== undefined || options.platform !== undefined || options.fenceAvailable !== undefined || options.flowFetch !== undefined ||
     options.integrationIo !== undefined || options.shouldStop !== undefined || options.leadSeams !== undefined || options.waitSleep !== undefined ||
     options.releaseIo !== undefined || options.installBin !== undefined || options.tempRoots !== undefined || options.filingSizer !== undefined ||
-    options.now !== undefined;
+    options.now !== undefined || options.folderLook !== undefined;
 }
 
 /** The entry a role child runs: the built sibling when installed, the TypeScript source through tsx in a checkout. */
@@ -13127,4 +13133,12 @@ export async function upProveSaved(gitRun: (file: string, args: readonly string[
 export function upNarrowDeferred(held: readonly string[], reported: readonly string[]): string[] {
   const kept = new Set(reported);
   return held.filter(one => kept.has(one));
+}
+
+/** Resolve the console's project identities after it is listening, never before: the deploy's health check and every
+ * page answer at once, and each project shows up as its folder answers (project-identity.ts `refresh`, its looks a
+ * few at a time under their deadline). Nothing waits on it; a pass that fails leaves those paths unresolved, which
+ * fails closed, for the background pass to try again. */
+export function consoleIdentitiesInBackground(identities: ProjectIdentities, paths: readonly string[]): void {
+  void identities.refresh(paths).catch(() => false);
 }

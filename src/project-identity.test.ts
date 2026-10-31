@@ -8,7 +8,8 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { authorizedProject, rowVisible } from "./project.js";
-import { projectIdentities } from "./project-identity.js";
+import { IDENTITY_LOOKS, projectIdentities } from "./project-identity.js";
+import type { FolderLookRunner } from "./folder-look.js";
 
 let base: string;
 beforeEach(() => { base = realpathSync(mkdtempSync(join(tmpdir(), "so-identity-"))); });
@@ -42,4 +43,28 @@ test("a request's path: only a resolved identity or exactly an admitted project"
   expect(identities.vouched(project, () => [project])).toBe(project);
   await identities.refresh([join(base, "alias")]);
   expect(identities.vouched(join(base, "alias"), () => [])).toBe(project);
+});
+
+test("a folder that never answers holds no other: the rest resolve a few at a time, and it stays unresolved", async () => {
+  const folders = Array.from({ length: 9 }, (_, n) => join(base, `project-${n}`));
+  for (const one of folders) mkdirSync(one);
+  const hung = join(base, "icloud-held");
+  const ends: (() => void)[] = [];
+  let running = 0, most = 0;
+  const runner: FolderLookRunner = request => {
+    const paths = request.op === "identities" ? request.paths : [];
+    // A hung look's process outlives the test until it is ended below.
+    if (paths.includes(hung)) return { answer: new Promise(() => {}), ended: new Promise<void>(done => ends.push(done)) };
+    running++; most = Math.max(most, running);
+    const answer = new Promise(done => setTimeout(done, 5)).then(() => { running--; return { ok: true, value: { paths: paths.map(path => ({ path, real: realpathSync(path) })) } }; });
+    return { answer, ended: answer.then(() => undefined) };
+  };
+  try {
+    const identities = projectIdentities({ runner, deadlineMs: 100 });
+    expect(await identities.refresh([...folders, hung])).toBe(false);
+    for (const one of folders) expect(identities.strict(one)).toBe(one);
+    expect(identities.strict(hung)).toBeNull();
+    expect(identities.hot(hung)).toBe(hung);
+    expect(most).toBeLessThanOrEqual(IDENTITY_LOOKS);
+  } finally { for (const end of ends) end(); }
 });

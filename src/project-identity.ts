@@ -2,7 +2,8 @@
  * Project identities as the console uses them, without touching a person's folders on its thread.
  *
  * A project's identity is its real path (project.ts canonicalProject). Resolving one reads the folder, and a folder can
- * stop answering (folder-look.ts), so the console never resolves one on a page or at startup on its own thread:
+ * stop answering (folder-look.ts), so the console never resolves one on a page or at startup on its own thread, and
+ * never waits for one before it answers:
  *
  * - `hot` (display and grouping only): the last answer, else the path as saved. Nothing is started by asking.
  * - `strict` (visibility and authorization): only a resolved identity; an unknown one fails closed until the next
@@ -10,7 +11,8 @@
  * - `vouched` (a path a request names): only a path whose identity is known, or one that is exactly a saved identity.
  *   Anything else is refused this time and resolved by the next background pass, never resolved inline.
  * - `resolveNow` (an action that needs a path checked now, a POST): resolved off the thread under the look's deadline.
- * - `refresh` (the console's start and its background pass): resolves what was asked about and what has gone stale.
+ * - `refresh` (the console's background pass, the first started right after it listens): resolves what was asked about
+ *   and what has gone stale. The console answers before any of it does; until a path answers it fails closed.
  *
  * An embedder or test that passes no identities gets `syncProjectIdentities`: the old synchronous reads, unchanged.
  */
@@ -40,6 +42,9 @@ export type ProjectIdentities = {
 /** How long an answer stands before the background pass resolves the path again. */
 const STALE_MS = 60_000;
 
+/** How many folders a pass looks at side by side when they're looked at one by one (within FOLDER_LOOK_CHILDREN). */
+export const IDENTITY_LOOKS = 4;
+
 export function projectIdentities(look: FolderLookOptions = {}, now: () => number = Date.now): ProjectIdentities {
   const answers = new Map<string, { real: string | null; at: number }>();
   const wanted = new Set<string>();
@@ -59,6 +64,29 @@ export function projectIdentities(look: FolderLookOptions = {}, now: () => numbe
     store(looked.value);
     return looked.value.get(resolve(path)) ?? null;
   };
+  const refreshNow = async (paths: readonly string[]): Promise<boolean> => {
+    const at = now();
+    const due = new Set<string>(wanted);
+    for (const one of paths) {
+      const key = resolve(one);
+      const answer = answers.get(key);
+      if (answer === undefined || at - answer.at >= STALE_MS) due.add(key);
+    }
+    for (const [key, answer] of answers) if (at - answer.at >= STALE_MS) due.add(key);
+    if (due.size === 0) return true;
+    const batch = await lookIdentities([...due], look);
+    if (batch.ok) { store(batch.value); return true; }
+    // One folder that doesn't answer mustn't hold the others: each on its own, a few at a time (inside the looks'
+    // child cap, leaving room for a person's actions), each under its deadline, each stored as soon as it answers.
+    const queue = [...due];
+    let missed = false;
+    const worker = async (): Promise<void> => {
+      for (let one = queue.shift(); one !== undefined; one = queue.shift()) if (await resolveNow(one) === "no-answer") missed = true;
+    };
+    await Promise.all(Array.from({ length: Math.min(IDENTITY_LOOKS, queue.length) }, worker));
+    return !missed;
+  };
+  let passes: Promise<void> = Promise.resolve();
   return {
     hot: path => {
       const key = resolve(path);
@@ -82,21 +110,12 @@ export function projectIdentities(look: FolderLookOptions = {}, now: () => numbe
       return undefined;
     },
     resolveNow,
-    refresh: async paths => {
-      const at = now();
-      const due = new Set<string>(wanted);
-      for (const one of paths) {
-        const key = resolve(one);
-        const answer = answers.get(key);
-        if (answer === undefined || at - answer.at >= STALE_MS) due.add(key);
-      }
-      for (const [key, answer] of answers) if (at - answer.at >= STALE_MS) due.add(key);
-      if (due.size === 0) return true;
-      const batch = await lookIdentities([...due], look);
-      if (batch.ok) { store(batch.value); return true; }
-      // One folder that doesn't answer mustn't hold the others: each on its own, in parallel (the looks are capped).
-      const each = await Promise.all([...due].map(one => resolveNow(one)));
-      return each.every(one => one !== "no-answer");
+    refresh: paths => {
+      // One pass at a time: a pass asked for while another runs waits for it, then resolves only what is still due.
+      const asked = [...paths];
+      const pass = passes.then(() => refreshNow(asked));
+      passes = pass.then(() => undefined, () => undefined);
+      return pass;
     },
   };
 }

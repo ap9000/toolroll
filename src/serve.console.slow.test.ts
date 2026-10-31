@@ -4,7 +4,9 @@
  */
 
 import { projectIdentities } from "./project-identity.js";
-import { describe, test, expect, beforeEach, afterEach } from "vitest";
+import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
+import { createServer as createNetServer } from "node:net";
+import type { FolderLookRunner } from "./folder-look.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -2486,6 +2488,24 @@ describe("the filesystem browser — confined to what opening allows", () => {
     expect(Date.now() - at).toBeLessThan(10_000);
   });
 
+  test("project folders that answer late: the console answers at once, and a project shows up once its folder answers", async () => {
+    const late = heldLooks();
+    try {
+      store.createTask({ id: "t-late", title: "work in a folder that answers late" }, T0);
+      store.placeTask(store.refFor("built-in", "t-late").id, join(root, "payments-api"));
+      // Nothing is resolved before serving (operate.ts startConsole); the background pass starts the looks.
+      await boot({ projectRoots: [root], identities: projectIdentities({ runner: late.runner, deadlineMs: 60_000 }), backgroundChecks: true, backgroundChecksMs: 100 });
+      expect((await fetch(url("/healthz"))).status).toBe(200);
+      const cookie = await login();
+      const task = async () => (await fetch(url("/t/t-late"), { headers: { cookie }, redirect: "manual" })).status;
+      await vi.waitFor(() => expect(late.started()).toBeGreaterThan(0));
+      // Unresolved fails closed: the task's project isn't authorized until its folder answers.
+      expect(await task()).toBe(404);
+      late.release();
+      await vi.waitFor(async () => expect(await task()).toBe(200), { timeout: 10_000, interval: 50 });
+    } finally { late.release(); }
+  });
+
   test("an explicit repo list gets no browser — the openable set is already on the page", async () => {
     await boot({ repo: root });
     const cookie = await login();
@@ -3073,5 +3093,52 @@ describe("round 4 — liveness is proved from the current lease, never guessed f
     const keptPage = await kept.text();
     expect(keptPage).toContain("the task was created, but could not be made to wait for nope-gone");
     expect(await (await fetch(url("/t/t-kept"), { headers: { cookie } })).text()).toContain("kept anyway");
+  });
+});
+
+/** Identity looks held until released, then answered with each path's real path. */
+function heldLooks(): { runner: FolderLookRunner; started: () => number; release: () => void } {
+  let release!: () => void;
+  const gate = new Promise<void>(done => { release = done; });
+  let started = 0;
+  const runner: FolderLookRunner = request => {
+    started++;
+    const answer = gate.then(() => ({ ok: true, value: { paths: request.op === "identities" ? request.paths.map(path => ({ path, real: realpathSync(path) })) : [] } }));
+    return { answer, ended: answer.then(() => undefined) };
+  };
+  return { runner, started: () => started, release };
+}
+
+describe("`toolroll serve` answers before any project folder does (the 0.9.83 deploy)", () => {
+  test("health and the deploy's task probe answer while every identity look is still held", async () => {
+    const { runOperate } = await import("./operate.js");
+    const free = createNetServer();
+    await new Promise<void>(done => free.listen(0, "127.0.0.1", done));
+    const port = (free.address() as { port: number }).port;
+    await new Promise<void>(done => free.close(() => done()));
+    const repo = realpathSync(mkdtempSync(join(tmpdir(), "so-serve-late-")));
+    mkdirSync(join(repo, ".git"));
+    const late = heldLooks();
+    const lines: string[] = [];
+    let listening!: () => void;
+    const ready = new Promise<void>(done => { listening = done; });
+    let finished = false;
+    const running = runOperate("serve", ["--port", String(port), "--repo", repo, "--json"], line => { lines.push(line); listening(); }, { folderLook: { runner: late.runner, deadlineMs: 60_000 } })
+      .finally(() => { finished = true; listening(); });
+    try {
+      await ready;
+      expect(finished, lines.join("\n")).toBe(false);
+      expect(JSON.parse(lines[0]!)).toMatchObject({ ok: true, command: "serve", port });
+      await vi.waitFor(() => expect(late.started()).toBeGreaterThan(0));
+      const health = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(1_000) });
+      expect(health.status).toBe(200);
+      const probe = await fetch(`http://127.0.0.1:${port}/t/t-1`, { redirect: "manual", signal: AbortSignal.timeout(1_000) });
+      expect(probe.status).toBeLessThan(500);
+    } finally {
+      late.release();
+      if (!finished) process.emit("SIGINT");
+      expect(await running).toBe(0);
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });

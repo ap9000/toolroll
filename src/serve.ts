@@ -1,6 +1,6 @@
 import { secretFolder } from "./tool-secret-store.js";
 import { acceptedIdentities, recoverLearning } from "./project-learning.js";
-import { syncProjectIdentities } from "./project-identity.js";
+import { syncProjectIdentities, type ProjectIdentities } from "./project-identity.js";
 import { firstTasksOffThread, recoverLearningOffThread } from "./learning-look.js";
 import { loadOrCreateVapidKeys } from "./push.js";
 import { checkoutPlan } from "./checkout-cleanup.js";
@@ -239,7 +239,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get managedRepos() { return managedRepos; },
     get ceiling() { return ceiling; },
     get allowedHost() { return allowedHost; },
-    get defaultProject() { return defaultProject; },
+    get defaultProject() { return defaultProject(); },
     get actionTarget() { return actionTarget; },
     get team() { return team; },
     get joinSourceOf() { return joinSourceOf; },
@@ -458,16 +458,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   let joinGlobal = { tokens: 30, refilledAt: Date.now() };
   const approvalNonces = new Map<string, ApprovalNonce>();
 
-  // Resolve startup authority once. Missing paths remain restrictive.
-  // Native additions come only from the controller after its admission checks.
-  const { ceiling: startCeiling, unresolved: unresolvedRepos } = resolveCeiling(
+  // Startup authority: the configured repos and roots as their identities say (startupCeiling). Missing or unresolved
+  // paths remain restrictive. Native additions come only from the controller after its admission checks.
+  const { ceiling, unresolved: unresolvedRepos, defaultProject } = startupCeiling(
     [...(options.repo === undefined ? [] : [options.repo]), ...(options.repos ?? [])],
     options.projectRoots ?? [],
-    options.identities === undefined ? undefined : identities.known,
+    options.identities === undefined ? undefined : identities,
+    identities.strict,
   );
-  const ceiling = { ...startCeiling, canon: identities.strict };
-  /** The project every fresh session opens with: the sole configured repo, else none. */
-  const defaultProject = ceiling.repos.length === 1 && ceiling.roots.length === 0 ? ceiling.repos[0] as string : null;
 
   /** No ceiling configured at all: the legacy trust-everything mode, named. */
   // An `up` console (it is handed its admitted set) is never unscoped: with every saved project away it is empty.
@@ -1299,8 +1297,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   function chatEnablement(): ChatEnablement {
     if (store.isDemo()) return { ok: false, code: "demo", why: "this is a demo database — chat cannot contact an external model" };
     if (unscopedMode) return { ok: false, code: "unscoped", why: "chat needs at least one added project" };
-    if (options.currentRepos === undefined && unresolvedRepos.length > 0) {
-      return { ok: false, code: "unresolved", why: "a configured project path did not resolve at startup — fix it and restart before chat will run" };
+    if (options.currentRepos === undefined && unresolvedRepos().length > 0) {
+      return { ok: false, code: "unresolved", why: "a configured project folder hasn't been found yet — chat runs once it answers; if its path is wrong, fix it and restart" };
     }
     if (managedRepos().length === 0) return { ok: false, code: "empty", why: "add a project first — chat will include it automatically" };
     const config = store.getChatConfig();
@@ -2122,7 +2120,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get providerFor(): ServerRuntime['providerFor'] { return providerFor; },
     get providerKnown(): ServerRuntime['providerKnown'] { return providerKnown; },
     get connectVisits(): ServerRuntime['connectVisits'] { return connectVisits; },
-    get defaultProject(): ServerRuntime['defaultProject'] { return defaultProject; },
+    get defaultProject(): ServerRuntime['defaultProject'] { return defaultProject(); },
     get googleVisits(): ServerRuntime['googleVisits'] { return googleVisits; },
     get setupAttemptsLeft(): ServerRuntime['setupAttemptsLeft'] { return setupAttemptsLeft; },
     set setupAttemptsLeft(value) { setupAttemptsLeft = value; },
@@ -2244,3 +2242,29 @@ export { diffFileAnchor,editorFileHref,needActionOf,orderChangedFiles,plainConcl
 export { settingsGroups,settingsTiles } from "./server/render-settings.js";
 export { decisionAnswerScript,earlierVersionsWords,revisionLineageWords,type RouteView } from "./server/render-tasks.js";
 export { SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type DecisionServer } from "./server/session.js";
+
+/**
+ * The console's configured repos and roots. Without identities (embedders and tests) they resolve once, synchronously,
+ * as before. With them, the console resolves them in the background after it listens (operate.ts startConsole), so
+ * each is read from the last answer: a configured path counts by its real path from the moment its folder answers,
+ * and until then only by its spelling, which the strict `canon` never matches for an unresolved row.
+ */
+function startupCeiling(repos: readonly string[], roots: readonly string[], identities: ProjectIdentities | undefined, canon: (path: string) => string | null): {
+  ceiling: { readonly repos: readonly string[]; readonly roots: readonly string[]; canon: (path: string) => string | null };
+  unresolved: () => readonly string[];
+  /** The project every fresh session opens with: the sole configured repo, else none. */
+  defaultProject: () => string | null;
+} {
+  const once = identities === undefined ? resolveCeiling(repos, roots) : null;
+  const current = () => once ?? resolveCeiling(repos, roots, identities!.known);
+  const ceiling = {
+    get repos() { return current().ceiling.repos; },
+    get roots() { return current().ceiling.roots; },
+    canon,
+  };
+  return {
+    ceiling,
+    unresolved: () => current().unresolved,
+    defaultProject: () => ceiling.repos.length === 1 && ceiling.roots.length === 0 ? ceiling.repos[0] as string : null,
+  };
+}
