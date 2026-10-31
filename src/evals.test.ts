@@ -97,6 +97,39 @@ describe("the shipped eval set", () => {
     expect(storeRewriteProblem(["docs/a.md"], null, null)).toBeNull();
   });
 
+  test.each([
+    // PR #263 follow-up: a write to a member of Object or Function, the descriptor and assign reflectives, and any
+    // decorator (code that runs as a class is defined) in another file need a person.
+    ["Object.defineProperty = (o) => o;\n"],
+    ["Object.freeze = (o) => o;\n"],
+    ["globalThis.Object.create = () => ({});\n"],
+    ["Function.prototype.call = function () {};\n"],
+    ["Object.prototype.recordIt = 1;\n"],
+    ["({ a: Object.keys } = {});\n"],
+    ["export const d = Object.getOwnPropertyDescriptor(Object, \"x\");\n"],
+    ["export const d = Object.getOwnPropertyDescriptors(Object);\n"],
+    ["export const d = Object.assign({}, {});\n"],
+    ["const mark = (_: unknown) => undefined;\n@mark\nexport class Other {}\n"],
+    ["const mark = (..._: unknown[]) => undefined;\nexport class Other {\n  @mark run() {}\n}\n"],
+  ])("a changed file that adds %j needs a person", text => {
+    expect(storeRewriteProblem(["src/a.ts"], () => Buffer.from(text), () => Buffer.from(""))).toMatch(/src\/a\.ts adds/);
+  });
+
+  test("Store#static holds the class header and refuses any decorator on Store or its members (PR #263 follow-up)", () => {
+    const pins = [{ file: "src/store.ts", fn: "Store#static", why: "sealed as the class is defined" }];
+    const store = (header: string, member = "") => () => Buffer.from(`const mark = (..._: unknown[]) => undefined;\nclass Base {}\n${header} {\n  static { seal(Store.prototype); }\n${member}  recordUsage() {}\n}\n`);
+    const base = store("export class Store");
+    expect(evalHookProblem(store("export class Store"), base, [], pins)).toBeNull();
+    expect(evalHookProblem(store("export   class  Store"), base, [], pins)).toBeNull();
+    for (const changed of ["export class Store extends Base", "export abstract class Store", "class Store", "export class Store<T>"]) {
+      expect(evalHookProblem(store(changed), base, [], pins)).toMatch(/Store#static changed/);
+    }
+    for (const decorated of [store("@mark\nexport class Store"), store("export class Store", "  @mark settle() {}\n"), store("export class Store", "  @mark static early = 1;\n"),
+      store("export class Store", "  constructor(@mark db: unknown) {}\n")]) {
+      expect(evalHookProblem(decorated, base, [], pins)).toMatch(/no longer has Store#static/);
+    }
+  });
+
   test("a link or an unlisted folder in the eval set refuses the whole set", () => {
     const copy = join(dir, "evals");
     cpSync(EVALS_ROOT, copy, { recursive: true });
