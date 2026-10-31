@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.83 — 2026-10-31
+
+- **A folder that doesn't answer can't freeze the console.** A disconnected
+  drive, an iCloud-synced Documents folder or a pending macOS privacy prompt
+  used to stall the whole console at startup. Folder reads now run in a
+  separate, time-limited process: the console keeps answering, and the one
+  page that needed the folder says it didn't answer.
+- **Projects come back by themselves.** A saved project whose folder was
+  away when Toolroll started connects as soon as the folder returns, with no
+  restart. It reconnects only to the same folder it was saved as, and a
+  project you remove stays removed.
+- **Safer project paths.** A project's access is decided from its real,
+  resolved location, never from how its path is spelled.
+
 ## 0.9.82 — 2026-10-31
 
 - **A failing nightly holds your releases.** Turn it on with
