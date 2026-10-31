@@ -27,7 +27,7 @@ export function evalCliEntry(): { file: string; args: string[] } {
 
 /** Git for the world's own fixture repository, before any agent exists: no system or global config, no hooks. */
 const GIT_ENV = { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0" };
-const GIT_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false", "-c", "user.email=eval@toolroll.invalid", "-c", "user.name=Toolroll eval"];
+const GIT_ARGS = ["-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
 
 function writeNew(path: string, body: string, mode = 0o644): void {
   mkdirSync(dirname(path), { recursive: true });
@@ -52,7 +52,10 @@ export async function runEvalWorld(one: EvalCase, input: { worldDir: string; dat
   try {
     mkdirSync(repo, { recursive: true });
     for (const [path, body] of Object.entries(one.fixture)) writeNew(join(repo, ...path.split("/")), body);
-    for (const argv of [["init", "-q", "-b", "main"], ["add", "-A"], ["commit", "-q", "-m", `Eval fixture ${one.id}`]]) {
+    // The worker later commits the agent's changes through checkoutGit. Keep the world's synthetic identity in its
+    // repository, where that helper carries it, instead of supplying it only to this first fixture commit.
+    for (const argv of [["init", "-q", "-b", "main"], ["config", "user.name", "Toolroll eval"], ["config", "user.email", "eval@toolroll.invalid"],
+      ["config", "user.useConfigOnly", "true"], ["add", "-A"], ["commit", "-q", "-m", `Eval fixture ${one.id}`]]) {
       const git = await run("git", [...GIT_ARGS, ...argv], { cwd: repo, env: GIT_ENV, timeoutMs: 30_000 });
       if (git.code !== 0) throw new Error(`git ${argv[0]}: ${git.stderr.slice(0, 200)}`);
     }

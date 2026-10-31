@@ -77,14 +77,18 @@ describe("a world's whole process tree", () => {
       conclusion: "Fixed pagination without changing the input.",
     } });
     const one = paginate({ pin: { provider: "claude", model: "claude-scripted" }, timeoutMinutes: 1 });
-    const ran = await attempt({}, "", one, { command: input => ({
+    const ran = await attempt({}, "", one, { keepWorlds: true, command: input => ({
       file: process.execPath,
       args: ["--import", import.meta.resolve("tsx"), "--input-type=module", "-e",
         `import { runEvalWorld } from ${JSON.stringify(pathToFileURL(join(REPO_ROOT, "src/eval-world.ts")).href)};
          console.log(JSON.stringify(await runEvalWorld(${JSON.stringify(one)}, ${JSON.stringify({ worldDir: input.worldDir, databaseFile: input.databaseFile, deny: [], timeoutMs: 55_000 })})));`],
       env: { ...process.env, PATH: `${scripted.bin}:${process.env["PATH"]}` } as Record<string, string>,
     }) });
-    expect(ran.result).toMatchObject({ outcome: "pass", modelReported: "claude-scripted" });
+    const worldDir = store.handle.prepare("SELECT world_dir FROM eval_attempt WHERE id = ?").get(ran.attempt)?.["world_dir"];
+    const world = openStore(join(String(worldDir), "toolroll", "orders.db"));
+    let runs: unknown;
+    try { runs = world.handle.prepare("SELECT outcome, reason FROM run").all(); } finally { world.close(); }
+    expect(ran.result, JSON.stringify({ result: ran.result, runs })).toMatchObject({ outcome: "pass", modelReported: "claude-scripted" });
     expect(scripted.journal().some((entry: { role: string }) => entry.role === "builder")).toBe(true);
   }, 90_000);
 
