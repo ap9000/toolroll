@@ -107,7 +107,7 @@ import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
  */
 
 import { homedir, hostname } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import {
   openStore, openStoreNoMigrate, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
@@ -327,6 +327,7 @@ import { installationStatus, renderInstallationStatus, renderTaskWait, repairSta
 import { latestRelease, newerRelease, notifySecurityRelease, notifyVersionLive, recordRunnerVersion, startUpdateChecks, updateLine, type ReleaseIo } from "./releases.js";
 import { installMethod } from "./install-method.js";
 import { PACKAGE_VERSION } from "./version.js";
+import { machineActing } from "./scope.js";
 
 export type Write = (line: string) => void;
 
@@ -838,6 +839,9 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "choose", "note", "max-open-decisions", "name", "days", "publication", "auto-approve", "review-auto", "port", "host", "allow-host",
   "for", "tick-every", "bridge-every", "reconcile-every", "incarnation",
   "say", "ceiling-usd", "cap-usd",
+  // evals: the cases a diagnostic campaign runs, its k, an attempt's world and what its builds may not read, and the
+  // stuck campaign a person ends (recover --abandon).
+  "case", "k", "world", "deny", "abandon",
   "token-file", "bin", "poll", "github", "remote", "head-prefix", "password",
   // v102: project rules.
   "not-requester", "protect", "protect-paths",
@@ -876,6 +880,8 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "release",
 ]);
 export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
+  // evals run: a report-only campaign; keep each attempt's world for a look afterwards.
+  "diagnostic", "keep",
   // task scope --release ... --no-carry: every later commit asks again.
   "no-carry",
   "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file",
@@ -1403,6 +1409,8 @@ async function dispatch(
   switch (command) {
     case "status":
       return statusCommand(positional, flags, context);
+    case "evals":
+      return evalsCommand(positional, flags, context);
     case "ready":
       return readyCommand(flags, context);
     case "task":
@@ -12849,4 +12857,119 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
 export async function refreshGithubNightlies(store: Store, now: () => Date, reads?: GhRead): Promise<number> {
   if (githubNightlyRepos(store).length === 0) return 0;
   return readGithubNightlies(store, { gh: reads ?? githubReads(releaseExec, releaseTools().gh, { retry: true }), now });
+}
+
+/**
+ * `toolroll evals run | attempt | cases | recover` (docs/plans/evals-nightly.md, part C).
+ *
+ * - `run [--diagnostic] [--case a,b] [--k n] --as <you> --token <password>`: admit a campaign (a person's proof, the
+ *   no release busy) and run it to its end from this installed plane. With no flags it is canonical,
+ *   refused while any case is a draft. Each attempt is a child process: `evals attempt`.
+ * - `attempt <campaign> <case> <n> --world <dir> --db <world db>`: one attempt's world (eval-world.ts). Only under its
+ *   runner's dispatch gate, and only on the world's own database.
+ * - `cases`: each installed case, its version, its pin, and whether a person has validated it yet.
+ * - `recover [--abandon <campaign>]`: settle campaigns whose runner stopped; with --abandon, a person ends a stuck one.
+ */
+export async function evalsCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { write, json } = context;
+  // Loaded when an eval command runs, so no other command (nor the console's bundle) pays for the eval runner.
+  const { admitEvalCampaign, campaignSpending, EVALS_ROOT, installedBuildDigest, loadEvalSet, planCampaign, recoverEvalCampaigns, runEvalCampaign } = await import("./evals.js");
+  const { inEvalWorld } = await import("./eval-gate.js");
+  const { evalCliEntry, runEvalWorld } = await import("./eval-world.js");
+  const action = positional[0];
+  const command = `evals${action === undefined ? "" : ` ${action}`}`;
+  const usage = "Use: toolroll evals run [--diagnostic] [--case <ids>] [--k <n>] --as <you> --token <password> | toolroll evals cases | toolroll evals recover [--abandon <campaign> --as <you> --token <password>]";
+  if (action === "recover" && flags.has("abandon")) return evalsAbandonCommand(flags, context);
+  if (action === "recover") {
+    // A campaign whose runner stopped: its unfinished attempts recorded as interrupted, then it ends incomplete.
+    const recovered = recoverEvalCampaigns(context.store, context.clock());
+    return succeed(write, json, command, { campaigns: recovered }, () => recovered.length === 0 ? ["No campaign is running."] : recovered.map(one => `${one.id}: ${one.recovered ? "recovered" : "left running"} (${one.why})`));
+  }
+  if (action === "cases") {
+    const set = loadEvalSet();
+    if (!set.ok) return fail(write, json, command, "unreadable", set.problem, EXIT.failed);
+    const cases = set.cases.map(one => ({ id: one.id, kind: one.kind, version: one.version, pin: one.pin, validatedBy: one.validatedBy, draft: one.validatedBy === null }));
+    return succeed(write, json, command, { manifestDigest: set.manifestDigest, cases }, () => cases.map(one => `${one.id} (${one.kind}) ${one.version.slice(0, 12)} on ${one.pin.model}: ${one.draft ? "draft, awaiting a person's validation" : `validated by ${one.validatedBy}`}`));
+  }
+  if (action === "attempt") {
+    // Only its campaign's runner starts an attempt: under the runner's dispatch gate, on the world's own database.
+    if (!inEvalWorld()) return fail(write, json, command, "refused", "An eval attempt runs only from its campaign's runner.", EXIT.refused);
+    const [, campaign, caseId, n] = positional;
+    const world = text(flags, "world");
+    if (campaign === undefined || caseId === undefined || n === undefined || !/^[1-9][0-9]?$/.test(n) || world === undefined) return fail(write, json, command, "usage", "Use: toolroll evals attempt <campaign> <case> <n> --world <dir> --db <world>/toolroll/orders.db", EXIT.usage);
+    let worldDir: string;
+    try { worldDir = realpathSync(world); } catch { return fail(write, json, command, "refused", "The world's folder can't be read.", EXIT.refused); }
+    if (resolve(context.databaseFile) !== join(worldDir, "toolroll", "orders.db")) return fail(write, json, command, "refused", "An eval attempt runs only on its world's own database.", EXIT.refused);
+    const set = loadEvalSet();
+    const one = set.ok ? set.cases.find(item => item.id === caseId) : undefined;
+    if (one === undefined) return fail(write, json, command, "refused", set.ok ? `No case is named ${caseId}.` : set.problem, EXIT.refused);
+    const deny = (text(flags, "deny") ?? "").split(",").filter(path => path !== "" && isAbsolute(path));
+    const report = await runEvalWorld(one, { worldDir, databaseFile: context.databaseFile, deny, timeoutMs: one.timeoutMinutes * 60_000 });
+    return succeed(write, json, command, { ...report }, () => [JSON.stringify(report)]);
+  }
+  if (action !== "run" || positional.length !== 1) return fail(write, json, command, "usage", usage, EXIT.usage);
+  if (inEvalWorld()) return fail(write, json, command, "refused", "An eval world doesn't start campaigns of its own.", EXIT.refused);
+  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined) return fail(write, json, command, "person-only", "Only a person starts an eval campaign: it spends money.", EXIT.refused);
+  const k = text(flags, "k");
+  const cases = text(flags, "case");
+  const set = loadEvalSet();
+  if (!set.ok) return fail(write, json, command, "unreadable", set.problem, EXIT.failed);
+  const planned = planCampaign(set, { ...(cases === undefined ? {} : { cases: cases.split(",").filter(Boolean) }), ...(k === undefined ? {} : { k: Number(k) }), diagnostic: flag(flags, "diagnostic") });
+  if (!planned.ok) return fail(write, json, command, "refused", planned.problem, EXIT.refused);
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, command, "usage", "An eval campaign is started with your password: add --as <you> --token <password>.", EXIT.usage);
+  const { plan } = planned;
+  const buildDigest = (): string => installedBuildDigest(PACKAGE_VERSION);
+  const sealed = { cases: plan.cases.map(one => ({ id: one.id, version: one.version, pin: one.pin, maxDispatches: one.maxDispatches })), k: plan.k, baseline: null, evals: EVALS_ROOT };
+  // A campaign whose runner stopped no longer holds its place.
+  recoverEvalCampaigns(context.store, context.clock());
+  const admitted = admitEvalCampaign(context.store, { kind: "eval", canonical: plan.canonical, manifestDigest: set.manifestDigest, buildDigest: buildDigest(), version: PACKAGE_VERSION, k: plan.k,
+    sealed, as: acting.name, token: acting.token, now: context.clock() });
+  if (!admitted.ok) return fail(write, json, command, admitted.reason, admitted.message, EXIT.refused);
+  const stateDir = dirname(context.databaseFile);
+  const entry = evalCliEntry();
+  const keep = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "SHELL", "TMPDIR"];
+  const ended = await runEvalCampaign(context.store, admitted.id, plan.cases, {
+    // Beside the plane's state folder, never inside it: a world's builds read-deny the plane's state.
+    workRoot: join(dirname(stateDir), "toolroll-eval-worlds", admitted.id),
+    buildDigest,
+    keepWorlds: flag(flags, "keep"),
+    now: context.clock,
+    command: input => ({ file: entry.file, args: [...entry.args, "evals", "attempt", input.campaign, input.caseId, String(input.n), "--world", input.worldDir, "--deny", stateDir, "--db", input.databaseFile, "--json"],
+      env: { ...Object.fromEntries(keep.flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!]])), XDG_CONFIG_HOME: join(input.worldDir, "config") } }),
+  });
+  const rows = context.store.handle.prepare("SELECT case_id, n, replaces, outcome, error_why, api_microusd, subscription_microusd, usage_unknown FROM eval_attempt WHERE campaign = ? ORDER BY case_id, n, replaces").all(admitted.id);
+  const nullable = (value: unknown): number | null => value === null || value === undefined ? null : Number(value);
+  const attempts = rows.map(row => ({ case: String(row["case_id"]), n: Number(row["n"]), replaces: Number(row["replaces"]), outcome: row["outcome"] === null ? null : String(row["outcome"]),
+    why: row["error_why"] === null ? null : String(row["error_why"]), apiMicrousd: nullable(row["api_microusd"]), subscriptionMicrousd: nullable(row["subscription_microusd"]), usageUnknown: Number(row["usage_unknown"]) === 1 }));
+  // What was actually spent, as recorded: API dollars and subscription usage apart, unknown never shown as measured.
+  const spent = campaignSpending(context.store, admitted.id);
+  const dollars = (micro: number | null, unknown: number): string => micro === null ? `unknown (${unknown} attempt${unknown === 1 ? "" : "s"} with unknown spending)` : `$${(micro / 1_000_000).toFixed(2)}`;
+  return succeed(write, json, command, { campaign: admitted.id, canonical: plan.canonical, state: ended.state, why: ended.why, attempts, spending: spent }, () => [
+    `Campaign ${admitted.id} (${plan.canonical ? "canonical" : "diagnostic"}) is ${ended.state}${ended.why === null ? "" : `: ${ended.why}`}.`,
+    ...attempts.map(one => `${one.case} #${one.n}${one.replaces === 0 ? "" : " (replacement)"}: ${one.outcome ?? "not finished"}${one.why === null ? "" : ` — ${one.why}`}`),
+    `API dollars: ${dollars(spent.apiMicrousd, spent.unknownAttempts)}. Subscription usage, not billed: ${dollars(spent.subscriptionMicrousd, spent.unknownAttempts)}.`,
+  ]);
+}
+
+/**
+ * `toolroll evals recover --abandon <campaign> --as <you> --token <password>` (PR #263 review): a person ends a campaign
+ * recovery can't settle (its runner or a world's processes can't be proven gone). Its unfinished attempts are recorded
+ * as errors and its spending as unknown, and it ends incomplete; nothing is signalled and no world is removed. A lead
+ * token, a machine or an eval world is refused; the password is checked inside the write (evals.ts abandonEvalCampaign).
+ */
+async function evalsAbandonCommand(flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { write, json } = context;
+  const command = "evals recover";
+  const { abandonEvalCampaign } = await import("./evals.js");
+  const { inEvalWorld } = await import("./eval-gate.js");
+  const id = text(flags, "abandon");
+  if (id === undefined || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(id)) return fail(write, json, command, "usage", "Use: toolroll evals recover --abandon <campaign> --as <you> --token <password>", EXIT.usage);
+  if (inEvalWorld() || machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined) return fail(write, json, command, "person-only", "Only a person abandons an eval campaign.", EXIT.refused);
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, command, "usage", "A campaign is abandoned with your password: add --as <you> --token <password>.", EXIT.usage);
+  const ended = abandonEvalCampaign(context.store, { id, as: acting.name, token: acting.token, now: context.clock() });
+  if (!ended.ok) return fail(write, json, command, ended.reason, ended.message, EXIT.refused);
+  return succeed(write, json, command, { campaign: id, state: "incomplete", attempts: ended.attempts, spending: "unknown" },
+    () => [`Campaign ${id} ended incomplete. ${ended.attempts} unfinished attempt${ended.attempts === 1 ? "" : "s"} recorded as errors; what it spent is unknown. Nothing was stopped: check for its processes yourself.`]);
 }

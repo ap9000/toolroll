@@ -10,6 +10,7 @@
  * is the one writer, and it writes through the ordinary knowledge and
  * decision stores so every edit keeps its revision.
  */
+import { inEvalWorld } from './eval-gate.js';
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -177,6 +178,8 @@ export function analysisPrompt(surface: MemorySurface, openGaps: { key: string; 
 /** The production analyser: one call through the configured chat provider, no tools, no history. */
 export function defaultAnalyzer(store: Store, options: { configDir?: string; env?: NodeJS.ProcessEnv; fetcher?: typeof fetch; timeoutMs?: number; runner?: Parameters<typeof performSubscriptionLeadRequest>[1] }): MemoryAnalyzer {
   return async input => {
+    // An eval world makes no provider call it can't record (eval-gate.ts, Codex round 1 #3): the backward pass waits.
+    if (inEvalWorld()) return { ok: false, problem: 'The backward pass makes no provider call in an eval world.' };
     const config = store.getChatConfig();
     if (config === null) return { ok: false, problem: 'Chat is not configured; the backward pass uses the chat model.' };
     const system = analysisPrompt(input.surface, input.openGaps);

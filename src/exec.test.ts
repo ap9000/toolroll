@@ -758,3 +758,20 @@ describe("finding the agent's own process in a listing", () => {
     } finally { child.kill("SIGKILL"); }
   });
 });
+
+// Evals B1/C1 Codex round 1 #7: one session whose inits name two models keeps both through the transport, so the run's
+// model reads unknown (never the pinned one); inits that agree keep their model.
+test.each([
+  ["claude-opus-4-1-20250805", null, false],
+  ["claude-sonnet-5-5", "claude-sonnet-5-5", false],
+  ["claude-opus-4-1-20250805", null, true],
+  ["claude-sonnet-5-5", "claude-sonnet-5-5", true],
+])("the Claude transport keeps a second init naming %s: the reported model is %s (earlier unnamed init: %s)", async (second, expected, unnamed) => {
+  const result = await runClaudeStreamJsonl(process.execPath, ["-e", `
+    ${unnamed ? 'console.log(JSON.stringify({type:"system",subtype:"init",session_id:"s-1"}));' : ""}
+    console.log(JSON.stringify({type:"system",subtype:"init",session_id:"s-1",model:"claude-sonnet-5-5"}));
+    console.log(JSON.stringify({type:"system",subtype:"init",session_id:"s-1",model:${JSON.stringify(second)}}));
+    console.log(JSON.stringify({type:"result",subtype:"success",is_error:false,session_id:"s-1",result:"done",total_cost_usd:0.01,num_turns:1}));
+  `], { timeoutMs: 15_000 });
+  expect(adapterFor("claude").parse(result.stdout).modelReported ?? null).toBe(expected);
+});

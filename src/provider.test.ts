@@ -703,6 +703,22 @@ describe("the provider audit", () => {
     expect(claude.parse("{}").initObserved).toBe(null);
   });
 
+  // v140 (docs/plans/evals-nightly.md B1): a run's exact model is what the session's own events say, never the agent's
+  // words; several, a subagent's, or a malformed one is unknown (null), never chosen.
+  test.each([
+    ["the session's init", [{ type: "system", subtype: "init", session_id: "s-1", model: "claude-sonnet-4-5-20250929" }, { type: "result", subtype: "success", session_id: "s-1", result: "I am claude-opus-9", modelUsage: { "claude-haiku-4-5": {} } }], "claude-sonnet-4-5-20250929"],
+    ["inits that disagree", [{ type: "system", subtype: "init", session_id: "s-1", model: "claude-sonnet-4-5" }, { type: "system", subtype: "init", session_id: "s-1", model: "claude-opus-4-1" }, { type: "result", subtype: "success", session_id: "s-1", modelUsage: { "claude-sonnet-4-5": {} } }], null],
+    ["a subagent's init", [{ type: "system", subtype: "init", session_id: "s-2", parent_tool_use_id: "toolu_1", model: "claude-opus-4-1" }, { type: "result", subtype: "success", result: "ok" }], null],
+    ["a model id with spaces or controls", [{ type: "system", subtype: "init", session_id: "s-1", model: "claude sonnet\n" }, { type: "result", subtype: "success", session_id: "s-1" }], null],
+    ["no result: the init alone", [{ type: "system", subtype: "init", session_id: "s-1", model: "claude-sonnet-4-5" }], "claude-sonnet-4-5"],
+    ["the legacy buffered envelope's one modelUsage model", [{ result: "ok", modelUsage: { "claude-sonnet-4-5": { inputTokens: 3 } } }], "claude-sonnet-4-5"],
+    ["the legacy buffered envelope naming two", [{ result: "ok", modelUsage: { "claude-sonnet-4-5": {}, "claude-haiku-4-5": {} } }], null],
+    ["nothing reported", [{ result: "claude-sonnet-4-5" }], null],
+  ] as const)("claudeParse's reported model: %s", (_name, events, model) => {
+    const parsed = adapterFor("claude").parse(events.map(event => JSON.stringify(event)).join("\n"));
+    expect(parsed.modelReported ?? null).toBe(model);
+  });
+
   test("Codex canonicalizes one identity and rejects conflicting thread.started ids", () => {
     const codex = adapterFor("codex");
     const canonical = codex.parse(

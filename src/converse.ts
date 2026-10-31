@@ -20,10 +20,12 @@
  * cannot be spoken to — the reservation math would be fiction.
  */
 
+import { takeEvalDispatch } from "./eval-gate.js";
 import { TASK_TEXT_LIMITS } from "./task-text.js";
 import { createHash } from "node:crypto";
 import { hasForbiddenControls, hasDisguisedText } from "./decision.js";
 import { parseAcceptanceCriteria, type AcceptanceCriterion } from "./scope.js";
+import { reportedCostUsdOf, reportedModelOf } from "./reported-usage.js";
 import type { ChatProviderId, DirectChatProviderId, SubscriptionChatProviderId } from "./store.js";
 
 // ---------------------------------------------------------------- limits
@@ -379,6 +381,9 @@ export type ProviderAnswer = {
   /** OpenRouter reports the actual charge; settlement takes the HIGHER of
    * this and the pinned math — the ledger never undercounts. */
   reportedCostMicrousd: number | null;
+  /** v140: the exact model the response body names, and the cost it reported in dollars (absent or null: unreported). */
+  modelReported?: string | null;
+  reportedCostUsd?: number | null;
 };
 
 /** Strict parse of the PROVIDER response body (layer one). */
@@ -434,7 +439,14 @@ export type LeadToolCall = { id: string; name: string; args: Record<string, unkn
 /** `tokensIn` is ALL input tokens of the request; of them, `cacheWriteTokens` were written to the provider's prompt cache
  * and `cacheReadTokens` read from it (absent: the provider reported none — never assumed zero for a cached request). */
 export type LeadProviderAnswer = { text: string; calls: LeadToolCall[]; tokensIn: number; tokensOut: number; reportedCostMicrousd: number | null;
-  cacheWriteTokens?: number; cacheReadTokens?: number };
+  cacheWriteTokens?: number; cacheReadTokens?: number;
+  /** v140 (docs/plans/evals-nightly.md B1), each from the provider's own report and absent or null when it gave none
+   * (never 0): the exact model it says answered, its own turn count (`num_turns`), and the cost it reported in dollars.
+   * `reportedCostMicrousd` stays API money only; a subscription harness's reported cost is `reportedCostUsd` alone. */
+  modelReported?: string | null; providerTurns?: number | null; reportedCostUsd?: number | null;
+  /** v141: how a subscription harness's own events said this request was billed (its init's key source); null or
+   * absent when they didn't say (unknown money, never assumed to be the plan). */
+  billingReported?: "subscription" | "api-key" | null };
 
 /** Anthropic prices a cache write at 1.25x and a cache read at 0.1x the input price (5-minute cache). */
 export const CACHE_WRITE_RATIO = 1.25;
@@ -531,6 +543,7 @@ export function parseLeadProviderWrapper(
     const write = cache("cache_creation_input_tokens"), read = cache("cache_read_input_tokens");
     if (write === null || read === null) return { ok: false, problem: "no-usage" };
     return { ok: true, answer: { text, calls, tokensIn: usage.tokensIn + (write ?? 0) + (read ?? 0), tokensOut: usage.tokensOut, reportedCostMicrousd: null,
+      modelReported: reportedModelOf(body["model"]), providerTurns: null, reportedCostUsd: null,
       ...(write === undefined ? {} : { cacheWriteTokens: write }), ...(read === undefined ? {} : { cacheReadTokens: read }) } };
   }
   const choices = body["choices"];
@@ -567,7 +580,8 @@ export function parseLeadProviderWrapper(
     if (!Number.isSafeInteger(micro)) return { ok: false, problem: "bad-cost" };
     reportedCostMicrousd = micro;
   }
-  return { ok: true, answer: { text, calls, tokensIn: usage.tokensIn, tokensOut: usage.tokensOut, reportedCostMicrousd } };
+  return { ok: true, answer: { text, calls, tokensIn: usage.tokensIn, tokensOut: usage.tokensOut, reportedCostMicrousd,
+    modelReported: reportedModelOf(body["model"]), providerTurns: null, reportedCostUsd: reportedCostUsdOf(rawCost) } };
 }
 
 /** The lead's request: system contract, the data document as the first
@@ -643,6 +657,9 @@ export async function performLeadRequest(
   signal: AbortSignal,
   fetcher: typeof fetch = fetch,
 ): Promise<{ ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string }> {
+  // An eval world (eval-gate.ts): each request takes one of the attempt's dispatch slots. Past the limit nothing is sent.
+  const evalSlot = takeEvalDispatch(`lead:${provider}`);
+  if (evalSlot.active && !evalSlot.ok) return { ok: false, problem: "status-eval-dispatch-limit" };
   let response: Response;
   try {
     response = await fetcher(request.url, { method: "POST", headers: request.headers, body: request.body, redirect: "error", signal });
@@ -679,7 +696,7 @@ export function parseProviderWrapper(
     const tokensIn = usage === undefined ? NaN : Number(usage["input_tokens"]);
     const tokensOut = usage === undefined ? NaN : Number(usage["output_tokens"]);
     if (!tokenCount(tokensIn) || !tokenCount(tokensOut)) return { ok: false, problem: "no-usage" };
-    return { ok: true, answer: { text: block["text"], tokensIn, tokensOut, reportedCostMicrousd: null } };
+    return { ok: true, answer: { text: block["text"], tokensIn, tokensOut, reportedCostMicrousd: null, modelReported: reportedModelOf(body["model"]), reportedCostUsd: null } };
   }
 
   // openrouter-api (OpenAI-compatible)
@@ -703,6 +720,9 @@ export function parseProviderWrapper(
       tokensIn,
       tokensOut,
       reportedCostMicrousd: Number.isFinite(reportedCost) && reportedCost >= 0 ? Math.ceil(reportedCost * 1_000_000) : null,
+      modelReported: reportedModelOf(body["model"]),
+      // The body's own number only: Number(null) would read an unreported cost as 0.
+      reportedCostUsd: usage === undefined ? null : reportedCostUsdOf(usage["cost"]),
     },
   };
 }
@@ -869,6 +889,10 @@ export async function performChatRequest(
   },
   fetcher: typeof fetch = fetch,
 ): Promise<{ ok: true; answer: ProviderAnswer } | { ok: false; problem: string }> {
+  // An eval world (eval-gate.ts, Codex round 1 #3): fleet chat's request takes a dispatch slot too; past the limit, or
+  // with a gate that can't be read, nothing is sent.
+  const evalSlot = takeEvalDispatch(`chat:${args.provider}`);
+  if (evalSlot.active && !evalSlot.ok) return { ok: false, problem: "status-eval-dispatch-limit" };
   const request = composeRequest(args);
   let response: Response;
   try {

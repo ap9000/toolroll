@@ -1,6 +1,6 @@
 # Evals and nightly: GitHub's nightly as release debt, and eval harness phase 2
 
-Status: approved for building (Codex round 2 GO-with-changes folded). Revision 3. Round 1 (NO-GO, 16 findings) and
+Status: approved for building (Codex round 2 GO-with-changes folded). Revision 4 (owner spending decision and B1/C1 recovery). Round 1 (NO-GO, 16 findings) and
 round 2 (11 closed, 5 partial plus one new high, all folded in) are in "Review round 1" and "Review round 2" below. Branch `evals-phase2`, off main 360762cb (0.9.81). Owner's ask: "We need to do these
 Evals and nightly stuff." Sources: docs/plans/test-matrix.md ("Nightly", "Not built yet"), docs/plans/eval-harness.md
 (phase 1 shipped 0.9.77–0.9.81; "Phase 2"), and the code cited below. Nothing here uses Tart or a VM.
@@ -13,7 +13,7 @@ This is a deliberately small first version. It has four parts:
 |---|---|---|---|
 | A. GitHub nightly → release debt | The plane reads every Nightly run and attempt on main itself. A failing lane becomes debt. Deploy, merge and the last pre-tag check wait until that lane passes on a later nightly, or freshly on the candidate. Shown in Needs you and on the release card | at most 20 s per boundary (one bounded GitHub read at deploy, merge and pre-tag); usually 0 | $0 |
 | B. Eval accounting | Every model call in an eval attempt is tied to that attempt, including lead chat turns. API dollars are kept apart from subscription usage, and unknown is kept as unknown | 0 | $0 |
-| C. Eval set | 25 versioned cases, run 3 times each, in canonical campaigns started by hand. Run by the installed plane in separate world processes, graded by a trusted oracle outside the fence. Compared with an owner-pinned baseline campaign | 0 (on demand, never in a release) | about $23–34 a campaign; at most about $130 reserved |
+| C. Eval set | 25 versioned cases, run 3 times each, in canonical campaigns started by hand. Run by the installed plane in separate world processes, graded by a trusted oracle outside the fence. Compared with an owner-pinned baseline campaign | 0 (on demand, never in a release) | about $23–34 a campaign; no dollar ceiling |
 | D. Reviewer evals | Person-validated buggy and clean diffs. Recall and false alarms under a pinned provider and exact model | 0 | about $29 a run |
 
 **Deferred** (see "Later"):
@@ -24,7 +24,7 @@ This is a deliberately small first version. It has four parts:
 - delta-review coverage in sealAutoGreen
 
 Estimated API spend: **about $85 in the first month** (two campaigns and one reviewer run, all started by hand). If
-weekly runs are switched on after measurement, **about $150 a month**. See "Budget".
+weekly runs are switched on after measurement, **about $150 a month**. See "Spending and dispatch limits".
 
 **What the eval gate does today: nothing automatic.** Production automatic approval is already refused, because CI
 reports are not protected from candidate writes (`reportsProtected: false`, src/release-adapters.ts:381-383; refusal
@@ -351,7 +351,7 @@ No production-run views (bloat flags, cost per finished task across projects) in
   installed binary. So `world()`-style environment changes stay inside one process (finding 16).
 - If the installed build changes mid-campaign (a deploy), the campaign stops as **incomplete**. An incomplete campaign is
   never canonical.
-- **Admission pauses** while a release operation is reserved or a deploy is draining. Only one campaign runs at a time.
+- **Admission pauses** while a release operation is reserved or a deploy is draining. Only one canonical campaign runs at a time.
   It has its own concurrency limit: 2 attempts at once.
 
 **Packaging.**
@@ -384,7 +384,7 @@ The case's code (the fixture repository as the agent left it) is never run in th
    | Outcome | When |
    |---|---|
    | pass | the oracle got the right answer |
-   | fail | wrong answer, or the exercised code crashed, timed out or hit its budget cap |
+   | fail | wrong answer, or the exercised code crashed, timed out or exceeded its dispatch limit |
    | error | the evaluator or provider failed independently of the agent (below) |
    | unevaluated | the reported exact model differs from the case's pin |
 
@@ -397,7 +397,7 @@ No VM. The fence is the same one every build already runs in.
 ### The cases (25, versioned)
 
 - **Folder.** Each case lives in `evals/cases/<id>/`: `case.json` (id, kind, words, pinned provider + exact model,
-  per-invocation cap, max invocations, timeout), `repo.bundle`, `oracle.mjs`, `source.md`.
+  max invocations, timeout), `repo.bundle`, `oracle.mjs`, `source.md`.
 - **Version.** A case's version is the sha256 of its folder. A changed case starts a new history.
 - **Who decides.** Cases are added by a person in a reviewed release, never filled automatically.
 
@@ -494,11 +494,11 @@ The release card repeats it for a person approving a release.
 - `src/nightly-github.ts`
 - the contracts they use (`src/contracts/evals*.ts`)
 
-That covers the evaluator, oracles, reviewer scoring, baseline, debt, budget and nightly ingestion.
+That covers the evaluator, oracles, reviewer scoring, baseline, debt, accounting and nightly ingestion.
 
 **Enforcement call sites are protected too.** The hooks live in src/deploy-gate.ts, scripts/deploy-candidate.mjs, the
 merge reservation in src/store.ts, the pre-tag step in src/release.ts, `sealAutoGreen` in src/release-auto.ts, and the
-lead and review dispatch paths that reserve eval spend. A change that removes or bypasses any of them must need a person.
+lead and review dispatch paths that record eval requests. A change that removes or bypasses any of them must need a person.
 
 Rather than protecting those whole large files by path, a manifest in `src/eval-*.ts` lists each required hook call.
 src/release-auto.ts and scripts/deploy-candidate.mjs are already person-only as release and CI policy. A check that
@@ -506,44 +506,28 @@ src/release-auto.ts and scripts/deploy-candidate.mjs are already person-only as 
 any is missing or moved, or the manifest itself changed, the change needs a person. Result-writing authority stays in the installed plane's eval module. World processes get no handle
 on the plane's database.
 
-### Budget: reservations, not a start-only cap
+### Spending and dispatch limits
 
-**Decision 4** (recommended): **on demand only** at first. After two measured campaigns the owner decides whether to
-turn on weekly runs.
+**Owner decision, 2026-10-30:** “We can set unlimited that is fine.” Eval campaigns have no monthly dollar ceiling or
+per-call dollar cap. The campaign reservation, carving and monthly ledger are removed. This supersedes the budget
+recommendations in the historical review tables below. Existing production budgets outside evals are unchanged.
 
-The monthly ceiling defaults to **$200 of API dollars plus reserved worst case**. Subscription usage is shown but not
-capped in dollars: plan limits govern it.
+Campaigns remain on demand. Every provider request takes a dispatch slot and is recorded. Helpers that cannot keep a
+request record refuse in an eval world. API dollars, subscription usage and unknown amounts remain separate; a
+missing record or unreadable gate makes the attempt an error, with unknown totals and model metadata. Known charges
+are preserved on individual invocation records, including when collection or the runner fails.
 
-**How a reservation works.**
-- **Before admitting a campaign** (eval or reviewer), the runner reserves the campaign's worst case in
-  `eval_spend_month`: the per-dispatch cap × max dispatches × 3, plus 3 replacements. Eval and reviewer campaigns share
-  this ledger.
-- **Every provider dispatch** in an attempt is capped and **carved out of that campaign reservation**. It is never
-  reserved a second time against the month. This covers:
-  - every `invokeAgent` call (builder, planner, repair, reviewer), capped by `maxBudgetUsd` (src/invoke.ts:851)
-  - **every lead request**: lead requests bypass `invokeAgent` (src/lead.ts:543, direct and subscription), and one
-    reply can make several requests
+A case retains its dispatch count and time limit. One canonical campaign runs at a time to preserve settlement order;
+diagnostic campaigns do not share that restriction. Admission still requires a person's proof and refuses during a
+release operation or deployment drain.
 
-  For lead requests, the world's lead turn is given the attempt's remaining per-dispatch cap through the lead's own
-  existing reservation (`reserved_microusd` on `chat_turn`). Each request counts as one dispatch in the case's
-  max-dispatch limit.
-- **If a dispatch can't be capped, or the case's dispatch limit is reached**, the attempt stops. Not capped is an
-  error; over the limit is a fail. A provider that can't hold a cap refuses (:327).
-- **After each dispatch**, the reported cost is settled back into the campaign reservation. Unknown cost settles at
-  that dispatch's full cap. When the campaign ends, what is left of its reservation is released.
-
-**Worst case per campaign:**
-
-| Case kind | Max dispatches, at a $0.75 cap each |
+| Case kind | Maximum dispatches |
 |---|---|
-| builds and stop-and-ask | plan + build = 2 |
+| builds and stop-and-ask | 2 |
 | repair | 3 |
 | planner | 1 |
-| lead answers | 2 lead requests |
-| lead flows | 3 lead requests |
-
-Over 25 cases × 3 that is about 165 dispatches ≈ **$124**, plus replacements ≈ **$130 reserved**. A $200 ceiling
-therefore admits one campaign at a time, never two.
+| lead answers | 2 |
+| lead flows | 3 |
 
 **Expected per campaign:** 75 attempts × $0.30–0.45 = **$22.50–$33.75**.
 
@@ -565,8 +549,7 @@ release.
    - **Every label is validated by a person** (`validatedBy` in labels.json; the folder needs a person under finding 10).
    - Labels never enter the reviewer's workspace: only the patch and files are copied in.
 3. **Same context as production.** Build-review's brief and patch preparation (:137, `REVIEW_PATCH_NAME`) are extracted
-   into one exported `reviewContextOf(...)` that both production and the eval call. Each invocation is capped (about
-   $0.60 via `maxBudgetUsd`). Production review stays uncapped as it is today.
+   into one exported `reviewContextOf(...)` that both production and the eval call. Every invocation is counted and its usage recorded, without an eval dollar cap.
 4. **Scoring.** 3 attempts per diff.
    - A HIGH finding at the labelled file and within ±8 lines is a **proxy hit**.
    - Every finding (with its scenario sentence) is kept for a person to adjudicate on the report page. An adjudication
@@ -576,16 +559,16 @@ release.
    - A change of 2 diffs or fewer out of 15 reads "no clear change".
 5. It holds nothing. It informs the pin.
 
-Cost: 30 diffs × 3 × about $0.32 (measured Opus review) ≈ **$29**, at most $54 reserved.
+Cost: 30 diffs × 3 × about $0.32 (measured Opus review) ≈ **$29**, without a reserved spending ceiling.
 
 ---
 
 ## Budget
 
-| Item | Per run (expected) | Reserved worst case | v1 month (on demand) | If weekly is turned on later |
+| Item | Per run (expected) | Dollar ceiling | v1 month (on demand) | If weekly is turned on later |
 |---|---|---|---|---|
-| Eval campaign, 25 × 3 Sonnet | $22.50–$33.75 | about $130 | 2 runs: about $56 | 4.3 runs: about $120 |
-| Reviewer evals, 30 × 3 | about $29 | about $54 | 1 run: about $29 | about $29 (when the pin or brief changes) |
+| Eval campaign, 25 × 3 Sonnet | $22.50–$33.75 | None | 2 runs: about $56 | 4.3 runs: about $120 |
+| Reviewer evals, 30 × 3 | about $29 | None | 1 run: about $29 | about $29 (when the pin or brief changes) |
 | Nightly reads, accounting | $0 | — | $0 | $0 |
 | **Total** | | | **about $85** | **about $150** |
 
@@ -616,8 +599,8 @@ VM isolation.
 | Version | Slice | Tables / columns |
 |---|---|---|
 | v139 | A1 | `nightly_lane` (lane_id, repo, workflow, display_name, retired_at, retired_by, retired_proof); `nightly_lane_alias` (repo, lane_id, name, by, proof, at); `github_nightly_cursor` (repo, page_cursor, last_ok_at, last_why); `github_nightly_watch` (repo, gh_run, created_at, attempts_read, finished, last_checked_at); `nightly_lane_job` (repo, lane_id, gh_run, attempt, job_id, sha, started_at, completed_at, conclusion, cause; unique (repo, gh_run, attempt, job_id)); `nightly_lane_failure` (id, repo, lane_id, job ref, sha, opened_at, cleared_at, cleared_by_job, closed_why); `nightly_exemption` (task, candidate, failure_id, pr, gh_run, attempt, job_id, started_at, completed_at, read_at; unique (task, candidate, failure_id)). Kept apart from `main_check_failure`, whose `run` is a Toolroll run id, NOT NULL |
-| v140 | B1 | `run.model_reported`; `chat_turn.model_reported`, `provider_turns`, `reported_cost_usd`, `cache_read_tokens`, `cache_write_tokens` (all nullable: null = not reported) |
-| v141 | C1, C2 | `eval_campaign` (id, canonical, manifest_digest, build_digest, version, baseline_campaign, k, admitted_at, finished_at, state, settled_at); `eval_attempt` (id, campaign, case_id, case_version, n, replaces, outcome, error_why, model_pinned, model_reported, api_microusd, subscription_microusd, usage_unknown, turns, tokens_in, cache_read, cache_write, tokens_out, tool_calls, wall_ms; unique (campaign, case_id, n, replaces)); `eval_invocation` (attempt, kind, world_ref, reserved_microusd, settled_microusd, unknown); `eval_spend_month` (month, ceiling_microusd, reserved_microusd, settled_microusd); `eval_baseline_pin` (campaign, by, proof, at, accepted_worse_json); `eval_debt` (id, case_id, case_version, campaign, baseline_campaign, opened_at, cleared_at, cleared_by_campaign, waived_by, waived_proof, waived_why) |
+| v140 | B1 | `run.model_reported`; `chat_turn.model_reported`, `provider_turns`, `reported_cost_usd` (all nullable: null = not reported; `chat_turn.cache_read_tokens` and `cache_write_tokens` already exist from v129, see Build notes) |
+| v141 | C1, C2 | `eval_campaign` (id, canonical, manifest_digest, build_digest, version, baseline_campaign, k, admitted_at, finished_at, state, settled_at); `eval_attempt` (id, campaign, case_id, case_version, n, replaces, outcome, error_why, model_pinned, model_reported, api_microusd, subscription_microusd, usage_unknown, turns, tokens_in, cache_read, cache_write, tokens_out, tool_calls, wall_ms; unique (campaign, case_id, n, replaces)); `eval_invocation` (attempt, kind, world_ref, recorded, amount, api_microusd, subscription_microusd, model_reported); runner host/pid on campaigns and world path/process witnesses on attempts; run.billing_basis and chat_turn.billing_reported; `eval_baseline_pin` (campaign, by, proof, at, accepted_worse_json); `eval_debt` (id, case_id, case_version, campaign, baseline_campaign, opened_at, cleared_at, cleared_by_campaign, waived_by, waived_proof, waived_why) |
 | v142 | D1 | `build_review.reviewer_model`; `reviewer_eval_attempt` (id, campaign, diff_id, diff_version, n, provider, model_pinned, model_reported, findings_json, proxy_hits_json, adjudication_json, api_microusd, subscription_microusd) |
 
 Each version is additive, with a `src/migration-v1NN-*.test.ts` and an `UPDATE_SAFE_MIGRATIONS` entry.
@@ -684,8 +667,8 @@ contracts. There are no copy or markup matrices. Fix rounds run only the affecte
   the eval collector; migration.
 - **Targeted:** src/subscription-chat.test.ts, src/provider*.test.ts, `src/migration-v140-*.test.ts`.
 
-### C1. Runner, oracle, packaging, budget, first 10 cases (v141)
-- **New code:** src/evals.ts (campaign, attempt child process, collector, reservations) and src/eval-oracle.ts (oracle
+### C1. Runner, oracle, packaging, accounting, first 10 cases (v141)
+- **New code:** src/evals.ts (campaign, attempt child process, collector, recovery) and src/eval-oracle.ts (oracle
   harness).
 - **Files:** `evals/` (manifest + 10 cases) added to package.json `files`; the provider gate ported into src; policy
   paths added to `autoPathProblem`.
@@ -696,10 +679,10 @@ contracts. There are no copy or markup matrices. Fix rounds run only the affecte
   - a symlinked input path is refused
   - the oracle runs only after the process group is gone
   - a crash or timeout is a fail and a world-start failure is an error
-  - reservations refuse admission over the ceiling and settle unknown cost at the full cap
-  - every lead request is capped and counted against the case's dispatch limit
-  - dispatch reservations are carved from the campaign's, never added to the month twice
-  - reviewer campaigns use the same ledger
+  - every exit path preserves known charges and unknown metadata
+  - every lead request counts against the case's dispatch limit
+  - unknown cost is never presented as measured spending
+  - recovery checks persisted process and process-group witnesses before settling an interrupted campaign
   - a build change mid-campaign leaves it incomplete
   - policy paths, including src/reviewer-evals.ts, need a person
   - a candidate that removes or moves a listed enforcement hook call, or edits the manifest, needs a person
@@ -723,7 +706,7 @@ contracts. There are no copy or markup matrices. Fix rounds run only the affecte
 
 ### D1. Reviewer evals and the pin (v142)
 - **Changes:** `reviewContextOf` extracted from build-review, the provider + exact model pin, `reviewer_model`, the
-  reviewer eval runner (capped), scoring with adjudication, 30 person-validated diffs.
+  reviewer eval runner (metered, without a dollar cap), scoring with adjudication, 30 person-validated diffs.
 - **Tests:**
   - production and eval use the same context function
   - a model mismatch is unevaluated
@@ -744,7 +727,7 @@ Codex: one round per pair (A1–A3, B1–C1, C2–D1), at most two each.
 | 5 | What eval debt holds | **Automatic approval only**, dormant while auto-approval stays refused; never deploy, merge or tag |
 | 6 | Baseline | **An owner-pinned campaign id**, with a password; no automatic promotion in v1 |
 | 7 | Reviewer model | **Pin provider + exact model**; a mismatch is not evaluated |
-| 8 | Monthly ceiling | **$200** of API dollars, reservation-backed (admits one campaign at a time) |
+| 8 | Spending limits | **Unlimited**, owner decision 2026-10-30; per-request accounting and dispatch-count limits remain |
 | 9 | Delta-review coverage | **Later** |
 
 ## Review round 1 (Codex, NO-GO): what changed
@@ -883,3 +866,168 @@ Where the build took the safer or more concrete reading of this plan, recorded a
   probe (5 s, cached) is left as it is.
 - 7: opt-in, alias and retire now check the password inside their own transaction (`provePerson` runs under the lock
   with the write), so neither a revocation nor a credential rotation can land between the proof and the change.
+
+**B1 (v140).**
+- `chat_turn.cache_read_tokens` and `cache_write_tokens` already exist (v129), so v140 adds only `run.model_reported`
+  and `chat_turn.model_reported`, `provider_turns` and `reported_cost_usd` (all nullable, saved rows NULL). The
+  subscription chat now fills the v129 cache columns too (it reported none before).
+- `chat_turn` is one row per provider request (a lead turn's steps are its rows), so each row keeps its own request's
+  report and nothing is summed there; a sum over a turn or an attempt is the collector's (C1), unknown if any part is.
+- The readings live in the new src/reported-usage.ts: a model id is printable ASCII without spaces, at most 200
+  characters, or unknown (never trimmed into another id). Claude: the session's own `system`/`init` model (a subagent's
+  never counts); inits that disagree leave it unknown, never chosen; with no init naming one (the buffered
+  `--output-format json` chat, legacy fixtures) the result's `modelUsage` counts only when it names exactly one model.
+  Turns are the result's `num_turns`, cost its `total_cost_usd`, tokens `usageOf`'s cache-aware split (input = input +
+  cache read + cache write when all three are reported, else the plain count as before). Codex `exec --json` reports no
+  model, turns or cost (unknown); its cache reads are `cached_input_tokens`, its cache writes unknown. The direct API
+  path reads the response body's `model`; OpenRouter's `usage.cost` is its reported cost (a null cost stays unknown,
+  where `Number(null)` would have read 0); Anthropic reports none. Fleet chat's `chat_turn` rows get the same.
+- A subscription's reported cost goes only to `reportedCostUsd` / `reported_cost_usd`, never `reportedCostMicrousd`,
+  which stays API money (lead settlement reads it).
+- A resumed turn that adds to its run's usage (a review resume) adds its model too: unknown if either turn's is, the
+  model when they agree, otherwise every model named, sorted and joined by " + " (never equal to one model, so a pinned
+  comparison reads it as a mismatch).
+- `runAccounting` and `chatTurnAccounting` (end of src/store.ts) are the collector's reads: the reported fields, the
+  normalized tokens, and the amount kept as API dollars (billing `api-key` with a reported or priced spend; an API chat's
+  settled charge), subscription usage (the provider's reported cost of subscription work; null when unreported), or
+  unknown (no billing, unpriced, or a chat request with unknown spend). They are never added together.
+- Not covered, and unknown: a failed chat request keeps no report (the harness's answer is never parsed when the
+  request fails); Codex, Gemini and ACP runs report no exact model, so a run on them is never evaluated under a pin.
+
+**C1 initial build (v141), superseded by the recovery notes below.**
+- Schema: v141 makes all six tables the plan names for C1 and C2 at once (they share the version). Beyond the plan's
+  columns: `eval_campaign.kind` (eval or reviewer: one shared ledger), `sealed_json`, `started_by`/`started_proof`,
+  `why`, `month`, `reserved_microusd`/`carved_microusd`/`settled_microusd`, `released`; `eval_attempt.carved_microusd`,
+  `started_at`/`finished_at`; `eval_invocation` unique per (attempt, world_ref). `eval_attempt.replaces` is NOT NULL,
+  0 for an original: SQLite treats NULLs as distinct, so a nullable column would let two originals land under the
+  unique identity. One running campaign per kind (a partial unique index).
+- Validation (the plan names no record for it): `case.json` carries `expected` and `validatedBy` (null: a draft), the
+  same shape as part D's `labels.json`. A person sets it in a release they approve (`evals/` needs a person). A
+  canonical campaign is refused while any case is a draft; a diagnostic one runs drafts. Setting it changes the case's
+  version, so a validated case starts its own history. **All ten C1 cases ship as drafts**: no canonical campaign can
+  run until the owner validates them.
+- Every campaign, diagnostic too, needs exact model pins (claude only: the one provider here that holds a dollar cap
+  and reports its exact model). The drafted pin is `claude-sonnet-4-5-20250929` (Decision 3), for the owner to confirm.
+  Starting a campaign needs a person's password (it spends money); a lead token or remote run is refused.
+- Fixtures are plain files (`fixture/`), not a git bundle: they read in the diff a person approves, and the world makes
+  its own repository from them as the pilot does (scripts/pilot.mjs). Sources: the real-model pilot's fixed assignments
+  (scripts/fixtures/pilot-scenarios.mjs) and the app-e2e journeys. The plane database's own failure history wasn't read
+  in this build. The first ten are nine small builds and one stop-and-ask; repair, planner and lead cases (their world
+  drivers and plane-state grading) come with C2.
+- Oracle: the case's `oracle.mjs` holds the hidden inputs and answers (pure functions); the harness (src/eval-oracle.ts,
+  run as its own process from src/eval-oracle-main.ts) copies in, fences, sends the nonce and compares. The launcher is
+  the case's `probe.mjs`, copied from the installed case. The fence is the release check's (`fenceFor("check")`,
+  writes only the grading folder, a proxy that allows no host) and also denies the installed `evals/`. A world's builds
+  can't read the hidden checks either: the world's project read-denies the installed `evals/` and the plane's state
+  folder.
+- Process tree: the attempt child runs in its own process group; the runner waits for its exit, its group and every
+  descendant the process-tree observer saw (30 s). A tree that won't end is stopped and the attempt is an error, never
+  graded. Not covered: a descendant that leaves for a new session within one 500 ms observation is not seen.
+- Errors only where the plane recorded them: the world failed before the agent started (the child says so AND the
+  world's database shows no provider started), a refused run before any start, the oracle failing, the world's records
+  unreadable, processes that wouldn't end, a dispatch without a gate slot. Crash, timeout and asking past the limit are
+  fails.
+- The dispatch gate (src/eval-gate.ts): TOOLROLL_EVAL_GATE names a folder beside the world's database (which agents'
+  fences deny); slots are exclusive creates; asking past the limit is remembered. invokeAgent refuses past the limit or
+  on a provider that can't hold a cap as `containment` (no new refusal reason); subscription lead requests run with
+  `--max-budget-usd` (Codex refused); direct lead requests take a slot, and lead.ts holds the turn's reservation to the
+  slots left × the cap; task sizing, flow drafts and subagent turns, which keep no record, refuse in an eval world.
+- Settlement: each attempt carves its dispatch limit × cap from the campaign's reservation (never the month again);
+  each dispatch settles at its API cost (subscription work: 0 API dollars, its reported cost kept apart as usage),
+  unknown, unrecorded or ungated ones at the cap; the rest of the carve, and at the end the rest of the campaign's
+  reservation, is released. The $200 ceiling is a constant in src/evals.ts (changing it needs a person).
+- The hook manifest (src/eval-hooks.ts) is checked by release-auto.ts `changeProblem` over verified blobs. Only hooks the
+  base holds are required, so other projects are held to none and a candidate can't opt out by deleting a file (the
+  base is the plane's record). It proves the call is in its function, not that it is reached (dead code passes); a
+  person reviewing these files stays the backstop. `src/evals*.ts` as a policy path includes its tests.
+- The provider gate's runtime part is ported as `limiter` and the slot folder; the pgrep session count isn't (nothing at
+  run time uses it).
+- Worlds are made beside the plane's state folder (`toolroll-eval-worlds/<campaign>/`), never inside it, since a world's
+  builds read-deny the plane's state. A world's own state folder is named `toolroll`, so every agent fence in the world
+  denies it whole (its database, its worker's token and the dispatch gate).
+- Open: the world driver (src/eval-world.ts) follows the pilot's CLI choreography. A by-hand smoke run with a stub
+  `claude` that refuses everything (no model call) got through the whole world start to the builder's dispatch, which
+  took a gate slot and was refused before any spawn (an error, as it should be). A build all the way through needs the
+  scripted-provider journey or a first diagnostic campaign; whether a world's standard mode adds an automatic review
+  dispatch (past a build's limit of 2) shows there.
+
+
+**B1/C1 recovery, 2026-10-30 (Codex).** Claude stopped with the first review fixes uncommitted on `evals-b1`.
+The recovered patch removes the eval dollar limits and pins draft cases to `claude-sonnet-5-5`; no real model was
+called to certify that pin. A different or missing provider-reported model remains unevaluated.
+
+- Every exit path collects known invocation charges. Unreadable records and slots add unknown metadata rather than
+  zeroes, and incomplete collection cannot satisfy a model pin. API billing on CLI chat is determined from that
+  request's evidence, not its provider name; unknown billing and conservative budget charges remain unknown.
+- Fleet chat takes a dispatch slot; the memory pass and other unrecorded helpers refuse in eval worlds. Conflicting
+  model init events survive the production transport. Tool calls are collected before removing an attempt's world.
+- The oracle requires both the right answers and exit code zero. A world process that crashes cannot reuse a prior
+  finished build to pass. Detached groups are checked as groups, and observation failure prevents grading.
+- Process witnesses and launch state are saved in the plane's database. Recovery refuses while a retained process or
+  group remains alive, or launch/observation evidence is incomplete. It never signals a historical PID. Worlds are
+  removed only after their result is saved and their tree is proven stopped.
+- A campaign rechecks its build, eval set and deployment drain before attempts and at completion. It waits for
+  already-started attempts after another lane fails, instead of finalizing while those lanes still write.
+- The release hook checker parses real TypeScript calls; comments, strings and regex literals cannot replace a call.
+  Accounting modules are protected paths and the store's accounting functions are pinned by body.
+- v141 now creates five eval tables, no monthly spending ledger. Existing rows gain nullable billing-evidence columns;
+  the ten cases remain drafts and cannot start a canonical campaign until a person validates their expected answers.
+
+Remaining scope: C2 (baseline comparison, debt and the rest of the cases) and D1 (reviewer evals) are separate slices.
+This fix round does not publish a release, run a paid campaign or validate the ten expected answers on the owner's behalf.
+
+A scripted-provider journey now exercises the real CLI setup, isolated database, native builder fence, worker,
+committed build, collector and oracle. It makes no model calls. Native oracle attacks remain a separate focused test.
+The transport also retains a model witness when an earlier init had no model, so later conflicting inits cannot be
+collapsed into a false match to the pin.
+
+**PR #263 review fixes (2026-10-31).**
+- Hook binding: a listed call counts only when its name is bound as the manifest's `from` says: an un-renamed value
+  import from that module (`./eval-gate.js`, `./nightly-github.js`, ...), the file's own top-level function (`self`)
+  or a local of the enclosing function (`local`, release.ts `nightlyHolds`), declared exactly once in the file and
+  never assigned. A renamed import beside a local stand-in, a namespace import, an import from another module, or a
+  shadowing parameter, variable or destructuring needs a person. Enclosing and pinned functions are held the same way
+  (a later `name = …` replaces the checked body). This is syntax, not the type checker: a person stays the backstop.
+- Pinned Store methods: `Store#recordUsage`, `Store#settleRunSpend`, `Store#fixRunBilling` and `Store#finalizeChatTurn`
+  (the plan's "finishChatTurn"; there is no method of that name), each the class's one member of its name, never
+  replaced through the prototype or `defineProperty`. invokeAgent's `recordRunBillingBasis` and `recordRunCostUnknown`
+  calls are hooks with `args`: what they are passed must read as the base has it.
+- `run.cost_unknown` (in the unreleased v141): set by the pinned `recordRunCostUnknown` when a turn's cost wasn't
+  reported, never cleared, so a review resume that writes new usage over the note can't make the money read as measured.
+  Accounting reads the column, not the note. Saved rows read 0 and are unknown money anyway (NULL billing basis).
+- An attempt whose world wasn't proven stopped (ancestry lost, a process that outlived SIGKILL, or the runner failing
+  after the spawn) records its spending as unknown (an extra `tree:unstopped` unknown dispatch) and stops the campaign
+  incomplete, with no replacement.
+- Recovery compares the runner's process start (`eval_campaign.runner_started`, `ps -o lstart`, within 2 s) so a reused
+  pid isn't the runner; an unreadable start counts as alive. `toolroll evals recover --abandon <campaign>` (a person's
+  password, in the write's transaction; a lead token, machine or eval world refused) ends a stuck campaign incomplete:
+  unfinished attempts are errors with unknown spending, `eval_campaign.spending_unknown` makes the campaign's totals
+  unknown, and nothing is signalled or removed.
+- Jev sort steps (flow-sort.ts `askJev`) refuse in an eval world, held by a hook.
+- Security scan of the above: a pin held the Store methods only inside store.ts. Now store.ts makes the four pinned
+  methods unwritable and unconfigurable on `Store.prototype` as it loads (`sealStoreMoneyMethods`, pinned, and a
+  `<module>` hook: a bare top-level call), and `changeProblem` scans every changed JavaScript/TypeScript file
+  (`storeRewriteProblem`, a hook): a new assignment to a pinned name, a computed-key write on something named like the
+  store or a prototype, a reach to a non-built-in prototype (`X.prototype`, `__proto__`, get/setPrototypeOf), or a
+  property-defining call naming a pinned method, the store or a prototype, or taking a computed key, needs a person.
+  Ways the base's copy of the file already had don't count. Tests' instance spies (`vi.spyOn(store, …)`) still work.
+  Residual: an alias of the store instance written through a computed key, which a person reviewing catches.
+- Security scan round 2: any new mention in a changed file of `defineProperty`, `defineProperties`, `setPrototypeOf`,
+  `getPrototypeOf`, `__proto__`, `__defineGetter__`, `__defineSetter__`, `Reflect` or `Proxy` (renamed or aliased
+  uses included), a class extending something named Store, or a member of a pinned name outside store.ts needs a
+  person. Rewrites are compared by their whole normalized text (sha256), not a shortened one. A changed-file read that
+  fails is a problem, never a deletion: only files the verified diff says are gone are skipped.
+- Security scan round 3, the owner's decision (2026-10-31): the two notes above are replaced by one blunt rule. In a
+  changed JS/TS file other than store.ts, a new computed member name, a write through a computed element access, a
+  computed element access on Object, Reflect, globalThis or anything named store, any mention of a reflective name
+  (`defineProperty`, `defineProperties`, `setPrototypeOf`, `getPrototypeOf`, `__proto__`, `__defineGetter__`,
+  `__defineSetter__`, `Reflect`, `Proxy`, `constructor`), an `extends` that isn't a plain identifier or names a store,
+  or anything named like a pinned method other than a call of it, needs a person. Ordinary code that adds a computed
+  write now needs a person too (accepted). The runtime seal in store.ts stays.
+- Security scan round 4 (runtime): the seal now runs from Store's first static block (pinned as `Store#static`, the
+  class's first static element that runs code), so nothing runs between the class's definition and the seal; it
+  refuses to load if a method isn't still the class's own plain method. The constructor (pinned) locks the four
+  methods as each instance's own unwritable, unconfigurable properties (`lockStoreMoneyMethods`, pinned), so shadowing
+  one on an instance throws however it's done. store.ts is scanned by the blunt rule too, its class's own method
+  declarations exempt. Tests that faked a crash through `vi.spyOn(store, "finalizeChatTurn")` now fail its database
+  statement instead.

@@ -31,6 +31,7 @@ import { ACP_AGENTS, isAcpProvider, withAcp, type AcpProviderId, type KeyedProvi
 import { acpParse } from "./acp-client.js";
 import { agentSpecSchema, MODEL_ID, modelIdSchema, PROVIDER_ID_VALUES, providerIdSchema, type AgentSpec, type ProviderId } from "./contracts/provider.js";
 import { primaryResultEvent, topLevelEvent } from "./stream-scope.js";
+import { claudeResultReport, reportedModelOf, type ClaudeInitModel } from "./reported-usage.js";
 
 export type { AgentSpec, ProviderId } from "./contracts/provider.js";
 export const PROVIDER_IDS: readonly ProviderId[] = PROVIDER_ID_VALUES;
@@ -195,6 +196,9 @@ export type ParsedEnvelope = {
   structuralTerminal: import("./exhaustion.js").StructuralTerminal | null;
   /** What an ACP agent itself reported it used — kept on the run, never priced. Absent for every other dialect. */
   agentReportedUsage?: string | null;
+  /** v140: the exact model the provider itself reported for this turn (Claude: its session's init, or a buffered
+   * result's one `modelUsage` model). Absent or null: not reported — every other dialect today. */
+  modelReported?: string | null;
   /** An ACP conversation's facts the conformance check reads (acp-client.ts AcpEnvelope): nothing else does. */
   acp?: { offered: string[]; exit: { how: "eof" | "term" | "kill" | "self" | "error"; leftover: boolean; timedOut: boolean } | null; agent: { name: string; version: string } | null; stop: string | null;
     /** The conversation broke the protocol (acpParse's protocolError), or null. */
@@ -507,6 +511,7 @@ function claudeEnvelopeOf(
   sessionFromInit: string | null,
   initObserved: boolean | null,
   initSessionConflict = false,
+  initModel: ClaudeInitModel = { model: null, conflict: false },
 ): ParsedEnvelope {
   const input = result?.usage?.input_tokens;
   const output = result?.usage?.output_tokens;
@@ -538,6 +543,8 @@ function claudeEnvelopeOf(
     costUsd: typeof cost === "number" && cost >= 0 ? cost : null,
     ...(result !== null && (result as Record<string, unknown>)[CLAUDE_COST_UNKNOWN] === true ? { costUnknown: true } : {}),
     usageRaw: result?.usage === undefined ? null : JSON.stringify(result.usage).slice(0, USAGE_JSON_CAP),
+    // The model only when the session's own events name it (never the agent's words); no result, no report.
+    modelReported: result === null ? (initModel.conflict ? null : initModel.model) : claudeResultReport(result as Record<string, unknown>, initModel).modelReported,
     initObserved,
     // Structural, never prose (finding 15): consumed means the primary
     // result says SUCCESS. An error result keeps its text as diagnostics
@@ -573,6 +580,7 @@ function claudeParse(stdout: string): ParsedEnvelope {
   let initSeen = false;
   let sessionFromInit: string | null = null;
   let initSessionConflict = false;
+  const initModels = new Set<string>();
   let primary: ClaudeResultShape | null = null;
   let transportFailure: ClaudeResultShape | null = null;
   for (const line of stdout.split("\n")) {
@@ -594,6 +602,8 @@ function claudeParse(stdout: string): ParsedEnvelope {
     }
     if (String(type) === "system" && String(event["subtype"] ?? "") === "init") {
       initSeen = true;
+      const model = reportedModelOf(event["model"]);
+      if (model !== null) initModels.add(model);
       const id = sessionIdOf(event["session_id"]);
       if (id !== null) {
         if (sessionFromInit === null) sessionFromInit = id;
@@ -615,7 +625,8 @@ function claudeParse(stdout: string): ParsedEnvelope {
       if (primary === null && primaryResultEvent(event)) primary = result;
     }
   }
-  const envelope = claudeEnvelopeOf(primary, sessionFromInit, initSeen, initSessionConflict);
+  const envelope = claudeEnvelopeOf(primary, sessionFromInit, initSeen, initSessionConflict,
+    { model: initModels.size === 1 ? [...initModels][0]! : null, conflict: initModels.size > 1 });
   if (transportFailure === null) return envelope;
   return {
     ...envelope,

@@ -42,9 +42,9 @@ test("v128: the personal lead queue and lead_message.pending are added; a saved 
 
   expect(updateSafeSchema(127)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(128);
-  expect(SCHEMA_VERSION).toBe(139);
+  expect(SCHEMA_VERSION).toBe(141);
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(139);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(141);
   const pending = Object.fromEntries((store.handle.prepare("SELECT id, pending FROM lead_message ORDER BY id").all() as { id: number; pending: number }[]).map(row => [row.id, row.pending]));
   expect(pending).toEqual({ 1: 0, 2: 0, 3: 0, 4: 0, 5: 1, 6: 0, 7: 1 });
   expect(store.handle.prepare("SELECT COUNT(*) AS n FROM lead_queue").get()?.["n"]).toBe(0);

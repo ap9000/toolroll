@@ -1331,6 +1331,8 @@ export function createChatHandlers(runtime: ServerRuntime) {
     const pinnedSettle = settleForPrice(enabled.price, result.answer.tokensIn, result.answer.tokensOut);
     const settled = Math.max(pinnedSettle, result.answer.reportedCostMicrousd ?? 0);
     const envelope = parseAssistantEnvelope(result.answer.text);
+    // v140: what the provider's response body itself reported (absent: unreported, kept NULL).
+    const reported = { modelReported: result.answer.modelReported ?? null, reportedCostUsd: result.answer.reportedCostUsd ?? null };
     if (!envelope.ok) {
       finish({
         state: "failed",
@@ -1338,6 +1340,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
         tokensIn: result.answer.tokensIn,
         tokensOut: result.answer.tokensOut,
         settledMicrousd: settled,
+        ...reported,
       });
       tell(null, "the model's answer was malformed and was discarded");
       return;
@@ -1370,6 +1373,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
       settledMicrousd: settled,
       replyBytes: Buffer.byteLength(envelope.envelope.reply, "utf8"),
       candidateCount: kept,
+      ...reported,
     });
     tell(envelope.envelope.reply, null, envelope.proposalsDiscarded);
   }

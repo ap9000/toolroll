@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
-import { leadTimeoutNotice, openStore, type ChatConfig, type Store } from "./store.js";
+import { chatTurnAccounting, leadTimeoutNotice, openStore, type ChatConfig, type Store } from "./store.js";
 import { fileTaskProposal } from "./proposal.js";
 import { propose } from "./scope.js";
 import { ceilingDigestOf, isVerifiedApprover, reproveApprover, verifyApproverStanding, type VerifiedApprover } from "./principal.js";
@@ -256,6 +256,34 @@ describe("the lead's turn", () => {
     expect(store.latchedChatTurns(credential)).toEqual([]);
     expect(store.chatTurnsToday("alex", clock())).toBe(1);
   });
+  // v140 (docs/plans/evals-nightly.md B1): each request's row keeps what its provider itself reported — exact model,
+  // turns, reported cost, cache tokens — with null for anything unreported, and API dollars apart from subscription usage.
+  test("each request keeps what its provider reported; API dollars, subscription usage and unknown stay apart", async () => {
+    const rows = (turn: number) => store.raw().prepare("SELECT id FROM chat_turn WHERE mate_turn = ? ORDER BY id").all(turn).map(row => chatTurnAccounting(store, Number(row["id"]))!);
+    // The direct API path: the response body names the model; Anthropic reports no cost or turns, so those stay null.
+    const direct = await turn("what needs me?", scripted([json({ type: "message", model: "claude-sonnet-5-20261001", content: [{ type: "text", text: "Quiet." }],
+      usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 50, cache_creation_input_tokens: 10 } })]).fetcher);
+    if (!direct.ok) throw new Error("turn refused");
+    expect(rows(direct.turn)).toEqual([expect.objectContaining({ provider: "anthropic-api", modelReported: "claude-sonnet-5-20261001", providerTurns: null, reportedCostUsd: null,
+      tokensIn: 160, cacheReadTokens: 50, cacheWriteTokens: 10, amount: { kind: "api", microusd: direct.settledMicrousd } })]);
+
+    // A subscription harness: its reported cost is usage, not billed; a request that reported nothing keeps null, not 0.
+    const config: ChatConfig = { ...CONFIG, provider: "claude-subscription", model: "default", weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 };
+    const subscriptionRunner: SubscriptionLeadRunner = async request => request.history.some(one => one.role === "tool")
+      ? { ok: true, answer: { text: "One decision needs you.", calls: [], tokensIn: 90, tokensOut: 12, reportedCostMicrousd: null } }
+      : { ok: true, answer: { text: "I will look.", calls: [{ id: "r1", name: "recap", args: {} }], tokensIn: 400, tokensOut: 20, reportedCostMicrousd: null,
+          modelReported: "claude-sonnet-4-5-20250929", providerTurns: 2, reportedCostUsd: 0.0123, cacheReadTokens: 300, cacheWriteTokens: 40, billingReported: "subscription" } };
+    const outcome = await runLeadTurn({ store, who, session: session(0, "alex", subscriptionCredentialKey("claude-subscription")), thread: thread(), config, key: null, message: "what needs me?", subscriptionRunner, clock });
+    if (!outcome.ok) throw new Error("turn refused");
+    expect(rows(outcome.turn)).toEqual([
+      expect.objectContaining({ provider: "claude-subscription", modelReported: "claude-sonnet-4-5-20250929", providerTurns: 2, reportedCostUsd: 0.0123, cacheReadTokens: 300, cacheWriteTokens: 40,
+        amount: { kind: "subscription", reportedUsd: 0.0123 } }),
+      // v141 (Codex round 1 #4): a request whose own events didn't say how it was billed is unknown money, never the plan.
+      expect.objectContaining({ modelReported: null, providerTurns: null, reportedCostUsd: null, cacheReadTokens: null, cacheWriteTokens: null, amount: { kind: "unknown" } }),
+    ]);
+    expect(outcome.settledMicrousd).toBe(0);
+  });
+
   test("a watched turn reports its steps, its tools in plain words and its reply as it is written", async () => {
     const config: ChatConfig = { ...CONFIG, provider: "claude-subscription", model: "default", weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 };
     const live = session(0, "alex", subscriptionCredentialKey("claude-subscription"));

@@ -1,0 +1,25 @@
+{
+  "id": "endpoint",
+  "kind": "build",
+  "title": "Add the create-item endpoint",
+  "goal": "Add validate.js exporting validName(value): true only for a string whose trimmed text is 1 to 20 characters. Add endpoint.js exporting createItem(body): return { status: 400, body: { error: \"invalid name\" } } when the body or its name is missing or invalid, otherwise { status: 201, body: { name: <the trimmed name> } }. A missing or null body never throws.",
+  "touches": [
+    "validate.js",
+    "endpoint.js",
+    "test/endpoint.test.mjs"
+  ],
+  "pin": {
+    "provider": "claude",
+    "model": "claude-sonnet-5-5"
+  },
+  "maxDispatches": 2,
+  "timeoutMinutes": 15,
+  "grade": {
+    "files": [
+      "validate.js",
+      "endpoint.js"
+    ]
+  },
+  "expected": "pass",
+  "validatedBy": null
+}

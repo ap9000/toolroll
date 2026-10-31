@@ -357,7 +357,9 @@ describe("where freshness may be honoured", () => {
     // checkApproverPassword), which proves through proveAccountNow. The counts make a new call site a reviewed change.
     expect(hits["checkApproverPassword()"]).toEqual({ "src/server/guards.ts": 2 });
     // Passwordless: credential acts moved to authenticateCredential / credentialApprover / proveCredential (pinned below).
-    expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1,
+    // evals: starting an eval campaign spends money, and abandoning a stuck one ends it with its spending unknown, so a
+    // person proves each inside its own transaction.
+    expect(hits["authenticateApprover()"]).toEqual({ "src/chat-actions.ts": 1, "src/control-setup.ts": 1, "src/desktop-host.ts": 5, "src/evals.ts": 2, "src/flows-cli.ts": 1, "src/nightly-check.ts": 1,
       // nightly-github: turning GitHub's nightly on, a lane alias and a lane's retirement, each a person proved now.
       "src/nightly-github.ts": 1, "src/operate.ts": 58, "src/pull-request-flow.ts": 1,
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
@@ -439,6 +441,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/desktop-host.ts#<module>": 2,
     "src/desktop-host.ts#desktopMain@14": 2,
     "src/desktop-host.ts#pairDesktopLogin@10": 3,
+    "src/evals.ts#<module>": 2,
+    "src/evals.ts#abandonEvalCampaign@36>store.transact(_)@1": 1,
+    "src/evals.ts#admitEvalCampaign@11>store.transact(_)@1": 1,
     "src/nightly-check.ts#<module>": 2,
     "src/nightly-check.ts#createNightlyCheckFlow@5": 1,
     "src/nightly-github.ts#<module>": 2,
