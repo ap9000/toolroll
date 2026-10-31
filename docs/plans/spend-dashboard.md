@@ -62,7 +62,7 @@ price table, historical match verdicts, headroom promises, cost per task, cache 
 | The route policy checks caller and capability only. Password and fresh proof are the handler's job | src/server/route-policy.ts:12 |
 | The Models POST handler does no step-up | src/server/settings.ts:1446 |
 | Models routes inherit `limited: "deny"` | src/server/route-table.ts:113, :287 |
-| `setPhaseConfig` records policy apart from its update. `setPhaseTierConfig` and the clear methods record nothing | src/store.ts:13483, :13535, :13497 |
+| `setPhaseConfig` records policy apart from its update. `setPhaseTierConfig` and the clear methods record nothing | src/store.ts:13483, :13535, :13498 |
 | Project builders inherit installation light and strong tiers. Repair can come from the installation | src/agentconfig.ts:284–340 |
 | A route is sealed at filing. Runs are stamped from the sealed route | src/store.ts:8490–8530, :15510–15524 |
 | A legacy build review with no sealed route resolves the **current** review agent | src/build-review.ts:259 |
