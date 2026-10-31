@@ -1017,3 +1017,10 @@ collapsed into a false match to the pin.
   uses included), a class extending something named Store, or a member of a pinned name outside store.ts needs a
   person. Rewrites are compared by their whole normalized text (sha256), not a shortened one. A changed-file read that
   fails is a problem, never a deletion: only files the verified diff says are gone are skipped.
+- Security scan round 3, the owner's decision (2026-10-31): the two notes above are replaced by one blunt rule. In a
+  changed JS/TS file other than store.ts, a new computed member name, a write through a computed element access, a
+  computed element access on Object, Reflect, globalThis or anything named store, any mention of a reflective name
+  (`defineProperty`, `defineProperties`, `setPrototypeOf`, `getPrototypeOf`, `__proto__`, `__defineGetter__`,
+  `__defineSetter__`, `Reflect`, `Proxy`, `constructor`), an `extends` that isn't a plain identifier or names a store,
+  or anything named like a pinned method other than a call of it, needs a person. Ordinary code that adds a computed
+  write now needs a person too (accepted). The runtime seal in store.ts stays.

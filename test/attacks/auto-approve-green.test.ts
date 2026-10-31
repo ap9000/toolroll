@@ -699,7 +699,13 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
     ["copied onto the store", "Object.assign(store, { recordUsage() {} });"],
     ["the store's prototype swapped", "Object.setPrototypeOf(store, {});"],
     ["reached through __proto__", "const proto = store.__proto__;"],
-    ["reached through an aliased class", "const methods = StoreAlias.prototype;"],
+    // The owner's blunt rule (2026-10-31): computed writes and members, computed reads of Object, Reflect, globalThis or a
+    // store, any reflective name or `.constructor`, and an `extends` that isn't a plain identifier.
+    ["written through any computed key", "target[key] = () => undefined;"],
+    ["declared as a computed class member", "return class { [key]() {} };"],
+    ["read off Object under a computed key", "const tool = Object[key];"],
+    ["replaced by a conditionally chosen subclass", "return class extends (key ? Store : Object) {};"],
+    ["reached through .constructor", "const methods = store.constructor;"],
     // Security scan round 2: renamed or wrapped tools, a subclass, and a member of a pinned name.
     ["defined through a destructured, renamed defineProperty", "const { defineProperty: d } = Object;\nd(target, key, { value() {} });"],
     ["set through an alias of Reflect", "const R = Reflect;\nR.set(target, key, () => undefined);"],
@@ -709,7 +715,7 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
   ])("a pinned Store method %s from another file: a person approves", (_name, code) => {
     const f = open({ candidate: { "src/hijack.ts": `export function hijack(store, target, key, Store) {\n${code}\n}\n` } });
     authorize(f);
-    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("src/hijack.ts could write over a pinned Store method") });
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("src/hijack.ts adds") });
   });
 
   // PR #263 review: what invokeAgent passes as the run's billing basis and its unknown cost is held as the base has it.

@@ -79,7 +79,12 @@ describe("the shipped eval set", () => {
     const write = (suffix: string) => `export function f(store) {\n  store[${long}${suffix}] = 1;\n}\n`;
     // The same rewrite the base already had ships; one alike in its first 200 characters but not after needs a person.
     expect(storeRewriteProblem(["src/a.ts"], file(write("1")), file(write("1")))).toBeNull();
-    expect(storeRewriteProblem(["src/a.ts"], file(write("2")), file(write("1")))).toMatch(/could write over a pinned Store method/);
+    expect(storeRewriteProblem(["src/a.ts"], file(write("2")), file(write("1")))).toMatch(/src\/a\.ts adds/);
+    // A construct the base already had still ships beside an ordinary change; a plain change with none ships too.
+    expect(storeRewriteProblem(["src/a.ts"], file(`${write("1")}export const more = 2;\n`), file(write("1")))).toBeNull();
+    expect(storeRewriteProblem(["src/a.ts"], file("export const answer = (items) => items.map(one => one.id);\n"), file(""))).toBeNull();
+    // store.ts itself is held by its pins and its seal, not this rule.
+    expect(storeRewriteProblem(["src/store.ts"], () => Buffer.from("x[k] = 1;\n"), () => null)).toBeNull();
     // A tree that couldn't be read, or a changed file with no bytes, is a problem: a person decides.
     expect(storeRewriteProblem(["src/a.ts"], null, file(write("1")))).toMatch(/can't be read/);
     expect(storeRewriteProblem(["src/a.ts"], file(write("1")), null)).toMatch(/can't be read/);
