@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { learningChild, recoverLearningOffThread } from "./learning-look.js";
+import { firstTasksOffThread, learningChild, recoverLearningOffThread } from "./learning-look.js";
 import { openStore } from "./store.js";
 
 let base: string;
@@ -27,4 +27,8 @@ test("each project is recovered in its own process: a real checkout is done, a m
   const at = Date.now();
   expect(await learningChild({ databaseFile, evidenceRoot: join(base, "evidence"), repo }, 1)).toBe("no-answer");
   expect(Date.now() - at).toBeLessThan(1_000);
+  // Chat's first-task suggestions too: the project's TODOs, read in a process of its own.
+  writeFileSync(join(repo, "todo.ts"), "// TODO: tidy the importer\n"); git(["add", "."]); git(["commit", "-qm", "todo"]);
+  expect(await firstTasksOffThread(repo)).toEqual(expect.arrayContaining([expect.objectContaining({ source: "todo" })]));
+  await expect(firstTasksOffThread(repo, 1)).rejects.toThrow("didn't answer");
 }, 60_000);

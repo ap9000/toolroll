@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { FOLDER_LOOK_CHILDREN, folderLooksRunning, listFolder, localOrigins, lookFolders, lookIdentities, type FolderLookRunner } from "./folder-look.js";
+import { FOLDER_LOOK_CHILDREN, folderLooksRunning, listFolder, localOrigins, lookFolders, lookIdentities, lookProjectMcp, type FolderLookRunner } from "./folder-look.js";
 
 let base: string;
 beforeEach(() => { base = realpathSync(mkdtempSync(join(tmpdir(), "so-folder-look-"))); });
@@ -104,5 +104,16 @@ describe("what a look reads", () => {
     writeFileSync(join(base, "file"), "");
     const looked = await lookIdentities([join(base, "alias"), join(base, "file"), join(base, "missing")]);
     expect(looked.ok && Object.fromEntries(looked.value)).toEqual({ [join(base, "alias")]: join(base, "real"), [join(base, "file")]: null, [join(base, "missing")]: null });
+  });
+
+  test("a project's .mcp.json for the Tools page: parsed when a plain file, nothing from a FIFO or a link", async () => {
+    const plain = join(base, "plain"), fifo = join(base, "fifo"), linked = join(base, "linked");
+    for (const one of [plain, fifo, linked]) mkdirSync(one);
+    writeFileSync(join(plain, ".mcp.json"), JSON.stringify({ mcpServers: { notes: { command: "notes-mcp" } } }));
+    execFileSync("mkfifo", [join(fifo, ".mcp.json")]);
+    symlinkSync(join(plain, ".mcp.json"), join(linked, ".mcp.json"));
+    expect(await lookProjectMcp(plain)).toEqual({ ok: true, value: { mcpServers: { notes: { command: "notes-mcp" } } } });
+    expect(await lookProjectMcp(fifo)).toEqual({ ok: true, value: null });
+    expect(await lookProjectMcp(linked)).toEqual({ ok: true, value: null });
   });
 });

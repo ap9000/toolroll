@@ -49,6 +49,11 @@ export type UpWorkerConfig = {
   /** Saved projects this start couldn't reach (a folder that didn't answer, a drive not connected): looked at again
    * while it runs, and connected once they answer, on the same saved-list authority the start had. */
   deferredRepos?: string[];
+  /** Each of those lines' removal count when this start read the saved list: a different count at binding means it was
+   * removed since (even if saved again), and the start's authority for it is gone. */
+  deferredGenerations?: Record<string, number>;
+  /** The saved line each of `repos` was proved from: a project stays while its line is saved, whatever else answers. */
+  repoLines?: Record<string, string[]>;
 };
 
 export type UpRoleStart =
@@ -137,12 +142,14 @@ export function startMessage(value: unknown): UpRoleStart | null {
     return { ...base, role: "console", config: config as unknown as UpConsoleConfig };
   }
   if (value["role"] === "worker") {
-    const keys = ["runner", "token", "repos", "pinnedRepos", "projectRoots", "registryPath", "pool", "forMs", "publicUrl", "stopGraceMs", "verbose", "terminal", "leaseWaitMs", "deferredRepos"];
+    const keys = ["runner", "token", "repos", "pinnedRepos", "projectRoots", "registryPath", "pool", "forMs", "publicUrl", "stopGraceMs", "verbose", "terminal", "leaseWaitMs", "deferredRepos", "deferredGenerations", "repoLines"];
     if (Object.keys(config).some(key => !keys.includes(key))) return null;
     if (!nonEmpty(config["runner"], 256) || !nonEmpty(config["token"], 1_024) || !texts(config["repos"]) || !texts(config["pinnedRepos"]) || !texts(config["projectRoots"]) ||
       !nonEmpty(config["registryPath"], 4_096) || !nonEmpty(config["pool"], 4_096) || !orNull(config["forMs"], (one): one is number => whole(one, 1)) ||
       !orNull(config["publicUrl"], (one): one is string => nonEmpty(one, 2_048)) || !whole(config["stopGraceMs"], 0) || typeof config["verbose"] !== "boolean" || typeof config["terminal"] !== "boolean" || !whole(config["leaseWaitMs"], 0) ||
-      (config["deferredRepos"] !== undefined && !texts(config["deferredRepos"]))) return null;
+      (config["deferredRepos"] !== undefined && !texts(config["deferredRepos"])) ||
+      (config["deferredGenerations"] !== undefined && !(isObject(config["deferredGenerations"]) && Object.values(config["deferredGenerations"]).every(one => whole(one, -1, Number.MAX_SAFE_INTEGER)))) ||
+      (config["repoLines"] !== undefined && !(isObject(config["repoLines"]) && Object.values(config["repoLines"]).every(one => texts(one))))) return null;
     return { ...base, role: "worker", config: config as unknown as UpWorkerConfig };
   }
   return null;

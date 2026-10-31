@@ -44,7 +44,9 @@ export type FolderLookRequest =
   /** The origin of each registered project, and of each repository directly in a root (at most 400 folders a root). */
   | { op: "origins"; registered: readonly string[]; roots: readonly string[]; home: string }
   /** Where each path really is (its real path, when that is a folder): a project's identity, resolved off the thread. */
-  | { op: "identities"; paths: readonly string[] };
+  | { op: "identities"; paths: readonly string[] }
+  /** A project's own `.mcp.json`, read as a plain bounded file and parsed (null when absent or not a JSON object). */
+  | { op: "projectMcp"; path: string };
 
 /** One look under way: its answer, and when its process has ended (a stuck child can outlive its answer). */
 export type FolderLookRun = { answer: Promise<unknown>; ended: Promise<void> };
@@ -114,6 +116,12 @@ function children(folder, roots, links) {
   return out;
 }
 function look() {
+  if (request.op === "projectMcp") {
+    const text = readBounded(path.join(request.path, ".mcp.json"), 1024 * 1024, 1024 * 1024);
+    if (text === null) return { config: null };
+    try { const parsed = JSON.parse(text); return { config: parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null }; }
+    catch { return { config: null }; }
+  }
   if (request.op === "identities") {
     return { paths: request.paths.slice(0, 500).map(one => {
       try { const real = fs.realpathSync(path.resolve(one)); return { path: one, real: fs.statSync(real).isDirectory() ? real : null }; }
@@ -200,6 +208,7 @@ function lookKey(request: FolderLookRequest): string {
     case "list": return JSON.stringify([request.op, resolve(request.path), sorted(request.roots), request.home]);
     case "origins": return JSON.stringify([request.op, sorted(request.registered), sorted(request.roots), request.home]);
     case "identities": return JSON.stringify([request.op, sorted(request.paths)]);
+    case "projectMcp": return JSON.stringify([request.op, resolve(request.path)]);
   }
 }
 
@@ -282,4 +291,14 @@ export async function lookIdentities(paths: readonly string[], options: FolderLo
     if (row !== null && typeof row === "object" && text(row.path) && (row.real === null || text(row.real))) out.set(row.path, row.real as string | null);
   }
   return { ok: true, value: out };
+}
+
+/** A project's own `.mcp.json` (parsed object, or null when absent or not one), read off the thread. */
+export async function lookProjectMcp(repo: string, options: FolderLookOptions = {}): Promise<FolderLook<Record<string, unknown> | null>> {
+  const looked = await lookFolders({ op: "projectMcp", path: repo }, options);
+  if (!looked.ok) return looked;
+  const value = looked.value as { config?: unknown } | null;
+  if (value === null || typeof value !== "object") return { ok: false, why: "failed" };
+  const config = value.config;
+  return { ok: true, value: config !== null && typeof config === "object" && !Array.isArray(config) ? config as Record<string, unknown> : null };
 }

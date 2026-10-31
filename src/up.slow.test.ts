@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, existsSync, statSync, readFileSync, writeFileSync, realpathSync, readdirSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, statSync, readFileSync, writeFileSync, realpathSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
@@ -18,7 +18,7 @@ import { sweepServiceRunning } from "./storage-sweep-schedule.js";
 import { openStore } from "./store.js";
 import { register } from "./runner.js";
 import { addApprover, authenticateApprover } from "./scope.js";
-import { addRepos, loadProjectRegistry, updateRepos } from "./repos.js";
+import { addRepos, loadProjectRegistry, registryRemovals, updateRepos } from "./repos.js";
 import { instanceRunDir, proveLiveConsole, readInstance } from "./console-instance.js";
 import { packageVersion } from "./monitoring.js";
 import { underAgent } from "./prompt.js";
@@ -449,7 +449,7 @@ describe("toolroll up", () => {
       expect(await up.stop()).toBe(0);
     });
 
-    test("removed while its proof is under way, it never connects, and saved again it needs its own admission", async ({ onTestFinished }) => {
+    test("removed and saved again while its proof is under way, it never connects on the start's authority", async ({ onTestFinished }) => {
       let release: () => void = () => {};
       const held = new Promise<void>(done => { release = done; });
       let proving: () => void = () => {};
@@ -465,18 +465,54 @@ describe("toolroll up", () => {
       makeRepo(later);
       armed = true;
       await asked;
-      // The person removes it while the proof waits; then the proof answers.
+      // While the proof waits, the person removes it and saves it again; then the proof answers.
       expect(await updateRepos(registry(), current => current.filter(one => one !== later))).toMatchObject({ ok: true });
-      release();
-      // A few passes of the saved-list loop (every 500 ms): the answered proof meets the removal, and nothing connects.
-      await new Promise(done => setTimeout(done, 2_500));
-      expect(up.episodes).not.toContain(later);
-      // Saved again: the start's authority for it is gone, so it is an ordinary addition without an admission.
       expect(await updateRepos(registry(), current => addRepos(current, [later]))).toMatchObject({ ok: true });
+      release();
+      await up.said(line => line.includes(`saved project not connected — ${later} was removed while it was away`));
+      // Saved again, it is an ordinary addition: without an admission it isn't connected.
       await up.said(line => line.includes(`project not connected — ${later}`));
       expect(runnerRepos(String(envelope()["runner"]))).not.toContain(later);
       expect(up.episodes).not.toContain(later);
       expect(await up.stop()).toBe(0);
+    });
+
+    test("a saved folder that comes back leading somewhere else never connects where it leads", async ({ onTestFinished }) => {
+      const other = join(elsewhere, "other");
+      const up = startUp(PORT + 12);
+      onTestFinished(async () => { await up.stop(); });
+      await up.said(line => line.startsWith("{"));
+      makeRepo(other);
+      symlinkSync(other, later);
+      await up.said(line => line.includes(`saved project not connected — ${later} now leads to ${other}`));
+      expect(runnerRepos(String(envelope()["runner"]))).not.toContain(other);
+      expect(up.episodes).not.toContain(other);
+      expect(await up.stop()).toBe(0);
+    });
+
+    test("a removed project is let go while another saved project is away", async ({ onTestFinished }) => {
+      const kept = join(elsewhere, "kept");
+      makeRepo(kept);
+      expect(await updateRepos(registry(), current => addRepos(current, [kept]))).toMatchObject({ ok: true });
+      const up = startUp(PORT + 13);
+      onTestFinished(async () => { await up.stop(); });
+      await up.said(line => line.startsWith("{"));
+      expect(envelope()).toMatchObject({ ok: true, repos: [kept] });
+      // `later` is still away; removing `kept` lets it go regardless.
+      expect(await updateRepos(registry(), current => current.filter(one => one !== kept))).toMatchObject({ ok: true });
+      await up.said(line => line.includes("project removed — kept is no longer built here"));
+      expect(runnerRepos(String(envelope()["runner"]))).not.toContain(kept);
+      expect(await up.stop()).toBe(0);
+    });
+
+    test("every removal from the saved list is counted under its lock, before the list changes", async () => {
+      expect(registryRemovals(registry())).toEqual({});
+      await updateRepos(registry(), current => current.filter(one => one !== later));
+      await updateRepos(registry(), current => addRepos(current, [later]));
+      await updateRepos(registry(), current => current.filter(one => one !== later));
+      expect(registryRemovals(registry())).toEqual({ [later]: 2 });
+      writeFileSync(`${registry()}.removals.json`, "not json");
+      expect(registryRemovals(registry())).toBeNull();
     });
 
     test("a worker's report only narrows what the next worker gets", () => {

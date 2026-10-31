@@ -4,8 +4,9 @@
  * A project's identity is its real path (project.ts canonicalProject). Resolving one reads the folder, and a folder can
  * stop answering (folder-look.ts), so the console never resolves one on a page or at startup on its own thread:
  *
- * - `hot` (lists, filters, page chrome): the last answer, else the path as saved. Saved identities were canonical
- *   when they were saved, so a list stays right without reading anything; nothing is started by asking.
+ * - `hot` (display and grouping only): the last answer, else the path as saved. Nothing is started by asking.
+ * - `strict` (visibility and authorization): only a resolved identity; an unknown one fails closed until the next
+ *   refresh resolves it, so a stored path that leads outside its root never passes on its spelling.
  * - `vouched` (a path a request names): only a path whose identity is known, or one that is exactly a saved identity.
  *   Anything else is refused this time and resolved by the next background pass, never resolved inline.
  * - `resolveNow` (an action that needs a path checked now, a POST): resolved off the thread under the look's deadline.
@@ -19,11 +20,16 @@ import { lookIdentities, type FolderLookOptions } from "./folder-look.js";
 import { canonicalProject } from "./project.js";
 
 export type ProjectIdentities = {
-  /** The last known identity, else the path as saved (resolved lexically). Reads nothing. */
+  /** For display and grouping only: the last known identity, else the path as saved (resolved lexically). Reads
+   * nothing. Never an authorization answer: use `strict`. */
   hot: (path: string) => string;
+  /** For authorization: the known real folder path, else null (unknown or not a folder: fail closed until resolved).
+   * Reads nothing; an unknown path is asked about on the next refresh. */
+  strict: (path: string) => string | null;
   /** The known identity: a real folder path, null (not a folder), or undefined (never answered). Reads nothing. */
   known: (path: string) => string | null | undefined;
-  /** A request's path: its known identity, or the path itself when it is exactly one of `saved`; else undefined. */
+  /** A request's path: its known identity, or the path itself when it is exactly one of `saved` (projects the plane
+   * itself proved and admitted); else undefined. */
   vouched: (path: string, saved: () => Iterable<string>) => string | undefined;
   /** This path's identity now, off the thread: a real folder path, null, or "no-answer" past the deadline. */
   resolveNow: (path: string) => Promise<string | null | "no-answer">;
@@ -61,10 +67,16 @@ export function projectIdentities(look: FolderLookOptions = {}, now: () => numbe
       return answer?.real ?? key;
     },
     known,
+    strict: path => {
+      const key = resolve(path);
+      const answer = answers.get(key);
+      if (answer === undefined) wanted.add(key);
+      return answer?.real ?? null;
+    },
     vouched: (path, saved) => {
       const key = resolve(path);
       const answer = answers.get(key);
-      if (answer !== undefined) return answer.real ?? undefined;
+      if (answer !== undefined && answer.real !== null) return answer.real;
       for (const one of saved()) if (one === key) return key;
       wanted.add(key);
       return undefined;
@@ -94,6 +106,7 @@ export function syncProjectIdentities(): ProjectIdentities {
   return {
     hot: path => canonicalProject(path) ?? path,
     known: path => canonicalProject(path),
+    strict: path => canonicalProject(path),
     vouched: path => canonicalProject(path) ?? undefined,
     resolveNow: async path => canonicalProject(path),
     refresh: async () => true,

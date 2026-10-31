@@ -370,7 +370,7 @@ export function createSharedGuards(runtime: GuardsRuntime) {
   // Defined last, so the reviewed functions above keep their places (password-freshness.test.ts).
   /** Project identities read without touching a folder (project-identity.ts); absent: the synchronous reads. */
   function identities(): ProjectIdentities { return runtime.identities ?? syncIdentities; }
-  /** The projects this console holds by name (each saved as its identity): what a request may name without a read. */
-  function savedIdentities(): string[] { return [...runtime.managedRepos(), ...runtime.store.listProjects().map(one => one.path)]; }
+  /** The projects `up` proved and admitted (each its own identity): what a request may name without a read. */
+  function savedIdentities(): string[] { return runtime.managedRepos(); }
   return { authenticateApprover, authenticateCredential, authorizeMutation, projectOf, resolveRouteProject, projectRequestAllowed, identify, lookupSession, restricted, visible, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible };
 }

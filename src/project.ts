@@ -137,7 +137,13 @@ export function rowVisible(ceiling: ProjectCeiling, repo: string | null): boolea
   // aliases, so the hundredth project does not stat the other99 directories.
   const canon = ceiling.canon;
   if (ceiling.repos.includes(repo) || ceiling.repos.some(one => canon === undefined ? sameRepo(one, repo) : (canon(one) ?? null) !== null && canon(one) === canon(repo))) return true;
-  const canonical = (canon ?? canonicalProject)(repo) ?? repo;
+  // With a resolver (the console's saved identities), an identity it can't vouch for fails closed before any root is
+  // matched: a path's spelling never stands in for where it leads.
+  if (canon !== undefined) {
+    const resolved = canon(repo);
+    return resolved !== null && ceiling.roots.some(root => resolved.startsWith(root + sep));
+  }
+  const canonical = canonicalProject(repo) ?? repo;
   return ceiling.roots.some(root => canonical.startsWith(root + sep));
 }
 

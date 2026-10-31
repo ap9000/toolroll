@@ -117,7 +117,7 @@ import { claimInstance, clearInstance, openInstanceSocket } from "./console-inst
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { ghDispatchAdapter, mirrorTaskId, syncPass, type DispatchAdapter } from "./sync.js";
 import { LIVE_FILE_BOUND, LIVE_RETAIN_MS, sweepLiveLogs } from "./live.js";
-import { addRepos, removeRepos, updateRepos, loadRepos, loadProjectRegistry, updateProjectRegistry } from "./repos.js";
+import { addRepos, removeRepos, updateRepos, loadRepos, loadProjectRegistry, updateProjectRegistry, registryRemovals } from "./repos.js";
 import { deleteProject, holdingsWords, projectHoldings, projectRunning } from "./project-delete.js";
 import { pushPass } from "./push.js";
 import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, writeFileSync } from "node:fs";
@@ -4345,7 +4345,7 @@ async function startConsole(options: {
   // answer (a drive away, an iCloud folder macOS is holding) stays unresolved, kept restrictive, and is looked at again
   // by the background pass; the console starts and answers either way (project-identity.ts).
   const identities = projectIdentities();
-  await identities.refresh([...options.repos ?? [], ...options.projectRoots ?? [], ...context.store.listProjects().map(one => one.path)]);
+  await identities.refresh([...options.repos ?? [], ...options.projectRoots ?? [], ...context.store.listProjects().map(one => one.path), ...context.store.knownRepos()]);
   const server = createDecisionServer({
     identities,
     store: context.store,
@@ -7578,6 +7578,8 @@ async function upCommand(
   // folders they may be added from are installation state, not arguments a
   // person must repeat on every start.
   const registryPath = registryPathOf(context);
+  // Read before the list itself: a line removed after this (even if saved again) counts differently from now on.
+  const removalsAtStart = registryRemovals(registryPath);
   const loadedRegistry = await loadProjectRegistry(registryPath);
   if ("error" in loadedRegistry) return fail(write, json, "up", "registry", loadedRegistry.error, EXIT.refused);
   const gitRun = context.gitRunner ?? ((file: string, args: readonly string[], opts?: { cwd?: string }) => run(file, [...args], { ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }), timeoutMs: 10_000 }));
@@ -7607,13 +7609,19 @@ async function upCommand(
   // A saved project that doesn't answer now (a drive not connected, a folder macOS is holding) is looked at again
   // while this start runs, and connects once it answers (upDeferredRetry).
   const deferredRepos: string[] = [];
+  const deferredGenerations: Record<string, number> = {};
+  // The saved line(s) each project was proved from, so its removal is judged by its own line alone.
+  const repoLines: Record<string, string[]> = {};
   for (const input of loadedRegistry.repos) {
     const root = await proveRepo(input);
     if (root === null) {
       progress(`saved project unavailable — skipped ${input}; it connects when it's back`);
       deferredRepos.push(input);
-    } else if (!repos.includes(root)) {
-      repos.push(root);
+      // An unreadable removal record leaves no count that could match later: the authority can't be used.
+      deferredGenerations[input] = removalsAtStart === null ? -1 : removalsAtStart[input] ?? 0;
+    } else {
+      if (!repos.includes(root)) repos.push(root);
+      (repoLines[root] ??= []).push(input);
     }
   }
   const explicitRepos = context.repoList ?? [];
@@ -7865,7 +7873,7 @@ async function upCommand(
           runner: runnerName, token: runnerToken, repos: generation === 1 ? [...repos] : [...currentRepos], pinnedRepos: [...pinnedRepos], projectRoots, registryPath, pool,
           // What this start still holds for its saved projects that were away: a restarted worker never gets back an
           // authority an earlier one gave up (connected, or removed from the saved list).
-          deferredRepos: [...deferredRepos],
+          deferredRepos: [...deferredRepos], deferredGenerations: { ...deferredGenerations }, repoLines,
           forMs: forGiven === undefined ? null : Number(forGiven), publicUrl: publicUrlFlag ?? null, stopGraceMs, verbose: flags.has("verbose"),
           terminal: context.upSeams?.terminal ?? process.stdout.isTTY === true,
           // A restart waits out a crashed predecessor's lease (at most a minute), then recovers it: as a fresh `up` after a crash.
@@ -12778,7 +12786,10 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
   // Saved lines' identities, resolved off the thread under a deadline (project-identity.ts): a line whose folder
   // doesn't answer is skipped this pass, and never holds up the others.
   const lineIdentities = projectIdentities();
+  /** The saved line(s) each active project came from: `up`'s proof for the start's own, the line admitted for later ones. */
+  const admittedLines = new Map<string, string[]>(Object.entries(config.repoLines ?? {}));
   const deferred = upDeferredRetry(config.deferredRepos ?? [], input => upProveSaved(gitRun, input));
+  const deferredGenerations = config.deferredGenerations ?? {};
   const reportDeferred = (): void => port.send({ type: "deferred", repos: deferred.list() });
   const registrySupervisor = (async (): Promise<void> => {
     const sleep = (ms: number) => new Promise(resolveSleep => setTimeout(resolveSleep, ms));
@@ -12792,14 +12803,15 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
       // A saved line removed while this start runs takes the start's authority for it with it, for good.
       if (deferred.keepOnly(loaded.repos)) reportDeferred();
       const plain = loaded.repos.filter(one => !deferred.has(one));
-      const allAnswered = await lineIdentities.refresh(plain);
+      await lineIdentities.refresh(plain);
       // Removed from the saved list: stop building it and take it out of the console. A pinned start keeps its own.
-      // A line saved exactly as the project is kept without a read; a line whose folder didn't answer could be another
-      // spelling of an active project, so nothing is let go on its account until it answers.
-      const saved = new Set([...loaded.repos, ...plain.flatMap(one => lineIdentities.known(one) ?? [])]);
+      // Each project is judged by its own saved line (the one it was proved or admitted from, or itself), never by
+      // whether some other folder answered: an unrelated folder that is away never keeps a removed project building.
+      const saved = new Set(loaded.repos);
       let removed = false;
       for (const repo of [...activeRepos]) {
-        if (stopping || pinnedRepos.has(repo) || saved.has(repo) || !allAnswered) continue;
+        const lines = admittedLines.get(repo) ?? [repo];
+        if (stopping || pinnedRepos.has(repo) || saved.has(repo) || lines.some(line => saved.has(line))) continue;
         activeRepos.delete(repo);
         removed = true;
         releasedRepos.add(repo);
@@ -12836,6 +12848,7 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
           continue;
         }
         rejected.delete(candidate);
+        admittedLines.set(canonical, [...new Set([...admittedLines.get(canonical) ?? [], candidate])]);
         await launchRepo(canonical, true);
       }
       if (!stopping) await sleep(500);
@@ -12853,26 +12866,41 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
   async function connectDeferred(candidate: string): Promise<void> {
     const proved = await deferred.retry(candidate);
     if (proved === null || stopping) return;
-    if (proved.root !== proved.line) {
+    // Only the very folder that was saved: the saved line must still resolve to itself, and git's checkout must be that
+    // folder. A parent checkout, or the saved path now leading somewhere else, is another project needing admission.
+    if (proved.line !== candidate || proved.root !== candidate) {
       deferred.revoke(candidate);
       reportDeferred();
-      progress(`saved project not connected — ${candidate} came back as part of ${proved.root}; add it again to connect it`);
+      progress(proved.root !== proved.line
+        ? `saved project not connected — ${candidate} came back as part of ${proved.root}; add it again to connect it`
+        : `saved project not connected — ${candidate} now leads to ${proved.line}; add it again to connect it`);
       return;
     }
-    const root = proved.root;
+    const root = candidate;
     if (activeRepos.has(root) || releasedRepos.has(root)) { deferred.revoke(candidate); reportDeferred(); return; }
+    // Bound under the saved list's lock: the line is still saved AND has not been removed since this start read it
+    // (its removal count unchanged, so a removal and a save again during the proof still counts as removed).
     let launching: Promise<void> | null = null;
-    const held = await updateProjectRegistry(registryPath, current => {
-      if (current.repos.includes(candidate) && deferred.has(candidate) && !stopping) {
+    let removedSince = false;
+    await updateProjectRegistry(registryPath, current => {
+      if (stopping || !deferred.has(candidate)) return current;
+      const count = registryRemovals(registryPath)?.[candidate] ?? (registryRemovals(registryPath) === null ? -2 : 0);
+      if (!current.repos.includes(candidate) || count !== deferredGenerations[candidate]) {
         deferred.revoke(candidate);
-        launching = launchRepo(root, true);
+        removedSince = true;
+        return current;
       }
+      deferred.revoke(candidate);
+      admittedLines.set(root, [candidate]);
+      launching = launchRepo(root, true);
       return current;
     });
-    if (launching === null) {
-      if (held.ok && !deferred.has(candidate)) reportDeferred();
+    if (removedSince) {
+      reportDeferred();
+      progress(`saved project not connected — ${candidate} was removed while it was away; add it again to connect it`);
       return;
     }
+    if (launching === null) return;
     reportDeferred();
     progress(`saved project is back — connecting ${root}`);
     await launching;

@@ -1,7 +1,7 @@
 import { secretFolder } from "./tool-secret-store.js";
 import { acceptedIdentities, recoverLearning } from "./project-learning.js";
 import { syncProjectIdentities } from "./project-identity.js";
-import { recoverLearningOffThread } from "./learning-look.js";
+import { firstTasksOffThread, recoverLearningOffThread } from "./learning-look.js";
 import { loadOrCreateVapidKeys } from "./push.js";
 import { checkoutPlan } from "./checkout-cleanup.js";
 import { latestReleaseFor } from "./server/render-settings.js";
@@ -42,7 +42,8 @@ import { asReadOnlyRequest } from './read-only-request.js';
 import { connectionsOf,localConnectOf,oneClickOf,type ConnectVisit } from "./mcp-connect.js";
 import { MOBILE_VIEWPORT_SCRIPT } from "./mobile-viewport.js";
 import { projectAuthority } from "./project-access.js";
-import { discoverTools,projectToolsOf,secretsSetFor,TOOL_CATALOG,toolSecretStorage,toolStanding } from "./project-tools.js";
+import { discoverTools,projectToolsOf,savedProjectMcp,secretsSetFor,TOOL_CATALOG,toolSecretStorage,toolStanding } from "./project-tools.js";
+import { lookProjectMcp } from "./folder-look.js";
 import { toolRefusal } from "./policy.js";
 import { isEdgeAddress,refuseEdge } from "./server/edge-refusal.js";
 import { announcePasswordBearer, isPasswordBearer, PASSWORD_BEARER_REFUSED, passwordBearerAccepted } from "./password-bearer.js";
@@ -464,7 +465,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     options.projectRoots ?? [],
     options.identities === undefined ? undefined : identities.known,
   );
-  const ceiling = { ...startCeiling, canon: identities.hot };
+  const ceiling = { ...startCeiling, canon: identities.strict };
   /** The project every fresh session opens with: the sole configured repo, else none. */
   const defaultProject = ceiling.repos.length === 1 && ceiling.roots.length === 0 ? ceiling.repos[0] as string : null;
 
@@ -477,7 +478,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const liveCeiling = () => {
     const repos = [...exactRepos(), ...(options.additionalProjectRepos?.() ?? [])];
     // An admitted set that is empty for now is an empty ceiling, never the legacy unscoped mode.
-    return { repos: repos.length === 0 && ceiling.roots.length === 0 && !unscopedMode ? [NO_PROJECT] : repos, roots: ceiling.roots, canon: identities.hot };
+    return { repos: repos.length === 0 && ceiling.roots.length === 0 && !unscopedMode ? [NO_PROJECT] : repos, roots: ceiling.roots, canon: identities.strict };
   };
   /** The explicit, currently proved project list. The callback is supplied
    * only by `up`, after it has independently checked git-ness and the root
@@ -576,7 +577,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // A service that connects by signing in (or an app's own Connect) is offered only that way.
       catalog: TOOL_CATALOG.filter(one => !names.has(one.name) && oneClickOf(one.name) === null && localConnectOf(one.name) === null),
       connections: connectionsOf(store, repo, toolHome), kit, wanted,
-      found: discoverTools(repo, codex, toolHome).filter(one => !names.has(one.spec.name)),
+      // The project's own .mcp.json as the background pass last read it off the console's thread (never read here).
+      found: discoverTools(repo, codex, toolHome, process.env, options.identities === undefined ? undefined : savedProjectMcp.get(repo) ?? null).filter(one => !names.has(one.spec.name)),
       storage: toolSecretStorage(),
     };
   };
@@ -1004,7 +1006,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     const known = new Set(["/recipes/prepare", "/recipes/preview", "/recipes/import", "/recipes/save", "/recipes/launch", "/tasks/add", "/queue/move", "/queue/note", "/people/invite", "/people/invite-revoke", "/people/revoke", "/people/projects", "/projects/select", "/projects/open", "/mode/confirm", "/mode/sign", "/mode/revoke", "/settings/chat-approval/save", "/settings/chat-approval/off", "/settings/project/live-view"]);
     const placed = url.pathname === "/tasks/add" ? body?.get("repo")?.trim() : null;
-    return { repo: url.pathname.startsWith("/people/") ? null : placed ? identities.hot(placed) : projectOf(who, request) ?? null, taskId: null, runId: null,
+    return { repo: url.pathname.startsWith("/people/") ? null : placed ? identities.strict(placed) ?? placed : projectOf(who, request) ?? null, taskId: null, runId: null,
       action: known.has(url.pathname) ? url.pathname.slice(1).replaceAll("/", " ") : "console request" };
   }
 
@@ -1906,7 +1908,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           for (const provider of PROVIDER_IDS.filter(isKeyedProvider).filter(one => one !== "claude" && one !== "codex")) waits.push(connectionCheck(provider).catch(() => undefined));
         }
         // Project identities, resolved off the thread: what pages asked about, and answers gone stale.
-        waits.push(identities.refresh([...exactRepos(), ...(options.currentRepos?.() ?? []), ...store.listProjects().map(one => one.path), ...ceiling.roots]));
+        waits.push(identities.refresh([...exactRepos(), ...(options.currentRepos?.() ?? []), ...store.listProjects().map(one => one.path), ...store.knownRepos(), ...ceiling.roots]));
         integrations.refreshIfDue();
         const sso = ssoSettings();
         if (sso !== null && (ssoProvider === null || ssoProvider.issuer !== sso.issuer || Date.now() - ssoProvider.at >= 10 * 60_000)) waits.push(providerFor(sso.issuer));
@@ -1935,7 +1937,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
             if (entry !== undefined && (entry.reading || entry.until > Date.now())) continue;
             const reading = { until: Date.now() + 10 * 60_000, found: entry?.found ?? null, reading: true };
             firstTasks.set(repo, reading);
-            waits.push(findFirstTasks(repo, options.firstTaskRunner ?? execRun).then(found => { reading.found = found; }, () => {}).finally(() => { reading.reading = false; }));
+            // A test's runner reads in-process; otherwise in a process of its own (learning-look.ts), so the hardened
+            // git's synchronous reads of the project's folder never hold the console's thread.
+            waits.push((options.firstTaskRunner !== undefined ? findFirstTasks(repo, options.firstTaskRunner) : firstTasksOffThread(repo)).then(found => { reading.found = found; }, () => {}).finally(() => { reading.reading = false; }));
           }
         }
         // Learning recovered from reviewed runs (and a project's saved rows carried to its current identity), which
@@ -1957,6 +1961,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         }
         // What Codex has configured, per project, for Settings → Tools to offer.
         for (const repo of managedRepos()) {
+          // The project's own .mcp.json, read off the console's thread (folder-look.ts) for the Tools page and the lead.
+          if (options.identities !== undefined && lastChecks.due(`project-mcp:${repo}`, 10 * 60_000)) {
+            waits.push(lastChecks.run(`project-mcp:${repo}`, async () => { const looked = await lookProjectMcp(repo); if (looked.ok) savedProjectMcp.set(repo, looked.value); return looked.ok; }));
+          }
           if (lastChecks.due(`codex-tools:${repo}`, 10 * 60_000)) waits.push(lastChecks.run(`codex-tools:${repo}`, () => codexServers(repo)));
         }
         if (databaseFile !== null && lastChecks.due("storage", 30 * 60_000)) {

@@ -2475,7 +2475,7 @@ describe("the filesystem browser — confined to what opening allows", () => {
     await identities.refresh([repo, root]);
     await boot({ repos: [repo], projectRoots: [root], identities, backgroundChecks: true, backgroundChecksMs: 100 });
     const cookie = await login();
-    for (const path of ["/healthz", "/projects", "/work", "/chat", "/settings/project"]) {
+    for (const path of ["/healthz", "/projects", "/work", "/chat", "/settings/project", "/settings/tools"]) {
       expect((await fetch(url(path), { headers: { cookie }, redirect: "manual" })).status, path).toBeLessThan(500);
     }
     // A path a request names that no answer vouches for is refused, never resolved on the console's thread.
