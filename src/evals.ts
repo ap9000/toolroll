@@ -22,7 +22,7 @@
  *
  * Result-writing authority is this module's alone: a world never gets a handle on the plane's database.
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, realpathSync, rmSync, writeSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
@@ -219,10 +219,11 @@ export type Admission = { ok: true; id: string } | { ok: false; reason: "person-
  */
 export function admitEvalCampaign(store: Store, input: {
   kind: "eval" | "reviewer"; canonical: boolean; manifestDigest: string; buildDigest: string; version: string; k: number;
-  sealed: unknown; as: string; token: string; now: Date; id?: string; runner?: { host: string; pid: number };
+  sealed: unknown; as: string; token: string; now: Date; id?: string; runner?: { host: string; pid: number; started?: string | null };
 }): Admission {
   const id = input.id ?? `ev-${input.now.toISOString().slice(0, 10).replace(/-/g, "")}-${randomBytes(4).toString("hex")}`;
-  const runner = input.runner ?? { host: hostname(), pid: process.pid };
+  // The runner's process start time too: recovery never takes a later process that reuses its pid for the runner.
+  const runner = input.runner ?? { host: hostname(), pid: process.pid, started: processStartOf(process.pid) };
   try {
     return store.transact((): Admission => {
       const proved = authenticateApprover(store, input.as, input.token, null);
@@ -234,9 +235,9 @@ export function admitEvalCampaign(store: Store, input: {
         if (running !== undefined) return { ok: false, reason: "already-running", message: `Canonical campaign ${String(running["id"])} is still running; canonical campaigns run one at a time.` };
       }
       store.handle.prepare(`INSERT INTO eval_campaign (id, kind, canonical, manifest_digest, build_digest, version, baseline_campaign, k, sealed_json, started_by, started_proof,
-          runner_host, runner_pid, admitted_at, state) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'running')`)
+          runner_host, runner_pid, runner_started, admitted_at, state) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'running')`)
         .run(id, input.kind, input.canonical ? 1 : 0, input.manifestDigest, input.buildDigest, input.version, input.k, JSON.stringify(input.sealed), input.as, proved.method,
-          runner.host, runner.pid, input.now.toISOString());
+          runner.host, runner.pid, runner.started ?? null, input.now.toISOString());
       store.recordAction({ at: input.now.toISOString(), actor: input.as, repo: null, taskId: null, runId: null, action: "eval campaign started", outcome: input.canonical ? "canonical" : "diagnostic", source: "request",
         detail: `${input.kind} campaign ${id}` });
       return { ok: true, id };
@@ -313,7 +314,9 @@ export function finishEvalCampaign(store: Store, id: string, state: "complete" |
  * total of the three. */
 export function campaignSpending(store: Store, id: string): { apiMicrousd: number | null; subscriptionMicrousd: number | null; unknownAttempts: number; attempts: number } {
   const rows = store.handle.prepare("SELECT api_microusd, subscription_microusd, usage_unknown FROM eval_attempt WHERE campaign = ? AND outcome IS NOT NULL").all(id);
-  const total = (column: string): number | null => rows.some(row => row[column] === null) ? null : rows.reduce((sum, row) => sum + Number(row[column]), 0);
+  // An abandoned campaign's spending is unknown whatever its finished attempts recorded: its runner may have gone on.
+  const abandoned = Number(store.handle.prepare("SELECT spending_unknown FROM eval_campaign WHERE id = ?").get(id)?.["spending_unknown"] ?? 0) !== 0;
+  const total = (column: string): number | null => abandoned || rows.some(row => row[column] === null) ? null : rows.reduce((sum, row) => sum + Number(row[column]), 0);
   return { apiMicrousd: total("api_microusd"), subscriptionMicrousd: total("subscription_microusd"), unknownAttempts: rows.filter(row => Number(row["usage_unknown"]) === 1).length, attempts: rows.length };
 }
 
@@ -574,7 +577,8 @@ const resultOf = (outcome: EvalOutcome, why: string | null, collected: WorldDisp
  * world's processes wouldn't end, a dispatch the gate and the records don't agree on); the agent timing out, crashing
  * or going past its dispatch limit is a fail; a reported model other than the pin is unevaluated.
  */
-export async function runEvalAttempt(store: Store, input: { campaign: string; one: EvalCase; n: number; replaces: number }, deps: AttemptDeps): Promise<{ attempt: number; result: AttemptResult } | { attempt: null; why: string }> {
+export async function runEvalAttempt(store: Store, input: { campaign: string; one: EvalCase; n: number; replaces: number }, deps: AttemptDeps):
+  Promise<{ attempt: number; result: AttemptResult; stopCampaign: string | null } | { attempt: null; why: string }> {
   const now = deps.now ?? (() => new Date());
   const { one } = input;
   const started = startEvalAttempt(store, { campaign: input.campaign, caseId: one.id, caseVersion: one.version, n: input.n, replaces: input.replaces, modelPinned: one.pin.model, now: now() });
@@ -584,6 +588,7 @@ export async function runEvalAttempt(store: Store, input: { campaign: string; on
   let worldDir: string | null = null;
   let ran: Awaited<ReturnType<typeof runWorldProcess>> | null = null;
   let failure: string | null = null;
+  let spawned = false;
   // The world's state folder is named as Toolroll's own, so every agent fence in the world denies it whole: the
   // database, the worker's token and the dispatch gate (agent-fence.ts agentFence, a dedicated state folder).
   const paths = (dir: string) => ({ stateDir: join(dir, "toolroll"), gateDir: join(dir, "toolroll", "eval-gate"), databaseFile: join(dir, "toolroll", "orders.db") });
@@ -598,7 +603,7 @@ export async function runEvalAttempt(store: Store, input: { campaign: string; on
     openEvalGate(gateDir, { v: 2, max: one.maxDispatches });
     const spec = deps.command({ campaign: input.campaign, caseId: one.id, n: input.n, worldDir, databaseFile, gateDir });
     ran = await runWorldProcess({ ...spec, env: { ...spec.env, [EVAL_GATE_ENV]: gateDir } }, worldDir, one.timeoutMinutes * 60_000, deps.settleMs ?? 30_000,
-      pgid => markAttemptWorld(store, attempt, worldDir!, pgid), processes => recordWorldProcesses(store, attempt, processes));
+      pgid => { spawned = true; markAttemptWorld(store, attempt, worldDir!, pgid); }, processes => recordWorldProcesses(store, attempt, processes));
     if (ran.stopped) deps.onTreeGone?.();
   } catch (error) {
     failure = `the eval runner failed: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`;
@@ -650,10 +655,19 @@ export async function runEvalAttempt(store: Store, input: { campaign: string; on
   } catch (error) {
     result = resultOf("error", `the world's records couldn't be processed: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`, collected, Date.now() - begun);
   } finally { world?.close(); }
+  // PR #263 review: a world whose process tree isn't proven stopped (its ancestry unknown, a process that outlived
+  // SIGKILL, or a runner failure after the spawn) may still be dispatching. What it spent is unknown, never the part
+  // its records show, and the campaign ends incomplete.
+  let stopCampaign: string | null = null;
+  if ((ran !== null && !ran.stopped) || (ran === null && spawned)) {
+    result = { ...result, apiMicrousd: null, subscriptionMicrousd: null, usageUnknown: true,
+      invocations: [...result.invocations, { kind: "unrecorded", worldRef: "tree:unstopped", recorded: false, amount: UNKNOWN, modelReported: null }] };
+    stopCampaign = `${one.id} #${input.n}'s world couldn't be proven stopped, so what it spent is unknown`;
+  }
   recordEvalAttempt(store, attempt, result, now());
   // Only once it is recorded is the world removed.
   if (worldDir !== null && ran?.stopped === true && deps.keepWorlds !== true) rmSync(worldDir, { recursive: true, force: true });
-  return { attempt, result };
+  return { attempt, result, stopCampaign };
 }
 
 /** Grade from what the world's installed code recorded: the built commit's files through the oracle (build), or the
@@ -709,6 +723,7 @@ export async function runEvalCampaign(store: Store, campaign: string, cases: rea
     if (moved !== null) { stop = moved; return; }
     const ran = await runEvalAttempt(store, { campaign, one, n, replaces }, deps);
     if (ran.attempt === null) { stop ??= ran.why; return; }
+    if (ran.stopCampaign !== null) { stop ??= ran.stopCampaign; return; }
     if (ran.result.outcome === "error" && replacements < EVAL_MAX_REPLACEMENTS && replaces === 0) {
       replacements++;
       await attempt(one, n, ran.attempt);
@@ -735,15 +750,17 @@ export async function runEvalCampaign(store: Store, campaign: string, cases: rea
  * unknown where the records can't say), once its world's process group is proven gone; then the campaign ends
  * incomplete. A campaign whose runner is alive, ran on another computer, or still has a world running stays as it is.
  */
-export function recoverEvalCampaigns(store: Store, now: Date, options: { host?: string; alive?: (pid: number) => boolean } = {}):
+export function recoverEvalCampaigns(store: Store, now: Date, options: { host?: string; alive?: (pid: number, started: string | null) => boolean } = {}):
   { id: string; recovered: boolean; why: string }[] {
   const host = options.host ?? hostname();
-  const alive = options.alive ?? ((pid: number) => processMayBeAlive(pid, false));
+  const alive = options.alive ?? runnerMayBeAlive;
   const out: { id: string; recovered: boolean; why: string }[] = [];
-  for (const campaign of store.handle.prepare("SELECT id, runner_host, runner_pid FROM eval_campaign WHERE state = 'running' ORDER BY admitted_at").all()) {
+  for (const campaign of store.handle.prepare("SELECT id, runner_host, runner_pid, runner_started FROM eval_campaign WHERE state = 'running' ORDER BY admitted_at").all()) {
     const id = String(campaign["id"]);
     if (String(campaign["runner_host"]) !== host) { out.push({ id, recovered: false, why: `its runner is on ${String(campaign["runner_host"])}` }); continue; }
-    if (alive(Number(campaign["runner_pid"]))) { out.push({ id, recovered: false, why: "its runner is still running" }); continue; }
+    if (alive(Number(campaign["runner_pid"]), typeof campaign["runner_started"] === "string" ? campaign["runner_started"] : null)) {
+      out.push({ id, recovered: false, why: "its runner is still running" }); continue;
+    }
     const open = store.handle.prepare("SELECT id, world_dir, world_pgid, world_processes_json, case_id FROM eval_attempt WHERE campaign = ? AND outcome IS NULL").all(id);
     const busy = open.find(one => one["world_pgid"] !== null && processMayBeAlive(Number(one["world_pgid"]), true));
     if (busy !== undefined) { out.push({ id, recovered: false, why: `attempt ${String(busy["id"])}'s world (process group ${String(busy["world_pgid"])}) is still running` }); continue; }
@@ -773,6 +790,69 @@ export function recoverEvalCampaigns(store: Store, now: Date, options: { host?: 
     out.push({ id, recovered: true, why: `${open.length} unfinished attempt${open.length === 1 ? "" : "s"} recorded as interrupted` });
   }
   return out;
+}
+
+/** A process's start time as the system reports it (`ps -o lstart`, whole seconds, in UTC and the C locale), or null
+ * when it can't be read: the identity a saved pid is compared by, so a later process that reuses the number is never
+ * taken for the one recorded. */
+export function processStartOf(pid: number): string | null {
+  if (process.platform === "win32" || !Number.isSafeInteger(pid) || pid <= 0) return null;
+  try {
+    const raw = execFileSync("/bin/ps", ["-p", String(pid), "-o", "lstart="], {
+      encoding: "utf8", env: { PATH: "/usr/bin:/bin", LC_ALL: "C", TZ: "UTC" }, stdio: ["ignore", "pipe", "ignore"], maxBuffer: 1024, timeout: 2_000, killSignal: "SIGKILL",
+    }).trim().replace(/ +/g, " ");
+    return /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/.test(raw) ? raw : null;
+  } catch { return null; }
+}
+
+/** Whether a campaign's runner may still be running (PR #263 review): its pid is held, and by the same process — its
+ * start time, where one was recorded, matches. A pid now held by a process that started at another time is someone
+ * else's. A start that can't be read now counts as alive (a person ends such a campaign: `evals recover --abandon`). */
+export function runnerMayBeAlive(pid: number, started: string | null): boolean {
+  if (!processMayBeAlive(pid, false)) return false;
+  const was = started === null ? null : startMs(started);
+  const now = processStartOf(pid);
+  const is = now === null ? null : startMs(now);
+  // Within two seconds is the same process: a system that derives the start from its boot time can shift it by a
+  // second, and a pid can't be reused while the process holding it lives.
+  return was === null || is === null || Math.abs(is - was) <= 2_000;
+}
+
+/** A `ps -o lstart` reading (UTC, C locale) as epoch milliseconds, or null when it isn't one exactly. */
+function startMs(raw: string): number | null {
+  const match = /^(Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) (\d{1,2}) (\d{2}:\d{2}:\d{2}) (\d{4})$/.exec(raw);
+  if (match === null) return null;
+  const utc = `${match[1]}, ${match[3]!.padStart(2, "0")} ${match[2]} ${match[5]} ${match[4]} GMT`;
+  const ms = Date.parse(utc);
+  return Number.isFinite(ms) && new Date(ms).toUTCString() === utc ? ms : null;
+}
+
+/**
+ * End a stuck campaign by a person's word (PR #263 review): a campaign recovery can't settle (its runner can't be
+ * proven gone, or a world's processes can't). A person proved now with their password (a lead token or remembered
+ * login is no proof); in one transaction every unfinished attempt is recorded as an error with unknown spending, the
+ * campaign's spending is marked unknown, and it ends incomplete. No process is signalled and no world is read or
+ * removed: whatever is still running is left to the person.
+ */
+export function abandonEvalCampaign(store: Store, input: { id: string; as: string; token: string; now: Date }):
+  { ok: true; attempts: number } | { ok: false; reason: "person-only" | "not-running"; message: string } {
+  return store.transact(() => {
+    const proved = authenticateApprover(store, input.as, input.token, null);
+    if (!proved.ok || !personProof(proved.method)) return { ok: false as const, reason: "person-only" as const, message: "Only an approver, proved as a person with their password, abandons an eval campaign." };
+    const campaign = store.handle.prepare("SELECT state FROM eval_campaign WHERE id = ?").get(input.id);
+    if (campaign === undefined || campaign["state"] !== "running") return { ok: false as const, reason: "not-running" as const, message: `No running campaign is named ${input.id}.` };
+    const open = store.handle.prepare("SELECT id FROM eval_attempt WHERE campaign = ? AND outcome IS NULL ORDER BY id").all(input.id).map(row => Number(row["id"]));
+    for (const attempt of open) {
+      recordEvalAttempt(store, attempt, { outcome: "error", why: `abandoned by ${input.as} before it finished`, modelReported: null, dispatches: null,
+        apiMicrousd: null, subscriptionMicrousd: null, usageUnknown: true, turns: null, tokensIn: null, cacheRead: null, cacheWrite: null, tokensOut: null, toolCalls: null, wallMs: 0,
+        invocations: [{ kind: "unrecorded", worldRef: "abandoned", recorded: false, amount: UNKNOWN, modelReported: null }] }, input.now);
+    }
+    store.handle.prepare("UPDATE eval_campaign SET spending_unknown = 1 WHERE id = ?").run(input.id);
+    finishEvalCampaign(store, input.id, "incomplete", `abandoned by ${input.as}; what it spent is unknown`, input.now);
+    store.recordAction({ at: input.now.toISOString(), actor: input.as, repo: null, taskId: null, runId: null, action: "eval campaign abandoned", outcome: "incomplete", source: "request",
+      detail: `campaign ${input.id}, ${open.length} unfinished attempt${open.length === 1 ? "" : "s"}` });
+    return { ok: true as const, attempts: open.length };
+  });
 }
 
 /** A random hex id, for the world's throwaway approver password. */

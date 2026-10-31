@@ -272,6 +272,8 @@ describe("the invocation gateway", () => {
     expect(capped.kind).toBe("ran");
     expect(store.getRun(runId)).toMatchObject({ costUsd: 3, tokensIn: 10 });
     expect(note()).toEqual({ cost_note: "cost unknown, charged at the cap", usage: { input_tokens: 10, output_tokens: 1 } });
+    // PR #263 review: and the run's money is unknown by its sticky column, whatever later turns write over the note.
+    expect(store.handle.prepare("SELECT cost_unknown FROM run WHERE id = ?").get(runId)?.["cost_unknown"]).toBe(1);
 
     store.finishRun(runId, { outcome: "built", now: T0 });
     store.createTask({ id: "t-uncapped", title: "u" }, T0);
@@ -279,6 +281,7 @@ describe("the invocation gateway", () => {
     await invokeAgent(store, runId, CLAUDE, ASK, { runner: async () => ({ ...OK, code: 1, stdout: unknown }) });
     expect(store.getRun(runId)?.costUsd).toBeNull();
     expect(note()["cost_note"]).toBe("cost unknown, no dollar cap applied: unmeasured");
+    expect(store.handle.prepare("SELECT cost_unknown FROM run WHERE id = ?").get(runId)?.["cost_unknown"]).toBe(1);
   });
 
   test("negative or non-numeric usage is a lie, not a measurement", async () => {

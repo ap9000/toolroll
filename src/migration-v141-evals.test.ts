@@ -42,14 +42,20 @@ test.each([140, -140])("v%s: the eval set's tables and how billing was known are
   expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(141);
   for (const table of TABLES) expect(store.handle.prepare(`SELECT count(*) AS n FROM ${table}`).get()?.["n"]).toBe(0);
   // Saved rows keep what they had; how their billing was known reads NULL (unknown), never a class.
-  expect({ ...store.handle.prepare("SELECT tokens_in, cost_usd, billing_basis FROM run WHERE id = ?").get(run) }).toEqual({ tokens_in: 10, cost_usd: 0.01, billing_basis: null });
+  // A saved run's cost reads as not marked unknown (0), its money unknown all the same through its NULL billing basis.
+  expect({ ...store.handle.prepare("SELECT tokens_in, cost_usd, billing_basis, cost_unknown FROM run WHERE id = ?").get(run) }).toEqual({ tokens_in: 10, cost_usd: 0.01, billing_basis: null, cost_unknown: 0 });
   expect({ ...store.handle.prepare("SELECT tokens_in, billing_reported FROM chat_turn").get() }).toEqual({ tokens_in: 9, billing_reported: null });
   expect(() => store!.handle.prepare("UPDATE run SET billing_basis = 'probably'").run()).toThrow();
   expect(() => store!.handle.prepare("UPDATE chat_turn SET billing_reported = 'free'").run()).toThrow();
+  expect(() => store!.handle.prepare("UPDATE run SET cost_unknown = 2").run()).toThrow();
+  expect(() => store!.handle.prepare("UPDATE run SET cost_unknown = NULL").run()).toThrow();
   // An attempt's identity is unique, an original included (replaces is 0, never NULL, so two originals can't both land).
   const campaign = (id: string, canonical: number, state = "running") => store!.handle.prepare(`INSERT INTO eval_campaign (id, kind, canonical, manifest_digest, build_digest, version, k, sealed_json,
     started_by, started_proof, runner_host, runner_pid, admitted_at, state) VALUES (?, 'eval', ?, 'm', 'b', '0.9.82', 3, '{}', 'alex', 'password', 'h', 1, ?, ?)`).run(id, canonical, now.toISOString(), state);
   campaign("c-1", 1);
+  // A campaign's runner start (recovery's pid identity) is nullable; its spending reads known until abandoned.
+  expect({ ...store.handle.prepare("SELECT runner_started, spending_unknown FROM eval_campaign WHERE id = 'c-1'").get() }).toEqual({ runner_started: null, spending_unknown: 0 });
+  expect(() => store!.handle.prepare("UPDATE eval_campaign SET spending_unknown = 2").run()).toThrow();
   const attempt = () => store!.handle.prepare("INSERT INTO eval_attempt (campaign, case_id, case_version, n, model_pinned, started_at) VALUES ('c-1', 'paginate', 'v', 1, 'm', ?)").run(now.toISOString());
   attempt();
   expect(attempt).toThrow();

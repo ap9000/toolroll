@@ -631,7 +631,8 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
 
   // The calls into eval and nightly policy (eval-hooks.ts): a candidate that drops or moves one the base holds needs a
   // person; one that keeps it ships. A project whose base holds none is held to none.
-  const leadRequest = (body: string) => `export async function performLeadRequest(request) {\n${body}\n  return request;\n}\nexport function other() {\n  return 1;\n}\n`;
+  const GATE = `import { takeEvalDispatch } from "./eval-gate.js";\n`;
+  const leadRequest = (body: string, head = GATE) => `${head}export async function performLeadRequest(request) {\n${body}\n  return request;\n}\nexport function other() {\n  return 1;\n}\n`;
   test.each([
     ["the call removed", leadRequest("  const kept = 1;")],
     ["the call left only in a comment", leadRequest("  // takeEvalDispatch(`lead`);")],
@@ -639,7 +640,17 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
     // Codex C1 round 1 #6: a regular expression literal is not a call.
     ["the call left only in a regular expression", leadRequest("  const removed = /takeEvalDispatch()/;")],
     ["the file no longer parsing", leadRequest("  takeEvalDispatch(`lead`);\n  const broken = ;")],
-    ["the call moved to another function", "export async function performLeadRequest(request) {\n  return request;\n}\nexport function other() {\n  takeEvalDispatch(`lead`);\n}\n"],
+    ["the call moved to another function", `${GATE}export async function performLeadRequest(request) {\n  return request;\n}\nexport function other() {\n  takeEvalDispatch(\`lead\`);\n}\n`],
+    // PR #263 review: the call must reach the real gate, not a local stand-in of the same name.
+    ["the import renamed beside a local function of the same name", leadRequest("  takeEvalDispatch(`lead`);", `import { takeEvalDispatch as _unused } from "./eval-gate.js";\nfunction takeEvalDispatch() {\n  return { active: false };\n}\n`)],
+    ["the import renamed, the gate called under another name", leadRequest("  gate(`lead`);", `import { takeEvalDispatch as gate } from "./eval-gate.js";\n`)],
+    ["another export imported under the gate's name", leadRequest("  takeEvalDispatch(`lead`);", `import { inEvalWorld as takeEvalDispatch } from "./eval-gate.js";\n`)],
+    ["a namespace import with a local of the gate's name", leadRequest("  takeEvalDispatch(`lead`);", `import * as gate from "./eval-gate.js";\nconst takeEvalDispatch = (kind) => gate.inEvalWorld() && { active: false, kind };\n`)],
+    ["the gate imported from another module", leadRequest("  takeEvalDispatch(`lead`);", `import { takeEvalDispatch } from "./eval-gate-shim.js";\n`)],
+    ["the gate shadowed inside the function", leadRequest("  const takeEvalDispatch = () => ({ active: false });\n  takeEvalDispatch(`lead`);")],
+    ["the gate shadowed by a parameter", leadRequest("  takeEvalDispatch(`lead`);").replace("performLeadRequest(request)", "performLeadRequest(request, takeEvalDispatch = () => ({ active: false }))")],
+    ["the gate shadowed by destructuring", leadRequest("  const { takeEvalDispatch } = request;\n  takeEvalDispatch(`lead`);")],
+    ["the enclosing function replaced after its declaration", `${leadRequest("  takeEvalDispatch(`lead`);")}performLeadRequest = async request => request;\n`],
     ["the function renamed", leadRequest("  takeEvalDispatch(`lead`);").replace("performLeadRequest", "performRequest")],
     ["the file deleted", null],
   ])("an enforcement hook with %s: a person approves", (_name, text) => {
@@ -660,6 +671,35 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
     authorize(kept);
     const sealed = seal(kept, check(kept));
     expect(sealed.ok ? "" : sealed.why).toBe("");
+  });
+
+  // PR #263 review: the store's own spending writes are Store methods, pinned by body too; a method replaced by name
+  // after the class, or declared twice, is no longer the body that was pinned.
+  const storeClass = (body: string, after = "") => `export class Store {\n  recordUsage(id, usage) {\n${body}\n  }\n  other() {\n    return 1;\n  }\n}\n${after}`;
+  test.each([
+    ["its body changed", storeClass("    this.write(id, 0);")],
+    ["a second method of the same name", storeClass("    this.write(id, usage);").replace("  other() {", "  recordUsage(id) {\n    return;\n  }\n  other() {")],
+    ["the method replaced on the prototype", storeClass("    this.write(id, usage);", "Store.prototype.recordUsage = function () {};\n")],
+    ["the method redefined by name", storeClass("    this.write(id, usage);", "Object.defineProperty(Store.prototype, \"recordUsage\", { value() {} });\n")],
+    ["the class gone", "export function recordUsage() {}\n"],
+  ])("a pinned Store method with %s: a person approves", (_name, text) => {
+    const f = open({ files: { "src/store.ts": storeClass("    this.write(id, usage);") }, candidate: { "src/store.ts": text } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("Store#recordUsage") });
+  });
+
+  // PR #263 review: what invokeAgent passes as the run's billing basis and its unknown cost is held as the base has it.
+  const invoke = (basis: string, unknown: string) => `import { takeEvalDispatch } from "./eval-gate.js";\nimport { recordRunBillingBasis, recordRunCostUnknown } from "./store.js";\n`
+    + `export async function invokeAgent(store, runId, envelope, evidence) {\n  takeEvalDispatch("run");\n  recordRunBillingBasis(store, runId, ${basis});\n  recordRunCostUnknown(store, runId, ${unknown});\n}\n`;
+  const BASIS = `evidence !== null ? "evidence" : "default"`, UNKNOWN = "envelope.costUnknown === true";
+  test.each([
+    ["a billing basis that always reads as known", invoke(`"evidence"`, UNKNOWN), "recordRunBillingBasis"],
+    ["an unknown cost never recorded", invoke(BASIS, "false"), "recordRunCostUnknown"],
+    ["the unknown cost's call removed", invoke(BASIS, UNKNOWN).replace(`  recordRunCostUnknown(store, runId, ${UNKNOWN});\n`, ""), "recordRunCostUnknown"],
+  ])("invokeAgent with %s: a person approves", (_name, text, named) => {
+    const f = open({ files: { "src/invoke.ts": invoke(BASIS, UNKNOWN) }, candidate: { "src/invoke.ts": text } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining(named) });
   });
 
   test("an enforcement hook kept in place ships with the change around it", () => {

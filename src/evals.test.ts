@@ -15,14 +15,22 @@ import { defaultAnalyzer } from "./memory-pass.js";
 import { evalHookProblem } from "./eval-hooks.js";
 import { EVAL_GATE_ENV, evalGateSlots, inEvalWorld, openEvalGate, takeEvalDispatch } from "./eval-gate.js";
 import {
-  admitEvalCampaign, campaignSpending, EVALS_ROOT, exactModelProblem, installedBuildDigest, loadEvalSet, planCampaign, recoverEvalCampaigns, runEvalAttempt, runEvalCampaign, startEvalAttempt,
-  type AttemptDeps, type EvalCase,
+  abandonEvalCampaign, admitEvalCampaign, campaignSpending, EVALS_ROOT, exactModelProblem, installedBuildDigest, loadEvalSet, planCampaign, processStartOf, recoverEvalCampaigns, runEvalAttempt,
+  runEvalCampaign, startEvalAttempt, type AttemptDeps, type EvalCase,
 } from "./evals.js";
+import { runOperate } from "./operate.js";
 import { addApprover } from "./scope.js";
 import { openStore, type Store } from "./store.js";
 import { performSubscriptionLeadRequest } from "./subscription-chat.js";
 import { claudeSizer } from "./task-sizing.js";
 import { NOW, paginate, SET, worldDeps, child, makeWorld, type WorldSpec } from "../test/eval-worlds.js";
+
+// A world whose process ancestry the observer loses (PR #263 review #4): set per test, through the real observer.
+const tree = vi.hoisted(() => ({ unknown: false }));
+vi.mock("./process-tree.js", async original => {
+  const real = await original<typeof import("./process-tree.js")>();
+  return { ...real, observeProcessTree: (...args: Parameters<typeof real.observeProcessTree>) => { real.observeProcessTree(...args); if (tree.unknown) args[1].onUnknown?.(); } };
+});
 
 let dir: string;
 let store: Store;
@@ -34,7 +42,7 @@ beforeEach(() => {
   if (!added.ok) throw new Error("no approver");
   password = added.token;
 });
-afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); vi.unstubAllEnvs(); });
+afterEach(() => { tree.unknown = false; store.close(); rmSync(dir, { recursive: true, force: true }); vi.unstubAllEnvs(); });
 
 
 describe("the shipped eval set", () => {
@@ -245,6 +253,67 @@ describe("a campaign", () => {
     expect(stateWhileGrading).toBe("running");
     expect(ended).toEqual({ state: "incomplete", why: "the eval runner failed: identity unreadable" });
     expect(store.handle.prepare("SELECT outcome FROM eval_attempt").get()).toMatchObject({ outcome: "pass" });
+  });
+
+  test("a world not proven stopped makes its spending unknown, never the part its records show, and ends the campaign incomplete (PR #263 review)", async () => {
+    const admitted = admit({ k: 2 });
+    if (!admitted.ok) throw new Error(admitted.message);
+    tree.unknown = true;
+    const ended = await runEvalCampaign(store, admitted.id, [paginate()], { ...worldDeps(dir, { runs: [{ api: 250_000 }] }), concurrency: 1, buildDigest: () => "build-a" });
+    expect(ended).toEqual({ state: "incomplete", why: expect.stringMatching(/couldn't be proven stopped, so what it spent is unknown/) });
+    // One attempt, no replacement and no second attempt: an error whose money is unknown, its known dispatch still kept.
+    expect(store.handle.prepare("SELECT outcome, api_microusd, subscription_microusd, usage_unknown FROM eval_attempt").all().map(row => ({ ...row })))
+      .toEqual([{ outcome: "error", api_microusd: null, subscription_microusd: null, usage_unknown: 1 }]);
+    expect(store.handle.prepare("SELECT world_ref, amount, api_microusd FROM eval_invocation ORDER BY id").all().map(row => [row["world_ref"], row["amount"], row["api_microusd"]]))
+      .toEqual([[expect.stringMatching(/^run:/), "api", 250_000], ["tree:unstopped", "unknown", null]]);
+    expect(campaignSpending(store, admitted.id)).toMatchObject({ apiMicrousd: null, subscriptionMicrousd: null, unknownAttempts: 1 });
+  }, 30_000);
+
+  test("a runner's pid held by a process that started at another time isn't the runner (PR #263 review)", () => {
+    const started = processStartOf(process.pid);
+    expect(started).toMatch(/^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/);
+    // This test's own process stands in for a later process that reuses the runner's pid: same number, another start.
+    const reused = admit({ canonical: true, runner: { host: "this-mac", pid: process.pid, started: "Thu Jan 1 00:00:00 2015" } });
+    if (!reused.ok) throw new Error(reused.message);
+    expect(recoverEvalCampaigns(store, NOW, { host: "this-mac" })).toEqual([{ id: reused.id, recovered: true, why: "0 unfinished attempts recorded as interrupted" }]);
+    // The same process, its start matching: still the runner.
+    const live = admit({ canonical: true, runner: { host: "this-mac", pid: process.pid, started } });
+    if (!live.ok) throw new Error(live.message);
+    expect(recoverEvalCampaigns(store, NOW, { host: "this-mac" })).toEqual([{ id: live.id, recovered: false, why: "its runner is still running" }]);
+    // No start recorded: a held pid can't be told apart, so it is left running (a person abandons it).
+    store.handle.prepare("UPDATE eval_campaign SET runner_started = NULL WHERE id = ?").run(live.id);
+    expect(recoverEvalCampaigns(store, NOW, { host: "this-mac" })[0]).toMatchObject({ recovered: false });
+  });
+
+  test("a stuck campaign is abandoned only by a person's password: unfinished attempts unknown, nothing signalled (PR #263 review)", async () => {
+    const admitted = admit({ canonical: true, runner: { host: hostname(), pid: process.pid, started: processStartOf(process.pid) } });
+    if (!admitted.ok) throw new Error(admitted.message);
+    const done = startEvalAttempt(store, { campaign: admitted.id, caseId: "paginate", caseVersion: "v", n: 1, replaces: 0, modelPinned: paginate().pin.model, now: NOW });
+    const stuck = startEvalAttempt(store, { campaign: admitted.id, caseId: "paginate", caseVersion: "v", n: 2, replaces: 0, modelPinned: paginate().pin.model, now: NOW });
+    if (!done.ok || !stuck.ok) throw new Error("not started");
+    store.handle.prepare("UPDATE eval_attempt SET outcome = 'pass', api_microusd = 100, subscription_microusd = 0 WHERE id = ?").run(done.attempt);
+    // Its world's group is this test's own (alive): recovery can't settle it, and abandoning signals nothing.
+    store.handle.prepare("UPDATE eval_attempt SET world_pgid = ? WHERE id = ?").run(process.pid, stuck.attempt);
+    expect(recoverEvalCampaigns(store, NOW)[0]).toMatchObject({ recovered: false });
+    const lines: string[] = [];
+    const cli = (args: string[]) => runOperate("evals", ["recover", ...args, "--json"], line => { lines.push(line); }, { databaseFile: join(dir, "plane.db") });
+    expect(await cli(["--abandon", admitted.id, "--as", "alex", "--token", "wrong-password-0000"])).not.toBe(0);
+    vi.stubEnv("TOOLROLL_LEAD_TOKEN", "lt_x");
+    expect(await cli(["--abandon", admitted.id, "--as", "alex", "--token", password])).not.toBe(0);
+    expect(JSON.parse(lines.at(-1)!)).toMatchObject({ ok: false, reason: "person-only" });
+    vi.unstubAllEnvs();
+    expect(abandonEvalCampaign(store, { id: "ev-nothing", as: "alex", token: password, now: NOW })).toMatchObject({ ok: false, reason: "not-running" });
+    expect(store.handle.prepare("SELECT state FROM eval_campaign WHERE id = ?").get(admitted.id)).toMatchObject({ state: "running" });
+    expect(await cli(["--abandon", admitted.id, "--as", "alex", "--token", password])).toBe(0);
+    expect(JSON.parse(lines.at(-1)!)).toMatchObject({ ok: true, campaign: admitted.id, state: "incomplete", attempts: 1, spending: "unknown" });
+    expect(store.handle.prepare("SELECT state, why FROM eval_campaign WHERE id = ?").get(admitted.id)).toMatchObject({ state: "incomplete", why: expect.stringMatching(/abandoned by alex/) });
+    expect(store.handle.prepare("SELECT outcome, usage_unknown, api_microusd FROM eval_attempt WHERE id = ?").get(stuck.attempt)).toMatchObject({ outcome: "error", usage_unknown: 1, api_microusd: null });
+    // The finished attempt keeps what it recorded; the campaign's spending is unknown all the same.
+    expect(store.handle.prepare("SELECT outcome, api_microusd FROM eval_attempt WHERE id = ?").get(done.attempt)).toMatchObject({ outcome: "pass", api_microusd: 100 });
+    expect(campaignSpending(store, admitted.id)).toMatchObject({ apiMicrousd: null, subscriptionMicrousd: null });
+    // This process (the "world") was never signalled, and its place is free.
+    expect(() => process.kill(process.pid, 0)).not.toThrow();
+    expect(admit({ canonical: true }).ok).toBe(true);
   });
 
   test("the build identity includes the service definition a deploy rewrites (Codex round 1 #9)", () => {

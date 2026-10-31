@@ -656,10 +656,12 @@ CREATE TABLE IF NOT EXISTS eval_campaign (
   started_proof     TEXT NOT NULL,
   runner_host       TEXT NOT NULL,
   runner_pid        INTEGER NOT NULL,
+  runner_started    TEXT,
   admitted_at       TEXT NOT NULL,
   finished_at       TEXT,
   state             TEXT NOT NULL CHECK (state IN ('running','complete','incomplete')),
   why               TEXT,
+  spending_unknown  INTEGER NOT NULL DEFAULT 0 CHECK (spending_unknown IN (0, 1)),
   settled_at        TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS eval_campaign_one_canonical ON eval_campaign (canonical) WHERE state = 'running' AND canonical = 1;
@@ -729,9 +731,14 @@ CREATE TABLE IF NOT EXISTS eval_debt (
 /** v141 (evals-nightly.md, Codex round 1 #4 and #10): how a run's billing was known — `evidence` (its own events, the
  * key it was given, or its agent's admission) or `default` (this computer's usual billing, a guess) — and how a chat
  * request was billed, as its own events said (null: they didn't). A guess or a silence is unknown money, never
- * subscription usage. Saved rows read NULL: unknown. */
+ * subscription usage. Saved rows read NULL: unknown. `run.cost_unknown` (PR #263 review): set once any turn of the run
+ * ended without its provider reporting a cost, and never cleared (recordRunCostUnknown); saved rows read 0, and their
+ * money is unknown all the same through their NULL billing basis. */
 export const V141_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
-  run: { billing_basis: { definition: "TEXT CHECK (billing_basis IS NULL OR billing_basis IN ('evidence','default'))", saved: "NULL" } },
+  run: {
+    billing_basis: { definition: "TEXT CHECK (billing_basis IS NULL OR billing_basis IN ('evidence','default'))", saved: "NULL" },
+    cost_unknown: { definition: "INTEGER NOT NULL DEFAULT 0 CHECK (cost_unknown IN (0, 1))", saved: "0" },
+  },
   chat_turn: { billing_reported: { definition: "TEXT CHECK (billing_reported IS NULL OR billing_reported IN ('subscription','api-key'))", saved: "NULL" } },
 });
 
@@ -25246,7 +25253,7 @@ export function runAccounting(store: Store, runId: number): {
   usage: { in: number | null; out: number | null; cacheRead: number | null; cacheWrite: number | null }; amount: ReportedAmount;
 } | null {
   const row = store.handle.prepare(`SELECT run.provider, run.model, run.model_reported, run.agent_turns, run.tokens_in, run.tokens_out, run.cost_usd, run.usage_json,
-      run.billing_basis, s.billing, s.microusd FROM run LEFT JOIN run_spend s ON s.run = run.id WHERE run.id = ?`).get(runId);
+      run.billing_basis, run.cost_unknown, s.billing, s.microusd FROM run LEFT JOIN run_spend s ON s.run = run.id WHERE run.id = ?`).get(runId);
   if (row === undefined) return null;
   const n = (value: unknown): number | null => value === null || value === undefined ? null : Number(value);
   const usage = usageOf({ provider: String(row["provider"]), model: row["model"] === null ? null : String(row["model"]), tokensIn: n(row["tokens_in"]), tokensOut: n(row["tokens_out"]),
@@ -25258,11 +25265,11 @@ export function runAccounting(store: Store, runId: number): {
     modelReported: row["model_reported"] === null || row["model_reported"] === undefined ? null : String(row["model_reported"]),
     agentTurns: n(row["agent_turns"]),
     usage: { in: usage.in, out: usage.out, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite },
-    // v141: a guessed billing, or a cost the provider never reported (invoke.ts writes the cap or nothing then, with a
-    // cost note), is unknown money.
+    // v141: a guessed billing, or a cost the provider never reported on any turn (invoke.ts writes the cap or nothing
+    // then, and recordRunCostUnknown sets the sticky column), is unknown money. Anything but a recorded 0 is unknown.
     amount: runAmountOf({ billing, spendMicrousd: n(row["microusd"]), costUsd: n(row["cost_usd"]),
       basis: row["billing_basis"] === "evidence" || row["billing_basis"] === "default" ? row["billing_basis"] : null,
-      costUnknown: typeof row["usage_json"] === "string" && /"cost_note":"cost unknown/.test(row["usage_json"]) }),
+      costUnknown: Number(row["cost_unknown"] ?? 1) !== 0 }),
   };
 }
 
@@ -25297,4 +25304,12 @@ export function chatTurnAccounting(store: Store, id: number): {
  * a guess). Once any turn of the run was a guess the run's money stays unknown. */
 export function recordRunBillingBasis(store: Store, runId: number, basis: "evidence" | "default"): void {
   store.handle.prepare("UPDATE run SET billing_basis = CASE WHEN billing_basis = 'default' THEN 'default' ELSE ? END WHERE id = ?").run(basis, runId);
+}
+
+/** v141 (PR #263 review): a run whose provider didn't report what a turn cost is unknown money for good. Set when a
+ * turn's cost is unknown, never cleared: a later turn (a review resume) that reports its own cost, and recordUsage's
+ * COALESCE over the usage note, can't make the run's spending read as measured again. */
+export function recordRunCostUnknown(store: Store, runId: number, unknown: boolean): void {
+  if (unknown !== true) return;
+  store.handle.prepare("UPDATE run SET cost_unknown = 1 WHERE id = ?").run(runId);
 }

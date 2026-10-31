@@ -839,8 +839,9 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "choose", "note", "max-open-decisions", "name", "days", "publication", "auto-approve", "review-auto", "port", "host", "allow-host",
   "for", "tick-every", "bridge-every", "reconcile-every", "incarnation",
   "say", "ceiling-usd", "cap-usd",
-  // evals: the cases a diagnostic campaign runs, its k, and an attempt's world and what its builds may not read.
-  "case", "k", "world", "deny",
+  // evals: the cases a diagnostic campaign runs, its k, an attempt's world and what its builds may not read, and the
+  // stuck campaign a person ends (recover --abandon).
+  "case", "k", "world", "deny", "abandon",
   "token-file", "bin", "poll", "github", "remote", "head-prefix", "password",
   // v102: project rules.
   "not-requester", "protect", "protect-paths",
@@ -12867,6 +12868,7 @@ export async function refreshGithubNightlies(store: Store, now: () => Date, read
  * - `attempt <campaign> <case> <n> --world <dir> --db <world db>`: one attempt's world (eval-world.ts). Only under its
  *   runner's dispatch gate, and only on the world's own database.
  * - `cases`: each installed case, its version, its pin, and whether a person has validated it yet.
+ * - `recover [--abandon <campaign>]`: settle campaigns whose runner stopped; with --abandon, a person ends a stuck one.
  */
 export async function evalsCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
   const { write, json } = context;
@@ -12876,7 +12878,8 @@ export async function evalsCommand(positional: readonly string[], flags: Map<str
   const { evalCliEntry, runEvalWorld } = await import("./eval-world.js");
   const action = positional[0];
   const command = `evals${action === undefined ? "" : ` ${action}`}`;
-  const usage = "Use: toolroll evals run [--diagnostic] [--case <ids>] [--k <n>] --as <you> --token <password> | toolroll evals cases | toolroll evals recover";
+  const usage = "Use: toolroll evals run [--diagnostic] [--case <ids>] [--k <n>] --as <you> --token <password> | toolroll evals cases | toolroll evals recover [--abandon <campaign> --as <you> --token <password>]";
+  if (action === "recover" && flags.has("abandon")) return evalsAbandonCommand(flags, context);
   if (action === "recover") {
     // A campaign whose runner stopped: its unfinished attempts recorded as interrupted, then it ends incomplete.
     const recovered = recoverEvalCampaigns(context.store, context.clock());
@@ -12947,4 +12950,26 @@ export async function evalsCommand(positional: readonly string[], flags: Map<str
     ...attempts.map(one => `${one.case} #${one.n}${one.replaces === 0 ? "" : " (replacement)"}: ${one.outcome ?? "not finished"}${one.why === null ? "" : ` — ${one.why}`}`),
     `API dollars: ${dollars(spent.apiMicrousd, spent.unknownAttempts)}. Subscription usage, not billed: ${dollars(spent.subscriptionMicrousd, spent.unknownAttempts)}.`,
   ]);
+}
+
+/**
+ * `toolroll evals recover --abandon <campaign> --as <you> --token <password>` (PR #263 review): a person ends a campaign
+ * recovery can't settle (its runner or a world's processes can't be proven gone). Its unfinished attempts are recorded
+ * as errors and its spending as unknown, and it ends incomplete; nothing is signalled and no world is removed. A lead
+ * token, a machine or an eval world is refused; the password is checked inside the write (evals.ts abandonEvalCampaign).
+ */
+async function evalsAbandonCommand(flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { write, json } = context;
+  const command = "evals recover";
+  const { abandonEvalCampaign } = await import("./evals.js");
+  const { inEvalWorld } = await import("./eval-gate.js");
+  const id = text(flags, "abandon");
+  if (id === undefined || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(id)) return fail(write, json, command, "usage", "Use: toolroll evals recover --abandon <campaign> --as <you> --token <password>", EXIT.usage);
+  if (inEvalWorld() || machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined) return fail(write, json, command, "person-only", "Only a person abandons an eval campaign.", EXIT.refused);
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, command, "usage", "A campaign is abandoned with your password: add --as <you> --token <password>.", EXIT.usage);
+  const ended = abandonEvalCampaign(context.store, { id, as: acting.name, token: acting.token, now: context.clock() });
+  if (!ended.ok) return fail(write, json, command, ended.reason, ended.message, EXIT.refused);
+  return succeed(write, json, command, { campaign: id, state: "incomplete", attempts: ended.attempts, spending: "unknown" },
+    () => [`Campaign ${id} ended incomplete. ${ended.attempts} unfinished attempt${ended.attempts === 1 ? "" : "s"} recorded as errors; what it spent is unknown. Nothing was stopped: check for its processes yourself.`]);
 }

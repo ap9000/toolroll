@@ -4,7 +4,7 @@
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { parseLeadProviderWrapper, parseProviderWrapper } from "./converse.js";
-import { chatTurnAccounting, openStore, recordRunBillingBasis, recordRunModelReported, runAccounting, type Store } from "./store.js";
+import { chatTurnAccounting, openStore, recordRunBillingBasis, recordRunCostUnknown, recordRunModelReported, runAccounting, type Store } from "./store.js";
 import { MODELS_JOIN, chatTurnAmountOf, combineReportedModels, runAmountOf } from "./reported-usage.js";
 
 const T0 = new Date("2026-10-30T12:00:00.000Z");
@@ -67,8 +67,15 @@ test("a run's accounting keeps API dollars, subscription usage and unknown apart
   expect(runAccounting(store, guessed)?.amount).toEqual({ kind: "unknown" });
   const capped = run("t-capped");
   store.recordUsage(capped, { tokensIn: 10, tokensOut: 5, costUsd: 0.75, usageJson: JSON.stringify({ cost_note: "cost unknown, charged at the cap" }) });
+  recordRunCostUnknown(store, capped, true);
   store.fixRunBilling(capped, "subscription", T0);
   recordRunBillingBasis(store, capped, "evidence");
+  expect(runAccounting(store, capped)?.amount).toEqual({ kind: "unknown" });
+  // PR #263 review: the unknown is a sticky column, not the note. A review resume that reports its own cost writes new
+  // usage over the note (recordUsage's COALESCE) and records its own turn as known: the run's money stays unknown.
+  store.recordUsage(capped, { tokensIn: 20, tokensOut: 9, costUsd: 0.9, usageJson: JSON.stringify({ usage: { input_tokens: 10, output_tokens: 4 } }) });
+  recordRunCostUnknown(store, capped, false);
+  expect(store.handle.prepare("SELECT cost_unknown, usage_json FROM run WHERE id = ?").get(capped)).toMatchObject({ cost_unknown: 1, usage_json: expect.not.stringContaining("cost_note") });
   expect(runAccounting(store, capped)?.amount).toEqual({ kind: "unknown" });
   // Billed by use with nothing reported or priced, and a run with no billing at all: unknown, never $0.
   const blank = run("t-blank");

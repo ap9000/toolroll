@@ -980,3 +980,27 @@ A scripted-provider journey now exercises the real CLI setup, isolated database,
 committed build, collector and oracle. It makes no model calls. Native oracle attacks remain a separate focused test.
 The transport also retains a model witness when an earlier init had no model, so later conflicting inits cannot be
 collapsed into a false match to the pin.
+
+**PR #263 review fixes (2026-10-31).**
+- Hook binding: a listed call counts only when its name is bound as the manifest's `from` says: an un-renamed value
+  import from that module (`./eval-gate.js`, `./nightly-github.js`, ...), the file's own top-level function (`self`)
+  or a local of the enclosing function (`local`, release.ts `nightlyHolds`), declared exactly once in the file and
+  never assigned. A renamed import beside a local stand-in, a namespace import, an import from another module, or a
+  shadowing parameter, variable or destructuring needs a person. Enclosing and pinned functions are held the same way
+  (a later `name = …` replaces the checked body). This is syntax, not the type checker: a person stays the backstop.
+- Pinned Store methods: `Store#recordUsage`, `Store#settleRunSpend`, `Store#fixRunBilling` and `Store#finalizeChatTurn`
+  (the plan's "finishChatTurn"; there is no method of that name), each the class's one member of its name, never
+  replaced through the prototype or `defineProperty`. invokeAgent's `recordRunBillingBasis` and `recordRunCostUnknown`
+  calls are hooks with `args`: what they are passed must read as the base has it.
+- `run.cost_unknown` (in the unreleased v141): set by the pinned `recordRunCostUnknown` when a turn's cost wasn't
+  reported, never cleared, so a review resume that writes new usage over the note can't make the money read as measured.
+  Accounting reads the column, not the note. Saved rows read 0 and are unknown money anyway (NULL billing basis).
+- An attempt whose world wasn't proven stopped (ancestry lost, a process that outlived SIGKILL, or the runner failing
+  after the spawn) records its spending as unknown (an extra `tree:unstopped` unknown dispatch) and stops the campaign
+  incomplete, with no replacement.
+- Recovery compares the runner's process start (`eval_campaign.runner_started`, `ps -o lstart`, within 2 s) so a reused
+  pid isn't the runner; an unreadable start counts as alive. `toolroll evals recover --abandon <campaign>` (a person's
+  password, in the write's transaction; a lead token, machine or eval world refused) ends a stuck campaign incomplete:
+  unfinished attempts are errors with unknown spending, `eval_campaign.spending_unknown` makes the campaign's totals
+  unknown, and nothing is signalled or removed.
+- Jev sort steps (flow-sort.ts `askJev`) refuse in an eval world, held by a hook.
