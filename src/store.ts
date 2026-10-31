@@ -633,6 +633,103 @@ CREATE TABLE IF NOT EXISTS nightly_exemption (
 );
 `;
 
+/** v141 (docs/plans/evals-nightly.md, part C): the eval set's own records, written only by the installed plane's eval
+ * module (evals.ts). `eval_campaign` is one campaign (an eval set run or a reviewer run), sealed at admission, with its
+ * reservation against the month; `eval_attempt` one attempt of one case (unique per campaign, case, number and what it
+ * replaces: 0 for an original); `eval_invocation` each provider dispatch the attempt's world made, carved from the
+ * campaign's reservation and settled at its reported cost (unknown: at its full cap); `eval_spend_month` the month's
+ * ceiling, outstanding reservations and settled API dollars, shared by eval and reviewer campaigns. `eval_baseline_pin`
+ * and `eval_debt` are C2's (the owner's pinned baseline and regressed cases). New tables only. */
+export const V141_SCHEMA = `
+CREATE TABLE IF NOT EXISTS eval_campaign (
+  id                TEXT PRIMARY KEY,
+  kind              TEXT NOT NULL DEFAULT 'eval' CHECK (kind IN ('eval','reviewer')),
+  canonical         INTEGER NOT NULL CHECK (canonical IN (0, 1)),
+  manifest_digest   TEXT NOT NULL,
+  build_digest      TEXT NOT NULL,
+  version           TEXT NOT NULL,
+  baseline_campaign TEXT,
+  k                 INTEGER NOT NULL CHECK (k >= 1),
+  sealed_json       TEXT NOT NULL,
+  started_by        TEXT NOT NULL,
+  started_proof     TEXT NOT NULL,
+  admitted_at       TEXT NOT NULL,
+  finished_at       TEXT,
+  state             TEXT NOT NULL CHECK (state IN ('running','complete','incomplete')),
+  why               TEXT,
+  settled_at        TEXT,
+  month             TEXT NOT NULL,
+  reserved_microusd INTEGER NOT NULL CHECK (reserved_microusd >= 0),
+  carved_microusd   INTEGER NOT NULL DEFAULT 0 CHECK (carved_microusd >= 0 AND carved_microusd <= reserved_microusd),
+  settled_microusd  INTEGER NOT NULL DEFAULT 0 CHECK (settled_microusd >= 0),
+  released          INTEGER NOT NULL DEFAULT 0 CHECK (released IN (0, 1))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS eval_campaign_one_running ON eval_campaign (kind) WHERE state = 'running';
+CREATE TABLE IF NOT EXISTS eval_attempt (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  campaign              TEXT NOT NULL REFERENCES eval_campaign(id),
+  case_id               TEXT NOT NULL,
+  case_version          TEXT NOT NULL,
+  n                     INTEGER NOT NULL CHECK (n >= 1),
+  replaces              INTEGER NOT NULL DEFAULT 0,
+  outcome               TEXT CHECK (outcome IN ('pass','fail','error','unevaluated')),
+  error_why             TEXT,
+  model_pinned          TEXT NOT NULL,
+  model_reported        TEXT,
+  api_microusd          INTEGER,
+  subscription_microusd INTEGER,
+  usage_unknown         INTEGER NOT NULL DEFAULT 0 CHECK (usage_unknown IN (0, 1)),
+  turns                 INTEGER,
+  tokens_in             INTEGER,
+  cache_read            INTEGER,
+  cache_write           INTEGER,
+  tokens_out            INTEGER,
+  tool_calls            INTEGER,
+  wall_ms               INTEGER,
+  carved_microusd       INTEGER NOT NULL DEFAULT 0 CHECK (carved_microusd >= 0),
+  started_at            TEXT NOT NULL,
+  finished_at           TEXT,
+  UNIQUE (campaign, case_id, n, replaces)
+);
+CREATE TABLE IF NOT EXISTS eval_invocation (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt           INTEGER NOT NULL REFERENCES eval_attempt(id),
+  kind              TEXT NOT NULL,
+  world_ref         TEXT NOT NULL,
+  reserved_microusd INTEGER NOT NULL CHECK (reserved_microusd >= 0),
+  settled_microusd  INTEGER NOT NULL CHECK (settled_microusd >= 0),
+  unknown           INTEGER NOT NULL CHECK (unknown IN (0, 1)),
+  UNIQUE (attempt, world_ref)
+);
+CREATE TABLE IF NOT EXISTS eval_spend_month (
+  month             TEXT PRIMARY KEY,
+  ceiling_microusd  INTEGER NOT NULL CHECK (ceiling_microusd >= 0),
+  reserved_microusd INTEGER NOT NULL DEFAULT 0 CHECK (reserved_microusd >= 0),
+  settled_microusd  INTEGER NOT NULL DEFAULT 0 CHECK (settled_microusd >= 0)
+);
+CREATE TABLE IF NOT EXISTS eval_baseline_pin (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  campaign            TEXT NOT NULL REFERENCES eval_campaign(id),
+  by                  TEXT NOT NULL,
+  proof               TEXT NOT NULL,
+  at                  TEXT NOT NULL,
+  accepted_worse_json TEXT
+);
+CREATE TABLE IF NOT EXISTS eval_debt (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id             TEXT NOT NULL,
+  case_version        TEXT NOT NULL,
+  campaign            TEXT NOT NULL REFERENCES eval_campaign(id),
+  baseline_campaign   TEXT NOT NULL,
+  opened_at           TEXT NOT NULL,
+  cleared_at          TEXT,
+  cleared_by_campaign TEXT,
+  waived_by           TEXT,
+  waived_proof        TEXT,
+  waived_why          TEXT
+);
+`;
+
 /** A project's "Show commands in the live view" (live-detail.ts): absent means off. */
 export const LIVE_DETAIL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS live_detail_setting (
@@ -963,7 +1060,10 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v140 adds, and changes no saved row: what the provider itself reported (docs/plans/evals-nightly.md, B1) — the exact
 // model of each run and chat request (run.model_reported, chat_turn.model_reported), a chat request's own turn count and
 // reported cost (chat_turn.provider_turns, reported_cost_usd). Saved rows read NULL: not reported, never 0.
-export const SCHEMA_VERSION = 140;
+// v141 adds, and changes no saved row: the eval set's records (docs/plans/evals-nightly.md, part C) — campaigns,
+// attempts, each attempt's provider dispatches, the month's eval spend ledger, the baseline pin and eval debt
+// (V141_SCHEMA, new tables only).
+export const SCHEMA_VERSION = 141;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1101,7 +1201,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -5525,6 +5625,8 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   for (const [table, columns] of Object.entries(V140_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   }
+  // v141: the eval set's records (new tables only).
+  db.exec(V141_SCHEMA);
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
