@@ -22,7 +22,6 @@ import { runCostWords,spendLine,tally } from "../summary.js";
 import { type WorkIndexGroup,type WorkIndexItem,type WorkIndexPage } from "../work-index.js";
 import { WORK_VIEWS,type WorkFacts,type WorkStatus,type WorkView } from "../workspace-ui.js";
 import { createHash } from "node:crypto";
-import { closeSync,constants as fsConstants,lstatSync,openSync,readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { buildsViews,CHEVRON_ICON,type Chrome,consoleSpend,FOLDER_PATHS,GRIP_HANDLE,isOverdue,projectChip,relativeAge,safePrUrl,screen,type Screen,sentenceCase,strokeIcon,TO_FRONT_ICON,when,whenTime } from "./chrome.js";
@@ -1232,55 +1231,6 @@ export function githubIdentityOf(remoteUrl: string): string | null {
   return null;
 }
 
-/**
- * The `origin` remote's url from a repository's OWN .git/config. BOUNDED
- * I/O by construction (ghlist review, finding 1): the final component may
- * not be a symlink (O_NOFOLLOW + lstat), must be a REGULAR file under a
- * size cap, and at most 64 KiB are ever read — a sparse monster or a fifo
- * planted as a "config" reads as null, never as a hang. Parsed LINE BY
- * LINE with real section tracking (finding 2): a `[remote "origin"]`
- * embedded inside some other value never opens the section. null when
- * unreadable or origin-less; a worktree-style `.git` FILE (gitdir pointer)
- * reads null too, which is honest — its identity lives elsewhere. The
- * answer is ADVISORY metadata for offering a button: the /projects/open
- * road re-proves path, ceiling, and git-ness before anything mutates, and
- * a config that lies about its origin can only mislabel a repository the
- * operator was already allowed to open.
- */
-export function originUrlOf(repoPath: string): string | null {
-  const file = join(repoPath, ".git", "config");
-  let fd: number | null = null;
-  try {
-    const stat = lstatSync(file);
-    if (!stat.isFile() || stat.size > 1024 * 1024) return null;
-    fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-    const buffer = Buffer.alloc(64 * 1024);
-    const read = readSync(fd, buffer, 0, buffer.length, 0);
-    const config = buffer.toString("utf8", 0, read);
-    let inOrigin = false;
-    for (const line of config.split("\n")) {
-      if (/^\s*\[/.test(line)) {
-        inOrigin = /^\s*\[remote "origin"\]\s*$/.test(line);
-        continue;
-      }
-      if (!inOrigin) continue;
-      const url = /^\s*url\s*=\s*(.+)$/.exec(line)?.[1];
-      if (url !== undefined) return url.trim();
-    }
-    return null;
-  } catch {
-    return null;
-  } finally {
-    if (fd !== null) {
-      try {
-        closeSync(fd);
-      } catch {
-        // already closed
-      }
-    }
-  }
-}
-
 /** The GitHub listing page: the account's repositories with ONE honest
  * action each. Names, descriptions, and paths are gh/filesystem DATA —
  * escaped at the sink like everything else. */
@@ -1295,6 +1245,8 @@ export function githubReposPage(
     csrf: string;
     cloneReady: boolean;
     openProject: string | null;
+    /** A projects folder didn't answer in time: local copies weren't matched this time. */
+    localUnanswered?: boolean;
   },
 ): Screen {
   const openForm = (path: string, label: string): Html =>
@@ -1333,6 +1285,7 @@ export function githubReposPage(
   return screen("projects", joinHtml([
     html`<h1>Your GitHub repositories</h1>`,
     html`<p class="meta">Repositories available to the GitHub account signed in on this machine — open one you already have, or clone a new one after a quick preview.</p>`,
+    data.localUnanswered === true ? html`<p class="meta">Your projects folder didn't answer, so copies already on this machine aren't matched yet. Try again in a moment.</p>` : null,
     rows,
     data.listed === null ? null : list("Refresh list"),
     html`<p class="row" style="margin-top:.6rem"><a class="badge" href="/projects">← back to projects</a></p>`,

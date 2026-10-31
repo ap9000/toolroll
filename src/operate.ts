@@ -7600,10 +7600,14 @@ async function upCommand(
       return null;
     }
   };
+  // A saved project that doesn't answer now (a drive not connected, a folder macOS is holding) is looked at again
+  // while this start runs, and connects once it answers (upDeferredRetry).
+  const deferredRepos: string[] = [];
   for (const input of loadedRegistry.repos) {
     const root = await proveRepo(input);
     if (root === null) {
-      progress(`saved project unavailable — skipped ${input}`);
+      progress(`saved project unavailable — skipped ${input}; it connects when it's back`);
+      deferredRepos.push(input);
     } else if (!repos.includes(root)) {
       repos.push(root);
     }
@@ -7853,6 +7857,7 @@ async function upCommand(
         type: "start", role: "worker", databaseFile: context.databaseFile, containment: containmentFlag, build,
         config: {
           runner: runnerName, token: runnerToken, repos: generation === 1 ? [...repos] : [...currentRepos], pinnedRepos: [...pinnedRepos], projectRoots, registryPath, pool,
+          deferredRepos: [...deferredRepos],
           forMs: forGiven === undefined ? null : Number(forGiven), publicUrl: publicUrlFlag ?? null, stopGraceMs, verbose: flags.has("verbose"),
           terminal: context.upSeams?.terminal ?? process.stdout.isTTY === true,
           // A restart waits out a crashed predecessor's lease (at most a minute), then recovers it: as a fresh `up` after a crash.
@@ -12759,6 +12764,7 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
 
   const dynamicCeiling = resolveCeiling(config.repos, config.projectRoots).ceiling;
   const rejected = new Set<string>();
+  const deferred = upDeferredRetry(config.deferredRepos ?? [], proveRepo);
   const registrySupervisor = (async (): Promise<void> => {
     const sleep = (ms: number) => new Promise(resolveSleep => setTimeout(resolveSleep, ms));
     while (!stopping) {
@@ -12781,6 +12787,14 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
       if (removed) reportRepos();
       for (const candidate of loaded.repos) {
         if (stopping) break;
+        // Skipped at start because it didn't answer: connected on the start's own authority once it does.
+        if (deferred.has(candidate)) {
+          const root = await deferred.retry(candidate);
+          if (root === null || stopping || activeRepos.has(root) || releasedRepos.has(root)) continue;
+          progress(`saved project is back — connecting ${root}`);
+          await launchRepo(root, true);
+          continue;
+        }
         const canonical = canonicalProject(candidate);
         // Still letting go of an earlier removal: it rejoins on the next pass after its watch has stopped.
         if (canonical !== null && (activeRepos.has(canonical) || releasedRepos.has(canonical))) continue;
@@ -12972,4 +12986,31 @@ async function evalsAbandonCommand(flags: Map<string, string | true>, context: C
   if (!ended.ok) return fail(write, json, command, ended.reason, ended.message, EXIT.refused);
   return succeed(write, json, command, { campaign: id, state: "incomplete", attempts: ended.attempts, spending: "unknown" },
     () => [`Campaign ${id} ended incomplete. ${ended.attempts} unfinished attempt${ended.attempts === 1 ? "" : "s"} recorded as errors; what it spent is unknown. Nothing was stopped: check for its processes yourself.`]);
+}
+
+/**
+ * The saved projects an `up` start couldn't reach (upCommand): each is proved again every `everyMs` while the
+ * worker runs, by the same proof the start used (`git rev-parse --show-toplevel`, bounded, then its real path), so a
+ * folder that answers again connects without a restart. Only what the start itself read from the saved list is here;
+ * a line saved later still needs its recorded admission. `retry` answers the proved checkout once (and forgets the
+ * line), or null while it still doesn't answer or isn't due.
+ */
+export function upDeferredRetry(inputs: readonly string[], prove: (input: string) => Promise<string | null>, everyMs = 5_000, now: () => number = Date.now): {
+  has: (input: string) => boolean;
+  retry: (input: string) => Promise<string | null>;
+} {
+  // Wall time, not the store's clock (a test's may stand still): this is only how often a folder is asked.
+  const nextAt = new Map<string, number>(inputs.map(input => [input, now() + everyMs]));
+  return {
+    has: input => nextAt.has(input),
+    retry: async input => {
+      const due = nextAt.get(input);
+      if (due === undefined || now() < due) return null;
+      nextAt.set(input, now() + everyMs);
+      const root = await prove(input);
+      if (root === null) return null;
+      nextAt.delete(input);
+      return root;
+    },
+  };
 }

@@ -370,6 +370,61 @@ describe("toolroll up", () => {
     expect(await running).toBe(0);
   });
 
+  test("a saved project that didn't answer at start connects once it's back, without a restart", async ({ onTestFinished }) => {
+    // Saved before this start, outside every projects folder and with no recorded admission: only the start's own
+    // saved-list authority can connect it, as a restart would.
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "so-up-later-")));
+    onTestFinished(() => rmSync(elsewhere, { recursive: true, force: true }));
+    const later = join(elsewhere, "later-project");
+    expect((await updateRepos(join(base, "repos.json"), current => addRepos(current, [later])))).toMatchObject({ ok: true });
+
+    let ready: () => void = () => {};
+    let connected: () => void = () => {};
+    const startup = new Promise<void>(resolve => { ready = resolve; });
+    const connection = new Promise<void>(resolve => { connected = resolve; });
+    let finished = false;
+    const running = runOperate("up", ["--repo", repo, "--port", String(PORT + 9), "--json"], line => { lines.push(line); ready(); }, {
+      databaseFile: db,
+      openDatabase: file => {
+        const store = openStore(file);
+        const startEpisode = store.startWatchEpisode.bind(store);
+        store.startWatchEpisode = (episode, now) => {
+          const result = startEpisode(episode, now);
+          if (episode.repo === later) connected();
+          return result;
+        };
+        return store;
+      },
+    }).finally(() => { finished = true; });
+    onTestFinished(async () => { if (!finished) process.emit("SIGINT"); await running; });
+    try {
+      const stoppedEarly = running.then(code => { throw new Error(`up stopped before the connection was observed (exit ${code})`); });
+      await Promise.race([startup, stoppedEarly]);
+      expect(envelope()).toMatchObject({ ok: true, repos: [realpathSync(repo)] });
+      const runnerName = String(envelope()["runner"]);
+
+      // The folder comes back.
+      execFileSync("mkdir", ["-p", later]);
+      git(["init", "-q"], later);
+      writeFileSync(join(later, "README.md"), "later\n");
+      git(["add", "."], later);
+      git(["commit", "-qm", "first"], later);
+      await Promise.race([connection, stoppedEarly]);
+
+      const store = openStore(db);
+      try {
+        expect(store.getRunner(runnerName)?.runner).toMatchObject({ repos: expect.arrayContaining([later]), retiredAt: null });
+        expect(store.latestWatchEpisode(later)).toMatchObject({ repo: later, runner: runnerName });
+      } finally {
+        store.close();
+      }
+    } finally {
+      if (!finished) process.emit("SIGINT");
+      await running;
+    }
+    expect(await running).toBe(0);
+  });
+
   test("a project added from the command line or by the lead is in every console list at once, and removing it hides it", async ({ onTestFinished }) => {
     const made = (name: string): string => {
       const path = join(base, name);

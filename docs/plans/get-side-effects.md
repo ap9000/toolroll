@@ -58,7 +58,7 @@ What a read may still write, because it records the read itself or caches what i
 | The update lock probe | `settings.updates`, the chrome for operators | Whether the updater holds its lock: opens the lock file only if it exists, takes and rolls back an exclusive lock, never creates or changes the file (`lockHeld`). |
 | The keychain read (`/usr/bin/security`, `secret-tool`) | Tools, Flows, Kits pages | Reads whether a secret is set; owner-checked binary, bounded (20 s), local. Moving legacy files in, the lock file and the names cache now wait for a non-GET read. |
 | Process liveness (`kill -0`, `/bin/ps`, the Windows job helper) | task, review, inbox, sweep pages | Reads whether a run's process is alive; bounded (1–5 s), local, writes nothing. |
-| Folder walks (projects browse, retention plan, peek) | | File-system reads, bounded by their own limits. |
+| Folder walks (projects browse, retention plan, peek) | | File-system reads, bounded by their own limits. Projects browse and the GitHub page's local matches read the person's folders in a child process of the same Node (`src/folder-look.ts`): reads only, no environment passed on, killed at its deadline, so a folder that doesn't answer (a disconnected drive, an iCloud folder) can't freeze the console. |
 | The terminal WebSocket (`term.socket`) | | The upgrade is a GET by protocol; it attaches to an existing terminal after the same cookie, role and origin checks, and keystrokes are frames sent by the page, not the GET. |
 
 ## The audit

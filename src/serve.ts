@@ -1,5 +1,6 @@
 import { secretFolder } from "./tool-secret-store.js";
 import { acceptedIdentities, recoverLearning } from "./project-learning.js";
+import { folderAnswers } from "./folder-look.js";
 import { loadOrCreateVapidKeys } from "./push.js";
 import { checkoutPlan } from "./checkout-cleanup.js";
 import { latestReleaseFor } from "./server/render-settings.js";
@@ -1883,6 +1884,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   // rule run from this pass (or a person's Check now), not from a GET.
   let backgroundChecks: ReturnType<typeof startMaintenance> | null = null;
   let agentsCheckedAt = 0;
+  const folderLookOptions = { ...(options.folderLook === undefined ? {} : { runner: options.folderLook }), ...(options.folderLookMs === undefined ? {} : { deadlineMs: options.folderLookMs }) };
   if (options.backgroundChecks === true) server.once('listening', () => {
     // This Toolroll's folder for secrets, checked once now, so a page can read which are set without preparing it.
     try { secretFolder(); } catch { /* a page says secrets can't be read; the next action reports why */ }
@@ -1932,6 +1934,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         if (lastChecks.due("learning", 10 * 60_000)) {
           waits.push(lastChecks.run("learning", async () => {
             for (const repo of managedRepos()) {
+              // Its reads of the project's Git folder are synchronous: only a folder that answers now is read, so one
+              // that doesn't (a disconnected drive, an iCloud folder macOS is holding) never freezes the console.
+              if (!(await folderAnswers(repo, folderLookOptions))) continue;
               try { acceptedIdentities(store, repo); } catch { /* the next pass tries again */ }
               try { recoverLearning(store, evidenceRoot, repo); } catch { /* the next pass tries again */ }
             }

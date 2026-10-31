@@ -2449,6 +2449,23 @@ describe("the filesystem browser — confined to what opening allows", () => {
     }
   });
 
+  test("a folder that never answers leaves the console answering: the browse page says so within the bound", async () => {
+    let looks = 0;
+    await boot({ projectRoots: [root], folderLook: () => { looks++; return new Promise(() => {}); }, folderLookMs: 300 });
+    const cookie = await login();
+    const at = Date.now();
+    const [browse, health] = await Promise.all([
+      fetch(url("/projects/browse"), { headers: { cookie }, redirect: "manual" }),
+      fetch(url("/healthz")),
+    ]);
+    expect([browse.status, health.status]).toEqual([503, 200]);
+    expect(await browse.text()).toContain("This folder didn&#39;t answer");
+    expect(Date.now() - at).toBeLessThan(3_000);
+    // Asked again while that look is still stuck: answered at once, and no second look piles up.
+    expect((await fetch(url("/projects/browse"), { headers: { cookie }, redirect: "manual" })).status).toBe(503);
+    expect(looks).toBe(1);
+  });
+
   test("an explicit repo list gets no browser — the openable set is already on the page", async () => {
     await boot({ repo: root });
     const cookie = await login();

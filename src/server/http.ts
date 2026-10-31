@@ -21,6 +21,7 @@ import { type launchRuntimeUpdate } from "../toolroll-update.js";
 import { timingSafeEqual } from "node:crypto";
 import { type IncomingMessage,type ServerResponse } from "node:http";
 import { SIGN_IN_LINK_PATH } from "./session.js";
+import { type FolderLookRunner } from "../folder-look.js";
 
 export type ServeOptions = {
   /** Tests: runs a person's command for the HTTP MCP gateway instead of operate.ts's. */
@@ -169,6 +170,9 @@ export type ServeOptions = {
    * how often they run and ask this computer's agents again. */
   backgroundChecks?: boolean;
   backgroundChecksMs?: number;
+  /** Tests: how a person's folders are read off the console's thread (folder-look.ts), and how long a read may take. */
+  folderLook?: FolderLookRunner;
+  folderLookMs?: number;
   connectionHome?: string;
   /** Test seam for Chat's first tasks: the `gh` and `git grep` reads. */
   firstTaskRunner?: typeof execRun;
