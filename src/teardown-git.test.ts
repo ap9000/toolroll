@@ -164,9 +164,13 @@ describe("the plane's git on a build's checkout (checkoutGit)", () => {
 
 test("checkoutGit's status never enters a submodule whose config would run a command", async () => {
   const dir = mkdtempSync(join(tmpdir(), "so-checkout-sub-"));
-  const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t" };
+  const env = { ...process.env, GIT_AUTHOR_NAME: "t", GIT_AUTHOR_EMAIL: "t@t", GIT_COMMITTER_NAME: "t", GIT_COMMITTER_EMAIL: "t@t", GIT_TERMINAL_PROMPT: "0" };
   // Each setup step bounded: one that stalls fails here, naming its command, instead of as the test's own timeout.
-  const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, env, timeout: 30_000, killSignal: "SIGKILL" });
+  // 120 s, not 30: the 0.9.82 release check (full suite loading the Mac) saw a setup step pass 30 s (run 3281).
+  const git = (cwd: string, ...args: string[]) => {
+    try { return execFileSync("git", args, { cwd, env, timeout: 120_000, killSignal: "SIGKILL" }); }
+    catch (error) { throw new Error(`setup: git ${args.join(" ")} failed: ${error instanceof Error ? error.message : String(error)}`); }
+  };
   const inner = join(dir, "inner");
   mkdirSync(inner);
   git(inner, "init", "-q", "-b", "main");
@@ -176,7 +180,14 @@ test("checkoutGit's status never enters a submodule whose config would run a com
   const outer = join(dir, "outer");
   mkdirSync(outer);
   git(outer, "init", "-q", "-b", "main");
-  git(outer, "-c", "protocol.file.allow=always", "submodule", "add", "-q", inner, "sub");
+  // The submodule is built with plumbing, not `git submodule add`: Apple's git-submodule shell script hung on the
+  // release Mac (0.9.82, run 3281) before running any git. A clone, its gitlink and .gitmodules are all the test needs.
+  git(dir, "-c", "protocol.file.allow=always", "clone", "-q", inner, join(outer, "sub"));
+  const head = git(inner, "rev-parse", "HEAD").toString().trim();
+  git(outer, "config", "-f", ".gitmodules", "submodule.sub.path", "sub");
+  git(outer, "config", "-f", ".gitmodules", "submodule.sub.url", inner);
+  git(outer, "update-index", "--add", "--cacheinfo", `160000,${head},sub`);
+  git(outer, "add", ".gitmodules");
   const marker = join(dir, "ran");
   git(join(outer, "sub"), "config", "core.fsmonitor", `touch ${marker}; true`);
   writeFileSync(join(outer, "sub", "f"), "changed\n");
@@ -184,7 +195,7 @@ test("checkoutGit's status never enters a submodule whose config would run a com
   expect(status.code).toBe(0);
   expect(existsSync(marker)).toBe(false);
   rmSync(dir, { recursive: true, force: true });
-});
+}, 300_000);
 
 test("a global filter that would run the checkout's own file never runs: global config contributes values only", async () => {
   const dir = mkdtempSync(join(tmpdir(), "so-checkout-global-"));

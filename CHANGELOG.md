@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.9.82 — 2026-10-31
+
+- **A failing nightly holds your releases.** Turn it on with
+  `toolroll release nightly --github` (your password). When a lane of your
+  project's GitHub nightly fails on main, every deploy, the merge and the tag
+  of a release wait until a later nightly passes that lane, and Needs you
+  says which lane and why. A release whose own pull request re-ran that lane
+  after the failure, with the same CI files, goes through. A nightly that
+  can't be read gives a warning, never a pass.
+- **Every run and chat turn records the model and cost the provider
+  reported:** the exact model id, provider turns, cache-aware tokens, and
+  cost, with API dollars, subscription usage and unknown kept apart (unknown
+  is never shown as zero).
+- **Evals (groundwork).** `toolroll evals` runs repeatable test tasks in
+  throwaway worlds, graded by a separate checker process the agent can't
+  reach. Ten starter tasks ship as drafts; real comparison runs stay off
+  until they're validated.
+- **CI:** required checks report under their exact names on every pull
+  request; a slow git config read now says it timed out instead of blaming
+  the project's config.
+
 ## 0.9.81 — 2026-10-30
 
 - **The release proof works after the merge.** GitHub empties a CI run's
