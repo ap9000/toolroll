@@ -12,7 +12,8 @@ import { chatTurnAccounting, openStore, runAccounting, type Store } from "./stor
 import { setAuthMode } from "./keys.js";
 import { monthOf, spendItems } from "./spend.js";
 import { spendReport, spendReportCsv, spendRows, type SpendRow } from "./spend-report.js";
-import { spendHtml } from "./spend-ui.js";
+import { money, spendHtml } from "./spend-ui.js";
+import type { Database } from "./store.js";
 import { html, htmlString } from "./html.js";
 
 let dir: string, store: Store, home: string | undefined;
@@ -62,10 +63,10 @@ function chat(fixture: ChatFixture): number {
       fixture.mateTurn === undefined ? "chat" : "mate-step", fixture.mateTurn ?? null).lastInsertRowid);
 }
 
-function leadTurn(settled: number, createdAt = AT): number {
+function leadTurn(settled: number, createdAt = AT, scope: { kind: "project" | "task"; key: string } = { kind: "project", key: REPO }): number {
   const session = Number(store.handle.prepare(`INSERT INTO lead_session (approver, approver_generation, credential_key, ceiling_microusd, ceiling_digest, terms_digest, minted_at) VALUES ('sam', 1, 'k', 9000000, 'c', 't', ?)`)
     .run(AT).lastInsertRowid);
-  const thread = Number(store.handle.prepare(`INSERT INTO lead_thread (approver, ceiling_digest, opened_at, scope_kind, scope_key) VALUES ('sam', 'c', ?, 'project', ?)`).run(AT, REPO).lastInsertRowid);
+  const thread = Number(store.handle.prepare(`INSERT INTO lead_thread (approver, ceiling_digest, opened_at, scope_kind, scope_key) VALUES ('sam', 'c', ?, ?, ?)`).run(AT, scope.kind, scope.key).lastInsertRowid);
   return Number(store.handle.prepare(`INSERT INTO mate_turn (approver, session, thread, credential_key, state, created_at, deadline_at, reserved_microusd, settled_microusd) VALUES ('sam', ?, ?, 'k', 'answered', ?, ?, ?, ?)`)
     .run(session, thread, createdAt, AT, settled, settled).lastInsertRowid);
 }
@@ -194,7 +195,8 @@ test("runs and chat requests read exactly as runAccounting and chatTurnAccountin
   // The roles include the lead's chat and evals; the top runs are API dollars only, biggest first.
   expect(report.byRole.map(line => line.key)).toEqual(expect.arrayContaining(["builder", "planner", "scout", "repair", "lead", "chat", "subagent", "flow", "evals"]));
   expect(report.topRuns.map(one => one.runId)).toEqual([runs.apiReported, runs.apiCatalogue, runs.twoModels]);
-  expect(report.byModel.find(line => line.key.includes("floating choice opus → claude-opus-5-5"))).toBeDefined();
+  expect(report.byModel.find(line => line.key === "claude · claude-opus-5-5")?.chosen).toEqual(["opus"]);
+  expect(report.topRuns[0]!.model).toBe("floating choice opus → claude-opus-5-5");
 
   // The CSV is the same rows: its API column adds up to the page's figure.
   const csv = spendReportCsv(rows, new Map()).replace(/^﻿/, "").trim().split("\r\n");
@@ -231,4 +233,42 @@ test("the page never shows unknown cost or unreported plan usage as $0", () => {
   for (const [, , inner] of kinds) expect(inner).not.toMatch(/\$0(\.0+)?(?!\d|\.\d*[1-9])/);
   expect(page).toContain('data-amount-kind="unknown" data-count="2"');
   expect(page).toContain("data-not-counted");
+});
+
+test.each([[1, "<$0.01"], [9_999, "<$0.01"], [10_000, "$0.01"], [1_250_000, "$1.25"], [0, "$0"]])("a positive amount under a cent never reads $0: %i micro-dollars → %s", (microusd, words) => {
+  expect(money(microusd)).toBe(words);
+});
+
+test("sub-cent plan usage and estimates show as under a cent on the page, in the figures and the breakdowns", () => {
+  run({ basis: "evidence", spend: { microusd: 0, source: "subscription", billing: "subscription" }, costUsd: 0.001 });
+  run({ basis: "default", spend: { microusd: 0, source: "subscription", billing: "subscription" }, costUsd: 0.001 });
+  const report = spendReport(spendRows(store.handle, MONTH.from, MONTH.to));
+  expect(report.totals).toMatchObject({ usageMicrousd: 1_000, estimatedMicrousd: 1_000 });
+  const page = htmlString(spendHtml({ month: MONTH.name, previous: "2026-09", next: null, report, budgets: [], windows: html``, subagentNames: new Map() }, {}));
+  expect(page).not.toMatch(/\$0\.00/);
+  expect(page).toContain("counted as &lt;$0.01 (estimated)");
+  expect(page.match(/&lt;\$0\.01/g)!.length).toBeGreaterThanOrEqual(4);
+});
+
+test("models group by what the work ran on; how it was chosen is detail on the line", () => {
+  run({ basis: "evidence", spend: { microusd: 1_000_000, source: "reported", billing: "api-key" }, model: "opus", modelReported: "claude-opus-5-5" });
+  run({ basis: "evidence", spend: { microusd: 2_000_000, source: "reported", billing: "api-key" }, model: "claude-opus-5-5", modelReported: "claude-opus-5-5" });
+  run({ basis: "evidence", spend: { microusd: 500_000, source: "reported", billing: "api-key" }, model: "sonnet" });
+  const lines = spendReport(spendRows(store.handle, MONTH.from, MONTH.to)).byModel.map(line => [line.key, line.apiMicrousd, line.count, line.chosen]);
+  expect(lines).toEqual([["claude · claude-opus-5-5", 3_000_000, 2, ["opus"]], ["claude · sonnet (not reported)", 500_000, 1, []]]);
+});
+
+test("the month's reads stay bounded: no scan of every task, chat request or eval invocation, and a task thread finds its project once", () => {
+  store.createTask({ id: "other-backend", title: "x", filedBy: { name: "alex", kind: "person" } }, NOW);
+  store.handle.prepare("INSERT INTO task_ref (backend, external_id, repo) VALUES ('github', 'gh-7', '/repo/desk')").run();
+  const turn = leadTurn(0, AT, { kind: "task", key: "gh-7" });
+  chat({ provider: "anthropic-api", settled: 100, mateTurn: turn });
+  evalAttempt([{ amount: "api", api: 5 }], 0);
+  const statements: string[] = [];
+  const watched = { prepare: (sql: string) => { statements.push(sql); return store.handle.prepare(sql); } } as unknown as Database;
+  const rows = spendRows(watched, MONTH.from, MONTH.to);
+  expect(rows.find(row => row.source === "lead")).toMatchObject({ project: "/repo/desk" });
+  const scans = statements.flatMap(sql => store.handle.prepare(`EXPLAIN QUERY PLAN ${sql}`).all().map(step => String(step["detail"])))
+    .filter(detail => /^SCAN (task_ref|chat_turn|eval_invocation|r|c|i)\b/.test(detail));
+  expect(scans).toEqual([]);
 });

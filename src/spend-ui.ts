@@ -51,22 +51,25 @@ export type SpendView = {
   subagentNames: Map<number, string>;
 };
 
+/** Dollars for the page: a positive amount under a cent reads "<$0.01", never a false $0. */
+export const money = (microusd: number): string => microusd > 0 && microusd < 10_000 ? "<$0.01" : usd(microusd);
+
 const each = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 /** A line's plan usage in words: the reported usage, or that none was reported. Never $0 for unreported usage. */
 const usageWords = (line: SpendLine): string =>
-  line.usageCount === 0 ? "—" : line.usageMicrousd > 0 ? `${usd(line.usageMicrousd)}${line.usageUnreported > 0 ? ` + ${line.usageUnreported} not reported` : ""}` : "not reported";
+  line.usageCount === 0 ? "—" : line.usageMicrousd > 0 ? `${money(line.usageMicrousd)}${line.usageUnreported > 0 ? ` + ${line.usageUnreported} not reported` : ""}` : "not reported";
 /** A line's unknown cost in words: how many, and a saved charge as an estimate. Never $0. */
 const unknownWords = (line: SpendLine): string => {
-  const counted = line.estimatedMicrousd > 0 ? `${usd(line.estimatedMicrousd)} estimated` : "";
+  const counted = line.estimatedMicrousd > 0 ? `${money(line.estimatedMicrousd)} estimated` : "";
   return line.unknown > 0 ? `${line.unknown}${counted === "" ? "" : ` · ${counted}`}` : counted === "" ? "—" : counted;
 };
-const apiWords = (line: SpendLine): string => line.apiMicrousd > 0 ? usd(line.apiMicrousd) : "—";
+const apiWords = (line: SpendLine): string => line.apiMicrousd > 0 ? money(line.apiMicrousd) : "—";
 
-function linesTable(title: string, lines: readonly SpendLine[], name: (key: string) => string, top = 12): Html | "" {
+function linesTable(title: string, lines: readonly SpendLine[], name: (key: string) => string, top = 12, detail: (line: SpendLine) => string = () => ""): Html | "" {
   if (lines.length === 0) return "";
   return html`<section><h2>${title}</h2><table class="lines"><thead><tr><th></th><th class="n">API dollars</th><th class="n">Plan usage</th><th class="n">Unknown</th></tr></thead><tbody>${
-    lines.slice(0, top).map(line => html`<tr><td>${name(line.key)}</td><td class="n" data-label="API dollars" data-amount-kind="api">${apiWords(line)}</td><td class="n" data-label="Plan usage" data-amount-kind="subscription">${usageWords(line)}</td><td class="n" data-label="Unknown" data-amount-kind="unknown">${unknownWords(line)}</td></tr>`)
+    lines.slice(0, top).map(line => html`<tr><td>${name(line.key)}${detail(line) === "" ? "" : html` <span class="meta">${detail(line)}</span>`}</td><td class="n" data-label="API dollars" data-amount-kind="api">${apiWords(line)}</td><td class="n" data-label="Plan usage" data-amount-kind="subscription">${usageWords(line)}</td><td class="n" data-label="Unknown" data-amount-kind="unknown">${unknownWords(line)}</td></tr>`)
   }</tbody></table></section>`;
 }
 
@@ -75,32 +78,32 @@ function limitRow(budget: BudgetState, nameOfSubagent: (key: string) => string, 
   const width = Math.min(100, Math.max(0, budget.percent));
   const over = budget.spentMicrousd >= budget.limitMicrousd;
   const label = budgetLabel(budget, budget.scope === "subagent" ? nameOfSubagent(budget.key) : undefined).replace(/'s$/, "");
-  return html`<div class="budget${over ? " over" : ""}" data-budget="${budget.id}"><span class="name">${label}</span><span class="figures">${usd(budget.spentMicrousd)} of ${usd(budget.limitMicrousd)} · ${budget.percent}%</span><span class="bar" aria-hidden="true"><span style="width:${width}%"></span></span><span class="meta">${over && budget.hardStop ? "Used up: new API work waits until next month or a higher limit." : budget.hardStop ? "Pauses new API work at 100%." : "Alerts only."}${budget.unpriced > 0 ? ` ${budget.unpriced} without a price.` : ""}</span>${editor}</div>`;
+  return html`<div class="budget${over ? " over" : ""}" data-budget="${budget.id}"><span class="name">${label}</span><span class="figures">${money(budget.spentMicrousd)} of ${usd(budget.limitMicrousd)} · ${budget.percent}%</span><span class="bar" aria-hidden="true"><span style="width:${width}%"></span></span><span class="meta">${over && budget.hardStop ? "Used up: new API work waits until next month or a higher limit." : budget.hardStop ? "Pauses new API work at 100%." : "Alerts only."}${budget.unpriced > 0 ? ` ${budget.unpriced} without a price.` : ""}</span>${editor}</div>`;
 }
 
 export function spendHtml(view: SpendView, notice: { said?: string | null; problem?: string | null }): Html {
   const note = notice.problem ? html`<p class="problem" role="alert">${notice.problem}</p>` : notice.said ? html`<p role="status">${notice.said}</p>` : "";
   const { totals } = view.report;
   const nameOfSubagent = (key: string) => view.subagentNames.get(Number(key)) ?? `Subagent ${key}`;
-  const usageValue = totals.usageCount === 0 ? "None" : totals.usageMicrousd > 0 ? usd(totals.usageMicrousd) : "Not reported";
+  const usageValue = totals.usageCount === 0 ? "None" : totals.usageMicrousd > 0 ? money(totals.usageMicrousd) : "Not reported";
   const usageMeta = totals.usageCount === 0 ? "No plan usage recorded"
     : totals.usageMicrousd > 0 ? `of usage at API prices${totals.usageUnreported > 0 ? ` · ${each(totals.usageUnreported, "piece")} of work not reported` : ""}` : `${each(totals.usageCount, "piece")} of work`;
   const unknownValue = totals.unknown === 0 ? "None" : String(totals.unknown);
   const unknownMeta = [totals.unknown > 0 ? `${totals.unknown === 1 ? "piece" : "pieces"} of work with billing not proved or cost not recorded` : "Nothing with an unknown cost",
-    ...(totals.estimatedMicrousd > 0 ? [`counted as ${usd(totals.estimatedMicrousd)} (estimated)`] : [])].join(" · ");
+    ...(totals.estimatedMicrousd > 0 ? [`counted as ${money(totals.estimatedMicrousd)} (estimated)`] : [])].join(" · ");
   const figures = html`<section class="spend-figures" aria-label="This month">\
-<div class="spend-figure" data-amount-kind="api" data-microusd="${totals.apiMicrousd}"><h2>API dollars</h2><p class="value">${usd(totals.apiMicrousd)}</p><p class="meta">Recorded charges to API keys</p></div>\
+<div class="spend-figure" data-amount-kind="api" data-microusd="${totals.apiMicrousd}"><h2>API dollars</h2><p class="value">${money(totals.apiMicrousd)}</p><p class="meta">Recorded charges to API keys</p></div>\
 <div class="spend-figure" data-amount-kind="subscription" data-microusd="${totals.usageMicrousd}" data-unreported="${totals.usageUnreported}"><h2>Plan usage</h2><p class="value">${usageValue}</p><p class="meta">${usageMeta}</p></div>\
 <div class="spend-figure" data-amount-kind="unknown" data-count="${totals.unknown}" data-estimated-microusd="${totals.estimatedMicrousd}"><h2>Unknown</h2><p class="value">${unknownValue}</p><p class="meta">${unknownMeta}</p></div></section>`;
   const limits = view.budgets === null ? "" : html`<section><h2>Monthly limits</h2>${view.budgets.length === 0 ? html`<p class="meta">No monthly limits. <a href="/settings/spend">Set a limit</a></p>`
     : html`${view.budgets.map(budget => limitRow(budget, nameOfSubagent, ""))}<p class="meta"><a href="/settings/spend">Change limits</a> · Evals never count toward a limit.</p>`}${view.windows}</section>`;
   const runs = view.report.topRuns.length === 0 ? "" : html`<section><h2>Most expensive runs</h2><table><thead><tr><th>Task</th><th>Run</th><th>Model</th><th class="n">API dollars</th></tr></thead><tbody>${
-    view.report.topRuns.map(run => html`<tr data-run="${run.runId}"><td><a href="${taskHref(run.taskId)}">${run.taskId}</a>${run.project === null ? "" : html` <span class="meta">${projectName(run.project)}</span>`}</td><td><a href="${runHref(run.runId)}">${ROLE_WORDS[run.role]} ${run.runId}</a></td><td>${run.provider} · ${run.model}</td><td class="n">${usd(run.microusd)}</td></tr>`)
+    view.report.topRuns.map(run => html`<tr data-run="${run.runId}"><td><a href="${taskHref(run.taskId)}">${run.taskId}</a>${run.project === null ? "" : html` <span class="meta">${projectName(run.project)}</span>`}</td><td><a href="${runHref(run.runId)}">${ROLE_WORDS[run.role]} ${run.runId}</a></td><td>${run.provider} · ${run.model}</td><td class="n">${money(run.microusd)}</td></tr>`)
   }</tbody></table></section>`;
   const notCounted = html`<section class="spend-not-counted" data-not-counted><h2>Not counted here</h2><ul>${NOT_COUNTED.map(one => html`<li>${one}</li>`)}</ul></section>`;
   return html`<article class="spend"><div class="spend-head"><h1>Spend</h1><p class="spend-month"><a href="/spend?month=${view.previous}">← ${view.previous}</a><strong>${view.month}</strong>${view.next === null ? "" : html`<a href="/spend?month=${view.next}">${view.next} →</a>`}<span class="meta">UTC month</span><a href="/spend?month=${view.month}&amp;format=csv" download>CSV</a></p></div>${note}${figures}${limits}${
     linesTable("By project", view.report.byProject, projectName)}${
-    linesTable("By model", view.report.byModel, key => key)}${
+    linesTable("By model", view.report.byModel, key => key, 12, line => line.chosen.length === 0 ? "" : `chosen as ${line.chosen.join(", ")}`)}${
     linesTable("By role", view.report.byRole, key => ROLE_WORDS[key as SpendRole] ?? key)}${
     linesTable("By person", view.report.byPerson, key => key)}${runs}${notCounted}</article>`;
 }

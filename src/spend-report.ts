@@ -65,6 +65,17 @@ export function spendRows(db: Database, from: string, to: string): SpendRow[] {
   const rows: SpendRow[] = [];
   const subagentOf = subagentFilers(db);
   const filerOf = filersOf(db);
+  // A task's project as its newest record names it. task_ref's index leads with its backend, so the lookup walks the
+  // few backends (each step an index seek) instead of scanning every task, once per task.
+  const backends = db.prepare(`WITH RECURSIVE b(x) AS (SELECT (SELECT MIN(backend) FROM task_ref) UNION ALL SELECT (SELECT MIN(backend) FROM task_ref WHERE backend > b.x) FROM b WHERE b.x IS NOT NULL)
+    SELECT x FROM b WHERE x IS NOT NULL`).all().map(row => String(row["x"]));
+  const repoOfTask = backends.length === 0 ? null
+    : db.prepare(`SELECT repo FROM task_ref WHERE backend IN (${backends.map(() => "?").join(", ")}) AND external_id = ? ORDER BY id DESC LIMIT 1`);
+  const taskRepos = new Map<string, string | null>();
+  const taskRepo = (taskId: string): string | null => {
+    if (!taskRepos.has(taskId)) taskRepos.set(taskId, repoOfTask === null ? null : text(repoOfTask.get(...backends, taskId)?.["repo"]));
+    return taskRepos.get(taskId) ?? null;
+  };
 
   // Runs: the columns runAccounting reads, with their task's project and filer.
   for (const row of db.prepare(`SELECT run.id, run.task_ref, run.role, run.provider, run.model, run.model_reported, run.cost_usd, run.started_at, run.billing_basis, run.cost_unknown,
@@ -125,16 +136,23 @@ export function spendRows(db: Database, from: string, to: string): SpendRow[] {
   // A lead turn: each request at the turn's creation, and whatever the turn settled beyond its requests' charges (a held
   // reservation) once, as an estimate attributed to the turn.
   const turns = new Map<number, { at: string; person: string | null; project: string | null; settled: number | null; provider: string | null; model: string | null; charged: number; unknown: boolean }>();
-  for (const row of db.prepare(`SELECT t.id AS turn, t.created_at, t.approver, t.settled_microusd AS turn_settled,
-        CASE th.scope_kind WHEN 'project' THEN th.scope_key WHEN 'task' THEN (SELECT r.repo FROM task_ref r WHERE r.external_id = th.scope_key ORDER BY r.id DESC LIMIT 1) END AS project,
-        c.id, c.provider, c.model, c.model_reported, c.settled_microusd, c.unknown_spend, c.reported_cost_usd, c.billing_reported
-      FROM mate_turn t LEFT JOIN lead_thread th ON th.id = t.thread LEFT JOIN chat_turn c ON c.mate_turn = t.id
-      WHERE t.created_at >= ? AND t.created_at < ? ORDER BY t.id, c.id`).all(from, to)) {
-    const id = Number(row["turn"]);
-    const turn = turns.get(id) ?? { at: String(row["created_at"]), person: text(row["approver"]), project: text(row["project"]), settled: micro(row["turn_settled"]),
-      provider: null, model: null, charged: 0, unknown: false };
-    turns.set(id, turn);
-    if (row["id"] === null || row["id"] === undefined) continue;
+  // The month's turns (mate_turn_created), each thread by its key; a task thread's project resolved once per task.
+  let until: string | null = null;
+  for (const row of db.prepare(`SELECT t.id, t.created_at, t.approver, t.settled_microusd, th.scope_kind, th.scope_key,
+        MAX(t.deadline_at, COALESCE(t.finished_at, t.created_at), t.created_at) AS until
+      FROM mate_turn t LEFT JOIN lead_thread th ON th.id = t.thread WHERE t.created_at >= ? AND t.created_at < ? ORDER BY t.id`).all(from, to)) {
+    const project = row["scope_kind"] === "project" ? text(row["scope_key"]) : row["scope_kind"] === "task" && row["scope_key"] != null ? taskRepo(String(row["scope_key"])) : null;
+    turns.set(Number(row["id"]), { at: String(row["created_at"]), person: text(row["approver"]), project, settled: micro(row["settled_microusd"]), provider: null, model: null, charged: 0, unknown: false });
+    if (until === null || String(row["until"]) > until) until = String(row["until"]);
+  }
+  // Their requests: written after their turn began and before it ended or ran out of time, so a bounded range of
+  // chat_turn_created (an hour's margin either side) holds every one; each is kept only when its turn is this month's.
+  const stepsFrom = new Date(Date.parse(from) - 3_600_000).toISOString();
+  const stepsUntil = until === null ? from : new Date(Date.parse(until) + 3_600_000).toISOString();
+  for (const row of until === null ? [] : db.prepare(`SELECT c.id, c.mate_turn AS turn, c.provider, c.model, c.model_reported, c.settled_microusd, c.unknown_spend, c.reported_cost_usd, c.billing_reported
+      FROM chat_turn c WHERE c.created_at >= ? AND c.created_at < ? AND c.mate_turn IS NOT NULL ORDER BY c.mate_turn, c.id`).all(stepsFrom, stepsUntil)) {
+    const turn = turns.get(Number(row["turn"]));
+    if (turn === undefined) continue;
     const request = chatRequest(row);
     turn.provider ??= String(row["provider"]);
     turn.model ??= text(row["model"]);
@@ -180,8 +198,9 @@ export function spendRows(db: Database, from: string, to: string): SpendRow[] {
 
   // Evals, from their own records: one row per provider invocation, kinds kept apart; a campaign whose spending was
   // left unknown adds one unknown. Never counted toward a limit, so never a charge.
+  // The month's attempts first, then each one's invocations through their (attempt, world_ref) key.
   for (const row of db.prepare(`SELECT i.id, i.amount, i.api_microusd, i.subscription_microusd, i.model_reported, a.started_at, a.model_pinned, c.started_by
-      FROM eval_invocation i JOIN eval_attempt a ON a.id = i.attempt JOIN eval_campaign c ON c.id = a.campaign
+      FROM eval_attempt a CROSS JOIN eval_invocation i ON i.attempt = a.id JOIN eval_campaign c ON c.id = a.campaign
       WHERE a.started_at >= ? AND a.started_at < ? ORDER BY i.id`).all(from, to)) {
     const api = micro(row["api_microusd"]);
     const subscription = micro(row["subscription_microusd"]);
@@ -208,6 +227,8 @@ export type SpendLine = {
   usageUnreported: number;
   usageCount: number;
   unknown: number;
+  /** By model: how each piece chose the model it ran on ("opus", the exact id), sorted; empty elsewhere. */
+  chosen: string[];
   /** Saved charges on work that isn't measured API dollars (estimates). */
   estimatedMicrousd: number;
 };
@@ -222,7 +243,7 @@ export type SpendReport = {
   topRuns: { runId: number; taskId: string; role: SpendRole; project: string | null; provider: string; model: string; microusd: number }[];
 };
 
-const empty = (key: string): SpendLine => ({ key, count: 0, apiMicrousd: 0, usageMicrousd: 0, usageUnreported: 0, usageCount: 0, unknown: 0, estimatedMicrousd: 0 });
+const empty = (key: string): SpendLine => ({ key, count: 0, apiMicrousd: 0, usageMicrousd: 0, usageUnreported: 0, usageCount: 0, unknown: 0, chosen: [], estimatedMicrousd: 0 });
 
 function add(line: SpendLine, row: SpendRow): void {
   line.count++;
@@ -249,6 +270,27 @@ export function modelLabel(row: Pick<SpendRow, "modelChosen" | "modelReported">)
   return floating(chosen) ? `floating choice ${chosen} → ${row.modelReported}` : `${row.modelReported} (chose ${chosen})`;
 }
 
+/** What a row ran on, for grouping: the reported model; the chosen one, "not reported", when the provider said nothing. */
+const ranOn = (row: Pick<SpendRow, "provider" | "modelChosen" | "modelReported">): string =>
+  `${row.provider} · ${row.modelReported ?? `${row.modelChosen === null || row.modelChosen === "" ? "default" : row.modelChosen} (not reported)`}`;
+
+/** The model breakdown, grouped by the model the work ran on; how it was chosen is detail on the line. */
+function byModel(rows: readonly SpendRow[]): SpendLine[] {
+  const lines = new Map<string, SpendLine>();
+  for (const row of rows) {
+    const key = ranOn(row);
+    const line = lines.get(key) ?? empty(key);
+    add(line, row);
+    const chosen = row.modelChosen === null || row.modelChosen === "" ? "default" : row.modelChosen;
+    if (row.modelReported !== null && chosen !== row.modelReported && !line.chosen.includes(chosen)) line.chosen = [...line.chosen, chosen].sort();
+    lines.set(key, line);
+  }
+  return sortLines([...lines.values()]);
+}
+
+const sortLines = (lines: SpendLine[]): SpendLine[] =>
+  lines.sort((a, b) => b.apiMicrousd - a.apiMicrousd || b.estimatedMicrousd - a.estimatedMicrousd || b.usageMicrousd - a.usageMicrousd || b.count - a.count || a.key.localeCompare(b.key));
+
 /** The month's totals, breakdowns and most expensive runs, from `spendRows`. Pure. */
 export function spendReport(rows: readonly SpendRow[], top = 10): SpendReport {
   const totals = empty("");
@@ -261,7 +303,7 @@ export function spendReport(rows: readonly SpendRow[], top = 10): SpendReport {
       add(line, row);
       lines.set(key, line);
     }
-    return [...lines.values()].sort((a, b) => b.apiMicrousd - a.apiMicrousd || b.estimatedMicrousd - a.estimatedMicrousd || b.usageMicrousd - a.usageMicrousd || b.count - a.count || a.key.localeCompare(b.key));
+    return sortLines([...lines.values()]);
   };
   for (const row of rows) add(totals, row);
   const topRuns = rows.filter(row => row.source === "run" && row.amount?.kind === "api" && row.runId !== null && row.taskId !== null)
@@ -270,7 +312,7 @@ export function spendReport(rows: readonly SpendRow[], top = 10): SpendReport {
   return {
     totals,
     byProject: by(row => row.project),
-    byModel: by(row => `${row.provider} · ${modelLabel(row)}`),
+    byModel: byModel(rows),
     byRole: by(row => row.role),
     byPerson: by(row => row.person),
     topRuns,
