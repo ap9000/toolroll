@@ -65,7 +65,7 @@ import { decisionAnswerScript,taskBody } from "./render-tasks.js";
 import { type Who } from "./session.js";
 import { rereadBrowser } from "./live.js";
 export function createPagesHandlers(runtime: ServerRuntime) {
-  const { clock, lastChecks, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession } = runtime;
+  const { identities, clock, lastChecks, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession } = runtime;
 
   // The filesystem browser (operator request): pick a project folder by
   // looking, not typing. CONFINED to exactly what opening allows —
@@ -78,7 +78,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const { url, who, response } = ctx;
     if (who.via !== "cookie") return refuse(response, who, 403, "browsing feeds a browser session's act");
     const browseRoots =
-      ceiling.roots.length > 0 ? [...ceiling.roots] : unscopedMode ? [realpathSync(homedir())] : [];
+      ceiling.roots.length > 0 ? [...ceiling.roots] : unscopedMode ? [identities.hot(homedir())] : [];
     if (browseRoots.length === 0) {
       return refuse(response, who, 404, "this server was configured with an explicit repo list — the openable projects are all on the projects page", "/projects");
     }
@@ -354,7 +354,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         runners: store.listRunners(),
         worktrees: store
           .listWorktrees()
-          .filter(one => project === null || sameRepo(one.repo, project)),
+          .filter(one => project === null || one.repo === project || identities.hot(one.repo) === identities.hot(project)),
         episode: project === null ? null : store.latestWatchEpisode(project),
         now,
       }),
@@ -384,7 +384,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         }),
         building: store.liveClaims(project, now),
         runners: store.listRunners(),
-        worktrees: store.listWorktrees().filter(one => project === null || sameRepo(one.repo, project)),
+        worktrees: store.listWorktrees().filter(one => project === null || one.repo === project || identities.hot(one.repo) === identities.hot(project)),
         episode: project === null ? null : store.latestWatchEpisode(project),
         outboxPending: store.pendingForAttention().length,
         // External work at a glance (arc 3 finding 24): every dispatch
@@ -676,7 +676,10 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       return refuse(response, who, 403, "selecting a project is a browser session's act");
     }
     const askedPath = (body.get("path") ?? "").trim();
-    const canonicalPick = askedPath === "" ? null : canonicalProject(askedPath);
+    // Resolved off the console's thread (project-identity.ts): a folder that doesn't answer is said, never waited on.
+    const picked = askedPath === "" ? null : await identities.resolveNow(askedPath);
+    if (picked === "no-answer") return refuse(response, who, 503, "That project's folder didn't answer. It may be on a drive that's disconnected, or waiting on macOS. Try again in a moment.");
+    const canonicalPick = picked;
     if ((askedPath !== "" && canonicalPick === null) || (canonicalPick !== null && (!visible(canonicalPick) || !(await authorizedProject(liveCeiling(), canonicalPick))))) {
       return refuse(response, who, 403, "that project is outside this console's reach");
     }
@@ -709,7 +712,11 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       return refuse(response, who, 403, "opening a project is a browser session's act");
     }
     const asked = (body.get("path") ?? "").trim();
-    const canonical = asked === "" ? null : canonicalProject(asked);
+    const resolved = asked === "" ? null : await identities.resolveNow(asked);
+    if (resolved === "no-answer") {
+      return void projectsScreen(response, who, "that folder didn't answer — it may be on a drive that's disconnected, or waiting on macOS; try again in a moment", 503, safeReturn(body.get("return")));
+    }
+    const canonical = resolved;
     if (canonical === null) {
       return void projectsScreen(response, who, "that path does not exist on this server", 400, safeReturn(body.get("return")));
     }
@@ -811,12 +818,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const rootIndex = Number(body.get("root") ?? "0");
     const rootRaw = Number.isInteger(rootIndex) ? ceiling.roots[rootIndex] : undefined;
     if (rootRaw === undefined) return projectsScreen(response, who, "pick one of the configured roots", 400);
-    let root: string;
-    try {
-      root = realpathSync(rootRaw);
-    } catch {
-      return projectsScreen(response, who, "that projects root does not resolve right now", 400);
-    }
+    const root = await identities.resolveNow(rootRaw);
+    if (root === null || root === "no-answer") return projectsScreen(response, who, "that projects root does not resolve right now", 400);
     const previewed = await (options.ghPreview ?? previewGithubRepo)(shape.owner, shape.name);
     if (!previewed.ok) return projectsScreen(response, who, previewed.message, 400);
     const reparsed = parseGithubRepo(previewed.preview.nameWithOwner);
@@ -880,12 +883,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     }
     const rootRaw = ceiling.roots[record.rootIndex];
     if (rootRaw === undefined) return projectsScreen(response, who, "the configured roots changed — preview again", 400);
-    let root: string;
-    try {
-      root = realpathSync(rootRaw);
-    } catch {
-      return projectsScreen(response, who, "that projects root does not resolve right now", 400);
-    }
+    const root = await identities.resolveNow(rootRaw);
+    if (root === null || root === "no-answer") return projectsScreen(response, who, "that projects root does not resolve right now", 400);
     if (dirname(record.target) !== root) return projectsScreen(response, who, "the configured roots changed — preview again", 400);
 
     const cloned = await (options.ghClone ?? cloneGithubRepo)(record.nameWithOwner, root, async (cwd: string) => {
@@ -900,8 +899,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       return projectsScreen(response, who, "the clone answered with a different path than the preview promised — refused; nothing was enrolled", 400);
     }
     // authorizedProject AFTER the repository exists (finding 20).
-    const proved = await authorizedProject(liveCeiling(), cloned.target);
-    const admitted = proved ? (canonicalProject(cloned.target) ?? cloned.target) : null;
+    const clonedAt = await identities.resolveNow(cloned.target);
+    const admitted = typeof clonedAt === "string" && clonedAt !== "no-answer" && (await authorizedProject(liveCeiling(), clonedAt)) ? clonedAt : null;
     if (admitted === null) {
       return projectsScreen(response, who, `the clone landed at ${cloned.target} but did not prove under the ceiling — it was left in place; enroll it by hand`, 400);
     }
@@ -942,7 +941,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const recentPaths = new Set(recent.map(one => one.path));
     const candidates = new Set<string>();
     for (const path of consoleProjects()) {
-      const canonical = canonicalProject(path) ?? path;
+      const canonical = identities.hot(path);
       if (!recentPaths.has(canonical) && visible(canonical)) candidates.add(canonical);
     }
     const open = who.via === "cookie" ? who.session.project : null;

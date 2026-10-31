@@ -216,6 +216,8 @@ import {
   type TelegramTransport,
 } from "./telegram.js";
 import type { TelegramConversationOptions } from "./telegram-lead.js";
+import { projectIdentities } from "./project-identity.js";
+import { lookIdentities, type FolderLookOptions } from "./folder-look.js";
 import { scanRepo } from "./capscan.js";
 import { computeGaps, describeCapability, type Gap } from "./gaps.js";
 import { ask as promptAsk, askHidden as promptHidden, confirm as promptConfirm, interactive as promptInteractive, underAgent } from "./prompt.js";
@@ -4339,7 +4341,13 @@ async function startConsole(options: {
   const { context } = options;
   // A git incident (teardown-git.ts) raises an attention notification in this console's outbox.
   noticeGitIncidents(context.store, context.clock);
+  // Every project folder this console starts with is resolved off its thread, under a deadline: one that doesn't
+  // answer (a drive away, an iCloud folder macOS is holding) stays unresolved, kept restrictive, and is looked at again
+  // by the background pass; the console starts and answers either way (project-identity.ts).
+  const identities = projectIdentities();
+  await identities.refresh([...options.repos ?? [], ...options.projectRoots ?? [], ...context.store.listProjects().map(one => one.path)]);
   const server = createDecisionServer({
+    identities,
     store: context.store,
     // Sign-in, integration and model checks, and the tidy-ups no page visit does (docs/plans/get-side-effects.md).
     backgroundChecks: true,
@@ -7592,13 +7600,9 @@ async function upCommand(
   // soon as a projects folder or saved repository exists.
   const repos: string[] = [];
   const proveRepo = async (input: string): Promise<string | null> => {
-    const top = await gitRun("git", ["rev-parse", "--show-toplevel"], { cwd: resolve(input) });
-    if (top.code !== 0) return null;
-    try {
-      return realpathSync(top.stdout.trim());
-    } catch {
-      return null;
-    }
+    // The checkout's real path is read off the thread, under a deadline (folder-look.ts): a folder that doesn't answer
+    // is unavailable, never a wait.
+    return (await upProveSaved(gitRun, input))?.root ?? null;
   };
   // A saved project that doesn't answer now (a drive not connected, a folder macOS is holding) is looked at again
   // while this start runs, and connects once it answers (upDeferredRetry).
@@ -7628,7 +7632,9 @@ async function upCommand(
     if (cwdRepo !== null && !repos.includes(cwdRepo)) repos.push(cwdRepo);
     if (cwdRepo !== null) pinnedRepos.add(cwdRepo);
   }
-  if (repos.length === 0 && projectRoots.length === 0) return fail(write, json, "up", "no-projects", "choose where your projects live once: `toolroll up --project-root <dir>`", EXIT.refused);
+  // Saved projects that are only away for now still start the service: it serves an empty, restrictive set until they
+  // answer (never the unscoped mode), and connects each as it comes back.
+  if (repos.length === 0 && projectRoots.length === 0 && deferredRepos.length === 0) return fail(write, json, "up", "no-projects", "choose where your projects live once: `toolroll up --project-root <dir>`", EXIT.refused);
   // A person at a terminal reads three lines (onboarding); the folders are for --verbose, a service log, or an agent.
   const quietStart = !json && !flags.has("verbose") && (context.upSeams?.terminal ?? process.stdout.isTTY === true) && !underAgent(context.upSeams?.env ?? process.env);
   if (!quietStart) {
@@ -7857,6 +7863,8 @@ async function upCommand(
         type: "start", role: "worker", databaseFile: context.databaseFile, containment: containmentFlag, build,
         config: {
           runner: runnerName, token: runnerToken, repos: generation === 1 ? [...repos] : [...currentRepos], pinnedRepos: [...pinnedRepos], projectRoots, registryPath, pool,
+          // What this start still holds for its saved projects that were away: a restarted worker never gets back an
+          // authority an earlier one gave up (connected, or removed from the saved list).
           deferredRepos: [...deferredRepos],
           forMs: forGiven === undefined ? null : Number(forGiven), publicUrl: publicUrlFlag ?? null, stopGraceMs, verbose: flags.has("verbose"),
           terminal: context.upSeams?.terminal ?? process.stdout.isTTY === true,
@@ -7866,6 +7874,12 @@ async function upCommand(
       }),
       onMessage: message => {
         if (message.type === "log") roleLine("worker")(message.line);
+        else if (message.type === "deferred") {
+          // Only ever narrows: a worker's word can't give back an authority this start no longer holds.
+          const narrowed = upNarrowDeferred(deferredRepos, message.repos);
+          deferredRepos.length = 0;
+          deferredRepos.push(...narrowed);
+        }
         else if (message.type === "repos") {
           // The console's admitted projects widen only to what the builder is bound to in the store (the worker binds
           // through the authenticated door before it reports): a worker's word alone admits nothing.
@@ -12578,13 +12592,9 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
   const pinnedRepos = new Set(config.pinnedRepos);
   const gitRun = context.gitRunner ?? ((file: string, args: readonly string[], opts?: { cwd?: string }) => run(file, [...args], { ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }), timeoutMs: 10_000 }));
   const proveRepo = async (input: string): Promise<string | null> => {
-    const top = await gitRun("git", ["rev-parse", "--show-toplevel"], { cwd: resolve(input) });
-    if (top.code !== 0) return null;
-    try {
-      return realpathSync(top.stdout.trim());
-    } catch {
-      return null;
-    }
+    // The checkout's real path is read off the thread, under a deadline (folder-look.ts): a folder that doesn't answer
+    // is unavailable, never a wait.
+    return (await upProveSaved(gitRun, input))?.root ?? null;
   };
   // The proved set this worker builds; `up` relays each change to the console.
   const activeRepos = new Set<string>(config.repos);
@@ -12762,9 +12772,14 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
     }
   })();
 
-  const dynamicCeiling = resolveCeiling(config.repos, config.projectRoots).ceiling;
+  // The start's own projects and folders were resolved by `up`: taken as they are, never read again on this thread.
+  const dynamicCeiling = resolveCeiling(config.repos, config.projectRoots, path => resolve(path)).ceiling;
   const rejected = new Set<string>();
-  const deferred = upDeferredRetry(config.deferredRepos ?? [], proveRepo);
+  // Saved lines' identities, resolved off the thread under a deadline (project-identity.ts): a line whose folder
+  // doesn't answer is skipped this pass, and never holds up the others.
+  const lineIdentities = projectIdentities();
+  const deferred = upDeferredRetry(config.deferredRepos ?? [], input => upProveSaved(gitRun, input));
+  const reportDeferred = (): void => port.send({ type: "deferred", repos: deferred.list() });
   const registrySupervisor = (async (): Promise<void> => {
     const sleep = (ms: number) => new Promise(resolveSleep => setTimeout(resolveSleep, ms));
     while (!stopping) {
@@ -12774,11 +12789,17 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
         stop();
         break;
       }
+      // A saved line removed while this start runs takes the start's authority for it with it, for good.
+      if (deferred.keepOnly(loaded.repos)) reportDeferred();
+      const plain = loaded.repos.filter(one => !deferred.has(one));
+      const allAnswered = await lineIdentities.refresh(plain);
       // Removed from the saved list: stop building it and take it out of the console. A pinned start keeps its own.
-      const saved = new Set(loaded.repos.map(one => canonicalProject(one) ?? one));
+      // A line saved exactly as the project is kept without a read; a line whose folder didn't answer could be another
+      // spelling of an active project, so nothing is let go on its account until it answers.
+      const saved = new Set([...loaded.repos, ...plain.flatMap(one => lineIdentities.known(one) ?? [])]);
       let removed = false;
       for (const repo of [...activeRepos]) {
-        if (stopping || pinnedRepos.has(repo) || saved.has(repo)) continue;
+        if (stopping || pinnedRepos.has(repo) || saved.has(repo) || !allAnswered) continue;
         activeRepos.delete(repo);
         removed = true;
         releasedRepos.add(repo);
@@ -12789,17 +12810,19 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
         if (stopping) break;
         // Skipped at start because it didn't answer: connected on the start's own authority once it does.
         if (deferred.has(candidate)) {
-          const root = await deferred.retry(candidate);
-          if (root === null || stopping || activeRepos.has(root) || releasedRepos.has(root)) continue;
-          progress(`saved project is back — connecting ${root}`);
-          await launchRepo(root, true);
+          await connectDeferred(candidate);
           continue;
         }
-        const canonical = canonicalProject(candidate);
+        const canonical = lineIdentities.known(candidate);
+        // Not answered yet: looked at again on the next pass.
+        if (canonical === undefined) continue;
         // Still letting go of an earlier removal: it rejoins on the next pass after its watch has stopped.
         if (canonical !== null && (activeRepos.has(canonical) || releasedRepos.has(canonical))) continue;
         const approvedAdditions = context.additionalProjectRepos?.() ?? [];
-        const admittedCeiling = resolveCeiling([...dynamicCeiling.repos, ...approvedAdditions], dynamicCeiling.roots).ceiling;
+        // A start serving nothing yet (its saved projects all away) is an empty ceiling, never the unscoped mode: a
+        // name that matches no path stands in, so a line saved later still needs its recorded admission.
+        const admittedRepos = [...dynamicCeiling.repos, ...approvedAdditions];
+        const admittedCeiling = { repos: admittedRepos.length === 0 && dynamicCeiling.roots.length === 0 ? ["/\0nothing-admitted"] : admittedRepos, roots: dynamicCeiling.roots, canon: (path: string) => lineIdentities.known(path) ?? null };
         // A project added after this start (`repos add`, the lead, the console) carries its recorded admission; a
         // registry line alone is not authority. Either way the folder is proved to be that Git checkout again.
         const allowed = canonical !== null &&
@@ -12821,6 +12844,39 @@ async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: R
     fatal = `the project registry stopped (${describe(error)})`;
     stop();
   });
+  /**
+   * A saved project the start couldn't reach, back now: connected only as the very folder that was saved (a parent
+   * checkout found because the saved one lost its .git is another project, needing its own admission), and only while
+   * the line is still saved, checked under the saved list's lock with the binding made inside it, so a removal racing
+   * the proof always wins.
+   */
+  async function connectDeferred(candidate: string): Promise<void> {
+    const proved = await deferred.retry(candidate);
+    if (proved === null || stopping) return;
+    if (proved.root !== proved.line) {
+      deferred.revoke(candidate);
+      reportDeferred();
+      progress(`saved project not connected — ${candidate} came back as part of ${proved.root}; add it again to connect it`);
+      return;
+    }
+    const root = proved.root;
+    if (activeRepos.has(root) || releasedRepos.has(root)) { deferred.revoke(candidate); reportDeferred(); return; }
+    let launching: Promise<void> | null = null;
+    const held = await updateProjectRegistry(registryPath, current => {
+      if (current.repos.includes(candidate) && deferred.has(candidate) && !stopping) {
+        deferred.revoke(candidate);
+        launching = launchRepo(root, true);
+      }
+      return current;
+    });
+    if (launching === null) {
+      if (held.ok && !deferred.has(candidate)) reportDeferred();
+      return;
+    }
+    reportDeferred();
+    progress(`saved project is back — connecting ${root}`);
+    await launching;
+  }
 
   // Provider readiness (v47): this machine's non-spending observations, recorded under its own runner name ONCE at
   // start — so every route projection can say ready / unavailable / unknown per provider, and the dispatch gate can
@@ -12989,28 +13045,58 @@ async function evalsAbandonCommand(flags: Map<string, string | true>, context: C
 }
 
 /**
- * The saved projects an `up` start couldn't reach (upCommand): each is proved again every `everyMs` while the
- * worker runs, by the same proof the start used (`git rev-parse --show-toplevel`, bounded, then its real path), so a
- * folder that answers again connects without a restart. Only what the start itself read from the saved list is here;
- * a line saved later still needs its recorded admission. `retry` answers the proved checkout once (and forgets the
- * line), or null while it still doesn't answer or isn't due.
+ * The saved projects an `up` start couldn't reach (upCommand): each is proved again every `everyMs` while the worker
+ * runs, by `prove` (upProveSaved), so a folder that answers again connects without a restart. Only what the start itself
+ * read from the saved list is here, and the set only shrinks: a line connected, removed from the saved list
+ * (`keepOnly`) or come back as some other checkout (`revoke`) is gone for good, so a line saved again later needs its
+ * recorded admission like any other addition. `retry` answers the proof when one is due and answered, else null.
  */
-export function upDeferredRetry(inputs: readonly string[], prove: (input: string) => Promise<string | null>, everyMs = 5_000, now: () => number = Date.now): {
+export function upDeferredRetry<T>(inputs: readonly string[], prove: (input: string) => Promise<T | null>, everyMs = 5_000, now: () => number = Date.now): {
   has: (input: string) => boolean;
-  retry: (input: string) => Promise<string | null>;
+  list: () => string[];
+  retry: (input: string) => Promise<T | null>;
+  revoke: (input: string) => void;
+  keepOnly: (saved: readonly string[]) => boolean;
 } {
   // Wall time, not the store's clock (a test's may stand still): this is only how often a folder is asked.
   const nextAt = new Map<string, number>(inputs.map(input => [input, now() + everyMs]));
   return {
     has: input => nextAt.has(input),
+    list: () => [...nextAt.keys()],
     retry: async input => {
       const due = nextAt.get(input);
       if (due === undefined || now() < due) return null;
       nextAt.set(input, now() + everyMs);
-      const root = await prove(input);
-      if (root === null) return null;
-      nextAt.delete(input);
-      return root;
+      return prove(input);
+    },
+    revoke: input => { nextAt.delete(input); },
+    keepOnly: saved => {
+      const keep = new Set(saved);
+      let changed = false;
+      for (const input of [...nextAt.keys()]) if (!keep.has(input)) { nextAt.delete(input); changed = true; }
+      return changed;
     },
   };
+}
+
+/**
+ * Whether a saved project's folder is a Git checkout now, read without blocking this thread: `git rev-parse
+ * --show-toplevel` (bounded, its own process), then the real paths of the saved line and of the checkout, resolved off
+ * the thread under a deadline (folder-look.ts). Null when it isn't one, or didn't answer.
+ */
+export async function upProveSaved(gitRun: (file: string, args: readonly string[], opts?: { cwd?: string }) => Promise<{ code: number | null; stdout: string }>,
+  input: string, look: FolderLookOptions = {}): Promise<{ line: string; root: string } | null> {
+  const top = await gitRun("git", ["rev-parse", "--show-toplevel"], { cwd: resolve(input) });
+  if (top.code !== 0) return null;
+  const answered = await lookIdentities([resolve(input), top.stdout.trim()], look);
+  if (!answered.ok) return null;
+  const line = answered.value.get(resolve(input)) ?? null, root = answered.value.get(top.stdout.trim()) ?? null;
+  return line === null || root === null ? null : { line, root };
+}
+
+/** What `up` hands its next worker after the worker reports which saved projects it still holds start authority for:
+ * only what both still hold. A worker's report can give up an authority, never add or give back one. */
+export function upNarrowDeferred(held: readonly string[], reported: readonly string[]): string[] {
+  const kept = new Set(reported);
+  return held.filter(one => kept.has(one));
 }

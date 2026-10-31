@@ -16,6 +16,7 @@
 
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
+import { resolve } from "node:path";
 
 /** How long the console waits for a look before saying the folder didn't answer. */
 export const FOLDER_LOOK_MS = 4_000;
@@ -42,17 +43,23 @@ export type FolderLookRequest =
   | { op: "list"; path: string; roots: readonly string[]; home: string }
   /** The origin of each registered project, and of each repository directly in a root (at most 400 folders a root). */
   | { op: "origins"; registered: readonly string[]; roots: readonly string[]; home: string }
-  /** Whether a project folder answers: the folder, its git folder's listing and its config can be read. */
-  | { op: "probe"; path: string };
+  /** Where each path really is (its real path, when that is a folder): a project's identity, resolved off the thread. */
+  | { op: "identities"; paths: readonly string[] };
 
-/** Runs one look and resolves with its JSON answer (or rejects). Production starts a child process; tests pass their own. */
-export type FolderLookRunner = (request: FolderLookRequest, deadlineMs: number) => Promise<unknown>;
+/** One look under way: its answer, and when its process has ended (a stuck child can outlive its answer). */
+export type FolderLookRun = { answer: Promise<unknown>; ended: Promise<void> };
+/** Starts one look. Production starts a child process; tests pass their own. */
+export type FolderLookRunner = (request: FolderLookRequest, deadlineMs: number) => FolderLookRun;
 
 export type FolderLook<T> = { ok: true; value: T } | { ok: false; why: "no-answer" | "failed" };
 
+/** At most this many look processes at once, stuck ones included: a folder that never answers costs one each. */
+export const FOLDER_LOOK_CHILDREN = 8;
+
 /**
- * The child's script: plain CommonJS, given the request as its one argument, printing one JSON answer. Mount points,
- * /Volumes and ~/Library are left alone unless the person chose a folder there (a root inside them).
+ * The child's script: plain CommonJS, given the request as its one argument, printing one JSON answer. Every file it
+ * reads is opened without following a link and without waiting on a FIFO, checked to be a regular file under its cap
+ * on the open descriptor, and read only up to its limit; every folder is read through a bounded iterator.
  */
 const LOOK_SCRIPT = `"use strict";
 const fs = require("fs"), path = require("path");
@@ -61,22 +68,27 @@ const request = JSON.parse(process.argv[1]);
 const within = (p, root) => p === root || p.startsWith(root === "/" ? "/" : root + "/");
 const home = request.home || "/nonexistent";
 const fenced = [path.join(home, "Library"), "/Volumes", "/System/Volumes", "/Network", "/net", "/private/var/automount"];
-// A place the look never enters unless the person chose a folder in it.
-const offLimits = (p, roots) => fenced.some(one => within(p, one) && !roots.some(root => within(root, one)));
-// The origin from a repository's own .git/config, bounded by construction (ghlist review, finding 1): never through a
-// link (lstat + O_NOFOLLOW), a regular file under 1 MiB, at most 64 KiB read, so a sparse monster or a FIFO costs nothing.
-function origin(repo) {
-  const file = path.join(repo, ".git", "config");
+// A place the look never enters, unless the path is inside a folder the person chose there (that root itself, not any
+// root that happens to lie in the same protected tree).
+const offLimits = (p, roots) => fenced.some(one => within(p, one) && !roots.some(root => within(root, one) && within(p, root)));
+const rootOf = (p, roots) => roots.filter(root => within(p, root)).sort((a, b) => b.length - a.length)[0];
+// A plain file read bounded by construction (ghlist review, finding 1): never through a link (O_NOFOLLOW), never
+// waiting on a FIFO (O_NONBLOCK), a regular file under the cap by the opened descriptor, at most the limit read.
+function readBounded(file, cap, limit) {
   let fd = null;
   try {
-    const stat = fs.lstatSync(file);
-    if (!stat.isFile() || stat.size > 1024 * 1024) return null;
-    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-    const buffer = Buffer.alloc(64 * 1024);
-    const read = fs.readSync(fd, buffer, 0, buffer.length, 0);
-    return originUrlIn(buffer.toString("utf8", 0, read));
+    fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.size > cap) return null;
+    const buffer = Buffer.alloc(Math.min(limit, stat.size));
+    const read = buffer.length === 0 ? 0 : fs.readSync(fd, buffer, 0, buffer.length, 0);
+    return buffer.toString("utf8", 0, read);
   } catch { return null; }
   finally { if (fd !== null) { try { fs.closeSync(fd); } catch {} } }
+}
+function origin(repo) {
+  const config = readBounded(path.join(repo, ".git", "config"), 1024 * 1024, 64 * 1024);
+  return config === null ? null : originUrlIn(config);
 }
 function children(folder, roots, links) {
   const out = [];
@@ -102,31 +114,25 @@ function children(folder, roots, links) {
   return out;
 }
 function look() {
-  if (request.op === "probe") {
-    const dir = fs.opendirSync(request.path); dir.readSync(); dir.closeSync();
-    const dotGit = path.join(request.path, ".git");
-    let common = dotGit;
-    const held = fs.lstatSync(dotGit);
-    if (!held.isDirectory()) {
-      if (!held.isFile()) return { answered: true };
-      const named = /^gitdir: (.+)$/m.exec(fs.readFileSync(dotGit, "utf8").slice(0, 4096));
-      if (named === null) return { answered: true };
-      common = path.resolve(request.path, named[1].trim());
-    }
-    fs.readdirSync(common);
-    try { fs.closeSync(fs.openSync(path.join(common, "config"), fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW)); } catch {}
-    return { answered: true };
+  if (request.op === "identities") {
+    return { paths: request.paths.slice(0, 500).map(one => {
+      try { const real = fs.realpathSync(path.resolve(one)); return { path: one, real: fs.statSync(real).isDirectory() ? real : null }; }
+      catch { return { path: one, real: null }; }
+    }) };
   }
   const roots = request.roots;
   if (request.op === "list") {
     const at = fs.realpathSync(request.path);
-    if (!fs.statSync(at).isDirectory() || !roots.some(root => within(at, root)) || offLimits(at, roots)) return { at: null, entries: [] };
+    const root = rootOf(at, roots);
+    if (root === undefined || offLimits(at, roots) || !fs.statSync(at).isDirectory()) return { at: null, entries: [] };
+    // A folder on another drive than the root that allows it is not entered (the root itself may be one).
+    if (at !== root && fs.statSync(at).dev !== fs.statSync(root).dev) return { at: null, entries: [] };
     const entries = children(at, roots, true)
       .filter(one => !one.name.startsWith(".") && one.name !== "node_modules")
       .map(one => ({ name: one.name, path: one.path, git: fs.existsSync(path.join(one.path, ".git")) }));
     return { at, entries };
   }
-  const registered = request.registered.map(repo => ({ path: repo, url: origin(repo) }));
+  const registered = request.registered.slice(0, 500).map(repo => ({ path: repo, url: origin(repo) }));
   const found = [];
   for (const root of roots) {
     let listed = [];
@@ -144,52 +150,86 @@ process.stdout.write(JSON.stringify(answer));
 `;
 
 /** The production look: the script above in a child process of this same Node (or Electron as Node), killed at its
- * deadline. Its environment carries nothing of this process's (no NODE_OPTIONS, no secrets). */
-export const childLook: FolderLookRunner = (request, deadlineMs) => new Promise((resolve, reject) => {
+ * deadline. Its environment carries nothing of this process's (no NODE_OPTIONS, no secrets). At the deadline its pipe
+ * is closed and nothing of it keeps this process alive; `ended` settles only when the process has really gone. */
+export const childLook: FolderLookRunner = (request, deadlineMs) => {
   const child = spawn(process.execPath, ["-e", LOOK_SCRIPT, JSON.stringify(request)], {
     stdio: ["ignore", "pipe", "ignore"],
     env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin", ELECTRON_RUN_AS_NODE: "1" },
-    timeout: deadlineMs,
     killSignal: "SIGKILL",
   });
-  // A child stuck in the kernel is never waited for: it holds nothing open in this process.
   child.unref();
-  const chunks: Buffer[] = [];
-  let size = 0;
-  child.stdout.on("data", (chunk: Buffer) => {
-    size += chunk.length;
-    if (size > 8 * 1024 * 1024) { child.kill("SIGKILL"); return; }
-    chunks.push(chunk);
+  const ended = new Promise<void>(resolveEnded => {
+    child.once("exit", () => resolveEnded());
+    child.once("error", () => resolveEnded());
   });
-  child.once("error", reject);
-  child.once("close", code => {
-    if (code !== 0) { reject(new Error(`the look ended with ${code}`)); return; }
-    try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); } catch (error) { reject(error); }
+  const answer = new Promise<unknown>((resolveAnswer, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      // A child stuck in the kernel can't be reaped yet: its pipe is closed now, so it holds nothing here.
+      child.stdout.destroy();
+      reject(new Error("the look didn't answer"));
+    }, deadlineMs);
+    timer.unref();
+    child.stdout.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > 8 * 1024 * 1024) { child.kill("SIGKILL"); child.stdout.destroy(); return; }
+      chunks.push(chunk);
+    });
+    child.once("error", error => { clearTimeout(timer); reject(error); });
+    child.once("close", code => {
+      clearTimeout(timer);
+      if (code !== 0) { reject(new Error(`the look ended with ${code}`)); return; }
+      try { resolveAnswer(JSON.parse(Buffer.concat(chunks).toString("utf8"))); } catch (error) { reject(error); }
+    });
   });
-});
+  answer.catch(() => {});
+  return { answer, ended };
+};
 
-/** Looks still running past their deadline, by request: one stuck look per folder, never a pile of them. */
-const stuck = new Map<string, Promise<unknown>>();
+/** Looks whose process hasn't ended, by request: callers asking the same thing share one; each holds a child slot
+ * until its process is gone. */
+const inFlight = new Map<string, FolderLookRun>();
+
+/** The same request however its paths were spelled: resolved paths, roots in order. */
+function lookKey(request: FolderLookRequest): string {
+  const sorted = (paths: readonly string[]) => paths.map(one => resolve(one)).sort();
+  switch (request.op) {
+    case "list": return JSON.stringify([request.op, resolve(request.path), sorted(request.roots), request.home]);
+    case "origins": return JSON.stringify([request.op, sorted(request.registered), sorted(request.roots), request.home]);
+    case "identities": return JSON.stringify([request.op, sorted(request.paths)]);
+  }
+}
+
+/** How many look processes are running now (stuck ones included). */
+export function folderLooksRunning(): number {
+  return inFlight.size;
+}
 
 /**
  * One look, answered within `deadlineMs` whatever the folder does: its value, or that the folder didn't answer (it ran
- * past the deadline, or the same look from before still hasn't ended) or the look failed.
+ * past the deadline, the same look is still stuck, or every child slot is held) or the look failed. A look already
+ * under way for the same request is joined, never started twice.
  */
 export async function lookFolders(request: FolderLookRequest, options: { runner?: FolderLookRunner; deadlineMs?: number } = {}): Promise<FolderLook<unknown>> {
   const deadlineMs = options.deadlineMs ?? FOLDER_LOOK_MS;
-  const key = JSON.stringify(request);
-  if (stuck.has(key)) return { ok: false, why: "no-answer" };
-  const runner = options.runner ?? childLook;
-  const running = Promise.resolve().then(() => runner(request, deadlineMs));
+  const key = lookKey(request);
+  let run = inFlight.get(key);
+  if (run === undefined) {
+    if (inFlight.size >= FOLDER_LOOK_CHILDREN) return { ok: false, why: "no-answer" };
+    try { run = (options.runner ?? childLook)(request, deadlineMs); } catch { return { ok: false, why: "failed" }; }
+    const mine = run;
+    inFlight.set(key, mine);
+    const forget = () => { if (inFlight.get(key) === mine) inFlight.delete(key); };
+    mine.ended.then(forget, forget);
+  }
   let timer: NodeJS.Timeout | undefined;
   const late = new Promise<"late">(resolveLate => { timer = setTimeout(() => resolveLate("late"), deadlineMs); });
   try {
-    const first = await Promise.race([running.then(value => ({ value }), () => "failed" as const), late]);
-    if (first === "late") {
-      stuck.set(key, running);
-      running.then(() => stuck.delete(key), () => stuck.delete(key));
-      return { ok: false, why: "no-answer" };
-    }
+    const first = await Promise.race([run.answer.then(value => ({ value }), () => "failed" as const), late]);
+    if (first === "late") return { ok: false, why: "no-answer" };
     if (first === "failed") return { ok: false, why: "failed" };
     const answer = first.value as { ok?: unknown; value?: unknown } | null;
     if (answer === null || typeof answer !== "object" || answer.ok !== true) return { ok: false, why: "failed" };
@@ -202,9 +242,10 @@ export async function lookFolders(request: FolderLookRequest, options: { runner?
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 4096 && !value.includes("\0");
 
 export type FolderEntry = { name: string; path: string; git: boolean };
+export type FolderLookOptions = { runner?: FolderLookRunner; deadlineMs?: number; home?: string };
 
 /** A folder's sub-folders for the browse page (null `at`: outside every root, or not a folder). */
-export async function listFolder(path: string, roots: readonly string[], options: { runner?: FolderLookRunner; deadlineMs?: number; home?: string } = {}): Promise<FolderLook<{ at: string | null; entries: FolderEntry[] }>> {
+export async function listFolder(path: string, roots: readonly string[], options: FolderLookOptions = {}): Promise<FolderLook<{ at: string | null; entries: FolderEntry[] }>> {
   const looked = await lookFolders({ op: "list", path, roots: [...roots], home: options.home ?? homedir() }, options);
   if (!looked.ok) return looked;
   const value = looked.value as { at?: unknown; entries?: unknown } | null;
@@ -217,7 +258,7 @@ export async function listFolder(path: string, roots: readonly string[], options
 }
 
 /** The origin URL of each registered project, and the repositories directly in each root with theirs. */
-export async function localOrigins(registered: readonly string[], roots: readonly string[], options: { runner?: FolderLookRunner; deadlineMs?: number; home?: string } = {}): Promise<FolderLook<{ registered: { path: string; url: string | null }[]; found: { path: string; url: string | null }[] }>> {
+export async function localOrigins(registered: readonly string[], roots: readonly string[], options: FolderLookOptions = {}): Promise<FolderLook<{ registered: { path: string; url: string | null }[]; found: { path: string; url: string | null }[] }>> {
   const looked = await lookFolders({ op: "origins", registered: [...registered], roots: [...roots], home: options.home ?? homedir() }, options);
   if (!looked.ok) return looked;
   const value = looked.value as { registered?: unknown; found?: unknown } | null;
@@ -229,7 +270,16 @@ export async function localOrigins(registered: readonly string[], roots: readonl
   return { ok: true, value: { registered: rows(value.registered), found: rows(value.found) } };
 }
 
-/** Whether a project folder answers now (its folder, git folder and config can be read), within the deadline. */
-export async function folderAnswers(path: string, options: { runner?: FolderLookRunner; deadlineMs?: number } = {}): Promise<boolean> {
-  return (await lookFolders({ op: "probe", path }, options)).ok;
+/** Each path's identity (its real path when that is a folder, else null), resolved off the thread. */
+export async function lookIdentities(paths: readonly string[], options: FolderLookOptions = {}): Promise<FolderLook<Map<string, string | null>>> {
+  const looked = await lookFolders({ op: "identities", paths: [...paths] }, options);
+  if (!looked.ok) return looked;
+  const value = looked.value as { paths?: unknown } | null;
+  if (value === null || typeof value !== "object" || !Array.isArray(value.paths)) return { ok: false, why: "failed" };
+  const out = new Map<string, string | null>();
+  for (const one of value.paths as unknown[]) {
+    const row = one as { path?: unknown; real?: unknown } | null;
+    if (row !== null && typeof row === "object" && text(row.path) && (row.real === null || text(row.real))) out.set(row.path, row.real as string | null);
+  }
+  return { ok: true, value: out };
 }

@@ -65,6 +65,8 @@ export type RoleToParent =
   | { type: "ready"; role: UpRoleName; build: string; pid: number; url: string | null; port: number | null }
   | { type: "log"; line: string }
   | { type: "repos"; repos: string[] }
+  /** The saved projects the worker still holds start authority for (it only ever shrinks: connected or removed). */
+  | { type: "deferred"; repos: string[] }
   | { type: "failed"; reason: "port-busy" | "start"; detail: string }
   | { type: "fatal"; detail: string }
   | { type: "sign-in-link"; id: number; link: string | null }
@@ -112,6 +114,7 @@ export function roleMessage(value: unknown, role: UpRoleName): RoleToParent | nu
       return { type: "ready", role, build: value["build"], pid: value["pid"], url: value["url"] as string | null, port: value["port"] as number | null };
     case "log": return text(value["line"]) ? { type: "log", line: value["line"] } : null;
     case "repos": return role === "worker" && texts(value["repos"]) ? { type: "repos", repos: [...value["repos"]] } : null;
+    case "deferred": return role === "worker" && texts(value["repos"]) ? { type: "deferred", repos: [...value["repos"]] } : null;
     case "failed": return (value["reason"] === "port-busy" || value["reason"] === "start") && text(value["detail"]) ? { type: "failed", reason: value["reason"], detail: value["detail"] } : null;
     case "fatal": return text(value["detail"]) ? { type: "fatal", detail: value["detail"] } : null;
     case "sign-in-link": return role === "console" && whole(value["id"]) && orNull(value["link"], (one): one is string => nonEmpty(one, 2_048)) ? { type: "sign-in-link", id: value["id"], link: value["link"] as string | null } : null;

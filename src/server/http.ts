@@ -22,6 +22,8 @@ import { timingSafeEqual } from "node:crypto";
 import { type IncomingMessage,type ServerResponse } from "node:http";
 import { SIGN_IN_LINK_PATH } from "./session.js";
 import { type FolderLookRunner } from "../folder-look.js";
+import { type ProjectIdentities } from "../project-identity.js";
+import { type LearningRunner } from "../learning-look.js";
 
 export type ServeOptions = {
   /** Tests: runs a person's command for the HTTP MCP gateway instead of operate.ts's. */
@@ -173,6 +175,11 @@ export type ServeOptions = {
   /** Tests: how a person's folders are read off the console's thread (folder-look.ts), and how long a read may take. */
   folderLook?: FolderLookRunner;
   folderLookMs?: number;
+  /** Project identities resolved off the console's thread (project-identity.ts); `up` and `serve` pass them. Absent:
+   * the old synchronous reads (embedders and tests). */
+  identities?: ProjectIdentities;
+  /** Tests: how the background pass runs one project's learning recovery in a process of its own. */
+  learningRunner?: LearningRunner;
   connectionHome?: string;
   /** Test seam for Chat's first tasks: the `gh` and `git grep` reads. */
   firstTaskRunner?: typeof execRun;

@@ -89,7 +89,10 @@ test("every GET and HEAD row only reads: no writes beyond bookkeeping, no proces
         // The probe asks the very executable a view runs, by its real path (eval-harness review 2, follow-up).
         || /^spawn spawnSync \/\S+\/git --no-lazy-fetch version$/.test(one)
         || /^spawn spawnSync git .*(--no-lazy-fetch )?--attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904 -c protocol\.allow=never /.test(one));
-      const acted = effects.list.filter(one => !kept(one));
+      // Kept on GET too (the plan, "Kept on GET"): Projects browse and the GitHub page read the person's folders in a
+      // child process of this same Node (folder-look.ts), its script fixed and its request the one argument.
+      const looked = (one: string) => /^\/projects\/(browse|github)(\?|$)/.test(path) && one.startsWith(`spawn spawn ${process.execPath} -e "use strict";`);
+      const acted = effects.list.filter(one => !kept(one) && !looked(one));
       if (acted.length > 0) found.push(`${label}: ${[...new Set(acted)].join("; ")}`);
     }
   }

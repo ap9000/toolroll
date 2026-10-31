@@ -1,6 +1,7 @@
 import { secretFolder } from "./tool-secret-store.js";
 import { acceptedIdentities, recoverLearning } from "./project-learning.js";
-import { folderAnswers } from "./folder-look.js";
+import { syncProjectIdentities } from "./project-identity.js";
+import { recoverLearningOffThread } from "./learning-look.js";
 import { loadOrCreateVapidKeys } from "./push.js";
 import { checkoutPlan } from "./checkout-cleanup.js";
 import { latestReleaseFor } from "./server/render-settings.js";
@@ -205,6 +206,9 @@ type ReviewFacts
 } from "./workspace-ui.js";
 import { WorktreePool } from "./worktree.js";
 export function createDecisionServer(options: ServeOptions): DecisionServer {
+  // Identities come from what the console's start resolved off its thread (startConsole); a path that didn't answer
+  // stays unresolved, kept restrictive. Without them (embedders, tests) the old synchronous reads apply.
+  const identities = options.identities ?? syncProjectIdentities();
   const { projectFamilyPeek, familiesInView, familyTasksInView, revisionDestination, runIsLive, runIsTaskResult, revisionViewOf, taskViewData, routeViewOf, taskChatFocus, pullRequestTargetOf, failureOf, explainAttempt, taskScreen, armTaskResume, planViewOf, planContractViewOf, revisionDocOf, revisionLedgerOf, resultDetailOf } = createTaskViews({
     get store() { return store; },
     get projectCounts() { return projectCounts; },
@@ -228,6 +232,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const { authenticateApprover, authenticateCredential, authorizeMutation, projectOf, projectRequestAllowed, identify, lookupSession, restricted, visible, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible } = createSharedGuards({
     get store() { return store; },
     get liveCeiling() { return liveCeiling; },
+    identities,
     get codingProjects() { return codingProjects; },
     get unscopedMode() { return unscopedMode; },
     get managedRepos() { return managedRepos; },
@@ -454,22 +459,25 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
   // Resolve startup authority once. Missing paths remain restrictive.
   // Native additions come only from the controller after its admission checks.
-  const { ceiling, unresolved: unresolvedRepos } = resolveCeiling(
+  const { ceiling: startCeiling, unresolved: unresolvedRepos } = resolveCeiling(
     [...(options.repo === undefined ? [] : [options.repo]), ...(options.repos ?? [])],
     options.projectRoots ?? [],
+    options.identities === undefined ? undefined : identities.known,
   );
+  const ceiling = { ...startCeiling, canon: identities.hot };
   /** The project every fresh session opens with: the sole configured repo, else none. */
   const defaultProject = ceiling.repos.length === 1 && ceiling.roots.length === 0 ? ceiling.repos[0] as string : null;
 
   /** No ceiling configured at all: the legacy trust-everything mode, named. */
-  const unscopedMode = ceiling.repos.length === 0 && ceiling.roots.length === 0;
+  // An `up` console (it is handed its admitted set) is never unscoped: with every saved project away it is empty.
+  const unscopedMode = ceiling.repos.length === 0 && ceiling.roots.length === 0 && options.admittedRepos === undefined;
   /** Per-row visibility under the ceiling — the authorization question for reads. */
   /** The exact repositories this console serves now: `up`'s live admitted set when it supplies one, else startup's. */
   const exactRepos = (): readonly string[] => options.admittedRepos?.() ?? ceiling.repos;
   const liveCeiling = () => {
     const repos = [...exactRepos(), ...(options.additionalProjectRepos?.() ?? [])];
     // An admitted set that is empty for now is an empty ceiling, never the legacy unscoped mode.
-    return { repos: repos.length === 0 && ceiling.roots.length === 0 && !unscopedMode ? [NO_PROJECT] : repos, roots: ceiling.roots };
+    return { repos: repos.length === 0 && ceiling.roots.length === 0 && !unscopedMode ? [NO_PROJECT] : repos, roots: ceiling.roots, canon: identities.hot };
   };
   /** The explicit, currently proved project list. The callback is supplied
    * only by `up`, after it has independently checked git-ness and the root
@@ -487,7 +495,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const repos: string[] = [];
     const gone = goneRepos();
     for (const path of [...exactRepos(), ...(options.currentRepos?.() ?? [])]) {
-      const canonical = canonicalProject(path) ?? path;
+      const canonical = identities.hot(path);
       if (seen.has(canonical) || !visible(canonical) || gone.has(canonical)) continue;
       seen.add(canonical);
       repos.push(canonical);
@@ -996,7 +1004,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     const known = new Set(["/recipes/prepare", "/recipes/preview", "/recipes/import", "/recipes/save", "/recipes/launch", "/tasks/add", "/queue/move", "/queue/note", "/people/invite", "/people/invite-revoke", "/people/revoke", "/people/projects", "/projects/select", "/projects/open", "/mode/confirm", "/mode/sign", "/mode/revoke", "/settings/chat-approval/save", "/settings/chat-approval/off", "/settings/project/live-view"]);
     const placed = url.pathname === "/tasks/add" ? body?.get("repo")?.trim() : null;
-    return { repo: url.pathname.startsWith("/people/") ? null : placed ? canonicalProject(placed) ?? placed : projectOf(who, request) ?? null, taskId: null, runId: null,
+    return { repo: url.pathname.startsWith("/people/") ? null : placed ? identities.hot(placed) : projectOf(who, request) ?? null, taskId: null, runId: null,
       action: known.has(url.pathname) ? url.pathname.slice(1).replaceAll("/", " ") : "console request" };
   }
 
@@ -1884,7 +1892,6 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   // rule run from this pass (or a person's Check now), not from a GET.
   let backgroundChecks: ReturnType<typeof startMaintenance> | null = null;
   let agentsCheckedAt = 0;
-  const folderLookOptions = { ...(options.folderLook === undefined ? {} : { runner: options.folderLook }), ...(options.folderLookMs === undefined ? {} : { deadlineMs: options.folderLookMs }) };
   if (options.backgroundChecks === true) server.once('listening', () => {
     // This Toolroll's folder for secrets, checked once now, so a page can read which are set without preparing it.
     try { secretFolder(); } catch { /* a page says secrets can't be read; the next action reports why */ }
@@ -1898,6 +1905,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           // The other agents Settings lists: their last answer is what the page shows.
           for (const provider of PROVIDER_IDS.filter(isKeyedProvider).filter(one => one !== "claude" && one !== "codex")) waits.push(connectionCheck(provider).catch(() => undefined));
         }
+        // Project identities, resolved off the thread: what pages asked about, and answers gone stale.
+        waits.push(identities.refresh([...exactRepos(), ...(options.currentRepos?.() ?? []), ...store.listProjects().map(one => one.path), ...ceiling.roots]));
         integrations.refreshIfDue();
         const sso = ssoSettings();
         if (sso !== null && (ssoProvider === null || ssoProvider.issuer !== sso.issuer || Date.now() - ssoProvider.at >= 10 * 60_000)) waits.push(providerFor(sso.issuer));
@@ -1933,10 +1942,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         // Settings → Learning and Knowledge used to do as they opened.
         if (lastChecks.due("learning", 10 * 60_000)) {
           waits.push(lastChecks.run("learning", async () => {
+            // Its reads of each project's Git folder are synchronous, so with a database file they run in a process of
+            // their own (learning-look.ts): a folder that doesn't answer costs its own recovery, never the console. An
+            // in-memory database (a test) can't be shared, so it is read here.
+            if (databaseFile !== null) {
+              await recoverLearningOffThread({ databaseFile, evidenceRoot, repos: managedRepos() }, options.learningRunner === undefined ? {} : { runner: options.learningRunner });
+              return;
+            }
             for (const repo of managedRepos()) {
-              // Its reads of the project's Git folder are synchronous: only a folder that answers now is read, so one
-              // that doesn't (a disconnected drive, an iCloud folder macOS is holding) never freezes the console.
-              if (!(await folderAnswers(repo, folderLookOptions))) continue;
               try { acceptedIdentities(store, repo); } catch { /* the next pass tries again */ }
               try { recoverLearning(store, evidenceRoot, repo); } catch { /* the next pass tries again */ }
             }
@@ -2143,6 +2156,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get revisionLedgerOf(): ServerRuntime['revisionLedgerOf'] { return revisionLedgerOf; },
     get firstTasks(): ServerRuntime['firstTasks'] { return firstTasks; },
     get authenticateCredential(): ServerRuntime['authenticateCredential'] { return authenticateCredential; },
+    get identities(): ServerRuntime['identities'] { return identities; },
   };
   const tasksHandlers = createTasksHandlers(handlerRuntime);
   const pagesHandlers = createPagesHandlers(handlerRuntime);
