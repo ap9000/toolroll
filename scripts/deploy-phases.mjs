@@ -10,8 +10,8 @@ import { HEALTH_WAIT_MS, RUNNER_LIVENESS_MS, recoverFailedDeployment, waitUntilH
 import { recordedStillRunning } from "./deploy-stop.mjs";
 
 export const sha = bytes => createHash("sha256").update(bytes).digest("hex");
-/** How long finish asks the started console's own port before giving up, a second apart. */
-const LOCAL_ANSWER_TRIES = 30;
+/** How long, in all, finish asks the started console's own port before giving up (each ask and pause fits inside it). */
+const LOCAL_ANSWER_MS = 30_000;
 const quote = s => '"' + s.replaceAll('"', '""') + '"';
 
 // Every direct connection waits at the same bounded lock boundary as Store.
@@ -131,7 +131,7 @@ export function activeWorkRefusal(work) {
 export function browserDeployment({
   database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script, oldRt, deploymentLock, signal,
   facts, quiet, service, proveStaged, verifyServiceStopped, leftFrom, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
-  processes,
+  processes, now = Date.now,
 }) {
   const short = candidateHead.slice(0, 7);
   const assertLocked = () => deploymentLock.assertHeld(journalFile);
@@ -455,12 +455,18 @@ export function browserDeployment({
     // The console answers as soon as it listens (project folders are resolved after, src/operate.ts startConsole); a
     // started service is still given a short while to open its port, and each ask has its own bound.
     const answered = response => response && (response.ok || response.status === 303 || response.status === 302);
+    const until = now() + LOCAL_ANSWER_MS;
     let local = null;
-    for (let i = 0; i < LOCAL_ANSWER_TRIES && !answered(local); i++) {
-      if (i > 0) await settle(sleep(1000));
-      local = await fetch(`http://127.0.0.1:4180/t/${encodeURIComponent(r.task)}`, { redirect: "manual", signal: AbortSignal.timeout(5_000) }).catch(() => null);
+    for (let first = true; ; first = false) {
+      const left = until - now();
+      if (!first && left <= 0) break;
+      local = await fetch(`http://127.0.0.1:4180/t/${encodeURIComponent(r.task)}`, { redirect: "manual", signal: AbortSignal.timeout(Math.max(1, Math.min(5_000, left))) }).catch(() => null);
+      if (answered(local)) break;
+      const rest = until - now();
+      if (rest <= 0) break;
+      await settle(sleep(Math.min(1_000, rest)));
     }
-    requireTrue(answered(local), `The local console does not answer (asked for ${LOCAL_ANSWER_TRIES} s).`);
+    requireTrue(answered(local), `The local console does not answer (asked for ${LOCAL_ANSWER_MS / 1000} s).`);
     let remote = "not configured";
     if (r.publicUrl) {
       const response = await fetch(`${r.publicUrl}/t/${encodeURIComponent(r.task)}`, { redirect: "manual", signal: AbortSignal.timeout(10_000) }).catch(() => null);

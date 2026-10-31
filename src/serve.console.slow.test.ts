@@ -8,7 +8,8 @@ import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { createServer as createNetServer } from "node:net";
 import type { FolderLookRunner } from "./folder-look.js";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
@@ -2504,6 +2505,73 @@ describe("the filesystem browser — confined to what opening allows", () => {
       late.release();
       await vi.waitFor(async () => expect(await task()).toBe(200), { timeout: 10_000, interval: 50 });
     } finally { late.release(); }
+  });
+
+  test("a configured repo whose folder hasn't answered authorizes nothing: not by its spelling, not as the default, not as unscoped", async () => {
+    const late = heldLooks();
+    try {
+      const repo = join(root, "payments-api");
+      store.createTask({ id: "t-cfg", title: "work in the configured repo" }, T0);
+      store.placeTask(store.refFor("built-in", "t-cfg").id, repo);
+      await boot({ repos: [repo], identities: projectIdentities({ runner: late.runner, deadlineMs: 60_000 }), backgroundChecks: true, backgroundChecksMs: 100 });
+      const cookie = await login();
+      await vi.waitFor(() => expect(late.started()).toBeGreaterThan(0));
+      expect((await fetch(url("/t/t-cfg"), { headers: { cookie }, redirect: "manual" })).status).toBe(404);
+      // No default project to file into, and a scoped console never files unplaced work.
+      const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(url("/projects"), { headers: { cookie } })).text())?.[1] ?? "";
+      const filed = await fetch(url("/tasks/add"), { method: "POST", headers: { cookie, origin: base, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, id: "t-early", title: "filed before the folder answered" }), redirect: "manual" });
+      expect(filed.status).toBe(400);
+      expect(await filed.text()).toContain("name a repository");
+      expect(store.lookupRef("t-early")).toBeNull();
+      late.release();
+      await vi.waitFor(async () => expect((await fetch(url("/t/t-cfg"), { headers: { cookie }, redirect: "manual" })).status).toBe(200), { timeout: 10_000, interval: 50 });
+    } finally { late.release(); }
+  });
+
+  test("a project identity that changes while a filing waits files nothing", async () => {
+    const repo = join(root, "ledger");
+    mkdirSync(repo);
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "so-moved-")));
+    const alias = join(elsewhere, "alias");
+    symlinkSync(join(root, "notes"), alias);
+    // The filing's own look at the repo is held until the test lets it go; every other look answers from the disk.
+    let hold: (() => void) | null = null;
+    let held = true;
+    const runner: FolderLookRunner = request => {
+      const paths = request.op === "identities" ? request.paths : [];
+      const answer = () => ({ ok: true, value: { paths: paths.map(path => ({ path, real: realpathSync(path) })) } });
+      if (!held && paths.length === 1 && paths[0] === repo) {
+        held = true;
+        const released = new Promise<void>(done => { hold = done; }).then(answer);
+        return { answer: released, ended: released.then(() => undefined) };
+      }
+      const now = Promise.resolve().then(answer);
+      return { answer: now, ended: now.then(() => undefined) };
+    };
+    try {
+      const identities = projectIdentities({ runner, deadlineMs: 60_000 });
+      // The repo is known (a request may name it); the filing still looks at it again, now, and that look is held.
+      await identities.refresh([root, alias, repo]);
+      held = false;
+      await boot({ projectRoots: [root], identities });
+      const cookie = await login();
+      const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(url("/projects"), { headers: { cookie } })).text())?.[1] ?? "";
+      const file = (id: string) => fetch(url("/tasks/add"), { method: "POST", headers: { cookie, origin: base, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, id, title: `filed as ${id}`, repo }), redirect: "manual" });
+      const waiting = file("t-moved");
+      await vi.waitFor(() => expect(hold).not.toBeNull());
+      // While it waits, a known identity moves.
+      rmSync(alias);
+      symlinkSync(elsewhere, alias);
+      expect(await identities.resolveNow(alias)).toBe(elsewhere);
+      hold!();
+      expect((await waiting).status).toBe(409);
+      expect(store.lookupRef("t-moved")).toBeNull();
+      // Nothing moved this time: it files.
+      const steady = await file("t-steady");
+      expect([steady.status, steady.headers.get("location")]).toEqual([303, "/t/t-steady"]);
+      expect(store.lookupRef("t-steady")?.repo).toBe(repo);
+    } finally { rmSync(elsewhere, { recursive: true, force: true }); }
   });
 
   test("an explicit repo list gets no browser — the openable set is already on the page", async () => {

@@ -191,7 +191,7 @@ async function deployment({ codingCatalog = true, wrap = (args: Record<string, a
 
   const log: string[] = [];
   const journals: Record<string, Record<string, any>> = {};
-  const hooks: { stopped?: (pids: number[]) => void; sleep?: () => void; fetch?: () => void; install?: () => void; installed?: () => void; freeze?: () => void; owned?: () => void; codingBackup?: () => void; facts?: (db: DatabaseSync) => void } = {};
+  const hooks: { stopped?: (pids: number[]) => void; sleep?: (ms?: number) => void; fetch?: () => void; now?: () => number; install?: () => void; installed?: () => void; freeze?: () => void; owned?: () => void; codingBackup?: () => void; facts?: (db: DatabaseSync) => void } = {};
   const current = { completion: { digest: 'complete', actor: 'lead' }, gateDigest: 'check', taskId: 'task', repo: '/repo', scopeDigest: 'scope' };
   const services = {
     old: { supervisor: fakePid(1), children: [fakePid(2)], commands: [] as string[] },
@@ -247,7 +247,8 @@ async function deployment({ codingCatalog = true, wrap = (args: Record<string, a
       return { status: 1, stdout: '' };
     },
     fetch: async (url: string) => { log.push(`fetch ${url}`); hooks.fetch?.(); return { ok: true, status: 200 }; },
-    sleep: async () => { hooks.sleep?.(); },
+    sleep: async (ms?: number) => { hooks.sleep?.(ms); },
+    now: () => hooks.now?.() ?? Date.now(),
     say: (message: unknown) => {
       if (typeof message !== 'string') { log.push('summary'); return; }
       const phase = message.replace(/^• /, '');
@@ -563,6 +564,21 @@ async function started() {
   d.reset();
   return d;
 }
+
+test('finish asks the local console for 30 s in all, however long each ask takes', async () => {
+  const d = await started();
+  try {
+    const start = 1_000_000;
+    let clock = start, asks = 0;
+    d.hooks.now = () => clock;
+    // Each ask runs to its own bound (5 s) and fails; each pause takes what it was given.
+    d.hooks.fetch = () => { asks++; clock += 5_000; throw Error('no answer'); };
+    d.hooks.sleep = ms => { clock += ms ?? 0; };
+    await expect(d.phases.finish()).rejects.toThrow('The local console does not answer (asked for 30 s).');
+    expect(clock - start).toBeLessThanOrEqual(30_000);
+    expect(asks).toBe(5);
+  } finally { d.close(); }
+});
 
 test('finish checks custody before the console answers, waits for fresh leases, and verifies the backups again before reopening admission', async () => {
   const d = await started();

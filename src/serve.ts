@@ -460,7 +460,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
   // Startup authority: the configured repos and roots as their identities say (startupCeiling). Missing or unresolved
   // paths remain restrictive. Native additions come only from the controller after its admission checks.
-  const { ceiling, unresolved: unresolvedRepos, defaultProject } = startupCeiling(
+  const { ceiling, unresolved: unresolvedRepos, defaultProject, configured, configuredPaths } = startupCeiling(
     [...(options.repo === undefined ? [] : [options.repo]), ...(options.repos ?? [])],
     options.projectRoots ?? [],
     options.identities === undefined ? undefined : identities,
@@ -469,7 +469,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
 
   /** No ceiling configured at all: the legacy trust-everything mode, named. */
   // An `up` console (it is handed its admitted set) is never unscoped: with every saved project away it is empty.
-  const unscopedMode = ceiling.repos.length === 0 && ceiling.roots.length === 0 && options.admittedRepos === undefined;
+  // Judged by what was configured, never by what has resolved so far: a console whose folders haven't answered yet is
+  // scoped and empty, not unscoped.
+  const unscopedMode = !configured && options.admittedRepos === undefined;
   /** Per-row visibility under the ceiling — the authorization question for reads. */
   /** The exact repositories this console serves now: `up`'s live admitted set when it supplies one, else startup's. */
   const exactRepos = (): readonly string[] => options.admittedRepos?.() ?? ceiling.repos;
@@ -1906,7 +1908,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           for (const provider of PROVIDER_IDS.filter(isKeyedProvider).filter(one => one !== "claude" && one !== "codex")) waits.push(connectionCheck(provider).catch(() => undefined));
         }
         // Project identities, resolved off the thread: what pages asked about, and answers gone stale.
-        waits.push(identities.refresh([...exactRepos(), ...(options.currentRepos?.() ?? []), ...store.listProjects().map(one => one.path), ...store.knownRepos(), ...ceiling.roots]));
+        waits.push(identities.refresh([...configuredPaths, ...exactRepos(), ...(options.currentRepos?.() ?? []), ...store.listProjects().map(one => one.path), ...store.knownRepos()]));
         integrations.refreshIfDue();
         const sso = ssoSettings();
         if (sso !== null && (ssoProvider === null || ssoProvider.issuer !== sso.issuer || Date.now() - ssoProvider.at >= 10 * 60_000)) waits.push(providerFor(sso.issuer));
@@ -2252,19 +2254,38 @@ export { SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type DecisionServer } from "./server/
 function startupCeiling(repos: readonly string[], roots: readonly string[], identities: ProjectIdentities | undefined, canon: (path: string) => string | null): {
   ceiling: { readonly repos: readonly string[]; readonly roots: readonly string[]; canon: (path: string) => string | null };
   unresolved: () => readonly string[];
-  /** The project every fresh session opens with: the sole configured repo, else none. */
+  /** The project every fresh session opens with: the sole configured repo once resolved, else none. */
   defaultProject: () => string | null;
+  /** Whether any repo or root was configured at all (an unscoped console has none). */
+  configured: boolean;
+  /** Every configured repo and root as given: what the background pass resolves, answered or not. */
+  configuredPaths: readonly string[];
 } {
-  const once = identities === undefined ? resolveCeiling(repos, roots) : null;
-  const current = () => once ?? resolveCeiling(repos, roots, identities!.known);
+  const configured = repos.length > 0 || roots.length > 0;
+  const configuredPaths = [...repos, ...roots];
+  if (identities === undefined) {
+    const once = resolveCeiling(repos, roots);
+    return {
+      ceiling: { ...once.ceiling, canon },
+      unresolved: () => once.unresolved,
+      defaultProject: () => once.ceiling.repos.length === 1 && once.ceiling.roots.length === 0 ? once.ceiling.repos[0] as string : null,
+      configured,
+      configuredPaths,
+    };
+  }
+  // Only resolved entries authorize: an unresolved configured path is in no list, so it matches nothing (not even its
+  // own spelling) and is no session's default until its folder answers.
+  const resolved = (paths: readonly string[]): string[] => [...new Set(paths.flatMap(path => { const real = identities.known(path); return typeof real === "string" ? [real] : []; }))];
   const ceiling = {
-    get repos() { return current().ceiling.repos; },
-    get roots() { return current().ceiling.roots; },
+    get repos() { return resolved(repos); },
+    get roots() { return resolved(roots); },
     canon,
   };
   return {
     ceiling,
-    unresolved: () => current().unresolved,
-    defaultProject: () => ceiling.repos.length === 1 && ceiling.roots.length === 0 ? ceiling.repos[0] as string : null,
+    unresolved: () => [...repos, ...roots].filter(path => typeof identities.known(path) !== "string"),
+    defaultProject: () => repos.length === 1 && roots.length === 0 ? resolved(repos)[0] ?? null : null,
+    configured,
+    configuredPaths,
   };
 }

@@ -37,6 +37,9 @@ export type ProjectIdentities = {
   resolveNow: (path: string) => Promise<string | null | "no-answer">;
   /** Resolve `paths`, everything asked about since, and answers older than a minute. False when some didn't answer. */
   refresh: (paths: Iterable<string>) => Promise<boolean>;
+  /** Moves whenever a known identity changes or goes: a decision made before an await is re-checked against it right
+   * before its write. */
+  generation: () => number;
 };
 
 /** How long an answer stands before the background pass resolves the path again. */
@@ -46,23 +49,41 @@ const STALE_MS = 60_000;
 export const IDENTITY_LOOKS = 4;
 
 export function projectIdentities(look: FolderLookOptions = {}, now: () => number = Date.now): ProjectIdentities {
-  const answers = new Map<string, { real: string | null; at: number }>();
+  /** Each answer with the lookup it came from: a lookup started earlier never overwrites one started later. */
+  const answers = new Map<string, { real: string | null; at: number; seq: number }>();
   const wanted = new Set<string>();
+  /** Paths whose last look didn't answer: looked at only on their own (joining a look still under way), never in a
+   * batch, so one folder that never answers holds one child, not one per differently made-up batch. */
+  const suspect = new Set<string>();
+  let lookups = 0;
+  let generation = 0;
   const known = (path: string): string | null | undefined => answers.get(resolve(path))?.real;
-  const store = (found: Map<string, string | null>): void => {
+  const put = (key: string, real: string | null, at: number, seq: number): void => {
+    const before = answers.get(key);
+    // A known identity that changes (or goes) moves authority: anything decided on the old one is out of date.
+    if (before !== undefined && before.real !== real) generation++;
+    answers.set(key, { real, at, seq });
+  };
+  const store = (found: Map<string, string | null>, seq: number): void => {
     const at = now();
     for (const [path, real] of found) {
-      answers.set(resolve(path), { real, at });
-      wanted.delete(resolve(path));
+      const key = resolve(path);
+      // Superseded: a later lookup already answered for this path. Its real path's entry goes with it.
+      if ((answers.get(key)?.seq ?? -1) > seq) continue;
+      put(key, real, at, seq);
+      wanted.delete(key);
       // A real path is its own identity.
-      if (real !== null) answers.set(real, { real, at });
+      if (real !== null && (answers.get(real)?.seq ?? -1) <= seq) put(real, real, at, seq);
     }
   };
   const resolveNow = async (path: string): Promise<string | null | "no-answer"> => {
-    const looked = await lookIdentities([resolve(path)], look);
-    if (!looked.ok) return "no-answer";
-    store(looked.value);
-    return looked.value.get(resolve(path)) ?? null;
+    const key = resolve(path);
+    const seq = ++lookups;
+    const looked = await lookIdentities([key], look);
+    if (!looked.ok) { suspect.add(key); return "no-answer"; }
+    suspect.delete(key);
+    store(looked.value, seq);
+    return answers.get(key)?.real ?? null;
   };
   const refreshNow = async (paths: readonly string[]): Promise<boolean> => {
     const at = now();
@@ -74,16 +95,21 @@ export function projectIdentities(look: FolderLookOptions = {}, now: () => numbe
     }
     for (const [key, answer] of answers) if (at - answer.at >= STALE_MS) due.add(key);
     if (due.size === 0) return true;
-    const batch = await lookIdentities([...due], look);
-    if (batch.ok) { store(batch.value); return true; }
+    const alone = [...due].filter(one => suspect.has(one));
+    const batched = [...due].filter(one => !suspect.has(one));
+    if (batched.length > 0) {
+      const seq = ++lookups;
+      const batch = await lookIdentities(batched, look);
+      if (batch.ok) store(batch.value, seq);
+      else alone.push(...batched);
+    }
     // One folder that doesn't answer mustn't hold the others: each on its own, a few at a time (inside the looks'
     // child cap, leaving room for a person's actions), each under its deadline, each stored as soon as it answers.
-    const queue = [...due];
     let missed = false;
     const worker = async (): Promise<void> => {
-      for (let one = queue.shift(); one !== undefined; one = queue.shift()) if (await resolveNow(one) === "no-answer") missed = true;
+      for (let one = alone.shift(); one !== undefined; one = alone.shift()) if (await resolveNow(one) === "no-answer") missed = true;
     };
-    await Promise.all(Array.from({ length: Math.min(IDENTITY_LOOKS, queue.length) }, worker));
+    await Promise.all(Array.from({ length: Math.min(IDENTITY_LOOKS, alone.length) }, worker));
     return !missed;
   };
   let passes: Promise<void> = Promise.resolve();
@@ -110,6 +136,7 @@ export function projectIdentities(look: FolderLookOptions = {}, now: () => numbe
       return undefined;
     },
     resolveNow,
+    generation: () => generation,
     refresh: paths => {
       // One pass at a time: a pass asked for while another runs waits for it, then resolves only what is still due.
       const asked = [...paths];
@@ -128,6 +155,7 @@ export function syncProjectIdentities(): ProjectIdentities {
     strict: path => canonicalProject(path),
     vouched: path => canonicalProject(path) ?? undefined,
     resolveNow: async path => canonicalProject(path),
+    generation: () => 0,
     refresh: async () => true,
   };
 }

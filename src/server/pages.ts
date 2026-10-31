@@ -677,12 +677,15 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     }
     const askedPath = (body.get("path") ?? "").trim();
     // Resolved off the console's thread (project-identity.ts): a folder that doesn't answer is said, never waited on.
+    const decidedOn = identities.generation();
     const picked = askedPath === "" ? null : await identities.resolveNow(askedPath);
     if (picked === "no-answer") return refuse(response, who, 503, "That project's folder didn't answer. It may be on a drive that's disconnected, or waiting on macOS. Try again in a moment.");
     const canonicalPick = picked;
     if ((askedPath !== "" && canonicalPick === null) || (canonicalPick !== null && (!visible(canonicalPick) || !(await authorizedProject(liveCeiling(), canonicalPick))))) {
       return refuse(response, who, 403, "that project is outside this console's reach");
     }
+    // An identity that changed during the awaits above undoes what they proved.
+    if (identities.generation() !== decidedOn) return refuse(response, who, 409, "a project folder changed while this was being checked — try again");
     who.session.project = canonicalPick;
     who.session.projectRevision += 1;
     sessions.persist(who.session);
@@ -712,6 +715,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       return refuse(response, who, 403, "opening a project is a browser session's act");
     }
     const asked = (body.get("path") ?? "").trim();
+    const decidedOn = identities.generation();
     const resolved = asked === "" ? null : await identities.resolveNow(asked);
     if (resolved === "no-answer") {
       return void projectsScreen(response, who, "that folder didn't answer — it may be on a drive that's disconnected, or waiting on macOS; try again in a moment", 503, safeReturn(body.get("return")));
@@ -734,6 +738,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     if (!visible(canonical)) {
       return void projectsScreen(response, who, "That project is outside your access.", 403, safeReturn(body.get("return")));
     }
+    // An identity that changed during the awaits above undoes what they proved.
+    if (identities.generation() !== decidedOn) return void projectsScreen(response, who, "a project folder changed while this was being checked — try again", 409, safeReturn(body.get("return")));
     // Opening an allowed repository admits it the same way `repos add` does
     // (project-admission.ts). A co-located `up` notices the durable list and
     // connects its builder; there is no separate restart or binding step.
