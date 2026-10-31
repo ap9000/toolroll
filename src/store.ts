@@ -123,6 +123,16 @@ import { PULL_REQUEST_SCHEMA } from "./pull-request-schema.js";
 import { chatTurnAmountOf, combineReportedModels, providerTurnsOf, reportedCostUsdOf, reportedModelOf, runAmountOf, type ReportedAmount } from "./reported-usage.js";
 import { usageOf } from "./run-efficiency.js";
 
+// PR #263 follow-up: the built-ins the Store money seal uses, captured as this module is evaluated, so code that later
+// replaces `Object.defineProperty` and the like can't fool the seal or the lock (lockStoreMoneyMethods refuses when
+// they've been replaced). The four sealed method references are recorded once, at the seal, in SEALED_MONEY_METHODS.
+const STORE_MONEY_METHODS = Object.freeze(["recordUsage", "settleRunSpend", "fixRunBilling", "finalizeChatTurn"] as const);
+const builtinDefineProperty = Object.defineProperty;
+const builtinGetOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
+const builtinFreeze = Object.freeze;
+const builtinIsFrozen = Object.isFrozen;
+const SEALED_MONEY_METHODS: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+
 // v60 fenced older readers before the chat action cards; v61 adds notification
 // provenance and Telegram destination receipts, and readers below v61 refuse it.
 // v62 adds the durable Telegram conversation queue and proposal-card tokens,
@@ -25322,21 +25332,42 @@ export function recordRunCostUnknown(store: Store, runId: number, unknown: boole
 /** PR #263 security scan: the Store methods eval accounting pins by body (eval-hooks.ts PINNED_STORE_METHODS) made
  * unwritable and unconfigurable on the prototype, from the class's own first static block, so no code runs between the
  * class's definition and the seal. Each must still be the class's own plain method (a writable, configurable function),
- * or loading refuses. */
+ * or loading refuses. The four references are recorded once, in a frozen module-private map, through the built-ins this
+ * module captured as it loaded; a second seal refuses. */
 export function sealStoreMoneyMethods(prototype: object): void {
-  for (const name of ["recordUsage", "settleRunSpend", "fixRunBilling", "finalizeChatTurn"] as const) {
-    const held = Object.getOwnPropertyDescriptor(prototype, name);
-    if (held === undefined || typeof held.value !== "function" || held.writable !== true || held.configurable !== true || held.value.name !== name) throw new Error(`Store.${name} isn't the class's own method`);
-    Object.defineProperty(prototype, name, { value: held.value, writable: false, configurable: false, enumerable: false });
-  }
+  const held = STORE_MONEY_METHODS.map(name => {
+    const one = builtinGetOwnPropertyDescriptor(prototype, name);
+    if (one === undefined || typeof one.value !== "function" || one.writable !== true || one.configurable !== true || one.value.name !== name) throw new Error(`Store.${name} isn't the class's own method`);
+    return one.value as unknown;
+  });
+  if (builtinIsFrozen(SEALED_MONEY_METHODS)) throw new Error("the Store money methods are already sealed");
+  STORE_MONEY_METHODS.forEach((name, at) => {
+    builtinDefineProperty(SEALED_MONEY_METHODS, name, { value: held[at], writable: false, configurable: false, enumerable: true });
+    builtinDefineProperty(prototype, name, { value: held[at], writable: false, configurable: false, enumerable: false });
+    const now = builtinGetOwnPropertyDescriptor(prototype, name);
+    if (now === undefined || now.value !== held[at] || now.writable !== false || now.configurable !== false) throw new Error(`Store.${name} couldn't be sealed`);
+  });
+  builtinFreeze(SEALED_MONEY_METHODS);
 }
 
 /** PR #263 security scan: each Store instance holds the sealed money methods as its own unwritable, unconfigurable
- * properties (the constructor's last step), so shadowing one on an instance, by any means, throws. */
-export function lockStoreMoneyMethods(store: Store): void {
-  for (const name of ["recordUsage", "settleRunSpend", "fixRunBilling", "finalizeChatTurn"] as const) {
-    const sealed = Object.getOwnPropertyDescriptor(Store.prototype, name);
+ * properties (the constructor's last step), so shadowing one on an instance, by any means, throws. It uses only the
+ * built-ins captured as this module loaded, refuses when the globals were replaced since, and installs a method only
+ * when the prototype's value is the very reference recorded at the seal. `prototype` is Store's own unless a test
+ * says otherwise; either way nothing but the recorded references is ever installed. */
+export function lockStoreMoneyMethods(store: object, prototype: object = Store.prototype): void {
+  if (Object.defineProperty !== builtinDefineProperty || Object.getOwnPropertyDescriptor !== builtinGetOwnPropertyDescriptor || Object.freeze !== builtinFreeze || Object.isFrozen !== builtinIsFrozen) {
+    throw new Error("the Store money methods can't be locked: Object's built-ins were replaced");
+  }
+  if (!builtinIsFrozen(SEALED_MONEY_METHODS)) throw new Error("the Store money methods aren't sealed");
+  for (const name of STORE_MONEY_METHODS) {
+    const recorded = builtinGetOwnPropertyDescriptor(SEALED_MONEY_METHODS, name);
+    const sealed = builtinGetOwnPropertyDescriptor(prototype, name);
+    if (recorded === undefined || typeof recorded.value !== "function") throw new Error(`Store.${name} wasn't recorded at the seal`);
     if (sealed === undefined || sealed.writable !== false || sealed.configurable !== false) throw new Error(`Store.${name} isn't sealed`);
-    Object.defineProperty(store, name, { value: sealed.value, writable: false, configurable: false, enumerable: false });
+    if (sealed.value !== recorded.value) throw new Error(`Store.${name} isn't the sealed method`);
+    builtinDefineProperty(store, name, { value: recorded.value, writable: false, configurable: false, enumerable: false });
+    const now = builtinGetOwnPropertyDescriptor(store, name);
+    if (now === undefined || now.value !== recorded.value || now.writable !== false || now.configurable !== false) throw new Error(`Store.${name} couldn't be locked`);
   }
 }

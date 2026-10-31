@@ -106,12 +106,13 @@ function topFunction(source: ts.SourceFile, name: string): ts.FunctionDeclaratio
 /** `Class#method`: the top-level class's one method of that name (no overload, accessor or property of it either),
  * never assigned or redefined by name anywhere in the file; null otherwise. `Class#constructor` is its one
  * constructor; `Class#static` its one static block, which must be the first of its static elements that runs code
- * (no static field initializer or other block runs before it). */
+ * (no static field initializer or other block runs before it). A class with a decorator anywhere (on it, a member or a
+ * parameter: code that runs before the seal) holds none. */
 function classMethod(source: ts.SourceFile, spec: string): ts.Node | null {
   const compiler = typescript();
   const [className, method] = spec.split("#") as [string, string];
   const classes = source.statements.filter((one): one is ts.ClassDeclaration => compiler.isClassDeclaration(one) && one.name?.text === className);
-  if (classes.length !== 1) return null;
+  if (classes.length !== 1 || hasDecorator(classes[0]!)) return null;
   if (method === "constructor") {
     const made = classes[0]!.members.filter(member => compiler.isConstructorDeclaration(member));
     return made.length === 1 && (made[0] as ts.ConstructorDeclaration).body !== undefined ? made[0]! : null;
@@ -125,6 +126,24 @@ function classMethod(source: ts.SourceFile, spec: string): ts.Node | null {
   const named = classes[0]!.members.filter(member => member.name !== undefined && (compiler.isIdentifier(member.name) || compiler.isStringLiteral(member.name)) && member.name.text === method);
   if (named.length !== 1 || !compiler.isMethodDeclaration(named[0]!) || named[0].body === undefined) return null;
   return memberRewritten(source, method) ? null : named[0];
+}
+
+/** Whether a decorator appears anywhere in this node. */
+function hasDecorator(node: ts.Node): boolean {
+  const compiler = typescript();
+  if (compiler.isDecorator(node)) return true;
+  let hit = false;
+  compiler.forEachChild(node, one => { if (!hit && hasDecorator(one)) hit = true; });
+  return hit;
+}
+
+/** The class header (modifiers, name, type parameters and heritage, up to its opening brace), whitespace normalized:
+ * pinned with `Class#static`, so a changed `extends` or modifier needs a person. */
+function classHeader(source: ts.SourceFile, node: ts.Node): string {
+  const compiler = typescript();
+  const owner = node.parent;
+  if (!compiler.isClassDeclaration(owner)) return "";
+  return source.text.slice(owner.getStart(source), owner.members.pos).replace(/\s+/g, " ").trim();
 }
 
 /** Whether the file writes a property of this name anywhere (`x.name = …`, `x["name"] = …`) or names it as a string to
@@ -259,7 +278,9 @@ function pinnedText(tree: (file: string) => Parsed, pin: EvalPinned): string | n
   const parsed = tree(pin.file);
   if ("problem" in parsed) return null;
   const fn = pin.fn.includes("#") ? classMethod(parsed.source, pin.fn) : heldFunction(parsed.source, pin.fn);
-  return fn === null ? null : fn.getText(parsed.source);
+  if (fn === null) return null;
+  // The static block's pin holds the class header too: its name, modifiers and heritage, as the base has them.
+  return pin.fn.endsWith("#static") ? `${classHeader(parsed.source, fn)}\n${fn.getText(parsed.source)}` : fn.getText(parsed.source);
 }
 
 /**
@@ -294,7 +315,11 @@ export const EVAL_HOOK_FILES: readonly string[] = Object.freeze([...new Set([...
 
 /** Names whose every new mention in a changed file needs a person: the ways to define, reflect on, wrap or climb to
  * an object's class. */
-const REFLECTIVE = new Set(["defineProperty", "defineProperties", "setPrototypeOf", "getPrototypeOf", "__proto__", "__defineGetter__", "__defineSetter__", "Reflect", "Proxy", "constructor"]);
+const REFLECTIVE = new Set(["defineProperty", "defineProperties", "getOwnPropertyDescriptor", "getOwnPropertyDescriptors", "assign", "setPrototypeOf", "getPrototypeOf",
+  "__proto__", "__defineGetter__", "__defineSetter__", "Reflect", "Proxy", "constructor"]);
+/** Built-ins whose members (`Object.x`, `Function.prototype.x`, ...) a changed file may never write: the store's seal
+ * captures Object's at load, and nothing should replace them. */
+const BUILTIN_HOLDERS = new Set(["Object", "Function"]);
 const STORE_NAME = /store/i;
 const GLOBAL_HOLDERS = new Set(["Object", "Reflect", "globalThis", "Store"]);
 
@@ -303,8 +328,9 @@ const GLOBAL_HOLDERS = new Set(["Object", "Reflect", "globalThis", "Store"]);
  * owner, 2026-10-31: one blunt rule, not a chase of syntax variants; store.ts's runtime seal is the other half):
  * a computed member name; a write through a computed element access; a computed element access on Object, Reflect,
  * globalThis or anything named store; any mention of a reflective name (REFLECTIVE, `.constructor` included); a class
- * whose `extends` isn't a plain identifier or names a store; and any member, property or string named like a pinned
- * method that isn't a call of it.
+ * whose `extends` isn't a plain identifier or names a store; any member, property or string named like a pinned
+ * method that isn't a call of it; any decorator (it runs code as a class is defined); and any write to a member of
+ * Object or Function (`Object.defineProperty = …`, `Function.prototype.call = …`).
  */
 function storeRewrites(source: ts.SourceFile, pinned: readonly string[], ownClass: string | null): string[] {
   const compiler = typescript();
@@ -322,12 +348,35 @@ function storeRewrites(source: ts.SourceFile, pinned: readonly string[], ownClas
     }
     return hit;
   };
+  // A member of Object or Function anywhere along the access chain (`Object.x`, `globalThis.Object.x`,
+  // `Function.prototype.x`, `Object["x"]`), or such a target inside a destructuring pattern.
+  const writesBuiltin = (target: ts.Node): boolean => {
+    if (compiler.isPropertyAccessExpression(target) || compiler.isElementAccessExpression(target)) {
+      for (let holder: ts.Expression = target.expression; ; holder = (holder as ts.PropertyAccessExpression | ts.ElementAccessExpression).expression) {
+        while (compiler.isParenthesizedExpression(holder) || compiler.isNonNullExpression(holder) || compiler.isAsExpression(holder)) holder = holder.expression;
+        if (compiler.isIdentifier(holder)) return BUILTIN_HOLDERS.has(holder.text);
+        if (compiler.isPropertyAccessExpression(holder) && BUILTIN_HOLDERS.has(holder.name.text)) return true;
+        if (compiler.isElementAccessExpression(holder) && compiler.isStringLiteralLike(holder.argumentExpression) && BUILTIN_HOLDERS.has(holder.argumentExpression.text)) return true;
+        if (!compiler.isPropertyAccessExpression(holder) && !compiler.isElementAccessExpression(holder)) return false;
+      }
+    }
+    let hit = false;
+    if (compiler.isObjectLiteralExpression(target) || compiler.isArrayLiteralExpression(target) || compiler.isSpreadElement(target) || compiler.isSpreadAssignment(target)
+      || compiler.isPropertyAssignment(target) || compiler.isShorthandPropertyAssignment(target) || compiler.isParenthesizedExpression(target)
+      || (compiler.isBinaryExpression(target) && target.operatorToken.kind === compiler.SyntaxKind.EqualsToken)) {
+      compiler.forEachChild(target, one => { if (!hit && writesBuiltin(one)) hit = true; });
+    }
+    return hit;
+  };
+  const writes = (target: ts.Node): boolean => writesThrough(target) || writesBuiltin(target);
   const visit = (one: ts.Node): void => {
     if (compiler.isComputedPropertyName(one)) say(one.parent);
-    if (compiler.isBinaryExpression(one) && isAssignment(one.operatorToken.kind) && writesThrough(one.left)) say(one);
-    if ((compiler.isPrefixUnaryExpression(one) || compiler.isPostfixUnaryExpression(one)) && writesThrough(one.operand)) say(one);
-    if (compiler.isDeleteExpression(one) && writesThrough(one.expression)) say(one);
-    if ((compiler.isForInStatement(one) || compiler.isForOfStatement(one)) && writesThrough(one.initializer)) say(one);
+    if (compiler.isDecorator(one)) say(one);
+    if (compiler.isBinaryExpression(one) && isAssignment(one.operatorToken.kind) && writes(one.left)) say(one);
+    if ((compiler.isPrefixUnaryExpression(one) || compiler.isPostfixUnaryExpression(one)) && (writesThrough(one.operand)
+      || ((one.operator === compiler.SyntaxKind.PlusPlusToken || one.operator === compiler.SyntaxKind.MinusMinusToken) && writesBuiltin(one.operand)))) say(one);
+    if (compiler.isDeleteExpression(one) && writes(one.expression)) say(one);
+    if ((compiler.isForInStatement(one) || compiler.isForOfStatement(one)) && writes(one.initializer)) say(one);
     if (compiler.isElementAccessExpression(one) && computed(one)) {
       const holder = one.expression;
       const named = compiler.isIdentifier(holder) ? holder.text : compiler.isPropertyAccessExpression(holder) ? holder.name.text : "";

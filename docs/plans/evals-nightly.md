@@ -1031,3 +1031,10 @@ collapsed into a false match to the pin.
   one on an instance throws however it's done. store.ts is scanned by the blunt rule too, its class's own method
   declarations exempt. Tests that faked a crash through `vi.spyOn(store, "finalizeChatTurn")` now fail its database
   statement instead.
+- Security scan round 5 (follow-up PR): store.ts captures `Object.defineProperty`, `getOwnPropertyDescriptor`,
+  `freeze` and `isFrozen` as it loads; the seal records the four method references once, in a frozen module-private
+  map, and a second seal refuses; the lock refuses when those globals were replaced since load and installs a method
+  only when the prototype's value is the recorded reference. `Store#static`'s pin holds the class header (modifiers,
+  name, type parameters, heritage), and a decorator anywhere in the Store class drops every Store pin. The blunt rule
+  adds `getOwnPropertyDescriptor(s)` and `assign` to the reflective names, any write to a member of Object or Function,
+  and any new decorator. Residual: a module store.ts imports runs before it and could replace the globals first.
