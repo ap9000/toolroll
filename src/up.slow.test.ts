@@ -5,18 +5,20 @@
  * file's discipline, and the runner lifecycle are each their own proof.
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, existsSync, statSync, readFileSync, writeFileSync, realpathSync, readdirSync } from "node:fs";
+import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
+import { mkdtempSync, rmSync, existsSync, statSync, readFileSync, writeFileSync, realpathSync, readdirSync, symlinkSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import { execFileSync } from "node:child_process";
-import { runOperate, parseOperateArgs } from "./operate.js";
+import { runOperate, parseOperateArgs, upNarrowDeferred } from "./operate.js";
+import { run as execRun } from "./exec.js";
+import { type Runner as CommandRunner } from "./builder.js";
 import { sweepServiceRunning } from "./storage-sweep-schedule.js";
 import { openStore } from "./store.js";
 import { register } from "./runner.js";
 import { addApprover, authenticateApprover } from "./scope.js";
-import { addRepos, loadProjectRegistry, updateRepos } from "./repos.js";
+import { addRepos, loadProjectRegistry, registryRemovals, updateRepos } from "./repos.js";
 import { instanceRunDir, proveLiveConsole, readInstance } from "./console-instance.js";
 import { packageVersion } from "./monitoring.js";
 import { underAgent } from "./prompt.js";
@@ -368,6 +370,155 @@ describe("toolroll up", () => {
       await running;
     }
     expect(await running).toBe(0);
+  });
+
+  // A saved project away at start (a drive not connected, an iCloud folder macOS is holding), saved before this start,
+  // outside every projects folder and with no recorded admission: only the start's own saved-list authority can
+  // connect it, as a restart would — and only as the very folder that was saved, and only while it is still saved.
+  describe("saved projects away at start", () => {
+    let elsewhere: string;
+    let later: string;
+    const registry = () => join(base, "repos.json");
+    beforeEach(async () => {
+      elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "so-up-later-")));
+      later = join(elsewhere, "later-project");
+      expect(await updateRepos(registry(), current => addRepos(current, [later]))).toMatchObject({ ok: true });
+    });
+    afterEach(() => rmSync(elsewhere, { recursive: true, force: true }));
+    const makeRepo = (path: string) => {
+      execFileSync("mkdir", ["-p", path]);
+      git(["init", "-q"], path);
+      writeFileSync(join(path, "README.md"), "later\n");
+      git(["add", "."], path);
+      git(["commit", "-qm", "first"], path);
+    };
+    /** `up` with only saved projects (no --repo, nothing inferred from where it runs), its lines and episodes watched. */
+    const startUp = (port: number, seams: { gitRunner?: CommandRunner } = {}) => {
+      const episodes: string[] = [];
+      const heard: string[] = [];
+      const waiters: { match: (line: string) => boolean; done: () => void }[] = [];
+      const said = (match: (line: string) => boolean) => new Promise<void>(done => {
+        if (heard.some(match)) done(); else waiters.push({ match, done });
+      });
+      const hear = (line: string) => { heard.push(line); for (const one of [...waiters]) if (one.match(line)) { waiters.splice(waiters.indexOf(one), 1); one.done(); } };
+      const onLine = (line: string) => { lines.push(line); hear(line); };
+      const stderr = process.stderr.write.bind(process.stderr);
+      // --json sends progress lines to stderr: read them there too.
+      process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => { for (const line of String(chunk).split("\n")) if (line !== "") hear(line); return (stderr as (...args: unknown[]) => boolean)(chunk, ...rest); }) as typeof process.stderr.write;
+      let finished = false;
+      const running = runOperate("up", ["--port", String(port), "--json"], onLine, {
+        databaseFile: db,
+        inferProjectFromCwd: false,
+        ...seams,
+        openDatabase: file => {
+          const store = openStore(file);
+          const startEpisode = store.startWatchEpisode.bind(store);
+          store.startWatchEpisode = (episode, now) => { episodes.push(episode.repo); return startEpisode(episode, now); };
+          return store;
+        },
+      }).finally(() => { finished = true; process.stderr.write = stderr; });
+      const stop = async () => { if (!finished) process.emit("SIGINT"); return running; };
+      return { running, episodes, said, stop };
+    };
+    const runnerRepos = (name: string) => { const store = openStore(db); try { return store.getRunner(name)?.runner.repos ?? []; } finally { store.close(); } };
+
+    test("with nothing else to serve it still starts, then connects the project once it's back", async ({ onTestFinished }) => {
+      const up = startUp(PORT + 9);
+      onTestFinished(async () => { await up.stop(); });
+      await up.said(line => line.startsWith("{"));
+      expect(envelope()).toMatchObject({ ok: true, repos: [] });
+      makeRepo(later);
+      await up.said(line => line.includes(`saved project is back — connecting ${later}`));
+      await vi.waitFor(() => expect(up.episodes).toContain(later), { timeout: 10_000 });
+      expect(runnerRepos(String(envelope()["runner"]))).toEqual([later]);
+      expect(await up.stop()).toBe(0);
+    });
+
+    test("a saved folder that comes back inside another checkout never connects that checkout", async ({ onTestFinished }) => {
+      // Saved: outer/inner. It comes back as a plain folder, so git finds the checkout around it.
+      const outer = join(elsewhere, "outer"), inner = join(outer, "inner");
+      expect(await updateRepos(registry(), current => addRepos(current, [inner]))).toMatchObject({ ok: true });
+      const up = startUp(PORT + 10);
+      onTestFinished(async () => { await up.stop(); });
+      await up.said(line => line.startsWith("{"));
+      makeRepo(outer);
+      execFileSync("mkdir", ["-p", inner]);
+      await up.said(line => line.includes(`saved project not connected — ${inner} came back as part of ${outer}`));
+      expect(runnerRepos(String(envelope()["runner"]))).not.toContain(outer);
+      expect(up.episodes).not.toContain(outer);
+      expect(await up.stop()).toBe(0);
+    });
+
+    test("removed and saved again while its proof is under way, it never connects on the start's authority", async ({ onTestFinished }) => {
+      let release: () => void = () => {};
+      const held = new Promise<void>(done => { release = done; });
+      let proving: () => void = () => {};
+      const asked = new Promise<void>(done => { proving = done; });
+      let armed = false;
+      const gitRunner: CommandRunner = async (file, args, options) => {
+        if (armed && options?.cwd === later) { proving(); await held; }
+        return execRun(file, [...args], { ...(options?.cwd === undefined ? {} : { cwd: options.cwd }), timeoutMs: 10_000 });
+      };
+      const up = startUp(PORT + 11, { gitRunner });
+      onTestFinished(async () => { release(); await up.stop(); });
+      await up.said(line => line.startsWith("{"));
+      makeRepo(later);
+      armed = true;
+      await asked;
+      // While the proof waits, the person removes it and saves it again; then the proof answers.
+      expect(await updateRepos(registry(), current => current.filter(one => one !== later))).toMatchObject({ ok: true });
+      expect(await updateRepos(registry(), current => addRepos(current, [later]))).toMatchObject({ ok: true });
+      release();
+      await up.said(line => line.includes(`saved project not connected — ${later} was removed while it was away`));
+      // Saved again, it is an ordinary addition: without an admission it isn't connected.
+      await up.said(line => line.includes(`project not connected — ${later}`));
+      expect(runnerRepos(String(envelope()["runner"]))).not.toContain(later);
+      expect(up.episodes).not.toContain(later);
+      expect(await up.stop()).toBe(0);
+    });
+
+    test("a saved folder that comes back leading somewhere else never connects where it leads", async ({ onTestFinished }) => {
+      const other = join(elsewhere, "other");
+      const up = startUp(PORT + 12);
+      onTestFinished(async () => { await up.stop(); });
+      await up.said(line => line.startsWith("{"));
+      makeRepo(other);
+      symlinkSync(other, later);
+      await up.said(line => line.includes(`saved project not connected — ${later} now leads to ${other}`));
+      expect(runnerRepos(String(envelope()["runner"]))).not.toContain(other);
+      expect(up.episodes).not.toContain(other);
+      expect(await up.stop()).toBe(0);
+    });
+
+    test("a removed project is let go while another saved project is away", async ({ onTestFinished }) => {
+      const kept = join(elsewhere, "kept");
+      makeRepo(kept);
+      expect(await updateRepos(registry(), current => addRepos(current, [kept]))).toMatchObject({ ok: true });
+      const up = startUp(PORT + 13);
+      onTestFinished(async () => { await up.stop(); });
+      await up.said(line => line.startsWith("{"));
+      expect(envelope()).toMatchObject({ ok: true, repos: [kept] });
+      // `later` is still away; removing `kept` lets it go regardless.
+      expect(await updateRepos(registry(), current => current.filter(one => one !== kept))).toMatchObject({ ok: true });
+      await up.said(line => line.includes("project removed — kept is no longer built here"));
+      expect(runnerRepos(String(envelope()["runner"]))).not.toContain(kept);
+      expect(await up.stop()).toBe(0);
+    });
+
+    test("every removal from the saved list is counted under its lock, before the list changes", async () => {
+      expect(registryRemovals(registry())).toEqual({});
+      await updateRepos(registry(), current => current.filter(one => one !== later));
+      await updateRepos(registry(), current => addRepos(current, [later]));
+      await updateRepos(registry(), current => current.filter(one => one !== later));
+      expect(registryRemovals(registry())).toEqual({ [later]: 2 });
+      writeFileSync(`${registry()}.removals.json`, "not json");
+      expect(registryRemovals(registry())).toBeNull();
+    });
+
+    test("a worker's report only narrows what the next worker gets", () => {
+      expect(upNarrowDeferred(["/a", "/b"], ["/b", "/c"])).toEqual(["/b"]);
+      expect(upNarrowDeferred(["/a"], [])).toEqual([]);
+    });
   });
 
   test("a project added from the command line or by the lead is in every console list at once, and removing it hides it", async ({ onTestFinished }) => {

@@ -71,6 +71,9 @@ export type ProjectCeiling = {
   repos: readonly string[];
   /** Canonical directories: any git repo under one is authorized. */
   roots: readonly string[];
+  /** How this ceiling resolves a path it is asked about (project-identity.ts): the console's saved identities, which
+   * read no folder. Absent: canonicalProject, a synchronous read. */
+  canon?: (path: string) => string | null;
 };
 
 /**
@@ -82,11 +85,12 @@ export type ProjectCeiling = {
 export function resolveCeiling(
   repos: readonly string[],
   roots: readonly string[],
+  canon: (path: string) => string | null | undefined = canonicalProject,
 ): { ceiling: ProjectCeiling; unresolved: string[] } {
   const unresolved: string[] = [];
   const keep = (paths: readonly string[]): string[] =>
     [...new Set(paths.map(path => {
-      const canonical = canonicalProject(path);
+      const canonical = canon(path) ?? null;
       if (canonical !== null) return canonical;
       unresolved.push(path);
       return resolve(path);
@@ -110,7 +114,7 @@ export async function authorizedProject(
   exec: ProjectExec = run,
 ): Promise<boolean> {
   if (unscoped(ceiling)) return true;
-  const canonical = canonicalProject(path);
+  const canonical = (ceiling.canon ?? canonicalProject)(path);
   if (canonical === null) return false;
   if (ceiling.repos.includes(canonical)) return true;
   for (const root of ceiling.roots) {
@@ -131,7 +135,14 @@ export function rowVisible(ceiling: ProjectCeiling, repo: string | null): boolea
   if (repo === null || unscoped(ceiling)) return true;
   // Exact saved identities are common. Check the whole set before resolving
   // aliases, so the hundredth project does not stat the other99 directories.
-  if (ceiling.repos.includes(repo) || ceiling.repos.some(one => sameRepo(one, repo))) return true;
+  const canon = ceiling.canon;
+  if (ceiling.repos.includes(repo) || ceiling.repos.some(one => canon === undefined ? sameRepo(one, repo) : (canon(one) ?? null) !== null && canon(one) === canon(repo))) return true;
+  // With a resolver (the console's saved identities), an identity it can't vouch for fails closed before any root is
+  // matched: a path's spelling never stands in for where it leads.
+  if (canon !== undefined) {
+    const resolved = canon(repo);
+    return resolved !== null && ceiling.roots.some(root => resolved.startsWith(root + sep));
+  }
   const canonical = canonicalProject(repo) ?? repo;
   return ceiling.roots.some(root => canonical.startsWith(root + sep));
 }

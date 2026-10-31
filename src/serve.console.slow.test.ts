@@ -3,6 +3,7 @@
  * queue-clearing pages over real HTTP.
  */
 
+import { projectIdentities } from "./project-identity.js";
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -2447,6 +2448,42 @@ describe("the filesystem browser — confined to what opening allows", () => {
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
+  });
+
+  test("a folder that never answers leaves the console answering: the browse page says so within the bound", async () => {
+    let looks = 0;
+    await boot({ projectRoots: [root], folderLook: () => { looks++; return { answer: new Promise(() => {}), ended: new Promise(() => {}) }; }, folderLookMs: 300 });
+    const cookie = await login();
+    const at = Date.now();
+    const [browse, health] = await Promise.all([
+      fetch(url("/projects/browse"), { headers: { cookie }, redirect: "manual" }),
+      fetch(url("/healthz")),
+    ]);
+    expect([browse.status, health.status]).toEqual([503, 200]);
+    expect(await browse.text()).toContain("This folder didn&#39;t answer");
+    expect(Date.now() - at).toBeLessThan(3_000);
+    // Asked again while that look is still stuck: answered at once, and no second look piles up.
+    expect((await fetch(url("/projects/browse"), { headers: { cookie }, redirect: "manual" })).status).toBe(503);
+    expect(looks).toBe(1);
+  });
+
+  test("project folders that never answer: the console starts and every page answers from saved identities", async () => {
+    // Up's console resolves identities off its thread (project-identity.ts); here every look hangs for good.
+    const identities = projectIdentities({ runner: () => ({ answer: new Promise(() => {}), ended: new Promise(() => {}) }), deadlineMs: 200 });
+    const repo = join(root, "payments-api");
+    const at = Date.now();
+    await identities.refresh([repo, root]);
+    await boot({ repos: [repo], projectRoots: [root], identities, backgroundChecks: true, backgroundChecksMs: 100 });
+    const cookie = await login();
+    for (const path of ["/healthz", "/projects", "/work", "/chat", "/settings/project", "/settings/tools"]) {
+      expect((await fetch(url(path), { headers: { cookie }, redirect: "manual" })).status, path).toBeLessThan(500);
+    }
+    // A path a request names that no answer vouches for is refused, never resolved on the console's thread.
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(url("/projects"), { headers: { cookie } })).text())?.[1] ?? "";
+    const opened = await fetch(url("/projects/open"), { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, path: join(root, "notes") }), redirect: "manual" });
+    expect(opened.status).toBe(503);
+    expect(await opened.text()).toContain("didn&#39;t answer");
+    expect(Date.now() - at).toBeLessThan(10_000);
   });
 
   test("an explicit repo list gets no browser — the openable set is already on the page", async () => {

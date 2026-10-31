@@ -9,6 +9,7 @@ import { CONNECT_CALLBACK,connectionsOf,finishConnect,localConnectOf,oneClickOf 
 import { learningView } from "../project-learning.js";
 import { skillTestResult } from "../project-skills.js";
 import { discoverTools,projectToolsOf } from "../project-tools.js";
+import { lookProjectMcp } from "../folder-look.js";
 import { publishingOf } from '../pull-request-flow.js';
 import { skillTestFeedbackHtml } from "../skills-ui.js";
 import { labelOf, nameOf } from "../subagent-admin.js";
@@ -143,7 +144,7 @@ import { leadSettingsHtml,notificationProjects,SETTINGS_AUTOSAVE_SCRIPT,settings
 /** The five operations of each chat app's settings (Slack, Teams, Discord). */
 type ChatAppAction = "connect" | "pair" | "unpair" | "disconnect" | "alerts";
 export function createSettingsHandlers(runtime: ServerRuntime) {
-  const { store, providerHome, managedRepos, consoleProjects, sendScreen, chromeFor, connectionCheck, connectionKnown, lastChecks, checkRelease, clock, modelCatalog, modelSeams, toolsViewOf, codexServers, projectViewOf, sessions, restricted, options, integrations, consoleOrigin, evidenceRoot, storagePool, visible, ssoSettings, checkLocalAgents, chatKeyFor, chatCatalog, chatCatalogKnown, leadWords, agentSignInCommand, settingsUpdates, phoneSetup, authenticateApprover, authenticateCredential, deletedRepos, projectOf, providerFor, admissionList, toolHome, connectVisits, mintApprovalNonce, consumeApprovalNonce, defaultProject, googleVisits } = runtime;
+  const { identities, store, providerHome, managedRepos, consoleProjects, sendScreen, chromeFor, connectionCheck, connectionKnown, lastChecks, checkRelease, clock, modelCatalog, modelSeams, toolsViewOf, codexServers, projectViewOf, sessions, restricted, options, integrations, consoleOrigin, evidenceRoot, storagePool, visible, ssoSettings, checkLocalAgents, chatKeyFor, chatCatalog, chatCatalogKnown, leadWords, agentSignInCommand, settingsUpdates, phoneSetup, authenticateApprover, authenticateCredential, deletedRepos, projectOf, providerFor, admissionList, toolHome, connectVisits, mintApprovalNonce, consumeApprovalNonce, defaultProject, googleVisits } = runtime;
 
   // v105: what agent work cost, by month, and the monthly budgets. An instance operator's page.
   async function spendPage(ctx: HandlerContext): Promise<void> {
@@ -1360,7 +1361,14 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       if (action === "import") {
         const wanted = body.getAll("import");
         if (wanted.length === 0) return back("problem", "Choose at least one tool to add.");
-        const found = discoverTools(repo, await codexServers(repo), toolHome);
+        // The project's own .mcp.json read now, off the console's thread (folder-look.ts).
+        let projectConfig: Record<string, unknown> | null | undefined;
+        if (options.identities !== undefined) {
+          const looked = await lookProjectMcp(repo);
+          if (!looked.ok) return back("problem", "This project's folder didn't answer. It may be on a drive that's disconnected, or waiting on macOS. Try again in a moment.");
+          projectConfig = looked.value;
+        }
+        const found = discoverTools(repo, await codexServers(repo), toolHome, process.env, projectConfig);
         const added: string[] = [], problems: string[] = [];
         for (const one of wanted) {
           const match = found.find(tool => tool.spec.name === one);
@@ -1620,7 +1628,8 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const body = readForm(posted, CONSOLE_FORMS.chatApproval);
     if ((["scope", "full-access", "cap-usd", "nonce", "digest", "token"] as const).some(key => body.getAll(key).length > 1)) return refuse(response, who, 400, "Submit one value for each field.", "/settings");
     const given = (body.get("scope") ?? "all").trim();
-    const scope = given === "all" || given === "" ? CHAT_APPROVAL_ALL : canonicalProject(given) ?? given;
+    const scope = given === "all" || given === "" ? CHAT_APPROVAL_ALL : identities.vouched(given, consoleProjects) ?? null;
+    if (scope === null) return refuse(response, who, 403, "That isn't one of your projects.", "/settings");
     if (scope !== CHAT_APPROVAL_ALL && !(visible(scope) && store.accountCanAccess(who.name, scope))) return refuse(response, who, 403, "That isn't one of your projects.", "/settings");
     const where = scope === CHAT_APPROVAL_ALL ? "all your projects" : projectName(scope);
     if (step === "off") {
