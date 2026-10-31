@@ -49,13 +49,13 @@ const STALE_MS = 60_000;
 export const IDENTITY_LOOKS = 4;
 
 export function projectIdentities(look: FolderLookOptions = {}, now: () => number = Date.now): ProjectIdentities {
-  /** Each answer with the lookup it came from: a lookup started earlier never overwrites one started later. */
+  /** Each answer with when the look that answered it started (folder-look.ts `started`, kept across joined looks): an
+   * answer from a look started earlier never overwrites one from a look started later. */
   const answers = new Map<string, { real: string | null; at: number; seq: number }>();
   const wanted = new Set<string>();
   /** Paths whose last look didn't answer: looked at only on their own (joining a look still under way), never in a
    * batch, so one folder that never answers holds one child, not one per differently made-up batch. */
   const suspect = new Set<string>();
-  let lookups = 0;
   let generation = 0;
   const known = (path: string): string | null | undefined => answers.get(resolve(path))?.real;
   const put = (key: string, real: string | null, at: number, seq: number): void => {
@@ -78,11 +78,11 @@ export function projectIdentities(look: FolderLookOptions = {}, now: () => numbe
   };
   const resolveNow = async (path: string): Promise<string | null | "no-answer"> => {
     const key = resolve(path);
-    const seq = ++lookups;
     const looked = await lookIdentities([key], look);
     if (!looked.ok) { suspect.add(key); return "no-answer"; }
     suspect.delete(key);
-    store(looked.value, seq);
+    // No start known: older than every answer, so it only fills what nothing answered yet.
+    store(looked.value, looked.started ?? 0);
     return answers.get(key)?.real ?? null;
   };
   const refreshNow = async (paths: readonly string[]): Promise<boolean> => {
@@ -98,9 +98,8 @@ export function projectIdentities(look: FolderLookOptions = {}, now: () => numbe
     const alone = [...due].filter(one => suspect.has(one));
     const batched = [...due].filter(one => !suspect.has(one));
     if (batched.length > 0) {
-      const seq = ++lookups;
       const batch = await lookIdentities(batched, look);
-      if (batch.ok) store(batch.value, seq);
+      if (batch.ok) store(batch.value, batch.started ?? 0);
       else alone.push(...batched);
     }
     // One folder that doesn't answer mustn't hold the others: each on its own, a few at a time (inside the looks'

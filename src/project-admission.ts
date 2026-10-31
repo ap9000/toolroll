@@ -27,7 +27,7 @@ export type AdmissionActor = { label: string; origin: AdmissionOrigin };
 
 export type AdmissionFailure = {
   ok: false;
-  reason: "unavailable" | "not-git" | "locked" | "registry" | "abandoned" | "failed";
+  reason: "unavailable" | "not-git" | "locked" | "registry" | "abandoned" | "failed" | "moved";
   message: string;
 };
 /** `remote`: the origin URL this add recorded as the project's trusted remote (null: none), and why one wasn't. */
@@ -72,6 +72,9 @@ export async function admitProject(store: Store, input: {
   captureOrigin?: boolean;
   /** Explicit value from the owner/instance-operator CLI boundary. */
   remoteUrl?: string;
+  /** The caller's authority, asked again about the proved repo inside the locked registry update and inside the
+   * database transaction (the console: nothing it proved before an await moved, and the repo is still visible). */
+  stillAllowed?: (repo: string) => boolean;
 }): Promise<Admitted | AdmissionFailure> {
   const proved = await proveProjectRoot(input.path, input.exec);
   if (!proved.ok) return proved;
@@ -85,12 +88,23 @@ export async function admitProject(store: Store, input: {
     ? await originOf(repo, input.exec ?? run) : null;
   let remote = { url: store.projectRemote(repo), why: null as string | null };
   let registryHad = true;
+  const allowed = (): boolean => input.stillAllowed === undefined || input.stillAllowed(repo);
+  const moved: AdmissionFailure = { ok: false, reason: "moved", message: `${projectName(repo)} wasn't added: a project folder changed while it was being checked. Try again.` };
   if (input.registryFile !== null) {
-    const enrolled = await updateRepos(input.registryFile, repos => addRepos(repos, [repo]));
+    let refused = false;
+    let had = false;
+    const enrolled = await updateRepos(input.registryFile, repos => {
+      had = repos.includes(repo);
+      if (!allowed()) { refused = true; return repos; }
+      return addRepos(repos, [repo]);
+    });
     if (!enrolled.ok) return { ok: false, reason: enrolled.reason, message: `${projectName(repo)} wasn't added: ${enrolled.message}` };
-    registryHad = before !== null && !("error" in before) && before.repos.includes(repo);
+    if (refused) return moved;
+    registryHad = had;
   }
   const added = store.transact(() => {
+    // Re-asked with the write; a refusal writes nothing here and takes back the registry line this call added below.
+    if (!allowed()) return null;
     const rowHad = store.listProjects().some(one => one.path === repo);
     const previous = store.projectRemote(repo);
     const first = !known && !store.projectAdmissionKnown(repo);
@@ -103,6 +117,10 @@ export async function admitProject(store: Store, input: {
     store.recordAction({ at: input.now.toISOString(), actor: input.actor.label, repo, taskId: null, runId: null, action: PROJECT_ADDED, outcome: "added", source: "access", detail: `from ${input.actor.origin}` });
     return true;
   });
+  if (added === null) {
+    if (input.registryFile !== null && !registryHad) await updateRepos(input.registryFile, repos => removeRepos(repos, [repo]));
+    return moved;
+  }
   return { ok: true, repo, name: projectName(repo), added, remote };
 }
 

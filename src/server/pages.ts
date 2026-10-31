@@ -743,10 +743,14 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     // Opening an allowed repository admits it the same way `repos add` does
     // (project-admission.ts). A co-located `up` notices the durable list and
     // connects its builder; there is no separate restart or binding step.
-    const admitted = await admitProject(store, { registryFile: options.registryPath ?? null, path: canonical, actor: { label: who.name, origin: "console" }, now });
+    // The admission asks again, inside its registry lock and its transaction, about the repo it proves.
+    const stillAllowed = (repo: string): boolean => identities.generation() === decidedOn && visible(repo);
+    const admitted = await admitProject(store, { registryFile: options.registryPath ?? null, path: canonical, actor: { label: who.name, origin: "console" }, now, stillAllowed });
     if (!admitted.ok) {
-      return void projectsScreen(response, who, admitted.reason === "not-git" ? "that path is not a git repository" : `that project is valid, but it could not be added — ${admitted.message}`, 400, safeReturn(body.get("return")));
+      return void projectsScreen(response, who, admitted.reason === "not-git" ? "that path is not a git repository" : `that project is valid, but it could not be added — ${admitted.message}`, admitted.reason === "moved" ? 409 : 400, safeReturn(body.get("return")));
     }
+    // And once more before the session follows it.
+    if (!stillAllowed(admitted.repo)) return void projectsScreen(response, who, "a project folder changed while this was being checked — try again", 409, safeReturn(body.get("return")));
     deletedRepos.delete(admitted.repo);
     who.session.project = admitted.repo;
     who.session.projectRevision++;
@@ -884,6 +888,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       return projectsScreen(response, who, "that preview expired or was already used — preview again", 400);
     }
     live.onboard?.delete(nonce); // consumed BEFORE the first await
+    // Identities as this confirmation found them: the admission below re-checks against them (project-identity.ts).
+    const decidedOn = identities.generation();
     if (record.large && body.get("big-ok") !== "1") {
       return projectsScreen(response, who, "that repository is large (or its size is unknown) — tick the box to clone it anyway", 400);
     }
@@ -910,10 +916,12 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     if (admitted === null) {
       return projectsScreen(response, who, `the clone landed at ${cloned.target} but did not prove under the ceiling — it was left in place; enroll it by hand`, 400);
     }
-    const joined = await admitProject(store, { registryFile: options.registryPath ?? null, path: admitted, actor: { label: who.name, origin: "console" }, now });
+    const stillAllowed = (repo: string): boolean => identities.generation() === decidedOn && visible(repo);
+    const joined = await admitProject(store, { registryFile: options.registryPath ?? null, path: admitted, actor: { label: who.name, origin: "console" }, now, stillAllowed });
     if (!joined.ok) {
-      return projectsScreen(response, who, `${cloned.target} is cloned but not added — ${joined.message}`, 400);
+      return projectsScreen(response, who, `${cloned.target} is cloned but not added — ${joined.message}`, joined.reason === "moved" ? 409 : 400);
     }
+    if (!stillAllowed(joined.repo)) return projectsScreen(response, who, `${cloned.target} is cloned but wasn't opened — a project folder changed while it was being checked; try again`, 409);
     deletedRepos.delete(admitted);
     who.session.project = admitted;
     who.session.projectRevision += 1;

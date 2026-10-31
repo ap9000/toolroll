@@ -142,3 +142,25 @@ test("one folder stuck for good holds one look, however the passes' path sets ch
     expect(folderLooksRunning() - before).toBeLessThanOrEqual(2);
   } finally { for (const end of ends) end(); }
 });
+
+test("a caller that joins an older look gets that look's age: its old answer never replaces a newer one", async () => {
+  const looks = manualLooks();
+  const identities = projectIdentities({ runner: looks.runner, deadlineMs: 60_000 });
+  const alias = join(base, "alias"), other = join(base, "other"), a = join(base, "a"), b = join(base, "b");
+  // An old direct look, still running.
+  const old = identities.resolveNow(alias);
+  await vi.waitFor(() => expect(looks.calls).toHaveLength(1));
+  // A newer batch answers first: the alias now leads to b.
+  const pass = identities.refresh([alias, other]);
+  await vi.waitFor(() => expect(looks.calls).toHaveLength(2));
+  looks.calls[1]!.answer([[alias, b], [other, other]]);
+  await pass;
+  // A new caller joins the old look (no new process), which then answers with what the alias used to be.
+  const joined = identities.resolveNow(alias);
+  expect(looks.calls).toHaveLength(2);
+  looks.calls[0]!.answer([[alias, a]]);
+  expect(await joined).toBe(b);
+  expect(await old).toBe(b);
+  expect(identities.strict(alias)).toBe(b);
+  expect(identities.known(a)).toBeUndefined();
+});
