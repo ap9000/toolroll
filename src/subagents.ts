@@ -16,6 +16,7 @@
  * Subagents do flow work only: they never approve a code task, a merge or
  * spending — those stay with people (or a signed hands-off mode).
  */
+import { inEvalWorld } from "./eval-gate.js";
 import { Buffer } from "node:buffer";
 import { strictJsonParse } from "./converse.js";
 import { scanForSecrets } from "./evidence.js";
@@ -253,6 +254,8 @@ export const TURN_TIMEOUT_MS = 180_000;
 export function claudeTurnRunner(runner: CommandRunner = run): TurnRunner {
   return request =>
     inScratchDir("standing-orders-subagent-", async dir => {
+      // An eval world makes no provider call it can't cap and record (eval-gate.ts).
+      if (inEvalWorld()) return { ok: false, said: "Subagents don't run in an eval world." };
       const started = Date.now();
       const result = await runner("claude", [
         "-p", "--output-format", "json", "--json-schema", JSON.stringify(TURN_MODEL_SCHEMA), ...CLAUDE_NO_TOOLS_ARGS, ...claudeModelArgs(request.model),

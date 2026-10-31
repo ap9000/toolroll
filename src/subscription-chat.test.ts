@@ -123,6 +123,57 @@ describe("subscription chat's isolated harness adapter", () => {
     });
   });
 
+  // v140 (docs/plans/evals-nightly.md B1): only the harness's own events report the model, its turns, its cost and its
+  // cache use; the answer's text never does, and anything it didn't report stays null (never 0). v141 (Codex round 1
+  // #4): how it was billed comes from its own init (a key source of "none" with no plan windows is a key), and a
+  // request whose events didn't say is null (unknown money), never the plan.
+  const answerText = { text: "claude-opus-9 answered this", calls: [] };
+  const cachedUsage = { input_tokens: 8, cache_read_input_tokens: 300, cache_creation_input_tokens: 40, output_tokens: 2 };
+  const claudeResult = (extra: Record<string, unknown>) => ({ type: "result", subtype: "success", is_error: false, structured_output: answerText, ...extra });
+  const streamed = (...events: Record<string, unknown>[]) => events.map(line => JSON.stringify(line)).join("\n") + "\n";
+  test.each([
+    ["streamed: the init's model, the result's turns, cost and cache", true,
+      streamed({ type: "system", subtype: "init", model: "claude-sonnet-4-5-20250929", apiKeySource: "none" },
+        claudeResult({ num_turns: 2, total_cost_usd: 0.0123, usage: cachedUsage, modelUsage: { "claude-haiku-4-5": {} } })),
+      { modelReported: "claude-sonnet-4-5-20250929", providerTurns: 2, reportedCostUsd: 0.0123, tokensIn: 348, cacheReadTokens: 300, cacheWriteTokens: 40, billingReported: "api-key" }],
+    ["streamed: inits that disagree leave the model unknown, never chosen", true,
+      streamed({ type: "system", subtype: "init", model: "claude-sonnet-4-5" }, { type: "system", subtype: "init", model: "claude-opus-4-1" },
+        claudeResult({ num_turns: 1, usage: cachedUsage, modelUsage: { "claude-sonnet-4-5": {} } })),
+      { modelReported: null, providerTurns: 1, reportedCostUsd: null, tokensIn: 348, cacheReadTokens: 300, cacheWriteTokens: 40, billingReported: null }],
+    ["streamed: a subagent's init is not the session's", true,
+      streamed({ type: "system", subtype: "init", model: "claude-opus-4-1", parent_tool_use_id: "toolu_1" },
+        claudeResult({ usage: { input_tokens: 8, output_tokens: 2 } })),
+      { modelReported: null, providerTurns: null, reportedCostUsd: null, tokensIn: 8 }],
+    ["buffered: the result's one modelUsage model", false,
+      JSON.stringify(claudeResult({ num_turns: 1, total_cost_usd: 0.004, usage: cachedUsage, modelUsage: { "claude-sonnet-4-5-20250929": { inputTokens: 8 } } })),
+      { modelReported: "claude-sonnet-4-5-20250929", providerTurns: 1, reportedCostUsd: 0.004, tokensIn: 348, cacheReadTokens: 300, cacheWriteTokens: 40, billingReported: null }],
+    ["buffered: several modelUsage models name no one model; malformed counts are unknown", false,
+      JSON.stringify(claudeResult({ num_turns: -1, total_cost_usd: "0.01", usage: { input_tokens: 8, output_tokens: 2 }, modelUsage: { "claude-sonnet-4-5": {}, "claude-haiku-4-5": {} } })),
+      { modelReported: null, providerTurns: null, reportedCostUsd: null, tokensIn: 8 }],
+  ] as const)("Claude keeps what its own result reported — %s", async (_name, watch, stdout, expected) => {
+    const result = await performSubscriptionLeadRequest({ ...request("claude-subscription"), ...(watch ? { onText: () => undefined } : {}) },
+      async () => ({ code: 0, stdout, stderr: "", timedOut: false, notFound: false }));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.answer).toMatchObject(expected);
+    // API money stays apart: a subscription's reported cost is never the API charge.
+    expect(result.answer.reportedCostMicrousd).toBeNull();
+    if (!("cacheReadTokens" in expected)) expect(result.answer.cacheReadTokens).toBeUndefined();
+  });
+
+  test("Codex keeps its cache reads (its input already counts them) and reports no model, turns or cost", async () => {
+    const result = await performSubscriptionLeadRequest(request("codex-subscription"), async () => ({
+      code: 0,
+      stdout: [
+        JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: JSON.stringify({ text: "All quiet.", calls: [] }) } }),
+        JSON.stringify({ type: "turn.completed", usage: { input_tokens: 120, cached_input_tokens: 100, output_tokens: 4 } }),
+      ].join("\n"),
+      stderr: "", timedOut: false, notFound: false,
+    }));
+    expect(result).toMatchObject({ ok: true, answer: { tokensIn: 120, cacheReadTokens: 100, modelReported: null, providerTurns: null, reportedCostUsd: null, reportedCostMicrousd: null } });
+    if (result.ok) expect(result.answer.cacheWriteTokens).toBeUndefined();
+  });
+
   test("Claude runs in safe print mode with an empty tool and MCP surface", async () => {
     let seen: { args: readonly string[]; cwd: string } | null = null;
     const result = await performSubscriptionLeadRequest(request("claude-subscription"), async (_file, args, options) => {

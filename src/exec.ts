@@ -1994,6 +1994,11 @@ export function runClaudeStreamJsonl(
     let initLine: string | null = null;
     let initIdentityLine: string | null = null;
     let conflictingInitLine: string | null = null;
+    /** v140: the first init's model, and the first top-level init naming another (the parser reads them as a conflict:
+     * unknown, never one of them). Kept even within one session id. */
+    let initModel: string | null = null;
+    let initModelLine: string | null = null;
+    let modelConflictLine: string | null = null;
     let initSessionId: string | null = null;
     let resultLine: string | null = null;
     let resultOverflowed = false;
@@ -2088,6 +2093,11 @@ export function runClaudeStreamJsonl(
       // for themselves.
       if (type === "system" && String(event["subtype"] ?? "") === "init" && topLevelEvent(event)) {
         if (initLine === null) initLine = line;
+        const model = typeof event["model"] === "string" ? event["model"] : null;
+        if (model !== null) {
+          if (initModel === null) { initModel = model; initModelLine = line; }
+          else if (model !== initModel && modelConflictLine === null) modelConflictLine = line;
+        }
         const id = transportSessionId(event["session_id"]);
         let identityWitness = false;
         if (id !== null) {
@@ -2174,7 +2184,7 @@ export function runClaudeStreamJsonl(
       liveProviders.delete(child);
       framing.finish();
       live?.detach();
-      const lines = [initLine, initIdentityLine, conflictingInitLine, accountedResultLine(), overflowLine]
+      const lines = [initLine, initIdentityLine, conflictingInitLine, initModelLine, modelConflictLine, accountedResultLine(), overflowLine]
         .filter((one): one is string => one !== null)
         .filter((line, index, all) => all.indexOf(line) === index);
       const settlement = container === null ? Promise.resolve<boolean | null>(null) : settleContainer(container, options);

@@ -15,6 +15,7 @@
  * The task text is data to the classifier, never instructions, and all it
  * can return is one of three sizes, a yes/no, and a short reason.
  */
+import { inEvalWorld } from "./eval-gate.js";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -88,6 +89,8 @@ export function sizingText(input: SizingInput): string {
 export function claudeSizer(runner: CommandRunner = run, model = SIZING_CLAUDE_MODEL, budgetMs = SIZING_BUDGET_MS): Sizer {
   return async (input, signal) => {
     if (signal.aborted) return null;
+    // An eval world makes no provider call it can't cap and record (eval-gate.ts): the task goes unsized.
+    if (inEvalWorld()) return null;
     const owner = `sizing:${randomUUID()}`;
     const stop = (): void => { terminateOwnedProcesses(owner); };
     signal.addEventListener("abort", stop, { once: true });
