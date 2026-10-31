@@ -610,6 +610,9 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
     ["src/reviewer-evals.ts", "export {};\n"],
     ["src/nightly-github.ts", "export {};\n"],
     ["src/contracts/evals-report.ts", "export {};\n"],
+    // The accounting readings evals trust (Codex C1 round 1 #5).
+    ["src/reported-usage.ts", "export {};\n"],
+    ["src/run-efficiency.ts", "export {};\n"],
   ])("%s changed: a person approves", (path, text) => {
     const f = open({ candidate: { [path]: text } });
     authorize(f);
@@ -633,6 +636,9 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
     ["the call removed", leadRequest("  const kept = 1;")],
     ["the call left only in a comment", leadRequest("  // takeEvalDispatch(`lead`);")],
     ["the call left only in a string", leadRequest("  const words = \"takeEvalDispatch(`lead`)\";")],
+    // Codex C1 round 1 #6: a regular expression literal is not a call.
+    ["the call left only in a regular expression", leadRequest("  const removed = /takeEvalDispatch()/;")],
+    ["the file no longer parsing", leadRequest("  takeEvalDispatch(`lead`);\n  const broken = ;")],
     ["the call moved to another function", "export async function performLeadRequest(request) {\n  return request;\n}\nexport function other() {\n  takeEvalDispatch(`lead`);\n}\n"],
     ["the function renamed", leadRequest("  takeEvalDispatch(`lead`);").replace("performLeadRequest", "performRequest")],
     ["the file deleted", null],
@@ -640,6 +646,20 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
     const f = open({ files: { "src/converse.ts": leadRequest("  takeEvalDispatch(`lead`);") }, candidate: { "src/converse.ts": text } });
     authorize(f);
     expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("src/converse.ts") });
+  });
+
+  // Codex C1 round 1 #5: the store's accounting reads are pinned by body; changing one needs a person.
+  const accounting = (body: string) => `export function runAccounting(store, runId) {\n${body}\n}\nexport function other() {\n  return 1;\n}\n`;
+  test("a pinned accounting function changed: a person approves; one left as it was ships", () => {
+    const changed = open({ files: { "src/store.ts": accounting("  return { amount: 'measured' };") }, candidate: { "src/store.ts": accounting("  return { amount: 'zero' };") } });
+    authorize(changed);
+    expect(seal(changed, check(changed))).toMatchObject({ ok: false, why: expect.stringContaining("src/store.ts's runAccounting changed") });
+    changed.close();
+    fixture = null;
+    const kept = open({ files: { "src/store.ts": accounting("  return { amount: 'measured' };") }, candidate: { "src/store.ts": accounting("  return { amount: 'measured' };").replace("return 1;", "return 2;") } });
+    authorize(kept);
+    const sealed = seal(kept, check(kept));
+    expect(sealed.ok ? "" : sealed.why).toBe("");
   });
 
   test("an enforcement hook kept in place ships with the change around it", () => {

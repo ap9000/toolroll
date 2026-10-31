@@ -5,6 +5,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import ts from "typescript-parser";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1044,10 +1045,15 @@ describe("the architecture rule", () => {
     for (const name of readdirSync(src)) {
       if (!name.endsWith(".ts") || name.endsWith(".test.ts")) continue;
       const text = readFileSync(join(src, name), "utf8");
-      if (name !== "invoke.ts" && name !== "provider.ts" && /\badapterFor\b/.test(text)) {
+      // Actual identifier nodes include imports and calls, with either quote style. Policy manifests can name a
+      // function in string data without acquiring authority to call it; comments and strings are not identifiers.
+      const identifiers = new Set<string>();
+      const visit = (node: ts.Node): void => { if (ts.isIdentifier(node)) identifiers.add(node.text); ts.forEachChild(node, visit); };
+      visit(ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true));
+      if (name !== "invoke.ts" && name !== "provider.ts" && identifiers.has("adapterFor")) {
         spawners.push(name);
       }
-      if (name !== "invoke.ts" && /\binvokeAgent\b/.test(text)) {
+      if (name !== "invoke.ts" && identifiers.has("invokeAgent")) {
         invokers.push(name);
       }
     }

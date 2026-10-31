@@ -124,7 +124,9 @@ describe("subscription chat's isolated harness adapter", () => {
   });
 
   // v140 (docs/plans/evals-nightly.md B1): only the harness's own events report the model, its turns, its cost and its
-  // cache use; the answer's text never does, and anything it didn't report stays null (never 0).
+  // cache use; the answer's text never does, and anything it didn't report stays null (never 0). v141 (Codex round 1
+  // #4): how it was billed comes from its own init (a key source of "none" with no plan windows is a key), and a
+  // request whose events didn't say is null (unknown money), never the plan.
   const answerText = { text: "claude-opus-9 answered this", calls: [] };
   const cachedUsage = { input_tokens: 8, cache_read_input_tokens: 300, cache_creation_input_tokens: 40, output_tokens: 2 };
   const claudeResult = (extra: Record<string, unknown>) => ({ type: "result", subtype: "success", is_error: false, structured_output: answerText, ...extra });
@@ -133,18 +135,18 @@ describe("subscription chat's isolated harness adapter", () => {
     ["streamed: the init's model, the result's turns, cost and cache", true,
       streamed({ type: "system", subtype: "init", model: "claude-sonnet-4-5-20250929", apiKeySource: "none" },
         claudeResult({ num_turns: 2, total_cost_usd: 0.0123, usage: cachedUsage, modelUsage: { "claude-haiku-4-5": {} } })),
-      { modelReported: "claude-sonnet-4-5-20250929", providerTurns: 2, reportedCostUsd: 0.0123, tokensIn: 348, cacheReadTokens: 300, cacheWriteTokens: 40 }],
+      { modelReported: "claude-sonnet-4-5-20250929", providerTurns: 2, reportedCostUsd: 0.0123, tokensIn: 348, cacheReadTokens: 300, cacheWriteTokens: 40, billingReported: "api-key" }],
     ["streamed: inits that disagree leave the model unknown, never chosen", true,
       streamed({ type: "system", subtype: "init", model: "claude-sonnet-4-5" }, { type: "system", subtype: "init", model: "claude-opus-4-1" },
         claudeResult({ num_turns: 1, usage: cachedUsage, modelUsage: { "claude-sonnet-4-5": {} } })),
-      { modelReported: null, providerTurns: 1, reportedCostUsd: null, tokensIn: 348, cacheReadTokens: 300, cacheWriteTokens: 40 }],
+      { modelReported: null, providerTurns: 1, reportedCostUsd: null, tokensIn: 348, cacheReadTokens: 300, cacheWriteTokens: 40, billingReported: null }],
     ["streamed: a subagent's init is not the session's", true,
       streamed({ type: "system", subtype: "init", model: "claude-opus-4-1", parent_tool_use_id: "toolu_1" },
         claudeResult({ usage: { input_tokens: 8, output_tokens: 2 } })),
       { modelReported: null, providerTurns: null, reportedCostUsd: null, tokensIn: 8 }],
     ["buffered: the result's one modelUsage model", false,
       JSON.stringify(claudeResult({ num_turns: 1, total_cost_usd: 0.004, usage: cachedUsage, modelUsage: { "claude-sonnet-4-5-20250929": { inputTokens: 8 } } })),
-      { modelReported: "claude-sonnet-4-5-20250929", providerTurns: 1, reportedCostUsd: 0.004, tokensIn: 348, cacheReadTokens: 300, cacheWriteTokens: 40 }],
+      { modelReported: "claude-sonnet-4-5-20250929", providerTurns: 1, reportedCostUsd: 0.004, tokensIn: 348, cacheReadTokens: 300, cacheWriteTokens: 40, billingReported: null }],
     ["buffered: several modelUsage models name no one model; malformed counts are unknown", false,
       JSON.stringify(claudeResult({ num_turns: -1, total_cost_usd: "0.01", usage: { input_tokens: 8, output_tokens: 2 }, modelUsage: { "claude-sonnet-4-5": {}, "claude-haiku-4-5": {} } })),
       { modelReported: null, providerTurns: null, reportedCostUsd: null, tokensIn: 8 }],

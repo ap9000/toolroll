@@ -5,15 +5,17 @@
  * nothing is spent. Real processes (a race between two admissions, lingering process trees, the package's contents)
  * are in src/evals.slow.test.ts.
  */
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { performLeadRequest } from "./converse.js";
+import { performChatRequest, performLeadRequest } from "./converse.js";
+import { defaultAnalyzer } from "./memory-pass.js";
 import { evalHookProblem } from "./eval-hooks.js";
-import { EVAL_GATE_ENV, evalGateSlots, evalLeadAllowanceMicrousd, inEvalWorld, openEvalGate, takeEvalDispatch } from "./eval-gate.js";
+import { EVAL_GATE_ENV, evalGateSlots, inEvalWorld, openEvalGate, takeEvalDispatch } from "./eval-gate.js";
 import {
-  admitEvalCampaign, attemptWorstMicrousd, campaignWorstMicrousd, EVALS_ROOT, exactModelProblem, finishEvalCampaign, loadEvalSet, planCampaign, runEvalAttempt, runEvalCampaign,
+  admitEvalCampaign, campaignSpending, EVALS_ROOT, exactModelProblem, installedBuildDigest, loadEvalSet, planCampaign, recoverEvalCampaigns, runEvalAttempt, runEvalCampaign, startEvalAttempt,
   type AttemptDeps, type EvalCase,
 } from "./evals.js";
 import { addApprover } from "./scope.js";
@@ -34,7 +36,6 @@ beforeEach(() => {
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); vi.unstubAllEnvs(); });
 
-const month = () => ({ ...store.handle.prepare("SELECT reserved_microusd, settled_microusd FROM eval_spend_month WHERE month = '2026-10'").get() });
 
 describe("the shipped eval set", () => {
   test("ten versioned cases, every one a draft awaiting a person: canonical refuses, a diagnostic runs, and pins must be exact", () => {
@@ -78,102 +79,136 @@ describe("the shipped eval set", () => {
 });
 
 const admit = (over: Partial<Parameters<typeof admitEvalCampaign>[1]> = {}) => admitEvalCampaign(store, {
-  kind: "eval", canonical: false, manifestDigest: SET.manifestDigest, buildDigest: "build-a", version: "0.9.82", k: 1, sealed: {}, reservedMicrousd: 130_000_000,
+  kind: "eval", canonical: false, manifestDigest: SET.manifestDigest, buildDigest: "build-a", version: "0.9.82", k: 1, sealed: {},
   as: "alex", token: password, now: NOW, ...over,
 });
 
-describe("admission and the month's ledger", () => {
-  test("a person's proof, the ceiling and one campaign of a kind at a time; reviewer campaigns share the ledger", () => {
+describe("admission", () => {
+  test("a person's proof; one canonical campaign at a time (settlement order); no money limit", () => {
     expect(admit({ token: "wrong-password" })).toMatchObject({ ok: false, reason: "person-only" });
-    expect(admit({ reservedMicrousd: 200_000_001 })).toMatchObject({ ok: false, reason: "over-ceiling" });
-    const first = admit();
-    expect(first.ok).toBe(true);
-    expect(month()).toEqual({ reserved_microusd: 130_000_000, settled_microusd: 0 });
-    expect(admit({ reservedMicrousd: 1 })).toMatchObject({ ok: false, reason: "already-running" });
-    // A reviewer campaign is held by the same month: $54 fits beside $130, $80 doesn't.
-    expect(admit({ kind: "reviewer", reservedMicrousd: 80_000_000 })).toMatchObject({ ok: false, reason: "over-ceiling" });
-    expect(admit({ kind: "reviewer", reservedMicrousd: 54_000_000 }).ok).toBe(true);
-    expect(month()).toEqual({ reserved_microusd: 184_000_000, settled_microusd: 0 });
-    expect(campaignWorstMicrousd({ canonical: true, k: 3, cases: SET.cases })).toBe(SET.cases.reduce((sum, one) => sum + attemptWorstMicrousd(one) * 3, 0) + 3 * 1_500_000);
+    expect(admit({ canonical: true }).ok).toBe(true);
+    expect(admit({ canonical: true })).toMatchObject({ ok: false, reason: "already-running" });
+    // Diagnostic and reviewer campaigns aren't held by it, and nothing is held for money (the owner, 2026-10-30).
+    expect(admit().ok).toBe(true);
+    expect(admit({ kind: "reviewer" }).ok).toBe(true);
+    expect({ ...store.handle.prepare("SELECT runner_host, runner_pid FROM eval_campaign LIMIT 1").get() }).toEqual({ runner_host: hostname(), runner_pid: process.pid });
   });
 
   test("no campaign starts while a release is deploying or merging", () => {
     store.handle.exec("PRAGMA foreign_keys = OFF");
     store.handle.prepare("INSERT INTO release_operation (id, authority, kind, task_id, candidate, epoch, state, reserved_at) VALUES ('op-1', 1, 'deploy', 't', 'c', 1, 'reserved', ?)").run(NOW.toISOString());
     expect(admit()).toMatchObject({ ok: false, reason: "release-busy" });
-    expect(month()).toEqual({});
   });
-
 });
 
 // ------------------------------------------------------------------ worlds
 
+const invocationsOf = (attempt: number) => store.handle.prepare("SELECT kind, world_ref, recorded, amount, api_microusd, subscription_microusd, model_reported FROM eval_invocation WHERE attempt = ? ORDER BY id")
+  .all(attempt).map(row => ({ ...row }));
 const attempt = async (spec: WorldSpec, script?: string, one: EvalCase = paginate(), over: Partial<AttemptDeps> = {}) => {
-  const admitted = admit({ reservedMicrousd: 10_000_000 });
+  const admitted = admit();
   if (!admitted.ok) throw new Error(admitted.message);
   const d = worldDeps(dir, spec, script, over);
   const ran = await runEvalAttempt(store, { campaign: admitted.id, one, n: 1, replaces: 0 }, d);
   if (ran.attempt === null) throw new Error(ran.why);
-  const invocations = store.handle.prepare("SELECT kind, world_ref, reserved_microusd, settled_microusd, unknown FROM eval_invocation WHERE attempt = ? ORDER BY id").all(ran.attempt).map(row => ({ ...row }));
-  return { ...ran, campaign: admitted.id, invocations, graded: d.graded };
+  return { ...ran, campaign: admitted.id, invocations: invocationsOf(ran.attempt), graded: d.graded };
 };
+const apiOf = (rows: Record<string, unknown>[]) => rows.map(one => [one["kind"], one["amount"], one["api_microusd"]]);
 
-describe("an attempt, from its world's child process to settlement", () => {
-  test("a build graded from its built commit; its dispatch carved from the campaign and settled once into the month", async () => {
+describe("an attempt, from its world's child process to its record", () => {
+  test("a build graded from its built commit; each dispatch recorded as it was billed, with its model", async () => {
     const ran = await attempt({ runs: [{ api: 300_000 }] });
-    expect(ran.result).toMatchObject({ outcome: "pass", why: null, modelReported: paginate().pin.model, apiMicrousd: 300_000, usageUnknown: false });
-    expect(ran.invocations).toEqual([{ kind: "builder", world_ref: expect.stringMatching(/^run:\d+$/), reserved_microusd: 750_000, settled_microusd: 300_000, unknown: 0 }]);
-    // Admission reserved $10; the attempt carved its $1.50 from that (never from the month again) and settled $0.30.
-    expect(month()).toEqual({ reserved_microusd: 10_000_000 - 1_500_000, settled_microusd: 300_000 });
-    finishEvalCampaign(store, ran.campaign, "complete", null, NOW);
-    expect(month()).toEqual({ reserved_microusd: 0, settled_microusd: 300_000 });
-    // Settling and finishing again change nothing.
-    finishEvalCampaign(store, ran.campaign, "complete", null, NOW);
-    expect(month()).toEqual({ reserved_microusd: 0, settled_microusd: 300_000 });
+    expect(ran.result).toMatchObject({ outcome: "pass", why: null, modelReported: paginate().pin.model, dispatches: 1, apiMicrousd: 300_000, subscriptionMicrousd: 0, usageUnknown: false });
+    expect(ran.invocations).toEqual([{ kind: "builder", world_ref: expect.stringMatching(/^run:\d+$/), recorded: 1, amount: "api", api_microusd: 300_000, subscription_microusd: null, model_reported: paginate().pin.model }]);
+    expect(campaignSpending(store, ran.campaign)).toEqual({ apiMicrousd: 300_000, subscriptionMicrousd: 0, unknownAttempts: 0, attempts: 1 });
   });
 
-  test.each<[string, WorldSpec, string, { outcome: string; why: RegExp }, number]>([
-    ["a wrong build fails on the hidden check", { runs: [{}], source: "export const paginate = (items, offset, limit) => items.splice(offset || 0, limit || 10);\n" }, "process.exit(0)", { outcome: "fail", why: /wrong answer/ }, 300_000],
-    ["an unknown cost settles at the dispatch's full cap", { runs: [{ api: null }] }, "process.exit(0)", { outcome: "pass", why: /^$/ }, 750_000],
-    ["a reported model other than the pin is unevaluated", { runs: [{ model: "claude-opus-4-1-20250805" }] }, "process.exit(0)", { outcome: "unevaluated", why: /not the pinned/ }, 300_000],
-    ["a model the provider never reported is unevaluated", { runs: [{ model: null }] }, "process.exit(0)", { outcome: "unevaluated", why: /no model/ }, 300_000],
-    ["a dispatch the gate refused past the case's limit makes the attempt a fail", { runs: [{}, {}, { started: false }] }, "process.exit(0)", { outcome: "fail", why: /past its limit of 2/ }, 600_000],
-    ["a dispatch past the limit that went around the gate is an error", { runs: [{}, {}, { gated: false }] }, "process.exit(0)", { outcome: "error", why: /without the eval gate/ }, 900_000],
-    ["a dispatch that bypassed the gate is an error, settled at its cap", { runs: [{ gated: false, api: 100_000 }] }, "process.exit(0)", { outcome: "error", why: /without the eval gate/ }, 100_000],
-    ["a crashed world whose agent ran but built nothing fails", { runs: [{ built: false }] }, "process.exit(3)", { outcome: "fail", why: /no build finished/ }, 300_000],
-    ["a world that failed before the agent started is an error", { database: false }, "console.log(JSON.stringify({ evalStage: 'world-start', why: 'git init failed' }))", { outcome: "error", why: /failed before the agent started: git init failed/ }, 0],
-    ["a world that claims it failed to start after a provider ran is still graded", { runs: [{}] }, "console.log(JSON.stringify({ evalStage: 'world-start', why: 'made up' }))", { outcome: "pass", why: /^$/ }, 300_000],
-    ["a provider refused before the agent started is an error", { runs: [{ started: false }] }, "process.exit(0)", { outcome: "error", why: /provider refused or was unavailable/ }, 0],
-    ["a world with no database whose dispatches took slots settles each at its cap", { database: false }, `const fs = require("fs"); fs.writeFileSync(process.env.${EVAL_GATE_ENV} + "/slots/1.json", JSON.stringify({ kind: "run:1", pid: 1, at: "" })); process.exit(0);`, { outcome: "error", why: /records can't be read/ }, 750_000],
-  ])("%s", async (_name, spec, script, expected, settled) => {
+  test.each<[string, WorldSpec, string, { outcome: string; why: RegExp }, (string | number | null)[][]]>([
+    ["a wrong build fails on the hidden check", { runs: [{}], source: "export const paginate = (items, offset, limit) => items.splice(offset || 0, limit || 10);\n" }, "process.exit(0)", { outcome: "fail", why: /wrong answer/ }, [["builder", "api", 300_000]]],
+    ["a cost the provider never reported is unknown, never measured", { runs: [{ api: null }] }, "process.exit(0)", { outcome: "pass", why: /^$/ }, [["builder", "unknown", null]]],
+    ["a billing this computer only guessed is unknown (Codex round 1 #4)", { runs: [{ basis: "default" }] }, "process.exit(0)", { outcome: "pass", why: /^$/ }, [["builder", "unknown", null]]],
+    ["a reported model other than the pin is unevaluated", { runs: [{ model: "claude-opus-4-1-20250805" }] }, "process.exit(0)", { outcome: "unevaluated", why: /not the pinned/ }, [["builder", "api", 300_000]]],
+    ["a model the provider never reported is unevaluated", { runs: [{ model: null }] }, "process.exit(0)", { outcome: "unevaluated", why: /no model/ }, [["builder", "api", 300_000]]],
+    ["a dispatch the gate refused past the case's limit makes the attempt a fail", { runs: [{}, {}, { started: false }] }, "process.exit(0)", { outcome: "fail", why: /more than its limit of 2/ }, [["builder", "api", 300_000], ["builder", "api", 300_000]]],
+    ["a dispatch that went around the gate is an error, its record kept", { runs: [{ gated: false, api: 100_000 }] }, "process.exit(0)", { outcome: "error", why: /don't agree/ }, [["builder", "api", 100_000]]],
+    ["a crashed world whose agent ran but built nothing fails", { runs: [{ built: false }] }, "process.exit(3)", { outcome: "fail", why: /process crashed/ }, [["builder", "api", 300_000]]],
+    ["a crashed world cannot pass using an earlier finished build", { runs: [{}] }, "process.exit(3)", { outcome: "fail", why: /process crashed/ }, [["builder", "api", 300_000]]],
+    ["a world that failed before the agent started is an error", { database: false }, "console.log(JSON.stringify({ evalStage: 'world-start', why: 'git init failed' }))", { outcome: "error", why: /failed before the agent started: git init failed/ }, [["unrecorded", "unknown", null]]],
+    ["a world that claims it failed to start after a provider ran is still graded", { runs: [{}] }, "console.log(JSON.stringify({ evalStage: 'world-start', why: 'made up' }))", { outcome: "pass", why: /^$/ }, [["builder", "api", 300_000]]],
+    ["a provider refused before the agent started is an error", { runs: [{ started: false }] }, "process.exit(0)", { outcome: "error", why: /provider refused or was unavailable/ }, []],
+    ["a world with no database whose dispatches took slots records each as unknown", { database: false }, `const fs = require("fs"); fs.writeFileSync(process.env.${EVAL_GATE_ENV} + "/slots/1.json", JSON.stringify({ kind: "run:1", pid: 1, at: "" })); process.exit(0);`, { outcome: "error", why: /records can't be read/ }, [["unrecorded", "unknown", null]]],
+  ])("%s", async (_name, spec, script, expected, dispatches) => {
     const ran = await attempt(spec, script);
     expect(ran.result.outcome).toBe(expected.outcome);
     expect(ran.result.why ?? "").toMatch(expected.why);
-    expect(ran.invocations.reduce((sum, one) => sum + Number(one["settled_microusd"]), 0)).toBe(settled);
+    expect(apiOf(ran.invocations)).toEqual(dispatches);
+    // Unknown is never shown as measured: one unknown dispatch makes the attempt's API total unknown.
+    if (dispatches.some(one => one[1] === "unknown")) expect(ran.result).toMatchObject({ usageUnknown: true, apiMicrousd: null });
     // Only a finished build reaches the oracle.
     if (expected.outcome !== "pass" && !/wrong answer/.test(ran.result.why ?? "")) expect(ran.graded).toEqual([]);
   });
 
-  test("lead requests that bypass invokeAgent are each a dispatch: subscription usage kept apart, a slot with no record settled at its cap", async () => {
+  test("lead requests are each a dispatch: subscription usage kept apart; a slot with no record is an error with unknown spending and model (Codex round 1 #8)", async () => {
     const ran = await attempt({ runs: [{ api: 200_000 }], chats: 1, chatSlots: 1 }, undefined, paginate({ maxDispatches: 3 }));
     expect(ran.result).toMatchObject({ outcome: "pass", apiMicrousd: 200_000, subscriptionMicrousd: 20_000 });
-    expect(ran.invocations.map(one => [one["kind"], one["settled_microusd"], one["unknown"]])).toEqual([["builder", 200_000, 0], ["lead", 0, 0]]);
-    const unrecorded = await (async () => { store.handle.exec("UPDATE eval_campaign SET state = 'complete' WHERE state = 'running'"); return attempt({ runs: [{ api: 200_000 }], chats: 0, chatSlots: 1 }, undefined, paginate({ maxDispatches: 3 })); })();
-    expect(unrecorded.invocations.map(one => [one["kind"], one["settled_microusd"], one["unknown"]])).toEqual([["builder", 200_000, 0], ["unrecorded", 750_000, 1]]);
-    expect(unrecorded.result).toMatchObject({ usageUnknown: true, apiMicrousd: null });
+    expect(apiOf(ran.invocations)).toEqual([["builder", "api", 200_000], ["lead", "subscription", null]]);
+    const unrecorded = await attempt({ runs: [{ api: 200_000 }], chats: 0, chatSlots: 1 }, undefined, paginate({ maxDispatches: 3 }));
+    expect(apiOf(unrecorded.invocations)).toEqual([["builder", "api", 200_000], ["unrecorded", "unknown", null]]);
+    expect(unrecorded.result).toMatchObject({ outcome: "error", usageUnknown: true, apiMicrousd: null, modelReported: null, tokensIn: null });
+    // A chat request whose own events didn't say how it was billed is unknown money, never plan usage (#4).
+    const silent = await attempt({ runs: [{ api: 200_000 }], chats: 1, chatSlots: 1, chatBilling: null }, undefined, paginate({ maxDispatches: 3 }));
+    expect(apiOf(silent.invocations)).toEqual([["builder", "api", 200_000], ["lead", "unknown", null]]);
+    expect(silent.result).toMatchObject({ usageUnknown: true, apiMicrousd: null, subscriptionMicrousd: null });
   });
 
+  test("the runner failing mid-attempt still records what the world dispatched (Codex round 1 #1)", async () => {
+    const ran = await attempt({}, undefined, paginate(), { command: input => { makeWorld(input, { runs: [{ api: 400_000 }] }); throw new Error("spawn exploded"); } });
+    expect(ran.result).toMatchObject({ outcome: "error", why: expect.stringMatching(/spawn exploded/), apiMicrousd: 400_000 });
+    expect(apiOf(ran.invocations)).toEqual([["builder", "api", 400_000]]);
+  });
+
+  test.each(["chat table", "gate slots", "null slot"])("unreadable %s keeps known charges and records unknown metadata", async broken => {
+    const ran = await attempt({}, undefined, paginate(), { command: input => {
+      makeWorld(input, { runs: [{ api: 400_000 }] });
+      if (broken === "chat table") {
+        const world = openStore(input.databaseFile);
+        try { world.handle.exec("ALTER TABLE chat_turn RENAME COLUMN state TO missing_state"); } finally { world.close(); }
+      } else if (broken === "null slot") writeFileSync(join(input.gateDir, "slots", "1.json"), "null");
+      else rmSync(join(input.gateDir, "slots"), { recursive: true });
+      return child("process.exit(0)");
+    } });
+    expect(ran.result).toMatchObject({ outcome: "error", apiMicrousd: null, usageUnknown: true, modelReported: null, tokensIn: null });
+    expect(apiOf(ran.invocations)).toEqual([["builder", "api", 400_000], ["unrecorded", "unknown", null]]);
+  });
+
+  test("an attempt whose world can't even be made is recorded, never thrown (Codex round 1 #12)", async () => {
+    writeFileSync(join(dir, "not-a-folder"), "");
+    const ran = await attempt({ runs: [{}] }, undefined, paginate(), { workRoot: join(dir, "not-a-folder", "worlds") });
+    expect(ran.result).toMatchObject({ outcome: "error", why: expect.stringMatching(/eval runner failed/), usageUnknown: true });
+  });
+
+  test("tool calls come from the world's step records before it is removed (Codex round 1 #13)", async () => {
+    const steps = [{ k: "open", at: NOW.toISOString(), detail: "base" }, ...["read", "edit", "command"].flatMap((kind, at) => [
+      { k: "step", at: new Date(NOW.getTime() + at * 1000).toISOString(), id: `s${at + 1}`, kind }, { k: "done", at: new Date(NOW.getTime() + at * 1000 + 500).toISOString(), id: `s${at + 1}`, ok: true }])];
+    const ran = await attempt({}, undefined, paginate(), { command: input => {
+      makeWorld(input, { runs: [{}] });
+      mkdirSync(join(input.worldDir, "toolroll", "evidence", "live"), { recursive: true });
+      writeFileSync(join(input.worldDir, "toolroll", "evidence", "live", "1.jsonl"), steps.map(one => JSON.stringify(one)).join("\n") + "\n");
+      return child("process.exit(0)");
+    } });
+    expect(ran.result).toMatchObject({ outcome: "pass", toolCalls: 3 });
+    // No step records: unknown, never 0.
+    expect((await attempt({ runs: [{}] })).result.toolCalls).toBeNull();
+  });
 });
 
 describe("a campaign", () => {
-  test("a build change mid-campaign stops it incomplete and releases what it didn't carve; an error gets one replacement", async () => {
-    const admitted = admit({ reservedMicrousd: 20_000_000, k: 3 });
+  test("a build change mid-campaign stops it incomplete; an error gets one replacement", async () => {
+    const admitted = admit({ k: 3 });
     if (!admitted.ok) throw new Error(admitted.message);
     let digests = 0;
-    const one = paginate();
-    // First attempt: a world that fails to start (an error, replaced once); then the build changes.
     let worlds = 0;
-    const ended = await runEvalCampaign(store, admitted.id, [one], {
+    const ended = await runEvalCampaign(store, admitted.id, [paginate()], {
       ...worldDeps(dir, { runs: [{}] }),
       concurrency: 1,
       command: input => { worlds++; if (worlds === 1) return child("console.log(JSON.stringify({ evalStage: 'world-start', why: 'boom' }))"); makeWorld(input, { runs: [{}] }); return child("process.exit(0)"); },
@@ -183,27 +218,91 @@ describe("a campaign", () => {
     const rows = store.handle.prepare("SELECT n, replaces, outcome FROM eval_attempt ORDER BY id").all().map(row => ({ ...row }));
     expect(rows).toEqual([{ n: 1, replaces: 0, outcome: "error" }, { n: 1, replaces: expect.any(Number), outcome: "pass" }]);
     expect(Number(rows[1]!["replaces"])).toBeGreaterThan(0);
-    expect(month()).toEqual({ reserved_microusd: 0, settled_microusd: 300_000 });
-    expect(store.handle.prepare("SELECT state, released FROM eval_campaign WHERE id = ?").get(admitted.id)).toMatchObject({ state: "incomplete", released: 1 });
   }, 30_000);
+
+  test("a change during the last attempt still leaves the campaign incomplete (Codex round 1 #9)", async () => {
+    const admitted = admit({ k: 1 });
+    if (!admitted.ok) throw new Error(admitted.message);
+    let digests = 0;
+    const ended = await runEvalCampaign(store, admitted.id, [paginate()], { ...worldDeps(dir, { runs: [{}] }), buildDigest: () => (digests++ < 1 ? "build-a" : "build-b") });
+    expect(ended).toEqual({ state: "incomplete", why: "the installed build changed during the campaign" });
+    expect(store.handle.prepare("SELECT outcome FROM eval_attempt").get()).toMatchObject({ outcome: "pass" });
+  }, 30_000);
+
+  test("a failed admission read waits for already-started attempts before ending the campaign", async () => {
+    const admitted = admit({ k: 2 });
+    if (!admitted.ok) throw new Error(admitted.message);
+    let reads = 0;
+    let stateWhileGrading: unknown;
+    const ended = await runEvalCampaign(store, admitted.id, [paginate()], {
+      ...worldDeps(dir, { runs: [{}] }), concurrency: 2,
+      buildDigest: () => { if (++reads > 1) throw new Error("identity unreadable"); return "build-a"; },
+      oracle: async () => {
+        stateWhileGrading = store.handle.prepare("SELECT state FROM eval_campaign WHERE id = ?").get(admitted.id)?.["state"];
+        return { outcome: "pass", why: null };
+      },
+    });
+    expect(stateWhileGrading).toBe("running");
+    expect(ended).toEqual({ state: "incomplete", why: "the eval runner failed: identity unreadable" });
+    expect(store.handle.prepare("SELECT outcome FROM eval_attempt").get()).toMatchObject({ outcome: "pass" });
+  });
+
+  test("the build identity includes the service definition a deploy rewrites (Codex round 1 #9)", () => {
+    const home = join(dir, "home");
+    const agents = join(home, "Library", "LaunchAgents");
+    mkdirSync(agents, { recursive: true });
+    writeFileSync(join(agents, "com.toolroll.browser.plist"), "<string>/runtimes/release-a/dist/bin.js</string>");
+    const before = installedBuildDigest("0.9.82", home);
+    expect(installedBuildDigest("0.9.82", home)).toBe(before);
+    writeFileSync(join(agents, "com.toolroll.browser.plist"), "<string>/runtimes/release-b/dist/bin.js</string>");
+    expect(installedBuildDigest("0.9.82", home)).not.toBe(before);
+  });
+
+  test("an interrupted campaign is recovered once its runner and worlds are gone, recording what its worlds dispatched (Codex round 1 #12)", async () => {
+    const admitted = admit({ canonical: true, runner: { host: "this-mac", pid: 999_999 } });
+    if (!admitted.ok) throw new Error(admitted.message);
+    const started = startEvalAttempt(store, { campaign: admitted.id, caseId: "paginate", caseVersion: "v", n: 1, replaces: 0, modelPinned: paginate().pin.model, now: NOW });
+    if (!started.ok) throw new Error(started.why);
+    const worldDir = join(dir, "interrupted-world");
+    mkdirSync(join(worldDir, "toolroll", "eval-gate"), { recursive: true });
+    openEvalGate(join(worldDir, "toolroll", "eval-gate"), { v: 2, max: 2 });
+    makeWorld({ worldDir, databaseFile: join(worldDir, "toolroll", "orders.db"), gateDir: join(worldDir, "toolroll", "eval-gate") }, { runs: [{ api: 250_000 }] });
+    store.handle.prepare("UPDATE eval_attempt SET world_dir = ?, world_pgid = ? WHERE id = ?").run(worldDir, process.pid, started.attempt);
+    // Its runner alive, or on another computer: left as it is.
+    expect(recoverEvalCampaigns(store, NOW, { host: "this-mac", alive: () => true })).toEqual([{ id: admitted.id, recovered: false, why: "its runner is still running" }]);
+    expect(recoverEvalCampaigns(store, NOW, { host: "other-mac", alive: () => false })).toEqual([{ id: admitted.id, recovered: false, why: "its runner is on this-mac" }]);
+    // Its world's process group still alive (this test's own): left as it is.
+    expect(recoverEvalCampaigns(store, NOW, { host: "this-mac", alive: () => false })[0]).toMatchObject({ recovered: false, why: expect.stringMatching(/still running/) });
+    store.handle.prepare("UPDATE eval_attempt SET world_pgid = NULL WHERE id = ?").run(started.attempt);
+    // A dead original group is insufficient: a saved detached descendant may still be alive, or observation lost.
+    for (const saved of [null, { state: "starting", witnesses: [] }, { state: "unknown", witnesses: [] },
+      { state: "watching", witnesses: [[process.pid, false]] }]) {
+      store.handle.prepare("UPDATE eval_attempt SET world_processes_json = ? WHERE id = ?").run(JSON.stringify(saved), started.attempt);
+      expect(recoverEvalCampaigns(store, NOW, { host: "this-mac", alive: () => false })[0]).toMatchObject({ recovered: false, why: expect.stringMatching(/isn't proven stopped/) });
+    }
+    store.handle.prepare("UPDATE eval_attempt SET world_processes_json = ? WHERE id = ?").run(JSON.stringify({ state: "stopped", witnesses: [] }), started.attempt);
+    expect(recoverEvalCampaigns(store, NOW, { host: "this-mac", alive: () => false })).toEqual([{ id: admitted.id, recovered: true, why: "1 unfinished attempt recorded as interrupted" }]);
+    expect(store.handle.prepare("SELECT outcome, error_why, api_microusd FROM eval_attempt").get()).toMatchObject({ outcome: "error", error_why: expect.stringMatching(/interrupted/), api_microusd: 250_000 });
+    expect(store.handle.prepare("SELECT state FROM eval_campaign WHERE id = ?").get(admitted.id)).toMatchObject({ state: "incomplete" });
+    // Its place is free again.
+    expect(admit({ canonical: true }).ok).toBe(true);
+  });
 });
 
 // ------------------------------------------------------------------ the dispatch gate in a world
 
-describe("every provider dispatch in an eval world takes a slot and runs under its cap", () => {
+describe("every provider dispatch in an eval world takes a slot", () => {
   let gateDir: string;
   beforeEach(() => {
     gateDir = join(dir, "gate");
     mkdirSync(gateDir);
-    openEvalGate(gateDir, { v: 1, max: 2, capMicrousd: 750_000 });
+    openEvalGate(gateDir, { v: 2, max: 2 });
   });
 
   test("slots are numbered, exclusive and limited; an unreadable gate refuses everything; outside a world nothing changes", () => {
     const env = { [EVAL_GATE_ENV]: gateDir };
     expect(takeEvalDispatch("run:1", {})).toEqual({ active: false });
-    expect(evalLeadAllowanceMicrousd(env)).toBe(1_500_000);
-    expect(takeEvalDispatch("run:1", env)).toMatchObject({ active: true, ok: true, n: 1, capUsd: 0.75 });
-    expect(evalLeadAllowanceMicrousd(env)).toBe(750_000);
+    expect(takeEvalDispatch("run:1", env)).toEqual({ active: true, ok: true, n: 1 });
     expect(takeEvalDispatch("lead:anthropic-api", env)).toMatchObject({ ok: true, n: 2 });
     expect(takeEvalDispatch("run:3", env)).toMatchObject({ ok: false, why: expect.stringMatching(/limit of 2 provider dispatches/) });
     expect(evalGateSlots(gateDir)?.map(slot => slot.kind)).toEqual(["run:1", "lead:anthropic-api"]);
@@ -215,42 +314,45 @@ describe("every provider dispatch in an eval world takes a slot and runs under i
     expect(takeEvalDispatch("run:5", { [EVAL_GATE_ENV]: linked })).toMatchObject({ active: true, ok: false });
   });
 
-  test("a subscription lead request is capped with --max-budget-usd and counted; past the limit nothing spawns; Codex can't be capped", async () => {
+  test("a subscription lead request takes a slot, with no dollar cap; past the limit nothing spawns", async () => {
     vi.stubEnv(EVAL_GATE_ENV, gateDir);
     const calls: string[][] = [];
     const runner = async (command: string, args: readonly string[]) => { calls.push([command, ...args]); return { code: 0, stdout: JSON.stringify({ type: "result", subtype: "success", result: JSON.stringify({ reply: "ok", calls: [] }), structured_output: { reply: "ok", calls: [] } }), stderr: "", timedOut: false, notFound: false }; };
-    const request = { provider: "claude-subscription" as const, model: "claude-sonnet-4-5-20250929", system: "s", dataDocument: "d", history: [{ role: "operator" as const, text: "hi" }], tools: [], timeoutMs: 5_000 };
+    const request = { provider: "claude-subscription" as const, model: "claude-sonnet-5-5", system: "s", dataDocument: "d", history: [{ role: "operator" as const, text: "hi" }], tools: [], timeoutMs: 5_000 };
     await performSubscriptionLeadRequest(request, runner);
     await performSubscriptionLeadRequest(request, runner);
     expect(calls).toHaveLength(2);
-    for (const call of calls) expect(call.slice(call.indexOf("--max-budget-usd"), call.indexOf("--max-budget-usd") + 2)).toEqual(["--max-budget-usd", "0.75"]);
+    for (const call of calls) expect(call).not.toContain("--max-budget-usd");
     expect(await performSubscriptionLeadRequest(request, runner)).toEqual({ ok: false, problem: "status-eval-dispatch-limit" });
-    expect(calls).toHaveLength(2);
-    rmSync(join(gateDir, "slots"), { recursive: true });
-    mkdirSync(join(gateDir, "slots"));
-    expect(await performSubscriptionLeadRequest({ ...request, provider: "codex-subscription" }, runner)).toEqual({ ok: false, problem: "status-eval-uncapped" });
     expect(calls).toHaveLength(2);
   });
 
-  test("a direct lead request (it bypasses invokeAgent) takes a slot; past the limit nothing is sent", async () => {
+  test.each([
+    ["a direct lead request", (fetcher: typeof fetch) => performLeadRequest({ url: "https://api.anthropic.com/v1/messages", headers: {}, body: "{}" }, "anthropic-api", new AbortController().signal, fetcher)],
+    // Codex round 1 #3: fleet chat's request went to the network without a slot.
+    ["a fleet chat request", (fetcher: typeof fetch) => performChatRequest({ provider: "anthropic-api", model: "claude-sonnet-5-5", key: "k", dataDocument: "d", userMessage: "hi", signal: new AbortController().signal }, fetcher)],
+  ])("%s (outside the gateway) takes a slot; past the limit, or with an unreadable gate, nothing is sent", async (_name, send) => {
     vi.stubEnv(EVAL_GATE_ENV, gateDir);
     let sent = 0;
     const fetcher = (async () => { sent++; return new Response("{}", { status: 500 }); }) as unknown as typeof fetch;
-    const signal = new AbortController().signal;
-    for (let at = 0; at < 2; at++) await performLeadRequest({ url: "https://api.anthropic.com/v1/messages", headers: {}, body: "{}" }, "anthropic-api", signal, fetcher);
+    await send(fetcher);
+    await send(fetcher);
     expect(sent).toBe(2);
-    expect(await performLeadRequest({ url: "https://api.anthropic.com/v1/messages", headers: {}, body: "{}" }, "anthropic-api", signal, fetcher)).toEqual({ ok: false, problem: "status-eval-dispatch-limit" });
+    expect(await send(fetcher)).toEqual({ ok: false, problem: "status-eval-dispatch-limit" });
+    vi.stubEnv(EVAL_GATE_ENV, join(dir, "no-gate"));
+    expect(await send(fetcher)).toEqual({ ok: false, problem: "status-eval-dispatch-limit" });
     expect(sent).toBe(2);
-    expect(evalGateSlots(gateDir)?.map(slot => slot.kind)).toEqual(["lead:anthropic-api", "lead:anthropic-api"]);
   });
 
-  test("helpers that would call a provider without a record (task sizing) don't, in an eval world", async () => {
+  test("helpers that would call a provider without a record (task sizing, the memory pass) don't, in an eval world", async () => {
     vi.stubEnv(EVAL_GATE_ENV, gateDir);
     expect(inEvalWorld()).toBe(true);
     let spawned = 0;
     const sizer = claudeSizer(async () => { spawned++; return { code: 0, stdout: "{}", stderr: "", timedOut: false, notFound: false }; });
     expect(await sizer({ title: "a task" }, new AbortController().signal)).toBeNull();
+    const analyzer = defaultAnalyzer(store, { runner: async () => { spawned++; return { code: 0, stdout: "{}", stderr: "", timedOut: false, notFound: false }; } });
+    expect(await analyzer({ surface: "lead", kind: "lead", trace: "t", openGaps: [] } as unknown as Parameters<typeof analyzer>[0])).toMatchObject({ ok: false });
     expect(spawned).toBe(0);
+    expect(evalGateSlots(gateDir)).toEqual([]);
   });
 });
-

@@ -634,12 +634,13 @@ CREATE TABLE IF NOT EXISTS nightly_exemption (
 `;
 
 /** v141 (docs/plans/evals-nightly.md, part C): the eval set's own records, written only by the installed plane's eval
- * module (evals.ts). `eval_campaign` is one campaign (an eval set run or a reviewer run), sealed at admission, with its
- * reservation against the month; `eval_attempt` one attempt of one case (unique per campaign, case, number and what it
- * replaces: 0 for an original); `eval_invocation` each provider dispatch the attempt's world made, carved from the
- * campaign's reservation and settled at its reported cost (unknown: at its full cap); `eval_spend_month` the month's
- * ceiling, outstanding reservations and settled API dollars, shared by eval and reviewer campaigns. `eval_baseline_pin`
- * and `eval_debt` are C2's (the owner's pinned baseline and regressed cases). New tables only. */
+ * module (evals.ts). `eval_campaign` is one campaign (an eval set run or a reviewer run), sealed at admission, with the
+ * runner that owns it (so an interrupted one can be recovered); one canonical campaign runs at a time (settlement
+ * order). `eval_attempt` is one attempt of one case (unique per campaign, case, number and what it replaces: 0 for an
+ * original) and what it spent; `eval_invocation` each provider dispatch its world made, with what it was billed as
+ * (API dollars, subscription usage or unknown, never added together) and the model it reported. `eval_baseline_pin` and
+ * `eval_debt` are C2's (the owner's pinned baseline and regressed cases). New tables only; the columns are
+ * V141_ADDED_COLUMNS. No money limit (the owner, 2026-10-30): spending is recorded, not capped. */
 export const V141_SCHEMA = `
 CREATE TABLE IF NOT EXISTS eval_campaign (
   id                TEXT PRIMARY KEY,
@@ -653,18 +654,15 @@ CREATE TABLE IF NOT EXISTS eval_campaign (
   sealed_json       TEXT NOT NULL,
   started_by        TEXT NOT NULL,
   started_proof     TEXT NOT NULL,
+  runner_host       TEXT NOT NULL,
+  runner_pid        INTEGER NOT NULL,
   admitted_at       TEXT NOT NULL,
   finished_at       TEXT,
   state             TEXT NOT NULL CHECK (state IN ('running','complete','incomplete')),
   why               TEXT,
-  settled_at        TEXT,
-  month             TEXT NOT NULL,
-  reserved_microusd INTEGER NOT NULL CHECK (reserved_microusd >= 0),
-  carved_microusd   INTEGER NOT NULL DEFAULT 0 CHECK (carved_microusd >= 0 AND carved_microusd <= reserved_microusd),
-  settled_microusd  INTEGER NOT NULL DEFAULT 0 CHECK (settled_microusd >= 0),
-  released          INTEGER NOT NULL DEFAULT 0 CHECK (released IN (0, 1))
+  settled_at        TEXT
 );
-CREATE UNIQUE INDEX IF NOT EXISTS eval_campaign_one_running ON eval_campaign (kind) WHERE state = 'running';
+CREATE UNIQUE INDEX IF NOT EXISTS eval_campaign_one_canonical ON eval_campaign (canonical) WHERE state = 'running' AND canonical = 1;
 CREATE TABLE IF NOT EXISTS eval_attempt (
   id                    INTEGER PRIMARY KEY AUTOINCREMENT,
   campaign              TEXT NOT NULL REFERENCES eval_campaign(id),
@@ -676,6 +674,7 @@ CREATE TABLE IF NOT EXISTS eval_attempt (
   error_why             TEXT,
   model_pinned          TEXT NOT NULL,
   model_reported        TEXT,
+  dispatches            INTEGER,
   api_microusd          INTEGER,
   subscription_microusd INTEGER,
   usage_unknown         INTEGER NOT NULL DEFAULT 0 CHECK (usage_unknown IN (0, 1)),
@@ -686,26 +685,24 @@ CREATE TABLE IF NOT EXISTS eval_attempt (
   tokens_out            INTEGER,
   tool_calls            INTEGER,
   wall_ms               INTEGER,
-  carved_microusd       INTEGER NOT NULL DEFAULT 0 CHECK (carved_microusd >= 0),
+  world_dir             TEXT,
+  world_pgid            INTEGER,
+  world_processes_json  TEXT,
   started_at            TEXT NOT NULL,
   finished_at           TEXT,
   UNIQUE (campaign, case_id, n, replaces)
 );
 CREATE TABLE IF NOT EXISTS eval_invocation (
-  id                INTEGER PRIMARY KEY AUTOINCREMENT,
-  attempt           INTEGER NOT NULL REFERENCES eval_attempt(id),
-  kind              TEXT NOT NULL,
-  world_ref         TEXT NOT NULL,
-  reserved_microusd INTEGER NOT NULL CHECK (reserved_microusd >= 0),
-  settled_microusd  INTEGER NOT NULL CHECK (settled_microusd >= 0),
-  unknown           INTEGER NOT NULL CHECK (unknown IN (0, 1)),
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt               INTEGER NOT NULL REFERENCES eval_attempt(id),
+  kind                  TEXT NOT NULL,
+  world_ref             TEXT NOT NULL,
+  recorded              INTEGER NOT NULL CHECK (recorded IN (0, 1)),
+  amount                TEXT NOT NULL CHECK (amount IN ('api','subscription','unknown')),
+  api_microusd          INTEGER CHECK (api_microusd IS NULL OR api_microusd >= 0),
+  subscription_microusd INTEGER CHECK (subscription_microusd IS NULL OR subscription_microusd >= 0),
+  model_reported        TEXT,
   UNIQUE (attempt, world_ref)
-);
-CREATE TABLE IF NOT EXISTS eval_spend_month (
-  month             TEXT PRIMARY KEY,
-  ceiling_microusd  INTEGER NOT NULL CHECK (ceiling_microusd >= 0),
-  reserved_microusd INTEGER NOT NULL DEFAULT 0 CHECK (reserved_microusd >= 0),
-  settled_microusd  INTEGER NOT NULL DEFAULT 0 CHECK (settled_microusd >= 0)
 );
 CREATE TABLE IF NOT EXISTS eval_baseline_pin (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -729,6 +726,14 @@ CREATE TABLE IF NOT EXISTS eval_debt (
   waived_why          TEXT
 );
 `;
+/** v141 (evals-nightly.md, Codex round 1 #4 and #10): how a run's billing was known — `evidence` (its own events, the
+ * key it was given, or its agent's admission) or `default` (this computer's usual billing, a guess) — and how a chat
+ * request was billed, as its own events said (null: they didn't). A guess or a silence is unknown money, never
+ * subscription usage. Saved rows read NULL: unknown. */
+export const V141_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
+  run: { billing_basis: { definition: "TEXT CHECK (billing_basis IS NULL OR billing_basis IN ('evidence','default'))", saved: "NULL" } },
+  chat_turn: { billing_reported: { definition: "TEXT CHECK (billing_reported IS NULL OR billing_reported IN ('subscription','api-key'))", saved: "NULL" } },
+});
 
 /** A project's "Show commands in the live view" (live-detail.ts): absent means off. */
 export const LIVE_DETAIL_SCHEMA = `
@@ -1061,8 +1066,8 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // model of each run and chat request (run.model_reported, chat_turn.model_reported), a chat request's own turn count and
 // reported cost (chat_turn.provider_turns, reported_cost_usd). Saved rows read NULL: not reported, never 0.
 // v141 adds, and changes no saved row: the eval set's records (docs/plans/evals-nightly.md, part C) — campaigns,
-// attempts, each attempt's provider dispatches, the month's eval spend ledger, the baseline pin and eval debt
-// (V141_SCHEMA, new tables only).
+// attempts, each attempt's provider dispatches, the baseline pin and eval debt (V141_SCHEMA) — and how a run's or chat
+// request's billing was known (V141_ADDED_COLUMNS; saved rows NULL: unknown).
 export const SCHEMA_VERSION = 141;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
@@ -5625,8 +5630,11 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   for (const [table, columns] of Object.entries(V140_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   }
-  // v141: the eval set's records (new tables only).
+  // v141: the eval set's records (new tables) and how a run's or chat request's billing was known (saved rows NULL).
   db.exec(V141_SCHEMA);
+  for (const [table, columns] of Object.entries(V141_ADDED_COLUMNS)) {
+    for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
+  }
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -14385,6 +14393,8 @@ export class Store {
       modelReported?: string | null;
       providerTurns?: number | null;
       reportedCostUsd?: number | null;
+      /** v141: how the request's own events said it was billed (a subscription harness); absent or null: unknown. */
+      billingReported?: "subscription" | "api-key" | null;
     },
     now: Date,
   ): boolean {
@@ -14393,7 +14403,7 @@ export class Store {
       .prepare(
         `UPDATE chat_turn SET state = ?, failure_reason = ?, tokens_in = ?, tokens_out = ?,
            settled_microusd = ?, unknown_spend = ?, reply_bytes = ?, candidate_count = ?, cache_read_tokens = ?, cache_write_tokens = ?,
-           model_reported = ?, provider_turns = ?, reported_cost_usd = ?, finished_at = ?
+           model_reported = ?, provider_turns = ?, reported_cost_usd = ?, billing_reported = ?, finished_at = ?
          WHERE id = ? AND generation = ? AND state IN ('queued','running')`,
       )
       .run(
@@ -14410,6 +14420,7 @@ export class Store {
         reportedModelOf(outcome.modelReported),
         providerTurnsOf(outcome.providerTurns),
         reportedCostUsdOf(outcome.reportedCostUsd),
+        outcome.billingReported === "subscription" || outcome.billingReported === "api-key" ? outcome.billingReported : null,
         now.toISOString(),
         id,
         generation,
@@ -25235,7 +25246,7 @@ export function runAccounting(store: Store, runId: number): {
   usage: { in: number | null; out: number | null; cacheRead: number | null; cacheWrite: number | null }; amount: ReportedAmount;
 } | null {
   const row = store.handle.prepare(`SELECT run.provider, run.model, run.model_reported, run.agent_turns, run.tokens_in, run.tokens_out, run.cost_usd, run.usage_json,
-      s.billing, s.microusd FROM run LEFT JOIN run_spend s ON s.run = run.id WHERE run.id = ?`).get(runId);
+      run.billing_basis, s.billing, s.microusd FROM run LEFT JOIN run_spend s ON s.run = run.id WHERE run.id = ?`).get(runId);
   if (row === undefined) return null;
   const n = (value: unknown): number | null => value === null || value === undefined ? null : Number(value);
   const usage = usageOf({ provider: String(row["provider"]), model: row["model"] === null ? null : String(row["model"]), tokensIn: n(row["tokens_in"]), tokensOut: n(row["tokens_out"]),
@@ -25247,7 +25258,11 @@ export function runAccounting(store: Store, runId: number): {
     modelReported: row["model_reported"] === null || row["model_reported"] === undefined ? null : String(row["model_reported"]),
     agentTurns: n(row["agent_turns"]),
     usage: { in: usage.in, out: usage.out, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite },
-    amount: runAmountOf({ billing, spendMicrousd: n(row["microusd"]), costUsd: n(row["cost_usd"]) }),
+    // v141: a guessed billing, or a cost the provider never reported (invoke.ts writes the cap or nothing then, with a
+    // cost note), is unknown money.
+    amount: runAmountOf({ billing, spendMicrousd: n(row["microusd"]), costUsd: n(row["cost_usd"]),
+      basis: row["billing_basis"] === "evidence" || row["billing_basis"] === "default" ? row["billing_basis"] : null,
+      costUnknown: typeof row["usage_json"] === "string" && /"cost_note":"cost unknown/.test(row["usage_json"]) }),
   };
 }
 
@@ -25258,7 +25273,7 @@ export function chatTurnAccounting(store: Store, id: number): {
   tokensIn: number | null; tokensOut: number | null; cacheReadTokens: number | null; cacheWriteTokens: number | null; amount: ReportedAmount;
 } | null {
   const row = store.handle.prepare(`SELECT provider, model, model_reported, provider_turns, reported_cost_usd, tokens_in, tokens_out, cache_read_tokens, cache_write_tokens,
-      settled_microusd, unknown_spend FROM chat_turn WHERE id = ?`).get(id);
+      settled_microusd, unknown_spend, billing_reported FROM chat_turn WHERE id = ?`).get(id);
   if (row === undefined) return null;
   const n = (value: unknown): number | null => value === null || value === undefined ? null : Number(value);
   const reportedCostUsd = n(row["reported_cost_usd"]);
@@ -25272,6 +25287,14 @@ export function chatTurnAccounting(store: Store, id: number): {
     tokensOut: n(row["tokens_out"]),
     cacheReadTokens: n(row["cache_read_tokens"]),
     cacheWriteTokens: n(row["cache_write_tokens"]),
-    amount: chatTurnAmountOf({ provider: String(row["provider"]), settledMicrousd: n(row["settled_microusd"]), unknownSpend: Number(row["unknown_spend"]) === 1, reportedCostUsd }),
+    amount: chatTurnAmountOf({ provider: String(row["provider"]), settledMicrousd: n(row["settled_microusd"]), unknownSpend: Number(row["unknown_spend"]) === 1, reportedCostUsd,
+      billingReported: row["billing_reported"] === "subscription" || row["billing_reported"] === "api-key" ? row["billing_reported"] : null }),
   };
+}
+
+/** v141 (evals-nightly.md, Codex round 1 #4): how a run's billing was known, beside the billing invoke.ts fixed —
+ * `evidence` (its own events, the key it was given, its agent's admission) or `default` (this computer's usual billing,
+ * a guess). Once any turn of the run was a guess the run's money stays unknown. */
+export function recordRunBillingBasis(store: Store, runId: number, basis: "evidence" | "default"): void {
+  store.handle.prepare("UPDATE run SET billing_basis = CASE WHEN billing_basis = 'default' THEN 'default' ELSE ? END WHERE id = ?").run(basis, runId);
 }

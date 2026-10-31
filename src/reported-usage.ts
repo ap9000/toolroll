@@ -92,8 +92,12 @@ export type ReportedAmount =
   | { kind: "unknown" };
 
 /** A run's amount, from its fixed billing and its priced spend (run_spend). Subscription work reads its provider's
- * reported cost as usage, never as dollars; billed work without a reported or priced cost is unknown. */
-export function runAmountOf(run: { billing: Billing | null; spendMicrousd: number | null; costUsd: number | null }): ReportedAmount {
+ * reported cost as usage, never as dollars; billed work without a reported or priced cost is unknown. v141 (Codex
+ * round 1 #4, #10): billing this computer's default guessed (`basis` not evidence) is unknown, and so is a run whose
+ * cost the provider never reported (its `cost_usd` then holds a conservative charge, never a measurement). */
+export function runAmountOf(run: { billing: Billing | null; spendMicrousd: number | null; costUsd: number | null; basis?: "evidence" | "default" | null; costUnknown?: boolean }): ReportedAmount {
+  if (run.basis !== undefined && run.basis !== "evidence") return { kind: "unknown" };
+  if (run.costUnknown === true) return { kind: "unknown" };
   if (run.billing === "subscription") return { kind: "subscription", reportedUsd: reportedCostUsdOf(run.costUsd) };
   if (run.billing === "api-key" && run.spendMicrousd !== null && Number.isSafeInteger(run.spendMicrousd) && run.spendMicrousd >= 0) {
     return { kind: "api", microusd: run.spendMicrousd };
@@ -104,9 +108,16 @@ export function runAmountOf(run: { billing: Billing | null; spendMicrousd: numbe
 const SUBSCRIPTION_CHAT = new Set(["claude-subscription", "codex-subscription"]);
 
 /** A chat request's amount: a subscription chat's reported cost is usage; an API chat's settled charge is dollars,
- * unless its spend is unknown (then the amount is, whatever was settled against the reservation). */
-export function chatTurnAmountOf(turn: { provider: string; settledMicrousd: number | null; unknownSpend: boolean; reportedCostUsd: number | null }): ReportedAmount {
-  if (SUBSCRIPTION_CHAT.has(turn.provider)) return { kind: "subscription", reportedUsd: reportedCostUsdOf(turn.reportedCostUsd) };
+ * unless its spend is unknown (then the amount is, whatever was settled against the reservation). v141 (Codex round 1
+ * #4): a subscription harness's request is subscription usage only when its own events said it was billed to the plan
+ * (`billingReported`); one they said used a key is API dollars at its reported cost; one they said nothing of is
+ * unknown. Absent `billingReported` keeps the older reading for callers that predate it. */
+export function chatTurnAmountOf(turn: { provider: string; settledMicrousd: number | null; unknownSpend: boolean; reportedCostUsd: number | null; billingReported?: "subscription" | "api-key" | null }): ReportedAmount {
+  if (SUBSCRIPTION_CHAT.has(turn.provider)) {
+    if (turn.billingReported === undefined || turn.billingReported === "subscription") return { kind: "subscription", reportedUsd: reportedCostUsdOf(turn.reportedCostUsd) };
+    const cost = reportedCostUsdOf(turn.reportedCostUsd);
+    return turn.billingReported === "api-key" && cost !== null ? { kind: "api", microusd: Math.round(cost * 1_000_000) } : { kind: "unknown" };
+  }
   if (turn.unknownSpend || turn.settledMicrousd === null || !Number.isSafeInteger(turn.settledMicrousd) || turn.settledMicrousd < 0) return { kind: "unknown" };
   return { kind: "api", microusd: turn.settledMicrousd };
 }

@@ -244,12 +244,10 @@ export async function performSubscriptionLeadRequest(
   request: SubscriptionLeadRequest,
   runner: CommandRunner = run,
 ): Promise<{ ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string }> {
-  // An eval world (eval-gate.ts): each request takes one of the attempt's dispatch slots and runs under its cap; Codex
-  // can't hold a dollar cap there, and past the limit nothing is sent ("status-": nothing billed).
+  // An eval world (eval-gate.ts): each request takes one of the attempt's dispatch slots; past the limit nothing is
+  // sent ("status-": nothing billed).
   const evalSlot = takeEvalDispatch(`chat:${request.provider}`);
   if (evalSlot.active && !evalSlot.ok) return { ok: false, problem: "status-eval-dispatch-limit" };
-  if (evalSlot.active && request.provider === "codex-subscription") return { ok: false, problem: "status-eval-uncapped" };
-  const evalCap = evalSlot.active && evalSlot.ok ? ["--max-budget-usd", String(evalSlot.capUsd)] : [];
   const dir = mkdtempSync(join(tmpdir(), "standing-orders-mate-"));
   try {
     const prompt = composeSubscriptionLeadPrompt(request);
@@ -277,7 +275,7 @@ export async function performSubscriptionLeadRequest(
         // Streaming (someone is watching): the same answer, delivered as
         // events whose final `result` line is the whole structured reply.
         "-p", ...(streaming ? ["--output-format", "stream-json", "--verbose", "--include-partial-messages"] : ["--output-format", "json"]), "--json-schema", JSON.stringify(schema),
-        ...CLAUDE_NO_TOOLS_ARGS, ...claudeModelArgs(request.model), ...evalCap,
+        ...CLAUDE_NO_TOOLS_ARGS, ...claudeModelArgs(request.model),
       ];
     }
     const result = await runner(command, args, {
@@ -296,6 +294,8 @@ export async function performSubscriptionLeadRequest(
     // v105: a streamed Claude turn says its plan's usage windows, and (once it answered) how this computer's Claude bills
     // with no key from us: the chat ran with every key left out. v140: its session's init names the exact model.
     let init: ClaudeInitModel = { model: null, conflict: false };
+    // v141: how this request was billed, as its own events said (streamed Claude only); null when they didn't say.
+    let billingReported: "subscription" | "api-key" | null = null;
     if (command === "claude" && streaming) {
       const seen = { keySource: null as string | null, model: null as string | null, planWindows: false };
       const initModels = new Set<string>();
@@ -317,14 +317,16 @@ export async function performSubscriptionLeadRequest(
       init = { model: initModels.size === 1 ? [...initModels][0]! : null, conflict: initModels.size > 1 };
       const billing = answered ? claudeBillingFrom(seen) : null;
       if (billing !== null) noteLimits({ provider: "claude", plan: null, windows: [], partial: true, billing });
+      billingReported = billing;
     }
     if (result.code !== 0) return { ok: false, problem: `status-${result.code}` };
     const output = request.provider === "codex-subscription" ? codexOutput(result.stdout) : claudeOutput(streaming ? lastResultLine(result.stdout) : result.stdout, init);
     if (output.text === null) return { ok: false, problem: "malformed-reply" };
     if (request.outputSchema !== undefined) {
-      return { ok: true, answer: { text: output.text, calls: [], tokensIn: output.tokensIn, tokensOut: output.tokensOut, reportedCostMicrousd: null, ...reportFields(output.report) } };
+      return { ok: true, answer: { text: output.text, calls: [], tokensIn: output.tokensIn, tokensOut: output.tokensOut, reportedCostMicrousd: null, ...reportFields(output.report), billingReported } };
     }
-    return parseSubscriptionLeadAnswer(output.text, output);
+    const parsed = parseSubscriptionLeadAnswer(output.text, output);
+    return parsed.ok ? { ok: true, answer: { ...parsed.answer, billingReported } } : parsed;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

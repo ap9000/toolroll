@@ -12859,10 +12859,10 @@ export async function refreshGithubNightlies(store: Store, now: () => Date, read
 }
 
 /**
- * `toolroll evals run | attempt | cases` (docs/plans/evals-nightly.md, part C).
+ * `toolroll evals run | attempt | cases | recover` (docs/plans/evals-nightly.md, part C).
  *
  * - `run [--diagnostic] [--case a,b] [--k n] --as <you> --token <password>`: admit a campaign (a person's proof, the
- *   month's ceiling, no release busy) and run it to its end from this installed plane. With no flags it is canonical,
+ *   no release busy) and run it to its end from this installed plane. With no flags it is canonical,
  *   refused while any case is a draft. Each attempt is a child process: `evals attempt`.
  * - `attempt <campaign> <case> <n> --world <dir> --db <world db>`: one attempt's world (eval-world.ts). Only under its
  *   runner's dispatch gate, and only on the world's own database.
@@ -12871,12 +12871,17 @@ export async function refreshGithubNightlies(store: Store, now: () => Date, read
 export async function evalsCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
   const { write, json } = context;
   // Loaded when an eval command runs, so no other command (nor the console's bundle) pays for the eval runner.
-  const { admitEvalCampaign, campaignWorstMicrousd, EVALS_ROOT, installedBuildDigest, loadEvalSet, planCampaign, runEvalCampaign } = await import("./evals.js");
+  const { admitEvalCampaign, campaignSpending, EVALS_ROOT, installedBuildDigest, loadEvalSet, planCampaign, recoverEvalCampaigns, runEvalCampaign } = await import("./evals.js");
   const { inEvalWorld } = await import("./eval-gate.js");
   const { evalCliEntry, runEvalWorld } = await import("./eval-world.js");
   const action = positional[0];
   const command = `evals${action === undefined ? "" : ` ${action}`}`;
-  const usage = "Use: toolroll evals run [--diagnostic] [--case <ids>] [--k <n>] --as <you> --token <password> | toolroll evals cases";
+  const usage = "Use: toolroll evals run [--diagnostic] [--case <ids>] [--k <n>] --as <you> --token <password> | toolroll evals cases | toolroll evals recover";
+  if (action === "recover") {
+    // A campaign whose runner stopped: its unfinished attempts recorded as interrupted, then it ends incomplete.
+    const recovered = recoverEvalCampaigns(context.store, context.clock());
+    return succeed(write, json, command, { campaigns: recovered }, () => recovered.length === 0 ? ["No campaign is running."] : recovered.map(one => `${one.id}: ${one.recovered ? "recovered" : "left running"} (${one.why})`));
+  }
   if (action === "cases") {
     const set = loadEvalSet();
     if (!set.ok) return fail(write, json, command, "unreadable", set.problem, EXIT.failed);
@@ -12912,9 +12917,11 @@ export async function evalsCommand(positional: readonly string[], flags: Map<str
   if (acting === null) return fail(write, json, command, "usage", "An eval campaign is started with your password: add --as <you> --token <password>.", EXIT.usage);
   const { plan } = planned;
   const buildDigest = (): string => installedBuildDigest(PACKAGE_VERSION);
-  const sealed = { cases: plan.cases.map(one => ({ id: one.id, version: one.version, pin: one.pin, capMicrousd: one.capMicrousd, maxDispatches: one.maxDispatches })), k: plan.k, baseline: null, evals: EVALS_ROOT };
+  const sealed = { cases: plan.cases.map(one => ({ id: one.id, version: one.version, pin: one.pin, maxDispatches: one.maxDispatches })), k: plan.k, baseline: null, evals: EVALS_ROOT };
+  // A campaign whose runner stopped no longer holds its place.
+  recoverEvalCampaigns(context.store, context.clock());
   const admitted = admitEvalCampaign(context.store, { kind: "eval", canonical: plan.canonical, manifestDigest: set.manifestDigest, buildDigest: buildDigest(), version: PACKAGE_VERSION, k: plan.k,
-    sealed, reservedMicrousd: campaignWorstMicrousd(plan), as: acting.name, token: acting.token, now: context.clock() });
+    sealed, as: acting.name, token: acting.token, now: context.clock() });
   if (!admitted.ok) return fail(write, json, command, admitted.reason, admitted.message, EXIT.refused);
   const stateDir = dirname(context.databaseFile);
   const entry = evalCliEntry();
@@ -12928,13 +12935,16 @@ export async function evalsCommand(positional: readonly string[], flags: Map<str
     command: input => ({ file: entry.file, args: [...entry.args, "evals", "attempt", input.campaign, input.caseId, String(input.n), "--world", input.worldDir, "--deny", stateDir, "--db", input.databaseFile, "--json"],
       env: { ...Object.fromEntries(keep.flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!]])), XDG_CONFIG_HOME: join(input.worldDir, "config") } }),
   });
-  const rows = context.store.handle.prepare("SELECT case_id, n, replaces, outcome, error_why, api_microusd, subscription_microusd FROM eval_attempt WHERE campaign = ? ORDER BY case_id, n, replaces").all(admitted.id);
-  const money = context.store.handle.prepare("SELECT settled_microusd FROM eval_campaign WHERE id = ?").get(admitted.id);
-  const attempts = rows.map(row => ({ case: String(row["case_id"]), n: Number(row["n"]), replaces: Number(row["replaces"]), outcome: row["outcome"] === null ? null : String(row["outcome"]), why: row["error_why"] === null ? null : String(row["error_why"]) }));
-  const subscription = rows.reduce<number | null>((total, row) => total === null || row["subscription_microusd"] === null ? null : total + Number(row["subscription_microusd"]), 0);
-  return succeed(write, json, command, { campaign: admitted.id, canonical: plan.canonical, state: ended.state, why: ended.why, attempts, apiMicrousd: Number(money?.["settled_microusd"] ?? 0), subscriptionMicrousd: subscription }, () => [
+  const rows = context.store.handle.prepare("SELECT case_id, n, replaces, outcome, error_why, api_microusd, subscription_microusd, usage_unknown FROM eval_attempt WHERE campaign = ? ORDER BY case_id, n, replaces").all(admitted.id);
+  const nullable = (value: unknown): number | null => value === null || value === undefined ? null : Number(value);
+  const attempts = rows.map(row => ({ case: String(row["case_id"]), n: Number(row["n"]), replaces: Number(row["replaces"]), outcome: row["outcome"] === null ? null : String(row["outcome"]),
+    why: row["error_why"] === null ? null : String(row["error_why"]), apiMicrousd: nullable(row["api_microusd"]), subscriptionMicrousd: nullable(row["subscription_microusd"]), usageUnknown: Number(row["usage_unknown"]) === 1 }));
+  // What was actually spent, as recorded: API dollars and subscription usage apart, unknown never shown as measured.
+  const spent = campaignSpending(context.store, admitted.id);
+  const dollars = (micro: number | null, unknown: number): string => micro === null ? `unknown (${unknown} attempt${unknown === 1 ? "" : "s"} with unknown spending)` : `$${(micro / 1_000_000).toFixed(2)}`;
+  return succeed(write, json, command, { campaign: admitted.id, canonical: plan.canonical, state: ended.state, why: ended.why, attempts, spending: spent }, () => [
     `Campaign ${admitted.id} (${plan.canonical ? "canonical" : "diagnostic"}) is ${ended.state}${ended.why === null ? "" : `: ${ended.why}`}.`,
     ...attempts.map(one => `${one.case} #${one.n}${one.replaces === 0 ? "" : " (replacement)"}: ${one.outcome ?? "not finished"}${one.why === null ? "" : ` — ${one.why}`}`),
-    `API dollars: $${(Number(money?.["settled_microusd"] ?? 0) / 1_000_000).toFixed(2)}. Subscription usage, not billed: ${subscription === null ? "unknown" : `$${(subscription / 1_000_000).toFixed(2)}`}.`,
+    `API dollars: ${dollars(spent.apiMicrousd, spent.unknownAttempts)}. Subscription usage, not billed: ${dollars(spent.subscriptionMicrousd, spent.unknownAttempts)}.`,
   ]);
 }

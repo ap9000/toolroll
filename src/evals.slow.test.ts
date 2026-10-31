@@ -7,6 +7,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { admitEvalCampaign, EVALS_ROOT, runEvalAttempt, type AttemptDeps, type EvalCase } from "./evals.js";
 import { addApprover } from "./scope.js";
@@ -26,10 +27,8 @@ beforeEach(() => {
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
-const month = () => ({ ...store.handle.prepare("SELECT reserved_microusd, settled_microusd FROM eval_spend_month WHERE month = '2026-10'").get() });
-
 const attempt = async (spec: WorldSpec, script: string, one: EvalCase, over: Partial<AttemptDeps> = {}) => {
-  const admitted = admitEvalCampaign(store, { kind: "eval", canonical: false, manifestDigest: SET.manifestDigest, buildDigest: "b", version: "v", k: 1, sealed: {}, reservedMicrousd: 10_000_000, as: "alex", token: password, now: NOW });
+  const admitted = admitEvalCampaign(store, { kind: "eval", canonical: false, manifestDigest: SET.manifestDigest, buildDigest: "b", version: "v", k: 1, sealed: {}, as: "alex", token: password, now: NOW });
   if (!admitted.ok) throw new Error(admitted.message);
   const d = worldDeps(dir, spec, script, over);
   const ran = await runEvalAttempt(store, { campaign: admitted.id, one, n: 1, replaces: 0 }, d);
@@ -51,12 +50,12 @@ describe("the package", () => {
 });
 
 describe("admission across processes", () => {
-  test("two campaigns admitted at the same moment from two processes: exactly one gets the ceiling", async () => {
+  test("two canonical campaigns admitted at the same moment from two processes: exactly one runs", async () => {
     const script = join(dir, "admit.mts");
     writeFileSync(script, `import { openStore } from ${JSON.stringify(join(REPO_ROOT, "src", "store.ts"))};
 import { admitEvalCampaign } from ${JSON.stringify(join(REPO_ROOT, "src", "evals.ts"))};
 const store = openStore(process.argv[2]);
-const answer = admitEvalCampaign(store, { kind: "eval", canonical: false, manifestDigest: "m", buildDigest: "b", version: "v", k: 1, sealed: {}, reservedMicrousd: 130000000,
+const answer = admitEvalCampaign(store, { kind: "eval", canonical: true, manifestDigest: "m", buildDigest: "b", version: "v", k: 1, sealed: {},
   as: "alex", token: process.argv[3], now: new Date("2026-10-30T12:00:00.000Z"), id: process.argv[4] });
 store.close();
 process.stdout.write(JSON.stringify(answer));\n`);
@@ -64,12 +63,31 @@ process.stdout.write(JSON.stringify(answer));\n`);
     const race = (id: string) => new Promise<{ ok: boolean; reason?: string }>((done, fail) => execFile(tsx, [script, join(dir, "plane.db"), password, id], { encoding: "utf8" }, (error, stdout) => error ? fail(error) : done(JSON.parse(stdout))));
     const answers = await Promise.all([race("ev-a"), race("ev-b")]);
     expect(answers.filter(one => one.ok)).toHaveLength(1);
-    expect(answers.find(one => !one.ok)?.reason).toMatch(/^(already-running|over-ceiling)$/);
-    expect(month()).toEqual({ reserved_microusd: 130_000_000, settled_microusd: 0 });
+    expect(answers.find(one => !one.ok)?.reason).toBe("already-running");
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM eval_campaign WHERE canonical = 1 AND state = 'running'").get()).toMatchObject({ n: 1 });
   }, 60_000);
 });
 
 describe("a world's whole process tree", () => {
+  test("a scripted provider completes the real world setup, build, collection and oracle", async () => {
+    const { scriptedProvider } = await import(pathToFileURL(join(REPO_ROOT, "scripts/fixtures/scripted-provider.mjs")).href);
+    const scripted = scriptedProvider(join(dir, "provider"));
+    scripted.add("eval world", { role: "builder", when: [/paginate/], answer: {
+      files: { "paginate.js": "export const paginate = (items, offset = 0, limit = 10) => { const from = Math.max(0, offset); return items.slice(from, from + limit); };\n" },
+      conclusion: "Fixed pagination without changing the input.",
+    } });
+    const one = paginate({ pin: { provider: "claude", model: "claude-scripted" }, timeoutMinutes: 1 });
+    const ran = await attempt({}, "", one, { command: input => ({
+      file: process.execPath,
+      args: ["--import", import.meta.resolve("tsx"), "--input-type=module", "-e",
+        `import { runEvalWorld } from ${JSON.stringify(pathToFileURL(join(REPO_ROOT, "src/eval-world.ts")).href)};
+         console.log(JSON.stringify(await runEvalWorld(${JSON.stringify(one)}, ${JSON.stringify({ worldDir: input.worldDir, databaseFile: input.databaseFile, deny: [], timeoutMs: 55_000 })})));`],
+      env: { ...process.env, PATH: `${scripted.bin}:${process.env["PATH"]}` } as Record<string, string>,
+    }) });
+    expect(ran.result).toMatchObject({ outcome: "pass", modelReported: "claude-scripted" });
+    expect(scripted.journal().some((entry: { role: string }) => entry.role === "builder")).toBe(true);
+  }, 90_000);
+
   test("a world that runs past its time limit fails, and its whole process group is stopped", async () => {
     const marker = join(dir, "late-write");
     const ran = await attempt({ runs: [{}] }, `require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => require('fs').writeFileSync('${marker}', 'x'), 2000)"], { stdio: "ignore" }); setInterval(() => {}, 1000);`,
@@ -92,6 +110,20 @@ describe("a world's whole process tree", () => {
     expect(() => process.kill(Number(readFileSync(pidFile, "utf8")), 0)).toThrow();
   }, 20_000);
 
+  test("a detached group whose leader exits while a member writes on: graded only after the whole group is gone (Codex round 1 #2)", async () => {
+    // The child starts a leader in a group of its own (observed as a group), which starts a member and exits; the member
+    // is born after the last observation, so only the leader's group witness can say it is still there.
+    const marker = join(dir, "member.done");
+    const member = `setTimeout(() => require('fs').writeFileSync('${marker}', 'done'), 1500)`;
+    const leader = `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(member)}], { stdio: 'ignore' }).unref(); setTimeout(() => process.exit(0), 40)`;
+    const goneAt: boolean[] = [];
+    const ran = await attempt({ runs: [{}] },
+      `const l = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(`setTimeout(() => { ${leader} }, 650)`)}], { stdio: "ignore", detached: true }); l.unref(); setTimeout(() => process.exit(0), 660);`,
+      paginate(), { onTreeGone: () => { goneAt.push(existsSync(marker)); } });
+    expect(goneAt).toEqual([true]);
+    expect(ran.result.outcome).toBe("pass");
+  }, 20_000);
+
   test("a grandchild that never ends: the attempt is an error, never graded, and the world's group is stopped", async () => {
     const pidFile = join(dir, "stuck.pid");
     const ran = await attempt({ runs: [{}] },
@@ -99,6 +131,8 @@ describe("a world's whole process tree", () => {
       paginate(), { settleMs: 800 });
     expect(ran.result).toMatchObject({ outcome: "error", why: expect.stringMatching(/processes didn't end/) });
     expect(ran.graded).toEqual([]);
+    // What the world dispatched is still recorded (Codex round 1 #1): its records were read once the tree was stopped.
+    expect(ran.result).toMatchObject({ apiMicrousd: 300_000, invocations: [expect.objectContaining({ worldRef: expect.stringMatching(/^run:/), recorded: true })] });
     expect(() => process.kill(Number(readFileSync(pidFile, "utf8")), 0)).toThrow();
   }, 20_000);
 });

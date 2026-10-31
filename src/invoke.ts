@@ -18,7 +18,7 @@
  */
 
 import { takeEvalDispatch } from "./eval-gate.js";
-import { adapterFor, auditOf, claudePluginEnv, isolationUnsupported, MONEY_CAPABILITIES, ALL_CREDENTIAL_ENV, type AgentSpec, type Invocation, type ProviderRunner, type AgentEnding } from "./provider.js";
+import { adapterFor, auditOf, claudePluginEnv, isolationUnsupported, ALL_CREDENTIAL_ENV, type AgentSpec, type Invocation, type ProviderRunner, type AgentEnding } from "./provider.js";
 import { readProviderKey, readAuthModeStrict, PROVIDER_KEY_ENV, OWN_KEY_ENV, type AuthMode } from "./keys.js";
 import { ACP_AGENTS, isAcpProvider, isKeyedProvider, type AcpProviderId } from "./acp-agents.js";
 import { launchFromJson, verifyLaunch } from "./acp-attest.js";
@@ -28,7 +28,7 @@ import { attestProvider, type VersionProbe } from "./attest.js";
 import { run as runCommand, runOwnerTag, streamsInput } from "./exec.js";
 import { spawnSync } from "node:child_process";
 import { currentContainment } from "./containment.js";
-import { recordRunModelReported, type Store } from "./store.js";
+import { recordRunBillingBasis, recordRunModelReported, type Store } from "./store.js";
 import type { RunOptions } from "./exec.js";
 import { witnessedRunner } from "./process-custody.js";
 import { underStopWatch } from "./task-control.js";
@@ -253,17 +253,11 @@ export async function invokeAgent(
     );
   }
 
-  // An eval world (eval-gate.ts, docs/plans/evals-nightly.md part C): every dispatch takes one of the attempt's slots
-  // and runs under its cap, carved from the campaign's reservation; past the limit, or on a provider that can't hold a
-  // dollar cap, nothing spawns. Outside an eval world this changes nothing.
+  // An eval world (eval-gate.ts, docs/plans/evals-nightly.md part C): every dispatch takes one of the attempt's slots,
+  // named for this run so the runner can match it to the run's record; past the case's limit nothing spawns. Outside
+  // an eval world this changes nothing.
   const evalSlot = takeEvalDispatch(`run:${runId}`);
-  if (evalSlot.active) {
-    if (!evalSlot.ok) return { kind: "refused", reason: "containment", providerVersion: null, diagnostic: evalSlot.why };
-    if (MONEY_CAPABILITIES[spec.provider].nativeDollarCapFlag === null) {
-      return { kind: "refused", reason: "containment", providerVersion: null, diagnostic: `${spec.provider} can't hold a dollar cap, so it doesn't run in an eval world (budget-unenforceable)` };
-    }
-    invocation = { ...invocation, maxBudgetUsd: Math.min(invocation.maxBudgetUsd ?? evalSlot.capUsd, evalSlot.capUsd) };
-  }
+  if (evalSlot.active && !evalSlot.ok) return { kind: "refused", reason: "containment", providerVersion: null, diagnostic: evalSlot.why };
 
   const adapter = adapterFor(spec.provider);
   const { startSessionId: _untrustedStartSessionId, streamInput: _untrustedStreamInput, ...invocationWithoutStart } = invocation;
@@ -823,6 +817,8 @@ export async function invokeAgent(
   // An ACP run bills as its admission stamp says (store.acpBillingOfRun): its agent's own plan, or metered.
   const acpBilling = isAcpProvider(spec.provider) ? (store.acpBillingOfRun(runId)?.kind === "plan" ? "subscription" as const : "api-key" as const) : null;
   store.fixRunBilling(runId, acpBilling ?? (authMode === "api-key" ? "api-key" : evidence ?? billingOf(spec.provider, store.handle)), new Date());
+  // v141: whether that billing is this run's own evidence or this computer's default (a guess: unknown money).
+  recordRunBillingBasis(store, runId, acpBilling !== null || authMode === "api-key" || evidence !== null ? "evidence" : "default");
 
   const envelope = adapter.parse(result.stdout);
   store.stampAgentReportedUsage(runId, envelope.agentReportedUsage ?? null);

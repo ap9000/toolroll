@@ -139,6 +139,8 @@ export async function gradeCase(input: { caseDir: string; inputDir: string; time
       } catch { /* not the answer */ }
     }
     if (outputs === null) return { outcome: "fail", why: ran.code === 0 ? "the graded program exited without an answer (an exit code alone never passes)" : "the graded program crashed without an answer" };
+    // An answer and then a crash or a nonzero exit is still a crash (Codex round 1 #11): it must answer AND finish cleanly.
+    if (ran.code !== 0) return { outcome: "fail", why: `the graded program exited with ${ran.code} after answering` };
     if (outputs.length !== expected.length) return { outcome: "fail", why: "the graded program answered a different number of inputs" };
     const wrong = expected.findIndex((one, index) => canonical(outputs![index]) !== one);
     return wrong === -1 ? { outcome: "pass", why: null } : { outcome: "fail", why: `wrong answer for input ${wrong + 1} of ${expected.length}` };

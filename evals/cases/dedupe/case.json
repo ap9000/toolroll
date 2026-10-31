@@ -9,9 +9,8 @@
   ],
   "pin": {
     "provider": "claude",
-    "model": "claude-sonnet-4-5-20250929"
+    "model": "claude-sonnet-5-5"
   },
-  "capUsd": 0.75,
   "maxDispatches": 2,
   "timeoutMinutes": 15,
   "grade": {

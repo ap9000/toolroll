@@ -443,7 +443,10 @@ export type LeadProviderAnswer = { text: string; calls: LeadToolCall[]; tokensIn
   /** v140 (docs/plans/evals-nightly.md B1), each from the provider's own report and absent or null when it gave none
    * (never 0): the exact model it says answered, its own turn count (`num_turns`), and the cost it reported in dollars.
    * `reportedCostMicrousd` stays API money only; a subscription harness's reported cost is `reportedCostUsd` alone. */
-  modelReported?: string | null; providerTurns?: number | null; reportedCostUsd?: number | null };
+  modelReported?: string | null; providerTurns?: number | null; reportedCostUsd?: number | null;
+  /** v141: how a subscription harness's own events said this request was billed (its init's key source); null or
+   * absent when they didn't say (unknown money, never assumed to be the plan). */
+  billingReported?: "subscription" | "api-key" | null };
 
 /** Anthropic prices a cache write at 1.25x and a cache read at 0.1x the input price (5-minute cache). */
 export const CACHE_WRITE_RATIO = 1.25;
@@ -654,8 +657,7 @@ export async function performLeadRequest(
   signal: AbortSignal,
   fetcher: typeof fetch = fetch,
 ): Promise<{ ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string }> {
-  // An eval world (eval-gate.ts): each request takes one of the attempt's dispatch slots; its dollars are bounded by the
-  // lead turn's reservation, which lead.ts holds to the slots left × the cap. Past the limit nothing is sent.
+  // An eval world (eval-gate.ts): each request takes one of the attempt's dispatch slots. Past the limit nothing is sent.
   const evalSlot = takeEvalDispatch(`lead:${provider}`);
   if (evalSlot.active && !evalSlot.ok) return { ok: false, problem: "status-eval-dispatch-limit" };
   let response: Response;
@@ -887,6 +889,10 @@ export async function performChatRequest(
   },
   fetcher: typeof fetch = fetch,
 ): Promise<{ ok: true; answer: ProviderAnswer } | { ok: false; problem: string }> {
+  // An eval world (eval-gate.ts, Codex round 1 #3): fleet chat's request takes a dispatch slot too; past the limit, or
+  // with a gate that can't be read, nothing is sent.
+  const evalSlot = takeEvalDispatch(`chat:${args.provider}`);
+  if (evalSlot.active && !evalSlot.ok) return { ok: false, problem: "status-eval-dispatch-limit" };
   const request = composeRequest(args);
   let response: Response;
   try {

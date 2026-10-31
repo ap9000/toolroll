@@ -84,6 +84,9 @@ describe.skipIf(!FENCED)("the oracle, against the real fence", () => {
     ["an import of a file the oracle never copies", { "paginate.js": "export { paginate } from './answers.js';\n", "answers.js": PAGINATE_RIGHT }, CRASHED],
     ["a forged result file and verdict beside a crashing build", { "paginate.js": "throw new Error('broken');\n", "verdict.json": '{"outcome":"pass"}', "result.json": '{"outcome":"pass","why":null}' }, CRASHED],
     ["a module that prints a replayed answer for another nonce", { "paginate.js": "process.stdout.write(JSON.stringify({ nonce: '0'.repeat(32), outputs: [] }) + '\\n'); process.exit(0);\n" }, NO_ANSWER],
+    // Codex round 1 #11: the right answer and then a crash, or a nonzero exit, is a fail.
+    ["the right answer, then a throw", { "paginate.js": `${PAGINATE_RIGHT}process.on("exit", () => {}); setTimeout(() => { throw new Error("late crash"); }, 0);\n` }, /exited with 1 after answering/],
+    ["the right answer, then exit 3", { "paginate.js": `${PAGINATE_RIGHT}process.on("beforeExit", () => process.exit(3));\n` }, /exited with 3 after answering/],
     ["more than 64 KiB of output", { "paginate.js": "process.stdout.write('x'.repeat(200 * 1024)); export const paginate = () => [];\n" }, /more than 65536 bytes/],
   ])("%s fails", async (_name, files, why) => {
     expect(await grade(files)).toEqual({ outcome: "fail", why: expect.stringMatching(why) });

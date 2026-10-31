@@ -17,7 +17,7 @@ import { fullCheckProblem, projectGitDir } from "./check-report.js";
 import { sealedRun } from "./release-recheck.js";
 import { runCheckLevel } from "./check-levels.js";
 import { readVerifiedCommit, verifiedBlobs, verifiedTreeDiff, verifiedTreeEntries } from "./commit-extract.js";
-import { EVAL_HOOKS, evalHookProblem } from "./eval-hooks.js";
+import { EVAL_HOOK_FILES, evalHookProblem } from "./eval-hooks.js";
 import { mightName, testInfrastructure, type TestInfrastructure } from "./test-infra.js";
 import { chatControlHref } from "./chat-controls.js";
 import { INFRA_RERUNS_PER_CANDIDATE, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW, prChecksVerdict, type CheckFailure } from "./release.js";
@@ -186,9 +186,10 @@ const SRC_TEST_INFRA = /^src\/(fixtures\/|(.*\/)?(test-[^/]*|[^/]*-test-support[
 const TEST_FILE = /^(?!.*(^|\/)fixtures?\/)[^]*\.test\.ts$/;
 
 /** The eval set's and GitHub nightly's policy code (docs/plans/evals-nightly.md, part C, finding 10): the cases and
- * oracles, the evaluator, its gate, hooks and world, reviewer scoring, nightly ingestion and their contracts. Where they
- * are called from is held by eval-hooks.ts instead (evalHookProblem). */
-const EVAL_POLICY = /^(evals\/|src\/evals[^/]*\.ts$|src\/eval-[^/]*\.ts$|src\/reviewer-evals\.ts$|src\/nightly-github\.ts$|src\/contracts\/evals[^/]*\.ts$)/;
+ * oracles, the evaluator, its gate, hooks and world, reviewer scoring, nightly ingestion, their contracts, and the
+ * accounting readings evals trust (reported-usage.ts, run-efficiency.ts). Where they are called from, and the store's
+ * accounting reads, are held by eval-hooks.ts instead (evalHookProblem). */
+const EVAL_POLICY = /^(evals\/|src\/evals[^/]*\.ts$|src\/eval-[^/]*\.ts$|src\/reviewer-evals\.ts$|src\/nightly-github\.ts$|src\/contracts\/evals[^/]*\.ts$|src\/reported-usage\.ts$|src\/run-efficiency\.ts$)/;
 
 /** Build or type configuration anywhere: a person approves it. */
 const BUILD_CONFIG = /(^|\/)(tsconfig[^/]*\.json|[^/]*\.config\.[cm]?[jt]s|\.npmrc|\.nvmrc|\.node-version)$/;
@@ -305,8 +306,7 @@ function changeProblem(repo: string, base: string | null, candidate: string): st
   const infra = new Set(scans.flatMap(one => [...one.infra]));
   // The eval and nightly enforcement calls the base holds must all still be in place at the candidate (eval-hooks.ts).
   // One verified read of every listed file per tree (an unreadable tree reads as every file missing: a person decides).
-  const hookFiles = [...new Set(EVAL_HOOKS.map(hook => hook.file))];
-  const blobAt = (tree: string) => { const blobs = verifiedBlobs(gitDir, tree, hookFiles); return (file: string): Buffer | null => blobs.ok ? blobs.value.get(file)?.bytes ?? null : null; };
+  const blobAt = (tree: string) => { const blobs = verifiedBlobs(gitDir, tree, EVAL_HOOK_FILES); return (file: string): Buffer | null => blobs.ok ? blobs.value.get(file)?.bytes ?? null : null; };
   const hooks = evalHookProblem(blobAt(after.value.tree), blobAt(before.value.tree));
   if (hooks !== null) return `${hooks}: a person decides`;
   for (const change of diff.value) {

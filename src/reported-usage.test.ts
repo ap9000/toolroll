@@ -4,7 +4,7 @@
  */
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { parseLeadProviderWrapper, parseProviderWrapper } from "./converse.js";
-import { chatTurnAccounting, openStore, recordRunModelReported, runAccounting, type Store } from "./store.js";
+import { chatTurnAccounting, openStore, recordRunBillingBasis, recordRunModelReported, runAccounting, type Store } from "./store.js";
 import { MODELS_JOIN, chatTurnAmountOf, combineReportedModels, runAmountOf } from "./reported-usage.js";
 
 const T0 = new Date("2026-10-30T12:00:00.000Z");
@@ -46,6 +46,7 @@ test("a run's accounting keeps API dollars, subscription usage and unknown apart
   const plan = run("t-plan");
   store.recordUsage(plan, { tokensIn: 10, tokensOut: 5, costUsd: 1.5, usageJson: cached, agentTurns: 4 });
   store.fixRunBilling(plan, "subscription", T0);
+  recordRunBillingBasis(store, plan, "evidence");
   recordRunModelReported(store, plan, "claude-sonnet-4-5-20250929", false);
   expect(runAccounting(store, plan)).toEqual({ provider: "claude", model: null, modelReported: "claude-sonnet-4-5-20250929", agentTurns: 4,
     usage: { in: 350, out: 5, cacheRead: 300, cacheWrite: 40 }, amount: { kind: "subscription", reportedUsd: 1.5 } });
@@ -53,7 +54,22 @@ test("a run's accounting keeps API dollars, subscription usage and unknown apart
   const billed = run("t-billed");
   store.recordUsage(billed, { tokensIn: 10, tokensOut: 5, costUsd: 0.25, usageJson: cached });
   store.fixRunBilling(billed, "api-key", T0);
+  recordRunBillingBasis(store, billed, "evidence");
   expect(runAccounting(store, billed)?.amount).toEqual({ kind: "api", microusd: 250_000 });
+  // Codex round 1 #4: billing this computer's default guessed (no evidence from the run itself) is unknown, and stays
+  // unknown once any turn guessed; #10: a cost the provider never reported (the cap or nothing written, with its note)
+  // is unknown, never measured spending.
+  const guessed = run("t-guessed");
+  store.recordUsage(guessed, { tokensIn: 10, tokensOut: 5, costUsd: 0.4 });
+  store.fixRunBilling(guessed, "subscription", T0);
+  recordRunBillingBasis(store, guessed, "default");
+  recordRunBillingBasis(store, guessed, "evidence");
+  expect(runAccounting(store, guessed)?.amount).toEqual({ kind: "unknown" });
+  const capped = run("t-capped");
+  store.recordUsage(capped, { tokensIn: 10, tokensOut: 5, costUsd: 0.75, usageJson: JSON.stringify({ cost_note: "cost unknown, charged at the cap" }) });
+  store.fixRunBilling(capped, "subscription", T0);
+  recordRunBillingBasis(store, capped, "evidence");
+  expect(runAccounting(store, capped)?.amount).toEqual({ kind: "unknown" });
   // Billed by use with nothing reported or priced, and a run with no billing at all: unknown, never $0.
   const blank = run("t-blank");
   store.fixRunBilling(blank, "api-key", T0);
@@ -69,6 +85,11 @@ test("a chat request's amount: a subscription's reported cost is usage, an API's
   expect(chatTurnAmountOf({ provider: "openrouter-api", settledMicrousd: 1200, unknownSpend: false, reportedCostUsd: 0.0012 })).toEqual({ kind: "api", microusd: 1200 });
   expect(chatTurnAmountOf({ provider: "anthropic-api", settledMicrousd: 5000, unknownSpend: true, reportedCostUsd: null })).toEqual({ kind: "unknown" });
   expect(chatTurnAmountOf({ provider: "anthropic-api", settledMicrousd: null, unknownSpend: false, reportedCostUsd: null })).toEqual({ kind: "unknown" });
+  // Codex round 1 #4: a subscription harness's request is plan usage only when its own events said so.
+  expect(chatTurnAmountOf({ provider: "claude-subscription", settledMicrousd: 0, unknownSpend: false, reportedCostUsd: 0.02, billingReported: "subscription" })).toEqual({ kind: "subscription", reportedUsd: 0.02 });
+  expect(chatTurnAmountOf({ provider: "claude-subscription", settledMicrousd: 0, unknownSpend: false, reportedCostUsd: 0.02, billingReported: "api-key" })).toEqual({ kind: "api", microusd: 20_000 });
+  expect(chatTurnAmountOf({ provider: "claude-subscription", settledMicrousd: 0, unknownSpend: false, reportedCostUsd: null, billingReported: "api-key" })).toEqual({ kind: "unknown" });
+  expect(chatTurnAmountOf({ provider: "claude-subscription", settledMicrousd: 0, unknownSpend: false, reportedCostUsd: 0.02, billingReported: null })).toEqual({ kind: "unknown" });
 });
 
 test("a chat request's row keeps what was reported and refuses what wasn't a report", () => {

@@ -272,13 +272,14 @@ describe("the lead's turn", () => {
     const subscriptionRunner: SubscriptionLeadRunner = async request => request.history.some(one => one.role === "tool")
       ? { ok: true, answer: { text: "One decision needs you.", calls: [], tokensIn: 90, tokensOut: 12, reportedCostMicrousd: null } }
       : { ok: true, answer: { text: "I will look.", calls: [{ id: "r1", name: "recap", args: {} }], tokensIn: 400, tokensOut: 20, reportedCostMicrousd: null,
-          modelReported: "claude-sonnet-4-5-20250929", providerTurns: 2, reportedCostUsd: 0.0123, cacheReadTokens: 300, cacheWriteTokens: 40 } };
+          modelReported: "claude-sonnet-4-5-20250929", providerTurns: 2, reportedCostUsd: 0.0123, cacheReadTokens: 300, cacheWriteTokens: 40, billingReported: "subscription" } };
     const outcome = await runLeadTurn({ store, who, session: session(0, "alex", subscriptionCredentialKey("claude-subscription")), thread: thread(), config, key: null, message: "what needs me?", subscriptionRunner, clock });
     if (!outcome.ok) throw new Error("turn refused");
     expect(rows(outcome.turn)).toEqual([
       expect.objectContaining({ provider: "claude-subscription", modelReported: "claude-sonnet-4-5-20250929", providerTurns: 2, reportedCostUsd: 0.0123, cacheReadTokens: 300, cacheWriteTokens: 40,
         amount: { kind: "subscription", reportedUsd: 0.0123 } }),
-      expect.objectContaining({ modelReported: null, providerTurns: null, reportedCostUsd: null, cacheReadTokens: null, cacheWriteTokens: null, amount: { kind: "subscription", reportedUsd: null } }),
+      // v141 (Codex round 1 #4): a request whose own events didn't say how it was billed is unknown money, never the plan.
+      expect.objectContaining({ modelReported: null, providerTurns: null, reportedCostUsd: null, cacheReadTokens: null, cacheWriteTokens: null, amount: { kind: "unknown" } }),
     ]);
     expect(outcome.settledMicrousd).toBe(0);
   });

@@ -1,7 +1,7 @@
 /**
  * The eval set (docs/plans/evals-nightly.md, part C1): versioned cases run by the installed plane, each attempt in a
- * throwaway world of its own, graded by a trusted oracle outside the fence, every provider dispatch reserved against a
- * monthly ceiling.
+ * throwaway world of its own, graded by a trusted oracle outside the fence, every provider dispatch through a gate
+ * and every dispatch's spending recorded as it was reported.
  *
  * - **Cases** live in `evals/` (shipped in the package): `manifest.json` lists them; each `cases/<id>/` holds
  *   `case.json`, `fixture/` (the project the agent starts from, plain files), `oracle.mjs` + `probe.mjs` (the hidden
@@ -10,16 +10,15 @@
  *   (`validatedBy` in case.json, changed only in a release a person approves: `evals/` is a policy path).
  * - **Campaigns**: canonical (no flags) seals every case, its version, its pin, k = 3 and the installed build; it is
  *   refused while any case is a draft or any pin isn't an exact model id. Anything else is diagnostic. Admission is one
- *   transaction with a person's proof: no release operation reserved, no deploy draining, the month's ceiling holds the
- *   campaign's worst case, and one campaign of a kind runs at a time.
+ *   transaction with a person's proof: no release operation reserved, no deploy draining, one canonical campaign at a
+ *   time (settlement order). The runner that owns a campaign is recorded, so an interrupted one can be recovered.
  * - **Attempts** run as `toolroll evals attempt …`, a child process of the installed binary in its own process group,
  *   with its own world (database, repository, worktrees, dispatch gate). The runner waits for the whole process tree to
  *   be gone, reads the world's database (read only), extracts the built files from verified Git objects, and only then
  *   asks the oracle (eval-oracle.ts).
- * - **Money**: the campaign reserves its worst case against the month (`eval_spend_month`, shared with reviewer
- *   campaigns). Each attempt carves its own worst case (dispatch limit × cap) from the campaign's reservation, never
- *   from the month again; after it, each dispatch settles at its reported API cost (unknown: its full cap) and the
- *   rest of the carve is released. When the campaign ends, what is left of its reservation is released.
+ * - **Money**: no limit (the owner, 2026-10-30). What every dispatch spent is recorded on every exit path: API dollars,
+ *   subscription usage and unknown kept apart and never added together; a dispatch the world's records don't account
+ *   for, or one that went around the gate, makes the attempt an error with unknown spending.
  *
  * Result-writing authority is this module's alone: a world never gets a handle on the plane's database.
  */
@@ -27,6 +26,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, realpathSync, rmSync, writeSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
+import { homedir, hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { readVerifiedCommit, verifiedBlobs } from "./commit-extract.js";
@@ -38,14 +38,13 @@ import { observeProcessTree, stopProcessTree } from "./process-tree.js";
 import { processMayBeAlive } from "./process-liveness.js";
 import { combineReportedModels, type ReportedAmount } from "./reported-usage.js";
 import { authenticateApprover } from "./scope.js";
+import { deriveRunEfficiency } from "./run-efficiency.js";
 import { chatTurnAccounting, runAccounting, Store } from "./store.js";
 
 // Loaded on first use, like the store: a static import prints Node's SQLite warning and can't be bundled.
 const sqlite = (): typeof import("node:sqlite") => createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
 
 export const EVALS_ROOT = fileURLToPath(new URL("../evals/", import.meta.url));
-/** Decision 8: $200 of API dollars a month, reservation-backed (admits one eval campaign at a time). */
-export const EVAL_MONTH_CEILING_MICROUSD = 200_000_000;
 export const EVAL_K = 3;
 /** An errored attempt gets one replacement when the plane confirms the error; at most this many a campaign. */
 export const EVAL_MAX_REPLACEMENTS = 3;
@@ -69,7 +68,6 @@ export type EvalCase = {
   goal: string;
   touches: string[];
   pin: { provider: "claude"; model: string };
-  capMicrousd: number;
   maxDispatches: number;
   timeoutMinutes: number;
   /** build: the files the oracle copies from the built commit. ask: the options the question must offer (patterns). */
@@ -137,10 +135,9 @@ function caseOf(id: string, dir: string, files: Map<string, Buffer>): { ok: true
   const title = text(raw["title"], 200), goal = text(raw["goal"], 4000);
   const touches = Array.isArray(raw["touches"]) && raw["touches"].every(one => typeof one === "string" && FIXTURE_PATH.test(one)) ? raw["touches"] as string[] : null;
   const pin = raw["pin"] as { provider?: unknown; model?: unknown } | undefined;
-  const capUsd = typeof raw["capUsd"] === "number" && raw["capUsd"] > 0 && raw["capUsd"] <= 5 ? raw["capUsd"] : null;
   const maxDispatches = whole(raw["maxDispatches"], 1, 10), timeoutMinutes = whole(raw["timeoutMinutes"], 1, 60);
   const validatedBy = raw["validatedBy"] === null ? null : text(raw["validatedBy"], 80);
-  if (kind === null || title === null || goal === null || touches === null || capUsd === null || maxDispatches === null || timeoutMinutes === null) return bad("case.json is missing a field or has one out of range");
+  if (kind === null || title === null || goal === null || touches === null || maxDispatches === null || timeoutMinutes === null) return bad("case.json is missing a field or has one out of range");
   if (raw["validatedBy"] !== null && validatedBy === null) return bad("validatedBy is a person's name, or null while the case is a draft");
   if (typeof pin?.provider !== "string" || typeof pin.model !== "string") return bad("its pin names no provider and model");
   const grade = raw["grade"] as Record<string, unknown> | undefined;
@@ -159,7 +156,7 @@ function caseOf(id: string, dir: string, files: Map<string, Buffer>): { ok: true
   for (const [path, bytes] of files) if (path.startsWith("fixture/")) fixture[path.slice("fixture/".length)] = bytes.toString("utf8");
   if (Object.keys(fixture).length === 0) return bad("its fixture is empty");
   if (!Object.keys(fixture).every(path => FIXTURE_PATH.test(path) && !path.split("/").includes(".git"))) return bad("a fixture path isn't a plain path");
-  return { ok: true, value: { id, version: digestOf(files), dir, kind, title, goal, touches, pin: { provider: "claude", model: pin.model }, capMicrousd: Math.round(capUsd * 1_000_000),
+  return { ok: true, value: { id, version: digestOf(files), dir, kind, title, goal, touches, pin: { provider: "claude", model: pin.model },
     maxDispatches, timeoutMinutes, grade: graded, validatedBy, fixture } };
 }
 
@@ -213,190 +210,231 @@ export function planCampaign(set: Extract<EvalSet, { ok: true }>, ask: CampaignA
   return { ok: true, plan: { canonical, k, cases } };
 }
 
-/** One attempt's worst case: its dispatch limit × its cap. */
-export const attemptWorstMicrousd = (one: Pick<EvalCase, "maxDispatches" | "capMicrousd">): number => one.maxDispatches * one.capMicrousd;
-/** A campaign's worst case: every attempt, plus its replacements at the dearest case's worst. */
-export function campaignWorstMicrousd(plan: CampaignPlan): number {
-  const each = plan.cases.map(attemptWorstMicrousd);
-  return each.reduce((sum, one) => sum + one * plan.k, 0) + EVAL_MAX_REPLACEMENTS * Math.max(0, ...each);
-}
-
-export const monthOf = (now: Date): string => now.toISOString().slice(0, 7);
-const usd = (micro: number): string => `$${(micro / 1_000_000).toFixed(2)}`;
-
-export type Admission = { ok: true; id: string } | { ok: false; reason: "person-only" | "release-busy" | "over-ceiling" | "already-running"; message: string };
+export type Admission = { ok: true; id: string } | { ok: false; reason: "person-only" | "release-busy" | "already-running"; message: string };
 
 /**
- * Admit a campaign (eval or reviewer): a person proved now, nothing releasing or deploying, and the month's ceiling
- * holding its worst case on top of everything already reserved and settled. One transaction: the proof, the checks and
- * the reservation, so two campaigns admitted at once can't both pass a ceiling only one fits.
+ * Admit a campaign (eval or reviewer): a person proved now, nothing releasing or deploying, and no other canonical
+ * campaign running (canonical campaigns settle in the order they were admitted). One transaction: the proof, the checks
+ * and the row, with the runner that owns it (this process, on this computer) for recovery.
  */
 export function admitEvalCampaign(store: Store, input: {
   kind: "eval" | "reviewer"; canonical: boolean; manifestDigest: string; buildDigest: string; version: string; k: number;
-  sealed: unknown; reservedMicrousd: number; as: string; token: string; now: Date; id?: string; ceilingMicrousd?: number;
+  sealed: unknown; as: string; token: string; now: Date; id?: string; runner?: { host: string; pid: number };
 }): Admission {
-  if (!Number.isSafeInteger(input.reservedMicrousd) || input.reservedMicrousd < 0) throw new Error("a campaign reserves a whole, non-negative amount");
   const id = input.id ?? `ev-${input.now.toISOString().slice(0, 10).replace(/-/g, "")}-${randomBytes(4).toString("hex")}`;
-  const month = monthOf(input.now);
+  const runner = input.runner ?? { host: hostname(), pid: process.pid };
   try {
     return store.transact((): Admission => {
       const proved = authenticateApprover(store, input.as, input.token, null);
-      if (!proved.ok || !personProof(proved.method)) return { ok: false, reason: "person-only", message: "Only an approver, proved as a person with their password, starts an eval campaign: it spends money." };
+      if (!proved.ok || !personProof(proved.method)) return { ok: false, reason: "person-only", message: "Only an approver, proved as a person with their password, starts an eval campaign: it calls models." };
       const busy = store.handle.prepare("SELECT COUNT(*) AS n FROM release_operation WHERE state IN ('reserved','running')").get();
       if (Number(busy?.["n"] ?? 0) > 0 || updateAdmissionPaused(store.handle)) return { ok: false, reason: "release-busy", message: "A release is deploying or merging, so no eval campaign starts now. Try again once it's done." };
-      store.handle.prepare("INSERT OR IGNORE INTO eval_spend_month (month, ceiling_microusd) VALUES (?, ?)").run(month, input.ceilingMicrousd ?? EVAL_MONTH_CEILING_MICROUSD);
-      const ledger = store.handle.prepare("SELECT ceiling_microusd, reserved_microusd, settled_microusd FROM eval_spend_month WHERE month = ?").get(month)!;
-      const ceiling = Number(ledger["ceiling_microusd"]), reserved = Number(ledger["reserved_microusd"]), settled = Number(ledger["settled_microusd"]);
-      if (settled + reserved + input.reservedMicrousd > ceiling) {
-        return { ok: false, reason: "over-ceiling", message: `This campaign reserves up to ${usd(input.reservedMicrousd)}, and this month's eval spending (${usd(settled)} spent, ${usd(reserved)} reserved) would pass its ${usd(ceiling)} ceiling. Nothing started.` };
+      if (input.canonical) {
+        const running = store.handle.prepare("SELECT id FROM eval_campaign WHERE canonical = 1 AND state = 'running'").get();
+        if (running !== undefined) return { ok: false, reason: "already-running", message: `Canonical campaign ${String(running["id"])} is still running; canonical campaigns run one at a time.` };
       }
-      const running = store.handle.prepare("SELECT id FROM eval_campaign WHERE kind = ? AND state = 'running'").get(input.kind);
-      if (running !== undefined) return { ok: false, reason: "already-running", message: `Campaign ${String(running["id"])} is still running; one runs at a time.` };
       store.handle.prepare(`INSERT INTO eval_campaign (id, kind, canonical, manifest_digest, build_digest, version, baseline_campaign, k, sealed_json, started_by, started_proof,
-          admitted_at, state, month, reserved_microusd) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, 'running', ?, ?)`)
-        .run(id, input.kind, input.canonical ? 1 : 0, input.manifestDigest, input.buildDigest, input.version, input.k, JSON.stringify(input.sealed), input.as, proved.method, input.now.toISOString(), month, input.reservedMicrousd);
-      store.handle.prepare("UPDATE eval_spend_month SET reserved_microusd = reserved_microusd + ? WHERE month = ?").run(input.reservedMicrousd, month);
+          runner_host, runner_pid, admitted_at, state) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 'running')`)
+        .run(id, input.kind, input.canonical ? 1 : 0, input.manifestDigest, input.buildDigest, input.version, input.k, JSON.stringify(input.sealed), input.as, proved.method,
+          runner.host, runner.pid, input.now.toISOString());
       store.recordAction({ at: input.now.toISOString(), actor: input.as, repo: null, taskId: null, runId: null, action: "eval campaign started", outcome: input.canonical ? "canonical" : "diagnostic", source: "request",
-        detail: `${input.kind} campaign ${id}: reserves ${usd(input.reservedMicrousd)} of ${month}'s eval ceiling` });
+        detail: `${input.kind} campaign ${id}` });
       return { ok: true, id };
     });
   } catch (error) {
-    // The unique running index is the last word on "one at a time" when two admissions race.
-    if (/UNIQUE constraint failed: eval_campaign/.test(String((error as Error).message))) return { ok: false, reason: "already-running", message: "Another campaign started at the same moment; one runs at a time." };
+    // The unique running index is the last word on "one canonical at a time" when two admissions race.
+    if (/UNIQUE constraint failed: eval_campaign/.test(String((error as Error).message))) return { ok: false, reason: "already-running", message: "Another canonical campaign started at the same moment; they run one at a time." };
     throw error;
   }
 }
 
-/** Carve one attempt's worst case from its campaign's reservation (never from the month again) and record the attempt.
- * Refused when the campaign isn't running or its reservation can't hold it. */
-export function carveEvalAttempt(store: Store, input: { campaign: string; caseId: string; caseVersion: string; n: number; replaces: number; carveMicrousd: number; modelPinned: string; now: Date }):
+/** Record one attempt's start (its identity is unique). Refused when the campaign isn't running. */
+export function startEvalAttempt(store: Store, input: { campaign: string; caseId: string; caseVersion: string; n: number; replaces: number; modelPinned: string; now: Date }):
   { ok: true; attempt: number } | { ok: false; why: string } {
   return store.transact(() => {
-    const campaign = store.handle.prepare("SELECT state, reserved_microusd, carved_microusd FROM eval_campaign WHERE id = ?").get(input.campaign);
+    const campaign = store.handle.prepare("SELECT state FROM eval_campaign WHERE id = ?").get(input.campaign);
     if (campaign === undefined || campaign["state"] !== "running") return { ok: false as const, why: "the campaign isn't running" };
-    if (Number(campaign["carved_microusd"]) + input.carveMicrousd > Number(campaign["reserved_microusd"])) return { ok: false as const, why: "the campaign's reservation is used up" };
-    store.handle.prepare("UPDATE eval_campaign SET carved_microusd = carved_microusd + ? WHERE id = ?").run(input.carveMicrousd, input.campaign);
-    const made = store.handle.prepare("INSERT INTO eval_attempt (campaign, case_id, case_version, n, replaces, model_pinned, carved_microusd, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(input.campaign, input.caseId, input.caseVersion, input.n, input.replaces, input.modelPinned, input.carveMicrousd, input.now.toISOString());
+    const made = store.handle.prepare("INSERT INTO eval_attempt (campaign, case_id, case_version, n, replaces, model_pinned, started_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(input.campaign, input.caseId, input.caseVersion, input.n, input.replaces, input.modelPinned, input.now.toISOString());
     return { ok: true as const, attempt: Number(made.lastInsertRowid) };
   });
 }
 
+/** Where an attempt's world is, and its process group once spawned: what recovery reads if the runner stops. */
+function markAttemptWorld(store: Store, attempt: number, worldDir: string, pgid: number | null): void {
+  store.handle.prepare("UPDATE eval_attempt SET world_dir = ?, world_pgid = COALESCE(?, world_pgid) WHERE id = ? AND outcome IS NULL").run(worldDir, pgid, attempt);
+}
+
+type WorldProcesses = { state: "not-started" | "starting" | "watching" | "unknown" | "stopped"; witnesses: [number, boolean][] };
+
+/** Saved outside the world: recovery must check detached groups as well as the world's original group. */
+function recordWorldProcesses(store: Store, attempt: number, processes: WorldProcesses): void {
+  store.handle.prepare("UPDATE eval_attempt SET world_processes_json = ? WHERE id = ? AND outcome IS NULL").run(JSON.stringify(processes), attempt);
+}
+
 export type EvalOutcome = "pass" | "fail" | "error" | "unevaluated";
-export type InvocationSettlement = { kind: string; worldRef: string; reservedMicrousd: number; settledMicrousd: number; unknown: boolean };
+/** One provider dispatch an attempt's world made: its record (`run:<id>`, `chat_turn:<id>`) or the gate slot no record
+ * accounts for (`slot:<n>`), what it was billed as, and the model it reported. */
+export type EvalDispatchRecord = { kind: string; worldRef: string; recorded: boolean; amount: ReportedAmount; modelReported: string | null };
 export type AttemptResult = {
-  outcome: EvalOutcome; why: string | null; modelReported: string | null;
+  outcome: EvalOutcome; why: string | null; modelReported: string | null; dispatches: number | null;
   apiMicrousd: number | null; subscriptionMicrousd: number | null; usageUnknown: boolean;
   turns: number | null; tokensIn: number | null; cacheRead: number | null; cacheWrite: number | null; tokensOut: number | null; toolCalls: number | null;
-  wallMs: number; invocations: InvocationSettlement[];
+  wallMs: number; invocations: EvalDispatchRecord[];
 };
 
-/** Settle a finished attempt, once: its dispatches against the campaign's reservation (each at its reported API cost,
- * unknown at its full cap), the month's settled dollars, and the release of the rest of its carve. */
-export function settleEvalAttempt(store: Store, attempt: number, result: AttemptResult, now: Date): void {
+/** Record a finished attempt, once: its outcome, each dispatch as it was billed, and its totals. */
+export function recordEvalAttempt(store: Store, attempt: number, result: AttemptResult, now: Date): void {
   store.transact(() => {
-    const row = store.handle.prepare("SELECT a.campaign, a.carved_microusd, a.outcome, c.month FROM eval_attempt a JOIN eval_campaign c ON c.id = a.campaign WHERE a.id = ?").get(attempt);
+    const row = store.handle.prepare("SELECT outcome FROM eval_attempt WHERE id = ?").get(attempt);
     if (row === undefined) throw new Error(`no eval attempt ${attempt}`);
     if (row["outcome"] !== null) return;
-    const settled = result.invocations.reduce((sum, one) => sum + one.settledMicrousd, 0);
     for (const one of result.invocations) {
-      store.handle.prepare("INSERT INTO eval_invocation (attempt, kind, world_ref, reserved_microusd, settled_microusd, unknown) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(attempt, one.kind.slice(0, 40), one.worldRef.slice(0, 80), one.reservedMicrousd, one.settledMicrousd, one.unknown ? 1 : 0);
+      const api = one.amount.kind === "api" ? one.amount.microusd : null;
+      const subscription = one.amount.kind === "subscription" && one.amount.reportedUsd !== null ? Math.round(one.amount.reportedUsd * 1_000_000) : null;
+      store.handle.prepare(`INSERT INTO eval_invocation (attempt, kind, world_ref, recorded, amount, api_microusd, subscription_microusd, model_reported) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT (attempt, world_ref) DO NOTHING`)
+        .run(attempt, one.kind.slice(0, 40), one.worldRef.slice(0, 80), one.recorded ? 1 : 0, one.amount.kind, api, subscription, one.modelReported);
     }
-    store.handle.prepare(`UPDATE eval_attempt SET outcome = ?, error_why = ?, model_reported = ?, api_microusd = ?, subscription_microusd = ?, usage_unknown = ?, turns = ?, tokens_in = ?,
-        cache_read = ?, cache_write = ?, tokens_out = ?, tool_calls = ?, wall_ms = ?, finished_at = ? WHERE id = ?`)
-      .run(result.outcome, result.why === null ? null : result.why.slice(0, 500), result.modelReported, result.apiMicrousd, result.subscriptionMicrousd, result.usageUnknown ? 1 : 0, result.turns,
-        result.tokensIn, result.cacheRead, result.cacheWrite, result.tokensOut, result.toolCalls, result.wallMs, now.toISOString(), attempt);
-    store.handle.prepare("UPDATE eval_campaign SET settled_microusd = settled_microusd + ? WHERE id = ?").run(settled, row["campaign"] as string);
-    // The carve leaves the month's reservation as its dispatches settle into the month's spending.
-    store.handle.prepare("UPDATE eval_spend_month SET reserved_microusd = MAX(0, reserved_microusd - ?), settled_microusd = settled_microusd + ? WHERE month = ?")
-      .run(Number(row["carved_microusd"]), settled, row["month"] as string);
+    store.handle.prepare(`UPDATE eval_attempt SET outcome = ?, error_why = ?, model_reported = ?, dispatches = ?, api_microusd = ?, subscription_microusd = ?, usage_unknown = ?,
+        turns = ?, tokens_in = ?, cache_read = ?, cache_write = ?, tokens_out = ?, tool_calls = ?, wall_ms = ?, finished_at = ? WHERE id = ?`)
+      .run(result.outcome, result.why === null ? null : result.why.slice(0, 500), result.modelReported, result.dispatches, result.apiMicrousd, result.subscriptionMicrousd,
+        result.usageUnknown ? 1 : 0, result.turns, result.tokensIn, result.cacheRead, result.cacheWrite, result.tokensOut, result.toolCalls, result.wallMs, now.toISOString(), attempt);
   });
 }
 
-/** End a campaign, once: complete or incomplete, and what is left of its reservation released from the month. */
+/** End a campaign, once: complete or incomplete. */
 export function finishEvalCampaign(store: Store, id: string, state: "complete" | "incomplete", why: string | null, now: Date): void {
-  store.transact(() => {
-    const row = store.handle.prepare("SELECT state, month, reserved_microusd, carved_microusd, released FROM eval_campaign WHERE id = ?").get(id);
-    if (row === undefined || row["state"] !== "running") return;
-    const left = Number(row["reserved_microusd"]) - Number(row["carved_microusd"]);
-    store.handle.prepare("UPDATE eval_campaign SET state = ?, why = ?, finished_at = ?, released = 1 WHERE id = ?").run(state, why, now.toISOString(), id);
-    if (Number(row["released"]) === 0) store.handle.prepare("UPDATE eval_spend_month SET reserved_microusd = MAX(0, reserved_microusd - ?) WHERE month = ?").run(left, row["month"] as string);
-  });
+  store.handle.prepare("UPDATE eval_campaign SET state = ?, why = ?, finished_at = ? WHERE id = ? AND state = 'running'").run(state, why, now.toISOString(), id);
+}
+
+/** What a campaign spent, from its attempts as recorded: API dollars (null when any dispatch's money is unknown),
+ * subscription usage (null when any is unknown or unreported), and how many attempts had unknown spending. Never one
+ * total of the three. */
+export function campaignSpending(store: Store, id: string): { apiMicrousd: number | null; subscriptionMicrousd: number | null; unknownAttempts: number; attempts: number } {
+  const rows = store.handle.prepare("SELECT api_microusd, subscription_microusd, usage_unknown FROM eval_attempt WHERE campaign = ? AND outcome IS NOT NULL").all(id);
+  const total = (column: string): number | null => rows.some(row => row[column] === null) ? null : rows.reduce((sum, row) => sum + Number(row[column]), 0);
+  return { apiMicrousd: total("api_microusd"), subscriptionMicrousd: total("subscription_microusd"), unknownAttempts: rows.filter(row => Number(row["usage_unknown"]) === 1).length, attempts: rows.length };
 }
 
 // ------------------------------------------------------------------ collecting a world
 
-export type WorldDispatches = { invocations: InvocationSettlement[]; modelReported: string | null; overLimit: boolean; ungated: boolean;
+export type WorldDispatches = {
+  invocations: EvalDispatchRecord[]; modelReported: string | null; dispatches: number | null;
+  /** Asked past the case's limit (the gate refused it), or more dispatches than the limit recorded. */
+  overLimit: boolean;
+  /** A dispatch the gate and the records don't agree on: a record with no slot (it went around the gate), a slot with no
+   * record, or slots that can't be read. Its spending is unknown and the attempt is an error. */
+  unaccounted: boolean;
   apiMicrousd: number | null; subscriptionMicrousd: number | null; usageUnknown: boolean;
-  turns: number | null; tokensIn: number | null; cacheRead: number | null; cacheWrite: number | null; tokensOut: number | null };
+  turns: number | null; tokensIn: number | null; cacheRead: number | null; cacheWrite: number | null; tokensOut: number | null; toolCalls: number | null;
+};
 
-const noDispatches = (): WorldDispatches => ({ invocations: [], modelReported: null, overLimit: false, ungated: false, apiMicrousd: 0, subscriptionMicrousd: 0, usageUnknown: false,
-  turns: null, tokensIn: null, cacheRead: null, cacheWrite: null, tokensOut: null });
 const sum = (values: (number | null)[]): number | null => values.some(one => one === null) ? null : values.reduce<number>((total, one) => total + (one as number), 0);
+const UNKNOWN: ReportedAmount = { kind: "unknown" };
 
-/** Every provider dispatch a world made, from its own database (opened read only) and its gate's slots: each settled
- * at its reported API cost, subscription usage kept apart (0 API dollars), unknown at the full cap. A dispatch the
- * database shows with no slot (the gate was bypassed: `ungated`) and a slot no record accounts for (a lead request that
- * left no row) both settle at the cap. */
-export function collectWorld(world: Store, gateDir: string, one: Pick<EvalCase, "maxDispatches" | "capMicrousd">): WorldDispatches {
-  const cap = one.capMicrousd;
+/** Every provider dispatch a world made, from its own records (its database, opened read only; null when there is none
+ * or it can't be read) and its gate's slots: each with what it was billed as and the model it reported. A slot no
+ * record accounts for, and a record no slot does, is a dispatch with unknown money and an unknown model. */
+export function collectWorld(world: Store | null, gateDir: string, maxDispatches: number, evidenceRoot: string, now: Date): WorldDispatches {
   const slots = evalGateSlots(gateDir);
-  const runs = world.handle.prepare("SELECT id, role FROM run WHERE provider_started_at IS NOT NULL ORDER BY id").all().map(row => ({ id: Number(row["id"]), role: String(row["role"]) }));
-  const turns = world.handle.prepare("SELECT id FROM chat_turn WHERE state IN ('running','answered','failed') ORDER BY id").all().map(row => Number(row["id"]));
-  const invocations: InvocationSettlement[] = [];
-  const models: (string | null)[] = [];
-  const api: (number | null)[] = [], subscription: (number | null)[] = [], providerTurns: (number | null)[] = [];
-  const tokensIn: (number | null)[] = [], cacheRead: (number | null)[] = [], cacheWrite: (number | null)[] = [], tokensOut: (number | null)[] = [];
-  let usageUnknown = slots === null;
-  const settle = (kind: string, worldRef: string, amount: ReportedAmount) => {
-    if (amount.kind === "unknown") usageUnknown = true;
-    api.push(amount.kind === "api" ? amount.microusd : amount.kind === "subscription" ? 0 : null);
-    subscription.push(amount.kind === "subscription" ? (amount.reportedUsd === null ? null : Math.round(amount.reportedUsd * 1_000_000)) : amount.kind === "api" ? 0 : null);
-    invocations.push({ kind, worldRef, reservedMicrousd: cap, settledMicrousd: amount.kind === "api" ? amount.microusd : amount.kind === "unknown" ? cap : 0, unknown: amount.kind === "unknown" });
+  const invocations: EvalDispatchRecord[] = [];
+  const turns: (number | null)[] = [], tokensIn: (number | null)[] = [], cacheRead: (number | null)[] = [], cacheWrite: (number | null)[] = [], tokensOut: (number | null)[] = [];
+  const toolCalls: (number | null)[] = [];
+  const unrecorded = (slot: { n: number; kind: string }): void => {
+    invocations.push({ kind: "unrecorded", worldRef: `slot:${slot.n}`, recorded: false, amount: UNKNOWN, modelReported: null });
+    for (const list of [turns, tokensIn, cacheRead, cacheWrite, tokensOut, toolCalls]) list.push(null);
   };
-  for (const run of runs) {
-    const read = runAccounting(world, run.id);
-    settle(run.role, `run:${run.id}`, read?.amount ?? { kind: "unknown" });
-    models.push(read?.modelReported ?? null);
-    providerTurns.push(read?.agentTurns ?? null); tokensIn.push(read?.usage.in ?? null); cacheRead.push(read?.usage.cacheRead ?? null); cacheWrite.push(read?.usage.cacheWrite ?? null); tokensOut.push(read?.usage.out ?? null);
-  }
-  for (const id of turns) {
-    const read = chatTurnAccounting(world, id);
-    settle("lead", `chat_turn:${id}`, read?.amount ?? { kind: "unknown" });
-    models.push(read?.modelReported ?? null);
-    providerTurns.push(read?.providerTurns ?? null); tokensIn.push(read?.tokensIn ?? null); cacheRead.push(read?.cacheReadTokens ?? null); cacheWrite.push(read?.cacheWriteTokens ?? null); tokensOut.push(read?.tokensOut ?? null);
-  }
-  const runSlots = new Set((slots ?? []).filter(slot => slot.kind.startsWith("run:")).map(slot => slot.kind));
-  const chatSlots = (slots ?? []).filter(slot => !slot.kind.startsWith("run:"));
-  // Unreadable slots: every recorded dispatch counts as ungated.
-  const ungated = slots === null ? runs.length + turns.length > 0 : runs.some(run => !runSlots.has(`run:${run.id}`)) || turns.length > chatSlots.length;
-  // A run slot whose run never reached its provider spent nothing; a run slot with no run at all, or a chat slot past
-  // the recorded chat requests, may have been sent: the cap.
-  for (const slot of slots ?? []) {
-    if (slot.kind.startsWith("run:")) {
-      const id = Number(slot.kind.slice(4));
-      if (Number.isSafeInteger(id) && world.handle.prepare("SELECT 1 FROM run WHERE id = ?").get(id) !== undefined) continue;
-      settle("unrecorded", `slot:${slot.n}`, { kind: "unknown" });
+  let unaccounted = slots === null;
+  if (world === null) {
+    for (const slot of slots !== null && slots.length > 0 ? slots : [{ n: 0, kind: "unreadable" }]) unrecorded(slot);
+    unaccounted = true;
+  } else {
+    try {
+      const runs = world.handle.prepare("SELECT id, role FROM run WHERE provider_started_at IS NOT NULL ORDER BY id").all().map(row => ({ id: Number(row["id"]), role: String(row["role"]) }));
+      const runSlots = new Set((slots ?? []).filter(slot => slot.kind.startsWith("run:")).map(slot => slot.kind));
+      const chatSlots = (slots ?? []).filter(slot => !slot.kind.startsWith("run:"));
+      for (const run of runs) {
+        const read = runAccounting(world, run.id);
+        if (!runSlots.has(`run:${run.id}`)) unaccounted = true;
+        invocations.push({ kind: run.role, worldRef: `run:${run.id}`, recorded: true, amount: read?.amount ?? UNKNOWN, modelReported: read?.modelReported ?? null });
+        turns.push(read?.agentTurns ?? null); tokensIn.push(read?.usage.in ?? null); cacheRead.push(read?.usage.cacheRead ?? null); cacheWrite.push(read?.usage.cacheWrite ?? null); tokensOut.push(read?.usage.out ?? null);
+        toolCalls.push(toolCallsOf(world, run.id, evidenceRoot, now));
+      }
+      const chats = world.handle.prepare("SELECT id FROM chat_turn WHERE state IN ('running','answered','failed') ORDER BY id").all().map(row => Number(row["id"]));
+      for (const id of chats) {
+        const read = chatTurnAccounting(world, id);
+        invocations.push({ kind: "lead", worldRef: `chat_turn:${id}`, recorded: true, amount: read?.amount ?? UNKNOWN, modelReported: read?.modelReported ?? null });
+        turns.push(read?.providerTurns ?? null); tokensIn.push(read?.tokensIn ?? null); cacheRead.push(read?.cacheReadTokens ?? null); cacheWrite.push(read?.cacheWriteTokens ?? null); tokensOut.push(read?.tokensOut ?? null);
+        // A chat request's own tool calls aren't step-recorded: unknown.
+        toolCalls.push(null);
+      }
+      if (chats.length > chatSlots.length) unaccounted = true;
+      // A run slot whose run never reached its provider spent nothing; a run slot with no run at all, or a chat slot past
+      // the recorded chat requests, may have been sent.
+      for (const slot of slots ?? []) {
+        if (!slot.kind.startsWith("run:")) continue;
+        const id = Number(slot.kind.slice(4));
+        if (Number.isSafeInteger(id) && world.handle.prepare("SELECT 1 FROM run WHERE id = ?").get(id) !== undefined) continue;
+        unrecorded(slot);
+        unaccounted = true;
+      }
+      for (const slot of chatSlots.slice(chats.length)) { unrecorded(slot); unaccounted = true; }
+    } catch {
+      // Keep every charge already read. A damaged or older world must not prevent settlement or turn missing
+      // dispatches into zero spending. The synthetic slot is explicitly unknown, never a measured call.
+      unrecorded({ n: 0, kind: "unreadable" });
+      unaccounted = true;
     }
   }
-  for (const slot of chatSlots.slice(turns.length)) settle("unrecorded", `slot:${slot.n}`, { kind: "unknown" });
-  const dispatches = Math.max(invocations.length, slots?.length ?? 0);
+  if (slots === null && !invocations.some(one => one.worldRef === "slot:0")) unrecorded({ n: 0, kind: "unreadable" });
+  const moneyUnknown = invocations.some(one => one.amount.kind === "unknown");
+  const usageUnknown = moneyUnknown || invocations.some(one => one.amount.kind === "subscription" && one.amount.reportedUsd === null);
   let modelReported: string | null = null;
-  for (const [index, model] of models.entries()) modelReported = index === 0 ? model : combineReportedModels(modelReported, model);
-  return { invocations, modelReported: models.length === 0 ? null : modelReported, overLimit: dispatches > one.maxDispatches || evalGateOverLimit(gateDir), ungated,
-    apiMicrousd: usageUnknown ? null : sum(api), subscriptionMicrousd: sum(subscription), usageUnknown,
-    turns: sum(providerTurns), tokensIn: sum(tokensIn), cacheRead: sum(cacheRead), cacheWrite: sum(cacheWrite), tokensOut: sum(tokensOut) };
+  for (const [index, one] of invocations.entries()) modelReported = index === 0 ? one.modelReported : combineReportedModels(modelReported, one.modelReported);
+  const count = slots === null || world === null ? null : Math.max(invocations.length, slots.length);
+  return {
+    invocations, modelReported: unaccounted || invocations.length === 0 ? null : modelReported, dispatches: count,
+    overLimit: (count ?? 0) > maxDispatches || evalGateOverLimit(gateDir), unaccounted,
+    apiMicrousd: moneyUnknown ? null : sum(invocations.map(one => one.amount.kind === "api" ? one.amount.microusd : 0)),
+    subscriptionMicrousd: moneyUnknown ? null : sum(invocations.map(one => one.amount.kind === "subscription" ? (one.amount.reportedUsd === null ? null : Math.round(one.amount.reportedUsd * 1_000_000)) : 0)),
+    usageUnknown, turns: unaccounted ? null : sum(turns), tokensIn: unaccounted ? null : sum(tokensIn), cacheRead: unaccounted ? null : sum(cacheRead), cacheWrite: unaccounted ? null : sum(cacheWrite), tokensOut: unaccounted ? null : sum(tokensOut), toolCalls: unaccounted ? null : sum(toolCalls),
+  };
+}
+
+/** A run's tool calls from its step records (run-efficiency.ts stepsOf), read before the world is removed; null when
+ * the records are absent, expired or incomplete. */
+function toolCallsOf(world: Store, runId: number, evidenceRoot: string, now: Date): number | null {
+  const run = world.getRun(runId);
+  if (run === null) return null;
+  const usageJson = world.handle.prepare("SELECT usage_json FROM run WHERE id = ?").get(runId)?.["usage_json"];
+  try {
+    const steps = deriveRunEfficiency({ ...run, usageJson: typeof usageJson === "string" ? usageJson : null }, evidenceRoot, now).steps;
+    return steps.state === "complete" ? steps.total : null;
+  } catch { return null; }
+}
+
+/** A world's records, read only; null when there is no database or it can't be read. */
+function openWorld(databaseFile: string): Store | null {
+  try { lstatSync(databaseFile); } catch { return null; }
+  try { return new Store(new (sqlite().DatabaseSync)(databaseFile, { readOnly: true })); } catch { return null; }
 }
 
 // ------------------------------------------------------------------ one attempt
 
-/** The installed build's identity: its version and a digest of every file of the code that is running (dist when
- * installed, the sources in a checkout). A change between attempts stops the campaign as incomplete. */
-export function installedBuildDigest(version: string): string {
+/** The installed build's identity: its version, a digest of every file of the code that is running (dist when
+ * installed, the sources in a checkout), and the service definitions that say which runtime the plane runs (a deploy
+ * rewrites them to another runtime's folder). A change between attempts, or before the end, stops the campaign as
+ * incomplete. */
+export function installedBuildDigest(version: string, home: string = homedir()): string {
   const here = dirname(fileURLToPath(import.meta.url));
-  const files = folderFilesDeep(here);
-  return sha256(`${version}\0${files}`);
+  const units: string[] = [];
+  for (const folder of [join(home, "Library", "LaunchAgents"), join(home, ".config", "systemd", "user")]) {
+    let names: string[] = [];
+    try { names = readdirSync(folder).sort(); } catch { continue; }
+    for (const name of names) if (/toolroll|standing-orders/i.test(name)) units.push(`${name}\0${sha256(readNoFollow(join(folder, name), 1024 * 1024) ?? Buffer.from("unreadable"))}`);
+  }
+  return sha256(`${version}\0${folderFilesDeep(here)}\0${units.join("\0")}`);
 }
 
 function folderFilesDeep(dir: string): string {
@@ -433,38 +471,60 @@ export type AttemptDeps = {
 
 type ChildReport = { stage: "world-start" | "agent" | "done"; why: string | null } | null;
 
+/** Whether every process witness is gone: the child's own group, and each descendant the observer saw, checked as what
+ * it was seen as (a process, or a group whose leader it was). */
+function treeGone(pgid: number, seen: ReadonlyMap<number, boolean>): boolean {
+  return pgid > 0 && !processMayBeAlive(pgid, true) && [...seen].every(([pid, group]) => !processMayBeAlive(pid, group));
+}
+
+/** Stop what is left of a world: the child's group, and each witness as what it was seen as. Its own processes only. */
+function stopWorld(pgid: number, seen: ReadonlyMap<number, boolean>): void {
+  if (pgid > 0) { try { process.kill(-pgid, "SIGKILL"); } catch { /* gone */ } }
+  for (const [pid, group] of seen) { try { process.kill(group ? -pid : pid, "SIGKILL"); } catch { /* gone */ } }
+}
+
 /** Run the child and wait for its whole process tree: the child's exit, its process group gone, and every descendant
- * the process-tree observer saw gone. A tree that won't end is stopped and reported, never graded. */
-async function runWorldProcess(spec: { file: string; args: string[]; env: Record<string, string> }, cwd: string, timeoutMs: number, settleMs: number):
-  Promise<{ timedOut: boolean; report: ChildReport; lingering: boolean; code: number | null }> {
+ * (and every group one led) the process-tree observer saw gone. A tree that won't end, or one whose ancestry couldn't
+ * be observed, is stopped and reported (`lingering`), never graded. */
+async function runWorldProcess(spec: { file: string; args: string[]; env: Record<string, string> }, cwd: string, timeoutMs: number, settleMs: number,
+  onSpawn: (pgid: number) => void, persist: (processes: WorldProcesses) => void):
+  Promise<{ timedOut: boolean; report: ChildReport; lingering: boolean; stopped: boolean; why: string | null; code: number | null }> {
+  persist({ state: "starting", witnesses: [] });
   const child: ChildProcess = spawn(spec.file, spec.args, { cwd, env: spec.env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
   const seen = new Map<number, boolean>();
-  observeProcessTree(child, { onDescendant: (pid, group) => { seen.set(pid, group); }, onDescendantExit: pid => { seen.delete(pid); } });
+  let unknownAncestry = false;
+  const pgid = child.pid ?? -1;
+  const save = (): void => persist({ state: unknownAncestry ? "unknown" : "watching", witnesses: [...(pgid > 0 ? [[pgid, true] as [number, boolean]] : []), ...seen] });
+  // A persistence failure after spawn must still stop the owned child and await its exit.
+  try { if (pgid > 0) onSpawn(pgid); save(); } catch { unknownAncestry = true; child.kill("SIGKILL"); }
+  observeProcessTree(child, {
+    onDescendant: (pid, group) => { seen.set(pid, seen.get(pid) === true || group); save(); },
+    onDescendantExit: (pid, group) => { if (seen.get(pid) === group) { seen.delete(pid); save(); } },
+    onUnknown: () => { unknownAncestry = true; save(); },
+  });
   let stdout = "";
   child.stdout?.on("data", (chunk: Buffer) => { if (stdout.length < 64 * 1024) stdout += chunk.toString("utf8"); });
   child.stderr?.on("data", () => undefined);
-  const pgid = child.pid ?? -1;
   let timedOut = false;
   const code = await new Promise<number | null>(done => {
     const timer = setTimeout(() => {
       timedOut = true;
       stopProcessTree(child);
-      try { process.kill(-pgid, "SIGKILL"); } catch { /* gone */ }
+      if (pgid > 0) { try { process.kill(-pgid, "SIGKILL"); } catch { /* gone */ } }
     }, timeoutMs);
     child.once("error", () => { clearTimeout(timer); done(null); });
     child.once("close", exit => { clearTimeout(timer); done(exit); });
   });
-  const gone = (): boolean => pgid > 0 && !processMayBeAlive(pgid, true) && [...seen.keys()].every(pid => !processMayBeAlive(pid, false));
+  if (timedOut) stopWorld(pgid, seen);
   const until = Date.now() + settleMs;
-  while (!gone() && Date.now() < until) await new Promise(done => setTimeout(done, 50));
-  let lingering = false;
-  if (!gone()) {
+  while (pgid > 0 && !treeGone(pgid, seen) && Date.now() < until) await new Promise(done => setTimeout(done, 50));
+  let lingering = false, why: string | null = null;
+  if ((pgid > 0 && !treeGone(pgid, seen)) || unknownAncestry) {
     lingering = true;
-    // Its own world's processes only: the child's group and the descendants observed under it.
-    try { process.kill(-pgid, "SIGKILL"); } catch { /* gone */ }
-    for (const pid of seen.keys()) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+    why = unknownAncestry ? "its world's process tree couldn't be observed whole, so it wasn't graded" : "the world's processes didn't end after its attempt, so it wasn't graded";
+    stopWorld(pgid, seen);
     const last = Date.now() + 5_000;
-    while (!gone() && Date.now() < last) await new Promise(done => setTimeout(done, 50));
+    while (pgid > 0 && !treeGone(pgid, seen) && Date.now() < last) await new Promise(done => setTimeout(done, 50));
   }
   // Its report: the whole output as one JSON document (the CLI's envelope), or its last line. None: the agent's stage.
   let report: ChildReport = null;
@@ -475,7 +535,9 @@ async function runWorldProcess(spec: { file: string; args: string[]; env: Record
       if (stage === "world-start" || stage === "agent" || stage === "done") { report = { stage, why: typeof parsed["why"] === "string" ? parsed["why"].slice(0, 300) : null }; break; }
     } catch { /* not this one */ }
   }
-  return { timedOut, report, lingering, code };
+  const stopped = pgid < 0 || (!unknownAncestry && treeGone(pgid, seen));
+  persist({ state: stopped ? "stopped" : "unknown", witnesses: [...(pgid > 0 ? [[pgid, true] as [number, boolean]] : []), ...seen] });
+  return { timedOut, report, lingering, stopped, why, code };
 }
 
 /** Write each graded file of the built commit, from verified Git objects (never the checkout, never a link), into a
@@ -497,85 +559,101 @@ function extractGraded(repo: string, head: string, files: readonly string[], int
   return { ok: true };
 }
 
+/** An attempt's result from what its world recorded, with the outcome and why. */
+const resultOf = (outcome: EvalOutcome, why: string | null, collected: WorldDispatches, wallMs: number): AttemptResult => ({
+  outcome, why, modelReported: collected.modelReported, dispatches: collected.dispatches,
+  apiMicrousd: collected.apiMicrousd, subscriptionMicrousd: collected.subscriptionMicrousd, usageUnknown: collected.usageUnknown,
+  turns: collected.turns, tokensIn: collected.tokensIn, cacheRead: collected.cacheRead, cacheWrite: collected.cacheWrite, tokensOut: collected.tokensOut, toolCalls: collected.toolCalls,
+  wallMs, invocations: collected.invocations });
+
 /**
- * One attempt: carve, make the world, run its child to the end of its whole process tree, read what it did, grade it,
- * settle. Outcomes (plan, "Grading"): an error only where the plane itself recorded one (the world failed before the
- * agent started, the provider refused or was down, the oracle failed, the world's processes wouldn't end); the agent
- * timing out, crashing or going past its dispatch limit is a fail; a reported model other than the pin is unevaluated.
+ * One attempt: record its start, make the world, run its child to the end of its whole process tree, read what it
+ * did, grade it, record it. What the world dispatched is collected and recorded on every road out, the runner's own
+ * failure included, before the world is removed. Outcomes (plan, "Grading"): an error only where the plane itself
+ * recorded one (the world failed before the agent started, the provider refused or was down, the oracle failed, the
+ * world's processes wouldn't end, a dispatch the gate and the records don't agree on); the agent timing out, crashing
+ * or going past its dispatch limit is a fail; a reported model other than the pin is unevaluated.
  */
 export async function runEvalAttempt(store: Store, input: { campaign: string; one: EvalCase; n: number; replaces: number }, deps: AttemptDeps): Promise<{ attempt: number; result: AttemptResult } | { attempt: null; why: string }> {
   const now = deps.now ?? (() => new Date());
   const { one } = input;
-  const carved = carveEvalAttempt(store, { campaign: input.campaign, caseId: one.id, caseVersion: one.version, n: input.n, replaces: input.replaces, carveMicrousd: attemptWorstMicrousd(one), modelPinned: one.pin.model, now: now() });
-  if (!carved.ok) return { attempt: null, why: carved.why };
-  const started = Date.now();
-  mkdirSync(deps.workRoot, { recursive: true, mode: 0o700 });
-  const worldDir = realpathSync(mkdtempSync(join(deps.workRoot, `${one.id}-${input.n}-`)));
+  const started = startEvalAttempt(store, { campaign: input.campaign, caseId: one.id, caseVersion: one.version, n: input.n, replaces: input.replaces, modelPinned: one.pin.model, now: now() });
+  if (!started.ok) return { attempt: null, why: started.why };
+  const attempt = started.attempt;
+  const begun = Date.now();
+  let worldDir: string | null = null;
+  let ran: Awaited<ReturnType<typeof runWorldProcess>> | null = null;
+  let failure: string | null = null;
   // The world's state folder is named as Toolroll's own, so every agent fence in the world denies it whole: the
   // database, the worker's token and the dispatch gate (agent-fence.ts agentFence, a dedicated state folder).
-  const stateDir = join(worldDir, "toolroll"), gateDir = join(stateDir, "eval-gate");
-  mkdirSync(stateDir, { mode: 0o700 });
-  mkdirSync(gateDir, { mode: 0o700 });
-  openEvalGate(gateDir, { v: 1, max: one.maxDispatches, capMicrousd: one.capMicrousd });
-  const databaseFile = join(stateDir, "orders.db");
-  const empty = (outcome: EvalOutcome, why: string | null, collected?: WorldDispatches): AttemptResult => ({
-    outcome, why, modelReported: collected?.modelReported ?? null,
-    // No world to read: nothing was dispatched. A world's unknown stays unknown (null), never 0.
-    apiMicrousd: collected === undefined ? 0 : collected.apiMicrousd, subscriptionMicrousd: collected === undefined ? 0 : collected.subscriptionMicrousd, usageUnknown: collected?.usageUnknown ?? false,
-    turns: collected?.turns ?? null, tokensIn: collected?.tokensIn ?? null, cacheRead: collected?.cacheRead ?? null, cacheWrite: collected?.cacheWrite ?? null, tokensOut: collected?.tokensOut ?? null,
-    toolCalls: null, wallMs: Date.now() - started, invocations: collected?.invocations ?? [] });
-  let result: AttemptResult;
+  const paths = (dir: string) => ({ stateDir: join(dir, "toolroll"), gateDir: join(dir, "toolroll", "eval-gate"), databaseFile: join(dir, "toolroll", "orders.db") });
   try {
+    mkdirSync(deps.workRoot, { recursive: true, mode: 0o700 });
+    worldDir = realpathSync(mkdtempSync(join(deps.workRoot, `${one.id}-${input.n}-`)));
+    markAttemptWorld(store, attempt, worldDir, null);
+    recordWorldProcesses(store, attempt, { state: "not-started", witnesses: [] });
+    const { stateDir, gateDir, databaseFile } = paths(worldDir);
+    mkdirSync(stateDir, { mode: 0o700 });
+    mkdirSync(gateDir, { mode: 0o700 });
+    openEvalGate(gateDir, { v: 2, max: one.maxDispatches });
     const spec = deps.command({ campaign: input.campaign, caseId: one.id, n: input.n, worldDir, databaseFile, gateDir });
-    const ran = await runWorldProcess({ ...spec, env: { ...spec.env, [EVAL_GATE_ENV]: gateDir } }, worldDir, one.timeoutMinutes * 60_000, deps.settleMs ?? 30_000);
-    deps.onTreeGone?.();
-    if (ran.lingering) {
-      result = empty("error", "the world's processes didn't end after its attempt, so it wasn't graded");
+    ran = await runWorldProcess({ ...spec, env: { ...spec.env, [EVAL_GATE_ENV]: gateDir } }, worldDir, one.timeoutMinutes * 60_000, deps.settleMs ?? 30_000,
+      pgid => markAttemptWorld(store, attempt, worldDir!, pgid), processes => recordWorldProcesses(store, attempt, processes));
+    if (ran.stopped) deps.onTreeGone?.();
+  } catch (error) {
+    failure = `the eval runner failed: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`;
+  }
+  // Whatever happened, what the world recorded is read before anything is decided or removed.
+  const where = worldDir === null ? null : paths(worldDir);
+  // A lingering tree has been stopped by now: its records are read all the same, so known spending is kept.
+  const world = where === null ? null : openWorld(where.databaseFile);
+  let result: AttemptResult;
+  const collected = where === null
+    ? collectWorld(null, join(deps.workRoot, "no-world"), one.maxDispatches, "", now())
+    : collectWorld(world, where.gateDir, one.maxDispatches, join(where.stateDir, "evidence"), now());
+  try {
+    const wall = () => Date.now() - begun;
+    if (failure !== null) result = resultOf("error", failure, collected, wall());
+    else if (ran === null) result = resultOf("error", "the eval runner failed", collected, wall());
+    else if (ran.lingering) result = resultOf("error", ran.why, collected, wall());
+    else if (world === null) {
+      result = resultOf("error", ran.report?.stage === "world-start" ? `the world failed before the agent started: ${ran.report.why ?? "no reason given"}` : "the world's records can't be read", collected, wall());
+    } else if (collected.unaccounted) {
+      result = resultOf("error", "a provider dispatch and the world's records don't agree (one went around the gate, or left no record), so its spending is unknown", collected, wall());
     } else {
-      // The world's own records, read only. No database: the world never started.
-      let world: Store | null = null;
-      try { world = new Store(new (sqlite().DatabaseSync)(databaseFile, { readOnly: true })); } catch { world = null; }
-      try {
-        // No database to read: whatever took a slot is settled at its cap all the same.
-        const slots = world === null ? evalGateSlots(gateDir) : null;
-        const collected = world === null
-          ? (slots === null || slots.length > 0 ? { ...noDispatches(), usageUnknown: true, apiMicrousd: null, subscriptionMicrousd: null,
-            invocations: (slots ?? [{ n: 0, kind: "unreadable" }]).map(slot => ({ kind: "unrecorded", worldRef: `slot:${slot.n}`, reservedMicrousd: one.capMicrousd, settledMicrousd: one.capMicrousd, unknown: true })) } : null)
-          : collectWorld(world, gateDir, one);
-        const started_ = world === null ? 0 : Number(world.handle.prepare("SELECT COUNT(*) AS n FROM run WHERE provider_started_at IS NOT NULL").get()?.["n"] ?? 0);
-        const refused = world === null ? 0 : Number(world.handle.prepare("SELECT COUNT(*) AS n FROM run WHERE outcome = 'refused' AND provider_started_at IS NULL").get()?.["n"] ?? 0);
-        const chats = collected === null ? 0 : collected.invocations.filter(inv => !inv.worldRef.startsWith("run:")).length;
-        if (world === null) {
-          // The world's own records were never made or can't be read: the world failed, not the agent.
-          result = empty("error", ran.report?.stage === "world-start" ? `the world failed before the agent started: ${ran.report.why ?? "no reason given"}` : "the world's records can't be read", collected ?? undefined);
-        } else if (collected === null || (started_ === 0 && chats === 0)) {
-          // Nothing reached a provider: the world failed before the agent started (its child said so), or the provider
-          // refused (a plane-side record); anything else is the agent's (a fail).
-          const why = ran.report?.stage === "world-start" ? `the world failed before the agent started: ${ran.report.why ?? "no reason given"}`
-            : refused > 0 ? "the provider refused or was unavailable before the agent started" : null;
-          result = why !== null ? empty("error", why, collected ?? undefined) : empty("fail", ran.timedOut ? "timed out before the agent started" : "the agent never started", collected ?? undefined);
-        } else if (collected.ungated) {
-          result = empty("error", "a provider dispatch ran without the eval gate; its cost is counted at the cap", collected);
-        } else if (collected.overLimit) {
-          result = empty("fail", `it went past its limit of ${one.maxDispatches} provider dispatches`, collected);
-        } else if (ran.timedOut) {
-          result = empty("fail", `it ran past its ${one.timeoutMinutes}-minute limit`, collected);
-        } else if (collected.modelReported !== one.pin.model) {
-          result = empty("unevaluated", `the provider reported ${collected.modelReported ?? "no model"}, not the pinned ${one.pin.model}`, collected);
-        } else {
-          const planeState = store.databaseFile();
-          const graded = await grade(world!, worldDir, one, deps, planeState === null ? [] : [dirname(planeState)]);
-          result = empty(graded.outcome, graded.why, collected);
+      const startedRuns = Number(world.handle.prepare("SELECT COUNT(*) AS n FROM run WHERE provider_started_at IS NOT NULL").get()?.["n"] ?? 0);
+      const refused = Number(world.handle.prepare("SELECT COUNT(*) AS n FROM run WHERE outcome = 'refused' AND provider_started_at IS NULL").get()?.["n"] ?? 0);
+      if (collected.invocations.length === 0 && startedRuns === 0) {
+        // Nothing reached a provider: the world failed before the agent started (its child said so), or the provider
+        // refused (a plane-side record); anything else is the agent's (a fail).
+        const why = ran.report?.stage === "world-start" ? `the world failed before the agent started: ${ran.report.why ?? "no reason given"}`
+          : refused > 0 ? "the provider refused or was unavailable before the agent started" : null;
+        result = why !== null ? resultOf("error", why, collected, wall()) : resultOf("fail", ran.timedOut ? "timed out before the agent started" : "the agent never started", collected, wall());
+      } else if (collected.overLimit) {
+        result = resultOf("fail", `it asked for more than its limit of ${one.maxDispatches} provider dispatches`, collected, wall());
+      } else if (ran.timedOut) {
+        result = resultOf("fail", `it ran past its ${one.timeoutMinutes}-minute limit`, collected, wall());
+      } else if (ran.code !== 0) {
+        result = resultOf("fail", "the world's process crashed", collected, wall());
+      } else if (collected.modelReported !== one.pin.model) {
+        result = resultOf("unevaluated", `the provider reported ${collected.modelReported ?? "no model"}, not the pinned ${one.pin.model}`, collected, wall());
+      } else {
+        const planeState = store.databaseFile();
+        try {
+          const graded = await grade(world, worldDir!, one, deps, planeState === null ? [] : [dirname(planeState)]);
+          result = resultOf(graded.outcome, graded.why, collected, wall());
+        } catch (error) {
+          result = resultOf("error", `the grading failed: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`, collected, wall());
         }
-      } finally { world?.close(); }
+      }
     }
   } catch (error) {
-    result = empty("error", `the eval runner failed: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);
-  } finally {
-    if (deps.keepWorlds !== true) rmSync(worldDir, { recursive: true, force: true });
-  }
-  settleEvalAttempt(store, carved.attempt, result, now());
-  return { attempt: carved.attempt, result };
+    result = resultOf("error", `the world's records couldn't be processed: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`, collected, Date.now() - begun);
+  } finally { world?.close(); }
+  recordEvalAttempt(store, attempt, result, now());
+  // Only once it is recorded is the world removed.
+  if (worldDir !== null && ran?.stopped === true && deps.keepWorlds !== true) rmSync(worldDir, { recursive: true, force: true });
+  return { attempt, result };
 }
 
 /** Grade from what the world's installed code recorded: the built commit's files through the oracle (build), or the
@@ -602,7 +680,7 @@ async function grade(world: Store, worldDir: string, one: EvalCase, deps: Attemp
 // ------------------------------------------------------------------ a campaign
 
 export type CampaignDeps = AttemptDeps & {
-  /** The installed build's digest now (installedBuildDigest): a change stops the campaign as incomplete. */
+  /** The installed build's identity now (installedBuildDigest): a change stops the campaign as incomplete. */
   buildDigest: () => string;
   /** The installed eval set now (loadEvalSet): a change stops the campaign as incomplete too. */
   evalSet?: () => EvalSet;
@@ -611,20 +689,24 @@ export type CampaignDeps = AttemptDeps & {
 
 /** Run an admitted campaign to its end: every sealed attempt (EVAL_CONCURRENCY at once), one replacement for an
  * attempt the plane recorded an error for (at most EVAL_MAX_REPLACEMENTS a campaign), then complete — or incomplete
- * when the installed build changed or an attempt couldn't be carved. */
+ * when the installed build or eval set changed (checked before every attempt and again at the end), a deploy is
+ * draining, or the runner itself failed. */
 export async function runEvalCampaign(store: Store, campaign: string, cases: readonly EvalCase[], deps: CampaignDeps): Promise<{ state: "complete" | "incomplete"; why: string | null }> {
   const now = deps.now ?? (() => new Date());
   const row = store.handle.prepare("SELECT k, build_digest, manifest_digest, state FROM eval_campaign WHERE id = ?").get(campaign);
   if (row === undefined || row["state"] !== "running") throw new Error(`campaign ${campaign} isn't running`);
   const k = Number(row["k"]), sealedBuild = String(row["build_digest"]), sealedSet = String(row["manifest_digest"]);
   const setNow = (): string | null => { const set = (deps.evalSet ?? loadEvalSet)(); return set.ok ? set.manifestDigest : null; };
+  const changed = (): string | null => deps.buildDigest() !== sealedBuild ? "the installed build changed during the campaign"
+    : setNow() !== sealedSet ? "the installed eval set changed during the campaign"
+    : updateAdmissionPaused(store.handle) ? "a deploy began draining during the campaign" : null;
   let stop: string | null = null;
   let replacements = 0;
   const gate = limiter(deps.concurrency ?? EVAL_CONCURRENCY);
   const attempt = async (one: EvalCase, n: number, replaces: number): Promise<void> => {
     if (stop !== null) return;
-    if (deps.buildDigest() !== sealedBuild) { stop = "the installed build changed during the campaign"; return; }
-    if (setNow() !== sealedSet) { stop = "the installed eval set changed during the campaign"; return; }
+    const moved = changed();
+    if (moved !== null) { stop = moved; return; }
     const ran = await runEvalAttempt(store, { campaign, one, n, replaces }, deps);
     if (ran.attempt === null) { stop ??= ran.why; return; }
     if (ran.result.outcome === "error" && replacements < EVAL_MAX_REPLACEMENTS && replaces === 0) {
@@ -632,10 +714,65 @@ export async function runEvalCampaign(store: Store, campaign: string, cases: rea
       await attempt(one, n, ran.attempt);
     }
   };
-  await Promise.all(cases.flatMap(one => Array.from({ length: k }, (_, index) => gate(() => attempt(one, index + 1, 0)))));
+  try {
+    await Promise.all(cases.flatMap(one => Array.from({ length: k }, (_, index) => gate(async () => {
+      try { await attempt(one, index + 1, 0); }
+      catch (error) { stop ??= `the eval runner failed: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`; }
+    }))));
+    // The identity again at the end: a change during the last attempts leaves the campaign incomplete too.
+    stop ??= changed();
+  } catch (error) {
+    stop ??= `the eval runner failed: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`;
+  }
   const state = stop === null ? "complete" as const : "incomplete" as const;
   finishEvalCampaign(store, campaign, state, stop, now());
   return { state, why: stop };
+}
+
+/**
+ * Recover campaigns whose runner stopped (Codex round 1 #12): a running campaign whose runner was this computer's and
+ * whose process is gone. Each unfinished attempt is recorded as an error with whatever its world recorded (its spending
+ * unknown where the records can't say), once its world's process group is proven gone; then the campaign ends
+ * incomplete. A campaign whose runner is alive, ran on another computer, or still has a world running stays as it is.
+ */
+export function recoverEvalCampaigns(store: Store, now: Date, options: { host?: string; alive?: (pid: number) => boolean } = {}):
+  { id: string; recovered: boolean; why: string }[] {
+  const host = options.host ?? hostname();
+  const alive = options.alive ?? ((pid: number) => processMayBeAlive(pid, false));
+  const out: { id: string; recovered: boolean; why: string }[] = [];
+  for (const campaign of store.handle.prepare("SELECT id, runner_host, runner_pid FROM eval_campaign WHERE state = 'running' ORDER BY admitted_at").all()) {
+    const id = String(campaign["id"]);
+    if (String(campaign["runner_host"]) !== host) { out.push({ id, recovered: false, why: `its runner is on ${String(campaign["runner_host"])}` }); continue; }
+    if (alive(Number(campaign["runner_pid"]))) { out.push({ id, recovered: false, why: "its runner is still running" }); continue; }
+    const open = store.handle.prepare("SELECT id, world_dir, world_pgid, world_processes_json, case_id FROM eval_attempt WHERE campaign = ? AND outcome IS NULL").all(id);
+    const busy = open.find(one => one["world_pgid"] !== null && processMayBeAlive(Number(one["world_pgid"]), true));
+    if (busy !== undefined) { out.push({ id, recovered: false, why: `attempt ${String(busy["id"])}'s world (process group ${String(busy["world_pgid"])}) is still running` }); continue; }
+    const unproven = open.find(one => {
+      if (one["world_dir"] === null) return false; // No world was ever made.
+      try {
+        const saved = JSON.parse(String(one["world_processes_json"])) as WorldProcesses | null;
+        if (saved === null || !Array.isArray(saved.witnesses)) return true;
+        if (saved.state === "not-started" || saved.state === "stopped") return false;
+        if (saved.state !== "watching" || saved.witnesses.length === 0) return true;
+        return saved.witnesses.some(witness => !Array.isArray(witness) || witness.length !== 2
+          || !Number.isSafeInteger(witness[0]) || witness[0] <= 0 || typeof witness[1] !== "boolean"
+          || processMayBeAlive(witness[0], witness[1]));
+      } catch { return true; }
+    });
+    if (unproven !== undefined) { out.push({ id, recovered: false, why: `attempt ${String(unproven["id"])}'s process tree isn't proven stopped` }); continue; }
+    for (const one of open) {
+      const dir = one["world_dir"] === null ? null : String(one["world_dir"]);
+      const world = dir === null ? null : openWorld(join(dir, "toolroll", "orders.db"));
+      try {
+        // No world folder recorded: the attempt never got as far as making one (its gate reads as unreadable: unknown).
+        const collected = collectWorld(world, dir === null ? "" : join(dir, "toolroll", "eval-gate"), Number.MAX_SAFE_INTEGER, dir === null ? "" : join(dir, "toolroll", "evidence"), now);
+        recordEvalAttempt(store, Number(one["id"]), resultOf("error", "interrupted: its runner stopped before the attempt finished", collected, 0), now);
+      } finally { world?.close(); }
+    }
+    finishEvalCampaign(store, id, "incomplete", "its runner stopped before the campaign finished", now);
+    out.push({ id, recovered: true, why: `${open.length} unfinished attempt${open.length === 1 ? "" : "s"} recorded as interrupted` });
+  }
+  return out;
 }
 
 /** A random hex id, for the world's throwaway approver password. */

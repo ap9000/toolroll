@@ -14,7 +14,6 @@
  * (finding 11); usage that cannot be true is malformed, never a discount
  * (finding 8); and everything the model sees passed `leadView` (finding 9).
  */
-import { evalLeadAllowanceMicrousd } from "./eval-gate.js";
 import type { CommitmentChannel } from "./lead-commitments.js";
 import { Buffer } from "node:buffer";
 import { leadToolFailureReason, leadToolLabel, type LeadProgress, type LeadToolOutcome } from "./lead-progress.js";
@@ -372,12 +371,9 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   const reservePrice = direct && directProvider === "anthropic-api" ? cacheWorstPrice(price as NonNullable<typeof price>) : price;
   const reserveFor = (steps: number) => direct ? leadWorstCaseForPrice(reservePrice as NonNullable<typeof price>, baseBytes, { steps }) : 0;
   if (direct) {
-    // An eval world (eval-gate.ts): the turn's reservation never passes the attempt's dispatch slots left × their cap.
-    const evalAllowance = evalLeadAllowanceMicrousd();
     const remaining = Math.min(liveSession.ceilingMicrousd - liveSession.spentMicrousd,
-      config.weeklyCeilingMicrousd - store.chatWeeklySpendMicrousd(credentialKey, now), evalAllowance ?? Number.POSITIVE_INFINITY);
+      config.weeklyCeilingMicrousd - store.chatWeeklySpendMicrousd(credentialKey, now));
     while (maxSteps > 1 && reserveFor(maxSteps) > remaining) maxSteps--;
-    if (evalAllowance !== null && reserveFor(maxSteps) > evalAllowance) return refuse("over-budget");
   }
   const reserved = reserveFor(maxSteps);
 
@@ -620,7 +616,8 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     finishStep({ state: "answered", tokensIn: answer.tokensIn, tokensOut: answer.tokensOut, settledMicrousd: stepSettled, replyBytes: Buffer.byteLength(answer.text, "utf8"),
       cacheReadTokens: answer.cacheReadTokens ?? null, cacheWriteTokens: answer.cacheWriteTokens ?? null,
       // v140: what the provider itself reported for this request (absent: unreported, kept NULL).
-      modelReported: answer.modelReported ?? null, providerTurns: answer.providerTurns ?? null, reportedCostUsd: answer.reportedCostUsd ?? null });
+      modelReported: answer.modelReported ?? null, providerTurns: answer.providerTurns ?? null, reportedCostUsd: answer.reportedCostUsd ?? null,
+      billingReported: answer.billingReported ?? null });
     tokensIn += answer.tokensIn;
     tokensOut += answer.tokensOut;
     if (answer.cacheReadTokens === undefined) cacheKnown = false; else cacheRead += answer.cacheReadTokens;
