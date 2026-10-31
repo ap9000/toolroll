@@ -1,7 +1,8 @@
 # Spend dashboard — plan
 
-Status: plan, 2026-10-31. Branch `spend-dashboard` (off `main` at 529ddeba, after Release 0.9.82). Nothing in `src/` is
-changed by this document.
+Status: plan, revised after Codex review round 1 (NO-GO, 2026-10-31). Revised to the smaller v1 that review proposed.
+Branch `spend-dashboard` (off `main` at 529ddeba, after Release 0.9.82). Nothing in `src/` is changed by this
+document.
 
 ## What Alex asked for
 
@@ -14,392 +15,468 @@ default is the newest Claude: Opus 5.5 (`claude-opus-5-5`), Sonnet 5.5 (`claude-
 
 ## In one screen
 
-Most of this already exists. It just isn't joined up, and in one place it isn't honest:
+v1 is three slices. Each ships on its own.
 
-- A **Spend page** (`/spend`) already shows the month's total, budgets, and breakdowns by project, person, subagent and
-  model, plus a CSV export (src/spend-ui.ts:50, :79). It counts subscription work as **$0** (src/spend-ui.ts:75,
-  src/spend.ts:289). That breaks the rule 0.9.82 set: API dollars, subscription usage and unknown are three separate
-  amounts, and none of them reads as $0 (src/reported-usage.ts:88–125).
-- **Monthly budgets** already exist for the installation, a project, a person or a subagent. Each is "alerts only" or
-  "stops new API work at 100%". Alerts fire at 50/80/100% (src/spend.ts:123, src/budget-alerts.ts:12). The limit is
-  enforced at admission and again when work starts (src/store.ts:16367 `budgetGate`, src/operate.ts:3002,
-  src/invoke.ts:341, src/builder.ts:3163/:3389, src/subagent-work.ts:61, src/flow-steps.ts:144, chat
-  src/store.ts:14355/:20005).
-- **Model choices** already exist: Settings → Models sets the installation's default agent for each role
-  (src/models-ui.ts:78, src/server/settings.ts:1446). Routing by size and headroom picks between configured tiers
-  (src/phase-routing.ts:355). A route is sealed at filing (src/store.ts:8490–8530), and a run is stamped from the
-  sealed route (src/store.ts:15510–15524). Nothing records or shows the **reported** model next to the **chosen** one.
+1. **An honest Spend page.**
+   - API dollars, plan usage and unknown cost are kept apart and never added together.
+   - Billing nobody proved shows as unknown, not as covered by a plan.
+   - Breakdowns by project, model and role, plus a CSV export.
+   - A Settings → Spend entry.
+2. **Monthly limits that say exactly what they do.** The wording is: "Pause new API work when recorded charges reach
+   this amount. Running work may exceed it."
+   - Fresh state is read at admission and again right before launch.
+   - Every paid provider entry point is inventoried. Gates are added where missing, and anything left out is disclosed
+     on the page.
+   - Unknown cost follows one matrix (§2.3).
+3. **One Models editor (Settings → Models).**
+   - Operator only, with step-up and the CSRF guard.
+   - Every write is one transaction, ledgered before → after, clears included.
+   - A preset shows its exact diff before it applies. Model ids are exact.
+   - Sealed profiles are never touched.
 
-v1 is four slices:
+Deferred: daily limits, configurable alert marks, project-approver permissions, adding Claude 5.5 to the direct-API
+price table, historical match verdicts, headroom promises, cost per task, cache analytics. See "Later".
 
-1. Rebuild the Spend page on the 0.9.82 accounting, with day/week/month views, roles, top runs, cost per finished task
-   and cache use.
-2. Spend settings: daily limits beside monthly ones, a plain "what happens at the limit" choice, and honest handling of
-   unknown cost.
-3. Model choices: the newest-model defaults, per-project overrides, the automatic routing shown in words, and the
-   reported model beside the chosen one.
-4. Limit notifications: Needs you plus the usual places (Telegram etc.).
-
-No new provider calls anywhere. Every number comes from records Toolroll already keeps.
-
-## Facts the design stands on
+## Facts the design stands on (verified)
 
 | Fact | Where |
 |---|---|
-| Per-run accounting: provider, chosen `model`, `modelReported`, turns, cache-aware usage, and an amount of `api` / `subscription` / `unknown` | src/store.ts:25266 `runAccounting` |
-| Per chat request: the same, plus `providerTurns`, `reportedCostUsd` and `billingReported` | src/store.ts:25293 `chatTurnAccounting` |
-| How an amount is decided. A guessed billing (`basis: default`) or a cost the provider never reported is unknown. Subscription work's reported cost is **usage**, not dollars | src/reported-usage.ts:98 `runAmountOf`, :115 `chatTurnAmountOf` |
-| Cache split per provider. Claude reports cache reads and writes; Codex reports cache reads only | src/run-efficiency.ts:51 `usageOf` |
-| `run.role` ∈ builder, repair, planner, reviewer, scout | src/store-baseline.ts:897 |
-| `run_spend`, `budget` (monthly only, unique live row per scope), `provider_limit` (plan windows), `side_spend` (flow drafts) | src/spend.ts:110–162 |
-| The current aggregation for the page and budgets (runs, subagent turns, chat and lead turns, drafts, Sort steps) | src/spend.ts:239 `spendItems` |
-| Eval spend is kept per attempt as `api_microusd` / `subscription_microusd` / `usage_unknown`. Owner, 2026-10-30: eval spend is recorded, never capped | src/store.ts:650–718 (V141_SCHEMA) |
-| Budget changes go through a step-up (browser only, so API and lead tokens are refused) and are ledgered before → after | src/server/route-table.ts:364, :61; src/store.ts:16248 |
-| The Spend page is instance-operator only, and scoped logins don't see it | src/server/route-table.ts:217, src/server/chrome.ts:889–891 |
-| A model choice is an approver act from a browser, with no step-up | src/server/route-table.ts:410–413 |
-| Precedence: project row, then installation row. Review inherits plan. With nothing set, the provider is Claude and the model is null, which isn't exact, so the scope files unresolved | src/agentconfig.ts:60–124, :284 |
-| Light / strong tiers and alternates per provider are set from the CLI only (`config set <phase> --tier …`) | src/store.ts:13535, src/operate.ts:5490–5530 |
-| Headroom routing: past 80% of the 5-hour window or 90% of the weekly window, a provider gives way | src/phase-routing.ts:215–270 |
-| The Models page already says: "New tasks use these. Approved tasks keep the agents they were approved with." | src/models-ui.ts:78 |
-| Claude aliases (`opus`, `sonnet`, `haiku`) are valid "exact" ids, but they move when Anthropic ships a new model | src/model-catalog.ts:187–210, src/setup-guide.ts:20 |
-| The lead's direct-API price table has no 5.5 ids, so a priced chat config can't choose them today | src/converse.ts:48–56 |
-| Task sizing asks `haiku` | src/task-sizing.ts:36 |
-| The model watch sends "model-available" when a new model lands | src/model-catalog.ts:366 |
-| Protected files: `reported-usage.ts` and `run-efficiency.ts` (EVAL_POLICY), plus the pinned Store bodies `runAccounting`, `chatTurnAccounting`, `recordUsage`, `settleRunSpend`, `fixRunBilling`, `finalizeChatTurn`. A change to any of them needs a person | src/release-auto.ts:192, src/eval-hooks.ts:65–86 |
-| Schema is v141 (src/store.ts:1088). v142 is reserved by evals D1 (docs/plans/evals-nightly.md:604) | — |
-| Settings tiles live in `SETTINGS_GROUPS` | src/server/render-settings.ts:600 |
-| Notifications go through the outbox (`enqueueNotification`, closed `pushClass`, machine-minted link). Delivery to Telegram, Slack, Discord, Teams and phone push is the existing routing | src/store.ts:14805 |
+| Per-run accounting: provider, chosen `model`, `modelReported`, turns, cache-aware usage, amount `api` / `subscription` / `unknown` | src/store.ts:25266 `runAccounting` |
+| Per chat request: the same, plus `providerTurns`, `reportedCostUsd`, `billingReported` | src/store.ts:25293 `chatTurnAccounting` |
+| The reported model is already recorded per run (`recordRunModelReported`) and per chat request. It isn't yet shown next to the chosen model on these screens | src/store.ts:25253; src/reported-usage.ts:21 |
+| How an amount is decided: a guessed billing (`basis: default`) or a cost the provider never reported reads `unknown`, **before** billing is considered. So `unknown` does not by itself mean API spending | src/reported-usage.ts:98 `runAmountOf`, :115 `chatTurnAmountOf` |
+| A lead step is a `chat_turn` row with `kind = 'mate-step'` and `mate_turn` set (fleet chat is `kind = 'chat'`) | src/store.ts:1905, :20080 |
+| Today's aggregation counts runs by start time, and a lead turn once at its parent `mate_turn.created_at` | src/spend.ts:239–306 `spendItems` |
+| Subagent turns and flow drafts stamp `claudeMachineBilling`, which falls back to subscription **without evidence** | src/store.ts:19227, :19234; src/spend.ts:52 |
+| Subscription chat and subagent work is counted as `$0` on today's page and in budget sums | src/spend.ts:289; src/spend-ui.ts:75 |
+| `budgetStates` adds `null` amounts as 0 | src/spend.ts:338 |
+| The gate refuses only when the **next** provider can't be priced. Claude always reads as priceable | src/store.ts:16386; src/spend.ts:58 |
+| The gate reads a month total cached for 5 s, so concurrent workers can see the same headroom | src/store.ts:16354, :16367 |
+| Flow steps build one gate per pass and reuse it after earlier steps spend | src/flow-steps.ts:101–102, :144 |
+| `invokeAgent`'s budget check at src/invoke.ts:341 is inside the **ACP-only** branch (from :320) | src/invoke.ts:320–342 |
+| Build reviews call `invokeAgent` with no budget check and no dollar cap | src/build-review.ts:189 |
+| Planner and scout runs call `invokeAgent` (src/planner.ts:920, :1081; src/scout.ts:455, :653). The plan path is behind the build-admission gate at src/operate.ts:3002; scout needs confirming | src/operate.ts:3172 |
+| Task sizing can ask OpenRouter (`jevSizer`). Its cost is not recorded | src/task-sizing.ts:125 |
+| A monthly remainder becomes a dollar cap **only** for providers that can hold one. Codex runs past the threshold uncapped unless an explicit per-run cap applies | src/operate.ts:3526–3530 |
+| Budget writes check the password in the handler (`authenticateApprover`) behind a `step-up` route (browser only) | src/server/settings.ts:803; src/server/route-table.ts:61, :364 |
+| The route policy checks caller and capability only. Password and fresh proof are the handler's job | src/server/route-policy.ts:12 |
+| The Models POST handler does no step-up | src/server/settings.ts:1446 |
+| Models routes inherit `limited: "deny"` | src/server/route-table.ts:113, :287 |
+| `setPhaseConfig` records policy apart from its update. `setPhaseTierConfig` and the clear methods record nothing | src/store.ts:13483, :13535, :13497 |
+| Project builders inherit installation light and strong tiers. Repair can come from the installation | src/agentconfig.ts:284–340 |
+| A route is sealed at filing. Runs are stamped from the sealed route | src/store.ts:8490–8530, :15510–15524 |
+| A legacy build review with no sealed route resolves the **current** review agent | src/build-review.ts:259 |
+| A subagent with no model of its own inherits the lead's model when the lead runs on the Claude subscription | src/subagent-work.ts:49–51 |
+| Aliases (`opus`) resolve against the **current** catalogue | src/model-catalog.ts:188 |
+| Headroom routing happens at filing, and keeps the original provider when no alternate has room | src/phase-routing.ts:548 `withHeadroom` |
+| Eval attempts gather several invocations. `usage_unknown` can mean "subscription usage not reported" next to known API charges. Eval worlds use their own database, so nothing lands twice in the installed store | src/store.ts:650–718; src/evals.ts:394; src/eval-world.ts:1–6 |
+| Eval spend is recorded, never capped (owner, 2026-10-30) | src/store.ts:653 |
+| Alerts run once a minute at 50/80/100% per monthly budget. A person's budget alerts that person | src/budget-alerts.ts:12–40 |
+| Task links are `/t/<id>` (`taskHref`); runs are `/r/<id>` | src/server/http.ts:240 |
+| Protected files: `reported-usage.ts`, `run-efficiency.ts` (EVAL_POLICY), and the pinned Store bodies | src/release-auto.ts:192; src/eval-hooks.ts:65–86 |
+| Schema is v141 (src/store.ts:1088). v142 is reserved by evals D1 | docs/plans/evals-nightly.md:604 |
 
-**This plan touches no protected file.** The new reader imports the pure functions `runAmountOf`, `chatTurnAmountOf`
-and `usageOf`. A contract test holds the reader to `runAccounting` / `chatTurnAccounting` row for row. Nothing pinned
-changes, so every slice can still be auto-approved.
+**No slice edits a protected file or a pinned body.** New code imports the pure functions `runAmountOf`,
+`chatTurnAmountOf` and `usageOf`. `invoke.ts` gains a call, not a change to a hooked call.
 
 ## Words (UI copy)
 
-Plain labels, no metaphors:
+- **API dollars**: recorded charges for work billed to an API key.
+- **Plan usage**: work whose own records prove it was billed to a subscription. Shown as the provider's reported usage
+  (`$4.10 of usage at API prices`) or "usage not reported". Never `$0`, and never added to dollars.
+- **Unknown**: billing not proved, or a cost that wasn't recorded. Shown as a count. Where a saved charge exists, it is
+  shown as "counted as $X (estimated)". There is no "at least".
+- **Monthly limit**, with **When reached**: `Alert only` / `Pause new API work`. The help line under it says "Pause new
+  API work when recorded charges reach this amount. Running work may exceed it."
+- **Chosen** / **Ran on**.
 
-- **API dollars**: work billed to an API key.
-- **Covered by your plan**: subscription work. Shown as usage (`$4.10 of usage at API prices`) or "usage not
-  reported". Never "$0", never added to dollars.
-- **Unknown cost**: shown as a count (`3 runs, cost unknown`), plus `at least $X estimated` when the catalogue can
-  price them. Never $0.
-- **Limit**, **Alert at**, **When the limit is reached**: `Alert only` / `Pause new paid work`. "Paid work" means work
-  billed to an API key.
-- **Chosen model** / **Ran on**.
-
-Amber is used only for "waits on you": a limit that has paused work. Approaching a limit (80%) uses the neutral or
-`--so-warning` tone, never amber.
+Amber is used only for "waits on you": a limit that is holding work. Approaching a limit uses the neutral or
+`--so-warning` tone.
 
 ---
 
-## Slice 1. The Spend page on 0.9.82 accounting (read-only, no schema)
+## Slice 1. The honest Spend page (read-only, no schema)
 
-**User value:** one honest page that answers "what did my agents cost this week, on what, and was it worth it". API
-dollars, plan usage and unknowns stay apart, and the page works on a phone.
+**User value:** one page that answers "what did my agents cost this month, on what, and for which project". API
+dollars, plan usage and unknown cost are kept apart, and the page works on a phone.
 
-### Data: `src/spend-report.ts` (new, not protected)
+### 1.1 Reader: `src/spend-report.ts` (new, not protected)
 
-- `spendRows(db, from, to)` makes one batch read per source and returns `SpendRow`s:
-  `{ at, source: run|chat|lead|subagent|draft|sort|eval, role, project, person, subagent, taskId, runId, provider,
-  modelChosen, modelReported, usage {in,out,cacheRead,cacheWrite}, amount: ReportedAmount, estimateMicrousd }`.
-  - **Runs.** The same columns `runAccounting` selects (src/store.ts:25270), joined to `task_ref` for project and filer,
-    as `spendItems` does today. `amount` comes from `runAmountOf`, `usage` from `usageOf`. `role` = `run.role`.
-    `estimateMicrousd` = today's `priceWork` figure (src/spend.ts:100), kept only for API work with unknown cost.
-  - **Chat and lead requests.** The `chat_turn` columns `chatTurnAccounting` selects (src/store.ts:25297), with the
-    amount from `chatTurnAmountOf`. Each lead step is a `chat_turn` row with `mate_turn` set. The row is counted once,
-    under its lead thread's project, so the double-count rule at src/spend.ts:278 carries over. Roles: `lead chat`
-    (kind lead) and `chat` (fleet chat).
-  - **Subagent turns, drafts, Sort steps.** As `spendItems` reads them today. A subscription turn becomes
-    `{kind:"subscription", reportedUsd}` instead of 0. An API turn with no reported cost becomes unknown with an
-    estimate.
-  - **Evals.** One row per finished `eval_attempt`, role `evals`, with the amount from its own three columns
-    (`usage_unknown = 1` reads as unknown). The build must confirm eval worlds write no `run` rows into the installed
-    store. If they do, those rows are excluded by campaign so nothing counts twice.
-- `spendReport(rows, period)` is pure. It returns totals as three amounts (`apiMicrousd`, `subscriptionReportedUsd` +
-  `subscriptionUnreported` count, `unknownCount` + `unknownEstimateMicrousd`), and breaks them down by day, project,
-  model (the **reported** model, falling back to chosen and labelled "not reported"), role, and provider. It also
-  returns:
-  - **top runs** by API dollars (10), and separately the top runs by plan usage, each linking to `/tasks/<id>#run-<n>`.
-  - **cost per finished task**: tasks that reached done in the period, summing every run of the task across all
-    time. It gives the median and the mean of API dollars. Tasks with any unknown part are left out of both, and the
-    page says how many.
-  - **cache use**: the share of input read from cache, by provider and in total, as tokens and a percentage.
-- **Dollar cache savings are left out of v1.** The catalogue has no cache-read prices (src/model-catalog.ts:55 lists
-  input and output only), and a made-up saving would break the honesty rule. "Later" covers adding them.
-- **Periods** are UTC: `?range=day|week|month` with `&at=YYYY-MM-DD`. The old `?month=YYYY-MM` keeps working, and so
-  does the CSV export, which gains `role`, `model_reported`, `amount_kind`, `cache_read`, `cache_write` columns. Reads
-  are bounded to one month plus the previous month (for week-over-week comparison) and cached for 5 s, as
-  `monthSpendCached` is (src/store.ts:16354).
+`spendRows(db, from, to)` returns one row per piece of work:
 
-### Page: rewrite `spendHtml` (src/spend-ui.ts)
+```
+{ at, source, role, project, person, subagent, taskId, runId, provider, modelChosen, modelReported,
+  billing, amount, charge }
+```
 
-The page is built from existing pieces: the `.spend` article, the `.spend-grid` tables, the `.budget` bar for limits,
-the limits tiles from src/limits-ui.ts for plan windows, and Operations Ledger tokens. No chart library.
+- `source` is one of run, chat, lead, subagent, draft, sort, eval.
+- `billing` records the evidence: confirmed subscription, API key, or not proved.
+- `amount` is a `ReportedAmount`.
+- `charge` is the amount the limit counts: `{ microusd, basis: reported | settled | estimated } | null`.
 
-1. **Header:** Today · 7 days · Month segmented control, ← → navigation, CSV.
-2. **Three figures, never summed:** API dollars · Covered by your plan · Unknown cost. Each carries
-   `data-amount-kind="api|subscription|unknown"` so a script or journey can read which amount it is.
-3. **By day:** one CSS bar per day for API dollars, with plan usage as an outline bar beside it. A bar is never drawn
-   for unknown. Its count shows as a figure.
-4. **Limits:** today's `.budget` rows, read-only here, with "Change" → Settings → Spend (slice 2).
-5. **Breakdowns:** by project, model (with the chosen model shown beside it when they differ), role (builder, repair,
-   planner, reviewer, scout, lead chat, chat, subagents, flows, evals), and person.
-6. **Most expensive runs** and **cost per finished task**.
-7. **Cache use** and **plan windows** (the existing `provider_limit` tiles).
+Attribution is defined **once**, as `spendItems` does it today: runs by start time, a lead turn at its parent's
+creation time, and the rest by their own time. The page, the CSV, `budgetStates` and the alert pass all read this one
+function. `spendItems` becomes a thin adapter over it, so the gate and the page never disagree.
 
-On a phone, the figures stack, tables become two-column rows (name / amount), and the day bars scroll inside their
-card, never the page. 16px gutter.
+- **Runs.**
+  - Columns are the ones `runAccounting` selects (src/store.ts:25270), joined to `task_ref` for project and filer.
+  - `amount` comes from `runAmountOf`; `role` is `run.role`.
+  - `billing` comes from `run_spend.billing` plus `run.billing_basis`. `default` reads as not proved.
+  - `charge`: the settled `run_spend.microusd` with its `source` (reported or estimated, frozen at settlement by
+    `settleRunSpend`); otherwise the run's saved conservative `cost_usd`, labelled estimated. It is never re-priced at
+    today's catalogue.
+- **Chat and lead.**
+  - `chat_turn` columns as `chatTurnAccounting` selects them (src/store.ts:25297), with the amount from
+    `chatTurnAmountOf`.
+  - `kind = 'chat'` is fleet chat. `kind = 'mate-step'` rows are grouped under their `mate_turn` and attributed at the
+    parent's `created_at`, counted once.
+  - `charge` is `settled_microusd`.
+- **Subagent turns and drafts.** Billing reads **not proved**, because the stamp is a machine default. If a cost is
+  reported, `charge` is that cost labelled "estimated (billing not confirmed)"; otherwise there is none.
+- **Sort steps** are OpenRouter API work: the reported cost, or unknown.
+- **Evals.**
+  - The `eval_invocation` rows are summed per attempt, and each amount kind is kept: API micro-dollars, subscription
+    micro-dollars, and the unknown count.
+  - A campaign with `spending_unknown = 1` adds one unknown.
+  - Role is `evals`. Evals are never counted toward limits.
 
-### Access
+`spendReport(rows)` is pure. It returns:
 
-`/spend` stays instance-operator only, as today. **Settings → Spend** is a new tile in the Agents group, beside
-Models (src/server/render-settings.ts:600). It opens `/settings/spend` (slice 2). Until slice 2 ships, the tile links
-to `/spend`.
+- the three totals;
+- breakdowns by project, model, role and person;
+- the 10 runs with the largest API dollars, each linking to `/t/<id>` and `/r/<run>`.
 
-### Tests (focused)
+The model breakdown is keyed on the reported model, falling back to the chosen one, labelled "not reported". Where
+the chosen model was an alias, the label reads "floating choice `opus` → `claude-opus-5-5`". There is no match
+verdict, because no historical alias target was saved.
 
-- `spend-report.test.ts` **contract**: for fixture runs and chat requests covering API reported, API estimated with
-  cost unknown, `basis: default`, subscription with and without reported usage, `billingReported` api-key, and a mixed
-  `MODELS_JOIN` model, each `SpendRow.amount` deep-equals `runAccounting(...).amount` / `chatTurnAccounting(...).amount`.
-- **Accounting:** totals never add subscription usage or unknown into API dollars. A lead step mirrored by a
-  `chat_turn` counts once. Eval attempts count once.
-- **What must never show:** an unknown amount and a subscription amount never render as `$0`. This is checked
-  through the `data-amount-kind` hooks, not copy strings.
-- **Route:** `/settings/spend` keeps the same roles as `/spend`.
+### 1.2 Page: rewrite `spendHtml` (src/spend-ui.ts)
 
----
+The page reuses the existing `.spend` article, the `.spend-grid` tables, the `.budget` limit rows, the plan-window
+tiles from src/limits-ui.ts, and the Operations Ledger tokens. Sections:
 
-## Slice 2. Spend settings: limits and alerts (schema v143)
+1. **Header:** month ← →, then CSV. Labelled "UTC month".
+2. **Three figures, never summed:** API dollars · Plan usage · Unknown. Each carries
+   `data-amount-kind="api|subscription|unknown"`.
+3. **Limits:** read-only rows, with "Change" → Settings → Spend.
+4. **Breakdowns:** project, model, role (builder, repair, planner, reviewer, scout, lead chat, chat, subagents, flows,
+   evals), person.
+5. **Most expensive runs.**
+6. **Not counted here.** The disclosure list from §2.2, for anything that isn't recorded.
 
-**User value:** "don't let agents spend more than $20 a day or $300 a month on this project". Paid work pauses at the
-limit and the owner is told at once. Unknown cost is never treated as free.
+On a phone, the figures stack, the tables become two-column rows, and there is a 16px gutter. The CSV gains `role`,
+`model_reported`, `billing`, `amount_kind` and `charge_basis` columns. The `?month=` links keep working.
 
-### What changes
+### 1.3 Access
 
-- **Period.** `budget.period TEXT NOT NULL DEFAULT 'month' CHECK (period IN ('month','day'))`. The live unique index
-  becomes `(scope_kind, scope_key, period)`, so a project can have a daily limit and a monthly limit. The migration
-  keeps every existing budget as `month`. No week period: month plus day covers both "runaway" and "plan".
-- **When the limit is reached.** The existing `hard_stop` keeps its meaning, now said in plain words: `Pause new paid
-  work` (1) or `Alert only` (0).
-  - Owner decision D2 covers a third choice, "require approval".
-  - A paused limit holds **new** paid work only. A run already started finishes; it already carries its own
-    `--max-budget-usd` cap where the provider supports one (src/provider.ts:412) and refuses where it can't
-    (`budget-unenforceable`, src/needs-you.ts:205).
-- **Alert marks.** Today they are fixed at 50/80/100. v1 makes them a per-limit choice of `80/100` (default) or
-  `50/80/100`, stored as `alert_marks TEXT NOT NULL DEFAULT '50,80,100'`. Existing rows keep their marks.
-- **What counts toward a limit (honest).**
-  - **API dollars**, reported or settled.
-  - **Unknown API work at its catalogue estimate.** This is what budgets already do (src/spend.ts:88 "never free").
-    Unknown work with no estimate counts as a figure (`+2 runs, cost unknown`). The gate also keeps refusing new
-    paid work on a provider it can't price at all (src/store.ts:16386, the `why: "unpriced"` hold).
-  - **Subscription usage does not count toward a dollar limit.** Plans are bound by their own windows, which headroom
-    routing already respects. The settings page says so in one line and shows the windows. (Later: a pause at X% of a
-    plan window.)
-  - **Evals are never capped** (owner, 2026-10-30). The page lists them, labelled "not limited".
-- **Gate.** `budgetGate` reads each live limit for its own period: a day limit reads from today's UTC midnight. Every
-  call site keeps calling the same gate, so no admission path changes shape. The hold words name the period:
-  `The shop project's daily limit is reached for 2026-10-31`.
-- **Who may change limits.**
-  - The existing POST `/spend/budget` gains `period` and `marks`. It stays `scope: "step-up"`: browser only, so API
-    tokens, the lead's token, the MCP gateway and chat bridges are refused (src/server/route-table.ts:61, :364).
-  - It takes a password unless Passwordless is on, in which case the live session is the proof (docs/plans/passwordless.md).
-  - It stays instance-operator only. Owner decision D4 covers project approvers.
-  - Every change is ledgered before → after by the existing `setBudget` (src/store.ts:16248).
+`/spend` stays instance-operator only.
 
-### Page: `/settings/spend` (new GET, operator)
+**Settings → Spend** is a tile in the Agents group, next to Models (src/server/render-settings.ts:600). It opens
+`/settings/spend`, a GET route with the same roles. That page shows the limits editor (slice 2; before slice 2 it is
+the existing editor, moved) and a Models summary card that links to Settings → Models.
 
-Sections:
+### 1.4 Tests
 
-1. **Limits.** Each row shows scope, period, used/limit bar, what happens at the limit, and alert marks, with "Change"
-   in a `<details>` (the existing `.budget` and `.budget-form`).
-2. **Add a limit.** For: Everything / a project / a person / a subagent. Period: Daily / Monthly. Amount in US
-   dollars. When the limit is reached. Alert at. Password field via `reauth()`.
-3. **Plan windows** (read-only).
-4. **Models** summary card (slice 3), linking to Settings → Models.
-
-### Tests
-
-- `migration-v143-spend-limits.test.ts`: existing budgets read back as `month` with the same marks. Two live rows (day
-  and month) can exist for one scope, but not two of the same period.
-- **Spend gate, security:**
-  - A daily limit at 100% with pause holds new API work at admission (`operate.ts`), at spawn (`invoke.ts`), for
-    repairs (`builder.ts`) and for chat (`store.ts`). Subscription work passes. A provider that can't be priced still
-    holds. Unknown work with an estimate counts at the estimate.
-  - Tomorrow (UTC) the day limit is clear and the month limit still counts.
-  - Attack: a bearer token, the lead token and a cookie without step-up each get the refusal, and nothing is written.
-- **Data integrity:** setting and removing a limit is one transaction with its ledger row.
+- **Contract.** For fixture rows of every source, `amount` deep-equals `runAccounting` / `chatTurnAccounting` for runs
+  and chat requests. The fixtures cover:
+  - API reported
+  - API with unknown cost
+  - `basis: default`
+  - subscription with and without usage
+  - `billingReported: api-key`
+  - a `MODELS_JOIN` model
+  - a lead turn with two mate-steps
+  - a subagent turn and a draft that carry the machine-default stamp: these must read **not proved**, never
+    subscription
+  - an eval attempt that mixes API, subscription-unreported and unknown invocations
+- **Accounting.** Plan usage and unknown are never added to API dollars. A lead turn counts once, at its parent's
+  time. `spendItems` and `spendRows` agree on attribution.
+- **What must never show.** An unknown or subscription amount never renders as `$0`, checked through
+  `data-amount-kind`.
 
 ---
 
-## Slice 3. Model choices: newest defaults, per-project, reported vs chosen (no schema)
+## Slice 2. Monthly limits with accurate words and real coverage (schema v143)
 
-**User value:** "use the newest Claude models, cheaper ones for small jobs, and show me if anything ran on something
-else". Choices can be made per project and are never applied behind an approval's back.
+**User value:** "pause new API work on this project once it has spent $300 this month". Every paid start checks
+fresh numbers, and the page says plainly what isn't covered.
 
-### Defaults: the newest models, as exact ids
+### 2.1 What a limit promises
 
-Today, a fresh installation with no `phase_config` files every scope unresolved until someone picks a model
-(src/agentconfig.ts:114–123). Setup offers floating aliases (src/setup-guide.ts:20).
+The existing monthly budgets stay as they are: installation, project, person or subagent; `hard_stop` means pause,
+otherwise alert only. They change in four ways:
 
-- **Use recommended models.** A one-click button on Settings → Models writes the recommended set at installation
-  scope through the existing `setPhaseConfig` / `setPhaseTierConfig` (each ledgered):
+- **Wording.** Everywhere a limit shows: "Pause new API work when recorded charges reach this amount. Running work may
+  exceed it." A run already started keeps whatever per-run cap its provider supports. A provider with no native cap
+  (Codex) is not capped by the monthly remainder (src/operate.ts:3526–3530), and the page says so on the limit.
+- **Fresh at admission.** The admission paths (src/operate.ts:2708/:3002, the builder repair paths, chat, subagents)
+  read the month without the 5-second cache. `budgetGate(now, { fresh: true })` skips `monthSpendCached`.
+- **Fresh right before launch.** `invokeAgent` gains one launch check for **every** provider, not only ACP: a fresh
+  gate for the run's budget subject, billed as `readAuthModeStrict` says. It refuses with reason `budget` before any
+  process starts. That covers builds, repairs, planner, scout and build reviews in one place.
+- **Flow steps re-gate per step**, instead of reusing one gate for the whole pass.
 
-  | Role | Model |
-  |---|---|
-  | Planner | `claude-opus-5-5` |
-  | Reviewer | `claude-opus-5-5` |
-  | Builder (routine) | `claude-sonnet-5-5` |
-  | Builder (strong: large or risky tasks) | `claude-opus-5-5` |
-  | Builder (light: small tasks) | `claude-haiku-5-5` |
-  | Repair | follows the builder |
+A real maximum would need atomic reservations across workers, outstanding-work accounting and provider capability
+handling. That is deferred, and the wording above doesn't claim it.
 
-  Setup (src/control-setup.ts:28) and the setup guide preselect the same ids. Owner decision D5 covers whether the
-  builder defaults to Opus.
-- **Exact ids, not aliases.** A sealed route binds the string it was given. `opus` sealed today runs whatever the CLI
-  maps `opus` to next month, so the approval no longer names what runs. Exact ids keep approvals and runs equal. The
-  existing model watch (src/model-catalog.ts:366) already says when 5.6 lands. Slice 3 adds a "Switch to it for new
-  tasks" button on that notice's page. It is the same `setPhaseConfig` write and affects new filings only. Aliases
-  stay selectable and are labelled "moves to the newest version".
-- **Other places Toolroll picks a model:**
-  - Task sizing (`SIZING_CLAUDE_MODEL = "haiku"`) becomes `claude-haiku-5-5`.
-  - The subagent default stays on the Claude CLI's own default (src/subagent-admin.ts:13), which is the person's
-    choice.
-  - The lead chat price table gains `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5` at Anthropic's
-    published list prices, checked at build time and never guessed (src/converse.ts:48). The lead's default model
-    becomes `claude-sonnet-5-5`.
+### 2.2 Paid entry points: inventory
 
-### Per-project overrides
+| Entry point | Records spend? | Gate today | v1 |
+|---|---|---|---|
+| Builds and repairs (`operate.ts`, `builder.ts` → `invokeAgent`) | yes (run) | admission | + fresh admission, + launch check |
+| Planner (`planner.ts` → `invokeAgent`) | yes (run) | admission (operate.ts:3002 path) | + launch check |
+| Scout (`scout.ts` → `invokeAgent`) | yes (run) | confirm at build | + launch check |
+| Build review (`build-review.ts:189` → `invokeAgent`) | yes (run) | **none** | + launch check (refusal: "not reviewed: a monthly limit holds API work") |
+| ACP agents (`invoke.ts:341`) | yes (run) | launch (ACP only) | unchanged, now part of the general check |
+| Fleet chat and lead (`converse.ts`, `subscription-chat.ts`) | yes (chat_turn) | admission (store.ts:14355, :20005) | + fresh |
+| Subagent turns (`subagents.ts`) | yes (subagent_turn) | admission (subagent-work.ts:61) | + fresh |
+| Flow drafts (`flow-draft.ts`) | yes (side_spend) | **none** | + gate before the draft |
+| Flow Sort (`flow-sort.ts`) | yes (decision cost) | one gate per pass | re-gate per step |
+| Task sizing on Claude (`claudeSizer`) | confirm at build | none | gate. If its cost isn't recorded, disclose it |
+| Task sizing on OpenRouter (`jevSizer`, task-sizing.ts:125) | **no** | none | gate (skip sizing while a covering pausing limit holds; the size reads unknown and routes routine). **Disclosed** as "not counted" |
+| Memory pass (`memory-pass.ts:179`, uses the chat model) | confirm at build | none | gate. Disclose if it isn't recorded |
+| Evals | yes (eval tables) | never capped (owner) | listed as "not limited" |
 
-- Settings → Models gains a **Project** picker (installation, or one project). With a project chosen, each role shows
-  either "uses the installation's choice" or a project row, and the form writes `phase_config(repo, …)` / tiers. These
-  are the same store writes the CLI uses (src/operate.ts:5529) and the same validation as src/server/settings.ts:1446
-  (exact id, review not on Gemini, repair on the builder's provider).
-- Strong and light tiers become editable on the page for Builder (light, strong) and Planner (strong). Today they are
-  CLI only. Alternates and fallback chains stay CLI only and are shown in words.
+The page's "Not counted here" list names every row marked **no**, or still unconfirmed when the slice ships. The slice
+isn't done until each "confirm at build" row is settled in this table.
 
-### Automatic routing, said in words (read-only)
+### 2.3 Unknown cost: the matrix
 
-One paragraph per project, built from the existing pure projection (src/phase-routing.ts:786 `agentsSummary`,
-:841 `routeWords`). For example:
+| Billing evidence | Saved charge | Counts toward a limit | Holds new API starts under a pausing limit? |
+|---|---|---|---|
+| API key | reported or settled | the charge | when the total reaches the limit |
+| API key | estimated (settled estimate or saved conservative `cost_usd`) | the charge, labelled estimated | when the total reaches the limit |
+| API key or **not proved** | **none** | nothing can be counted | **yes**: covered API starts hold until the operator marks it reviewed (below) |
+| Not proved (machine-default subagent or draft) | reported cost | the cost, labelled "estimated (billing not confirmed)" | when the total reaches the limit |
+| Subscription, **confirmed** by the work's own records (`billing_basis = evidence`, or `billingReported = subscription`) | — | nothing (it's plan usage) | never |
 
-> Small tasks build on Haiku 5.5 with no plan; large or risky ones plan and build on Opus 5.5. When Claude has used
-> more than 80% of its 5-hour window, an alternate on another provider takes the phase.
+- The gate's existing refusal for a provider it can't price at all stays.
+- **Mark as reviewed.**
+  - v143 adds `budget.uncounted_reviewed_at`.
+  - Work with no usable charge from before that time stops holding.
+  - The action is a step-up operator act on Settings → Spend, ledgered with the count it cleared.
+  - It doesn't make that work free: it stays in the Unknown figure.
 
-Fallback chains: "Off until a real out-of-plan case is recorded" (the inert recognizer registry, docs/fallback-fixtures.md).
+### 2.4 Who may change limits
 
-### Chosen vs ran on
+Unchanged: an instance operator, with step-up in the handler (`authenticateApprover`; the session counts as proof
+when Passwordless is on). Browser only, so API tokens, the lead token, MCP and chat bridges are refused. Every change is
+ledgered before → after (src/store.ts:16248). Person, subagent and project limits are all operator-owned.
 
-For each role over the last 30 days, the page shows **Chosen** (the run's stamped `run_route.model`, or `run.model`)
-next to **Ran on** (`run.model_reported`). A new pure function, `modelMatch(chosen, reported, aliasTarget)`, returns:
+### 2.5 Alerts (the existing monthly pass, reworded)
 
-- `same`
-- `alias` — `opus` ran as `claude-opus-5-5`, counted as the same
-- `different` — the reported model, with the runs listed and linked
-- `several` — a `MODELS_JOIN` value
-- `not reported` — Codex reports no model (src/reported-usage.ts:79)
+- The pass stays once a minute at 50/80/100%. The page never says "at once".
+- The 100% notice for a pausing limit reads "`<limit>`: API work is paused" (exhausted). When work is held for
+  uncounted cost instead, the notice reads "Some costs could not be counted". Both links read **Review limit**, to
+  `/settings/spend`.
+- Holds come from current state. Raising one limit says "still held by `<other limit>`" when another limit still
+  holds.
+- Actionable notices go to instance operators. A person's own budget also gives that person an information copy with
+  no action.
+- **Needs you.** One amber Inbox row per holding limit (operator only), with the action **Review limit**. It goes away
+  when the hold clears.
+- **Telegram and other chat bridges** carry the message and link only. Changing a limit needs a step-up browser act.
 
-`different` gets a counted line ("3 runs ran on claude-sonnet-5-5"). It is not amber: nothing waits on the person. The
-same pair also shows on each run in the task page's attempts list (render-tasks.ts already formats model names at
-:161).
+### 2.6 Schema
 
-### Sealing stays fail-closed
+v143: `budget.uncounted_reviewed_at TEXT` (nullable). Added to `UPDATE_SAFE_MIGRATIONS` with
+`src/migration-v143-spend-limits.test.ts`. If evals D1 hasn't taken v142 when this merges, take the next free number
+and say so in the PR.
 
-- A model choice changes **new filings only**. A route is computed and sealed when a scope is filed
-  (src/store.ts:8490–8530). An approval binds that route's digest, and every run is stamped from the sealed route
-  (src/store.ts:15510–15524).
-- No slice-3 write touches `scope`, `run_route`, an approval, a mode's terms, a routine's pin or a fallback chain.
-- Plans already filed but not yet approved keep the route they were filed with. The page lists how many there are
-  ("4 plans waiting for approval use the previous choice; re-file to switch") and links to them. It never re-routes
-  them. A mode's auto-approval already refuses a changed route (src/modes.ts:238).
-- **Who may change model choices.**
-  - Today, POST `/settings/models/agent` is an approver browser act with no step-up.
-  - Slice 3 makes every model-choice write (agent, tier, project, "use recommended", "switch") `scope: "step-up"`,
-    like budgets: password unless Passwordless; API tokens and the lead token refused.
-  - A model choice decides what new work spends, so it needs the same proof as a limit.
-  - Project rows need an approver with access to that project. Installation rows need an instance operator (D4).
+### 2.7 Tests
 
-### Tests
-
-- **Sealed routes (security):** after a filed and approved scope, changing the installation and project choices
-  leaves its route digest, its approval and the next run's stamp unchanged. A newly filed scope gets the new choice.
-- **Attack:** bearer token, lead token and cookie without step-up are each refused on every model-choice POST, with no
-  `phase_config` change and no ledger row. A project approver without access to that project is refused.
-- `modelMatch` unit cases: alias resolution, joined models, null reported.
-- **Contract:** "Use recommended" writes exactly the table above as exact ids, and the CLI's `config show --json`
-  reads them back.
-
----
-
-## Slice 4. Limit notifications (no schema)
-
-**User value:** the owner hears about a limit before and when it bites, on their phone or Telegram, and gets one tap
-to the page where it can be raised.
-
-- **Alerts.** `budgetAlertPass` (src/budget-alerts.ts:14) learns the period: the dedupe key becomes
-  `budget:<id>:<limit>:<period-key>:<mark>`, where the period key is the day or the month, and only each limit's
-  chosen marks are used. Delivery is unchanged: the outbox, with the person's usual places (Telegram, Slack, Discord,
-  Teams, phone push), `pushClass: "attention"`, link `/settings/spend`.
-- **Needs you.** While a pausing limit holds paid work, one row shows in the operator's Inbox (Needs you, amber):
-  `The shop project's daily limit is reached. 2 tasks are waiting.` with a single action, **Raise the limit**, linking
-  to `/settings/spend#limit-<id>`. There is one row per limit, never per task. It disappears when the limit is raised
-  or the period turns. A held task's own page keeps its "Budget" fact (src/server/render-tasks.ts:2293).
-- **Never from chat.** Telegram and other chat bridges carry the message and the link only. Raising a limit is a
-  step-up browser act, so a chat can't do it. This holds even with chat approval on.
-- **Unknown cost.** At most one notice a month per limit: "3 runs on the shop project have unknown cost; they count at
-  their estimate." It is sent only when an unknown with no estimate exists under a pausing limit.
-
-### Tests
-
-- Each limit sends at most once per mark per period. A day limit alerts again the next day. Raising a limit re-arms
-  its marks (the key includes the limit).
-- The Needs-you row exists only while a pausing limit holds work, and is gone after a raise.
-- **Attack:** a Telegram reply or callback can't change a limit.
+- **Migration.** Existing budgets read back unchanged, with `uncounted_reviewed_at` null.
+- **Gate security:**
+  - At 100% with pause, new API work is held at admission **and** at launch: builds, repair, planner, build review,
+    flow draft, sort step, chat, subagent.
+  - Confirmed subscription work passes.
+  - Not-proved work with no charge holds until it is marked reviewed.
+  - Estimated work counts at its saved charge.
+- **Race.** Admission passes, then a concurrent settlement crosses the limit: the launch check refuses, and no process
+  starts.
+- **Flow.** Within one pass, a second Sort step is refused after the first one crosses the limit.
+- **Attack.** A bearer token, the lead token and a Telegram callback cannot set a limit or mark one reviewed. A valid
+  Passwordless session can.
+- **Alerts.** The actionable notice goes to operators. The uncounted-cost wording appears only for that cause.
 
 ---
 
-## Owner decisions (with recommendations)
+## Slice 3. One Models editor (no schema)
+
+**User value:** "use the newest Claude models", set in one place and applied in one step. You see exactly what will
+change first, and approved work is never touched.
+
+### 3.1 The editor (Settings → Models, the only editor)
+
+The page keeps today's per-role pickers (src/models-ui.ts). It adds:
+
+- **Scope.** Installation, or one project.
+- **Inherited values in words.** For example, "inherits the installation's light builder". This covers both tier
+  inheritance and repair inheritance (src/agentconfig.ts:284–340).
+- **Tiers behind a disclosure.** Builder light and strong, and planner strong. Alternates and fallback chains stay
+  CLI-only and are described in words.
+- **Presets** (D5). Choosing one shows the **exact diff** first: each row before → after, and every clear. Applying it
+  is a second, step-up submit that carries the diff's digest.
+- **Switch when the watch sees a newer model.** The existing notice (src/model-catalog.ts:366) leads to the same
+  diff-then-apply flow.
+- **Model ids are exact.** Aliases stay selectable, labelled "floating: moves to the newest version". Presets never
+  write aliases.
+
+The Spend page and Settings → Spend show a read-only summary card linking here.
+
+### 3.2 One mutation boundary
+
+`store.applyModelChoices(change, actor, now)` is the single write path for the console. The CLI's `config set` and
+`config clear` move onto it too. In one transaction it:
+
+1. **Authenticates.** The handler has already run `authenticateApprover` (step-up; the session counts when
+   Passwordless is on). The route is `scope: "step-up"`, so it is browser only, and the CSRF guard
+   (src/server/guards.ts:114) applies unchanged.
+2. **Rechecks authority now.** The actor must be an instance operator for installation and project rows alike in v1.
+   A project target must be a known project.
+3. **Rejects stale input.** The submitted digest of the current rows for that scope must match what is stored, so two
+   tabs can't overwrite each other.
+4. **Validates the resulting configuration**, inheritance included:
+   - exact ids;
+   - no Gemini reviewer;
+   - repair on the effective builder's provider at that scope;
+   - every phase resolves exactly at installation scope, and at every project the change affects.
+5. **Writes every row**, sets and clears.
+6. **Ledgers before → after per row**, clears included. `setPhaseTierConfig` and the clear methods get policy entries
+   through this boundary.
+
+When a change moves a role to a different provider, the diff shows what that changes: billing (plan or key), whether
+a dollar cap can be held, and network hosts.
+
+**Also changed by lead defaults.** A subagent with no model of its own follows the lead's model on the Claude
+subscription (src/subagent-work.ts:49–51). The diff lists the affected subagents when the lead model changes.
+
+### 3.3 Sealed work stays sealed
+
+- Model choices apply to **new filings**. No write here touches `scope`, its `approvedProfile` or digest, the repair
+  model it sealed, `run_route`, an approval, a mode's terms, or a routine's or standing order's pin.
+- **Exception, stated on the page:** a legacy build review with no sealed route uses the current review agent
+  (src/build-review.ts:259).
+- The page lists plans that were filed but are waiting for approval under the previous choice, with links. It never
+  re-routes them.
+
+### 3.4 Defaults where Toolroll picks a model
+
+- The setup picker offers exact ids (src/setup-guide.ts:20, plus the setup inputs `control-setup.ts` receives) and
+  preselects per D5.
+- Task sizing (`SIZING_CLAUDE_MODEL`, src/task-sizing.ts:36) becomes `claude-haiku-5-5`.
+- **Deferred:** the direct-API lead price table (src/converse.ts:48). Its integer-micro-dollar-per-token settlement
+  and fixed cache ratios can't represent Haiku 5.5's tiers or Sonnet 5.5's cache-read price faithfully. The
+  subscription lead isn't affected.
+
+### 3.5 Routing in words (read-only)
+
+The page describes routing with the existing projection (src/phase-routing.ts:786, :841). Headroom is described as a
+preference at filing time. For example: "when a task is filed and Claude has used over 80% of its 5-hour window, an
+alternate with more room is preferred; with no alternate, Claude is kept". It is never described as a limit or a live
+fallback.
+
+### 3.6 Tests
+
+- **Sealed profiles (security).** After a filed and approved scope, a preset, a switch and a project override each
+  leave its `approvedProfile`, `approvedDigest`, sealed repair model, route digest, the next run's stamp, and a
+  routine's or standing order's pin byte-identical. A newly filed scope gets the new choice.
+- **Mutation boundary (security):**
+  - Refused: missing or duplicate CSRF; a foreign origin; a revoked session; a bearer or lead token; an approver who
+    isn't an operator; an unknown project.
+  - Refused: a stale digest, with nothing written.
+  - A Passwordless session passes without a password. An SSO session passes through its own step-up.
+- **Atomicity.** A preset that fails validation on its last row writes nothing. Every applied row and clear has a
+  before → after ledger entry.
+- **Contract.** A preset writes exactly its table as exact ids. `config show --json` reads them back.
+
+---
+
+## Owner decisions
 
 | # | Decision | Recommendation |
 |---|---|---|
-| D1 | Where model choices live | **Keep them on Settings → Models**, add per-project and tiers there, and show a Models summary card on Settings → Spend and on `/spend`. One editor, two ways in. |
-| D2 | What happens at a limit: warn / pause new work / require approval | **Warn and pause in v1.** A pause shows as one Needs-you row with "Raise the limit". "Require approval" (per-task "run anyway") adds a one-shot spend grant that must be sealed, ledgered and race-proof, for little gain over raising the limit. Later if asked. |
-| D3 | Unknown cost under a limit | **Count it at the catalogue estimate (as budgets do today), show unknowns with no estimate as a count, keep refusing providers that can't be priced at all.** Pausing on every unknown would stop all Codex API work, since Codex reports no cost. |
-| D4 | Who may change limits and model choices | **Instance operator for installation-wide rows. An approver with project access for that project's model choice. Every write is step-up, so API and lead tokens are refused.** Project-scoped approvers seeing their own project's spend can come later. |
-| D5 | Builder default model | **Sonnet 5.5 routine, Opus 5.5 for large or risky tasks, Haiku 5.5 for small ones. Opus 5.5 plans and reviews.** Newest everywhere, and sized routing keeps the bill sensible. Alternative: Opus 5.5 for every build (simpler, roughly 5× the API dollars on routine work). |
-| D6 | Exact ids or aliases by default | **Exact ids**, with a "Switch to it" button when the watch sees a newer model. An alias under a sealed approval quietly changes what runs. |
-| D7 | Subscription usage limits | **Not in v1.** Plans are bound by their own windows, and headroom routing already respects them. Later: "pause new work at X% of the weekly window". |
-| D8 | Spend-aware routing (route cheaper near a limit) | **Not in v1.** It would need to be a sealed routing input, like headroom. Revisit after v1 data. |
+| D1 | Where model choices live | **One editor, Settings → Models**, with summary cards on Spend and Settings → Spend. Tiers sit behind a disclosure. |
+| D2 | What happens at a limit | **Alert only or pause new API work**, called a recorded-spend threshold. A true cap (reservations) and "require approval" come later. |
+| D3 | Unknown cost | **The §2.3 matrix.** Saved estimates count. Potentially billed work with no charge holds covered API starts until reviewed. Confirmed subscription work is exempt. |
+| D4 | Who changes limits and models | **Instance operator only in v1, with step-up.** Project approvers come later, with target-scoped authorization. |
+| D5 | Default models | **The owner's call. Two options below.** |
+| D6 | Exact ids or aliases | **Exact ids.** Upgrades are explicit, through diff-then-apply. |
+| D7 | Limits on subscription usage | **Defer.** Plan windows are shown as observations. Headroom is not enforcement. |
+| D8 | Cheaper models near a limit | **Defer.** No automatic substitution. |
+
+### D5: the two default sets
+
+Token prices: Opus 5.5 is $4 in / $20 out per million tokens; Sonnet 5.5 is $2 / $10. That's 2× per token. A task's
+real cost ratio varies, because Opus may need fewer turns.
+
+- **(a) Opus first.** Opus 5.5 plans, builds and reviews by default. Repair follows the builder. An explicit
+  **Economy** preset switches to Sonnet 5.5 for routine builds and Haiku 5.5 for small ones. Best results by default
+  for early adopters. API-key users pay the higher token price on every build. Subscription users use up plan windows
+  faster.
+- **(b) Sized.** Sonnet 5.5 builds routine tasks, Opus 5.5 builds large or risky ones, Haiku 5.5 builds small ones.
+  Opus 5.5 plans and reviews. Lower API dollars on routine work, using the sizing that already exists. Routine builds
+  don't get the strongest model.
+
+Both are offered as presets either way. D5 only picks which one setup preselects. Codex leaned toward (a).
 
 ## Schema
 
 | Version | Slice | Change |
 |---|---|---|
-| v143 | 2 | `budget.period` (`'month'`/`'day'`, default `'month'`), `budget.alert_marks` (default `'50,80,100'`). Rebuild `budget_live` as `(scope_kind, scope_key, period) WHERE removed_at IS NULL`. Add to `UPDATE_SAFE_MIGRATIONS`, with `src/migration-v143-spend-limits.test.ts`. |
+| v143 | 2 | `budget.uncounted_reviewed_at TEXT` (nullable) |
 
-v142 is reserved by evals D1. If D1 hasn't landed when slice 2 merges, take the next free number and say so in the PR.
-Slices 1, 3 and 4 add no schema.
+Slices 1 and 3 add no schema.
 
 ## Slices (each ships alone)
 
-| Slice | Ships | Depends on | User value |
-|---|---|---|---|
-| 1 | Spend page on 0.9.82 accounting, Settings → Spend tile | — | An honest dashboard: by day, week, month, project, model, role; top runs; cost per finished task; cache use; phone-friendly |
-| 2 | Daily and monthly limits, plain "at the limit" choice, Settings → Spend page (v143) | 1 (page only) | Cap a project or everything per day or month; paid work pauses; unknown is never free |
-| 3 | Newest-model defaults, per-project and tier choices, routing in words, chosen vs ran on, step-up on model writes | — | Current models by default; overrides per project; mismatches are visible; approvals untouched |
-| 4 | Period-aware alerts, a Needs-you row for a paused limit, Telegram etc. | 2 | Hear about a limit before and when it bites; one tap to raise it |
+| Slice | Ships | User value |
+|---|---|---|
+| 1 | Honest Spend page, Settings → Spend entry | See API dollars, plan usage and unknown cost apart, by project, model and role, with a CSV, on desktop and phone |
+| 2 | Monthly limits: accurate words, fresh checks at admission and launch, entry-point gates, unknown matrix, reworded alerts and a Needs-you row (v143) | A limit you can trust to pause new API work, and a clear list of what isn't covered |
+| 3 | One Models editor: presets with diff, exact ids, single-transaction ledgered writes | Newest models in one step, without touching approved work |
 
-Order: 1 → 3 → 2 → 4. Slice 3 is independent and the most visible "newest models" change, so it can ship in the same
-release as slice 1.
-
-Each slice runs only its affected tests while it is being fixed. The full suite runs on GitHub CI and in the release
-check.
+Order: 1 → 3 → 2. Slices 1 and 3 can ship in the same release. Each slice runs only its affected tests while being
+fixed; the full suite runs on GitHub CI and in the release check. Before it is accepted, each slice gets the desktop
+and phone journey with its failure states.
 
 ## Later (not in v1)
 
-- Dollar cache savings, once the catalogue keeps cache-read and cache-write prices.
-- Pausing at a share of a plan window.
-- Per-task "run anyway" grants.
-- Spend-aware routing.
-- Project approvers seeing their own project's spend.
-- Week-period limits.
-- A lead tool that reads the spend summary (read-only).
+- Daily limits (one attribution rule; period in every lookup, cache key and CLI mutation; midnight and rollover tests)
+- Configurable alert marks
+- Project-approver permissions
+- A real spending cap with atomic reservations
+- "Require approval" per task
+- Direct-API 5.5 prices with exact tier and cache settlement
+- Historical match verdicts (needs the alias target saved at run time)
+- Cost per finished task
+- Cache analytics (needs cache prices)
+- Pausing at a share of a plan window
+- Spend-aware routing
+- Recording the cost of OpenRouter sizing
+
+## Review round 1 (Codex, NO-GO): what changed
+
+| # | Finding | Verdict | Where closed |
+|---|---|---|---|
+| 1 | Pause doesn't cover every paid entry point (the invoke gate is ACP-only; build review and sizing are ungated) | Accepted, verified (invoke.ts:320–342, build-review.ts:189, task-sizing.ts:125) | §2.1 general launch check in `invokeAgent`; §2.2 inventory with gates and disclosures |
+| 2 | Threshold, not a race-proof cap; 5 s cache; flow gate per pass; no-cap providers | Accepted, verified (store.ts:16354, flow-steps.ts:101, operate.ts:3526) | §2.1 wording, fresh at admission and launch, per-step re-gate; a real cap goes to Later |
+| 3 | Unknown spend counts as nothing; `unknown` ≠ API | Accepted, verified (spend.ts:338, reported-usage.ts:98) | §1.1 billing kept apart from amount and charge; §2.3 matrix, plus "mark reviewed" (v143) |
+| 4 | Subagent and draft billing is a machine default, not evidence | Accepted, verified (store.ts:19227/:19234, spend.ts:52) | §1.1 reads "not proved"; §1.4 contract fixtures for these sources |
+| 5 | A step-up route doesn't authenticate; Models is `limited: deny` | Accepted, verified (route-policy.ts:12, settings.ts:1446) | §3.2 handler step-up plus one mutation boundary; operator-only (D4), so no project-limited routes; §3.6 tests incl. Passwordless passes |
+| 6 | Presets aren't atomic or fully ledgered; inheritance; sealed-profile coverage; legacy review | Accepted, verified (store.ts:13483/:13535, build-review.ts:259) | §3.2 one transaction, stale digest, ledger incl. clears, diff first; §3.3 legacy-review exception; §3.6 profile/digest/repair/pin test |
+| 7 | One amount per eval attempt loses information; duplication question | Accepted, verified (evals.ts:394, eval-world.ts:1–6) | §1.1 per-invocation aggregation keeps kinds apart; separate DB stated |
+| 8 | 5.5 rows in the lead price table can't settle honestly | Accepted | §3.4 deferred |
+| 9 | Daily attribution and CLI removal | Accepted by deferral | Daily limits moved to Later with the stated requirements |
+| 10 | Estimates re-priced at today's prices; "at least"; cost per task; cache | Accepted | §1.1 saved charges with their basis, never re-priced; "at least", cost per task and cache cut |
+| 11 | Historical alias verdicts; headroom overpromised | Accepted, verified (model-catalog.ts:188, phase-routing.ts:548) | §1.1 "floating choice → reported"; §3.5 filing-time preference wording |
+| 12 | Daily alerts can't ship apart; misleading notices; recipients | Accepted | Daily deferred; §2.5 holds from current state, "Review limit", "Some costs could not be counted", notices to operators, minute pass stated |
+| T1 | The reported model is already recorded | Accepted | Facts table: "not yet shown together" |
+| T2 | Lead discriminator is `mate-step` | Accepted, verified (store.ts:1905) | §1.1 |
+| T3 | Links are `/t/` and `/r/` | Accepted, verified (http.ts:240) | §1.1 |
+| T4 | `control-setup.ts` doesn't define defaults | Accepted | §3.4 setup picker plus inputs |
+| T5 | Subagents inherit the lead model | Accepted, verified (subagent-work.ts:49–51) | §3.2 the diff lists affected subagents |
+| T6 | 2×, not 5×, token price | Accepted | D5 options |
+| D1–D8 | Codex's views | D1, D2, D6, D7, D8 agreed; D3 changed to the matrix; D4 simplified to operator-only; D5 given to the owner with both options | Owner decisions table |
+
+No findings were rejected.
