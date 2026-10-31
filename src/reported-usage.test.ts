@@ -77,6 +77,13 @@ test("a run's accounting keeps API dollars, subscription usage and unknown apart
   recordRunCostUnknown(store, capped, false);
   expect(store.handle.prepare("SELECT cost_unknown, usage_json FROM run WHERE id = ?").get(capped)).toMatchObject({ cost_unknown: 1, usage_json: expect.not.stringContaining("cost_note") });
   expect(runAccounting(store, capped)?.amount).toEqual({ kind: "unknown" });
+  // PR #263 security scan: the pinned Store methods can't be replaced on the class at run time, however it's reached.
+  const proto = Object.getPrototypeOf(store) as Record<string, unknown>;
+  for (const name of ["recordUsage", "settleRunSpend", "fixRunBilling", "finalizeChatTurn"]) {
+    expect(() => { proto[name] = () => undefined; }).toThrow(TypeError);
+    expect(() => Object.defineProperty(proto, name, { value: () => undefined })).toThrow(TypeError);
+    expect(Reflect.set(proto, name, () => undefined)).toBe(false);
+  }
   // Billed by use with nothing reported or priced, and a run with no billing at all: unknown, never $0.
   const blank = run("t-blank");
   store.fixRunBilling(blank, "api-key", T0);

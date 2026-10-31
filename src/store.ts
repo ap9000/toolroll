@@ -25313,3 +25313,15 @@ export function recordRunCostUnknown(store: Store, runId: number, unknown: boole
   if (unknown !== true) return;
   store.handle.prepare("UPDATE run SET cost_unknown = 1 WHERE id = ?").run(runId);
 }
+
+/** PR #263 security scan: the Store methods eval accounting pins by body (eval-hooks.ts PINNED_STORE_METHODS) are made
+ * unwritable and unconfigurable on the class as this module loads, so no other module replaces one on the prototype
+ * at run time, however it reaches it. Called below, a hook: a release that drops the call needs a person. */
+export function sealStoreMoneyMethods(): void {
+  for (const name of ["recordUsage", "settleRunSpend", "fixRunBilling", "finalizeChatTurn"] as const) {
+    const held = Object.getOwnPropertyDescriptor(Store.prototype, name);
+    if (held === undefined || typeof held.value !== "function") throw new Error(`Store.${name} is missing`);
+    Object.defineProperty(Store.prototype, name, { value: held.value, writable: false, configurable: false, enumerable: false });
+  }
+}
+sealStoreMoneyMethods();

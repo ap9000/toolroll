@@ -442,7 +442,7 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/desktop-host.ts#desktopMain@14": 2,
     "src/desktop-host.ts#pairDesktopLogin@10": 3,
     "src/evals.ts#<module>": 2,
-    "src/evals.ts#abandonEvalCampaign@35>store.transact(_)@1": 1,
+    "src/evals.ts#abandonEvalCampaign@36>store.transact(_)@1": 1,
     "src/evals.ts#admitEvalCampaign@11>store.transact(_)@1": 1,
     "src/nightly-check.ts#<module>": 2,
     "src/nightly-check.ts#createNightlyCheckFlow@5": 1,

@@ -27,7 +27,8 @@ import type ts from "typescript-parser";
 let compiler: typeof ts | undefined;
 const typescript = (): typeof ts => compiler ??= createRequire(import.meta.url)("typescript-parser") as typeof ts;
 
-/** One required call: in this file, inside this top-level function, a call to this name, the name bound as `from`
+/** One required call: in this file, inside this top-level function (`<module>`: a statement of the file's own top
+ * level, unconditional), a call to this name, the name bound as `from`
  * says (a module specifier its un-renamed named import comes from; `self`: the file's own top-level function; `local`:
  * declared inside `inside`). `args`: the call's arguments, as text, must stay as the base has them. */
 export type EvalHook = { file: string; inside: string; calls: string; from: string; args?: true; why: string };
@@ -45,6 +46,9 @@ export const EVAL_HOOKS: readonly EvalHook[] = Object.freeze([
   { file: "src/release-auto.ts", inside: "sealAutoGreen", calls: "nightlyDebtHold", from: "./nightly-github.js", why: "GitHub's nightly holds automatic approval" },
   { file: "src/release-auto.ts", inside: "changeProblem", calls: "evalHookProblem", from: "./eval-hooks.js", why: "this check itself" },
   { file: "src/release-auto.ts", inside: "changeProblem", calls: "autoPathProblem", from: "self", why: "policy paths need a person" },
+  { file: "src/release-auto.ts", inside: "changeProblem", calls: "storeRewriteProblem", from: "./eval-hooks.js", why: "no changed file rewrites a pinned Store method" },
+  // The pinned Store methods are made unwritable on the class itself as store.ts loads (PR #263 security scan).
+  { file: "src/store.ts", inside: "<module>", calls: "sealStoreMoneyMethods", from: "self", why: "the pinned Store methods can't be replaced at run time" },
   // The invocation gateway (invoke.ts): every agent run an eval world spawns takes a slot.
   { file: "src/invoke.ts", inside: "invokeAgent", calls: "takeEvalDispatch", from: "./eval-gate.js", why: "every agent dispatch in an eval world takes a slot" },
   // PR #263 review: what the run's billing basis and its unknown cost are computed from is held too, not only the call.
@@ -71,7 +75,11 @@ export const EVAL_PINNED: readonly EvalPinned[] = Object.freeze([
   { file: "src/store.ts", fn: "Store#settleRunSpend", why: "how a run's spending is priced" },
   { file: "src/store.ts", fn: "Store#fixRunBilling", why: "how a run was billed" },
   { file: "src/store.ts", fn: "Store#finalizeChatTurn", why: "what a chat request spent and how it was billed" },
+  { file: "src/store.ts", fn: "sealStoreMoneyMethods", why: "the pinned Store methods can't be replaced at run time" },
 ]);
+
+/** The Store methods pinned by body, which no file may write over (storeRewriteProblem, store.ts sealStoreMoneyMethods). */
+export const PINNED_STORE_METHODS: readonly string[] = Object.freeze(EVAL_PINNED.filter(pin => pin.fn.startsWith("Store#")).map(pin => pin.fn.slice("Store#".length)));
 
 type Parsed = { source: ts.SourceFile } | { problem: string };
 
@@ -221,6 +229,15 @@ function parser(read: (file: string) => Buffer | null): (file: string) => Parsed
 function hookIn(tree: (file: string) => Parsed, hook: EvalHook): { args: string[] } | { missing: string } {
   const parsed = tree(hook.file);
   if ("problem" in parsed) return { missing: `${parsed.problem}, and it holds a required call (${hook.why})` };
+  if (hook.inside === "<module>") {
+    // A bare call statement of the file's own top level: run once, as the module loads, never behind a condition.
+    const compiler = typescript();
+    const found = parsed.source.statements.filter((one): one is ts.ExpressionStatement => compiler.isExpressionStatement(one) && compiler.isCallExpression(one.expression)
+      && compiler.isIdentifier(one.expression.expression) && one.expression.expression.text === hook.calls);
+    const fn = topFunction(parsed.source, hook.calls);
+    if (found.length === 0 || fn === null || boundAs(parsed.source, hook.calls, "self", fn) !== null) return { missing: `${hook.file} no longer calls its own ${hook.calls} as it loads (${hook.why})` };
+    return { args: found.map(one => one.getText(parsed.source)).sort() };
+  }
   const fn = heldFunction(parsed.source, hook.inside);
   if (fn === null || fn.body === undefined) return { missing: `${hook.file} no longer has ${hook.inside} as one function, which must call ${hook.calls} (${hook.why})` };
   const found = callsOf(fn.body, hook.calls);
@@ -267,3 +284,75 @@ export function evalHookProblem(candidate: (file: string) => Buffer | null, base
 
 /** Every file the manifest reads, for one verified read of each tree. */
 export const EVAL_HOOK_FILES: readonly string[] = Object.freeze([...new Set([...EVAL_HOOKS.map(hook => hook.file), ...EVAL_PINNED.map(pin => pin.file)])]);
+
+const BUILTIN_CLASSES = new Set(["Object", "Array", "Function", "String", "Number", "Boolean", "Symbol", "BigInt", "Map", "Set", "WeakMap", "WeakSet", "Promise",
+  "Error", "TypeError", "RangeError", "RegExp", "Date", "Buffer", "Uint8Array", "ArrayBuffer", "DataView", "URL", "Headers", "Response", "Request", "EventTarget"]);
+const STOREISH = /(^|[^a-z])store|Store|prototype|__proto__/;
+
+/** The ways `source` could write over a pinned Store method from anywhere, each as its text (PR #263 security scan): an
+ * assignment to a property of a pinned name; a computed-key write on something named like the store or a prototype;
+ * reaching a class's prototype (`X.prototype` of anything but a built-in, `__proto__`, get/setPrototypeOf); and a
+ * property-defining call (defineProperty, defineProperties, Reflect.set or defineProperty, Object.assign onto an existing
+ * object, __defineGetter__/__defineSetter__) that names a pinned method, the store or a prototype, or takes its key
+ * computed. Syntax, not types: an alias of the store instance written through a computed key is a person's to catch. */
+function storeRewrites(source: ts.SourceFile, pinned: readonly string[]): string[] {
+  const compiler = typescript();
+  const names = new Set(pinned);
+  const found: string[] = [];
+  const say = (node: ts.Node): void => { found.push(node.getText(source).replace(/\s+/g, " ").slice(0, 200)); };
+  const literal = (node: ts.Node | undefined): string | null => node !== undefined && compiler.isStringLiteralLike(node) ? node.text : null;
+  const mentions = (node: ts.Node): boolean => {
+    if ((compiler.isIdentifier(node) || compiler.isPrivateIdentifier(node) || compiler.isStringLiteralLike(node)) && (names.has(node.text) || STOREISH.test(node.text))) return true;
+    let hit = false;
+    compiler.forEachChild(node, one => { if (!hit && mentions(one)) hit = true; });
+    return hit;
+  };
+  const writesPinned = (left: ts.Node): boolean => (compiler.isPropertyAccessExpression(left) && names.has(left.name.text))
+    || (compiler.isElementAccessExpression(left) && (literal(left.argumentExpression) === null ? STOREISH.test(left.expression.getText(source)) : names.has(literal(left.argumentExpression)!)));
+  const visit = (one: ts.Node): void => {
+    if (compiler.isBinaryExpression(one) && isAssignment(one.operatorToken.kind) && writesPinned(one.left)) say(one);
+    else if ((compiler.isPrefixUnaryExpression(one) || compiler.isPostfixUnaryExpression(one)) && writesPinned(one.operand)) say(one);
+    else if (compiler.isPropertyAccessExpression(one) && one.name.text === "prototype" && !(compiler.isIdentifier(one.expression) && BUILTIN_CLASSES.has(one.expression.text))) say(one);
+    else if ((compiler.isIdentifier(one) || compiler.isStringLiteralLike(one)) && one.text === "__proto__") say(one);
+    else if (compiler.isCallExpression(one)) {
+      const callee = calleeName(one.expression);
+      const owner = compiler.isPropertyAccessExpression(one.expression) ? one.expression.expression.getText(source) : "";
+      const keyed = callee === "defineProperty" || (owner === "Reflect" && (callee === "set" || callee === "defineProperty"));
+      if (callee === "getPrototypeOf" || callee === "setPrototypeOf") say(one);
+      else if (keyed && (literal(one.arguments[1]) === null || one.arguments.some(mentions))) say(one);
+      else if ((callee === "defineProperties" || callee === "__defineGetter__" || callee === "__defineSetter__") && (one.arguments.some(mentions) || callee !== "defineProperties")) say(one);
+      else if (owner === "Object" && callee === "assign" && one.arguments[0] !== undefined && !compiler.isObjectLiteralExpression(one.arguments[0]) && one.arguments.some(mentions)) say(one);
+    }
+    compiler.forEachChild(one, visit);
+  };
+  visit(source);
+  return found;
+}
+
+/**
+ * Why a changed file could write over a pinned Store method, or null (PR #263 security scan). The pins hold the methods'
+ * bodies in store.ts, but any other file could replace one at run time; store.ts makes them unwritable on the class as
+ * it loads (sealStoreMoneyMethods, a hook), and this holds every changed JavaScript or TypeScript file: a way of
+ * rewriting one (storeRewrites) the base's copy of that file didn't already have needs a person. A file that can't be
+ * read or parsed needs one too.
+ */
+export function storeRewriteProblem(paths: readonly string[], candidate: (file: string) => Buffer | null, base: (file: string) => Buffer | null,
+  pinned: readonly string[] = PINNED_STORE_METHODS): string | null {
+  for (const path of paths) {
+    if (!/\.(?:[cm]?[jt]sx?)$/.test(path) || path.startsWith("node_modules/") || path.includes("/node_modules/")) continue;
+    const bytes = candidate(path);
+    if (bytes === null) continue; // Deleted: it writes nothing.
+    const now = parse(path, bytes);
+    if ("problem" in now) return `${now.problem}, so whether it rewrites a pinned Store method can't be read`;
+    const before = base(path);
+    const was = before === null ? null : parse(path, before);
+    const kept = new Map<string, number>();
+    if (was !== null && !("problem" in was)) for (const one of storeRewrites(was.source, pinned)) kept.set(one, (kept.get(one) ?? 0) + 1);
+    for (const one of storeRewrites(now.source, pinned)) {
+      const left = kept.get(one) ?? 0;
+      if (left > 0) { kept.set(one, left - 1); continue; }
+      return `${path} could write over a pinned Store method (${one.slice(0, 120)}), which needs a person`;
+    }
+  }
+  return null;
+}

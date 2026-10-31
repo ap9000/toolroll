@@ -17,7 +17,7 @@ import { fullCheckProblem, projectGitDir } from "./check-report.js";
 import { sealedRun } from "./release-recheck.js";
 import { runCheckLevel } from "./check-levels.js";
 import { readVerifiedCommit, verifiedBlobs, verifiedTreeDiff, verifiedTreeEntries } from "./commit-extract.js";
-import { EVAL_HOOK_FILES, evalHookProblem } from "./eval-hooks.js";
+import { EVAL_HOOK_FILES, evalHookProblem, storeRewriteProblem } from "./eval-hooks.js";
 import { mightName, testInfrastructure, type TestInfrastructure } from "./test-infra.js";
 import { chatControlHref } from "./chat-controls.js";
 import { INFRA_RERUNS_PER_CANDIDATE, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW, prChecksVerdict, type CheckFailure } from "./release.js";
@@ -309,6 +309,11 @@ function changeProblem(repo: string, base: string | null, candidate: string): st
   const blobAt = (tree: string) => { const blobs = verifiedBlobs(gitDir, tree, EVAL_HOOK_FILES); return (file: string): Buffer | null => blobs.ok ? blobs.value.get(file)?.bytes ?? null : null; };
   const hooks = evalHookProblem(blobAt(after.value.tree), blobAt(before.value.tree));
   if (hooks !== null) return `${hooks}: a person decides`;
+  // No changed file may write over a pinned Store method from outside store.ts (eval-hooks.ts storeRewriteProblem).
+  const changed = diff.value.filter(change => change.after !== null).map(change => change.path);
+  const changedAt = (tree: string) => { const blobs = verifiedBlobs(gitDir, tree, changed); return (file: string): Buffer | null => blobs.ok ? blobs.value.get(file)?.bytes ?? null : null; };
+  const rewrites = storeRewriteProblem(changed, changedAt(after.value.tree), changedAt(before.value.tree));
+  if (rewrites !== null) return `${rewrites}: a person decides`;
   for (const change of diff.value) {
     const modes = [change.before?.mode, change.after?.mode].filter((one): one is string => one !== undefined);
     if (modes.includes("120000") || modes.includes("160000")) return `${change.path} is a symlink or submodule`;

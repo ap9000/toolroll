@@ -688,6 +688,24 @@ describe("codex r1 #2: only product code, tests, docs, the changelog and a versi
     expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("Store#recordUsage") });
   });
 
+  // PR #263 security scan: a pinned Store method rewritten from ANY changed file, however it is reached, needs a person.
+  test.each([
+    ["assigned on the prototype", "Store.prototype.settleRunSpend = () => undefined;"],
+    ["defined on the prototype", "Object.defineProperty(Store.prototype, \"settleRunSpend\", { value() {} });"],
+    ["set through Reflect on the instance's prototype", "Reflect.set(Object.getPrototypeOf(store), \"fixRunBilling\", () => undefined);"],
+    ["set through Reflect under a computed key", "const key = \"record\" + \"Usage\";\nReflect.set(target, key, () => undefined);"],
+    ["written on the store under a computed key", "store[\"finalize\" + \"ChatTurn\"] = () => true;"],
+    ["shadowed on the instance", "store.recordUsage = () => undefined;"],
+    ["copied onto the store", "Object.assign(store, { recordUsage() {} });"],
+    ["the store's prototype swapped", "Object.setPrototypeOf(store, {});"],
+    ["reached through __proto__", "const proto = store.__proto__;"],
+    ["reached through an aliased class", "const methods = StoreAlias.prototype;"],
+  ])("a pinned Store method %s from another file: a person approves", (_name, code) => {
+    const f = open({ candidate: { "src/hijack.ts": `export function hijack(store, target) {\n${code}\n}\n` } });
+    authorize(f);
+    expect(seal(f, check(f))).toMatchObject({ ok: false, why: expect.stringContaining("src/hijack.ts could write over a pinned Store method") });
+  });
+
   // PR #263 review: what invokeAgent passes as the run's billing basis and its unknown cost is held as the base has it.
   const invoke = (basis: string, unknown: string) => `import { takeEvalDispatch } from "./eval-gate.js";\nimport { recordRunBillingBasis, recordRunCostUnknown } from "./store.js";\n`
     + `export async function invokeAgent(store, runId, envelope, evidence) {\n  takeEvalDispatch("run");\n  recordRunBillingBasis(store, runId, ${basis});\n  recordRunCostUnknown(store, runId, ${unknown});\n}\n`;

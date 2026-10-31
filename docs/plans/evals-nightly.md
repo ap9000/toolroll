@@ -1004,3 +1004,11 @@ collapsed into a false match to the pin.
   unfinished attempts are errors with unknown spending, `eval_campaign.spending_unknown` makes the campaign's totals
   unknown, and nothing is signalled or removed.
 - Jev sort steps (flow-sort.ts `askJev`) refuse in an eval world, held by a hook.
+- Security scan of the above: a pin held the Store methods only inside store.ts. Now store.ts makes the four pinned
+  methods unwritable and unconfigurable on `Store.prototype` as it loads (`sealStoreMoneyMethods`, pinned, and a
+  `<module>` hook: a bare top-level call), and `changeProblem` scans every changed JavaScript/TypeScript file
+  (`storeRewriteProblem`, a hook): a new assignment to a pinned name, a computed-key write on something named like the
+  store or a prototype, a reach to a non-built-in prototype (`X.prototype`, `__proto__`, get/setPrototypeOf), or a
+  property-defining call naming a pinned method, the store or a prototype, or taking a computed key, needs a person.
+  Ways the base's copy of the file already had don't count. Tests' instance spies (`vi.spyOn(store, …)`) still work.
+  Residual: an alias of the store instance written through a computed key, which a person reviewing catches.
