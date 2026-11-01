@@ -5443,6 +5443,9 @@ async function configCommand(
   if (phase === undefined || !["plan", "build", "repair", "review"].includes(phase)) return fail(write, json, `config ${action}`, "usage", "which phase? plan, build, repair, review — or chat", EXIT.usage);
 
   const acting = await askCredentials(flags, context);
+  // The credential generation the proof below is checked against, read BEFORE it: a rotation after this read makes
+  // the write refuse (model-choices.ts re-checks it inside the transaction), never borrow the new generation.
+  const provedGeneration = acting === null ? -1 : store.accountOf(acting.name)?.generation ?? -1;
   const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
   if (acting === null || !verified?.ok) return refuseApprover(context, `config ${action}`, verified, "changing spend routing takes `--as <you> --token <t>`", phase);
 
@@ -5487,7 +5490,9 @@ async function configCommand(
 
   // Every plain and tier row below is written through the one write path (model-choices.ts): one transaction, the
   // actor re-proved as an instance operator at the credential generation proved above, every row ledgered before → after.
-  const written = (slot: Slot, to: ModelChange["to"]) => writeModelRow(store, acting.name, verified.method, scope, slot, to, clock());
+  // A project named with --repo must be one Toolroll knows (the editor's own rule).
+  const projectKnown = repoGiven === undefined || (await knownProject(context, repoGiven, { listed: true, canonical: true })) !== undefined;
+  const written = (slot: Slot, to: ModelChange["to"]) => writeModelRow(store, { actor: acting.name, generation: provedGeneration, method: verified.method }, scope, () => projectKnown, slot, to, clock());
   if (action === "clear") {
     if (tierGiven === "light" && phase === "build") {
       const lightWrite = written({ phase, tier: "light" }, null);
@@ -5546,9 +5551,7 @@ async function configCommand(
     ]);
   }
   // A routine row may still name no model on the command line (said below); the editor never writes one.
-  const routineSet = modelGiven === null
-    ? writeModelRowWithoutModel(store, acting.name, verified.method, scope, phase as SlotPhase, providerGiven, clock())
-    : written({ phase: phase as SlotPhase, tier: "routine" }, { provider: providerGiven, model: modelGiven });
+  const routineSet = written({ phase: phase as SlotPhase, tier: "routine" }, { provider: providerGiven, model: modelGiven });
   if (!routineSet.ok) return fail(write, json, "config set", routineSet.reason, routineSet.problem, EXIT.refused);
   const warnings: string[] = [];
   if (modelGiven === null) {
@@ -13153,28 +13156,11 @@ export function upNarrowDeferred(held: readonly string[], reported: readonly str
 }
 
 /** `config set` and `config clear` on the command line, through Settings → Models' one write path (model-choices.ts,
- * docs/plans/spend-dashboard.md slice 3): the person proved themselves just above, with their own password or login;
- * a machine credential (a remote token, the lead's token) never changes which models run. The write re-proves them
- * inside its transaction: still an unrestricted instance operator, at the credential generation they proved under. */
-function writeModelRow(store: Store, actor: string, method: string, scope: string, slot: Slot, to: ModelChange["to"], now: Date): ApplyResult {
-  if (method === "remote-token" || method === "lead-token") return { ok: false, reason: "authority", problem: "Changing which models run takes your own password, not a token." };
-  const generation = store.accountOf(actor)?.generation ?? -1;
-  return applyModelChoices(store, { scope, change: [{ slot, to }], expected: { state: stateDigest(store, scope) }, strict: false, knownProject: () => true },
-    { actor, generation, live: () => true }, now);
-}
-
-/** The one command-line write the editor never makes: a routine row naming a provider with no model (its harness
- * default), which `config show` then reports as unable to file until a model is named. Same proof, one transaction,
- * one ledger entry. */
-function writeModelRowWithoutModel(store: Store, actor: string, method: string, scope: string, phase: SlotPhase, provider: string, now: Date): ApplyResult {
-  if (method === "remote-token" || method === "lead-token") return { ok: false, reason: "authority", problem: "Changing which models run takes your own password, not a token." };
-  const generation = store.accountOf(actor)?.generation ?? -1;
-  return store.transact(() => {
-    const account = store.accountOf(actor);
-    if (account === null || account.revokedAt !== null || account.generation !== generation || !store.isInstanceOperator(actor)) {
-      return { ok: false as const, reason: "authority" as const, problem: "Only an instance operator, signed in now, can change models." };
-    }
-    store.setPhaseConfig(scope, phase, provider, null, actor, now);
-    return { ok: true as const, diff: [], unresolved: null };
-  });
+ * docs/plans/spend-dashboard.md slice 3), under the same target and resulting-configuration checks as the editor: the
+ * person proved themselves with their own password or login at `proved.generation`; a machine credential (a remote
+ * token, the lead's token) never changes which models run. The write re-proves them inside its transaction: still an
+ * unrestricted instance operator, at that very generation, by a proof that still stands. */
+export function writeModelRow(store: Store, proved: { actor: string; generation: number; method: string }, scope: string, knownProject: (repo: string) => boolean, slot: Slot, to: ModelChange["to"], now: Date): ApplyResult {
+  return applyModelChoices(store, { scope, change: [{ slot, to }], expected: { state: stateDigest(store, scope) }, strict: false, knownProject },
+    { ...proved, live: () => true }, now);
 }

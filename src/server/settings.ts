@@ -82,7 +82,7 @@ import { startConnect } from "../mcp-connect.js";
 import { decideProposal,listProposals,memoryStatus } from "../memory-pass.js";
 import { checkModels,isNewModel,modelOptions,modelWords,RUNTIME_TOOLS,runtimeStates,seenModels,setWatch,updateRuntime,watchState,type RuntimeTool } from "../model-catalog.js";
 import { modelsHtml,modelsScript,type RoleView } from "../models-ui.js";
-import { applyModelChoices,changeDigest,DEFAULT_PRESET,diffOf,isPresetName,newerModels,PRESETS,presetChange,presetInUse,recentRuns,rowAt,scopeProblem,slotKey,SLOTS,slotWords,stateDigest,switchChange,type ModelAuthority,type ModelChange } from "../model-choices.js";
+import { ALL_SLOTS,applyModelChoices,browserWords,checkScope,DEFAULT_PRESET,isPresetName,newerModels,PRESETS,presetChange,presetInUse,previewModelChange,recentRuns,rowAt,slotKey,SLOTS,slotWords,stateDigest,switchChange,type ModelAuthority,type ModelChange } from "../model-choices.js";
 import { HEADROOM_FIVE_HOUR_LIMIT,HEADROOM_WEEKLY_LIMIT,exactModelId } from "../phase-routing.js";
 import { RISKY_MEANS,SIZE_MEANS,SIZING_CLAUDE_MODEL } from "../task-sizing.js";
 import { CHAT_APPROVE_ALL,MODE_MAX_DAYS,modeDigestOf,modeTermsJson,modeWords,presetTerms,type ModeName,type ModeTerms } from "../modes.js";
@@ -1545,7 +1545,8 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const nonceKey = `project-setup:${project}`;
     if (step === "preview") {
       const nonce = mintApprovalNonce(who.name, nonceKey, preview.fingerprint);
-      return sendScreen(response, 200, screen("Approve project setup", setupPreviewHtml(inputs, { csrf, repo: project, fingerprint: preview.fingerprint, nonce }), { chrome: chromeFor(project, "settings") }));
+      const models = preview.models === null ? null : { label: PRESETS[DEFAULT_PRESET].label, rows: preview.models.rows.map(row => ({ role: slotWords(row.slot), model: row.after?.model ?? (row.slot.phase === "repair" ? "same as the builder" : "not set") })) };
+      return sendScreen(response, 200, screen("Approve project setup", setupPreviewHtml(inputs, { csrf, repo: project, fingerprint: preview.fingerprint, nonce }, models), { chrome: chromeFor(project, "settings") }));
     }
     if (who.via === "cookie" && !consumeApprovalNonce(body.get("nonce") ?? "", who.name, nonceKey, body.get("fingerprint") ?? "")) return refuse(response, who, 409, "This setup preview expired. Review it again.", "/control");
     const approved = approveSetup(store, project, inputs, body.get("fingerprint") ?? "", who.name, body.get("token") ?? "", now);
@@ -2118,14 +2119,18 @@ ${modeWords(terms)
       return { key: slotKey(slot), label: slotWords(slot), current: own === null ? "" : `${own.provider}|${own.model ?? ""}`, words, unset, groups, tier: slot.tier !== "routine" };
     });
     const inUse = presetInUse(store, scope);
+    const unchosen = repo === null && ALL_SLOTS.every(slot => rowAt(store, INSTALLATION_SCOPE, slot) === null);
+    const checked = checkScope(store, repo);
     // A preset or a switch, previewed: the exact rows it moves, with what a change of provider brings along.
     const pairWords = (pair: { provider: string; model: string | null } | null, slot: (typeof SLOTS)[number]) => pair === null ? (repo !== null ? "same as the installation" : slot.phase === "repair" ? "same as the builder" : slot.phase === "review" ? "same as the planner" : slot.tier === "light" ? "routine builder" : slot.tier === "strong" ? "routine one" : "not set") : (pair.model ?? `${pair.provider} default`);
     const switchFrom = query.get("switch"), switchTo = query.get("to");
     const presetAsked = query.get("preset");
+    // The rows, what they inherit, and both digests come from one snapshot (model-choices.ts previewModelChange).
     const previewOf = (title: string, change: ModelChange[], hidden: Record<string, string>) => {
-      const rows = diffOf(store, scope, change).map(row => {
+      const snapshot = previewModelChange(store, scope, change);
+      const rows = snapshot.rows.map(row => {
         const notes: string[] = [];
-        const was = row.before?.provider ?? (repo === null ? null : rowAt(store, INSTALLATION_SCOPE, row.slot)?.provider ?? null);
+        const was = row.before?.provider ?? row.inherited?.provider ?? null;
         if (row.after !== null && was !== null && was !== row.after.provider && isProviderId(row.after.provider)) {
           const name = ASSISTANTS[row.after.provider].name;
           notes.push(`Billed the way ${name} is signed in on this computer.`);
@@ -2134,11 +2139,13 @@ ${modeWords(terms)
         }
         return { role: slotWords(row.slot), before: pairWords(row.before, row.slot), after: pairWords(row.after, row.slot), notes };
       });
-      return { title, rows, hidden: { scope, digest: stateDigest(store, scope), change: changeDigest(scope, change), ...hidden } };
+      return { title, rows, hidden: { scope, digest: snapshot.state, change: snapshot.change, ...hidden } };
     };
     const preview = !canManage ? null
       : isPresetName(presetAsked) ? previewOf(`Use ${PRESETS[presetAsked].label}`, presetChange(presetAsked), { preset: presetAsked })
       : switchFrom !== null && switchTo !== null && exactModelId(switchFrom) && exactModelId(switchTo) ? previewOf(`Switch to ${switchTo}`, switchChange(store, scope, switchFrom, switchTo), { switch: switchFrom, to: switchTo })
+      // A new installation with nothing chosen yet opens on the default, ready to apply.
+      : unchosen ? previewOf(`Start with ${PRESETS[DEFAULT_PRESET].label}`, presetChange(DEFAULT_PRESET), { preset: DEFAULT_PRESET })
       : null;
     const chat = store.getChatConfig();
     const chatName = chat === null ? "" : chat.provider === "claude-subscription" ? "Claude membership" : chat.provider === "codex-subscription" ? "Codex membership" : chat.provider === "anthropic-api" ? "Anthropic API" : "OpenRouter";
@@ -2150,13 +2157,13 @@ ${modeWords(terms)
       fresh: (["claude", "codex", "gemini"] as const).flatMap(source => seenModels(store, source)).filter(model => isNewModel(model, now)).slice(0, 12),
       scope: { value: scope, label: repo === null ? "All projects" : projectName(repo), digest: stateDigest(store, scope),
         options: [{ value: INSTALLATION_SCOPE, label: "All projects" }, ...projects.map(one => ({ value: one, label: projectName(one) }))] },
-      inUse: inUse === null ? null : PRESETS[inUse].label,
+      inUse: unchosen ? "nothing chosen yet" : inUse === null ? null : PRESETS[inUse].label,
       presets: (["sized", "opus"] as const).map(name => ({ name, label: PRESETS[name].label, words: PRESETS[name].words, inUse: inUse === name, recommended: name === DEFAULT_PRESET })),
       newer: newerModels(store, scope).map(one => ({ from: one.from, to: one.to.id, name: one.to.name, roles: one.slots.map(slotWords).join(", ").toLowerCase() })),
-      preview, unresolved: scopeProblem(store, repo),
+      preview, unresolved: checked.kind === "ok" ? null : checked.kind === "incomplete" ? `some roles have no model yet. Choose them above, or use ${PRESETS[DEFAULT_PRESET].label}.` : browserWords(checked.problem),
       sizing: { small: capital(SIZE_MEANS.small), routine: capital(SIZE_MEANS.medium), large: SIZE_MEANS.large, risky: RISKY_MEANS,
         classifier: readProviderKey("openrouter", providerHome) !== null ? "A quick AI check (Jev, through your OpenRouter key) reads its title and description." : `A quick AI check (${SIZING_CLAUDE_MODEL}, on this computer's Claude sign-in) reads its title and description.` },
-      routing: `When a task is filed and Claude has used over ${HEADROOM_FIVE_HOUR_LIMIT}% of its 5-hour window or ${HEADROOM_WEEKLY_LIMIT}% of its week, ${alsoSet ? "the other provider you set for that size is preferred if it has more room" : "an alternate provider with more room would be preferred, but none is set (`toolroll config set … --also`)"}; with no room anywhere, the first choice is kept. This is a preference at filing time, not a limit.`,
+      routing: `When a task is filed and Claude has used over ${HEADROOM_FIVE_HOUR_LIMIT}% of its 5-hour window or ${HEADROOM_WEEKLY_LIMIT}% of its week, ${alsoSet ? "the other provider you set for that size is preferred if it has more room" : "an alternate provider with more room would be preferred, but none is set"}; with no room anywhere, the first choice is kept. This is a preference at filing time, not a limit.`,
       recent: recentRuns(store).map(one => ({ taskId: one.taskId, runId: one.runId, role: one.role,
         chosen: one.chosen === null ? "its default" : /^(opus|sonnet|haiku|fable)$/.test(one.chosen) ? `floating ${one.chosen}` : one.chosen,
         ranOn: one.ranOn ?? "not reported" })),
@@ -2486,18 +2493,18 @@ ${modeWords(terms)
   // browser-only step-ups: the password (or a Passwordless session, or an identity-provider re-check) is proved here,
   // and model-choices.ts re-proves the same session, credential generation and operator standing inside the one
   // transaction that checks the form against what is stored, validates the result and writes and ledgers every row.
-  function modelsAuthority(who: Extract<HandlerContext["who"], { via: "cookie" }>): ModelAuthority {
+  function modelsAuthority(who: Extract<HandlerContext["who"], { via: "cookie" }>, method: string): ModelAuthority {
     const session = who.session;
-    return { actor: who.name, generation: session.generation, live: () => sessions.holds(session) && sessions.savedNow(session) && sessionWithinLifetime(session, Date.now()) };
+    return { actor: who.name, generation: session.generation, method, live: () => sessions.holds(session) && sessions.savedNow(session) && sessionWithinLifetime(session, Date.now()) };
   }
   function modelsBack(response: HandlerContext["response"], scope: string) {
     return sayTo(response, `/settings/models${scope === INSTALLATION_SCOPE ? "" : `?scope=${encodeURIComponent(scope)}`}`);
   }
   function modelsSaid(result: ReturnType<typeof applyModelChoices>, what: string): { key: "said" | "problem"; words: string } {
-    if (!result.ok) return { key: "problem", words: result.problem };
+    if (!result.ok) return { key: "problem", words: browserWords(result.problem) };
     const count = result.diff.length;
     const done = count === 0 ? "Nothing changed." : `${what}: ${count} change${count === 1 ? "" : "s"} saved for tasks filed from now on.`;
-    return { key: "said", words: result.unresolved === null ? done : `${done} New tasks can't be filed here yet: ${result.unresolved}` };
+    return { key: "said", words: result.unresolved === null ? done : `${done} Some roles have no model yet, so new tasks can't be filed here.` };
   }
   /** One save of the whole editor: every role at the scope, sets and clears, as one change. */
   async function modelsSave(ctx: HandlerContext): Promise<void> {
@@ -2507,7 +2514,8 @@ ${modeWords(terms)
     const scope = body.get("scope") ?? INSTALLATION_SCOPE;
     const back = modelsBack(response, scope);
     if (["scope", "password", "digest", ...SLOTS.map(slotKey)].some(field => body.sent.getAll(field).length > 1)) return back("problem", "That form was sent twice over. Nothing changed.");
-    if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change models.");
+    const proved = authenticateApprover(who, body.get("password") ?? "");
+    if (!proved.ok) return back("problem", "Enter your Toolroll password to change models.");
     const change: ModelChange[] = [];
     for (const slot of SLOTS) {
       const value = body.sent.get(slotKey(slot));
@@ -2525,7 +2533,7 @@ ${modeWords(terms)
       change[repair] = { slot: change[repair]!.slot, to: null };
       follows = true;
     }
-    const result = applyModelChoices(store, { scope, change, expected: { state: body.get("digest") ?? "" }, strict: true, knownProject: repo => consoleProjects().includes(repo) }, modelsAuthority(who), now);
+    const result = applyModelChoices(store, { scope, change, expected: { state: body.get("digest") ?? "" }, strict: true, knownProject: repo => consoleProjects().includes(repo) }, modelsAuthority(who, proved.method), now);
     const said = modelsSaid(result, scope === INSTALLATION_SCOPE ? "All projects" : projectName(scope));
     return back(said.key, follows && result.ok ? `${said.words} Repairs now follow the builder.` : said.words);
   }
@@ -2537,12 +2545,13 @@ ${modeWords(terms)
     const scope = body.get("scope") ?? INSTALLATION_SCOPE;
     const back = modelsBack(response, scope);
     if (["scope", "password", "digest", "preset", "switch", "to", "change"].some(field => body.sent.getAll(field).length > 1)) return back("problem", "That form was sent twice over. Nothing changed.");
-    if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change models.");
+    const proved = authenticateApprover(who, body.get("password") ?? "");
+    if (!proved.ok) return back("problem", "Enter your Toolroll password to change models.");
     const preset = body.get("preset"), from = body.get("switch"), to = body.get("to");
     const change = isPresetName(preset) ? presetChange(preset)
       : from !== null && to !== null && exactModelId(from) && exactModelId(to) ? switchChange(store, scope, from, to) : null;
     if (change === null) return back("problem", "Choose a preset or a newer model. Nothing changed.");
-    const result = applyModelChoices(store, { scope, change, expected: { state: body.get("digest") ?? "", change: body.get("change") ?? "" }, strict: true, knownProject: repo => consoleProjects().includes(repo) }, modelsAuthority(who), now);
+    const result = applyModelChoices(store, { scope, change, expected: { state: body.get("digest") ?? "", change: body.get("change") ?? "" }, strict: true, knownProject: repo => consoleProjects().includes(repo) }, modelsAuthority(who, proved.method), now);
     const said = modelsSaid(result, isPresetName(preset) ? PRESETS[preset].label : `Switched to ${to}`);
     return back(said.key, said.words);
   }

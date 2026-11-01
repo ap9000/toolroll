@@ -9,9 +9,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, BUILT_IN, type Store } from "./store.js";
 import { addApprover, approve, propose } from "./scope.js";
-import { INSTALLATION_SCOPE, resolveAgentAuthority } from "./agentconfig.js";
-import { applyModelChoices, changeDigest, HAIKU, OPUS, presetChange, presetInUse, rowAt, SONNET, stateDigest, switchChange, type ApplyInput, type ModelAuthority, type ModelChange } from "./model-choices.js";
-import { runOperate } from "./operate.js";
+import { INSTALLATION_SCOPE, resolveAgentAuthority, resolveRouteCandidates } from "./agentconfig.js";
+import { recommendRoute } from "./phase-routing.js";
+import { applyModelChoices, checkScope, HAIKU, OPUS, presetChange, presetInUse, previewModelChange, rowAt, SONNET, stateDigest, switchChange, type ApplyInput, type ModelAuthority, type ModelChange } from "./model-choices.js";
+import { runOperate, writeModelRow } from "./operate.js";
+import { setPasswordless } from "./passwordless.js";
 
 const T0 = new Date("2026-10-31T12:00:00.000Z");
 const REPO = "/repo/shop";
@@ -29,9 +31,11 @@ beforeEach(() => {
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
-const operator = (over: Partial<ModelAuthority> = {}): ModelAuthority => ({ actor: "alex", generation: store.accountOf("alex")!.generation, live: () => true, ...over });
-const input = (change: readonly ModelChange[], over: Partial<ApplyInput> = {}, scope = INSTALLATION_SCOPE): ApplyInput =>
-  ({ scope, change, expected: { state: stateDigest(store, scope), change: changeDigest(scope, change) }, strict: true, knownProject: repo => repo === REPO, ...over });
+const operator = (over: Partial<ModelAuthority> = {}): ModelAuthority => ({ actor: "alex", generation: store.accountOf("alex")!.generation, method: "password-now", live: () => true, ...over });
+const input = (change: readonly ModelChange[], over: Partial<ApplyInput> = {}, scope = INSTALLATION_SCOPE): ApplyInput => {
+  const preview = previewModelChange(store, scope, change);
+  return { scope, change, expected: { state: preview.state, change: preview.change }, strict: true, knownProject: repo => repo === REPO, ...over };
+};
 const policyEntries = () => store.actionLedger({ repos: null, instance: true, limit: 100 }).filter(one => one.source === "policy").map(one => `${one.action}: ${one.detail}`).sort();
 /** Every table but the editor's own rows, the ledger and SQLite's and the live view's counters, as stored. */
 const everythingElse = () => Object.fromEntries((store.raw().prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT IN ('phase_config','phase_tier_config','service_cursor','sqlite_sequence') AND name NOT LIKE '%ledger%' ORDER BY name").all() as { name: string }[])
@@ -46,8 +50,10 @@ describe("who may write", () => {
     const refused = [
       operator({ live: () => false }), // the session ended between the password and the write
       operator({ generation: store.accountOf("alex")!.generation - 1 }), // the credential rotated in between
-      { actor: "sam", generation: store.accountOf("sam")!.generation, live: () => true }, // a project approver, not an operator
-      { actor: "nobody", generation: 0, live: () => true },
+      { actor: "sam", generation: store.accountOf("sam")!.generation, method: "password-now", live: () => true }, // a project approver, not an operator
+      { actor: "nobody", generation: 0, method: "password-now", live: () => true },
+      operator({ method: "lead-token" }), operator({ method: "remote-token" }), // machine credentials
+      operator({ method: "session" }), operator({ method: "cli-login" }), // Passwordless proofs, with Passwordless off
     ];
     for (const authority of refused) expect(applyModelChoices(store, input(change), authority, T0)).toMatchObject({ ok: false, reason: "authority" });
     expect(store.listPhaseConfig(INSTALLATION_SCOPE)).toEqual([]);
@@ -60,7 +66,7 @@ describe("who may write", () => {
     const seen = input(change);
     store.setPhaseConfig(INSTALLATION_SCOPE, "plan", "claude", "claude-opus-5-5", "alex", T0); // another tab saved first
     expect(applyModelChoices(store, seen, operator(), T0)).toMatchObject({ ok: false, reason: "stale" });
-    expect(applyModelChoices(store, input(change, { expected: { state: stateDigest(store, INSTALLATION_SCOPE), change: changeDigest(INSTALLATION_SCOPE, presetChange("opus")) } }), operator(), T0)).toMatchObject({ ok: false, reason: "stale" });
+    expect(applyModelChoices(store, input(change, { expected: { state: stateDigest(store, INSTALLATION_SCOPE), change: previewModelChange(store, INSTALLATION_SCOPE, presetChange("opus")).change } }), operator(), T0)).toMatchObject({ ok: false, reason: "stale" });
     expect(store.listPhaseConfig(INSTALLATION_SCOPE).map(one => one.phase)).toEqual(["plan"]);
     // A project's form is stale when the installation rows it inherits move, even with its own rows unchanged.
     const projectForm = input(change, {}, REPO);
@@ -77,7 +83,7 @@ describe("a preset", () => {
     expect(result).toMatchObject({ ok: true, unresolved: null });
     expect(presetInUse(store, INSTALLATION_SCOPE)).toBe("sized");
     expect(Object.fromEntries(store.listPhaseConfig(INSTALLATION_SCOPE).map(one => [one.phase, `${one.provider}:${one.model}`]))).toEqual({ plan: `claude:${OPUS}`, build: `claude:${SONNET}`, review: `claude:${OPUS}` });
-    expect(store.listPhaseTierConfig(INSTALLATION_SCOPE).map(one => `${one.phase}-${one.tier}:${one.model}`)).toEqual([`build-light:${HAIKU}`, `build-strong:${OPUS}`, `plan-strong:${OPUS}`]);
+    expect(store.listPhaseTierConfig(INSTALLATION_SCOPE).map(one => `${one.phase}-${one.tier}:${one.model}`)).toEqual([`build-light:${HAIKU}`, `build-strong:${OPUS}`, `plan-strong:${OPUS}`, `review-strong:${OPUS}`]);
     expect(policyEntries()).toEqual([
       `agent for build changed: not set → claude · ${SONNET}`,
       `agent for plan changed: not set → claude · ${OPUS}`,
@@ -87,16 +93,17 @@ describe("a preset", () => {
       `light agent for build changed: not set → claude · ${HAIKU}`,
       `strong agent for build changed: not set → claude · ${OPUS}`,
       `strong agent for plan changed: not set → claude · ${OPUS}`,
+      `strong agent for review changed: not set → claude · ${OPUS}`,
     ].sort());
     const lines: string[] = [];
     expect(await runOperate("config", ["show", "--json"], line => lines.push(line), { databaseFile: file, now: T0 })).toBe(0);
     const shown = JSON.parse(lines.join("\n")) as { resolved: { phase: string; model: string }[]; installationStrong: { phase: string; tier: string; model: string }[] };
     expect(shown.resolved.map(one => `${one.phase}:${one.model}`)).toEqual([`plan:${OPUS}`, `build:${SONNET}`, "repair:null", `review:${OPUS}`]);
-    expect(shown.installationStrong.map(one => `${one.phase}-${one.tier}:${one.model}`)).toEqual([`build-light:${HAIKU}`, `build-strong:${OPUS}`, `plan-strong:${OPUS}`]);
+    expect(shown.installationStrong.map(one => `${one.phase}-${one.tier}:${one.model}`)).toEqual([`build-light:${HAIKU}`, `build-strong:${OPUS}`, `plan-strong:${OPUS}`, `review-strong:${OPUS}`]);
     // Applied again, nothing moves and nothing more is ledgered.
     const again = applyModelChoices(store, input(presetChange("sized")), operator(), T0);
     expect(again).toMatchObject({ ok: true, diff: [] });
-    expect(policyEntries()).toHaveLength(8);
+    expect(policyEntries()).toHaveLength(9);
   });
 
   test("is all or nothing: a bad last row writes none of the rows before it", () => {
@@ -122,7 +129,7 @@ describe("a preset", () => {
   test("switch to a newer model rewrites only the rows that named the old one", () => {
     applyModelChoices(store, input(presetChange("sized")), operator(), T0);
     const change = switchChange(store, INSTALLATION_SCOPE, OPUS, "claude-opus-6");
-    expect(change.map(one => `${one.slot.phase}-${one.slot.tier}`)).toEqual(["plan-routine", "plan-strong", "build-strong", "review-routine"]);
+    expect(change.map(one => `${one.slot.phase}-${one.slot.tier}`)).toEqual(["plan-routine", "plan-strong", "build-strong", "review-routine", "review-strong"]);
     expect(applyModelChoices(store, input(change), operator(), T0)).toMatchObject({ ok: true });
     expect(rowAt(store, INSTALLATION_SCOPE, { phase: "build", tier: "routine" })).toEqual({ provider: "claude", model: SONNET });
     expect(rowAt(store, INSTALLATION_SCOPE, { phase: "plan", tier: "routine" })).toEqual({ provider: "claude", model: "claude-opus-6" });
@@ -175,5 +182,80 @@ describe("the command line", () => {
     expect(store.setAccountProjects("sam", [REPO], "alex", T0)).toEqual({ ok: true });
     expect(await cli(["set", "build", "--provider", "claude", "--model", SONNET, "--repo", REPO, "--as", "sam", "--token", sam.token, "--json"])).not.toBe(0);
     expect(store.listPhaseConfig(REPO)).toEqual([]);
+  });
+});
+
+describe("review round 1 (PR #270)", () => {
+  const rotate = () => store.raw().prepare("UPDATE approver SET generation = generation + 1 WHERE name = 'alex'").run();
+  const sized = () => expect(applyModelChoices(store, input(presetChange("sized")), operator(), T0)).toMatchObject({ ok: true });
+  const routeOf = (repo: string | null, size: "small" | "medium" | "large", phase: string, strict = false) => {
+    const candidates = resolveRouteCandidates(store, repo);
+    if (!candidates.ok) throw new Error(candidates.problem);
+    return recommendRoute({ qualityMode: strict ? "strict" : "default", evidence: [], publication: "none", candidates: candidates.candidates, overrides: [], size: { size, risky: false, source: "heuristic", reason: "" } })
+      .legs.find(leg => leg.phase === phase)!;
+  };
+
+  test("1: the command line carries the generation it proved; a rotation after the proof refuses the write, with or without a model", () => {
+    const proved = { actor: "alex", generation: store.accountOf("alex")!.generation, method: "password-now" };
+    rotate();
+    expect(writeModelRow(store, proved, INSTALLATION_SCOPE, () => false, { phase: "build", tier: "routine" }, { provider: "claude", model: SONNET }, T0)).toMatchObject({ ok: false, reason: "authority" });
+    expect(writeModelRow(store, proved, INSTALLATION_SCOPE, () => false, { phase: "build", tier: "routine" }, { provider: "codex", model: null }, T0)).toMatchObject({ ok: false, reason: "authority" });
+    expect(store.listPhaseConfig(INSTALLATION_SCOPE)).toEqual([]);
+  });
+
+  test("2: a Passwordless proof stands only while Passwordless is still on at the write", () => {
+    setPasswordless(store, true, "alex", T0);
+    const session = operator({ method: "session" });
+    expect(applyModelChoices(store, input(presetChange("sized")), session, T0)).toMatchObject({ ok: true });
+    setPasswordless(store, false, "alex", T0); // turned off between the handler's proof and the write
+    expect(applyModelChoices(store, input(presetChange("opus")), session, T0)).toMatchObject({ ok: false, reason: "authority" });
+    expect(presetInUse(store, INSTALLATION_SCOPE)).toBe("sized");
+  });
+
+  test("3: a preview's rows and digests come from one snapshot; a row moved after it, or a change it never showed, is refused", () => {
+    const preview = previewModelChange(store, INSTALLATION_SCOPE, presetChange("opus"));
+    store.setPhaseConfig(INSTALLATION_SCOPE, "plan", "codex", "gpt-5", "alex", T0);
+    expect(applyModelChoices(store, { scope: INSTALLATION_SCOPE, change: presetChange("opus"), expected: { state: preview.state, change: preview.change }, strict: true, knownProject: () => false }, operator(), T0)).toMatchObject({ ok: false, reason: "stale" });
+    const again = previewModelChange(store, INSTALLATION_SCOPE, presetChange("opus"));
+    const applied = applyModelChoices(store, { scope: INSTALLATION_SCOPE, change: presetChange("opus"), expected: { state: again.state, change: again.change }, strict: true, knownProject: () => false }, operator(), T0);
+    expect(applied.ok && applied.diff.map(row => row.slot)).toEqual(again.rows.map(row => row.slot));
+  });
+
+  test("4: every size's route is checked: a small-task builder on another provider than an explicit repair is refused", () => {
+    sized();
+    const change: ModelChange[] = [{ slot: { phase: "build", tier: "light" }, to: { provider: "codex", model: "gpt-5-codex" } }, { slot: { phase: "repair", tier: "routine" }, to: { provider: "claude", model: SONNET } }];
+    expect(applyModelChoices(store, input(change), operator(), T0)).toMatchObject({ ok: false, reason: "invalid", problem: expect.stringContaining("small tasks") });
+    expect(presetInUse(store, INSTALLATION_SCOPE)).toBe("sized");
+  });
+
+  test("5: a project's Opus for everything builds small tasks on Opus too, and 'in use' reads the effective routes", () => {
+    sized();
+    expect(applyModelChoices(store, input(presetChange("opus"), {}, REPO), operator(), T0)).toMatchObject({ ok: true });
+    expect(routeOf(REPO, "small", "build").model).toBe(OPUS);
+    expect(presetInUse(store, REPO)).toBe("opus");
+    // An installation-only change the project inherits makes it a custom set, read from what would run.
+    store.clearPhaseTierConfig(REPO, "build", "light");
+    expect(presetInUse(store, REPO)).toBeNull();
+  });
+
+  test("6: presets set the strong reviewer too, so strict reviews run on Opus", () => {
+    store.setPhaseTierConfig(INSTALLATION_SCOPE, "review", "strong", "claude", HAIKU, "alex", T0);
+    sized();
+    expect(routeOf(null, "medium", "review", true).model).toBe(OPUS);
+    expect(presetInUse(store, INSTALLATION_SCOPE)).toBe("sized");
+  });
+
+  test("7: command-line writes face the same target and result checks; incomplete is said, invalid refused", async () => {
+    expect(checkScope(store, null).kind).toBe("incomplete");
+    sized();
+    const lines: string[] = [];
+    const cli = (args: string[]) => runOperate("config", args, line => lines.push(line), { databaseFile: file, now: T0 });
+    expect(await cli(["set", "repair", "--provider", "codex", "--model", "gpt-5-codex", "--as", "alex", "--token", token, "--json"])).not.toBe(0);
+    expect(store.phaseConfig(INSTALLATION_SCOPE, "repair")).toBeNull();
+    expect(await cli(["set", "build", "--provider", "claude", "--model", SONNET, "--repo", "/not/a/project", "--as", "alex", "--token", token, "--json"])).not.toBe(0);
+    expect(store.listPhaseConfig("/not/a/project")).toEqual([]);
+    // Clearing the planner leaves setup incomplete: saved, and said.
+    expect(await cli(["clear", "plan", "--as", "alex", "--token", token, "--json"])).toBe(0);
+    expect(checkScope(store, null).kind).toBe("incomplete");
   });
 });

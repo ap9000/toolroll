@@ -15,7 +15,8 @@ import { addApprover, authenticateApprover, freshFacts, type FreshFacts } from "
 import { createDecisionServer } from "./serve.js";
 import { mintApiToken } from "./api-tokens.js";
 import { INSTALLATION_SCOPE } from "./agentconfig.js";
-import { applyModelChoices, changeDigest, OPUS, presetChange, SONNET, stateDigest } from "./model-choices.js";
+import { applyModelChoices, OPUS, presetChange, presetInUse, previewModelChange, SONNET } from "./model-choices.js";
+import { approveSetup, previewSetup } from "./control-setup.js";
 
 let dir: string, repo: string, store: Store, server: Server, base: string, password: string;
 
@@ -107,7 +108,7 @@ test("a preset shows its exact diff first; applying it carries that diff's diges
   // A different preset under this preview's digest is not what was reviewed.
   expect((await post({ cookie }, "/settings/models/apply", apply({ preset: "opus" }))).location).toMatch(/problem=This change is not the one you reviewed/);
   expect(rows()).toEqual([]);
-  expect((await post({ cookie }, "/settings/models/apply", apply())).location).toMatch(/said=Sized by job: 6 changes saved/);
+  expect((await post({ cookie }, "/settings/models/apply", apply())).location).toMatch(/said=Sized by job: 7 changes saved/);
   expect(store.phaseTierConfig(INSTALLATION_SCOPE, "build", "light")?.model).toBe("claude-haiku-5-5");
   // The same preview, applied again, is stale: the rows it was computed from moved.
   expect((await post({ cookie }, "/settings/models/apply", apply())).location).toMatch(/problem=Models changed since this page loaded/);
@@ -120,9 +121,28 @@ test("an identity-provider re-check stands in for the password, through the shar
   const proved = freshFacts.run(facts, () => authenticateApprover(store, "alex", ""));
   expect(proved).toMatchObject({ ok: true, method: "sso-now" });
   const change = presetChange("opus");
-  const result = applyModelChoices(store, { scope: INSTALLATION_SCOPE, change, expected: { state: stateDigest(store, INSTALLATION_SCOPE), change: changeDigest(INSTALLATION_SCOPE, change) }, strict: true, knownProject: () => false },
-    { actor: "alex", generation: store.accountOf("alex")!.generation, live: facts.live }, new Date());
+  const preview = previewModelChange(store, INSTALLATION_SCOPE, change);
+  const result = applyModelChoices(store, { scope: INSTALLATION_SCOPE, change, expected: { state: preview.state, change: preview.change }, strict: true, knownProject: () => false },
+    { actor: "alex", generation: store.accountOf("alex")!.generation, method: proved.ok ? proved.method : "", live: facts.live }, new Date());
   expect(result).toMatchObject({ ok: true });
   // Spent: the same re-check doesn't prove a second change.
   expect(freshFacts.run(facts, () => authenticateApprover(store, "alex", ""))).toMatchObject({ ok: false });
+});
+
+test("a fresh installation: the page opens on Sized by job, ready to apply, with no terminal command; setup applies it", async () => {
+  const cookie = await login("alex", password);
+  const html = await page(cookie);
+  expect(html).toContain("Start with Sized by job");
+  expect(html).not.toMatch(/config set|toolroll config/);
+  // Project setup on a fresh installation previews and applies the whole default, through the same write path.
+  const inputs = { provider: "claude", model: SONNET, command: "", seconds: "300" };
+  const preview = previewSetup(store, repo, inputs);
+  if (!preview.ok) throw new Error(preview.message);
+  expect(preview.models?.rows.length).toBe(7);
+  expect(approveSetup(store, repo, inputs, preview.fingerprint, "alex", password, new Date())).toEqual({ ok: true });
+  expect(presetInUse(store, INSTALLATION_SCOPE)).toBe("sized");
+  expect(presetInUse(store, repo)).toBe("sized");
+  expect(store.phaseConfig(repo, "build")).toBeNull(); // Sonnet 5.5 is what it inherits: no project row of its own
+  // A second project's setup leaves the chosen installation alone.
+  expect(previewSetup(store, repo, inputs)).toMatchObject({ ok: true, models: null });
 });

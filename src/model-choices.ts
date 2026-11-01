@@ -11,7 +11,8 @@ import { createHash } from "node:crypto";
 import { isAcpProvider } from "./acp-agents.js";
 import { INSTALLATION_SCOPE, resolvePhaseAgent, resolveRouteCandidates } from "./agentconfig.js";
 import { seenModels, type SeenModel } from "./model-catalog.js";
-import { exactModelId } from "./phase-routing.js";
+import { passwordlessOn } from "./passwordless.js";
+import { exactModelId, recommendRoute, routeProblems, type PhaseRoute } from "./phase-routing.js";
 import { isProviderId, validateSpec } from "./provider.js";
 import type { Store } from "./store.js";
 
@@ -20,19 +21,20 @@ export type SlotTier = "routine" | "light" | "strong";
 export type Slot = { phase: SlotPhase; tier: SlotTier };
 export type Pair = { provider: string; model: string | null };
 /** One row to set (an exact pair) or clear (null). */
-export type ModelChange = { slot: Slot; to: { provider: string; model: string } | null };
+/** A model is null only on the command line's `config set <phase> --provider p` (its harness default). */
+export type ModelChange = { slot: Slot; to: { provider: string; model: string | null } | null };
 
 /** Every row the editor owns, in the order the page and the diff show them. Alternates (`--also`) and the strong
- * reviewer and repair rows stay CLI-only and are never written here. */
+ * repair row stay CLI-only; presets clear the strong repair row so repairs follow the builder. */
 export const SLOTS: readonly Slot[] = Object.freeze([
   { phase: "plan", tier: "routine" }, { phase: "plan", tier: "strong" },
   { phase: "build", tier: "light" }, { phase: "build", tier: "routine" }, { phase: "build", tier: "strong" },
-  { phase: "repair", tier: "routine" }, { phase: "review", tier: "routine" },
+  { phase: "repair", tier: "routine" }, { phase: "review", tier: "routine" }, { phase: "review", tier: "strong" },
 ]);
 
-/** Every row the write path accepts: the editor's, plus the strong repair and reviewer rows the CLI also sets. */
+/** Every row the write path accepts: the editor's, plus the strong repair row the CLI also sets. */
 export const ALL_SLOTS: readonly Slot[] = Object.freeze([
-  ...SLOTS.slice(0, 6), { phase: "repair", tier: "strong" }, { phase: "review", tier: "routine" }, { phase: "review", tier: "strong" },
+  ...SLOTS.slice(0, 6), { phase: "repair", tier: "strong" }, ...SLOTS.slice(6),
 ] as Slot[]);
 const order = (slot: Slot): number => ALL_SLOTS.findIndex(one => one.phase === slot.phase && one.tier === slot.tier);
 
@@ -74,6 +76,22 @@ export function changeDigest(scope: string, change: readonly ModelChange[]): str
 }
 
 export type DiffRow = { slot: Slot; before: Pair | null; after: Pair | null };
+/** What a preview showed: the scope and every row's before → after. Bound into the apply, so a row that moved in
+ * between, or a change the preview never showed, is refused. */
+export function diffDigest(scope: string, diff: readonly DiffRow[]): string {
+  return sha({ scope, diff: diff.map(row => [slotKey(row.slot), row.before, row.after]) });
+}
+/** A preview read from ONE snapshot: the rows it moves, what a cleared project row would inherit, and both digests
+ * the apply must match. */
+export function previewModelChange(store: Store, scope: string, change: readonly ModelChange[]): { rows: (DiffRow & { inherited: Pair | null })[]; state: string; change: string } {
+  return store.transact(() => {
+    const diff = diffOf(store, scope, change);
+    return {
+      rows: diff.map(row => ({ ...row, inherited: scope === INSTALLATION_SCOPE ? null : rowAt(store, INSTALLATION_SCOPE, row.slot) })),
+      state: stateDigest(store, scope), change: diffDigest(scope, diff),
+    };
+  });
+}
 /** The rows this change really moves (a set to the value already there is no change). */
 export function diffOf(store: Store, scope: string, change: readonly ModelChange[]): DiffRow[] {
   return ALL_SLOTS.flatMap(slot => {
@@ -95,30 +113,55 @@ export const PRESETS: Record<PresetName, { label: string; words: string; rows: R
   sized: {
     label: "Sized by job",
     words: "Small tasks build on Haiku 5.5, routine tasks on Sonnet 5.5, large or risky tasks on Opus 5.5. Planning and review always use Opus 5.5.",
-    rows: { plan: OPUS, "plan-strong": OPUS, "build-light": HAIKU, build: SONNET, "build-strong": OPUS, repair: null, review: OPUS },
+    rows: { plan: OPUS, "plan-strong": OPUS, "build-light": HAIKU, build: SONNET, "build-strong": OPUS, repair: null, "repair-strong": null, review: OPUS, "review-strong": OPUS },
   },
   opus: {
     label: "Opus for everything",
     words: "Every task plans, builds and is reviewed on Opus 5.5, whatever its size.",
-    rows: { plan: OPUS, "plan-strong": OPUS, "build-light": null, build: OPUS, "build-strong": OPUS, repair: null, review: OPUS },
+    rows: { plan: OPUS, "plan-strong": OPUS, "build-light": OPUS, build: OPUS, "build-strong": OPUS, repair: null, "repair-strong": null, review: OPUS, "review-strong": OPUS },
   },
 };
 export const DEFAULT_PRESET: PresetName = "sized";
 export const isPresetName = (value: string | null): value is PresetName => value === "sized" || value === "opus";
 
-/** A preset as a change: every slot it names, as exact Claude ids, never an alias. A clear lets repair follow the
- * builder, and lets small tasks use the routine builder. */
+/** A preset as a change: every slot, as exact Claude ids, never an alias. Repair rows are cleared so repairs follow
+ * the builder of each size. */
 export function presetChange(name: PresetName): ModelChange[] {
-  return SLOTS.map(slot => {
+  return ALL_SLOTS.map(slot => {
     const model = PRESETS[name].rows[slotKey(slot)];
     return { slot, to: model === null || model === undefined ? null : { provider: "claude", model } };
   });
 }
 
-/** Which preset the scope's own rows match exactly, or null ("Custom"). */
+/** The routes a task filed now would get at a scope, for every size and demand that picks a tier (inheritance,
+ * review following the planner, and repair following each size's builder included), or the words for why none can. */
+export const ROUTE_CASES: readonly { label: string; size: "small" | "medium" | "large"; risky: boolean; strict: boolean }[] = Object.freeze([
+  { label: "small", size: "small", risky: false, strict: false }, { label: "routine", size: "medium", risky: false, strict: false },
+  { label: "large", size: "large", risky: false, strict: false }, { label: "risky", size: "small", risky: true, strict: false },
+  { label: "strict", size: "medium", risky: false, strict: true },
+]);
+export function effectiveRoutes(store: Store, repo: string | null): { ok: true; routes: { label: string; route: PhaseRoute }[] } | { ok: false; problem: string } {
+  const candidates = resolveRouteCandidates(store, repo);
+  if (!candidates.ok) return { ok: false, problem: candidates.problem };
+  return { ok: true, routes: ROUTE_CASES.map(one => ({ label: one.label, route: recommendRoute({ qualityMode: one.strict ? "strict" : "default", evidence: [], publication: "none",
+    candidates: candidates.candidates, overrides: [], size: { size: one.size, risky: one.risky, source: "heuristic", reason: "" } }) })) };
+}
+
+/** Which preset a scope's EFFECTIVE configuration matches (what each size would really run, inherited rows
+ * included), or null ("a custom set"). */
 export function presetInUse(store: Store, scope: string): PresetName | null {
+  const effective = effectiveRoutes(store, scope === INSTALLATION_SCOPE ? null : scope);
+  if (!effective.ok) return null;
+  const legs = (label: string) => effective.routes.find(one => one.label === label)!.route.legs;
+  const model = (label: string, phase: string) => legs(label).find(leg => leg.phase === phase);
+  const want: Record<PresetName, Record<string, string>> = { sized: { small: HAIKU, routine: SONNET, large: OPUS, risky: OPUS, strict: OPUS }, opus: { small: OPUS, routine: OPUS, large: OPUS, risky: OPUS, strict: OPUS } };
   for (const name of ["sized", "opus"] as const) {
-    if (presetChange(name).every(one => samePair(rowAt(store, scope, one.slot), one.to))) return name;
+    const fits = ROUTE_CASES.every(one => {
+      const build = model(one.label, "build"), repair = model(one.label, "repair"), plan = model(one.label, "plan"), review = model(one.label, "review");
+      return build?.provider === "claude" && build.model === want[name][one.label] && repair?.model === build.model
+        && plan?.provider === "claude" && plan.model === OPUS && review?.provider === "claude" && review.model === OPUS;
+    });
+    if (fits) return name;
   }
   return null;
 }
@@ -156,14 +199,23 @@ export function newerModels(store: Store, scope: string): { from: string; to: Se
 /** Who is acting, proved by the caller's own step-up, and re-proved here inside the transaction: the same account,
  * still active, still an unrestricted instance operator, at the credential generation the proof was made under, on a
  * session (or local CLI login) that is still live. */
-export type ModelAuthority = { actor: string; generation: number; live: () => boolean };
+export type ModelAuthority = {
+  actor: string;
+  /** The credential generation the proof was checked against (read before the proof, never after). */
+  generation: number;
+  /** How the person proved it (scope.ts AuthMethod): a Passwordless session or remembered CLI login stands only while
+   * Passwordless is still on, and is re-checked here. */
+  method: string;
+  live: () => boolean;
+};
+const PERSON_PROOFS = new Set(["password-now", "sso-now", "session", "cli-login"]);
 export type ApplyInput = {
   scope: string;
   change: readonly ModelChange[];
   /** The state the person saw, and (for a preview) the exact change it showed. */
   expected: { state: string; change?: string };
-  /** The console: exact ids, an eligible reviewer, and the resulting configuration checked. The CLI keeps its own
-   * per-row checks. */
+  /** The console: exact ids only. The CLI may also name a floating name, or a routine row with no model. The
+   * resulting configuration is checked the same way for both. */
   strict: boolean;
   knownProject: (repo: string) => boolean;
 };
@@ -180,7 +232,8 @@ function rowProblem(change: ModelChange, strict: boolean): string | null {
   if (!isProviderId(to.provider)) return `${slotWords(slot)}: choose a known provider.`;
   const valid = validateSpec({ provider: to.provider, model: to.model });
   if (!valid.ok) return `${slotWords(slot)}: ${valid.problem}`;
-  if (strict && !exactModelId(to.model)) return `${slotWords(slot)}: choose an exact model.`;
+  if (to.model === null && (strict || slot.tier !== "routine")) return `${slotWords(slot)}: choose an exact model.`;
+  if (to.model !== null && !exactModelId(to.model)) return `${slotWords(slot)}: choose an exact model.`;
   if ((slot.phase === "plan" || slot.phase === "review") && isAcpProvider(to.provider)) return `${slotWords(slot)}: this agent builds and repairs only. Choose Claude or Codex.`;
   if (strict && slot.phase === "review" && to.provider === "gemini") return "Gemini cannot review yet. Choose Claude or Codex.";
   return null;
@@ -192,18 +245,38 @@ function projectsWithRows(store: Store): string[] {
     UNION SELECT scope FROM phase_tier_alternate WHERE scope != ? ORDER BY scope`).all(INSTALLATION_SCOPE, INSTALLATION_SCOPE, INSTALLATION_SCOPE) as { scope: string }[]).map(one => String(one.scope));
 }
 
-/** Why a scope's resulting configuration can't file a task, or null: every phase resolves to an exact pair, the
- * reviewer is eligible, and repair runs on the effective builder's provider (inheritance included). */
-export function scopeProblem(store: Store, repo: string | null): string | null {
-  const candidates = resolveRouteCandidates(store, repo);
-  if (!candidates.ok) return candidates.problem;
+export type ScopeCheck = { kind: "ok" } | { kind: "incomplete" | "invalid"; problem: string };
+/**
+ * Whether tasks can be filed at a scope with its resulting configuration. INCOMPLETE: a role has no exact model yet
+ * (setup in progress; saved, and said). INVALID: something set can't run: an unknown provider, an ineligible reviewer,
+ * or a route of any size or demand (small, routine, large, risky, strict) whose repair can't resume its builder,
+ * inherited rows included. An invalid result is never saved.
+ */
+export function checkScope(store: Store, repo: string | null): ScopeCheck {
+  const effective = effectiveRoutes(store, repo);
+  if (!effective.ok) return { kind: /has no exact model/.test(effective.problem) ? "incomplete" : "invalid", problem: effective.problem };
   const build = resolvePhaseAgent(store, "build", repo, {});
-  if (!build.ok) return build.problem;
+  if (!build.ok) return { kind: "invalid", problem: build.problem };
   const review = resolvePhaseAgent(store, "review", repo, {});
-  if (!review.ok) return review.problem;
+  if (!review.ok) return { kind: "invalid", problem: review.problem };
   const repair = (repo === null ? null : store.phaseConfig(repo, "repair")) ?? store.phaseConfig(INSTALLATION_SCOPE, "repair");
-  if (repair !== null && repair.provider !== build.spec.provider) return `Repairs must use the builder's provider (${build.spec.provider}).`;
-  return null;
+  if (repair !== null && repair.provider !== build.spec.provider) return { kind: "invalid", problem: `Repairs must use the builder's provider (${build.spec.provider}).` };
+  for (const one of effective.routes) {
+    const problems = routeProblems(one.route);
+    if (problems.length > 0) return { kind: "invalid", problem: `${one.label} tasks: ${problems[0]}` };
+  }
+  return { kind: "ok" };
+}
+/** A resolver's words for a browser: what is wrong, never a terminal command to fix it. */
+export function browserWords(problem: string): string {
+  const said = problem.split(" — ")[0]!.replace(/`[^`]*`/g, "").replace(/\s+([:;,.])/g, "$1").replace(/\s{2,}/g, " ").trim();
+  return said.length === 0 ? "This choice can't run." : `${said.charAt(0).toUpperCase()}${said.slice(1)}${/[.!?]$/.test(said) ? "" : "."}`;
+}
+
+/** The problem alone, or null when tasks can be filed. */
+export function scopeProblem(store: Store, repo: string | null): string | null {
+  const checked = checkScope(store, repo);
+  return checked.kind === "ok" ? null : checked.problem;
 }
 
 const pairWords = (pair: Pair | null): string => pair === null ? "not set" : `${pair.provider} · ${pair.model ?? "its default model"}`;
@@ -218,24 +291,44 @@ const ACTION_OF = (slot: Slot): string => slot.tier === "routine" ? `agent for $
 export function applyModelChoices(store: Store, input: ApplyInput, authority: ModelAuthority, now: Date): ApplyResult {
   try {
     return store.transact(() => {
+      // A savepoint, so a refusal rolls back these writes even inside a caller's transaction (project setup).
+      store.handle.exec("SAVEPOINT model_choices");
+      try {
+        const result = applyLocked(store, input, authority, now);
+        store.handle.exec("RELEASE model_choices");
+        return result;
+      } catch (error) {
+        store.handle.exec("ROLLBACK TO model_choices");
+        store.handle.exec("RELEASE model_choices");
+        throw error;
+      }
+    });
+  } catch (error) {
+    if (error instanceof Refused) return error.refusal;
+    throw error;
+  }
+}
+
+function applyLocked(store: Store, input: ApplyInput, authority: ModelAuthority, now: Date): { ok: true; diff: DiffRow[]; unresolved: string | null } {
+  {
+    {
       const account = store.accountOf(authority.actor);
-      if (account === null || account.revokedAt !== null || account.generation !== authority.generation || !store.isInstanceOperator(authority.actor) || !authority.live()) {
+      const standsNow = PERSON_PROOFS.has(authority.method) && ((authority.method !== "session" && authority.method !== "cli-login") || passwordlessOn(store));
+      if (account === null || account.revokedAt !== null || account.generation !== authority.generation || !store.isInstanceOperator(authority.actor) || !authority.live() || !standsNow) {
         throw new Refused({ ok: false, reason: "authority", problem: "Only an instance operator, signed in now, can change models." });
       }
       const scope = input.scope;
       if (scope !== INSTALLATION_SCOPE && !input.knownProject(scope)) throw new Refused({ ok: false, reason: "unknown-project", problem: "That isn't a project here." });
       if (stateDigest(store, scope) !== input.expected.state) throw new Refused({ ok: false, reason: "stale", problem: "Models changed since this page loaded. Nothing was saved. Review the current choices and try again." });
-      if (input.expected.change !== undefined && changeDigest(scope, input.change) !== input.expected.change) throw new Refused({ ok: false, reason: "stale", problem: "This change is not the one you reviewed. Nothing was saved." });
+      if (input.expected.change !== undefined && diffDigest(scope, diffOf(store, scope, input.change)) !== input.expected.change) throw new Refused({ ok: false, reason: "stale", problem: "This change is not the one you reviewed. Nothing was saved." });
       const keys = input.change.map(one => slotKey(one.slot));
       if (new Set(keys).size !== keys.length) throw new Refused({ ok: false, reason: "invalid", problem: "Each role can change once per save." });
       for (const one of input.change) {
         const problem = rowProblem(one, input.strict);
         if (problem !== null) throw new Refused({ ok: false, reason: "invalid", problem });
       }
-      // The CLI's own rows have always been allowed part-way (`config show` names what's missing); the console checks
-      // the whole result.
-      const affected: (string | null)[] = !input.strict ? [] : scope === INSTALLATION_SCOPE ? [null, ...projectsWithRows(store)] : [scope];
-      const before = new Map(affected.map(repo => [repo, scopeProblem(store, repo)]));
+      const affected: (string | null)[] = scope === INSTALLATION_SCOPE ? [null, ...projectsWithRows(store)] : [scope];
+      const before = new Map(affected.map(repo => [repo, checkScope(store, repo).kind]));
       const diff = diffOf(store, scope, input.change);
       const repo = scope === INSTALLATION_SCOPE ? null : scope;
       for (const row of diff) {
@@ -251,22 +344,20 @@ export function applyModelChoices(store: Store, input: ApplyInput, authority: Mo
         }
         store.recordAction({ at: now.toISOString(), actor: authority.actor, repo, taskId: null, runId: null, action: ACTION_OF(slot), outcome: "changed", source: "policy", detail: `${pairWords(row.before)} → ${pairWords(after)}` });
       }
-      // A scope that could file tasks before must still file them after. One that couldn't yet (a new installation
-      // part-way through choosing) may be saved, and the page says what is still missing.
+      // INVALID is never saved, for the target or any project inheriting from it. INCOMPLETE (a role with no exact
+      // model yet) is saved and said for the target; another project that could file tasks before must still.
       let unresolved: string | null = null;
       for (const target of affected) {
-        const problem = scopeProblem(store, target);
-        if (problem === null) continue;
-        if (before.get(target) === null) {
-          throw new Refused({ ok: false, reason: "invalid", problem: target === repo ? `Nothing was saved: ${problem}` : `Nothing was saved: ${target} would stop working: ${problem}` });
+        const checked = checkScope(store, target);
+        if (checked.kind === "ok") continue;
+        const where = target === repo ? "" : `${target} would stop working: `;
+        if (checked.kind === "invalid" || (target !== repo && before.get(target) === "ok")) {
+          throw new Refused({ ok: false, reason: "invalid", problem: `Nothing was saved: ${where}${checked.problem}` });
         }
-        if (target === repo) unresolved = problem;
+        if (target === repo) unresolved = checked.problem;
       }
       return { ok: true as const, diff, unresolved };
-    });
-  } catch (error) {
-    if (error instanceof Refused) return error.refusal;
-    throw error;
+    }
   }
 }
 

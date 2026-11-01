@@ -318,7 +318,7 @@ export function systemPage(chrome: Chrome, data: {
       return html`<p class="row"><span class="mono">${one.phase}</span> <strong>${one.provider ?? ""}</strong>${one.model === null || one.model === undefined ? html` <span class="meta">(its default model)</span>` : html` · <span class="mono">${one.model}</span>`}<span class="right meta">${who}${dollars}</span></p><p class="meta" style="margin-top:0">${PHASE_SAID[one.phase] ?? ""}</p>`;
     }), "\n");
   const agentsCard =
-    html`<h2>Agents</h2><p class="meta">Which AI provider runs each phase — changed from the terminal with your credentials (<code>toolroll config</code>), never by a browser click</p><div class="card">${agentLines}<p class="meta">Repair always stays on the provider that built — only its model can differ. A schedule's task filed under an approval moved from a routine is pinned to the agents approved then.</p></div>`;
+    html`<h2>Agents</h2><p class="meta">Which AI provider runs each phase. An instance operator changes them in <a href="/settings/models">Settings → Models</a> with their password, or with <code>toolroll config</code>.</p><div class="card">${agentLines}<p class="meta">Repair always stays on the provider that built — only its model can differ. A schedule's task filed under an approval moved from a routine is pinned to the agents approved then.</p></div>`;
 
   return screen("system", joinHtml([
     html`<h1>System</h1>`,
