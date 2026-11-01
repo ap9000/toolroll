@@ -810,6 +810,21 @@ If a slice finds it needs a file another slice in its wave owns, it waits. Never
 - **Other:** `serve` starting a local builder; the outline-button shadow; the macOS app's setup; connected states
   checked against real services.
 
+## Build notes
+
+- **2026-10-31, prerequisite gate (Codex round 2):** checked on `main` at 67a7b680 (#270 merged). `control-setup.ts`
+  `approveSetup` applies the Sized preset on a fresh install: when the installation has no model rows,
+  `previewSetup` previews `presetChange(DEFAULT_PRESET)` (`DEFAULT_PRESET = "sized"`) into the fingerprint, and
+  `approveSetup` writes it through `applyModelChoices` in the same transaction as the operator proof. It refuses with a
+  message when the approver isn't an instance operator, or when the reviewed digests no longer match.
+  `/control/setup-approve` (`settings.ts` ~1552) is its only caller. `serve.models.test.ts` ("a fresh installation …
+  setup applies it") passes on this base: the installation and the project resolve to `sized`, and the second project's
+  preview carries `models: null`. **The gate is met.** S11 still re-checks it on its own base.
+- **S1 stage 1 (wave 0):** the runner is `scripts/settings-journey.mjs`, with `fixture.mjs`, `probes.mjs`, the
+  allowlist and two baseline step files (`baseline`, `baseline-fresh`) in `scripts/settings-journey/`. The guard rules
+  are tested in `src/settings-journey.test.ts`. The allowlist holds today's findings. They are report-only, and the
+  slice that fixes each one deletes its line.
+
 ## 10. Review round 1 (Codex, on 7dd186c9: NO-GO, 12 findings)
 
 | # | Finding | Checked in code | Outcome |
