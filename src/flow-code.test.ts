@@ -22,6 +22,7 @@ import { addFlowTriggerTo, checkFlowTriggerNow, runFlowTriggers, type TriggerIo 
 import { setFlowSecret } from "./flow-secrets.js";
 import { cardsFromOutput, codeOutput } from "./flow-code.js";
 import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
+import { NO_OS_FENCE } from "../test/inside-fence.js";
 
 const T0 = new Date("2026-09-25T09:00:00.000Z");
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
@@ -40,6 +41,8 @@ beforeEach(() => {
   store = openStore(join(dir, "orders.db"));
   for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "fixture", T0);
   if (!addApprover(store, "alex", T0).ok) throw new Error("bootstrap");
+  // Where no OS fence can be made (inside the plane's check, a runner without bubblewrap) an operator allows unconfined agents.
+  if (NO_OS_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
@@ -65,12 +68,12 @@ describe("a code step", () => {
     // Text that would do something if it were ever pasted into a command.
     const marker = join(dir, "pwned");
     const title = `Acme wants a demo $(touch ${marker}) \`touch ${marker}\``;
-    const card = store.addFlowCard({ flow, title, description: "Reach sam@acme.example", stage: "classify", by: "alex" }, T0);
+    const card = store.addFlowCard({ flow, title, description: "Reach sam@acme.example", stage: "classify", by: "alex", byKind: "person" }, T0);
     expect(await runFlowSteps(store, repo, at(1), io())).toEqual({ ran: 1, problems: [] });
     expect(store.getFlowCard(card)).toMatchObject({ stage: "call-them", outputs: { classify: `${title}: about 500 people (sam@acme.example)` } });
     expect(store.flowStepRun(card, 1)).toMatchObject({ state: "passed", result: "classify ran and picked Big.", exitCode: 0 });
     expect(existsSync(marker)).toBe(false);
-    const small = store.addFlowCard({ flow, title: "Two-person bakery", description: null, stage: "classify", by: "alex" }, T0);
+    const small = store.addFlowCard({ flow, title: "Two-person bakery", description: null, stage: "classify", by: "alex", byKind: "person" }, T0);
     await runFlowSteps(store, repo, at(2), io());
     expect(store.getFlowCard(small)!.stage).toBe("send-a-guide");
   });
@@ -83,7 +86,7 @@ describe("a code step", () => {
       "console.error(`debug: ${process.env.CRM_KEY}`);",
     ].join("\n") });
     const flow = flowOf([{ title: "Inbox", kind: "inbox" }, { id: "enrich", title: "Enrich", kind: "check", script: "enrich", runIn: "folder", secrets: ["CRM_KEY"] }]);
-    const card = store.addFlowCard({ flow, title: "Globex", description: null, stage: "enrich", by: "alex" }, T0);
+    const card = store.addFlowCard({ flow, title: "Globex", description: null, stage: "enrich", by: "alex", byKind: "person" }, T0);
     await runFlowSteps(store, repo, at(1), io());
     // It waits, saying for what, and runs on its own once the secret is saved.
     expect(store.getFlowCard(card)).toMatchObject({ stage: "enrich", waiting: "enrich needs the secret CRM_KEY. Save it on the zone." });
@@ -108,7 +111,7 @@ describe("a code step", () => {
       { id: "count", title: "Count", kind: "check", script: "count", runIn: "folder" },
       { id: "wander", title: "Wander", kind: "check", script: "wander", runIn: "folder", routes: [{ answer: "Here", goesTo: "Inbox" }], ifFails: "Inbox" },
     ]);
-    const card = store.addFlowCard({ flow, title: "Tally", description: "one two three", stage: "count", by: "alex" }, T0);
+    const card = store.addFlowCard({ flow, title: "Tally", description: "one two three", stage: "count", by: "alex", byKind: "person" }, T0);
     await runFlowSteps(store, repo, at(1), io());
     const counted = store.getFlowCard(card)!;
     expect(counted.stage).toBe("wander");
@@ -116,8 +119,8 @@ describe("a code step", () => {
     await runFlowSteps(store, repo, at(2), io());
     expect(store.getFlowCard(card)).toMatchObject({ stage: "inbox", note: "wander picked “Elsewhere”, but this zone has no answer called that (it has Here)." });
     const second = flowOf([{ title: "Inbox", kind: "inbox" }, { id: "breaks", title: "Breaks", kind: "check", script: "breaks", runIn: "folder", ifFails: "Inbox" }, { id: "gone", title: "Gone", kind: "check", script: "gone", runIn: "folder", ifFails: "Inbox" }]);
-    const failing = store.addFlowCard({ flow: second, title: "Try", description: null, stage: "breaks", by: "alex" }, T0);
-    const missing = store.addFlowCard({ flow: second, title: "Try too", description: null, stage: "gone", by: "alex" }, T0);
+    const failing = store.addFlowCard({ flow: second, title: "Try", description: null, stage: "breaks", by: "alex", byKind: "person" }, T0);
+    const missing = store.addFlowCard({ flow: second, title: "Try too", description: null, stage: "gone", by: "alex", byKind: "person" }, T0);
     await runFlowSteps(store, repo, at(3), io());
     expect(store.getFlowCard(failing)).toMatchObject({ stage: "inbox", note: "breaks failed (exit 1).\nhalf done\nthe API said no", outputs: { breaks: "half done" } });
     expect(store.getFlowCard(missing)).toMatchObject({ stage: "inbox", note: "gone runs scripts/missing.sh, which isn't a file in the project." });
@@ -128,7 +131,7 @@ describe("a code step", () => {
   test.runIf(macosFenceAvailable() || linuxFenceAvailable())("a script can't read Toolroll's own database, like an agent can't", async () => {
     save({ name: "peek", about: "Tries to read the database", body: `if cat "${join(dir, "orders.db")}" > /dev/null 2>&1; then echo read; else echo denied; fi` });
     const flow = flowOf([{ title: "Inbox", kind: "inbox" }, { id: "peek", title: "Peek", kind: "check", script: "peek", runIn: "folder" }]);
-    const card = store.addFlowCard({ flow, title: "Look", description: null, stage: "peek", by: "alex" }, T0);
+    const card = store.addFlowCard({ flow, title: "Look", description: null, stage: "peek", by: "alex", byKind: "person" }, T0);
     await runFlowSteps(store, repo, at(1), io());
     expect(store.getFlowCard(card)!.outputs["peek"]).toBe("denied");
   });

@@ -12,7 +12,6 @@ import { z } from "zod";
 import { cardOutputsSchema } from "./stage-output.js";
 
 export const FLOW_CARD_STATES = ["active", "done", "cancelled"] as const;
-export type FlowCardState = (typeof FLOW_CARD_STATES)[number];
 
 export const flowCardSchema = z.strictObject({
   id: z.int().min(1),
@@ -34,6 +33,9 @@ export const flowCardSchema = z.strictObject({
   outputs: cardOutputsSchema.shape.outputs,
   attached: cardOutputsSchema.shape.attached,
   createdBy: z.string(),
+  /** v126: whether a person or an automation (a delivery, a poll, a schedule, a public form) made it. Decided where it
+   * was made, never read from its label: filing passes it on as the requester's kind. */
+  createdKind: z.enum(["person", "automation"]),
   createdAt: z.string(),
   updatedAt: z.string(),
   owner: z.string().nullable(),

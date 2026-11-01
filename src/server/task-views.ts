@@ -1,6 +1,12 @@
-import { taskBaseOf } from "../task-base.js";
+import { releaseViewOf } from "../release-view.js";
+import { releaseCiRunningOf } from "../release-ci-hold.js";
+import { releaseObligationsOf } from "../release-recheck.js";
+import { approvalProofOf, freshlyApprovable, freshnessFor, withFreshness } from "../scope.js";
+import { liveAttemptOf, steerControlsFor } from "../steer-controls.js";
+import { originOf } from "../task-source.js";
+import { recentGitReads, taskBaseOf } from "../task-base.js";
 import { assignmentPresentationOf,historicalAssessmentReason } from '../assignment-presentation.js';
-import { html,joinHtml,type Html } from "../html.js";
+import { html, joinHtml, type Html } from "../html.js";
 import { assignmentStatusOf,assignmentWithEvidence } from '../assignment-ui.js';
 import { assignmentOf,type AssignmentSnapshot } from '../assignment.js';
 import { knowledgeContextHtml } from "../knowledge-ui.js";
@@ -20,7 +26,7 @@ import { pullRequestFactOf } from '../task-status.js';
 import { openWorkDecisionOf } from "../work-summary.js";
 import { learningHtml } from "../workspace-ui.js";
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { type ServerResponse } from "node:http";
 import { agentChoicesFor,routeOfTask } from "../agentconfig.js";
 import { rulesSummary } from "../approval-rules-ui.js";
@@ -50,6 +56,10 @@ import { type ProjectPeek,type WorkRow } from "./render-pages.js";
 import { completionReceiptView,diffFileAnchor,evidenceLinksFor,followUpsFor,orderChangedFiles,parseReviewDiff,proofBundleView,receiptStatusOf,withinSignedTouches,type CompletionReceiptView,type ResultDetail,type TaskPullRequest } from "./render-results.js";
 import { approvalFormDigest,consentDoorOf,nonceHashOf,publicationFactsOf,resumeCeremonyPage,resumeDigestOf,taskBody,taskPage,type MilestoneProgressView,type PlanContractView,type PlanRevisionLedgerView,type RevisionDocView,type RevisionView,type RouteView } from "./render-tasks.js";
 import { type Who } from "./session.js";
+import type { TaskPageExtras } from "./runtime.js";
+import type { BrowserTaskView } from "../browser-workspace.js";
+import { RESULT_REVIEW_SCRIPT } from "../result-review.js";
+import { reviewEvidenceScript } from "./render-results.js";
 import { budgetHoldWords,budgetLabel,monthOf } from "../spend.js";
 import type { PlanRevision,TaskRef } from "../store.js";
 import {
@@ -86,6 +96,9 @@ export interface TaskViewsRuntime {
   liveRefreshSeconds: () => number;
 }
 export function createTaskViews(runtime: TaskViewsRuntime) {
+  // The task page's base line reads Git through a frozen view of the project (~0.2-0.5 s on a large repository) and
+  // the page renders it twice per view and again on every live refresh: its answers are kept for a moment.
+  const baseGit = recentGitReads();
 
   /** The first task's way to Ready shows until the first Ready result, and stays on the installation's first task. */
   function guided(rootId: string, now: Date): boolean {
@@ -407,6 +420,8 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         repairChain: completion !== null ? null : runtime.store.repairChainForDraft(taskId),
         repo: ref?.repo ?? null,
         filedVia: runtime.store.filedViaOf(taskId),
+        // v126: where the work came from (a flow, an outside event), from what was kept when it was filed.
+        origin: (() => { const repos = runtime.workAccess().repos; return originOf(runtime.store, taskId, repo => repos === null || repos.includes(repo)); })(),
         coordinator: (() => {
           const who = runtime.store.coordinatorProvenanceOf(taskId);
           if (who === null) return null;
@@ -513,13 +528,39 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
         incidents: ref === null ? [] : runtime.store.incidentsForTask(ref.id),
         coordinatorProposals: (() => {
           if (ref === null || ref.repo === null || who.role !== "approver") return null;
-          runtime.store.sweepCoordinatorProposals(now);
           const rows = runtime.store.listCoordinatorProposals({ repos: [ref.repo], taskId });
           return { rows, decisions: decisionsFor(runtime.store, rows), now };
         })(),
         steering: ref === null ? [] : runtime.store.listSteerNotes(ref.id),
-        base: taskBaseOf(runtime.store, taskId),
+        base: taskBaseOf(runtime.store, taskId, baseGit),
         steeringLive: ref !== null && runtime.store.steeringLiveBuild(ref.id, now) !== null,
+        steeringRun: ref === null ? null : runtime.store.steeringLiveBuild(ref.id, now),
+        release: ref === null ? null : releaseViewOf(runtime.store, ref.externalId, now, authority => releaseObligationsOf(runtime.store, runtime.evidenceRoot, authority)),
+        canStopRelease: who.role === "approver" && who.via === "cookie",
+        autoRelease: ref === null ? null : autoReleaseOf(runtime.store.getScope(ref.externalId)),
+        releaseCiRunning: ref !== null && releaseCiRunningOf(runtime.store, ref.externalId) !== null,
+        approvalProof: (() => {
+          // The proof of the approval shown: its approver, its exact sealed digest (approvedDigest === digest when approved).
+          const scope = ref === null ? null : runtime.store.getScope(ref.externalId);
+          return scope === null || scope.approvedBy === null || scope.approvedDigest === null ? null
+            : approvalProofOf(runtime.store, ref!.externalId, scope.approvedBy, scope.approvedDigest);
+        })(),
+        // Cockpit B2: whether this person's remembered password may approve these exact terms (the same rule approve()
+        // applies), and since when.
+        approvalFresh: (() => {
+          const scope = ref === null ? null : runtime.store.getScope(ref.externalId);
+          if (scope === null || who?.via !== "cookie") return null;
+          const fresh = withFreshness("approve-standard", () => freshnessFor(who.name, Date.now(), true));
+          if (fresh === null) return null;
+          const gate = runtime.store.approvalGate(ref!.externalId, who.name, "person");
+          return freshlyApprovable(runtime.store, ref!.externalId, scope, gate.verdict === "seal" && !gate.protectedWork) ? new Date(fresh.at).toISOString() : null;
+        })(),
+        steerRecent: ref === null ? [] : runtime.store.runsFor(ref.id).filter(one => one.outcome !== null).map(one => one.id).sort((a, b) => b - a).slice(0, 5),
+        // The running attempt's composer, for an approver on a browser session (steer-controls.ts).
+        steerComposer: (() => {
+          const run = ref === null ? null : liveAttemptOf(runtime.store, ref.id, now);
+          return run === null ? null : steerControlsFor(runtime.store, ref!.externalId, run, now, who?.role === "approver");
+        })(),
         // "publishes as" reads ONLY publicationGrantFor(repo) — the grant
         // the publisher would act under — never listGrants(), which is
         // dispatch authority (slice 1c).
@@ -618,6 +659,7 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
               deliverable: view.deliverable ?? "branch",
               revision: view.revision ?? null,
               coordinator: view.coordinator ?? null,
+              origin: view.origin ?? null,
               repairChain: view.repairChain ?? null,
             },
       decisions: (view?.decisions ?? runtime.store.decisionsForTask(ref.id))
@@ -720,6 +762,52 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     return { action: `/r/${runId}/checks`, level: followUps.full ? "full" : "quick", returnTo };
   }
 
+  /**
+   * One page per task (docs/plans/one-page-task-and-agent.md): the tab the address named, the Result tab's result with
+   * every result attempt to pick from, and every link that would open a result page of this family (its /review deep
+   * link, a build's /r/<n>) pointed at this page's Result tab instead — the person stays on the task.
+   */
+  function onePageView(view: BrowserTaskView, family: TaskFamily | null, runs: readonly (Run & { taskId: string })[], extras: TaskPageExtras): BrowserTaskView {
+    const root = family?.root.id ?? view.id;
+    const current = family?.current.id ?? view.id;
+    const versions = new Set(family?.versions.map(one => one.id) ?? [view.id]);
+    const results = new Map(runs.filter(run => runIsTaskResult(run) && (extras.admissible === undefined || extras.admissible.has(run.id))).map(run => [run.id, run.taskId] as const));
+    const tabHref = (taskId: string, run: number | null, section: string | null, hash: string): string =>
+      `${taskHref(root)}?${taskId !== current ? `version=${encodeURIComponent(taskId)}&` : ""}tab=result${run === null ? "" : `&run=${run}`}${section === null || section === "summary" ? "" : `&section=${section}`}${hash}`;
+    const toTab = (href: string): string => {
+      const review = /^\/review\?result=([A-Za-z0-9._~%-]{1,200})(?:&run=([0-9]{1,15}))?(?:&tab=(summary|changes|checks))?(#[A-Za-z0-9_-]{1,120})?$/.exec(href);
+      if (review !== null) {
+        const taskId = decodeURIComponent(review[1]!);
+        if (versions.has(taskId)) return tabHref(taskId, review[2] === undefined ? null : Number(review[2]), review[3] ?? null, review[4] ?? "");
+      }
+      const record = /^\/r\/([0-9]{1,15})$/.exec(href);
+      if (record !== null && results.has(Number(record[1]))) return tabHref(results.get(Number(record[1]))!, Number(record[1]), null, "");
+      return href;
+    };
+    const link = <T extends { href: string | null }>(one: T | null): T | null => one === null ? null : { ...one, href: one.href === null ? null : toTab(one.href) };
+    const status = view.status === null ? null : { ...view.status, action: view.status.action === null ? null : link(view.status.action),
+      status: { ...view.status.status, details: view.status.status.details.map(one => ({ ...one, href: one.href === null ? null : toTab(one.href), action: one.action === null ? null : link(one.action) })) } };
+    const selected = extras.result?.selected ?? null;
+    const attempts = [...results.entries()].sort((a, b) => b[0] - a[0]).map(([id, taskId]) => {
+      const run = runs.find(one => one.id === id)!;
+      const outcome = run.outcome === "built" ? "result" : run.outcome === "no-change" ? "no change" : run.outcome === null ? "never finished" : run.outcome;
+      return { label: `${run.role === "scout" ? "Report" : "Build"} #${id} · ${outcome}`, href: tabHref(taskId, id, null, ""), current: selected?.build === id };
+    });
+    return {
+      ...view,
+      status,
+      ...(view.failure == null ? {} : { failure: { ...view.failure, link: link(view.failure.link) } }),
+      ...(view.earlier == null ? {} : { earlier: { ...view.earlier, attempts: view.earlier.attempts.map(one => ({ ...one, href: toTab(one.href) })) } }),
+      ...(view.thread === undefined ? {} : { thread: view.thread.map(one => ({ ...one, link: link(one.link) })) }),
+      // The previous result's fold moves to the Result tab when there is one.
+      sections: selected === null ? view.sections : view.sections.filter(one => one.id !== "result"),
+      tab: extras.tab ?? "activity",
+      result: selected === null ? null : { selected, current: extras.result!.current, attempts,
+        // Fresh per-render request tokens (32 hex) are not what it shows: left out, so an unchanged result keeps its stamp.
+        revision: createHash("sha256").update(JSON.stringify(selected).replace(/\b[a-f0-9]{32}\b/g, "")).digest("hex").slice(0, 16) },
+    };
+  }
+
   function taskScreen(
     response: ServerResponse,
     who: Who,
@@ -729,12 +817,13 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     scopeDraft?: URLSearchParams,
     cancelDraft?: string,
     editPlan = false,
+    extras: TaskPageExtras = {},
   ): void {
     const admittedFamily = runtime.familyOf(taskId);
     if (admittedFamily?.problem != null) return runtime.sendScreen(response, status, screen(admittedFamily.root.title,
       html`<h1>${admittedFamily.root.title}</h1><p>${admittedFamily.current.state}</p><p class="problem" data-history-problem>${admittedFamily.problem}</p>`, { chrome: runtime.chromeFor(admittedFamily.root.repo, "tasks") }));
     const data = taskViewData(taskId, who, problem);
-    if (data === null) return refuse(response, who, 404, "no such task", "/tasks");
+    if (data === null) return refuse(response, who, 404, "no such task", "/work");
     const family = runtime.familyOf(taskId);
     const presentedData = { ...data, rootId: family?.root.id ?? taskId, rootTitle: family?.root.title ?? data.task.title,
       ...(family === null || data.assignment != null ? {} : { history: familyHistory(family) }),
@@ -770,8 +859,19 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     const taskView = page.workspace?.view?.kind === "task" ? { ...page.workspace.view, ...(docked === null ? {} : { tabs: [] }), ...(who.role === "approver" ? {} : { chatHref: null }),
       // A signed-in page hears the moment the task changes, and who else has it open.
       ...(who.via === "cookie" ? { live: { room: `task:${encodeURIComponent(family?.root.id ?? taskId)}`, at: (() => { try { return taskFingerprint(runtime.store, family?.root.id ?? taskId, runtime.clock()); } catch { return null; } })() } } : {}) } : page.workspace?.view;
-    if (docked !== null) page.workspace = { ...page.workspace, ...(taskView === undefined ? {} : { view: taskView }), conversation: docked, pageHtml: page.body };
-    else if (taskView !== undefined && page.workspace !== undefined) page.workspace = { ...page.workspace, view: taskView };
+    // A refusal that keeps a draft (a scope edit, an armed cancel) or asks for the plan editor reopens on Plan, where the
+    // draft and its error are; anything else on Activity unless the address named a tab.
+    const tab = extras.tab ?? (scopeDraft !== undefined || cancelDraft !== undefined || editPlan ? "plan" : "activity");
+    const oneTaskView = taskView?.kind === "task" ? onePageView(taskView, family, presentedData.family?.runs ?? data.runs.map(run => ({ ...run, taskId: data.task.id })), { ...extras, tab }) : taskView;
+    // The Result tab's no-script page, under the task's own (the same HTML its result page serves), and its script.
+    if (extras.result != null) {
+      page.body = html`${page.body}<section class="task-result-tab" id="task-result" aria-label="Result">${extras.result.html}</section>`;
+      // The result's own script, as its result page ships it (a password form there keeps it too: Request changes and
+      // the line notes need it).
+      page.functional = { script: `${page.functional?.script ?? ""}${reviewEvidenceScript()}${RESULT_REVIEW_SCRIPT}`, fetches: page.functional?.fetches ?? false };
+    }
+    if (docked !== null) page.workspace = { ...page.workspace, ...(oneTaskView === undefined ? {} : { view: oneTaskView }), conversation: docked, pageHtml: page.body };
+    else if (oneTaskView !== undefined && page.workspace !== undefined) page.workspace = { ...page.workspace, view: oneTaskView };
     page.refreshSeconds = runtime.liveRefreshSeconds();
     return runtime.sendScreen(response, status, page);
   }
@@ -1051,4 +1151,11 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
     };
   }
   return { guided, projectFamilyPeek, familiesInView, familyTasksInView, revisionDestination, earlierLiveVersions, familyHistory, freshAssignment, workRowOf, taskListPane, runIsLive, runIsTaskResult, revisionViewOf, taskViewData, routeViewOf, taskChatFocus, pullRequestTargetOf, taskPullRequestOf, failureOf, explainAttempt, runChecksHere, taskScreen, armTaskResume, planViewOf, planContractViewOf, revisionDocOf, revisionLedgerOf, progressOf, resultDetailOf };
+}
+
+/** A release task the plane approved (or is checking) itself, for the task page (docs/plans/auto-approve-green.md). */
+function autoReleaseOf(scope: Scope | null): { kind: "checking" | "approved"; candidate: string } | null {
+  if (scope === null || scope.approvedDigest !== scope.digest || (scope.candidate ?? null) === null) return null;
+  return scope.approvalBasis === "auto-green" ? { kind: "approved", candidate: scope.candidate! }
+    : scope.approvalBasis === "auto-check" ? { kind: "checking", candidate: scope.candidate! } : null;
 }

@@ -22,8 +22,8 @@ export function steerStandingOf(note: SteerNote, liveBuild: boolean): SteerStand
 /** The words, and the moment the agent read it when it has: each surface renders that time its own way. */
 export function steerStandingParts(note: SteerNote, liveBuild: boolean): { words: string; readAt: string | null } {
   switch (steerStandingOf(note, liveBuild)) {
-    case "read": return { words: "Read by the agent at", readAt: note.ackedAt ?? note.deliveredAt! };
-    case "waiting": return { words: "Waiting for the agent to read it", readAt: null };
+    case "read": return { words: "Picked up at", readAt: note.ackedAt ?? note.deliveredAt! };
+    case "waiting": return { words: "Sent · not picked up yet", readAt: null };
     case "not-picked-up": return { words: "Not picked up", readAt: null };
     case "next-attempt": return { words: "Will reach the next attempt", readAt: null };
     case "ended": return { words: "The task ended before the agent read it", readAt: null };

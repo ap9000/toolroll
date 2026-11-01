@@ -3,7 +3,9 @@
  * plane makes later lands where the build can reach it, or so the build's sandbox policy (Codex Full above all, which
  * writes anywhere else) breaks or lets the planted entry through. Guard: WorktreePool.lease inspects every name on the
  * way into the pool and refuses a link before writing anything or running git; codexPool denies every entry it can't
- * resolve and leaves the pool's folders read-only, so a build can't plant there at all.
+ * resolve and leaves the pool's folders read-only, so a Codex build can't plant there at all. Under the sandbox
+ * runtime (Claude, Gemini, ACP) a build can make a new entry beside its own checkout (the runtime can't deny writes to
+ * a folder while giving one inside it back): the lease's refusal is the guard there.
  */
 import { mkdirSync, readdirSync, symlinkSync, existsSync, lstatSync } from "node:fs";
 import { join } from "node:path";
@@ -12,7 +14,7 @@ import { codexPool } from "../../src/agent-fence.js";
 import { register } from "../../src/runner.js";
 import { openStore, type Store } from "../../src/store.js";
 import { WorktreePool, worktreePath } from "../../src/worktree.js";
-import { codexSandbox, git, lines, marker, needs, plane, q, seatbelt, underCodex, underSeatbelt, useScratch, write } from "./harness.js";
+import { codexSandbox, git, lines, marker, needs, plane, q, underCodex, underSandbox, useScratch, write } from "./harness.js";
 
 const T0 = new Date("2026-10-13T08:00:00.000Z");
 
@@ -111,12 +113,4 @@ describe("attack: a symlink, folder or dangling/looping link planted in the work
     }
   });
 
-  test("native Seatbelt: the build can plant nothing in the pool; its own checkout stays writable", ctx => {
-    needs(ctx, seatbelt());
-    const at = plane(scratch(), marker("planted-seatbelt"));
-    const { fence, grants } = at.launch("claude");
-    const result = underSeatbelt(plant(at.pool, at.active), fence, grants, { cwd: at.active });
-    expect(lines(result), result.stderr).toEqual(REFUSED);
-    nothingPlanted(at.pool);
-  });
 });

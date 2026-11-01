@@ -16,6 +16,7 @@ import { writeStoreSeed } from "../test/store-seed.js";
 import { addApprover } from "./scope.js";
 import { runOperate } from "./operate.js";
 import { fakePid } from "../test/fake-pid.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
 
 const roots: string[] = [];
 const stores: Store[] = [];
@@ -54,6 +55,7 @@ function fixture() {
   store.createTask({ id: "draft", title: "Draft" }, now);
   const ref = store.refFor("built-in", "draft").id;
   store.placeTask(ref, root);
+  store.acquireWatchLease("worker", root, "dead-watch", 60_000, now);
   const claim = acquire(store, ref, "worker", { token: "fixture-only", now, incarnation: "dead-watch" });
   if (!claim.ok) throw new Error(JSON.stringify(claim));
   const id = store.startRun({ taskRef: ref, runner: "worker", leaseId: claim.claim.leaseId,
@@ -257,7 +259,8 @@ describe("operator review: cancellation cannot cross custody boundaries", () => 
     expect(resumeTaskStop(f.store, { taskId: "draft", runId: f.id, by: "operator", via: "cli" }, new Date()).ok).toBe(true);
   });
 
-  test.skipIf(process.platform === "win32").each(["normal", "failed-write"])("recovery retains an observed detached descendant after its harness dies (%s)", async mode => {
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE || process.platform === "win32").each(["normal", "failed-write"])("recovery retains an observed detached descendant after its harness dies (%s)", async mode => {
     const f = fixture();
     const record = f.store.recordRunProcess.bind(f.store);
     let injected = false;

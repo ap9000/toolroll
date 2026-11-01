@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { mintApiToken } from "./api-tokens.js";
 import { addApprover } from "./scope.js";
-import { effectiveLimits, limitWords, parseLimit, RequestBudget, REQUEST_BUDGET_DEFAULTS, setLimitOverride, SourceAdmission, type Admission } from "./request-budget.js";
+import { effectiveLimits, parseLimit, RequestBudget, REQUEST_BUDGET_DEFAULTS, setLimitOverride, SourceAdmission, type Admission } from "./request-budget.js";
 
 const T0 = Date.parse("2026-10-06T12:00:00.000Z");
 let dir: string, file: string, store: Store, now: number;
@@ -161,7 +161,6 @@ test("source admission keeps sliding windows and evicts the least recently used 
   expect(budget.admit("a")).toEqual({ ok: true });
   expect(budget.admit("c")).toEqual({ ok: true });
   expect(budget.size).toBe(2);
-  expect(limitWords("per-minute", 5)).toBe("Request limit reached (requests per minute). Try again in 5 seconds.");
 });
 
 test("a full table of made-up sources never locks out a real one", () => {

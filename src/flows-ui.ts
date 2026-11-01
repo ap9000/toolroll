@@ -1,15 +1,20 @@
 /** Flows in the console: the list of a person's flows, and one flow's canvas
  * (the React view's data, plus a plain fallback page the view replaces). */
+import { liveAttemptOf, steerControlsFor } from "./steer-controls.js";
 import type { BrowserFlowCard, BrowserFlowTrigger, BrowserFlowView } from "./browser-workspace.js";
 import { draftFor, flowDefinitionOf } from "./flow-engine.js";
 import { describeStandingOrder } from "./flow-schedule.js";
-import { describeTrigger, triggerHeadline, FLOW_TRIGGER_KINDS, FLOW_TRIGGER_WORDS, githubRepoOf, HOOK_PATH, hookReady, planeStatusLink, readHooksBase, readLinearKey, takesDeliveries, triggerConfigOf } from "./flow-triggers.js";
+import { describeTrigger, triggerHeadline, FLOW_TRIGGER_KINDS, FLOW_TRIGGER_WORDS, githubRepoOf, HOOK_PATH, hookReady, planeStatusLink, readHooksBase, readLinearKey, senderOf, takesDeliveries, triggerConfigOf, type TriggerConfig } from "./flow-triggers.js";
+import { SENDER_WORDS } from "./webhook-signing.js";
+import { READER_CAPTURED } from "./webhook-readers.js";
+import { hostOf, linkWords, provedWords, snapshotOf } from "./task-source.js";
 import { deciderOf, FLOW_COLORS, FLOW_KIND_WORDS, FLOW_STAGE_KINDS } from "./flows.js";
+import { nightlyHealthWords } from "./nightly-check.js";
 import { flowInsights, troubleWords } from "./flow-insights.js";
 import { parseSortDecision, sortChip } from "./flow-sort.js";
 import { flowSecretNames, readEmailSettings, sendingReady } from "./flow-actions.js";
 import { projectToolsOf, secretsSetFor, toolStanding } from "./project-tools.js";
-import type { FlowCardRow, FlowRow, Store } from "./store.js";
+import type { FlowCardRow, FlowRow, FlowTriggerRow, Store } from "./store.js";
 import { flowFingerprint } from "./flow-live.js";
 import { flowChoiceAt, readFlowSend, type FlowSendContent } from "./flow-send.js";
 import { itemCaption, whyLines } from "./flow-items.js";
@@ -25,6 +30,39 @@ import { readFlowSecrets } from "./flow-secrets.js";
 import { html, joinHtml, postForm, type Html } from "./html.js";
 const projectName = (repo: string) => repo.split(/[\\/]/).filter(Boolean).pop() ?? repo;
 
+/** v126: what happens to deliveries turned away (refused with 503), as far as each sender is known to say: nothing
+ * here claims a loss that a sender's own retries may still make good. */
+function resendWords(config: TriggerConfig): string {
+  if (config.kind === "github") return "GitHub doesn't retry on its own: resend them from the repository's Settings → Webhooks → this webhook → Recent Deliveries → Redeliver.";
+  if (config.kind === "linear") return "Linear may retry a refused delivery. Look in the webhook's settings in Linear for its recent deliveries; any it doesn't resend can't be recovered here.";
+  const sender = config.kind === "webhook" ? senderOf(config) : "none";
+  return sender === "vercel" ? "Vercel retries refused deliveries for up to a day, so some may still arrive. Its webhook's delivery attempts are listed in Vercel's webhook settings; any it gives up on are lost."
+    : sender === "sentry" ? "Sentry may retry a refused delivery. Your Internal Integration's Dashboard in Sentry (Developer Settings) shows its request log; any it doesn't resend are lost, though new alerts for the same issues still arrive."
+    : "The sender may retry. Look in its webhook delivery log and resend from there if it offers it; any it doesn't resend are lost.";
+}
+
+/** v126: what a webhook trigger's row says about how its deliveries are proved. */
+function hookView(trigger: FlowTriggerRow, config: TriggerConfig, dir: string | null): NonNullable<BrowserFlowTrigger["hook"]> {
+  const ready = hookReady(trigger, dir);
+  const dropped = trigger.droppedCount > 0 && trigger.droppedSince !== null ? { count: trigger.droppedCount, since: trigger.droppedSince, resend: resendWords(config) } : null;
+  if (config.kind !== "webhook") return { ready, needsSecret: config.kind === "linear", sender: null, makesSecret: false, warning: null, readerNote: null, dropped, scope: null };
+  const sender = senderOf(config);
+  // What it needs first, first: an unset secret refuses everything, so that is said before any narrowing.
+  const warning = trigger.hookHash === null && (sender === "none" || ready) ? "No address yet: choose New address to make one and give it to the sender."
+    : sender === "none" ? "Unsigned: anyone with its address can add cards. Choose who signs its deliveries to close that."
+    : !ready ? `Not set up: its deliveries are refused until ${sender === "sentry" || sender === "vercel" ? `${SENDER_WORDS[sender]}'s secret is pasted (with New address for the address to give it)` : "it is set up"}.`
+    : (sender === "sentry" || sender === "vercel") && config.project == null ? `Any ${SENDER_WORDS[sender]} project this secret covers can add cards. Name the project to narrow it.`
+    : null;
+  // A sender that signs only the body: byte-identical requests are one delivery (§3).
+  const repeats = sender === "github-style" ? "Identical requests count once. If the sender must send the same request again and have it count, use Standard Webhooks." : null;
+  // A reader written from its sender's documentation, not yet from a captured delivery, says so on its own line,
+  // whatever else the row says (webhook-readers.ts).
+  const readerNote = (sender === "sentry" || sender === "vercel") && !READER_CAPTURED[sender]
+    ? `Reader unverified: Toolroll reads ${SENDER_WORDS[sender]} deliveries from ${SENDER_WORDS[sender]}'s documented examples; no real delivery has been checked yet.` : null;
+  return { ready, needsSecret: sender === "sentry" || sender === "vercel", sender, makesSecret: sender === "standard" || sender === "github-style", warning, readerNote: [readerNote, repeats].filter(one => one !== null).join(" ") || null, dropped,
+    scope: sender === "sentry" || sender === "vercel" ? { project: config.project ?? null, team: config.team ?? null } : null };
+}
+
 export const FLOWS_CSS = `.flows{max-width:880px;min-width:0}.flows .card{padding:16px 18px;margin:12px 0}.flows .flow-row{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}.flows .flow-row h2{font-size:1.05rem;margin:0}.flows .flow-counts{font-size:.85rem;color:var(--so-muted)}.flows form{display:grid;gap:10px;margin:0}.flows label{display:grid;gap:6px}.flows input,.flows select{box-sizing:border-box;width:100%;max-width:100%}.flows button{justify-self:start;min-height:44px}.flows .flow-fallback ol{padding-left:20px}.flows summary{cursor:pointer;min-height:44px;display:flex;align-items:center;font-weight:600}.flows .flow-buttons{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0 0}.flows .flow-import{margin-top:18px;padding-top:14px;border-top:1px solid var(--so-line)}.flows .flow-import h3{font-size:.95rem;margin:0}.flows .flow-terms{list-style:none;padding:0;margin:8px 0 16px;display:grid;gap:10px}.flows .flow-terms li{white-space:pre-line;overflow-wrap:anywhere}.flows .flow-terms pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:.8rem;margin:6px 0 0}.flows .flow-import-preview h2{font-size:1rem;margin:20px 0 4px}.flows .flow-untrusted{font-weight:600}.flows button.primary{background:var(--primary);color:var(--primary-foreground);border-color:var(--primary)}.flows fieldset{border:0;padding:0;margin:0;display:grid;gap:10px;min-width:0}.flows legend{font-weight:600;padding:0;margin-bottom:6px}.flows textarea[hidden]{display:none}.flows button.secondary{background:transparent;color:var(--foreground);border:1px solid var(--border)}@media(max-width:600px){.flows input,.flows select{font-size:16px}}@media(max-width:760px){.flows .card{padding:10px 12px;margin:8px 0;position:relative}.flows .flow-row{row-gap:2px}.flows .flow-row h2 a::after{content:"";position:absolute;inset:0;border-radius:inherit}.flows .flow-counts{line-height:1.35}}`;
 
 /** The flows a person can open, with how many cards wait in each, and the new-flow form. */
@@ -34,7 +72,7 @@ export function flowsListHtml(store: Store, flows: readonly FlowRow[], projects:
     const definition = flowDefinitionOf(flow);
     const waiting = cards.filter(card => ["approval", "choose"].includes(definition?.stages.find(one => one.id === card.stage)?.kind ?? "")).length;
     const buttons = store.flowTriggers(flow.id).filter(one => one.state === "active").flatMap(one => { const config = triggerConfigOf(one); return config?.kind === "button" ? [{ id: one.id, label: config.label }] : []; });
-    const trouble = troubleWords(flowInsights(store, flow, new Date(), 7));
+    const trouble = troubleWords(flowInsights(store, flow, new Date(), 7)) ?? nightlyHealthOf(store, flow);
     return html`<article class="card"><div class="flow-row"><h2><a href="/flows/${flow.id}">${flow.name}</a></h2><span class="flow-counts">${projectName(flow.repo)} · ${cards.length} card${cards.length === 1 ? "" : "s"} in progress${waiting > 0 ? ` · ${waiting} waiting for a decision` : ""}${trouble === null ? "" : ` · ${trouble}`}</span></div>${buttons.length > 0 && html`<p class="flow-buttons">${joinHtml(buttons.map(one => html`<a class="button-link" href="/flows/${flow.id}?start=${one.id}">${one.label}</a>`), " ")}</p>`}</article>`;
   });
   const projectField = projects.length === 1 ? html`<input type="hidden" name="repo" value="${projects[0]!}">` : html`<label>Project<select name="repo">${projects.map(repo => html`<option value="${repo}">${projectName(repo)}</option>`)}</select></label>`;
@@ -150,14 +188,22 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
       id: card.id, title: card.title, description: card.description, stage: card.stage, state: card.state,
       waiting: card.state === "active" && card.task !== null && (stage?.kind === "task" || stage?.kind === "report")
         ? canReadTask ? flowCardTaskLine(store, card.task, taskRepo!, now, secretsFor(taskRepo!)) : "Task unavailable" : card.waiting,
-      task: task === null ? null : { id: task, href: `/t/${encodeURIComponent(task)}` },
+      task: task === null ? null : { id: task, href: `/t/${encodeURIComponent(task)}`,
+        // Its running attempt's composer, for an approver who may read the task (steer-controls.ts).
+        ...(() => {
+          const ref = card.state === "active" && canReadTask && viewer.approver ? store.lookupRef(task) : null;
+          const run = ref === null ? null : liveAttemptOf(store, ref.id, now);
+          const composer = run === null ? null : steerControlsFor(store, task, run, now, viewer.approver);
+          return composer === null ? {} : { composer };
+        })() },
       createdBy: card.createdBy, updatedAt: card.updatedAt,
       canDecide,
       // What a "Send to me" sent shows once, in its own box (sent), not again here; a report zone's items and full report
       // (`<id>.items`, `<id>.report`) are for later zones, and its summary is shown.
       outputs: Object.entries(card.outputs).filter(([id]) => !id.includes(".") && stages.find(one => one.id === id)?.kind !== "send").map(([id, text]) => ({ stage: id, title: title(id), text })),
       history: [...moves, ...owned].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 30),
-      source: card.source,
+      // v126: an outside event's card says how it was proved and where its link goes, from what was kept at receipt.
+      source: card.source === null ? null : (() => { const snapshot = snapshotOf(card.source); return snapshot === null ? card.source : { ...card.source, proved: provedWords(snapshot), host: hostOf(card.source.url), shown: card.source.url === null ? null : linkWords(card.source.url) }; })(),
       owner: card.owner, watchers, watching: watchers.includes(viewer.name),
       mine: card.owner === viewer.name || watchers.includes(viewer.name) || canDecide || choosing?.person === viewer.name,
       comments: discussion.filter(one => one.kind === "comment").map(one => ({ id: one.id, author: one.author, body: one.body, mentions: one.mentions, at: one.at })),
@@ -186,7 +232,7 @@ export function flowView(store: Store, flow: FlowRow, viewer: { name: string; ap
       ...(config === null ? { name: "Trigger", detail: "Can't be read" } : triggerHeadline(config, store)),
       zone: title(config?.zone ?? definition?.start ?? ""), zoneId: config?.zone ?? definition?.start ?? "", state: trigger.state, status: trigger.lastOutcome, statusLink: planeStatusLink(config, trigger.lastOutcome), statusAt: trigger.lastAt, failing: trigger.failures > 0,
       button: config?.kind === "button" ? { label: config.label, questions: config.questions } : null,
-      hook: config !== null && takesDeliveries(config) ? { ready: hookReady(trigger, setup.dir), needsSecret: config.kind === "linear" } : null,
+      hook: config !== null && takesDeliveries(config) ? hookView(trigger, config, setup.dir) : null,
       checkable: ((config?.kind === "github" || config?.kind === "linear") && config.delivery === "poll") || config?.kind === "email" || (config?.kind === "schedule" && config.script !== undefined) || config?.kind === "plane-review",
       shared: config?.kind === "button" && trigger.hookHash !== null,
       ...(config?.kind === "schedule" && config.order !== undefined ? { order: describeStandingOrder(config.order, flow.repo, config.schedule) } : {}),
@@ -235,4 +281,10 @@ export function flowFallbackHtml(view: BrowserFlowView): Html {
     const cards = view.cards.filter(card => card.stage === stage.id && card.state === "active");
     return html`<li><strong>${stage.title}</strong> · ${FLOW_KIND_WORDS[stage.kind].label}${cards.length > 0 && html`<ul>${cards.map(card => html`<li>${card.title}${card.waiting !== null && ` — ${card.waiting}`}</li>`)}</ul>`}</li>`;
   })}</ol></section>`;
+}
+
+/** The nightly check's own health on its flow (release-once.md, part 3): nothing since the last firing for 26 hours. */
+function nightlyHealthOf(store: Store, flow: FlowRow): string | null {
+  const nightly = store.flowTriggers(flow.id).find(one => one.state === "active" && triggerConfigOf(one)?.kind === "schedule" && (triggerConfigOf(one) as { order?: { check?: unknown } }).order?.check !== undefined);
+  return nightly === undefined ? null : nightlyHealthWords(store, flow.repo, nightly.updatedAt, new Date());
 }

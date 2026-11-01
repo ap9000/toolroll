@@ -42,10 +42,10 @@ test('real HTTP requests, live streams and budget refusals reach metrics and the
     const profileFile = join(dir, 'profile.json');
     writeFileSync(profileFile, JSON.stringify({ version: 1, active: 'test', profiles: { test: { origin: url, account: 'synthetic-operator', token } } }), { mode: 0o600 });
     const lines: string[] = [];
-    expect(await main(['health'], line => lines.push(line), { team: { profileFile } })).toBe(0);
+    expect(await main(['health'], line => lines.push(line), { connect: { profileFile } })).toBe(0);
     expect(lines.join('\n')).toContain('SQLite write-lock waits:'); expect(lines.join('\n')).toContain('Live streams: 1 open');
     lines.length = 0;
-    expect(await main(['health', '--json'], line => lines.push(line), { team: { profileFile } })).toBe(0);
+    expect(await main(['health', '--json'], line => lines.push(line), { connect: { profileFile } })).toBe(0);
     expect(JSON.parse(lines[0]!)).toMatchObject({ ok: true, command: 'health', health: { version: 1, streams: { open: 1 }, budgetRefusals: 1 } });
     store.saveApprover('synthetic-project-reader', 'not-a-login', now);
     store.setAccountProjects('synthetic-project-reader', [dir], 'synthetic-operator', now);

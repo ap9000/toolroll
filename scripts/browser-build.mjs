@@ -13,9 +13,12 @@ await rm(outdir, { recursive: true, force: true });
 await mkdir(outdir, { recursive: true });
 const result = await build({
   absWorkingDir: root,
-  entryPoints: { workspace: "src/browser/app.tsx" },
+  entryPoints: { workspace: "src/browser/app.tsx", terminal: "src/browser/terminal-app.tsx" },
   outdir,
   bundle: true,
+  // A checkout that links the plane's shared dependencies resolves through its own node_modules links, never by
+  // listing the shared copy (a fenced build may look up, not list, its folder). The bundle is byte-identical.
+  preserveSymlinks: true,
   format: "esm",
   platform: "browser",
   target: ["es2022"],
@@ -26,6 +29,8 @@ const result = await build({
   charset: "utf8",
   legalComments: "eof",
   metafile: true,
+  // Typefaces are the console's own pre-auth assets (pages-assets.ts), never bundled.
+  external: ["/fonts/*"],
   define: { "process.env.NODE_ENV": '"production"' },
   banner: { js: "/*! Third-party notices: /assets/THIRD_PARTY_NOTICES.txt */" },
   logLevel: "info",

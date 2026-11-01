@@ -86,6 +86,7 @@ export const LEAD_TOOL_INPUTS = {
   }),
   recap: z.strictObject({ since: text("recapSince").optional() }),
   list_repos: z.strictObject({}),
+  find_tools: z.strictObject({ query: z.string().min(1).max(200).describe("What you want to do, in a few words (\"make a flow\", \"add a subagent\", \"hold a task\").") }),
   get_project_tools: z.strictObject({ repo: repoId }),
   get_flows: z.strictObject({ repo: repoId.optional(), flow: id.optional(), card: id.optional() }),
   // The flow contract's own schema (src/contracts/flow-propose.ts), never a second one here.
@@ -132,6 +133,14 @@ export const LEAD_TOOL_INPUTS = {
     not: scopeText.nullable().optional(), touches: touches.optional(), acceptance,
     planning: z.enum(["auto", "required", "skip"]).optional(), report: z.boolean().optional(), checks: text("checksWords").optional(),
   }),
+  // Lead fan-out (docs/plans/lead-fan-out.md): 2 to 20 independent items under one shared brief and one success test.
+  propose_sweep: z.strictObject({
+    repo: repoId, title: text("taskTitle"), brief: scopeText,
+    items: z.array(z.strictObject({ title: text("taskTitle"), item: scopeText })).min(2).max(20),
+    acceptance, max_parallel: z.number().int().min(1).max(8).optional(),
+  }),
+  get_sweep: z.strictObject({ sweep: id }),
+  propose_sweep_cancel: z.strictObject({ sweep: id }),
   propose_next: z.strictObject({ task: taskRef }),
   propose_reserve: z.strictObject({ task: taskRef, worker: text("workerName").nullable() }),
   propose_hold: z.strictObject({ task: taskRef, reason: text("proposalReason") }),
@@ -226,6 +235,7 @@ export const LEAD_TOOL_OUTPUTS = {
   propose_review: proposed("review", { operation: z.enum(["note", "revise"]) }),
   recap: recapOutput,
   list_repos: z.looseObject({ repos: rows({ repo: str }) }),
+  find_tools: z.looseObject({ tools: rows({ name: str, summary: str }), next: str }),
   get_project_tools: z.looseObject({ rule: str, tools: rows({ name: str }), connectBySigningIn: list, commonTools: list, foundOnThisComputer: list, notice: str }),
   get_flows: z.union([
     z.looseObject({ flow: int, name: str, steps: rows({ id: str, title: str, kind: str }), cards: rows({ card: int, title: str }), scripts: list, triggers: list, rule: str }),
@@ -264,6 +274,9 @@ export const LEAD_TOOL_OUTPUTS = {
   get_decision: decisionOutput,
   queue: z.looseObject({ repo: str, queueRevision: int, ...queueColumnsOutput }),
   propose_task: proposed("task", { repo: str, deliverable: z.enum(["branch", "report"]), planning: str }),
+  propose_sweep: cardDrafted,
+  get_sweep: z.looseObject({ sweep: int, title: str, line: str, table: str, maxParallel: int, items: z.array(z.looseObject({ item: int, label: str, task: str, state: str })) }),
+  propose_sweep_cancel: cardDrafted,
   propose_next: proposed("next", { task: str }),
   propose_reserve: proposed("reserve", { task: str, worker: nullable(str) }),
   propose_hold: proposed("hold", { task: str }),
@@ -275,8 +288,6 @@ export const LEAD_TOOL_OUTPUTS = {
   propose_answer: proposed("answer", { decision: int, option: str }),
   propose_cancel: proposed("cancel", { task: str }),
 } as const satisfies Record<LeadToolName, z.ZodType>;
-
-export type LeadToolOutput<N extends LeadToolName> = z.infer<(typeof LEAD_TOOL_OUTPUTS)[N]>;
 
 /**
  * Report a result that disagrees with its output schema without hiding the actual result, including under Vitest.

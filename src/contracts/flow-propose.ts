@@ -41,7 +41,6 @@ export const proposeFlowInputSchema = z.strictObject({
   }).optional(),
   settings: leadTriggerSchema.optional(),
 });
-export type ProposeFlowInput = z.infer<typeof proposeFlowInputSchema>;
 
 /** What the lead is told propose_flow takes: exactly the schema its call is read with. */
 export const PROPOSE_FLOW_MODEL_SCHEMA: Readonly<Record<string, unknown>> = toModelSchema(proposeFlowInputSchema);

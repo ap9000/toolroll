@@ -18,7 +18,6 @@ import { credentialKeyOf } from "./converse.js";
 const T0 = new Date("2026-10-11T12:00:00.000Z");
 const at = (ms: number) => new Date(T0.getTime() + ms);
 // A pulse is 60 seconds; every delivery below lands well inside the first one.
-const PULSE_MS = 60_000;
 
 let store: Store, worktree: string, taskRef: number, runId: number, box: SteerMailbox;
 let frames: Record<string, unknown>[], session: LiveInput;
@@ -48,7 +47,6 @@ describe("live steering's dispatcher", () => {
     const id = file("prefer the smaller diff");
     // One half-second tick after filing, nowhere near the 60-second pulse.
     tickLiveSteer(store, { box, session }, at(500), true);
-    expect(500).toBeLessThan(PULSE_MS);
     expect(existsSync(join(box.dir, "001.json"))).toBe(true);
     expect(JSON.parse(readFileSync(join(box.dir, "001.json"), "utf8"))).toMatchObject({ number: 1, key: box.key, note: "| prefer the smaller diff" });
     const note = store.steerNote(id)!;
@@ -56,7 +54,7 @@ describe("live steering's dispatcher", () => {
     // The first send carries the note's own identity, minted when it was filed.
     expect(frames.at(-1)?.["uuid"]).toBe(note.liveUuid);
     expect(note).toMatchObject({ mailedRun: runId, liveSends: 1, liveSentAt: at(500).toISOString(), deliveredAt: null, ackedAt: null });
-    expect(steerStandingWords(note, true, iso => iso)).toBe("Waiting for the agent to read it");
+    expect(steerStandingWords(note, true, iso => iso)).toBe("Sent · not picked up yet");
     // Only the agent moving the file reads it.
     moveToHandled("001.json");
     tickLiveSteer(store, { box, session }, at(1_000), true);
@@ -77,7 +75,6 @@ describe("live steering's dispatcher", () => {
     expect(sends).toEqual([LIVE_RESEND_MS, 2 * LIVE_RESEND_MS, 3 * LIVE_RESEND_MS]);
     const reminder = liveReminderText(box, 1);
     expect(userTexts()).toEqual([liveNoteText(box, 1, store.steerNote(id)!), reminder, reminder, reminder]);
-    expect(reminder).toBe(`Steering note 1 is still unread: ${box.folder}/001.json. Act on it if you have not already, then move it into ${box.folder}/handled/.`);
     expect(reminder).not.toContain("start with the retry path");
     const missed = store.steerNote(id)!;
     expect(missed).toMatchObject({ liveSends: 4, liveMissedAt: at(4 * LIVE_RESEND_MS).toISOString(), deliveredAt: null });
@@ -86,7 +83,7 @@ describe("live steering's dispatcher", () => {
     expect(steerStandingWords(missed, false, iso => iso)).toBe("Will reach the next attempt");
     moveToHandled("001.json");
     tickLiveSteer(store, { box, session }, at(7 * LIVE_RESEND_MS), true);
-    expect(steerStandingWords(store.steerNote(id)!, true, iso => iso)).toBe(`Read by the agent at ${at(7 * LIVE_RESEND_MS).toISOString()}`);
+    expect(steerStandingWords(store.steerNote(id)!, true, iso => iso)).toBe(`Picked up at ${at(7 * LIVE_RESEND_MS).toISOString()}`);
   });
 
   test("c4: moving the file cancels the re-sends", () => {

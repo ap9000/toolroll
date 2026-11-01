@@ -53,8 +53,8 @@ describe("verification receipts read through their schema", () => {
     sealVerificationReceipt(store, dir, runId, HEAD, command, { configured: true, ran: true, exitCode: 0 }, T1);
     rewrite(value => ({ ...value, result: { configured: true, ran: true, exitCode: 0, attemptFailed: true } }));
     expect(verificationEvidence(store, dir, runId)).toEqual({ ok: false, problem: "The verification receipt is malformed: result: unknown key 'attemptFailed'" });
-    rewrite(value => ({ ...value, result: { configured: true, ran: true, exitCode: 0 }, version: 3 }));
-    expect(verificationEvidence(store, dir, runId)).toEqual({ ok: false, problem: "The verification receipt is malformed: version: made by a newer Toolroll (version 3; this one reads up to 2)" });
+    rewrite(value => ({ ...value, result: { configured: true, ran: true, exitCode: 0 }, version: 4 }));
+    expect(verificationEvidence(store, dir, runId)).toEqual({ ok: false, problem: "The verification receipt is malformed: version: made by a newer Toolroll (version 4; this one reads up to 3)" });
   });
 
   test("reuse is version 2's: a direct receipt naming it is refused, and a reused one must be bound to an observation follow-up", () => {

@@ -7,6 +7,8 @@
  * what. The console asks for the name, then the password; so does the CLI's
  * --yes.
  */
+import { setLiveCommands } from "./live-detail.js";
+import { verifiedAuthor } from "./store.js";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -72,7 +74,7 @@ function populate(where: string) {
   const first = task(where);
   const second = task(where, first.id);
   const flow = store.createFlow({ repo: where, name: "Support", definitionJson: JSON.stringify({ stages: [{ id: "inbox", name: "Inbox" }] }), by: "alex" }, NOW);
-  const card = store.addFlowCard({ flow, title: "Refund", description: null, stage: "inbox", by: "alex" }, NOW);
+  const card = store.addFlowCard({ flow, title: "Refund", description: null, stage: "inbox", by: "alex", byKind: "person" }, NOW);
   store.addFlowComment({ card, author: "alex", body: "Looking", mentions: [] }, NOW);
   const mate = store.createSubagent({ repo: where, handle: `maya${serial}`, soul: "---\nname: Maya\n---\nHelpful.\n", model: null, manager: "alex", by: "alex" }, NOW);
   store.addSubagentTurn({ subagent: mate, card, model: "sonnet", ok: true, ms: 5, costUsd: 0.1 }, NOW);
@@ -83,6 +85,10 @@ function populate(where: string) {
   store.setBudget({ scope: "project", key: where, limitMicrousd: 5_000_000, hardStop: true }, "alex", NOW);
   store.setBudget({ scope: "subagent", key: String(mate), limitMicrousd: 1_000_000, hardStop: true }, "alex", NOW);
   store.setApprovalRules(where, { notRequester: true, protectProject: false, protectedPaths: [] }, "alex", NOW);
+  // The live view's "Show commands", and a steering note that reached a run (its history rows go with the run).
+  setLiveCommands(store, { repo: where, commands: true, by: "alex", via: "test" }, NOW);
+  const steered = store.fileSteerNote(first.id, verifiedAuthor("alex"), "look at the retry path", NOW);
+  if (steered.ok) store.markSteerMailed(steered.id, first.run, NOW);
   // Knowledge history refuses deletes by design; a project's own goes with it.
   store.handle.prepare("INSERT INTO knowledge_change (repo, identity, revision, actor, at, payload, sha) VALUES (?, 'k', 1, 'alex', ?, '{}', 'x')").run(where, NOW.toISOString());
   store.upsertProject(where, where.split("/").pop()!, NOW);
@@ -128,6 +134,11 @@ test("deleting a project removes what Toolroll holds for it and keeps everything
   store.handle.prepare("UPDATE task_ref SET revision_brief_artifact = ? WHERE id = ?").run(shared, other.second.ref);
   expect(mentions(repo).length).toBeGreaterThan(5);
 
+  // Each project's task came from a signed Sentry delivery (v126 task_source).
+  const source = JSON.stringify({ label: "Sentry issue", verified: "sentry", external: { id: "1", url: "https://acme.sentry.io/issues/1/" }, receipt: "v3:sentry:id:1" });
+  store.recordTaskSource(shop.first.id, { flow: 1, card: 1, entry: 1 }, source, NOW);
+  store.recordTaskSource(other.first.id, { flow: 1, card: 1, entry: 1 }, source, NOW);
+
   // A paired Telegram chat asked about each project's task; each message has its reply planned (event ids are text, 'm…').
   const talk = telegramTalk([[shop.first.id, 501], [other.first.id, 502]]);
   expect(count("SELECT COUNT(*) AS n FROM chat_event WHERE provider = 'telegram' AND kind = 'message'")).toBe(2);
@@ -138,6 +149,9 @@ test("deleting a project removes what Toolroll holds for it and keeps everything
   expect(store.handle.prepare("SELECT id FROM chat_event WHERE provider = 'telegram' AND kind = 'message'").all().map(row => row["id"])).toEqual([talk[1]]);
   expect(store.handle.prepare("SELECT event FROM chat_part WHERE provider = 'telegram'").all().map(row => row["event"])).toEqual([talk[1]]);
 
+  // Where the deleted task came from goes with it: a task later made under the same id is never given that origin.
+  expect(store.taskSourceOf(shop.first.id)).toBeNull();
+  expect(store.taskSourceOf(other.first.id)).not.toBeNull();
   // Nothing names the project any more; its tasks, runs, chats, cards, subagent and evidence are gone.
   expect(mentions(repo)).toEqual([]);
   expect(count("SELECT COUNT(*) AS n FROM task WHERE id IN (?, ?)", shop.first.id, shop.second.id)).toBe(0);

@@ -4,7 +4,7 @@
  * token made with a day left says so once. Replaced and revoked tokens get none. The same pass records the end of each
  * rotated token whose overlap has passed; it already signs no one in (tokenLive), so a late pass grants nothing.
  */
-import { expiryNoticeDue, EXPIRY_NOTICE_DAYS, tokenLive } from "./api-tokens.js";
+import { expiryNoticeDue, EXPIRY_NOTICE_DAYS } from "./api-tokens.js";
 import type { Store } from "./store.js";
 
 export const TOKEN_NOTICE_KIND = "api-token-expiry";
@@ -31,11 +31,6 @@ export function tokenNoticePass(store: Store, now: Date): { sent: { token: strin
     sent.push({ token: token.id, days });
   }
   return { sent, ended };
-}
-
-/** Whether a token's console card warns that it expires soon (within the first notice's days). */
-export function expiresSoon(token: Parameters<typeof tokenLive>[0] & { replacedBy: string | null }, now: number): boolean {
-  return expiryNoticeDue(token, now) !== null;
 }
 
 /** The loop beside the console: a pass a minute. */

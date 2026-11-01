@@ -1,4 +1,5 @@
 /** HTTP answers every console route shares: server options, body limits, safe responses, redirects and return paths. */
+import type { TerminalHost } from "../live-terminal.js";
 import { html, htmlString, isHtml, type Html } from "../html.js";
 import { chatResultHref as sharedResultHref } from "../chat-controls.js";
 import { type CliHttpOptions,type RunOperateAs } from "../cli-http.js";
@@ -20,6 +21,9 @@ import { type launchRuntimeUpdate } from "../toolroll-update.js";
 import { timingSafeEqual } from "node:crypto";
 import { type IncomingMessage,type ServerResponse } from "node:http";
 import { SIGN_IN_LINK_PATH } from "./session.js";
+import { type FolderLookRunner } from "../folder-look.js";
+import { type ProjectIdentities } from "../project-identity.js";
+import { type LearningRunner } from "../learning-look.js";
 
 export type ServeOptions = {
   /** Tests: runs a person's command for the HTTP MCP gateway instead of operate.ts's. */
@@ -30,6 +34,8 @@ export type ServeOptions = {
   installBin?: string;
   /** Native coding workspace injection for isolated integration tests. */
   codingWorkspace?: CodingWorkspace;
+  /** Live terminals (tests stand their own in; null turns them off). Default: one on a machine that runs agents. */
+  terminalHost?: TerminalHost | null;
   /** Read-only worker connections for heavy reads (read-executor.ts); 0 reads in-process. Default: off under tests. */
   readWorkers?: number;
   store: Store;
@@ -64,6 +70,8 @@ export type ServeOptions = {
   leadByDefault?: boolean;
   /** Test seam: the operating system the sign-in command is written for. */
   platform?: NodeJS.Platform;
+  /** Test seam: whether this machine has an OS fence (macOS sandbox or bubblewrap) for checks. */
+  fenceAvailable?: () => boolean;
   /** Extra Host values this server answers as (a Tailscale name, a LAN ip:port). */
   allowedHosts?: readonly string[];
   /**
@@ -138,6 +146,12 @@ export type ServeOptions = {
   connectFetch?: typeof fetch;
   /** Tests: every request sign-in with the identity provider makes (discovery, keys, tokens). */
   ssoFetch?: typeof fetch;
+  /** Cockpit B1: this `up` console's instance secret (null: none — the instance route answers 404). */
+  instanceSecret?: () => string | null;
+  /** v137: whether this console is draining (its `up` is stopping): /healthz says so at once, and pages say Toolroll is restarting. */
+  draining?: () => boolean;
+  /** Cockpit E: how Finder is asked to reveal a proved checkout (tests pass their own; never a launch). True: shown. */
+  revealPath?: (path: string) => Promise<boolean> | boolean;
   chatEnv?: Record<string, string | undefined>;
   /**
    * The live peek's locality ASSERTION (live-peek v3 §3): the administrator
@@ -153,6 +167,19 @@ export type ServeOptions = {
    * the exact part of the ceiling, so an addition or removal shows without a restart. */
   admittedRepos?: () => readonly string[];
   connectionProbe?: typeof execRun;
+  /** The console's background checks (docs/plans/get-side-effects.md): sign-in checks, integration checks, model
+   * lists and the tidy-ups pages used to do. On for `up` and `serve`; a test turns them on, and `backgroundChecksMs` sets
+   * how often they run and ask this computer's agents again. */
+  backgroundChecks?: boolean;
+  backgroundChecksMs?: number;
+  /** Tests: how a person's folders are read off the console's thread (folder-look.ts), and how long a read may take. */
+  folderLook?: FolderLookRunner;
+  folderLookMs?: number;
+  /** Project identities resolved off the console's thread (project-identity.ts); `up` and `serve` pass them. Absent:
+   * the old synchronous reads (embedders and tests). */
+  identities?: ProjectIdentities;
+  /** Tests: how the background pass runs one project's learning recovery in a process of its own. */
+  learningRunner?: LearningRunner;
   connectionHome?: string;
   /** Test seam for Chat's first tasks: the `gh` and `git grep` reads. */
   firstTaskRunner?: typeof execRun;
@@ -214,6 +241,10 @@ export function taskHref(taskId: string): string {
   return `/t/${encodeURIComponent(taskId)}`;
 }
 
+export function runHref(runId: number): string {
+  return `/r/${Math.trunc(runId)}`;
+}
+
 // ---- rendering -------------------------------------------------------------
 
 export const SAFETY = {
@@ -233,10 +264,13 @@ export function respond<T extends string>(response: ServerResponse, status: numb
   // writeHead's headers would otherwise win.
   const own = response.getHeader("content-security-policy");
   const cache = response.getHeader("cache-control");
+  // The first-account form's page sends `same-origin` so its own post names this console (signup-gate.ts).
+  const referrer = response.getHeader("referrer-policy");
   response.writeHead(status, {
     ...SAFETY,
     ...(own === undefined ? {} : { "content-security-policy": own as string }),
     ...(cache === undefined ? {} : { "Cache-Control": cache as string }),
+    ...(referrer === "same-origin" ? { "Referrer-Policy": "same-origin" } : {}),
     "Content-Type": type,
   });
   response.end(isHtml(body) ? htmlString(body) : body);
@@ -291,8 +325,15 @@ export function goOutside(response: ServerResponse, to: string, words: string, b
   response.end(htmlString(html`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="0;url=${to}"><title>Toolroll</title>${HANDOFF_STYLE}<p>${words} <a href="${to}">Continue</a></p>`));
 }
 
+/** A form's answer: back to `page` (which may carry its own query) saying `said` or `problem` words, then an anchor. */
+export function sayTo(response: ServerResponse, page: string, anchor = ""): (key: "said" | "problem", words: string, at?: string) => void {
+  const join = page.includes("?") ? "&" : "?";
+  return (key, words, at = anchor) => redirect(response, `${page}${join}${key}=${encodeURIComponent(words)}${at}`);
+}
 export function redirect(response: ServerResponse, to: string): void {
-  response.writeHead(303, { ...SAFETY, Location: to });
+  // Set as a header (not only in writeHead) so the answer can be read back after: a refused act's redirect names it.
+  response.setHeader("Location", to);
+  response.writeHead(303, { ...SAFETY });
   response.end();
 }
 

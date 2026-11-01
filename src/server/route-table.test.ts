@@ -4,7 +4,7 @@
  * serve.bearer-scope tests), generated from the same table.
  */
 import { describe, expect, test } from "vitest";
-import { assertRouteTable, declaredForAnotherMethod, matchRoute, ROUTES, type RouteDeclaration } from "./route-table.js";
+import { assertRouteTable, matchRoute, ROUTES, type RouteDeclaration } from "./route-table.js";
 
 const consoleRoutes = ROUTES.filter(route => route.stage === "console");
 const edgeRoutes = ROUTES.filter(route => route.stage === "edge");
@@ -30,7 +30,11 @@ const LIMITED_ACCESS = {
   'settings.skills': 'unscoped', 'settings.flows': 'collection', 'settings.knowledge': 'unscoped',
   'settings.learning': 'unscoped', 'settings.telegram': 'self', 'settings.page': 'unscoped',
   'decision.page': 'resource', 'decision.evidence': 'resource', 'code.act-other': 'self', 'code.answer-send': 'self', 'code.changes': 'self', 'code.continue-send': 'self',
-  'code.other': 'self', 'code.recover-send': 'self', 'code.resume-send': 'self', 'code.send-send': 'self',
+  'code.other': 'self', 'code.changes-read': 'self', 'code.ship-preview': 'self', 'code.recover-send': 'self', 'code.resume-send': 'self', 'code.send-send': 'self',
+  // Lead sweeps: the handler shows and acts only on a sweep in a project the reader can see.
+  'sweep.page': 'unscoped', 'sweep.cancel-rest': 'unscoped',
+  // Start a builder (S4): where Connect a builder leads; the handler shows only a visible project.
+  'start-builder': 'unscoped',
   'code.session': 'self', 'code.ship': 'self', 'code.ship-send': 'self', 'code.start': 'self', 'code.state': 'self', 'code.stop-send': 'self',
   'settings.skills-revise': 'unscoped', 'settings.skills-import': 'unscoped', 'settings.skills-change': 'unscoped',
   'flows.gallery-create': 'resource', 'flows.create': 'resource', 'flows.import': 'resource',
@@ -38,24 +42,24 @@ const LIMITED_ACCESS = {
   'flow.card.decide': 'resource', 'flow.card.move': 'resource', 'flow.card.watch': 'resource',
   'flow.trigger.pause': 'resource', 'flow.trigger.resume': 'resource', 'flow.trigger.remove': 'resource',
   'flow.trigger.check': 'resource', 'flow.trigger.press': 'resource', 'flow.trigger.renew': 'resource',
-  'flow.trigger.secret': 'resource', 'flow.trigger.share': 'resource', 'flow.trigger.unshare': 'resource',
-  'settings.flows-on': 'collection', 'settings.knowledge-refresh': 'unscoped',
+  'flow.trigger.secret': 'resource', 'flow.trigger.setup': 'resource', 'flow.trigger.sender': 'resource', 'flow.trigger.dropped': 'resource', 'flow.trigger.scope': 'resource', 'flow.trigger.share': 'resource', 'flow.trigger.unshare': 'resource',
+  'settings.flows-on': 'collection', 'settings.integrations-youiyoux': 'collection', 'settings.knowledge-refresh': 'unscoped',
   'settings.knowledge-change': 'unscoped', 'settings.learning-change': 'unscoped',
   'settings.telegram-retry': 'self', 'settings.chat-approval-confirm': 'self',
   'settings.chat-approval-save': 'self', 'settings.chat-approval-off': 'self',
   'settings.telegram-pair': 'self', 'settings.telegram-unpair': 'self',
-  'projects.select': 'unscoped', 'agents': 'unscoped', 'tasks.add': 'collection', 'decision.answer': 'resource',
+  'projects.select': 'unscoped', 'agents': 'unscoped', 'agents.live': 'unscoped', 'agents.live.read': 'unscoped', 'tasks.add': 'collection', 'decision.answer': 'resource',
   'task.act.hold': 'resource', 'task.act.unhold': 'resource', 'task.act.requeue': 'resource',
   'task.act.cancel': 'resource', 'task.act.scope': 'resource', 'task.act.approve': 'resource',
   'task.act.plan': 'resource', 'task.act.plan-edit': 'resource', 'task.act.next': 'resource',
   'task.act.reopen': 'resource', 'task.act.steer': 'resource', 'task.act.reply': 'resource', 'task.act.accept-proof': 'resource',
   'task.act.accept-revision': 'resource', 'task.act.reject-revision': 'resource', 'task.act.route': 'resource',
   'task.act.retry-review': 'resource', 'task.act.complete': 'resource', 'task.act.merge': 'resource',
-  'task.act.confirm-stopped': 'resource', 'task.act.stop': 'resource', 'task.act.pause': 'resource',
+  'task.act.confirm-stopped': 'resource', 'task.act.stop': 'resource', 'task.act.stop-carrying': 'resource', 'task.act.pause': 'resource',
   'task.act.resume-arm': 'resource', 'task.act.resume': 'resource', 'chat.proposal.confirm': 'proposal', 'chat.proposal.dismiss': 'proposal',
   'recipes.prepare-send': 'collection', 'recipes.preview-send': 'collection', 'recipes.import-send': 'collection',
   'recipes.save-send': 'collection', 'recipes.launch-send': 'collection', 'run.act.add-tests': 'resource', 'run.act.checks': 'resource', 'run.act.comment': 'resource',
-  'run.act.draft-repair': 'resource', 'run.act.note': 'resource', 'run.act.revise': 'resource',
+  'run.act.draft-repair': 'resource', 'run.act.note': 'resource', 'run.act.reveal': 'resource', 'run.act.revise': 'resource', 'session.forget-password': 'self',
 } satisfies Record<string, Exclude<RouteDeclaration['limited'], 'deny'>>;
 
 describe("the route table", () => {
@@ -102,7 +106,7 @@ describe("the route table", () => {
     for (const route of ROUTES.filter(one => one.limited !== "deny")) expect(route.stage, route.id).toBe("console");
     for (const route of ROUTES.filter(one => one.needsProject)) expect([route.stage, route.method], route.id).toEqual(["console", "GET"]);
     for (const route of ROUTES.filter(one => one.viewer)) expect([route.method, route.callers.includes("cookie")], route.id).toEqual(["POST", true]);
-    expect(ids(consoleRoutes.filter(one => one.viewer))).toEqual(["projects.select", "session.editor-links"]);
+    expect(ids(consoleRoutes.filter(one => one.viewer))).toEqual(["session.forget-password", "projects.select", "session.editor-links"]);
     // Each limited kind names how its object is found.
     for (const route of ROUTES.filter(one => one.limited === "self")) expect(["coding", "session"], route.id).toContain(route.project);
     expect(ids(ROUTES.filter(one => one.limited === "proposal"))).toEqual(ids(ROUTES.filter(one => one.project === "proposal")));
@@ -128,7 +132,6 @@ describe("the route table", () => {
       expect(matchRoute("POST", path, "console"), path).toBeNull();
     }
     expect(matchRoute("POST", "/board", "console")).toBeNull();
-    expect(declaredForAnotherMethod("POST", "/board", "console")).toBe(true);
     expect(matchRoute("GET", "/tasks/add", "console")).toBeNull();
     expect(matchRoute("DELETE", "/board", "console")).toBeNull();
     expect(matchRoute("HEAD", "/board", "console")).toBeNull();

@@ -17,7 +17,7 @@ import { executeSharedAction, sharedActionPayload, sharedActionAllowsChallenge, 
 import { closedQuestionWords } from "./decision.js";
 import { steerDestinationWords } from "./steer-status.js";
 import { isCheckLevel, setTaskCheckLevel } from "./check-levels.js";
-import { leadTurnKeepsProposals, verifiedAuthor, type CoordinatorProposal, type LeadProposal, type Store } from "./store.js";
+import { leadTurnKeepsProposals, verifiedAuthor, type LeadProposal, type Store } from "./store.js";
 import { agentQuestion, answerAgentQuestion } from "./agent-board.js";
 import type { VerifiedApprover } from "./principal.js";
 import { isVerifiedApprover, reproveApprover } from "./principal.js";
@@ -36,7 +36,7 @@ import { applyChatTaskAction } from "./chat-task-actions.js";
 export type ProposalKind = LeadProposal["kind"];
 
 export type DoorOutcome =
-  | { ok: true; kind: ProposalKind; said: string; taskId: string | null; href?: string }
+  | { ok: true; kind: ProposalKind; said: string; taskId: string | null; href?: string; awaiting?: true; already?: true }
   | { ok: false; kind: ProposalKind | null; reason: DoorRefusal; said: string };
 
 export type DoorRefusal =
@@ -216,6 +216,12 @@ export function confirmLeadProposal(store: Store, who: VerifiedApprover, proposa
       store.casLeadProposal(proposalId, "confirming", "pending", null, null, now);
       return outcome;
     }
+    // A first yes on protected work is kept, and the card stays pending for the second approver.
+    if (outcome.ok && outcome.awaiting === true) {
+      store.casLeadProposal(proposalId, "confirming", "pending", null, null, now);
+      if (shared) store.handle.prepare('INSERT INTO team_event(lead,conversation,kind,actor,created_at) VALUES(?,?,?,?,?)').run(shared['lead'],shared['id'],'proposal-changed',who.name,now.toISOString());
+      return outcome;
+    }
     // The recorded outcome names the surface that confirmed — the audit a
     // card shows on every other surface afterwards.
     store.casLeadProposal(proposalId, "confirming", outcome.ok ? "confirmed" : "refused", who.name, { ...outcome, via: options.via }, now);
@@ -287,11 +293,6 @@ export function dismissCoordinatorProposal(store: Store, who: VerifiedApprover, 
     if (proposal === null || !who.repos.includes(proposal.repo)) return false;
     return store.casCoordinatorProposal(proposalId, "pending", "dismissed", who.name, null, now);
   });
-}
-
-/** Which door renders a coordinator proposal for this reader: the repo must be admitted. */
-export function coordinatorProposalVisible(who: { repos: readonly string[] }, proposal: CoordinatorProposal): boolean {
-  return who.repos.includes(proposal.repo);
 }
 
 /**

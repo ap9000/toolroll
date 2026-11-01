@@ -439,7 +439,8 @@ labeled.
 **The positioning turn, stated.** Toolroll is unattended-first. The
 maintenance budget is explicit: exactly ONE tier-2 provider adapter is
 funded; adding another requires retiring the first or a new reviewed
-strategy decision.
+strategy decision. That decision was taken on 2026-10-19 (§9d): the funded
+tier-2 unit is now the ACP transport, not a vendor.
 
 ## 9c. Watched sessions (removed in v115)
 
@@ -454,7 +455,34 @@ again; the authorization, turn and custody tables are dropped, while the
 `decision.delivered_turn` columns and the `interrupted` and `held` words in
 old rows stay readable as history.
 
-## 9d. Attested runtimes (Parity II Phase 3)
+## 9d. Attested runtimes (Parity II Phase 3; ACP agents, 2026-10-19)
+
+**The strategy decision of 2026-10-19 (docs/plans/acp-adapter.md).** The
+one funded tier-2 unit is the **Agent Client Protocol transport**: one
+adapter (acp-client.ts, the runner, the gateway's admission) that drives
+any coding agent speaking ACP — OpenCode, Cursor, Cline, Qwen Code, Goose
+today, each a row of data (acp-agents.ts) and its own provider id. An ACP
+agent runs only:
+
+- on a **passed conformance check of the exact binary on that runner** —
+  an operator exception to "re-attestation is a release act", recorded as
+  such: the check is password-confirmed, runs as real runs inside the fence,
+  and binds the launch (a script through its pinned interpreter) and every
+  file it depends on by stat and sha256, re-proved immediately before every
+  spawn. No check, or a changed file, is denial;
+- with **full access inside the OS fence** (the macOS sandbox or
+  bubblewrap; no fence, no run) — the only posture the plane can make true,
+  since an agent may run commands without asking;
+- for **builds and repairs** only, on a model it offered when checked, with
+  no dollar cap (it can't hold one), its own sign-in (Toolroll holds no key
+  for it and every key it knows is shed), and success only from the prompt's
+  `end_turn` answer.
+
+Gemini's stream-json adapter below stays until gemini passes ACP
+conformance; then it moves onto the ACP transport under the same id and the
+stream-json road retires in its own reviewed commit.
+
+### Gemini's stream-json adapter (the earlier tier-2 unit)
 
 Two tiers of provider, by what the plane can prove — never by brand.
 

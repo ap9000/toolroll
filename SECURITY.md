@@ -17,6 +17,45 @@ user. What it promises:
 - **No agent approves its own work.** Approvals need your password on a
   screen that restates the exact terms, and the agent fence keeps your
   remembered login, runner tokens and the database out of agents' reach.
+  The lead's token and API tokens can't approve, merge by hand, be the second
+  person on protected work, or stand behind a release or deployment; those
+  need a person's proof (docs/plans/approval-policy.md). **Accepted limit:** a
+  lead (or any program) running as your OS user outside Toolroll's fence, such
+  as an assistant in your own terminal, can read the remembered login
+  (`up-login.txt`) and approve as you, since Toolroll can't tell it from you at
+  your own command line. Don't keep a remembered login on a machine where you
+  run such an agent, or sign out of the CLI there.
+- **Your chat apps, browsers and password managers are out of every build's
+  reach** (docs/plans/chat-management.md §1.1). Every launch Toolroll fences
+  (builds, checks, flows, tool servers, coding sessions), under either fence
+  policy and on every sandbox, is denied the data folders of Slack, Telegram,
+  Discord, Teams, WhatsApp, 1Password, Bitwarden and the Chrome, Chromium,
+  Brave, Edge, Arc, Firefox, Zen, Vivaldi, Opera, Orion and Safari profiles
+  (src/protected-storage.ts), whatever the project's read settings, and gets
+  none of the SLACK_, TELEGRAM_, DISCORD_, TEAMS_, OP_ and BW_ variables.
+  **Limits:** only the listed storage is covered: a browser started with its
+  own `--user-data-dir`, a portable app or an unlisted password manager isn't.
+  Build agents keep the Keychain, so the profile deny, not Chrome's cookie
+  encryption, is the protection. Live terminals are your own shell and are not
+  fenced.
+- **One approval per release, for test fixes only** (docs/plans/release-once.md).
+  A person's yes to a release's terms carries to later commits on the same pull
+  request only when every change since is unit tests, the journey scripts,
+  Markdown under docs/, the README or the changelog (never agent or policy
+  files, agent or CI settings, the test harness, helpers or fixtures), within
+  400 changed lines, 20 files and 800 lines of churn, and the production build
+  is byte-for-byte the approved one. The proof reads only Toolroll's records
+  and Git objects it hashes itself, runs nothing from the commit until a
+  read-only preflight passed, builds in the fence with no network, and is
+  checked again at every deploy entry. A moved head after the deploy started,
+  an expired, revoked or superseded approval, or a lost approver stops it.
+  **Accepted limit (Alex, 2026-10-25):** re-running only what failed trusts test
+  code, as the full check always has. A test runs as the same user as the
+  check harness in the same checkout, can misreport its own results or change
+  its own harness copy and `node_modules`; the fence limits writes outside the
+  run and network, but deliberately lets a run read the home folder and the
+  repositories beside it. The nightly full check on main catches some
+  accidental omissions, with no guaranteed time to detect them.
 - **Tokens, not passwords, on requests.** Scripts, the remote CLI and MCP sign
   in with an API token (`toolroll tokens create`): it reads or acts, can be
   limited to projects, expires, and only its hash is kept. A password sent on a
@@ -25,9 +64,34 @@ user. What it promises:
 - **The agent fence.** Standing Orders' own secrets (the state folder beside
   the database, except the build's worktree, and `~/.toolroll`) are
   denied to agents by the operating system: Codex through its own sandbox on
-  every platform; Claude and Gemini through a sandbox on macOS. On Linux and
-  Windows, Claude's file tools are fenced but its shell is not yet, and Gemini
-  is not fenced. The README's "What an agent can reach" has the full table.
+  every platform; Claude, Gemini and ACP agents, and every command and check,
+  through Anthropic's sandbox-runtime (`@anthropic-ai/sandbox-runtime` 0.0.79:
+  Seatbelt on macOS, bubblewrap with its seccomp filter on Linux). Where it can't
+  run (Windows, or Linux without bubblewrap, socat or ripgrep) a build doesn't
+  start, unless an instance operator
+  allows unconfined agents (`config unconfined-agents allow`; each such run
+  says "Not confined"). The README's "What an agent can reach" has the table.
+- **A build writes only its workspace.** Each scope seals where its build may
+  write (`project writes`, default `workspace`): its checkout and commit data,
+  the project's package caches, its temp folder and its agent's session files.
+  The operator's shell profile, login items, agent settings and the
+  repository's Git config, hooks and info are read-only to it, enforced by the
+  same sandbox (the sandbox-runtime, Codex's profile); `anywhere` is an
+  approver's explicit choice. Setup and check commands run in the build's
+  fence. Toolroll's own Git on a build's checkout skips hooks, fsmonitor and
+  submodules and refuses config that names a command; tool servers never run
+  from what a build wrote.
+- **The network a build reaches is approved with it.** Each scope seals its
+  network: the agent's provider, the package registries the project uses, and
+  hosts an approver added (`project network --allow`), or `open`. The
+  operating system enforces it: on macOS the sandbox refuses every outbound
+  connection but the run's own proxy (direct connections, UDP, name lookups,
+  and asking another service to fetch, like `open https://…`); on Linux the
+  build gets a network of its own, reaching the proxy by a bridge, with the
+  machine's D-Bus, container and display sockets out of reach. The proxy
+  admits only the approved hosts, on ports 443 and 80, to public addresses,
+  and only for that run. A result shows what its proxy connected to and
+  refused.
 - **Separation of duties, per project** (Settings → Approval rules, or
   `project rules`). Every task records who filed it. A project can refuse
   the requester's own approval, and can mark the whole project or chosen
@@ -89,3 +153,50 @@ Known limits:
   outside the fence. Use it only for repositories you trust.
 - The console serves plain HTTP. Keep it on localhost or a private network
   such as Tailscale; don't expose it to the internet.
+- The network rule restricts where a build connects, not what it sends
+  there: the proxy never decrypts TLS, so an approved host (a registry, the
+  provider) receives whatever the build sends it.
+- On a Mac a build reaches no local service but its own proxy and tools. A
+  project that needs local test servers sets `project network --local any`,
+  which admits every local service on that Mac (the macOS sandbox can't admit
+  some local ports and refuse others). Linux builds always have a loopback of
+  their own.
+- On a Mac, a project's checks may register and look up one macOS service
+  name pattern so Playwright's Chromium headless shell can start sandboxed:
+  `org.chromium.Chromium.MachPortRendezvousServer.<pid>` (builds, flows and
+  tool servers can't). Chromium picks that name itself, and the sandbox can't
+  tie the pid in it to the process asking. So a hostile check can reach
+  across launches: register the name for another process's pid, so a
+  default-named Chromium started outside its sandbox with that pid (your own
+  Playwright or Puppeteer headless shell, another project's check browser)
+  fails to start; or look up a running one's rendezvous server and send it
+  messages. That server picks what it hands out by the sender's pid, as the
+  kernel reports it, and may answer an unknown sender with an empty reply;
+  what more it checks depends on how Chromium was built. Assessed against
+  Playwright's Chromium headless shell 156.0.8078.4: no port theft or escape
+  was found, but there is no guarantee beyond that, so treat it as
+  cross-launch messaging and denial of service you accept by running browser
+  checks sandboxed.
+- On a Mac, a build's agent can reach the keychain's services (securityd):
+  Claude Code signs in from the keychain. The sandbox runtime allows that to
+  every sandboxed process (anthropics/sandbox-runtime#755), so a build's
+  agent can read any keychain item, the login keychain's included, whose
+  access list lets any program read it; items that ask, or that name their
+  programs, stay closed. Toolroll denies those services to everything else
+  it sandboxes: a build's setup and check commands, a project's checks,
+  flows and tool servers, a check a project gave **sign-ins** included:
+  Toolroll itself reads Claude Code's and gh's sign-ins from the keychain,
+  outside the sandbox, and hands just those tokens to the check in its
+  environment (Claude's current access token, which the check can't renew).
+- Every sandboxed launch on a Mac can open terminals of its own and no
+  other, can't type into a terminal (TIOCSTI), and starts in a session of
+  its own, so it has no terminal of whoever started Toolroll. A program
+  started on a terminal made for it (a live terminal, a coding session)
+  keeps that one. A project that denies `/dev` or its terminal devices by
+  name in its read-deny list gets no terminal of its own either.
+- Codex's command sandbox can't use a proxy: its commands are offline unless
+  the project's network is `open` and the build has Full access.
+- A project's tool servers keep their own network reach (they hold the
+  tool's secrets, not the agent's code).
+- Approvals sealed before network rules run with the narrow default: the
+  provider and the project's registries, no local services.

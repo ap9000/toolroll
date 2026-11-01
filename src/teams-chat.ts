@@ -3,15 +3,14 @@
 import { resultShotsPruned } from "./result-shots.js";
 import { chatQuestionButtons } from "./subagent-question.js";
 import { chatAskButtons } from "./chat-ask.js";
-import { ChatDeliveryError, ChatState, chatHash, partContent, type ChatContent, type ChatIdentity, type ChatPart } from "./chat-delivery-state.js";
-import { channelAccess, chatObject as object, planChatNotifications, planRoomMessages, processChatEvent, splitChatText, type ChatDeliveryOptions } from "./chat-delivery.js";
+import { ChatDeliveryError, ChatState, chatHash, partContent, type ChatContent, type ChatIdentity } from "./chat-delivery-state.js";
+import { channelAccess, chatObject as object, heldForWatch, planChatNotifications, planRoomMessages, processChatEvent, splitChatText, type ChatDeliveryOptions } from "./chat-delivery.js";
 import { PLATFORM_LIMITS } from "./text-limits.js";
-import { roomCommand } from "./chat-rooms.js";
 import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
 import { renderReply } from "./reply-shape.js";
 import { armedCardText, armedYesLabel, proposalLink, proposalOutcomeText, proposalPreview } from "./chat-channel.js";
 import { chatFlowButtons } from "./chat-flow.js";
-import { channelInbox } from "./chat-inbox.js";
+import { admitChatEvent } from "./chat-admission.js";
 import { chatResultHref } from "./chat-controls.js";
 import { TeamsError, type TeamsApi } from "./teams-api.js";
 import { readTeamsSubmit } from "./contracts/teams-callback.js";
@@ -103,14 +102,9 @@ export function receiveTeams(state: ChatState, identity: ChatIdentity, raw: unkn
       ...(Array.isArray(activity.attachments) && activity.attachments.length > 0 ? { unsupported: "Incoming files are not supported yet. Describe the request in a message; saved result screenshots open from their links." } : {}) };
     eventId = chatHash(`${identity.installation}:message:${id}`);
   }
-  const words = "text" in payload ? payload.text ?? "" : "";
-  // v89: a channel that feeds a flow takes anyone's message (as a card, with no say over anything); "flow 12" connects one.
-  const inbox = isRoom && kind === "message" ? channelInbox(state.store, "teams", identity.installation, channel, words) : { watched: false, command: false };
-  const roomish = isRoom && (state.room(identity.installation, channel) !== null || (kind === "message" && roomCommand(words) !== null) || inbox.watched || inbox.command);
-  if (isRoom && !roomish) return false;
-  const binding = state.bindingFor(identity.installation, member);
-  const open = inbox.watched && !inbox.command;
-  if (kind === "pair" ? !!binding || isRoom : !open && (!binding || !state.live(binding) || (binding.channel !== channel && !roomish))) return false;
+  const admitted = admitChatEvent(state, "teams", identity.installation, { kind, member, channel, isRoom, payload });
+  if (admitted === null) return false;
+  const { binding } = admitted;
   return state.store.transact(() => {
     state.setMeta(identity.installation, serviceKey(channel), activity.serviceUrl as string, now);
     return state.enqueue({
@@ -213,6 +207,8 @@ export async function deliverTeamsPart(options: TeamsChatOptions): Promise<boole
     const bodies = teamsMessages(voiced ?? text, voiced !== null, one => actions.length || content.proposal ? teamsCard(one, actions) : { type: "message", text: one, textFormat: voiced !== null ? "markdown" : "plain" });
     const activities = `/v3/conversations/${encodeURIComponent(destination)}/activities`;
     // An edit replaces its one message with the first part; any more follow it as new messages.
+    // The watch, at the last moment before the network (cockpit §3).
+    if (heldForWatch(state, store, row.id, event, binding.approver, content, now)) return true;
     let answer = await options.api(target ? "PUT" : "POST", serviceUrl, target ? `${activities}/${encodeURIComponent(target)}` : activities, bodies[0]!);
     for (const more of bodies.slice(1)) answer = await options.api("POST", serviceUrl, activities, more);
     const messageId = target ?? (typeof answer.id === "string" ? answer.id : null);

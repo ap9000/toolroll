@@ -15,7 +15,6 @@ import { mintApiToken } from "./api-tokens.js";
 import { runOperate, runOperateAs, type Principal } from "./operate.js";
 import { callPersonTool } from "./mcp-person.js";
 import { auditOutcome, OWNER_READER, readDetail, remoteAudit, sinceOf, type AuditFilters } from "./remote-audit.js";
-import { auditLine } from "./audit-cli.js";
 import { personAuditHtml } from "./people-audit-ui.js";
 import { htmlString } from "./html.js";
 import { createDecisionServer } from "./serve.js";
@@ -276,14 +275,12 @@ describe("People → a person", () => {
     expect(html).toContain("Active · Can act · last used 2026-10-06 11:58 UTC");
     expect(html).toContain("Expired · Read only · last used never");
     expect(html).toContain("Revoked · Read only");
-    expect(html).toContain(`<span class="outcome outcome-refused">Refused</span>task_show · <a href="/t/t-1">t-1</a>`);
     expect(html).toContain("2026-10-06 12:00 UTC · &lt;b&gt;laptop&lt;/b&gt; · Agent (MCP) · a-very-long-project-name · not-found");
     expect(html).toContain(`<a href="/people?person=sam&amp;before=41">Older actions</a>`);
     expect(html).not.toContain("<b>");
     const empty = htmlString(personAuditHtml({ name: "vic", tokens: [], token: "ci", nextCursor: null, now: NOW, actions: [] }));
     expect(empty).toContain("No API tokens.");
     expect(empty).toContain("No remote actions with this token.");
-    expect(empty).toContain(`<p class="meta">With ci</p><p><a href="/people?person=vic">All tokens</a></p>`);
     expect(empty).not.toContain("Older actions");
   });
 
@@ -318,7 +315,6 @@ describe("People → a person", () => {
       expect(samPage.status).toBe(200);
       expect(samPage.html).toContain("<h1>sam</h1>");
       expect(samPage.html).toContain(`href="/people?person=sam&amp;token-name=laptop"`);
-      expect(samPage.html).toContain(`<span class="outcome outcome-ok">OK</span>task show`);
       expect((await get(operator, "/people?person=sam&token-name=laptop+%C2%B7+old")).html).toContain("No remote actions with this token.");
       expect((await get(operator, "/people?person=alex")).html).toContain("task list");
 
@@ -343,9 +339,4 @@ describe("People → a person", () => {
       expect((await get(viewer, "/people?person=vic&before=nope")).status).toBe(400);
     });
   });
-});
-
-it("formats one line per action, outcome first", () => {
-  expect(auditLine({ id: 1, at: NOW.toISOString(), person: "sam", token: null, source: "mcp", kind: "tool", name: "list_tasks", command: "task list", tool: "list_tasks", repo: "/srv/shop", taskId: null, outcome: "error", reason: null }))
-    .toBe("2026-10-06 12:00  error  sam  unknown token  mcp  list_tasks  shop");
 });

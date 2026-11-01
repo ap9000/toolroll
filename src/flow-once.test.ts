@@ -24,6 +24,7 @@ import { flowFromSteps, validateFlowDefinition } from "./flows.js";
 import { advanceFlows } from "./flow-engine.js";
 import { runFlowSteps, type StepIo } from "./flow-steps.js";
 import { saveScript } from "./flow-scripts.js";
+import { NO_OS_FENCE } from "../test/inside-fence.js";
 
 const T0 = new Date("2026-09-30T23:00:00.000Z");
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
@@ -44,6 +45,8 @@ beforeEach(() => {
   store = openStore(file);
   const alex = addApprover(store, "alex", T0);
   if (!alex.ok) throw new Error("approver");
+  // Where no OS fence can be made (inside the plane's check, a runner without bubblewrap) an operator allows unconfined agents.
+  if (NO_OS_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
   token = alex.token;
   for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "alex", T0);
 });
@@ -65,12 +68,12 @@ function researchFlow(): number {
 /** A ready card, and a card that couldn't file its work once (the backlog was full) and now tries again. */
 function readyAndStuck(): { ready: number; stuck: number } {
   const flow = researchFlow();
-  const stuck = store.addFlowCard({ flow, title: "Nightly journeys, 29 September", description: null, stage: "research", by: "alex" }, T0);
+  const stuck = store.addFlowCard({ flow, title: "Nightly journeys, 29 September", description: null, stage: "research", by: "alex", byKind: "person" }, T0);
   const full = vi.spyOn(store, "createConsoleTask").mockReturnValue({ ok: false, reason: "backlog-full" });
   expect(advanceFlows(store, repo, T0).filed).toEqual([]);
   full.mockRestore();
   expect(store.getFlowCard(stuck)).toMatchObject({ task: null, waiting: expect.stringMatching(/^Couldn't file the work: the backlog is full/) });
-  const ready = store.addFlowCard({ flow, title: "Nightly journeys, 30 September", description: null, stage: "research", by: "alex" }, T0);
+  const ready = store.addFlowCard({ flow, title: "Nightly journeys, 30 September", description: null, stage: "research", by: "alex", byKind: "person" }, T0);
   return { ready, stuck };
 }
 
@@ -78,7 +81,7 @@ function readyAndStuck(): { ready: number; stuck: number } {
 function checkCard(): number {
   expect(saveScript(store, repo, { name: "journeys", about: "Runs the journeys", body: "sleep 1\necho \"checked $FLOW_CARD_TITLE\"" }, "alex", T0)).toMatchObject({ ok: true });
   const flow = store.createFlow({ repo, name: "Check it", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ title: "Journeys", kind: "check", script: "journeys" }, { title: "Inbox", kind: "inbox" }], null)) }, T0);
-  return store.addFlowCard({ flow, title: "Checkout journey", description: null, stage: "journeys", by: "alex" }, T0);
+  return store.addFlowCard({ flow, title: "Checkout journey", description: null, stage: "journeys", by: "alex", byKind: "person" }, T0);
 }
 
 /** A card whose build is Ready (checked, on its branch) sitting in a Pull request zone, with pull requests set up. */
@@ -113,7 +116,7 @@ async function pullRequestCard(): Promise<{ card: number; runId: number }> {
   storeEvidence(store, dir, runId, "check-log", "checks.txt", Buffer.from("1 test passed"), "npm test", T0, { captureStatus: "ok" });
   sealVerificationReceipt(store, dir, runId, HEAD, store.liveVerifyCommand(repo)!, { configured: true, ran: true, exitCode: 0 }, T0);
   const flow = store.createFlow({ repo, name: "Ship it", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ title: "Build", kind: "task" }, { title: "Pull request", kind: "pull-request" }], null)) }, T0);
-  const card = store.addFlowCard({ flow, title: "Checkout journey fails", description: null, stage: "pull-request", by: "alex" }, T0);
+  const card = store.addFlowCard({ flow, title: "Checkout journey fails", description: null, stage: "pull-request", by: "alex", byKind: "person" }, T0);
   store.updateFlowCard(card, { task: taskId, primaryTask: taskId }, T0);
   return { card, runId };
 }

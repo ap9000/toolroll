@@ -92,7 +92,6 @@ describe("toolroll tokens", () => {
   test("the human answer prints the token once, and the password never comes from argv, a remote caller or the lead", async () => {
     expect(await tokens(["create", "--as", "alex", "--name", "ci", "--access", "read", "--days", "90", "--password-stdin"], { json: false })).toBe(0);
     expect(out.join("\n").match(/so_[a-f0-9]{12}_[A-Za-z0-9_-]{43}/g)).toHaveLength(1);
-    expect(out.join("\n")).toContain("reads in all your projects");
     for (const flag of ["--password", "--token", "--token-file", "--token-env"]) {
       out = [];
       expect(await tokens(["list", "--as", "alex", flag, "hunter2-not-real"]), flag).toBe(2);

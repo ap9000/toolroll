@@ -1,4 +1,4 @@
-import { TEXT_LIMITS } from "./text-limits.js";
+import { sweepLine, sweepTable } from "./lead-sweep.js";
 import { connectionsOf, oneClickOf } from "./mcp-connect.js";
 import { checkLevelFromWords, isCheckLevel } from "./check-levels.js";
 import { policyParts } from "./policy.js";
@@ -42,9 +42,9 @@ import { LEAD_ASK_OTHER, type FlowCardRow, type FlowRow, type Store, type LeadPr
 import type { VerifiedApprover } from "./principal.js";
 import type { LeadToolSchema } from "./converse.js";
 import { hasDisguisedText, hasForbiddenControls } from "./decision.js";
-import { readVerifiedArtifact, readVerifiedReport, scanForSecrets } from "./evidence.js";
+import { readVerifiedArtifact, scanForSecrets } from "./evidence.js";
 import { parseAcceptanceCriteria, type AcceptanceCriterion } from "./scope.js";
-import { diagnoseTaskDispatch, withDispatchDiagnoses } from "./dispatch.js";
+import { diagnoseTaskDispatch } from "./dispatch.js";
 import { agentChoicesFor, routeOfTask, INSTALLATION_SCOPE } from "./agentconfig.js";
 import { isNewModel, modelWords, priceWords, runtimeStates, seenModels } from "./model-catalog.js";
 import { agentsSummary, chosenWords, PHASES, postureWords, routeProblems, sameSpec, sizeSourceWords, sizeWords, specWords, type PhaseRoute, type TaskSize } from "./phase-routing.js";
@@ -59,7 +59,7 @@ import { planInChat } from "./chat-decide.js";
 import { flowDecisionAt } from "./telegram-flow.js";
 import { flowPersonOf } from "./flow-send.js";
 import { flowInsights } from "./flow-insights.js";
-import { describeTrigger, FLOW_TRIGGER_KINDS, triggerConfigOf } from "./flow-triggers.js";
+import { describeTrigger, triggerConfigOf } from "./flow-triggers.js";
 import type { ChatAction } from "./chat-actions.js";
 
 export const LEAD_MAX_PROPOSALS_PER_TURN = 5;
@@ -100,6 +100,9 @@ export type LeadToolContext = {
   checkedCapabilities?: Map<string, number>;
   /** Records this turn's one question to its owner; false when it already asked one. Absent: this surface cannot ask. */
   ask?: (question: string, options: readonly string[]) => boolean;
+  /** This turn's tool discovery (find_tools): how many searches it made and which deferred tools it found, which the
+   * conversation loop advertises from its next request. Absent (a direct call outside a turn): nothing to add to. */
+  findTools?: { searches: number; found: Set<string> };
 };
 
 export type LeadToolResult = { ok: true; body: unknown } | { ok: false; message: string };
@@ -110,8 +113,6 @@ import { labelOf, nameOf, summaryOf, zonesOf } from "./subagent-admin.js";
 import { SUBAGENT_TEMPLATES, withSection } from "./subagents.js";
 import { callOutcome, callWords, defaultRule, ruleWords } from "./subagent-tools.js";
 import { deskOf, routinesOf } from "./subagent-desk.js";
-import { KITS } from "./kits.js";
-import { STARTER_IDS } from "./flow-starters.js";
 import { undoFor, weekOf, weekWords } from "./subagent-week.js";
 import { PERSON_ID, personEntry, teamRoomOf } from "./lead-people.js";
 import { aboutYouOf, checkAboutYouLine } from "./lead-about.js";
@@ -448,7 +449,101 @@ export function agentsOver(store: Store, taskId: string, now: Date): Record<stri
   };
 }
 
+/**
+ * The tools every request advertises (docs/plans/lead-deferred-tools.md): the ones most replies use, and every tool a
+ * guard requires read in an earlier step (search_project_memory before any proposal, get_capabilities before work that
+ * needs an agent, get_result before propose_review, get_decision before propose_answer). The rest are found with
+ * find_tools and advertised from the next request of the same reply.
+ */
+export const LEAD_CORE_TOOLS: ReadonlySet<string> = new Set([
+  "find_tools", "get_brief", "recap", "list_repos", "get_project_context", "search_project_memory", "get_capabilities",
+  "list_tasks", "get_task", "get_result", "get_diff", "get_check_log", "list_decisions", "get_decision",
+  "get_actions", "get_action_status", "propose_action", "propose_task", "propose_scope", "propose_steer",
+  "propose_answer", "propose_review", "remember", "ask_owner", "commit_to",
+  // The lead's queue verbs: basic, and small enough that deferring them saves almost nothing.
+  "queue", "propose_next", "propose_reserve", "propose_hold", "propose_unhold", "propose_cancel",
+  // Task and result acts a reply uses often (links to a control, a result's images and evidence, the task's own acts):
+  // small, so deferral is kept for the large, occasional families (flows, subagents, sweeps, project tools).
+  "show_control", "get_controls", "get_result_images", "get_acceptance_evidence", "offer_approval", "propose_task_action", "propose_agents",
+  "get_agents", "propose_dependency_repair",
+]);
+
+/** Words a deferred tool is found by, beyond its name and description. */
+const LEAD_TOOL_KEYWORDS: Partial<Record<LeadToolName, readonly string[]>> = {
+  propose_flow: ["flow", "automation", "workflow", "schedule", "trigger", "every", "when", "email", "inbox", "sort", "follow-up", "nudge"],
+  get_flows: ["flow", "automation", "workflow", "running", "card"],
+  get_flow_insights: ["flow", "insights", "stats", "how flows"],
+  propose_subagent: ["subagent", "assistant", "rep", "support", "sales", "teammate", "rules", "persona"],
+  get_subagents: ["subagent", "assistant", "teammate", "rules"],
+  propose_sweep: ["sweep", "fan-out", "many", "parallel", "batch", "each", "list of"],
+  get_sweep: ["sweep", "fan-out", "batch", "table", "verdict"],
+  propose_sweep_cancel: ["sweep", "cancel", "stop the rest"],
+  get_models: ["model", "models", "provider", "price"],
+  get_project_tools: ["tools", "mcp", "server", "integration", "connect", "stripe", "notion", "linear", "sentry", "jira"],
+  get_integrations: ["integration", "slack", "telegram", "discord", "teams", "email", "connected"],
+  get_skills: ["skill", "skills", "guide"],
+  get_project_knowledge: ["knowledge", "docs", "notes", "memory"],
+  get_task_conversation: ["conversation", "chat", "history", "messages"],
+  release_commitment: ["promise", "commitment", "release", "forget"],
+  get_person: ["person", "people", "who", "member", "teammate"],
+};
+
+/** At most this many find_tools searches per reply, results per search, and bytes of found tool schemas per reply. */
+export const FIND_TOOLS_PER_TURN = 3;
+export const FIND_TOOLS_MAX_RESULTS = 6;
+export const FIND_TOOLS_SCHEMA_BYTES = 48_000;
+const FIND_TOOLS_NONE = "Nothing matched. The other tools cover flows, subagents, sweeps, agents and models, project tools and integrations, controls and settings pages, holds and the queue, task actions (retry, stop, merge), result images and evidence, people, and promises — search again with one of those words.";
+
+const MAKE_WORDS = new Set(["make", "add", "create", "set", "draft", "new", "start", "change", "edit", "build", "run", "hold", "cancel", "release", "move", "switch", "turn"]);
+const LOOK_WORDS = new Set(["show", "list", "see", "what", "which", "how", "check", "read", "look", "find", "open", "where"]);
+
+/** The deferred tools a query finds, best first: an exact name, then words in the name, keywords and description. */
+export function findLeadTools(query: string): { name: string; summary: string }[] {
+  // A plural matches its singular ("sweeps" finds sweep tools).
+  const words = query.toLowerCase().split(/[^a-z0-9-]+/).filter(one => one.length >= 3).map(one => one.length > 4 && one.endsWith("s") && !one.endsWith("ss") ? one.slice(0, -1) : one);
+  const exact = query.trim().toLowerCase();
+  const scored = LEAD_TOOLS.filter(tool => !LEAD_CORE_TOOLS.has(tool.name)).map(tool => {
+    const name = tool.name.toLowerCase(), keywords = (LEAD_TOOL_KEYWORDS[tool.name as LeadToolName] ?? []).join(" ").toLowerCase();
+    const description = tool.description.toLowerCase();
+    let score = name === exact ? 100 : 0;
+    for (const word of words) score += (name.includes(word) ? 5 : 0) + (keywords.includes(word) ? 3 : 0) + (description.includes(word) ? 1 : 0);
+    // What the person wants done leans the match: making or changing something → a proposal; looking → a read.
+    if (score > 0 && words.some(word => MAKE_WORDS.has(word))) score += name.startsWith("propose_") ? 4 : 0;
+    if (score > 0 && words.some(word => LOOK_WORDS.has(word))) score += name.startsWith("get_") || name === "show_control" ? 4 : 0;
+    return { tool, score };
+  }).filter(one => one.score > 0).sort((a, b) => b.score - a.score || a.tool.name.localeCompare(b.tool.name));
+  return scored.slice(0, FIND_TOOLS_MAX_RESULTS).map(({ tool }) => ({ name: tool.name, summary: summaryLine(tool.description) }));
+}
+
+/** A description's first sentence, at most 160 characters. */
+function summaryLine(description: string): string {
+  const first = /^(.+?[.!?])(\s|$)/.exec(description)?.[1] ?? description;
+  return first.length <= 160 ? first : `${first.slice(0, 157).trimEnd()}…`;
+}
+
 const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
+  find_tools: {
+    // Counted before the call is read, so an invalid search still uses one of the reply's three.
+    prepare: (ctx, raw) => { if (ctx.findTools !== undefined) ctx.findTools.searches++; return raw; },
+    description: "Find the lead's other tools by what you want to do — flows, subagents, sweeps, agents and models, project tools and integrations, controls and settings pages, holds and the queue, task actions (retry, stop, merge), result images and evidence, people, promises. Search before saying something can't be done. Matching tools become available from your next step in this reply: call them then, not in the same step.",
+    handle: (ctx, args) => {
+      const state = ctx.findTools;
+      if (state === undefined) return { ok: false, message: "find_tools works inside a conversation reply." };
+      if (state.searches > FIND_TOOLS_PER_TURN) return { ok: false, message: `You have searched ${FIND_TOOLS_PER_TURN} times this reply. Use the tools you found, or answer with what you have.` };
+      const bytesOf = (name: string): number => Buffer.byteLength(JSON.stringify(LEAD_TOOL_SCHEMAS.find(one => one.name === name) ?? {}), "utf8");
+      let used = [...state.found].reduce((sum, name) => sum + bytesOf(name), 0);
+      const tools: { name: string; summary: string }[] = [];
+      for (const one of findLeadTools(args.query)) {
+        if (!state.found.has(one.name)) {
+          if (used + bytesOf(one.name) > FIND_TOOLS_SCHEMA_BYTES) continue;
+          used += bytesOf(one.name);
+          state.found.add(one.name);
+        }
+        tools.push(one);
+      }
+      return { ok: true, body: { tools, next: tools.length === 0 ? FIND_TOOLS_NONE : "These are available from your next step in this reply: call one then." } };
+    },
+  },
   get_brief: {
     description: 'Read current tasks, decisions, results and project knowledge from the local database. No model or mutation.',
     handle: (ctx, args) => {
@@ -1120,7 +1215,8 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       const limit = Number.isSafeInteger(args["limit"]) ? Math.max(1, Math.min(30, Number(args["limit"]))) : 12;
       const thread = ctx.store.liveLeadThreadFor(ctx.who.name, { kind: "task", key: root });
       if (thread === null || thread.ceilingDigest !== ctx.who.ceilingDigest) return { ok: true, body: { task: root, messages: [], notice: "No conversation about this task yet." } };
-      const messages = ctx.store.listLeadMessages(thread.id, limit).map(one => ({ from: one.role === "operator" ? "operator" : "lead", text: one.text.length > 1_200 ? `${one.text.slice(0, 1_200)}…` : one.text, at: one.createdAt }));
+      // What the lead reads of a task's conversation is what it has been told: admitted messages only (v128).
+      const messages = ctx.store.listLeadHistory(thread.id, limit).map(one => ({ from: one.role === "operator" ? "operator" : "lead", text: one.text.length > 1_200 ? `${one.text.slice(0, 1_200)}…` : one.text, at: one.createdAt }));
       return { ok: true, body: { task: root, title: family?.root.title ?? null, messages, notice: messages.length === limit ? "Only the most recent messages are shown." : null } };
     },
   },
@@ -1248,7 +1344,8 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       const integrations = list.map(one => ({
         name: one.name, kind: one.group, state: STATE_WORDS[one.state], account: one.account, detail: one.detail, usedBy: one.usedBy,
         lastSuccessAt: one.lastSuccessAt, lastError: one.lastError,
-        next: one.action.kind === "setup" ? "Not set up: open Settings → Integrations to set it up" : one.action.kind === "fix" ? `Fix: ${one.action.words}` : null,
+        next: one.action.kind === "setup" ? "Not set up: open Settings → Integrations to set it up" : one.action.kind === "fix" ? `Fix: ${one.action.words}`
+          : one.action.kind === "switch" ? (one.action.words !== null ? `Fix: ${one.action.words}` : one.action.on ? "Turned off: turn it on in Settings → Integrations" : null) : null,
       }));
       return { ok: true, body: { integrations, settings: "show_control integrations opens Settings → Integrations; never invent a link" } };
     },
@@ -1454,6 +1551,52 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
       const id = ctx.draft("task", { repo, repoId: args["repo"], title: args["title"], goal: args["goal"], not, touches, acceptance, planning, report, ...(checks === null || report ? {} : { checks }) });
       if (id === null) return tooMany();
       return { ok: true, body: { proposal: id, kind: "task", repo: args["repo"], deliverable: report ? "report" : "branch", planning: report ? "not needed for a scout" : planning, awaiting: "the operator's confirmation" } };
+    },
+  },
+  propose_sweep: {
+    description: "Several independent items under ONE shared rule set (a bug sweep, a batch of small fixes): 2-20 items, each becomes its own task in its own worktree, started with one approval, at most max_parallel (default 3) at once, each reporting a verdict into one table. brief holds the shared rules every item gets (e.g. reproduce first; 'not reproducible' is a valid result; prove the fix); each item is only its own report. Not for one task, and not for steps that depend on each other.",
+    handle: (ctx, args) => {
+      const repo = repoPathOf(ctx.who, args["repo"]);
+      if (repo === null) return { ok: false, message: "repo must be one of the ids from list_repos" };
+      const items = Array.isArray(args["items"]) ? args["items"] as Record<string, unknown>[] : [];
+      for (const one of [{ title: args["title"], goal: args["brief"] }, ...items.map(item => ({ title: item["title"], goal: item["item"] }))]) {
+        if (typeof one.title !== "string" || typeof one.goal !== "string") return { ok: false, message: "each title, the brief and each item are text" };
+        const bad = validateTaskText({ title: one.title, goal: one.goal, outOfScope: null });
+        if (bad !== null) return { ok: false, message: bad.message };
+        if ([one.title, one.goal].some(text => typeof text === "string" && scanForSecrets(text).length > 0)) return { ok: false, message: "Task text cannot contain credentials." };
+      }
+      const acceptance = readAcceptanceArg(args["acceptance"]);
+      if (acceptance === null) return { ok: false, message: "acceptance is required: at least one criterion with an id, statement, and evidence kinds (shared by every item)" };
+      try {
+        const action = prepareSharedAction(ctx.store, ctx.who, "sweep_file", { repo, title: args["title"], brief: args["brief"], items: items.map(item => ({ title: item["title"], item: item["item"] })),
+          acceptance, maxParallel: typeof args["max_parallel"] === "number" ? args["max_parallel"] : 3 }, ctx.evidenceRoot, ctx.now);
+        const id = ctx.draft("action", { ...action });
+        return id === null ? tooMany() : { ok: true, body: { proposal: id, label: action.title, awaiting: "human review in the secure confirmation screen", executed: false } };
+      } catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : "That sweep couldn't be drafted." };
+      }
+    },
+  },
+  get_sweep: {
+    description: "A sweep's table as facts: each item's state, its verdict (fixed, not reproducible, blocked, done, or none yet) and its result, plus the one-line count. Read this, don't poll each task.",
+    handle: (ctx, args) => {
+      const table = sweepTable(ctx.store, Number(args["sweep"]), ctx.now, ctx.who.repos, ctx.evidenceRoot);
+      if (table === null) return { ok: false, message: "No such sweep in your projects." };
+      return { ok: true, body: { sweep: table.id, title: table.title, line: sweepLine(table), table: `/sweeps/${table.id}`, maxParallel: table.maxParallel,
+        items: table.rows.map(row => ({ item: row.ordinal + 1, label: row.label, task: row.task, state: row.state, detail: row.detail.slice(0, 300),
+          verdict: row.verdict?.verdict ?? null, why: row.verdict?.why ?? null, result: row.result })) } };
+    },
+  },
+  propose_sweep_cancel: {
+    description: "Cancel every item of a sweep that isn't ready yet (finished results stay); one confirmation. To steer, cancel or retry ONE item, use that task's own actions.",
+    handle: (ctx, args) => {
+      try {
+        const action = prepareSharedAction(ctx.store, ctx.who, "sweep_cancel_rest", { sweep: Number(args["sweep"]) }, ctx.evidenceRoot, ctx.now);
+        const id = ctx.draft("action", { ...action });
+        return id === null ? tooMany() : { ok: true, body: { proposal: id, label: action.title, awaiting: "human confirmation", executed: false } };
+      } catch (error) {
+        return { ok: false, message: error instanceof Error ? error.message : "That couldn't be drafted." };
+      }
     },
   },
   propose_next: {

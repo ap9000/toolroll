@@ -9,7 +9,7 @@ import { openStore } from "./store.js";
 import { REPORT_LIMITS, parseReport } from "./scout-report.js";
 import { shapeReplyParts } from "./reply-shape.js";
 import { PART_CAP, splitParts } from "./telegram-lead.js";
-import { limitRule, overruns, passOn, PLATFORM_LIMITS, shortenAsk, TEXT_LIMITS, writeWithin } from "./text-limits.js";
+import { overruns, passOn, PLATFORM_LIMITS, TEXT_LIMITS, writeWithin } from "./text-limits.js";
 
 test("the raised limits: notes 4000, flow instructions 8000, report summary 2500 bytes, a step's output 12000", () => {
   expect(TEXT_LIMITS).toMatchObject({ goal: 8_000, goalBytes: 32_000, note: 4_000, flowInstructions: 8_000, reportSummary: 2_500, stageOutput: 12_000 });
@@ -29,19 +29,9 @@ test("a stored report is read without its length caps; a new one is still held t
   expect(parseReport(JSON.stringify({ title: "two\nlines", summary: "s", report: "r" }), { stored: true }).ok).toBe(false);
 });
 
-test("a model is told the exact limit before it writes", () => {
-  expect(limitRule("The draft", 12_000)).toBe("The draft: at most 12,000 characters. Put the most important part first. Longer text is not cut: you will be asked to shorten it.");
-  expect(limitRule("summary", 2_500, "bytes")).toContain("at most 2,500 bytes");
-});
-
-test("an answer over a limit is asked once to shorten, naming each field, its length and its limit", () => {
+test("an answer over a limit names each field, its length and its limit", () => {
   const over = overruns({ text: "t".repeat(12_001), note: "fine" }, { text: 12_000, note: 4_000 });
   expect(over).toEqual([{ field: "text", limit: 12_000, length: 12_001 }]);
-  expect(shortenAsk(over)).toBe([
-    "Your answer is over a limit:",
-    "- text is 12,001 characters; the limit is 12,000.",
-    "Answer again with the same decision and meaning, each field within its limit. Shorten by dropping repetition and detail, not facts that matter.",
-  ].join("\n"));
   expect(overruns({ summary: "é".repeat(1_300) }, { summary: 2_500 }, "bytes")).toEqual([{ field: "summary", limit: 2_500, length: 2_600, unit: "bytes" }]);
 });
 

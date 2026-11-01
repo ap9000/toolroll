@@ -1,3 +1,6 @@
+import { PASSWORDLESS_TRADE, passwordlessSetting, setPasswordless } from "../passwordless.js";
+import { ACP_AGENTS, isKeyedProvider } from "../acp-agents.js";
+import { LIVE_VIEW_CONSENT, liveViewConsentDigest, setLiveCommands } from "../live-detail.js";
 import { CONSOLE_FORMS,readForm } from "../contracts/console-api.js";
 import { galleryTemplateOf } from "../flow-gallery.js";
 import { finishGoogleConsent,GOOGLE_CALLBACK } from "../google-mail.js";
@@ -6,6 +9,7 @@ import { CONNECT_CALLBACK,connectionsOf,finishConnect,localConnectOf,oneClickOf 
 import { learningView } from "../project-learning.js";
 import { skillTestResult } from "../project-skills.js";
 import { discoverTools,projectToolsOf } from "../project-tools.js";
+import { lookProjectMcp } from "../folder-look.js";
 import { publishingOf } from '../pull-request-flow.js';
 import { skillTestFeedbackHtml } from "../skills-ui.js";
 import { labelOf, nameOf } from "../subagent-admin.js";
@@ -14,7 +18,7 @@ import { learningHtml } from "../workspace-ui.js";
 import { adapterPolicy } from "./route-policy.js";
 
 import { createHash } from "node:crypto";
-import { dirname,join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { INSTALLATION_SCOPE } from "../agentconfig.js";
 import { rulesSummary } from "../approval-rules-ui.js";
 import { installMethod } from "../install-method.js";
@@ -26,7 +30,7 @@ import {
 canonicalProject,
 projectName
 } from "../project.js";
-import { ALL_CREDENTIAL_ENV,type ProviderId } from "../provider.js";
+import { ALL_CREDENTIAL_ENV,MONEY_CAPABILITIES,type ProviderId } from "../provider.js";
 import { updateChecksOff } from "../releases.js";
 import {
 authenticateAccount
@@ -37,14 +41,15 @@ import type { HandlerContext } from './handler-context.js';
 import { handlersOf } from './handler-registry.js';
 import type { ServerRuntime } from './runtime.js';
 import { refuse,screen } from "./chrome.js";
-import { HANDOFF_STYLE,redirect,respond,safeReturn,signInSpent,startedHere } from "./http.js";
-import { html, htmlString, joinHtml, postForm, type Html } from "../html.js";
-import { browserCaller,type Who } from "./session.js";
+import { HANDOFF_STYLE,redirect,respond,safeReturn,sayTo,signInSpent,startedHere } from "./http.js";
+import { html, htmlString, joinHtml, postForm, type Html, reauth } from "../html.js";
+import { browserCaller,sessionWithinLifetime } from "./session.js";
 /** settings handlers, moved without changing their route bodies. */
 import { DEFAULT_ACCENT,normalHex } from "../accent-colors.js";
 import { resolvePhaseAgent } from "../agentconfig.js";
 import { parseProtectedPaths } from "../approval-policy.js";
-import { approvalRulesHtml } from "../approval-rules-ui.js";
+import { approvalRulesHtml, releaseApprovalHtml } from "../approval-rules-ui.js";
+import { releaseApprovalSetting, setReleaseApproval } from "../release-auto.js";
 import { backupHtml } from "../backup-ui.js";
 import { BACKUP_EVERY_HOURS,backupFolderOf,backupNow,checkBackupFolder,defaultBackupFolder,MAX_KEEP } from "../backup.js";
 import { projectBatchChecks,setProjectBatchChecks } from '../batch-policy.js';
@@ -52,7 +57,7 @@ import { ALL_PROJECTS as CHAT_APPROVAL_ALL,chatApprovalWords,setChatApproval } f
 import { ChatState } from "../chat-delivery-state.js";
 import { checkSettingsHtml } from '../check-levels-ui.js';
 import { CHECK_LEVEL_WORDS,isCheckLevel,liveQuickCommand,projectCheckLevel,quickVerifyKey,setProjectCheckLevel,suggestQuickCommand } from '../check-levels.js';
-import { checkoutPlan,cleanCheckouts,discardCheckout,previewDigest } from "../checkout-cleanup.js";
+import { checkoutPlan,cleanCheckouts,discardCheckout,previewDigest,type CheckoutPlan } from "../checkout-cleanup.js";
 import { approveSetup,previewSetup,type SetupInputs } from "../control-setup.js";
 import { connectionHtml,controlSetupHtml,setupPreviewHtml } from "../control-ui.js";
 import { hasDisguisedText } from '../decision.js';
@@ -67,8 +72,9 @@ import { startersHtml } from "../flow-starters-ui.js";
 import { starterOf,startersFor,switchOnStarter } from "../flow-starters.js";
 import { disconnectGoogle,googleConnected,googleConsent,readGoogleMail,saveGoogleClient } from "../google-mail.js";
 import { integrationsHtml } from "../integrations-ui.js";
-import { clearProviderKey,keyStatus,plausibleKey,PROVIDER_KEY_ENV,readAuthMode,readProviderKey,saveProviderKey,setAuthMode,SUBSCRIPTION_CAPABLE,verdictWords,verifyProviderKey,type AuthMode } from "../keys.js";
-import { decisionsHtml,knowledgeHtml,MEMORY_INTRO,memorySearchHtml,proposalsHtml } from "../knowledge-ui.js";
+import { setYouiyouxIntake } from "../youiyoux-intake.js";
+import { clearProviderKey, keyStatus, plausibleKey, PROVIDER_KEY_ENV, readAuthMode, readProviderKey, saveProviderKey, setAuthMode, SUBSCRIPTION_CAPABLE, verdictWords, verifyProviderKey } from "../keys.js";
+import { decisionsHtml,framedSection,knowledgeHtml,MEMORY_INTRO,memorySearchHtml,proposalsHtml } from "../knowledge-ui.js";
 import { aboutYouOf,checkAboutYou,saveAboutYou } from "../lead-about.js";
 import { cancelCommitment,conditionWords,openCommitments } from '../lead-commitments.js';
 import { checkLeadIdentity,leadIdentityOf } from "../lead-identity.js";
@@ -77,6 +83,9 @@ import { startConnect } from "../mcp-connect.js";
 import { decideProposal,listProposals,memoryStatus } from "../memory-pass.js";
 import { checkModels,isNewModel,modelOptions,modelWords,RUNTIME_TOOLS,runtimeStates,seenModels,setWatch,updateRuntime,watchState,type RuntimeTool } from "../model-catalog.js";
 import { modelsHtml,modelsScript,type RoleView } from "../models-ui.js";
+import { ALL_SLOTS,applyModelChoices,browserWords,checkScope,DEFAULT_PRESET,isPresetName,newerModels,PRESETS,presetChange,presetInUse,previewModelChange,recentRuns,rowAt,slotKey,SLOTS,slotWords,stateDigest,switchChange,type ModelAuthority,type ModelChange } from "../model-choices.js";
+import { HEADROOM_FIVE_HOUR_LIMIT,HEADROOM_WEEKLY_LIMIT,exactModelId } from "../phase-routing.js";
+import { RISKY_MEANS,SIZE_MEANS,SIZING_CLAUDE_MODEL } from "../task-sizing.js";
 import { CHAT_APPROVE_ALL,MODE_MAX_DAYS,modeDigestOf,modeTermsJson,modeWords,presetTerms,type ModeName,type ModeTerms } from "../modes.js";
 import { monitoringChange,readMonitoring,saveMonitoring } from "../monitoring-settings.js";
 import { monitoringHtml,signingSecretHtml } from "../monitoring-ui.js";
@@ -84,6 +93,10 @@ import { openRouterPickerScript } from "../openrouter-models.js";
 import { policyHtml } from "../policy-ui.js";
 import { checkPolicy,parseList,policyParts } from "../policy.js";
 import { parseProjectConcurrency,saveProjectConcurrency } from "../project-concurrency.js";
+import { MAX_NETWORK_HOSTS, normalizeHost } from "../egress.js";
+import { isWritesMode } from "../writes-mode.js";
+import { isCheckAccess, signInsUnavailableWords, widerThan } from "../check-access.js";
+import { parseMachLookup, parseReadDeny } from "../project-sandbox.js";
 import { projectDeleteConfirmHtml,projectSettingsHtml } from "../project-delete-ui.js";
 import { deleteProject,holdingsWords } from "../project-delete.js";
 import { applySavedKnowledge,changeKnowledge,knowledgeVersion,knowledgeView,type KnowledgeDraft } from "../project-knowledge.js";
@@ -108,7 +121,9 @@ import { addProjectInstructions,ASSISTANTS,detectPreparation,modelChoices,previe
 import { skillsHtml,skillsScript } from "../skills-ui.js";
 import { checkSlackCredentials,clearSlackCredentials,loadSlackCredentials,saveSlackCredentials,SLACK_MANIFEST,SlackError } from "../slack-api.js";
 import { slackSettingsHtml } from "../slack-settings.js";
-import { spendCsv,spendHtml } from "../spend-ui.js";
+import { spendHtml,spendSettingsHtml } from "../spend-ui.js";
+import { spendReport,spendReportCsv,spendRows } from "../spend-report.js";
+import { limitsHtml,limitsView } from "../limits-ui.js";
 import { budgetStates,monthNamed,spendItems,usd as spendUsd,subagentNames as subagentNamesOf } from "../spend.js";
 import { removeSsoSettings,saveSsoSettings,SSO_CALLBACK,ssoChangeWords } from "../sso-settings.js";
 import { ssoSettingsHtml } from "../sso-ui.js";
@@ -117,51 +132,45 @@ import { sweepSchedule } from "../storage-sweep-schedule.js";
 import { storageHtml } from "../storage-ui.js";
 import { landedSummary } from "../landed-cleanup.js";
 import { bytesWords,parseCleanup } from "../storage.js";
-import { isDigestTime,RESULT_SCREENSHOTS,type ResultScreenshots } from "../store.js";
+import { isDigestTime,liveBackupState,RESULT_SCREENSHOTS,setLiveBackupSettings,type ResultScreenshots } from "../store.js";
+import { defaultLiveFolder,liveFolderOf,liveFolderProblem } from "../live-backup.js";
+import { LIVE_EVERY } from "../backup-ui.js";
 import { checkTeamsCredentials,clearTeamsCredentials,loadTeamsCredentials,saveTeamsCredentials,TeamsError } from "../teams-api.js";
 import { teamsSettingsHtml } from "../teams-settings.js";
 import { telegramSettingsHtml } from "../telegram-settings.js";
 import { hashPairingCode,loadBotToken,mintPairingCode,PAIRING_TTL_MS,redactToken,saveBotToken } from "../telegram.js";
 import { newerThan,updatesHtml,updatesScript,updateStepsHtml } from "../toolroll-update-ui.js";
-import { abandonRuntimeUpdate,currentRuntime,launchRuntimeUpdate,markWhatsNewSeen,prepareRuntimeUpdate,releaseStalledUpdate,requestRuntimeUpdateCancel,runningWorkWords,runtimeUpdateStatus,runtimeUpdateTerminal,type When } from "../toolroll-update.js";
+import { abandonRuntimeUpdate,currentRuntime,launchRuntimeUpdate,markWhatsNewSeen,prepareRuntimeUpdate,requestRuntimeUpdateCancel,runningWorkWords,runtimeUpdateStatus,runtimeUpdateTerminal,type When } from "../toolroll-update.js";
 import { TOOLS_PROJECT_SCRIPT,toolsHtml,toolsProjectPicker } from "../tools-ui.js";
 import { effectivePrimary,isMessagingChannel,savePrimary } from "../webhooks.js";
 import type { EdgeContext } from './handler-context.js';
 import { personChip,ROLE_TITLES } from "./chrome.js";
 import { chatReturnWithSaid,goOutside } from "./http.js";
-import { latestReleaseFor,leadSettingsHtml,notificationProjects,SETTINGS_AUTOSAVE_SCRIPT,settingsPage,settingsWorkers,telegramDeliveryWords,telegramTrouble,type LeadFormFacts } from "./render-settings.js";
+import { leadSettingsHtml,notificationProjects,SETTINGS_AUTOSAVE_SCRIPT,settingsPage,settingsWorkers,telegramDeliveryWords,telegramTrouble,type LeadFormFacts } from "./render-settings.js";
 /** The five operations of each chat app's settings (Slack, Teams, Discord). */
 type ChatAppAction = "connect" | "pair" | "unpair" | "disconnect" | "alerts";
 export function createSettingsHandlers(runtime: ServerRuntime) {
-  const { store, providerHome, managedRepos, consoleProjects, sendScreen, chromeFor, connectionCheck, clock, modelCatalog, modelSeams, toolsViewOf, codexServers, projectViewOf, sessions, restricted, options, integrations, consoleOrigin, evidenceRoot, storagePool, visible, ssoSettings, checkLocalAgents, chatKeyFor, chatCatalog, leadWords, agentSignInCommand, settingsUpdates, phoneSetup, authenticateApprover, deletedRepos, recordSignIn, projectOf, providerFor, admissionList, toolHome, connectVisits, mintApprovalNonce, consumeApprovalNonce, defaultProject, googleVisits } = runtime;
+  const { identities, store, providerHome, managedRepos, consoleProjects, sendScreen, chromeFor, connectionCheck, connectionKnown, lastChecks, checkRelease, clock, modelCatalog, modelSeams, toolsViewOf, codexServers, projectViewOf, sessions, restricted, options, integrations, consoleOrigin, evidenceRoot, storagePool, visible, ssoSettings, checkLocalAgents, chatKeyFor, chatCatalog, chatCatalogKnown, leadWords, agentSignInCommand, settingsUpdates, phoneSetup, authenticateApprover, authenticateCredential, deletedRepos, projectOf, providerFor, admissionList, toolHome, connectVisits, mintApprovalNonce, consumeApprovalNonce, googleVisits } = runtime;
 
-  // v105: what agent work cost, by month, and the monthly budgets. An instance operator's page.
+  // What agent work cost, by month: API dollars, plan usage and unknown cost apart (spend-report.ts). An instance
+  // operator's page. Its limits show read-only; they change on Settings → Spend.
   async function spendPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, now } = ctx;
     const current = monthOf(now);
     const asked = url.searchParams.get("month");
     const month = asked === null ? current : monthNamed(asked);
     if (month === null) return refuse(response, who, 400, "Choose a month like 2026-09.", "/spend");
-    const items = spendItems(store.handle, month.from, month.to);
-    const subagents = store.subagents([...new Set([...managedRepos(), ...store.knownRepos()])]);
+    const rows = spendRows(store.handle, month.from, month.to);
     const subagentNames = subagentNamesOf(store.handle);
     if (url.searchParams.get("format") === "csv") {
       response.writeHead(200, { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="standing-orders-spend-${month.name}.csv"`, "cache-control": "no-store", "x-content-type-options": "nosniff" });
-      return void response.end(spendCsv(items, subagentNames));
+      return void response.end(spendReportCsv(rows, subagentNames));
     }
     const shift = (by: number) => { const at = new Date(`${month.name}-01T00:00:00.000Z`); at.setUTCMonth(at.getUTCMonth() + by); return at.toISOString().slice(0, 7); };
-    const projects = consoleProjects();
-    const people = store.accountFacts().filter(one => one.revokedAt === null).map(one => one.name);
-    const view = {
-      month: month.name, previous: shift(-1), next: month.name === current.name ? null : shift(1),
-      items, budgets: budgetStates(store.budgets(), items), subagentNames, csrf: who.via === "cookie" ? who.session.csrf : "",
-      targets: [
-        { value: "installation:*", label: "Everything", group: "Everything" as const },
-        ...projects.map(repo => ({ value: `project:${repo}`, label: projectName(repo), group: "Projects" as const })),
-        ...people.map(name => ({ value: `person:${name}`, label: name, group: "People" as const })),
-        ...subagents.map(one => ({ value: `subagent:${one.id}`, label: `${subagentNames.get(one.id) ?? one.handle} (${projectName(one.repo)})`, group: "Subagents" as const })),
-      ],
-    };
+    // Limits read what the budget gate counts today (spend.ts spendItems), for the current month.
+    const budgets = month.name === current.name ? budgetStates(store.budgets(), spendItems(store.handle, current.from, current.to)) : null;
+    const windows = month.name !== current.name ? html`` : limitsHtml(limitsView(store.providerLimits(), [], { project: projectName, subagent: id => subagentNames.get(id) ?? `Subagent ${id}` }, now));
+    const view = { month: month.name, previous: shift(-1), next: month.name === current.name ? null : shift(1), report: spendReport(rows), budgets, windows, subagentNames };
     return sendScreen(response, 200, screen("Spend", spendHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }), { chrome: chromeFor(null, "spend") }));
   }
   async function modePage(ctx: HandlerContext): Promise<void> {
@@ -233,10 +242,11 @@ ${hasGrant ? "" : html`<span class="meta">self-merging needs a merge-capable pub
     const asked = url.searchParams.get("provider") ?? saved?.provider ?? "claude";
     if (!isProviderId(asked)) return refuse(response, who, 400, "Choose a known provider.", "/control");
     const task = url.searchParams.get("task") ?? "";
-    const connection = await connectionCheck(asked, url.searchParams.get("check-connection") === "1");
+    // The last sign-in check: Check again posts (docs/plans/get-side-effects.md).
+    const connection = connectionKnown(asked);
     if (view === "connection") {
       const command = asked === "claude" ? "claude auth login" : asked === "codex" ? "codex login" : asked === "gemini" ? "gemini" : null;
-      return sendScreen(response, 200, screen(`${ASSISTANTS[asked].name} connection`, html`<h1>${ASSISTANTS[asked].name} ${connection.state === "connected" ? "is connected" : "connection"}</h1>\
+      return sendScreen(response, 200, screen(`${ASSISTANTS[asked].name} connection`, html`<h1>${ASSISTANTS[asked].name} ${connection?.state === "connected" ? "is connected" : "connection"}</h1>\
 ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On the computer running Toolroll, sign in with:</p><pre class="recap">${command}</pre>`}\
 <p><a href="/settings#providers">Manage API keys and authentication mode</a></p><input type="hidden" name="resume-task" value="${task}">`, { chrome: chromeFor(project, "settings") }));
     }
@@ -249,22 +259,67 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const models = live.length === 0 ? modelChoices(asked, configured, providerHome)
       : configured && !live.some(one => one.value === configured) ? [{ value: configured, label: `${configured} — current choice` }, ...live] : live;
     const instructions = previewProjectInstructions(project);
-    const catalog = asked === "openrouter" ? await modelCatalog(readProviderKey("openrouter", providerHome), url.searchParams.get("refresh-models") === "1") : null;
-    const inputs: SetupInputs = { provider: asked, model: saved?.provider === asked ? saved.model ?? "" : models[0]?.value ?? "", command: setup?.command ?? (saved === null ? preparation?.command ?? "" : ""), seconds: String((setup?.timeoutMs ?? 300_000) / 1000) };
+    // The model list as last loaded; Refresh models posts, and the background checks keep it current.
+    const catalog = asked === "openrouter" ? modelCatalog.known(readProviderKey("openrouter", providerHome)) ?? { ok: false as const, problem: "The model list has not loaded yet." } : null;
+    // With nothing saved, setup preselects what the installation builds routine tasks with, else "Sized by job"'s
+    // routine builder (Sonnet 5.5) for Claude: an exact id, never a floating name.
+    const installationBuild = store.phaseConfig(INSTALLATION_SCOPE, "build");
+    const routineDefault = PRESETS[DEFAULT_PRESET].rows["build"] ?? "";
+    const preselected = installationBuild?.provider === asked && installationBuild.model !== null && models.some(one => one.value === installationBuild.model) ? installationBuild.model
+      : asked === "claude" && models.some(one => one.value === routineDefault) ? routineDefault : models[0]?.value ?? "";
+    const inputs: SetupInputs = { provider: asked, model: saved?.provider === asked ? saved.model ?? "" : preselected, command: setup?.command ?? (saved === null ? preparation?.command ?? "" : ""), seconds: String((setup?.timeoutMs ?? 300_000) / 1000) };
     return sendScreen(response, 200, screen("Project setup", controlSetupHtml({ repo: project, csrf: who.via === "cookie" ? who.session.csrf : "", provider: asked, inputs, models, connection, catalog, task, preparation,
       instructions: instructions.ok ? { installed: instructions.installed } : { installed: false, message: instructions.message } }),
       { chrome: chromeFor(project, "settings"), ...(catalog === null ? {} : { functional: { script: openRouterPickerScript() } }) }));
   };
+  // Settings → Projects → Pull requests → Check setup: git and GitHub, for one project, by an approver who may turn it on.
+  async function pullRequestsCheck(ctx: HandlerContext): Promise<void> {
+    const { who, response, posted } = ctx;
+    const repo = readForm(posted, CONSOLE_FORMS.pullRequestsCheck).get("repo") ?? "";
+    const known = [...new Set([...managedRepos(), ...store.knownRepos(), ...store.listProjects().map(one => one.path)])];
+    if (who.via !== "cookie" || !known.includes(repo) || !visible(repo)) return refuse(response, who, 404, "No such project.", "/projects");
+    if (who.role !== "approver" || store.isDemo()) return refuse(response, who, 403, "An approver can turn on pull requests.", "/projects");
+    await lastChecks.run(`publishing:${repo}`, () => checkPublishing(repo, options.publishExec === undefined ? {} : { exec: options.publishExec }));
+    return redirect(response, `/settings/pull-requests?repo=${encodeURIComponent(repo)}`);
+  }
+  // Settings → Storage → Check now: measure the checkouts again.
+  async function storageCheck(ctx: HandlerContext): Promise<void> {
+    const databaseFile = store.databaseFile();
+    if (databaseFile !== null) await measureStorage(databaseFile);
+    return redirect(ctx.response, "/settings/storage");
+  }
+  const measureStorage = (databaseFile: string) => lastChecks.run("storage", () => checkoutPlan(store, storagePool(databaseFile), clock(), { manual: true }));
+  // Settings → Updates → Check now: ask npm once, whether or not automatic checks are on.
+  async function updatesCheck(ctx: HandlerContext): Promise<void> {
+    await checkRelease();
+    return redirect(ctx.response, "/settings/updates");
+  }
+  // Check again (Settings → providers, Project setup): ask this computer's CLI, or test the saved key, now.
+  async function connectionCheckNow(ctx: HandlerContext): Promise<void> {
+    const { response, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.connectionCheck);
+    const provider = body.get("provider") ?? "";
+    const back = safeReturn(body.get("return") ?? "/settings#providers");
+    if (!isProviderId(provider)) return redirect(response, back);
+    await connectionCheck(provider, true).catch(() => undefined);
+    return redirect(response, back);
+  }
+  // Refresh models (Project setup, OpenRouter): load the list again, then show the setup page with it.
+  async function modelsRefresh(ctx: HandlerContext): Promise<void> {
+    const { response, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.modelsRefresh);
+    await modelCatalog(readProviderKey("openrouter", providerHome), true);
+    const query = new URLSearchParams({ provider: "openrouter", ...(body.get("task") ? { task: body.get("task")! } : {}) });
+    return redirect(response, `/control?${query.toString()}`);
+  }
   async function modelsPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
     const now = clock();
-    const watch = watchState(store);
-    // Opening the page refreshes a stale snapshot; the lists are public and
-    // the check sends nothing about the person or their projects.
-    if (who.role === "approver" && (watch.checkedAt === null || now.getTime() - Date.parse(watch.checkedAt) > 3_600_000)) {
-      await checkModels(store, now, modelSeams).catch(() => undefined);
-    }
-    const view = modelsView(who.role === "approver", who.via === "cookie" ? who.session.csrf : "", now, url.searchParams.get("said"), url.searchParams.get("problem"));
+    // The page shows the last check and when it ran (docs/plans/get-side-effects.md): Check now, or the watch loop's
+    // automatic checks, fetch the lists and may queue a notice; opening the page never does.
+    // Only an instance operator changes models (docs/plans/spend-dashboard.md D4); a preset or a switch is previewed
+    // here, read-only, and applied by its own password-checked POST.
+    const view = modelsView(who.via === "cookie" && store.isInstanceOperator(who.name), who.via === "cookie" ? who.session.csrf : "", now, url.searchParams.get("said"), url.searchParams.get("problem"), url.searchParams);
     return sendScreen(response, 200, screen("Models", html`<p><a href="/settings">Settings</a></p><h1>Models</h1>${modelsHtml(view)}`, { chrome: chromeFor(project, "settings"), functional: { script: modelsScript() } }));
   }
   async function skillsPage(ctx: HandlerContext): Promise<void> {
@@ -292,7 +347,8 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     if (chosen) {
       try {
         const approver = who.role === "approver" && who.via === "cookie";
-        const view = toolsViewOf(chosen, approver ? await codexServers(chosen) : null, kit, wanted);
+        // What Codex had configured at the last background check (docs/plans/get-side-effects.md): the page starts no codex.
+        const view = toolsViewOf(chosen, approver ? lastChecks.known<unknown[] | null>(`codex-tools:${chosen}`)?.value ?? null : null, kit, wanted);
         if (approver) view.others = projects.filter(one => one !== chosen).map(one => ({ repo: one, project: projectName(one), open: connectionsOf(store, one).filter(c => c.state === "open").map(c => c.id) }));
         content = (toolsHtml(view, who.via === "cookie" ? who.session.csrf : "", approver,
           { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }));
@@ -320,7 +376,9 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     if (chosen && !projects.includes(chosen)) return refuse(response, who, 403, "That project is outside your access.", "/settings/approval");
     const selector = projects.length > 1 ? html`<form class="approval-project" method="get" action="/settings/approval"><label>Project<select name="repo">${projects.map(p => html`<option value="${p}"${p === chosen ? " selected" : ""}>${projectName(p)}</option>`)}</select></label><button>Show</button></form>` : "";
     const approvers = chosen === "" ? 0 : store.listApprovers().filter(one => { const account = store.accountOf(one.name); return account !== null && account.revokedAt === null && account.role === "approver" && store.accountCanAccess(one.name, chosen); }).length;
-    const content = chosen === "" ? html`<p>Add a project to set its approval rules.</p>` : (approvalRulesHtml({ repo: chosen, name: projectName(chosen), rules: store.approvalRules(chosen), canChange: who.via === "cookie" && store.isInstanceOperator(who.name), approvers }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }));
+    const release = chosen === "" ? null : releaseApprovalSetting(store, chosen);
+    const content = chosen === "" ? html`<p>Add a project to set its approval rules.</p>` : html`${approvalRulesHtml({ repo: chosen, name: projectName(chosen), rules: store.approvalRules(chosen), canChange: who.via === "cookie" && store.isInstanceOperator(who.name), approvers }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") })}${
+      releaseApprovalHtml({ repo: chosen, auto: release!.auto, setBy: release!.setBy, at: release!.at, canChange: who.via === "cookie" && who.role === "approver" && !store.isDemo() && store.accountCanAccess(who.name, chosen) })}`;
     return sendScreen(response, 200, screen("Approval rules", html`<p><a href="/settings">Settings</a></p><h1>Approval rules</h1>${selector}${content}`, { chrome: chromeFor(chosen || project, "settings") }));
   }
   // Sprint 8: Settings → Policy, the organisation policy and its history. Anyone signed in reads it; an instance operator changes it.
@@ -371,15 +429,15 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const who = browserCaller(ctx.who);
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return refuse(response, who, 403, "An instance operator updates Toolroll.", "/settings");
-    // A record it cannot release is shown as it is; the page never fails over it.
-    try { releaseStalledUpdate(dirname(databaseFile), clock()); } catch { /* shown as last saved */ }
+    // A stalled update is released by the background pass, never by opening this page (docs/plans/get-side-effects.md).
     const status = runtimeUpdateStatus(dirname(databaseFile));
     if (url.searchParams.get("fragment") === "steps") return respond(response, 200, "text/html; charset=utf-8", status.journal ? updateStepsHtml(status.journal, status.running) : html`<div id="update-live" data-done="1"></div>`);
     const active = status.journal !== null && !runtimeUpdateTerminal(status.journal.phase);
     const current = options.updates?.current ?? PACKAGE_VERSION;
-    // While update checks are off the page asks npm nothing until Check now.
-    const checksOff = updateChecksOff(process.env, options.configDir ?? dirname(databaseFile)).off && url.searchParams.get("check") !== "now";
-    const view = { current, latest: active ? { version: current } : checksOff ? { off: true as const } : await latestReleaseFor(options.updates?.latest), method: options.updates?.method ?? installMethod(), journal: status.journal, running: status.running, whatsNew: status.whatsNew, rollbackTo: status.lastUpdate?.to === current ? status.lastUpdate.from : null, csrf: who.session.csrf };
+    // The last answer npm gave (the background checks ask while update checks are on; Check now asks once).
+    const checksOff = updateChecksOff(process.env, options.configDir ?? dirname(databaseFile)).off;
+    const known = lastChecks.known<{ version: string } | { problem: string }>("release")?.value ?? null;
+    const view = { current, latest: active ? { version: current } : known ?? (checksOff ? { off: true as const } : { pending: true as const }), method: options.updates?.method ?? installMethod(), journal: status.journal, running: status.running, whatsNew: status.whatsNew, rollbackTo: status.lastUpdate?.to === current ? status.lastUpdate.from : null, csrf: who.session.csrf };
     return sendScreen(response, 200, screen("Updates", html`<p><a href="/settings">Settings</a></p><h1>Updates</h1>${(updatesHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`,
       { chrome: chromeFor(project, "settings"), ...(active ? { functional: { script: updatesScript(), fetches: true } } : {}) }));
   }
@@ -398,9 +456,17 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const who = browserCaller(ctx.who);
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return refuse(response, who, 403, "An instance operator looks after storage.", "/settings");
-    const plan = await checkoutPlan(store, storagePool(databaseFile), now, { manual: true });
+    // The last measurement (docs/plans/get-side-effects.md): the background checks measure the checkouts, and so do
+    // Check now and every clean-up; opening the page runs no du or git.
+    const measured = lastChecks.known<CheckoutPlan>("storage");
+    const check = postForm("/settings/storage/check", html`<button type="submit" class="secondary">Check now</button>`, { attrs: { class: "inline" } });
+    if (measured === null) {
+      return sendScreen(response, 200, screen("Storage", html`<p><a href="/settings">Settings</a></p><h1>Storage</h1><section class="storage"><div class="card storage-state"><h2>Checkouts not measured yet</h2>${check}</div></section>`,
+        { chrome: chromeFor(project, "settings") }));
+    }
+    const plan = { ...measured.value, cleanup: store.checkoutCleanup() };
     const sweep = { last: lastSweep(store), off: storageSweepOff(), schedule: sweepSchedule(store, now) };
-    return sendScreen(response, 200, screen("Storage", html`<p><a href="/settings">Settings</a></p><h1>Storage</h1>${(storageHtml({ plan, csrf: who.session.csrf, sweep, landed: landedSummary(store) }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`,
+    return sendScreen(response, 200, screen("Storage", html`<p><a href="/settings">Settings</a></p><h1>Storage</h1>${(storageHtml({ plan, csrf: who.session.csrf, sweep, landed: landedSummary(store), measured: html`<p class="meta">Measured ${new Date(measured.at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })} ${check}</p>` }, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`,
       { chrome: chromeFor(project, "settings") }));
   }
   // Settings → Projects → Pull requests: one project's setup. Off, the checks run on open, so the page says
@@ -412,7 +478,8 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     if (who.via !== "cookie" || !known.includes(repo) || !visible(repo)) return refuse(response, who, 404, "No such project.", "/projects");
     const publishing = publishingOf(store, repo);
     const canChange = who.role === "approver" && !store.isDemo();
-    const check = publishing.on || !canChange ? null : await checkPublishing(repo, options.publishExec === undefined ? {} : { exec: options.publishExec });
+    // The last setup check for this project (Check setup posts); opening the page asks git and GitHub nothing.
+    const check = publishing.on || !canChange ? null : lastChecks.known<Awaited<ReturnType<typeof checkPublishing>>>(`publishing:${repo}`)?.value ?? "unchecked";
     const body = (pullRequestSettingsHtml({ repo, name: projectName(repo), csrf: who.session.csrf, canChange, publishing, check,
       said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }));
     return sendScreen(response, 200, screen("Pull requests", html`<p><a href="/projects">Projects</a></p><h1>Pull requests</h1>${body}`, { chrome: chromeFor(project, "projects") }));
@@ -437,14 +504,16 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return refuse(response, who, 403, "An instance operator looks after backups.", "/settings");
     const settings = store.backupSettings();
-    const view = { settings, folder: backupFolderOf(settings, databaseFile), defaultFolder: defaultBackupFolder(databaseFile), runs: store.backupRuns(20), csrf: who.session.csrf, now };
+    const live = liveBackupState(store);
+    const view = { settings, folder: backupFolderOf(settings, databaseFile), defaultFolder: defaultBackupFolder(databaseFile), runs: store.backupRuns(20), csrf: who.session.csrf, now,
+      live: { state: live, folder: liveFolderOf(live.settings, databaseFile), defaultFolder: defaultLiveFolder(databaseFile) } };
     return sendScreen(response, 200, screen("Backups", html`<p><a href="/settings">Settings</a></p><h1>Backups</h1>${(backupHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`,
       { chrome: chromeFor(project, "settings") }));
   }
   // v105: Settings → Data, where an instance operator downloads everything. The download is a POST with the password.
   async function dataPage(ctx: HandlerContext): Promise<void> {
     const { url, response, project } = ctx;
-    const who = browserCaller(ctx.who);
+    browserCaller(ctx.who);
     return sendScreen(response, 200, screen("Data", html`<p><a href="/settings">Settings</a></p><h1>Data</h1>${(dataExportHtml({ problem: url.searchParams.get("problem") }))}`,
       { chrome: chromeFor(project, "settings") }));
   }
@@ -460,12 +529,44 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
       { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") });
     return sendScreen(response, 200, screen("Sign-in", html`<p><a href="/settings">Settings</a></p><h1>Sign-in</h1>${body}`, { chrome: chromeFor(project, "settings") }));
   }
+  /** Passwordless (docs/plans/passwordless.md): the switch, and the trade in plain words. */
+  async function passwordlessPage(ctx: HandlerContext): Promise<void> {
+    const { url, response, project } = ctx;
+    browserCaller(ctx.who);
+    const setting = passwordlessSetting(store);
+    const said = url.searchParams.get("said"), problem = url.searchParams.get("problem");
+    const note = problem ? html`<p class="problem" role="alert">${problem}</p>` : said ? html`<p role="status">${said}</p>` : "";
+    const since = setting.at === null ? "" : html` <span class="meta">(${setting.on ? "on" : "off"} since ${new Date(setting.at).toLocaleString("en-US", { dateStyle: "medium", timeStyle: "short" })}, by ${setting.setBy ?? "someone"})</span>`;
+    const control = setting.on
+      ? postForm("/settings/passwordless", html`<button class="secondary">Turn Passwordless off</button>`, { hidden: { action: "off" } })
+      : postForm("/settings/passwordless", html`<label>Your password<input type="password" name="password" autocomplete="current-password" required></label><button>Turn Passwordless on</button>`, { attrs: { class: "card approve-form" }, hidden: { action: "on" } });
+    return sendScreen(response, 200, screen("Passwordless", html`<p><a href="/settings">Settings</a></p><h1>Passwordless</h1>${note}\
+<p>When it's on, signing in is the only password: approvals, settings, budgets, signing a mode and starting a terminal no longer ask again — in the browser, on the phone, and in this computer's <code>toolroll</code> command (through its remembered login).</p>\
+<p class="meta">${PASSWORDLESS_TRADE}</p>\
+<p><strong>Passwordless is ${setting.on ? "on" : "off"}.</strong>${since}</p>${control}`, { chrome: chromeFor(project, "settings") }));
+  }
+  async function passwordlessSave(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.passwordless);
+    const back = sayTo(response, "/settings/passwordless");
+    const action = body.get("action");
+    if (action === "off") {
+      setPasswordless(store, false, who.name, now);
+      return back("said", "Passwordless is off. Step-ups ask for your password again.");
+    }
+    if (action !== "on") return back("problem", "Choose on or off.");
+    // Turning it on is a credential act: a password typed now (or a one-use provider re-check), never a session.
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to turn Passwordless on.");
+    setPasswordless(store, true, who.name, now);
+    return back("said", "Passwordless is on. Signing in is the only password now.");
+  }
   async function knowledgePage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, project } = ctx;
     const projects = consoleProjects();
     const chosen = url.searchParams.get("repo") ?? project ?? projects[0] ?? "";
     if (chosen && (!projects.includes(chosen) || !visible(chosen))) return refuse(response, who, 403, "That project is outside your access.", "/settings/knowledge");
-    const selector = projects.length > 1 ? html`<form class="knowledge" method="get" action="/settings/knowledge"><label>Project<select name="repo">${projects.map(p=>html`<option value="${p}"${p===chosen?' selected':''}>${p.split('/').at(-1)??p}</option>`)}</select></label><button>Show project</button></form>` : '';
+    const selector = projects.length > 1 ? framedSection('Project', html`<form class="field-row" method="get" action="/settings/knowledge"><label><span class="visually-hidden">Project</span><select name="repo">${projects.map(p=>html`<option value="${p}"${p===chosen?' selected':''}>${p.split('/').at(-1)??p}</option>`)}</select></label><button>Show project</button></form>`) : '';
     let content: Html = html`<p>Add a project to keep its knowledge here.</p>`;
     if (chosen) {
       try {
@@ -485,7 +586,7 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
         try { proposals = (proposalsHtml(chosen, listProposals(store, chosen), memoryStatus(store, chosen, who.name), csrf, who.role === 'approver')); } catch { proposals = html``; }
         content = html`<p class="meta">${MEMORY_INTRO}</p>${memorySearchHtml(chosen, memoryQuery, hits)}${proposals}${(decisionsHtml(chosen, listDecisions(store, chosen, who.name, { limit: 50 }), csrf, who.role === 'approver'))}\
 ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : '')}${knowledgeHtml(view,csrf,who.role==='approver')}\
-<details class="knowledge"><summary>Learned lessons</summary>${(learningHtml(learningView(store,evidenceRoot,chosen,who.name),csrf,who.role==='approver'))}</details>`;
+<details class="knowledge frame"><summary class="frame-head">Learned lessons</summary><div class="frame-panel">${(learningHtml(learningView(store,evidenceRoot,chosen,who.name),csrf,who.role==='approver'))}</div></details>`;
       } catch { content = html`<p class="problem" role="alert">Project knowledge is unavailable. Reload to retry.</p>`; }
     }
     return sendScreen(response,200,screen('Knowledge',html`<p><a href="/settings">Settings</a></p><h1>Knowledge</h1>${url.searchParams.get('saved')==='1'?html`<p role="status">Saved for future tasks.</p>`:''}${selector}${content}`,{chrome:chromeFor(chosen||project,'settings')}));
@@ -507,14 +608,13 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
   async function leadPage(ctx: HandlerContext): Promise<void> {
     const { url, response, now, project } = ctx;
     const who = browserCaller(ctx.who);
-    if (runtime.localSignIn === null) await Promise.race([checkLocalAgents(), new Promise(done => setTimeout(done, 6_000).unref?.())]);
     const config = store.getChatConfig();
     const facts: LeadFormFacts = {
       keyFacts: (["anthropic-api", "openrouter-api"] as const).map(one => {
         const found = chatKeyFor(one);
         return { provider: one, state: found === null ? "none" : found.source, tail: found === null || found.source === "environment" ? null : redactToken(found.key) };
       }),
-      openrouterModels: (await chatCatalog())?.map(one => one.id) ?? null,
+      openrouterModels: chatCatalogKnown()?.map(one => one.id) ?? null,
       liveModels: [...modelOptions(store, "claude", now, providerHome), ...modelOptions(store, "codex", now, providerHome)],
       csrf: who.session.csrf,
       returnTo: "/settings/lead",
@@ -580,13 +680,14 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     };
     const providerKeys = who.role !== "approver"
       ? null
-      : await Promise.all(PROVIDER_IDS.map(async provider => ({
+      // ACP agents sign in their own way; Toolroll keeps no key for them, so the key card lists only the others.
+      : await Promise.all(PROVIDER_IDS.filter(isKeyedProvider).map(async provider => ({
           provider,
-          envName: PROVIDER_KEY_ENV[provider as "claude"],
+          envName: PROVIDER_KEY_ENV[provider],
           ...keyStatus(provider, providerHome),
-          connection: await connectionCheck(provider, url.searchParams.get("check-connection") === provider),
-          ambient: (process.env[PROVIDER_KEY_ENV[provider as "claude"]] ?? "") !== "",
-          mode: readAuthMode(provider, providerHome),
+          ...(connectionKnown(provider) === null ? {} : { connection: connectionKnown(provider)! }),
+          ambient: (process.env[PROVIDER_KEY_ENV[provider]] ?? "") !== "",
+          mode: readAuthMode(provider, providerHome) === "api-key" ? "api-key" as const : "subscription" as const,
           subscriptionCapable: SUBSCRIPTION_CAPABLE[provider],
         })));
     const telegramConfigured = loadBotToken(process.env, options.telegramTokenFile) !== null;
@@ -633,6 +734,13 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     return redirect(response, "/work");
   }
   // The update notice is dismissed per browser and per version: a newer release shows it again.
+  // Cockpit B2: Forget — nothing verified on this session before now counts as fresh (a CSRF-checked post, like every act).
+  async function forgetPassword(ctx: HandlerContext): Promise<void> {
+    const { who, response, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.forgetPassword);
+    if (who.via === "cookie") { who.session.freshFloor = Date.now(); delete who.session.passwordAt; delete who.session.ssoReauthAt; delete who.session.ssoNowAt; }
+    return redirect(response, safeReturn(body.get("return") ?? "/"));
+  }
   async function updatesDismiss(ctx: HandlerContext): Promise<void> {
     const { who, response, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.updatesDismiss);
@@ -697,7 +805,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
   async function spendBudget(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.spendBudget);
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/spend?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/spend");
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change a budget.");
     const target = /^(installation|project|person|subagent):(.+)$/.exec(body.get("target") ?? "");
     if (target === null) return back("problem", "Choose what the budget is for.");
@@ -726,7 +834,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const known = consoleProjects();
     if (!known.includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
     if (who.via !== "cookie" || who.role !== "approver" || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project sets how many tasks build at once.", "/settings/project");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/project?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, `/settings/project?repo=${encodeURIComponent(repo)}`);
     const n = parseProjectConcurrency(body.get("concurrency") ?? "");
     if (n === null) return back("problem", "Builds at once is a whole number from 1 to 64. Nothing changed.");
     const databaseFile = store.databaseFile();
@@ -735,6 +843,40 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     store.recordProjectConcurrency(who.name, repo, changed.before, changed.after, now);
     store.bumpWake();
     return back("said", changed.before === changed.after ? "Nothing changed." : `Saved. Up to ${n} at once.`);
+  }
+  // Settings → Project → Live view (live-detail.ts): an approver for the project shows commands with their password,
+  // or hides them in one step; the ledger keeps each change. It applies from the next run.
+  async function projectLiveView(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.projectLiveView);
+    const repo = body.get("repo") ?? "";
+    if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
+    if (who.via !== "cookie" || who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project changes the live view.", "/settings/project");
+    const back = sayTo(response, `/settings/project?repo=${encodeURIComponent(repo)}`);
+    const act = body.get("act");
+    if (act === "off") return back("said", setLiveCommands(store, { repo, commands: false, by: who.name, via: "the console" }, now).said);
+    if (act !== "on") return back("problem", "That change isn't available.");
+    // Single use, for this person and exactly this change: a replayed or copied form changes nothing.
+    if (!consumeApprovalNonce(body.get("nonce") ?? "", who.name, LIVE_VIEW_CONSENT, liveViewConsentDigest(repo))) return back("problem", "That form was already used or is out of date. Try again from this page.");
+    if (!authenticateApprover(who, body.get("password") ?? "", repo).ok) return back("problem", "Enter your Toolroll password to show commands.");
+    return back("said", setLiveCommands(store, { repo, commands: true, by: who.name, via: "the console" }, now).said);
+  }
+  // Settings → Project → Network (egress.ts): what the project's builds may reach. An approver for the project changes it
+  // with their password typed now; the ledger keeps before → after. New scopes use it; approved ones keep theirs.
+  async function projectNetwork(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.projectNetwork);
+    const repo = body.get("repo") ?? "";
+    if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
+    if (who.via !== "cookie" || who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project changes what its builds may reach.", "/settings/project");
+    const back = sayTo(response, `/settings/project?repo=${encodeURIComponent(repo)}`, "#network");
+    const hosts = (body.get("hosts") ?? "").split(/[\s,]+/).filter(Boolean).map(normalizeHost);
+    if (hosts.some(one => one === null)) return back("problem", "A host is a name like api.stripe.com or *.stripe.com: no address, port or path. Nothing changed.");
+    if (hosts.length > MAX_NETWORK_HOSTS) return back("problem", `A project lists at most ${MAX_NETWORK_HOSTS} hosts. Nothing changed.`);
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change what builds may reach.");
+    const changed = store.setProjectNetwork(repo, { mode: body.get("mode") === "open" ? "open" : "allowlist", hosts: hosts as string[], loopback: body.get("local") === "any" ? "any" : "proxy-only" }, who.name, now);
+    const same = JSON.stringify(changed.before) === JSON.stringify(changed.after);
+    return back("said", same ? "Nothing changed." : "Saved. Tasks scoped from now on use it; tasks already approved keep the network they were approved with.");
   }
   // Delete a project, in two steps: its name, then what goes and the password. An instance operator; the ledger keeps who and what.
   async function projectDelete(ctx: HandlerContext): Promise<void> {
@@ -763,7 +905,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
   async function policySave(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.policy);
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/policy?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/policy");
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "That password didn't match. Nothing changed.");
     const chosen = body.getAll("provider");
     const checked = checkPolicy({ providers: chosen.length === 4 ? null : chosen, models: parseList(body.get("models")), tools: parseList(body.get("tools")), ceiling: body.get("ceiling") ?? "" });
@@ -780,7 +922,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const repo = body.get("repo") ?? "";
     const known = consoleProjects();
     if (!known.includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/approval");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/approval?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, `/settings/approval?repo=${encodeURIComponent(repo)}`);
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "That password didn't match. Nothing changed.");
     const protect = body.get("protect") ?? "none";
     const paths = parseProtectedPaths(body.get("paths") ?? "");
@@ -795,7 +937,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
   async function requestLimitsSave(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.requestLimits);
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/sessions?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/sessions");
     const target = body.get("target") ?? "";
     const token = target === "*" ? null : store.apiTokens(null).find(one => one.id === target && one.revokedAt === null) ?? null;
     if (target !== "*" && token === null) return back("problem", "That token is no longer live. Nothing changed.");
@@ -815,7 +957,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.signIn);
     if (!options.configDir) return refuse(response, who, 403, "An instance operator sets up sign-in.", "/settings");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/sign-in?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/sign-in");
     const action = body.get("action") ?? "";
     const before = ssoSettings();
     if (action === "test") {
@@ -824,7 +966,8 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       const found = await providerFor(before.issuer);
       return found.ok ? back("said", `${before.label} answers: it's ready for people to sign in.`) : back("problem", found.said);
     }
-    if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change sign-in.");
+    // Sign-in methods and the identity provider are the login itself: a credential act, a password typed now.
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change sign-in.");
     if (action === "remove") {
       removeSsoSettings(options.configDir);
       runtime.ssoProvider = null;
@@ -850,7 +993,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return refuse(response, who, 403, "An instance operator updates Toolroll.", "/settings");
     const stateDir = dirname(databaseFile);
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/updates?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/updates");
     if (op === "seen") { markWhatsNewSeen(stateDir); return redirect(response, "/settings/updates"); }
     if (op === "cancel") return back("said", requestRuntimeUpdateCancel(stateDir));
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to update.");
@@ -881,7 +1024,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
   async function retentionSave(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.retention);
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/retention?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/retention");
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change retention.");
     const before = store.retentionPeriods();
     // Only what the page offers (or the period already set): a hand-made value doesn't save.
@@ -899,7 +1042,9 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const body = readForm(posted, CONSOLE_FORMS.storage);
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return refuse(response, who, 403, "An instance operator looks after storage.", "/settings");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/storage?${key}=${encodeURIComponent(words)}`);
+    // What the page shows next is measured again after the change.
+    const said = sayTo(response, "/settings/storage");
+    const back = async (kind: Parameters<typeof said>[0], words: string) => { await measureStorage(databaseFile).catch(() => undefined); return said(kind, words); };
     const what = op === "clean" ? "clean up" : op === "discard" ? "discard a checkout" : "change checkout cleanup";
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", `Enter your Toolroll password to ${what}.`);
     if (op === "cleanup") {
@@ -932,7 +1077,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     if (who.via !== "cookie") return refuse(response, who, 403, REMOTE_MESSAGES["step-up"]);
     if (!known.includes(repo) || !visible(repo)) return refuse(response, who, 404, "No such project.", "/projects");
     if (who.role !== "approver" || store.isDemo()) return refuse(response, who, 403, "An approver sets up pull requests.", "/projects");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/pull-requests?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, `/settings/pull-requests?repo=${encodeURIComponent(repo)}`);
     const act = body.get("act");
     if (!authenticateApprover(who, body.get("password") ?? "", repo).ok) return back("problem", "Enter your Toolroll password to change pull requests.");
     if (act === "on") {
@@ -965,7 +1110,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     if (who.via !== "cookie") return refuse(response, who, 403, REMOTE_MESSAGES["step-up"]);
     if (!known.includes(repo) || !visible(repo)) return refuse(response, who, 404, "No such project.", "/projects");
     if (who.role !== "approver" || store.isDemo()) return refuse(response, who, 403, "An approver sets a project's checks.", "/projects");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/checks?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, `/settings/checks?repo=${encodeURIComponent(repo)}`);
     if (!authenticateApprover(who, body.get("password") ?? "", repo).ok) return back("problem", "Enter your Toolroll password to change checks.");
     const act = body.get("act");
     // The automatic review switch: the policy log keeps before → after.
@@ -1020,7 +1165,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const body = readForm(posted, CONSOLE_FORMS.backups);
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return refuse(response, who, 403, "An instance operator looks after backups.", "/settings");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/backups?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/backups");
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change backups.");
     const every = body.get("every") ?? "";
     const hours = Number(every);
@@ -1033,8 +1178,22 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       const problem = checkBackupFolder(folder, [...new Set([...managedRepos(), ...store.knownRepos(), ...(options.poolRoot === undefined ? [] : [options.poolRoot])])]);
       if (problem !== null) return back("problem", problem);
     }
+    // The continuous copy (live-backup.ts): how often, and a folder that is a plain, private folder of this user's
+    // outside every project and checkout. A form without these fields leaves it as it is.
+    const liveBefore = liveBackupState(store).settings;
+    const liveEvery = body.get("live_every") ?? null;
+    const liveMinutes = Number(liveEvery);
+    if (liveEvery !== null && liveEvery !== "off" && !(LIVE_EVERY as readonly number[]).includes(liveMinutes)) return back("problem", "Choose how often to copy continuously.");
+    const liveTyped = body.get("live_folder") === null ? liveBefore.folder ?? "" : (body.get("live_folder") ?? "").trim();
+    const liveFolder = liveTyped === "" || liveTyped === defaultLiveFolder(databaseFile) ? null : liveTyped;
+    if (liveFolder !== null) {
+      const problem = liveFolderProblem(liveFolder, [...new Set([...managedRepos(), ...store.knownRepos(), ...(options.poolRoot === undefined ? [] : [options.poolRoot])])]);
+      if (problem !== null) return back("problem", problem);
+    }
     const before = store.backupSettings();
     store.setBackupSettings({ enabled: every !== "off", everyHours: every === "off" ? before.everyHours : hours, keep, folder }, who.name, now);
+    setLiveBackupSettings(store, { enabled: liveEvery === null ? liveBefore.enabled : liveEvery !== "off", everyMinutes: liveEvery === null || liveEvery === "off" ? liveBefore.everyMinutes : liveMinutes,
+      keep: liveBefore.keep, folder: liveFolder }, who.name, now);
     return back("said", every === "off" ? "Saved. Scheduled backups are off." : "Saved.");
   }
   // v105: download everything as a .zip. An instance operator, with a step-up; the ledger records it.
@@ -1056,7 +1215,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const { who, response, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.flowsOn);
     const repo = body.get("repo") ?? "";
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/flows?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, `/settings/flows?repo=${encodeURIComponent(repo)}`);
     const known = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])];
     if (store.isDemo()) return refuse(response, who, 403, "An approver switches starter flows on.", "/settings/flows");
     if (!known.includes(repo) || !visible(repo)) return refuse(response, who, 404, "No such project.", "/settings/flows");
@@ -1065,13 +1224,26 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const switched = switchOnStarter(store, starter, repo, who.name, clock(), options.configDir ?? null);
     return switched.ok ? back("said", switched.said) : back("problem", switched.said);
   }
+  // Settings → Integrations → youiyoux → Turn off / Turn on: whether a project's change requests become tasks.
+  async function integrationsYouiyoux(ctx: HandlerContext): Promise<void> {
+    const { who, response, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.integrationsYouiyoux);
+    const repo = body.get("repo") ?? "";
+    const back = sayTo(response, "/settings/integrations");
+    const known = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])];
+    if (store.isDemo()) return refuse(response, who, 403, "An approver turns youiyoux requests on or off.", "/settings/integrations");
+    if (!known.includes(repo) || !visible(repo)) return refuse(response, who, 404, "No such project.", "/settings/integrations");
+    const on = body.get("on") === "1";
+    setYouiyouxIntake(store, repo, on, who.name, clock());
+    return back("said", on ? `youiyoux requests in ${basename(repo)} become tasks again.` : `youiyoux requests in ${basename(repo)} are off.`);
+  }
   // Settings → Integrations → Send test: one harmless read-only check of one integration, now.
   async function integrationsTest(ctx: HandlerContext): Promise<void> {
     const { who, response, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.integrationsTest);
     if (!options.configDir) return refuse(response, who, 403, "An installation approver tests integrations.", "/settings");
     const key = body.get("key") ?? "";
-    const back = (name: "said" | "problem", words: string) => redirect(response, `/settings/integrations?${name}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/integrations");
     const checked = (await integrations.check([key])).find(one => one.key === key);
     if (checked === undefined) return back("problem", "That integration isn't here any more.");
     return checked.state === "connected" ? back("said", `${checked.name} works${checked.account === null ? "" : ` (${checked.account})`}.`)
@@ -1082,7 +1254,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const { who, request, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.monitoring);
     if (!options.configDir) return refuse(response, who, 403, "An instance operator sets up monitoring.", "/settings");
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/monitoring?${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, "/settings/monitoring");
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change monitoring.");
     const before = readMonitoring(options.configDir);
     // Never into Toolroll's own folder, a project or the build checkouts: an agent could read the stream there.
@@ -1157,7 +1329,12 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const started = await startConnect({ service: service.id, repo: target, by: who.name, origin, kit: also === null ? kit : null, template, readOnly }, options.connectFetch ?? fetch);
     if (!started.ok) return back(started.said);
     for (const [key, visit] of connectVisits) if (visit.expires < Date.now()) connectVisits.delete(key);
-    connectVisits.set(started.state, started.visit);
+    // The password above proves one thing: this connection, by this account as it is now, and (from a kit whose subagent
+    // is set up) letting that subagent use this tool in this project. The callback holds the visit to exactly that.
+    const kitSet = kit === null || also !== null ? null : kitOf(kit);
+    const installed = kitSet === null || !kitSet.tools.some(one => one.tool === service.id) ? null : kitInstalled(store, kitSet, target);
+    connectVisits.set(started.state, { ...started.visit, generation: store.accountOf(who.name)?.generation ?? -1,
+      grant: installed === null ? null : { subagent: installed.mate.id, tool: service.id, repo: target } });
     return goOutside(response, started.go, `Going to ${service.label} to sign in…`, { state: started.state, path: CONNECT_CALLBACK, secure: origin.startsWith("https:") });
   }
   async function toolsChange(ctx: HandlerContext): Promise<void> {
@@ -1165,7 +1342,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const body = readForm(posted, CONSOLE_FORMS.toolsChange);
     const repo = body.get("repo") ?? "";
     if (!visible(repo) || !consoleProjects().includes(repo)) return refuse(response, who, 403, "That project is outside your access.", "/projects");
-    const back = (key: "said" | "problem", words: string, anchor = "") => redirect(response, `/settings/tools?repo=${encodeURIComponent(repo)}&${key}=${encodeURIComponent(words)}${anchor}`);
+    const back = sayTo(response, `/settings/tools?repo=${encodeURIComponent(repo)}`);
     // As for Connect: a post from a page that showed another project is refused, never applied here.
     const shown = body.get("shown") ?? "";
     if (shown !== repo) {
@@ -1203,7 +1380,14 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       if (action === "import") {
         const wanted = body.getAll("import");
         if (wanted.length === 0) return back("problem", "Choose at least one tool to add.");
-        const found = discoverTools(repo, await codexServers(repo), toolHome);
+        // The project's own .mcp.json read now, off the console's thread (folder-look.ts).
+        let projectConfig: Record<string, unknown> | null | undefined;
+        if (options.identities !== undefined) {
+          const looked = await lookProjectMcp(repo);
+          if (!looked.ok) return back("problem", "This project's folder didn't answer. It may be on a drive that's disconnected, or waiting on macOS. Try again in a moment.");
+          projectConfig = looked.value;
+        }
+        const found = discoverTools(repo, await codexServers(repo), toolHome, process.env, projectConfig);
         const added: string[] = [], problems: string[] = [];
         for (const one of wanted) {
           const match = found.find(tool => tool.spec.name === one);
@@ -1259,7 +1443,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       : `so-theme=${theme}; SameSite=Lax; Path=/; Max-Age=31536000`);
     return redirect(response, back);
   }
-  const modelsAct = (action: "check" | "watch" | "update" | "agent" | "other") => async (ctx: HandlerContext): Promise<void> => {
+  const modelsAct = (action: "check" | "watch" | "update" | "other") => async (ctx: HandlerContext): Promise<void> => {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.models);
     const back = (said: string, bad = false) => redirect(response, `/settings/models?${bad ? "problem" : "said"}=${encodeURIComponent(said)}`);
@@ -1277,32 +1461,6 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       if (!(tool in RUNTIME_TOOLS)) return back("Choose Claude Code, Codex or Gemini CLI.", true);
       const updated = await updateRuntime(store, tool as RuntimeTool, who.name, now, modelSeams);
       return back(updated.message, !updated.ok);
-    }
-    if (action === "agent") {
-      const phase = body.get("phase") ?? "", agent = body.get("agent") ?? "";
-      if (!["plan", "build", "review", "repair"].includes(phase)) return back("Choose a role.", true);
-      const role = ROLE_TITLES[phase as RoleView["phase"]];
-      if (agent === "inherit") {
-        if (phase !== "repair") return back("Choose a model.", true);
-        store.clearPhaseConfig(INSTALLATION_SCOPE, "repair");
-        return back("Repairs now use the builder's agent.");
-      }
-      const split = agent.indexOf("|");
-      const provider = split < 0 ? "" : agent.slice(0, split), model = split < 0 ? "" : agent.slice(split + 1);
-      if (!isProviderId(provider) || !validModelId(model)) return back("Choose a model from the list.", true);
-      const valid = validateSpec({ provider, model });
-      if (!valid.ok) return back(valid.problem, true);
-      if (phase === "review" && provider === "gemini") return back("Gemini cannot review yet. Choose Claude or Codex.", true);
-      const build = store.phaseConfig(INSTALLATION_SCOPE, "build");
-      if (phase === "repair" && build !== null && build.provider !== provider) return back(`Repairs must use the builder's provider (${build.provider}).`, true);
-      store.setPhaseConfig(INSTALLATION_SCOPE, phase, provider, model, who.name, now);
-      const repair = store.phaseConfig(INSTALLATION_SCOPE, "repair");
-      let extra = "";
-      if (phase === "build" && repair !== null && repair.provider !== provider) {
-        store.clearPhaseConfig(INSTALLATION_SCOPE, "repair");
-        extra = " Repairs now follow the builder.";
-      }
-      return back(`${role} now uses ${modelWords(store, provider, model)} for new tasks.${extra}`);
     }
     return refuse(response, who, 404, "No such models action.", "/settings/models");
   };
@@ -1387,7 +1545,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       const nonceKey = `project-instructions:${project}`;
       if (step === "preview") {
         const nonce = mintApprovalNonce(who.name, nonceKey, preview.fingerprint);
-        return sendScreen(response, 200, screen("Review agent instructions", html`<h1>Review agent instructions</h1><p>${preview.plan.skillPath}</p><pre class="recap">${preview.content}</pre>${postForm("/control/instructions-approve", html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label><button>Add these instructions</button>`, { hidden: { repo: project, nonce, fingerprint: preview.fingerprint } })}`, { chrome: chromeFor(project, "settings") }));
+        return sendScreen(response, 200, screen("Review agent instructions", html`<h1>Review agent instructions</h1><p>${preview.plan.skillPath}</p><pre class="recap">${preview.content}</pre>${postForm("/control/instructions-approve", html`${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label>`)}<button>Add these instructions</button>`, { hidden: { repo: project, nonce, fingerprint: preview.fingerprint } })}`, { chrome: chromeFor(project, "settings") }));
       }
       if (who.via === "cookie" && !consumeApprovalNonce(body.get("nonce") ?? "", who.name, nonceKey, body.get("fingerprint") ?? "")) return refuse(response, who, 409, "This instruction preview expired. Review it again.", "/control");
       if (!authenticateApprover(who, body.get("token") ?? "").ok) return refuse(response, who, 403, "Your operator credential is required.", "/control");
@@ -1401,7 +1559,8 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const nonceKey = `project-setup:${project}`;
     if (step === "preview") {
       const nonce = mintApprovalNonce(who.name, nonceKey, preview.fingerprint);
-      return sendScreen(response, 200, screen("Approve project setup", setupPreviewHtml(inputs, { csrf, repo: project, fingerprint: preview.fingerprint, nonce }), { chrome: chromeFor(project, "settings") }));
+      const models = preview.models === null ? null : { label: PRESETS[DEFAULT_PRESET].label, rows: preview.models.rows.map(row => ({ role: slotWords(row.slot), model: row.after?.model ?? (row.slot.phase === "repair" ? "same as the builder" : "not set") })) };
+      return sendScreen(response, 200, screen("Approve project setup", setupPreviewHtml(inputs, { csrf, repo: project, fingerprint: preview.fingerprint, nonce }, models), { chrome: chromeFor(project, "settings") }));
     }
     if (who.via === "cookie" && !consumeApprovalNonce(body.get("nonce") ?? "", who.name, nonceKey, body.get("fingerprint") ?? "")) return refuse(response, who, 409, "This setup preview expired. Review it again.", "/control");
     const approved = approveSetup(store, project, inputs, body.get("fingerprint") ?? "", who.name, body.get("token") ?? "", now);
@@ -1421,7 +1580,8 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       if(!credentials || !state.bindings(credentials.installation).some(one=>state.live(one))) return show("Pair your Slack account first.",409);
       savePrimary(dir,"slack");return redirect(response,"/settings/slack");
     }
-    if(!authenticateApprover(who, body.get("password")??"").ok) return show("Enter your Toolroll password to change Slack access.",403);
+    // Connecting or pairing opens a way to act from Slack: a credential act. Unpairing or disconnecting only closes one.
+    if(!(action==="connect"||action==="pair" ? authenticateCredential(who, body.get("password")??"") : authenticateApprover(who, body.get("password")??"")).ok) return show("Enter your Toolroll password to change Slack access.",403);
     const generation=store.accountOf(who.name)!.generation;
     if(action==="connect") {
       try {
@@ -1462,7 +1622,8 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const body = readForm(posted, CONSOLE_FORMS.chatApproval);
     if ((["scope", "full-access", "cap-usd", "nonce", "digest", "token"] as const).some(key => body.getAll(key).length > 1)) return refuse(response, who, 400, "Submit one value for each field.", "/settings");
     const given = (body.get("scope") ?? "all").trim();
-    const scope = given === "all" || given === "" ? CHAT_APPROVAL_ALL : canonicalProject(given) ?? given;
+    const scope = given === "all" || given === "" ? CHAT_APPROVAL_ALL : identities.vouched(given, consoleProjects) ?? null;
+    if (scope === null) return refuse(response, who, 403, "That isn't one of your projects.", "/settings");
     if (scope !== CHAT_APPROVAL_ALL && !(visible(scope) && store.accountCanAccess(who.name, scope))) return refuse(response, who, 403, "That isn't one of your projects.", "/settings");
     const where = scope === CHAT_APPROVAL_ALL ? "all your projects" : projectName(scope);
     if (step === "off") {
@@ -1503,6 +1664,8 @@ ${postForm("/settings/chat-approval/save", html`\
     const show = (problem: string, status = 400) => sendScreen(response, status, screen("Telegram", telegramSettingsHtml(store, botId, who.name, { problem }), { chrome: chromeFor(projectOf(who, request) ?? null, "settings") }));
     if (body.getAll("password").length > 1) return show("Submit one value for each field.");
     if (botId === null) return show("Connect the Telegram bot first.", 409);
+    // Pairing a phone is a credential act (a typed password, always); unpairing only closes a way in.
+    if (op === "unpair" && authenticateApprover(who, body.get("password") ?? "").ok) { store.unpairTelegram(botId, who.name, now); return redirect(response, "/settings/telegram"); }
     const pairingIdentity = authenticateAccount(store, who.name, body.get("password") ?? "");
     if (!pairingIdentity.ok || pairingIdentity.role !== "approver" || pairingIdentity.generation !== who.session.generation) return show("Enter your Toolroll password to change your phone pairing.", 403);
     if (op === "unpair") {
@@ -1527,7 +1690,7 @@ ${postForm("/settings/chat-approval/save", html`\
       if (!credentials || !state.bindings(credentials.installation).some(one => state.live(one))) return show("Pair your Teams account first.", 409);
       savePrimary(dir, "teams"); return redirect(response, "/settings/teams");
     }
-    if (!authenticateApprover(who, body.get("password") ?? "").ok) return show("Enter your Toolroll password to change Teams access.", 403);
+    if (!(action === "connect" || action === "pair" ? authenticateCredential(who, body.get("password") ?? "") : authenticateApprover(who, body.get("password") ?? "")).ok) return show("Enter your Toolroll password to change Teams access.", 403);
     const generation = store.accountOf(who.name)!.generation;
     if (action === "connect") {
       try {
@@ -1566,7 +1729,7 @@ ${postForm("/settings/chat-approval/save", html`\
       if(!credentials || !state.bindings(credentials.installation).some(one=>state.live(one))) return show("Pair your Discord account first.",409);
       savePrimary(dir,"discord");return redirect(response,"/settings/discord");
     }
-    if(!authenticateApprover(who, body.get("password")??"").ok) return show("Enter your Toolroll password to change Discord access.",403);
+    if(!(action==="connect"||action==="pair" ? authenticateCredential(who, body.get("password")??"") : authenticateApprover(who, body.get("password")??"")).ok) return show("Enter your Toolroll password to change Discord access.",403);
     const generation=store.accountOf(who.name)!.generation;
     if(action==="connect") {
       try {
@@ -1613,6 +1776,11 @@ ${postForm("/settings/chat-approval/save", html`\
     const wanted = body.get("permission-mode");
     if (wanted !== "auto" && wanted !== "bypassPermissions") {
       return refuse(response, who, 400, "permissions must be Auto or Full access", "/settings");
+    }
+    // Widening every new task to Full access takes a password (chat-management.md §0a.3): an ordinary step-up, so a
+    // signed-in session does under Passwordless. Back to Auto narrows, and needs none.
+    if (wanted === "bypassPermissions" && store.permissionDefault().mode !== "bypassPermissions" && !authenticateApprover(who, body.get("password") ?? "").ok) {
+      return redirect(response, `/settings?said=${encodeURIComponent("Enter your Toolroll password to start new tasks with Full access. Nothing changed.")}`);
     }
     store.setPermissionDefault(wanted, who.name, now);
     return redirect(
@@ -1691,6 +1859,7 @@ ${postForm("/settings/chat-approval/save", html`\
     // write-only from here — status pages say set/not-set, never bytes.
     const provider = body.get("provider") ?? "";
     if (!isProviderId(provider)) return refuse(response, who, 400, "unknown provider", "/settings");
+    if (!isKeyedProvider(provider)) return refuse(response, who, 400, `${ACP_AGENTS[provider].name} signs in its own way — Toolroll keeps no key for it`, "/settings");
     if (op === "clear") {
       const cleared = clearProviderKey(provider, providerHome);
       const clearedMode = readAuthMode(provider, providerHome);
@@ -1724,7 +1893,7 @@ ${postForm("/settings/chat-approval/save", html`\
     }
     // Apply the mode only when it actually differs.
     const modeChanged = modeSelected && wantedMode !== currentMode;
-    if (modeChanged) setAuthMode(provider, wantedMode as AuthMode, providerHome);
+    if (modeChanged) setAuthMode(provider, wantedMode, providerHome);
     const modeNote = modeChanged ? ` \u00b7 ${provider} now uses ${wantedMode === "api-key" ? "the API key" : "its own subscription / login"}` : "";
     if (value === "") {
       return redirect(response, `/settings?said=${encodeURIComponent(modeChanged ? `${provider} now uses ${wantedMode === "api-key" ? "the API key" : "its own subscription / login"}` : `no change — ${provider} already uses ${currentMode === "api-key" ? "the API key" : "its own subscription / login"}`)}`);
@@ -1748,7 +1917,7 @@ ${postForm("/settings/chat-approval/save", html`\
       const existing = loadBotToken({}, options.telegramTokenFile);
       const hasEnv = (envValue(process.env, "TELEGRAM_TOKEN") ?? "") !== "";
       const csrf = who.via === "cookie" ? who.session.csrf : "";
-      return sendScreen(response, 400, settingsPage(chromeFor(who.via === "cookie" ? who.session.project : defaultProject, "settings"), existing, hasEnv, csrf, saved.message, options.configDir === undefined ? null : effectivePrimary(process.env, options.configDir, loadBotToken(process.env, options.telegramTokenFile) !== null), null, null, null, {
+      return sendScreen(response, 400, settingsPage(chromeFor(who.via === "cookie" ? who.session.project : runtime.defaultProject, "settings"), existing, hasEnv, csrf, saved.message, options.configDir === undefined ? null : effectivePrimary(process.env, options.configDir, loadBotToken(process.env, options.telegramTokenFile) !== null), null, null, null, {
         ...store.permissionDefault(),
         canManage: who.role === "approver",
       }));
@@ -1867,7 +2036,8 @@ ${modeWords(terms)
       return refuse(response, who, 409, "the terms moved while you were reading — read them again", "/mode");
     }
     const token = body.get("token") ?? "";
-    if (!authenticateApprover(who, token).ok) {
+    // A mode that lets a chat app approve opens a way to act: a credential act. Any other mode is an ordinary one.
+    if (!(body.get("chat-approve") === "1" ? authenticateCredential(who, token) : authenticateApprover(who, token)).ok) {
       return refuse(response, who, 403, "signing a mode takes your password, typed again", "/mode");
     }
     store.signMode(
@@ -1932,8 +2102,9 @@ ${modeWords(terms)
     return redirect(response, "/chat");
   }
 
-  /** Settings → Models, read from the saved catalog and the installation's role rows. */
-  function modelsView(canManage: boolean, csrf: string, now: Date, said: string | null, problem: string | null) {
+  /** Settings → Models, read from the saved catalog and the role rows at the scope being edited (the installation,
+   * or one project and what it inherits). */
+  function modelsView(canManage: boolean, csrf: string, now: Date, said: string | null, problem: string | null, query: URLSearchParams = new URLSearchParams()) {
     const runtimes = runtimeStates(store);
     const installed = new Set(runtimes.map(one => one.tool));
     const openrouter = (readProviderKey("openrouter", providerHome) ?? process.env["OPENROUTER_API_KEY"] ?? "") !== "";
@@ -1943,26 +2114,76 @@ ${modeWords(terms)
       { label: "Gemini", provider: "gemini", on: installed.has("gemini") },
       { label: "OpenRouter", provider: "openrouter", on: openrouter },
     ];
-    const build = store.phaseConfig(INSTALLATION_SCOPE, "build");
-    const roles: RoleView[] = (["plan", "build", "review", "repair"] as const).map(phase => {
-      const row = store.phaseConfig(INSTALLATION_SCOPE, phase);
-      const groups = makers.filter(one => one.on && !(phase === "review" && one.provider === "gemini") && !(phase === "repair" && build !== null && one.provider !== build.provider))
+    const projects = consoleProjects();
+    const asked = query.get("scope") ?? INSTALLATION_SCOPE;
+    const scope = asked !== INSTALLATION_SCOPE && projects.includes(asked) ? asked : INSTALLATION_SCOPE;
+    const repo = scope === INSTALLATION_SCOPE ? null : scope;
+    const said_ = (pair: { provider: string; model: string | null }) => `${ASSISTANTS[pair.provider as ProviderId]?.name ?? pair.provider} · ${modelWords(store, pair.provider, pair.model)}`;
+    const build = resolvePhaseAgent(store, "build", repo, {});
+    const roles: RoleView[] = SLOTS.map(slot => {
+      const own = rowAt(store, scope, slot);
+      const inherited = repo === null ? null : rowAt(store, INSTALLATION_SCOPE, slot);
+      const unset = repo !== null ? (inherited === null ? "Same as the installation (not set)" : `Same as the installation (${inherited.model ?? inherited.provider})`)
+        : slot.phase === "repair" ? "Same as the builder" : slot.phase === "review" ? "Same as the planner"
+        : slot.tier === "light" ? "Not set: small tasks use the routine builder" : slot.tier === "strong" ? "Not set: uses the routine one" : "Not set";
+      const words = own !== null ? said_(own) : inherited !== null ? `Inherits the installation's: ${said_(inherited)}`
+        : slot.phase === "repair" ? "Follows the builder" : slot.phase === "review" ? "Follows the planner" : slot.tier !== "routine" ? "Uses the routine one" : "Not set";
+      const groups = makers.filter(one => one.on && !(slot.phase === "review" && one.provider === "gemini") && !(slot.phase === "repair" && build.ok && one.provider !== build.spec.provider))
         .map(one => ({ label: one.label, provider: one.provider, options: modelOptions(store, one.provider, now, providerHome) }));
-      return {
-        phase, label: ROLE_TITLES[phase], groups, ...(phase === "repair" ? { inherit: true } : {}),
-        current: row === null ? (phase === "repair" ? "inherit" : "") : `${row.provider}|${row.model ?? ""}`,
-        words: row === null ? (phase === "repair" ? "Same as the builder" : "Not set") : `${ASSISTANTS[row.provider as ProviderId]?.name ?? row.provider} · ${modelWords(store, row.provider, row.model)}`,
-      };
+      return { key: slotKey(slot), label: slotWords(slot), current: own === null ? "" : `${own.provider}|${own.model ?? ""}`, words, unset, groups, tier: slot.tier !== "routine" };
     });
+    const inUse = presetInUse(store, scope);
+    const unchosen = repo === null && ALL_SLOTS.every(slot => rowAt(store, INSTALLATION_SCOPE, slot) === null);
+    const checked = checkScope(store, repo);
+    // A preset or a switch, previewed: the exact rows it moves, with what a change of provider brings along.
+    const pairWords = (pair: { provider: string; model: string | null } | null, slot: (typeof SLOTS)[number]) => pair === null ? (repo !== null ? "same as the installation" : slot.phase === "repair" ? "same as the builder" : slot.phase === "review" ? "same as the planner" : slot.tier === "light" ? "routine builder" : slot.tier === "strong" ? "routine one" : "not set") : (pair.model ?? `${pair.provider} default`);
+    const switchFrom = query.get("switch"), switchTo = query.get("to");
+    const presetAsked = query.get("preset");
+    // The rows, what they inherit, and both digests come from one snapshot (model-choices.ts previewModelChange).
+    const previewOf = (title: string, change: ModelChange[], hidden: Record<string, string>) => {
+      const snapshot = previewModelChange(store, scope, change);
+      const rows = snapshot.rows.map(row => {
+        const notes: string[] = [];
+        const was = row.before?.provider ?? row.inherited?.provider ?? null;
+        if (row.after !== null && was !== null && was !== row.after.provider && isProviderId(row.after.provider)) {
+          const name = ASSISTANTS[row.after.provider].name;
+          notes.push(`Billed the way ${name} is signed in on this computer.`);
+          notes.push(MONEY_CAPABILITIES[row.after.provider].nativeDollarCapFlag === null ? `${name} can't hold a per-task dollar cap.` : `${name} can hold a per-task dollar cap.`);
+          notes.push(`Builds reach ${name}'s hosts instead of ${ASSISTANTS[was as ProviderId]?.name ?? was}'s.`);
+        }
+        return { role: slotWords(row.slot), before: pairWords(row.before, row.slot), after: pairWords(row.after, row.slot), notes };
+      });
+      return { title, rows, hidden: { scope, digest: snapshot.state, change: snapshot.change, ...hidden } };
+    };
+    const preview = !canManage ? null
+      : isPresetName(presetAsked) ? previewOf(`Use ${PRESETS[presetAsked].label}`, presetChange(presetAsked), { preset: presetAsked })
+      : switchFrom !== null && switchTo !== null && exactModelId(switchFrom) && exactModelId(switchTo) ? previewOf(`Switch to ${switchTo}`, switchChange(store, scope, switchFrom, switchTo), { switch: switchFrom, to: switchTo })
+      // A new installation with nothing chosen yet opens on the default, ready to apply.
+      : unchosen ? previewOf(`Start with ${PRESETS[DEFAULT_PRESET].label}`, presetChange(DEFAULT_PRESET), { preset: DEFAULT_PRESET })
+      : null;
     const chat = store.getChatConfig();
     const chatName = chat === null ? "" : chat.provider === "claude-subscription" ? "Claude membership" : chat.provider === "codex-subscription" ? "Codex membership" : chat.provider === "anthropic-api" ? "Anthropic API" : "OpenRouter";
+    const capital = (words: string) => `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+    const alsoSet = store.listPhaseTierAlternates(INSTALLATION_SCOPE).length + (repo === null ? 0 : store.listPhaseTierAlternates(repo).length) > 0;
     return {
       runtimes, watch: watchState(store), roles, csrf, canManage, said, problem,
       chat: chat === null ? null : { words: `Leads and chat use ${chatName} · ${modelWords(store, chat.provider, chat.model)}` },
       fresh: (["claude", "codex", "gemini"] as const).flatMap(source => seenModels(store, source)).filter(model => isNewModel(model, now)).slice(0, 12),
+      scope: { value: scope, label: repo === null ? "All projects" : projectName(repo), digest: stateDigest(store, scope),
+        options: [{ value: INSTALLATION_SCOPE, label: "All projects" }, ...projects.map(one => ({ value: one, label: projectName(one) }))] },
+      inUse: unchosen ? "nothing chosen yet" : inUse === null ? null : PRESETS[inUse].label,
+      presets: (["sized", "opus"] as const).map(name => ({ name, label: PRESETS[name].label, words: PRESETS[name].words, inUse: inUse === name, recommended: name === DEFAULT_PRESET })),
+      newer: newerModels(store, scope).map(one => ({ from: one.from, to: one.to.id, name: one.to.name, roles: one.slots.map(slotWords).join(", ").toLowerCase() })),
+      preview, unresolved: checked.kind === "ok" ? null : checked.kind === "incomplete" ? `some roles have no model yet. Choose them above, or use ${PRESETS[DEFAULT_PRESET].label}.` : browserWords(checked.problem),
+      sizing: { small: capital(SIZE_MEANS.small), routine: capital(SIZE_MEANS.medium), large: SIZE_MEANS.large, risky: RISKY_MEANS,
+        classifier: readProviderKey("openrouter", providerHome) !== null ? "A quick AI check (Jev, through your OpenRouter key) reads its title and description." : `A quick AI check (${SIZING_CLAUDE_MODEL}, on this computer's Claude sign-in) reads its title and description.` },
+      routing: `When a task is filed and Claude has used over ${HEADROOM_FIVE_HOUR_LIMIT}% of its 5-hour window or ${HEADROOM_WEEKLY_LIMIT}% of its week, ${alsoSet ? "the other provider you set for that size is preferred if it has more room" : "an alternate provider with more room would be preferred, but none is set"}; with no room anywhere, the first choice is kept. This is a preference at filing time, not a limit.`,
+      recent: recentRuns(store).map(one => ({ taskId: one.taskId, runId: one.runId, role: one.role,
+        chosen: one.chosen === null ? "its default" : /^(opus|sonnet|haiku|fable)$/.test(one.chosen) ? `floating ${one.chosen}` : one.chosen,
+        ranOn: one.ranOn ?? "not reported" })),
+      waiting: canManage ? store.scopesAwaitingApproval(null, 10, admissionList()).map(one => ({ taskId: one.taskId, title: one.title })) : [],
     };
   }
-
 
   /** Google's redirect back: the code becomes a saved refresh token, and a page sends the person back to Settings. */
   async function googleCallback(ctx: EdgeContext): Promise<void> {
@@ -2000,7 +2221,14 @@ ${modeWords(terms)
     if (!startedHere(request, state)) return done("/settings/tools", "problem", "That sign-in was started in another browser. Connect again from this one.");
     const visit = connectVisits.get(state);
     connectVisits.delete(state);
-    if (visit === undefined || visit.expires < Date.now() || store.accountOf(visit.by)?.role !== "approver") return done("/settings/tools", "problem", "That sign-in expired. Connect again.");
+    // The signer as at Connect: still an approver, not revoked, the same generation, still in the project. Checked here,
+    // before the connection changes, and again at the grant, after every wait.
+    const standing = (): boolean => {
+      const account = visit === undefined ? null : store.accountOf(visit.by);
+      return visit !== undefined && account !== null && account.role === "approver" && account.revokedAt === null && visit.generation !== undefined
+        && account.generation === visit.generation && store.accountCanAccess(visit.by, visit.repo);
+    };
+    if (visit === undefined || visit.expires < Date.now() || !standing()) return done("/settings/tools", "problem", "That sign-in expired. Connect again.");
     const service = oneClickOf(visit.service)!;
     const kit = visit.kit === null ? null : kitOf(visit.kit);
     // Started from a gallery template's page: back to it, for the same project.
@@ -2013,21 +2241,31 @@ ${modeWords(terms)
     if (!/^[\x21-\x7e]{4,2048}$/.test(code)) return done(back, "problem", `${service.label} didn't send a sign-in code. Connect again.`);
     const now = clock();
     if (!adapterPolicy({ caller: "service", capability: "none" }).ok) return respond(response, 403, "text/plain", "Forbidden");
-    const finished = await finishConnect(store, visit, code, now, { fetcher: options.connectFetch ?? fetch, home: toolHome, omitEnv: ALL_CREDENTIAL_ENV });
+    const finished = await finishConnect(store, visit, code, now, { fetcher: options.connectFetch ?? fetch, home: toolHome, omitEnv: ALL_CREDENTIAL_ENV, stillStanding: standing });
     if (!finished.ok) return done(back, "problem", finished.said);
     // From a kit: its teammate may use the tool now (reading freely, the rest after a person approves each call).
     const set = kit === null || !kit.tools.some(one => one.tool === service.id) ? null : kitInstalled(store, kit, visit.repo);
-    if (set !== null && store.subagentGrant(set.mate.id, service.id) === null) {
-      const granted = await grantTool(store, set.mate, service.id, visit.by, now, { toolHome });
+    const bound = visit.grant ?? null;
+    if (set !== null && bound !== null && bound.subagent === set.mate.id && bound.tool === service.id && bound.repo === visit.repo && set.mate.repo === visit.repo
+      && store.subagentGrant(set.mate.id, service.id) === null && standing()) {
+      // The password at Connect (toolsConnect) is this grant's proof, for exactly the grant the visit names, while the
+      // signer still stands: re-checked after the tool's listing, in the step that saves the grant.
+      const granted = await grantTool(store, set.mate, service.id, visit.by, now, { toolHome }, { widening: "proved", stillProved: standing });
       if (granted.ok) return done(back, "said", `${service.label} is connected to ${to}, and ${nameOf(set.mate)} can use it: reading freely, the rest after you approve each call.`);
     }
     return done(back, "said", finished.said);
   }
   const registrations = handlersOf("settings", {
     "spend": spendPage,
+    "settings.spend": spendSettingsPage,
     "mode": modePage,
     "control": controlPage("setup"),
     "control.connection": controlPage("connection"),
+    "settings.updates-check-send": updatesCheck,
+    "settings.storage-check-send": storageCheck,
+    "settings.pull-requests-check-send": pullRequestsCheck,
+    "settings.connection-check": connectionCheckNow,
+    "control.models-refresh": modelsRefresh,
     "settings.models": modelsPage,
     "settings.tools": toolsPage,
     "settings.project": projectPage,
@@ -2043,6 +2281,9 @@ ${modeWords(terms)
     "settings.backups": backupsPage,
     "settings.data": dataPage,
     "settings.sign-in": signInPage,
+    "settings.passwordless": passwordlessPage,
+    "settings.passwordless-send": passwordlessSave,
+    "settings.release-approval-send": releaseApprovalSave,
     "settings.lead": leadPage,
     "settings.teams": teamsPage,
     "settings.discord": discordPage,
@@ -2056,12 +2297,18 @@ ${modeWords(terms)
     "settings.page": settingsHome,
     "provider.resume": providerResume,
     "settings.updates-dismiss": updatesDismiss,
+    "session.forget-password": forgetPassword,
     "settings.updates-checks": updatesChecks,
     "settings.skills-revise": skillsRevise,
     "settings.skills-import": skillsAct("import"),
     "settings.skills-change": skillsAct("change"),
     "spend.budget": spendBudget,
     "settings.project-concurrency": projectConcurrency,
+    "settings.project-live-view": projectLiveView,
+    "settings.project-network": projectNetwork,
+    "settings.project-writes": projectWrites,
+    "settings.project-check-access": projectCheckAccess,
+    "settings.project-sandbox": projectSandbox,
     "settings.project-delete": projectDelete,
     "settings.policy-send": policySave,
     "settings.approval-send": approvalSave,
@@ -2080,6 +2327,7 @@ ${modeWords(terms)
     "settings.backups-send": backupsSave,
     "settings.data-send": dataExport,
     "settings.integrations-test-send": integrationsTest,
+    "settings.integrations-youiyoux": integrationsYouiyoux,
     "settings.monitoring-send": monitoringSave,
     "settings.tools-connect-send": toolsConnect,
     "settings.tools-change-send": toolsChange,
@@ -2088,7 +2336,8 @@ ${modeWords(terms)
     "settings.models-check": modelsAct("check"),
     "settings.models-watch": modelsAct("watch"),
     "settings.models-update": modelsAct("update"),
-    "settings.models-agent": modelsAct("agent"),
+    "settings.models-agent": modelsSave,
+    "settings.models-apply": modelsApply,
     "settings.models-act": modelsAct("other"),
     "settings.knowledge-refresh": knowledgeRefresh,
     "settings.knowledge-proposal": knowledgeProposal,
@@ -2145,5 +2394,181 @@ ${modeWords(terms)
     "edge.google-callback": googleCallback,
     "edge.connect-callback": connectCallback,
   });
+  // Settings → Project → Where builds write (writes-mode.ts). An approver for the project changes it with their password
+  // typed now; the ledger keeps before → after. New scopes use it; approved ones keep theirs.
+  async function projectWrites(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.projectWrites);
+    const repo = body.get("repo") ?? "";
+    if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
+    if (who.via !== "cookie" || who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project changes where its builds may write.", "/settings/project");
+    const back = sayTo(response, `/settings/project?repo=${encodeURIComponent(repo)}`, "#writes");
+    const wanted = body.get("writes");
+    if (!isWritesMode(wanted)) return back("problem", "Choose where builds may write. Nothing changed.");
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change where builds may write.");
+    const changed = store.setProjectWrites(repo, wanted, who.name, now);
+    return back("said", changed.before === changed.after ? "Nothing changed." : "Saved. Tasks scoped from now on use it; tasks already approved keep what they were approved with.");
+  }
+
+  // Settings → Project → Check access (check-access.ts). Widening is an instance operator's act with a password typed now
+  // (an identity-provider re-check doesn't count); any approver for the project narrows it. The level is compared again
+  // inside the write, so a change made meanwhile can't turn a narrowing into a widening. The ledger keeps before → after.
+  async function projectCheckAccess(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.projectCheckAccess);
+    const repo = body.get("repo") ?? "";
+    if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
+    if (who.via !== "cookie" || who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project changes how far its checks reach.", "/settings/project");
+    const back = sayTo(response, `/settings/project?repo=${encodeURIComponent(repo)}`, "#check-access");
+    const wanted = body.get("level");
+    if (!isCheckAccess(wanted)) return back("problem", "Choose how far checks reach. Nothing changed.");
+    // Not available yet (check-access.ts signInsAvailable): refused before the password, whatever the form sent.
+    const unavailable = wanted === "sign-ins" ? signInsUnavailableWords(options.platform ?? process.platform) : null;
+    if (unavailable !== null) return back("problem", `${unavailable} Nothing changed.`);
+    const widening = widerThan(wanted, store.projectCheckAccess(repo));
+    // Sign-ins with an open network: a second, explicit yes, said before the password.
+    if (wanted === "sign-ins" && widening && store.projectNetwork(repo).mode === "open" && body.get("confirm-open") !== "yes") {
+      return back("problem", "This project's network is open: confirm that its checks could send your sign-ins to any host. Nothing changed.");
+    }
+    const proved = authenticateCredential(who, body.get("password") ?? "");
+    if (!proved.ok) return back("problem", "Enter your Toolroll password to change how far checks reach.");
+    if (widening && (proved.method !== "password-now" || !store.isInstanceOperator(who.name))) {
+      return back("problem", "Only an instance operator widens how far checks reach, with their password typed now. Nothing changed.");
+    }
+    const changed = store.setProjectCheckAccess(repo, wanted, who.name, now, { may: widening ? "widen" : "narrow" });
+    if (changed === null) return back("problem", "Check access changed meanwhile, and this would now widen it. Nothing changed.");
+    return back("said", changed.before === changed.after ? "Nothing changed." : "Saved. Tasks scoped from now on use it; tasks already approved keep what they were approved with.");
+  }
+
+  // Settings → Project → Home folder (project-sandbox.ts, sandbox parity C9): what the project's builds and checks may not
+  // read, and the macOS services they may also use. An approver for the project changes it with
+  // their password typed now; the ledger keeps before → after. New scopes seal it; approved ones keep theirs.
+  async function projectSandbox(ctx: HandlerContext): Promise<void> {
+    const { who, response, now, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.projectSandbox);
+    const repo = body.get("repo") ?? "";
+    if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/project");
+    if (who.via !== "cookie" || who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return refuse(response, who, 403, "An approver for this project changes its sandbox.", "/settings/project");
+    const back = sayTo(response, `/settings/project?repo=${encodeURIComponent(repo)}`, "#sandbox");
+    const lines = (name: "read-deny" | "mach") => (body.get(name) ?? "").split(/\r?\n/);
+    const parsed = { readDeny: parseReadDeny(lines("read-deny")), machLookup: parseMachLookup(lines("mach")) };
+    for (const one of Object.values(parsed)) if (!one.ok) return back("problem", `${one.problem.charAt(0).toUpperCase()}${one.problem.slice(1)}. Nothing changed.`);
+    if (!authenticateCredential(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change the project's sandbox.");
+    const wanted = { readDeny: parsed.readDeny.ok ? parsed.readDeny.list : [], machLookup: parsed.machLookup.ok ? parsed.machLookup.list : [] };
+    const changed = store.setProjectSandbox(repo, wanted, who.name, now);
+    if (changed === null) return back("problem", "An approver for this project changes its sandbox. Nothing changed.");
+    return back("said", JSON.stringify(changed.before) === JSON.stringify(changed.after) ? "Nothing changed." : "Saved. Tasks scoped from now on use it; tasks already approved keep what they were approved with.");
+  }
+
+  // Release approval (docs/plans/auto-approve-green.md): an approver of the project. Approving automatically is a
+  // credential act (a password typed now, never a session); asking again is one click and takes back automatic seals.
+  async function releaseApprovalSave(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.releaseApproval);
+    const repo = body.get("repo") ?? "";
+    if (!consoleProjects().includes(repo) || !visible(repo)) return refuse(response, who, 403, "That project is outside your access.", "/settings/approval");
+    const back = sayTo(response, `/settings/approval?repo=${encodeURIComponent(repo)}`);
+    if (who.role !== "approver" || store.isDemo() || !store.accountCanAccess(who.name, repo)) return back("problem", "An approver of this project sets how its releases are approved.");
+    const action = body.get("action");
+    if (action === "ask") {
+      const changed = setReleaseApproval(store, repo, false, who.name, now);
+      return back("said", !changed.changed ? "Saved." : `Releases ask you again.${changed.withdrawn.length === 0 ? "" : ` ${changed.withdrawn.length} automatic approval${changed.withdrawn.length === 1 ? " was" : "s were"} taken back.`}`);
+    }
+    if (action !== "auto") return back("problem", "Choose Ask me or Approve automatically when checks pass.");
+    if (!authenticateCredential(who, body.get("password") ?? "", repo).ok) return back("problem", "Enter your Toolroll password to approve releases automatically.");
+    const changed = setReleaseApproval(store, repo, true, who.name, now);
+    return back("said", changed.changed ? "Releases approve themselves once CI and the release check pass." : "Saved.");
+  }
+  // Settings → Spend: the monthly limits editor and the models in use. An instance operator's page; changing a limit
+  // posts to /spend/budget with a step-up.
+  async function spendSettingsPage(ctx: HandlerContext): Promise<void> {
+    const { url, response, now } = ctx;
+    const current = monthOf(now);
+    const subagents = store.subagents([...new Set([...managedRepos(), ...store.knownRepos()])]);
+    const subagentNames = subagentNamesOf(store.handle);
+    const projects = consoleProjects();
+    const people = store.accountFacts().filter(one => one.revokedAt === null).map(one => one.name);
+    const models = (["plan", "build", "review"] as const).map(phase => {
+      const agent = resolvePhaseAgent(store, phase, null, {});
+      return { role: phase === "plan" ? "Planner" : phase === "build" ? "Builder" : "Reviewer", model: agent.ok ? `${agent.spec.provider} · ${agent.spec.model ?? "its default model"}` : "Not set" };
+    });
+    const view = {
+      budgets: budgetStates(store.budgets(), spendItems(store.handle, current.from, current.to)), subagentNames, models,
+      targets: [
+        { value: "installation:*", label: "Everything", group: "Everything" as const },
+        ...projects.map(repo => ({ value: `project:${repo}`, label: projectName(repo), group: "Projects" as const })),
+        ...people.map(name => ({ value: `person:${name}`, label: name, group: "People" as const })),
+        ...subagents.map(one => ({ value: `subagent:${one.id}`, label: `${subagentNames.get(one.id) ?? one.handle} (${projectName(one.repo)})`, group: "Subagents" as const })),
+      ],
+    };
+    return sendScreen(response, 200, screen("Spend settings", spendSettingsHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }), { chrome: chromeFor(null, "settings") }));
+  }
+  // Settings → Models (docs/plans/spend-dashboard.md, slice 3): the one editor. Both posts are an instance operator's,
+  // browser-only step-ups: the password (or a Passwordless session, or an identity-provider re-check) is proved here,
+  // and model-choices.ts re-proves the same session, credential generation and operator standing inside the one
+  // transaction that checks the form against what is stored, validates the result and writes and ledgers every row.
+  function modelsAuthority(who: Extract<HandlerContext["who"], { via: "cookie" }>, method: string): ModelAuthority {
+    const session = who.session;
+    return { actor: who.name, generation: session.generation, method, live: () => sessions.holds(session) && sessions.savedNow(session) && sessionWithinLifetime(session, Date.now()) };
+  }
+  function modelsBack(response: HandlerContext["response"], scope: string) {
+    return sayTo(response, `/settings/models${scope === INSTALLATION_SCOPE ? "" : `?scope=${encodeURIComponent(scope)}`}`);
+  }
+  function modelsSaid(result: ReturnType<typeof applyModelChoices>, what: string): { key: "said" | "problem"; words: string } {
+    if (!result.ok) return { key: "problem", words: browserWords(result.problem) };
+    const count = result.diff.length;
+    const done = count === 0 ? "Nothing changed." : `${what}: ${count} change${count === 1 ? "" : "s"} saved for tasks filed from now on.`;
+    return { key: "said", words: result.unresolved === null ? done : `${done} Some roles have no model yet, so new tasks can't be filed here.` };
+  }
+  /** One save of the whole editor: every role at the scope, sets and clears, as one change. */
+  async function modelsSave(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.modelsChange);
+    const scope = body.get("scope") ?? INSTALLATION_SCOPE;
+    const back = modelsBack(response, scope);
+    if (["scope", "password", "digest", ...SLOTS.map(slotKey)].some(field => body.sent.getAll(field).length > 1)) return back("problem", "That form was sent twice over. Nothing changed.");
+    const proved = authenticateApprover(who, body.get("password") ?? "");
+    if (!proved.ok) return back("problem", "Enter your Toolroll password to change models.");
+    const change: ModelChange[] = [];
+    for (const slot of SLOTS) {
+      const value = body.sent.get(slotKey(slot));
+      if (value === null) continue;
+      if (value === "clear") { change.push({ slot, to: null }); continue; }
+      const split = value.indexOf("|");
+      if (split < 1) return back("problem", "Choose a model from the list. Nothing changed.");
+      change.push({ slot, to: { provider: value.slice(0, split), model: value.slice(split + 1) } });
+    }
+    // Repairs resume the builder's session: a builder moved to another provider takes repair with it.
+    const builder = change.find(one => one.slot.phase === "build" && one.slot.tier === "routine")?.to ?? null;
+    const repair = change.findIndex(one => one.slot.phase === "repair");
+    let follows = false;
+    if (builder !== null && repair >= 0 && change[repair]!.to !== null && change[repair]!.to!.provider !== builder.provider) {
+      change[repair] = { slot: change[repair]!.slot, to: null };
+      follows = true;
+    }
+    const result = applyModelChoices(store, { scope, change, expected: { state: body.get("digest") ?? "" }, strict: true, knownProject: repo => consoleProjects().includes(repo) }, modelsAuthority(who, proved.method), now);
+    const said = modelsSaid(result, scope === INSTALLATION_SCOPE ? "All projects" : projectName(scope));
+    return back(said.key, follows && result.ok ? `${said.words} Repairs now follow the builder.` : said.words);
+  }
+  /** A preset or a switch, applied exactly as previewed: the change's own digest rides the form. */
+  async function modelsApply(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.modelsChange);
+    const scope = body.get("scope") ?? INSTALLATION_SCOPE;
+    const back = modelsBack(response, scope);
+    if (["scope", "password", "digest", "preset", "switch", "to", "change"].some(field => body.sent.getAll(field).length > 1)) return back("problem", "That form was sent twice over. Nothing changed.");
+    const proved = authenticateApprover(who, body.get("password") ?? "");
+    if (!proved.ok) return back("problem", "Enter your Toolroll password to change models.");
+    const preset = body.get("preset"), from = body.get("switch"), to = body.get("to");
+    const change = isPresetName(preset) ? presetChange(preset)
+      : from !== null && to !== null && exactModelId(from) && exactModelId(to) ? switchChange(store, scope, from, to) : null;
+    if (change === null) return back("problem", "Choose a preset or a newer model. Nothing changed.");
+    const result = applyModelChoices(store, { scope, change, expected: { state: body.get("digest") ?? "", change: body.get("change") ?? "" }, strict: true, knownProject: repo => consoleProjects().includes(repo) }, modelsAuthority(who, proved.method), now);
+    const said = modelsSaid(result, isPresetName(preset) ? PRESETS[preset].label : `Switched to ${to}`);
+    return back(said.key, said.words);
+  }
   return { registrations, modelsView };
 }

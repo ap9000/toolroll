@@ -4,7 +4,7 @@
  * costs nothing per run, so its windows are what bind it; budgets bind work
  * billed to an API key. An instance operator's view.
  */
-import type { BrowserLimitTile, BrowserLimits } from "./browser-workspace.js";
+import type { BrowserLimitTile, BrowserLimits, BrowserUsageChip } from "./browser-workspace.js";
 import { windowLabel } from "./provider-limits.js";
 import { usd, type BudgetState } from "./spend.js";
 import { html, type Html } from "./html.js";
@@ -62,6 +62,33 @@ export function limitsView(
     });
   }
   return tiles.length === 0 ? null : { tiles };
+}
+
+/** One short reset: "3h", "25 min", or "Fri 11 PM". */
+const shortReset = (resetsAt: string, now: Date) => {
+  const minutes = Math.max(1, Math.round((Date.parse(resetsAt) - now.getTime()) / 60_000));
+  return minutes < 60 ? `${minutes} min` : minutes < 24 * 60 ? `${Math.round(minutes / 60)}h` : resetWords(resetsAt, now);
+};
+
+/**
+ * The usage chip (cockpit §3, R16): the subscription window with the highest use the providers last reported, as
+ * "Claude 5-hour · 82% · resets 3h". A reading older than 30 minutes stays visibly stale ("as of 2h ago"), judged by
+ * the reading's age as the Limits view judges it; a window with no known reset says "resets: unknown". API-key budgets
+ * are not compared here (they stay in the details). An operator's view, as the Limits view is. Null: nothing reported.
+ */
+export function usageChipOf(windows: Parameters<typeof limitsView>[0], now: Date): BrowserUsageChip | null {
+  // A window whose reset has passed since its reading is not measured again yet: it ranks below every current one, and
+  // shows what was last read, as stale — never an inferred 0%.
+  const expired = (one: (typeof windows)[number]) => one.resetsAt !== null && Date.parse(one.resetsAt) <= now.getTime();
+  const rank = (one: (typeof windows)[number]) => (expired(one) ? -1_000 : 0) + one.usedPercent + (one.reached && !expired(one) ? 1_000 : 0);
+  const top = [...windows].sort((a, b) => rank(b) - rank(a))[0];
+  if (top === undefined) return null;
+  const old = expired(top);
+  const stale = old || now.getTime() - Date.parse(top.observedAt) > 30 * 60_000;
+  // A window with no known length or reset has no reset to name.
+  const reset = old ? "window reset" : top.resetsAt === null || top.windowMinutes === null ? "resets: unknown" : `resets ${shortReset(top.resetsAt, now)}`;
+  const text = `${PROVIDER_NAMES[top.provider] ?? top.provider} ${windowLabel(top.window, top.windowMinutes)} · ${Math.round(top.usedPercent)}% · ${reset}${stale ? ` · as of ${ago(top.observedAt, now)}` : ""}`;
+  return { text, tone: old ? "neutral" : toneOf(top.usedPercent, top.reached), stale, href: "/work", title: `What the providers last reported: ${text}` };
 }
 
 /** The same tiles for the page without scripts. */

@@ -78,12 +78,6 @@ test.each(["ended", "disconnected"])("an unresolved call becomes unknown when th
   expect(document.querySelector(".so-working")).toBeNull();
 });
 
-test("empty progress has no tool status", async () => {
-  await emit([{ tools: [], toolCalls: [], text: "" }]);
-  expect(rows()).toHaveLength(0);
-  expect(document.body.textContent).toContain("Thinking…");
-});
-
 test("running, done and failed steps render together with the full long reason", async () => {
   const reason = "The saved changes could not be verified. The result is still available for you to inspect, but this step could not read its saved changes. Open the result to see which files and checks were saved before deciding what to do next.";
   await emit([

@@ -1,4 +1,4 @@
-// A miniature Vitest suite for src/suite-lifecycle.test.ts: it leaves a temp folder and a helper process, then passes
+// A miniature Vitest suite for src/suite-lifecycle.slow.test.ts: it leaves a temp folder and a helper process, then passes
 // or hangs (FIXTURE_MODE). The run's temp root (test/temp-root.ts) and the helper must be gone however it ends.
 import { spawn } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";

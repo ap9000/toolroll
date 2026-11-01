@@ -29,7 +29,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { authenticate } from "./runner.js";
+import { authenticate, drainOf } from "./runner.js";
 import { pauseForAuth } from "./provider-auth.js";
 import {
   DEFAULT_MAX_OPEN_DECISIONS,
@@ -89,6 +89,8 @@ export type AcquireResult =
   /** A mode-sealed approval whose signature no longer stands (v29): the
    * approval falls back to a person; nothing dispatches on a dead mode. */
   | { ok: false; reason: "mode-ended"; message: string }
+  /** A lead sweep's limit (docs/plans/lead-fan-out.md): `limit` of its families already hold a live claim. */
+  | { ok: false; reason: "sweep-limit"; sweep: number; limit: number }
   /** The credential presented with this acquisition did not verify against
    * the runner row AT CLAIM TIME (MCP spec v6): stale incarnations never
    * ride a successor's rotation. */
@@ -101,7 +103,10 @@ export type AcquireResult =
   | { ok: false; reason: "unauthorized-repo"; repo: string }
   /** A coordinator filed this and no password ceremony has sealed its
    * scope yet — nothing claims, plans, or runs it until one does. */
-  | { ok: false; reason: "coordinator-filed" };
+  | { ok: false; reason: "coordinator-filed" }
+  | { ok: false; reason: "watch-custody" }
+  /** The runner reported draining (v137 lifecycle): its stop has begun, so it takes no new work. */
+  | { ok: false; reason: "draining"; until: string };
 
 /** `fenced` means the lease was superseded; `unknown` means it never existed. */
 export type FenceResult =
@@ -199,12 +204,20 @@ function acquireLocked(
       // repo never even holds a claim.
       const gate = authenticate(store, runner, options.token);
       if (!gate.ok) return { ok: false as const, reason: "unauthenticated" as const, detail: gate.reason };
+      // DRAINING (v137): a runner whose stop has begun admits nothing new, on every claim road.
+      const drain = drainOf(store, gate.runner, now);
+      if (drain !== null) return { ok: false as const, reason: "draining" as const, until: drain.until };
       const placedRef = store.refForId(taskRef);
       const placedRepo = placedRef?.repo ?? null;
       if (placedRepo === null) return { ok: false as const, reason: "unplaced" as const };
       if (!gate.runner.repos.includes(placedRepo)) {
         return { ok: false as const, reason: "unauthorized-repo" as const, repo: placedRepo };
       }
+      // The watch may have lapsed while this pass awaited I/O, before its heartbeat callback ran. Runner tokens
+      // survive a role restart, so prove this exact watch in the claim transaction as well.
+      if (options.incarnation !== undefined && db.prepare(
+        "SELECT 1 FROM watch_lease WHERE runner = ? AND repo = ? AND owner = ? AND expires_at > ?",
+      ).get(runner, placedRepo, options.incarnation, stamp) === undefined) return { ok: false as const, reason: "watch-custody" as const };
       // THE COORDINATOR QUARANTINE in the one primitive every claim road
       // shares (MCP spec v6, round-3 f1): a coordinator-filed task whose
       // scope has not been sealed by the password ceremony claims for
@@ -241,8 +254,14 @@ function acquireLocked(
         return {
           ok: false as const,
           reason: "mode-ended" as const,
-          message: "the operating mode that approved this has ended — the approval falls back to a person",
+          message: "the approval it was sealed with no longer stands (an ended mode or flow grant, or an approval that wasn't a person's) — a person approves it again",
         };
+      }
+      // A LEAD SWEEP'S LIMIT, inside this write transaction so two runners can't both take the last slot: at most
+      // max_parallel of its families hold a live claim (claimed-but-not-started counts; a revision counts as its child).
+      const sweep = placedRef === null ? null : store.sweepOfTask(placedRef.externalId);
+      if (sweep !== null && store.sweepLiveClaims(sweep.id, stamp, taskRef) >= sweep.maxParallel) {
+        return { ok: false as const, reason: "sweep-limit" as const, sweep: sweep.id, limit: sweep.maxParallel };
       }
       const existing = latest(db, taskRef);
 
@@ -344,6 +363,20 @@ export { DEFAULT_MAX_OPEN_DECISIONS, missingCapability } from "./dispatch.js";
  * it, which is a race being won; not-ready means nobody should have it, and
  * says why.
  */
+/**
+ * A conformance check's claim (acp-check.ts): its task has no scope to approve, so readiness is not asked — but a
+ * check runs real agents, so the runner's capacity is counted where the claim lands, as for dispatch.
+ */
+export function acquireForCheck(store: Store, taskRef: number, runner: string, options: AcquireOptions): AcquireResult | NotReady {
+  return inTransaction(store, () => {
+    const registered = store.getRunner(runner);
+    if (registered !== null && store.liveClaimCount(runner, options.now) >= registered.runner.capacity) {
+      return { ok: false as const, reason: "capacity" as const, message: `${runner} has no free slot for a check` };
+    }
+    return acquireLocked(store, taskRef, runner, options);
+  });
+}
+
 export function acquireIfReady(
   store: Store,
   taskRef: number,
@@ -1026,7 +1059,7 @@ export type InterruptSeal =
 function sealInterrupted(store: Store, leaseId: string, args: InterruptedSeal): InterruptSeal {
   const { runId, taskId, stopRun, now } = args;
   const db = store.handle;
-  const run = openAttempt(store, leaseId, runId, "an interruption");
+  openAttempt(store, leaseId, runId, "an interruption");
   // A lease the world moved past still ends its run as interrupted — that IS the honest ending — touching no task state.
   const fenced = !releaseAs(store, leaseId, "interrupted", now);
   if (args.message !== undefined && args.message.trim() !== "") {
@@ -1075,7 +1108,7 @@ export type InterruptedSeal = { runId: number; taskId: string; stopRun: number; 
 function sealHandBack(store: Store, leaseId: string, args: HandBackSeal): HandBackFinalize {
   const { runId, taskId, now } = args;
   const db = store.handle;
-  const run = openAttempt(store, leaseId, runId, "a hand-back");
+  openAttempt(store, leaseId, runId, "a hand-back");
   // A lease the world moved past still ends its run as interrupted — that IS the honest ending — touching no task state.
   const fenced = !releaseAs(store, leaseId, "interrupted", now);
   if (args.message.trim() !== "") store.recordOutcomeFacts(runId, { handoff: args.message });
@@ -1304,7 +1337,6 @@ export type PlanFinalize =
  */
 function sealPlan(store: Store, leaseId: string, args: PlanSeal): PlanFinalize {
   const { runId, taskId, plan, now } = args;
-  const db = store.handle;
   // The ingestion record (contract handoff, task 1) is composed here from
   // the filed terms and the drafted plan; its file and row land inside the
   // transaction below, only after the stale-source check admits the draft.
@@ -1570,7 +1602,7 @@ export type RevisionFinalize =
  */
 function sealRevision(store: Store, leaseId: string, args: RevisionSeal): RevisionFinalize {
   const { runId, taskId, taskRef, revision, now } = args;
-  const run = openAttempt(store, leaseId, runId, "a plan revision", "builder");
+  openAttempt(store, leaseId, runId, "a plan revision", "builder");
   const stopped = interruptIfStopped(store, { leaseId, runId, taskId, now });
   if (stopped !== null) return { ok: false as const, reason: "stopped" as const };
   const fenced = releaseOrRefuse(store, leaseId, "released", runId, now);
@@ -1659,7 +1691,6 @@ export type PlanFailureDisposition =
  */
 function sealPlanFailure(store: Store, leaseId: string, args: PlanFailureSeal): PlanFailureDisposition {
   const { runId, taskId, failure: kind, message, now } = args;
-  const db = store.handle;
   const run = openAttempt(store, leaseId, runId, "a failure", "planner");
   const stopped = interruptIfStopped(store, { leaseId, runId, taskId, now });
   if (stopped !== null) return { ok: false as const, reason: "stopped" as const };
@@ -1772,7 +1803,6 @@ export type ScoutFinalize = { ok: true } | { ok: false; reason: "fenced" | "unkn
  */
 function sealScout(store: Store, leaseId: string, args: ScoutSeal): ScoutFinalize {
   const { runId, taskId, report, now } = args;
-  const db = store.handle;
   const run = openAttempt(store, leaseId, runId, "a report", "scout");
   const stopped = interruptIfStopped(store, { leaseId, runId, taskId, now });
   if (stopped !== null) return { ok: false as const, reason: "stopped" as const };

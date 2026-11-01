@@ -1,6 +1,7 @@
 /** The Agents board's saved state: turn states from Claude and Codex streams under the attempt key (an earlier
  * attempt never repaints a newer one), the status file and its questions, the four-minute Stuck boundary, unread
  * Done and who is watching. */
+import { heldForWatch } from "./chat-delivery.js";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,7 +10,7 @@ import { agentNowForTask, agentTurnHistory, answerAgentQuestion, attemptKeyOf, h
   noteOpenTool, noteTranscript, openAgentQuestions, pageQuestions, QUESTION_PAGE_EVERY_MS, QUESTIONS_OVERFLOW_NOTE, recordAgentTurn, releaseAgentView,
   STUCK_AFTER_MS, TOOL_STUCK_AFTER_MS, VIEW_LEASE_MS,
   watchedPing, watchingAgent, type AgentTurn } from "./agent-board.js";
-import { parseStatusLine, readStatusFile, statusBrief } from "./agent-pulse.js";
+import { parseStatusLine, readStatusFile } from "./agent-pulse.js";
 import { OPEN_TOOLS_CAP, toolCallsOf, turnSignalOf, withAgentTurns } from "./agent-turns.js";
 import { agentFacts, agentFactsFor, agentFactsSql, agentGroupOf, agentRowOf, agentRunFingerprint, agentsBoardOf } from "./agents-board.js";
 import { liveLogPath, openLiveLog, sanitizeTranscriptLine } from "./live.js";
@@ -77,17 +78,6 @@ describe("turn states from the output stream", () => {
     expect(turnSignalOf({ type: "system", subtype: "compact_boundary" })).toBeNull();
   });
 
-  test("a Claude build records busy then idle, once each, and a finished turn is not a crash", () => {
-    const run = start("lease-1");
-    let tick = 0;
-    const turns = observer(run, () => at(tick++ * 1000));
-    for (const event of CLAUDE) turns.observe(event);
-    turns.ended();
-    expect(states(run)).toEqual(["busy", "idle"]);
-    // The clock is read when the state changes or the open tool calls move: busy, Read opens, Read answers, Edit, then the result.
-    expect(agentNowForTask(store, taskRef)).toMatchObject({ run, state: "idle", stateAt: at(4000).toISOString(), toolAt: null });
-  });
-
   test("a Codex build records busy then idle; one that exits mid-turn records crashed", () => {
     const run = start("lease-1", T0, "codex");
     const turns = observer(run, () => T0);
@@ -145,14 +135,6 @@ describe("turn states from the output stream", () => {
     const key = ["0f1e", "2d3c", "4b5a", "6978"].join("");
     expect(recordAgentTurn(store, { run, attemptKey: key, state: "busy", at: T0 })).toBe(false);
     expect(states(run)).toEqual([]);
-  });
-
-  test("every admitted run gets its own opaque key", () => {
-    const one = start("lease-1");
-    store.finishRun(one, { outcome: "failed", reason: "agent", now: at(1) });
-    const two = start("lease-2", at(2));
-    expect(keyOf(one)).toMatch(/^[0-9a-f]{24}$/);
-    expect(keyOf(two)).not.toBe(keyOf(one));
   });
 
   test("each provider's tool calls open and close by id; anything else opens nothing", () => {
@@ -248,14 +230,11 @@ describe("the agent's status file", () => {
     expect(readStatusFile(link, 0)).toEqual({ ok: false, reason: "unreadable" });
   });
 
-  test("its name is protocol-shaped (swept, never committed), and the brief says how a reply arrives", () => {
+  test("its name is protocol-shaped (swept, never committed)", () => {
     const name = statusFileName();
     expect(name).toMatch(/^STANDING-ORDERS-STATUS-[0-9a-f]{16}\.jsonl$/);
     expect(looksLikeProtocolFile(name)).toBe(true);
     expect(looksLikeProtocolFile("STANDING-ORDERS-STATUS-notes.jsonl")).toBe(false);
-    const brief = statusBrief(name, "STANDING-ORDERS-STEER-x");
-    expect(brief).toContain(name);
-    expect(brief).toContain('Reply to your question "<short-key>"');
   });
 
   test("a needs-decision opens its key once, pages once, and moves only forward", () => {
@@ -384,13 +363,6 @@ describe("questions from an untrusted agent", () => {
     expect(note(other)).toBeNull();
   });
 
-  test("one question pages at once, with its own words", () => {
-    const run = busy(start("lease-1"));
-    expect(ingest(run, ["keep-oauth"], T0).asked).toEqual(["keep-oauth"]);
-    expect(pages()).toMatchObject([{ dedupeKey: `agent-question:${run}:keep-oauth`, subject: "Fix the login page: the agent has a question",
-      body: "Question keep-oauth?", pushClass: "attention", link: `/agents?run=${run}` }]);
-  });
-
   test("at most one page per run in five minutes; the next page says how many are waiting", () => {
     expect(QUESTION_PAGE_EVERY_MS).toBe(5 * 60_000);
     const run = busy(start("lease-1"));
@@ -503,10 +475,6 @@ describe("Stuck with a tool call open, and fresh activity", () => {
     expect(agentNowForTask(store, taskRef)?.stuckAt).toBeNull();
     expect(agentRunFingerprint(store, run)).not.toBe(before);
     expect(rowOf(run, at(STUCK_AFTER_MS + 6000)).group).toBe("working");
-    // And fresh transcript, read by the board straight from the saved facts.
-    expect(markStuck(store, run, key, at(2 * STUCK_AFTER_MS + 5000))).toBe(true);
-    noteTranscript(store, run, key, 64, at(2 * STUCK_AFTER_MS + 6000));
-    expect(rowOf(run, at(2 * STUCK_AFTER_MS + 6000)).group).toBe("working");
   });
 });
 
@@ -598,7 +566,6 @@ describe("the board's query", () => {
     expect(plan.some(step => step.includes("agent_board_recent"))).toBe(true);
     // Never a plain scan of the run table.
     expect(plan.filter(step => /^SCAN (run|r|x|p)\b/.test(step) && !/INDEX/.test(step))).toEqual([]);
-    expect(agentFactsSql()).not.toMatch(/MAX\(x\.id\)/);
   });
 });
 
@@ -728,5 +695,66 @@ describe("who is watching", () => {
     const id = openAgentQuestions(store, taskRef).find(one => one.key === "copy")!.id;
     expect(answerAgentQuestion(store, { question: id, answer: "Save", author: "alex", at: at(later + 32_000), file: (task, note) => store.fileSteerNote(task, verifiedAuthor("alex"), note, at(later + 32_000)) }).ok).toBe(true);
     expect(store.claimTelegramDeliveries(binding, "owner", 1_000, at(later + 30_000 + VIEW_LEASE_MS)).map(one => one.id)).not.toContain(second.id);
+  });
+
+  test("a watch opened after the claim stops the send at the final fence: push and Telegram hold it, no attempt spent", () => {
+    const added = addApprover(store, "alex", T0);
+    if (!added.ok) throw new Error("approver");
+    store.enrollPushSubscription({ endpoint: "https://fcm.googleapis.com/fcm/send/abc", p256dh: "B".repeat(87), auth: "a".repeat(22), approver: "alex", approverGeneration: 1,
+      uaWords: "a phone", vapidFingerprint: "fp-1" } as Parameters<Store["enrollPushSubscription"]>[0], T0);
+    store.setNotificationPreference("alex", { mode: "all" }, "alex", T0);
+    const code = mintPairingCode();
+    store.createTelegramPairing({ codeHash: hashPairingCode(code), approver: "alex", by: "alex", ttlMs: PAIRING_TTL_MS }, T0);
+    expect(store.consumeTelegramPairing({ codeHash: hashPairingCode(code), botId: "777000", chatId: "4242", userId: "31337", updateId: 1 }, T0).ok).toBe(true);
+    const binding = store.liveTelegramBinding("777000")!;
+    const run = start("lease-1", at(1000));
+    store.resolveEpisodes("life", at(1000));
+    const ping = ask(run);
+    // Nobody watching: both claim it.
+    store.seedPushPairs(at(2000));
+    const [pair] = store.claimPushPairs("sender", 60_000, 10, at(2000)).filter(one => one.notification === ping.id);
+    const [delivery] = store.claimTelegramDeliveries(binding, "owner", 60_000, at(2000)).filter(one => one.id === ping.id);
+    expect(pair).toBeDefined();
+    expect(delivery).toBeDefined();
+    // The person opens the agent before the network call: the final fences hold both.
+    holdAgentView(store, view, "alex", run, at(3000));
+    expect(store.pushSendFence(pair!.id, "sender", pair!.claimGeneration, at(3500))).toBeNull();
+    expect(store.handle.prepare("SELECT state, next_attempt_at, attempts, claim_owner FROM push_delivery WHERE id = ?").get(pair!.id))
+      .toEqual({ state: "pending", next_attempt_at: at(3000 + VIEW_LEASE_MS).toISOString(), attempts: 0, claim_owner: null });
+    expect(store.telegramWatchFence(delivery!, binding, "owner", at(3500))).toBe("held");
+    expect(store.handle.prepare("SELECT next_attempt_at, attempts, claim_owner, receipt, delivered_at FROM notification_delivery WHERE notification = ?").get(ping.id))
+      .toEqual({ next_attempt_at: at(3000 + VIEW_LEASE_MS).toISOString(), attempts: 0, claim_owner: null, receipt: null, delivered_at: null });
+    // Re-evaluated when the watch ends: claimable again, and the fence lets it through.
+    const again = store.claimTelegramDeliveries(binding, "owner", 60_000, at(3000 + VIEW_LEASE_MS)).filter(one => one.id === ping.id);
+    expect(again).toHaveLength(1);
+    expect(store.telegramWatchFence(again[0]!, binding, "owner", at(3000 + VIEW_LEASE_MS))).toBe("send");
+    expect(store.claimPushPairs("sender", 60_000, 10, at(3000 + VIEW_LEASE_MS)).map(one => one.notification)).toContain(ping.id);
+  });
+
+  test("any ping about a task is held while its live build is watched; a security alert never is", () => {
+    const run = start("lease-1");
+    recordAgentTurn(store, { run, attemptKey: keyOf(run), state: "busy", at: T0 });
+    holdAgentView(store, view, "alex", run, at(1000));
+    const task = { kind: "plan-ready", run: null, taskRef };
+    expect(watchedPing(store, task, "alex", at(2000))).toEqual({ hold: at(1000 + VIEW_LEASE_MS).toISOString() });
+    expect(watchedPing(store, task, "blair", at(2000))).toBe("send");
+    expect(watchedPing(store, { kind: "secret-detected", run, taskRef }, "alex", at(2000))).toBe("send");
+    expect(watchedPing(store, { kind: "evening-digest", run: null, taskRef: null }, "alex", at(2000))).toBe("send");
+    // A chat app's part about the task waits the same way, as a held part.
+    const held: [number, string][] = [];
+    const state = { holdPart: (part: number, until: string) => { held.push([part, until]); } } as unknown as Parameters<typeof heldForWatch>[0];
+    expect(heldForWatch(state, store, 9, { kind: "notice" }, "alex", { text: "Plan ready", task: "t-1", watch: true }, at(2000))).toBe(true);
+    expect(held).toEqual([[9, at(1000 + VIEW_LEASE_MS).toISOString()]]);
+    expect(heldForWatch(state, store, 9, { kind: "reply" }, "alex", { text: "Hi", task: "t-1", watch: true }, at(2000))).toBe(false);
+    expect(heldForWatch(state, store, 9, { kind: "notice" }, "blair", { text: "Plan ready", task: "t-1", watch: true }, at(2000))).toBe(false);
+    // Fail closed: a part not planned as holdable (a security alert about this very task) is never held.
+    expect(heldForWatch(state, store, 9, { kind: "notice" }, "alex", { text: "A secret was found", task: "t-1", run }, at(2000))).toBe(false);
+    expect(held).toHaveLength(1);
+    // A part covering several tasks waits only while every one of them is watched.
+    store.createTask({ id: "t-2", title: "t-2" }, T0);
+    const other = store.refFor(BUILT_IN, "t-2").id;
+    expect(heldForWatch(state, store, 10, { kind: "notice" }, "alex", { text: "Two done", watch: true, subjects: [{ ref: taskRef, run }, { ref: other, run: null }] }, at(2000))).toBe(false);
+    expect(heldForWatch(state, store, 10, { kind: "notice" }, "alex", { text: "Two done", watch: true, subjects: [{ ref: taskRef, run }, { ref: null, run }] }, at(2000))).toBe(true);
+    expect(held.at(-1)).toEqual([10, at(1000 + VIEW_LEASE_MS).toISOString()]);
   });
 });

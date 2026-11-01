@@ -7,8 +7,10 @@
 #
 # To release: `toolroll release <branch>` (src/release.ts). It pushes the
 # matching tag on the squash-merged commit once main's tree equals the gated
-# tree. Both macOS legs must pass before publishing; the coordinator waits
-# for all three check names before Homebrew.
+# tree. The tag runs no tests again (docs/plans/test-matrix.md): the release
+# proof job reads GitHub's own record, with this workflow's read-only token,
+# and npm publication needs it. The coordinator waits for both jobs
+# (RELEASE_TAG_CHECKS).
 name: Publish
 
 on:
@@ -16,46 +18,71 @@ on:
     tags: ["v*"]
 
 permissions:
-  contents: write # the GitHub release
-  id-token: write # npm trusted publishing
+  contents: read
 
 concurrency:
   group: publish
   cancel-in-progress: false
 
 jobs:
-  macos:
-    name: node ${{ matrix.node }} · macos-latest
-    runs-on: macos-latest
+  # Independent proof that the tagged commit was tested before it merged (scripts/release-proof.mjs): it is on main, it
+  # is the squash merge of exactly one merged pull request whose head commit has the same tree, and on that head every
+  # check below passed in the newest GitHub Actions run of its workflow for that pull request (ci.yml, and the release
+  # candidate workflow on a release-* branch). Missing, skipped, different or unreadable: no publish.
+  # This proves what GitHub recorded; it relies on main's branch protection requiring every one of these checks, which
+  # `toolroll release` refuses to merge without.
+  proof:
+    name: release proof
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        node: ["22", "24"]
+      actions: read
+      pull-requests: read
+    env:
+      # Exactly src/release.ts REQUIRED_PR_CHECKS, each with the workflow it must come from (src/ci-workflow.test.ts holds
+      # them equal).
+      REQUIRED_CHECKS: >-
+        {"node 24 · ubuntu-latest": ".github/workflows/ci.yml",
+        "node 24 · macos-latest": ".github/workflows/ci.yml",
+        "linux native containment · delegated cgroup v2": ".github/workflows/ci.yml",
+        "linux fence · sandbox-runtime": ".github/workflows/ci.yml",
+        "Windows Job Object containment": ".github/workflows/ci.yml",
+        "git 2.41 · debian trixie": ".github/workflows/ci.yml",
+        "git 2.47 · debian trixie": ".github/workflows/ci.yml",
+        "node 22 · ubuntu-latest": ".github/workflows/release-candidate.yml",
+        "node 22 · macos-latest": ".github/workflows/release-candidate.yml"}
     steps:
-      # src/provider.test.ts reads historical commits (see ci.yml).
       - uses: actions/checkout@v5
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
+      - name: The tag sits on main
+        run: |
+          git fetch --quiet origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME is not on main; release only reviewed, merged commits"; exit 1
+          fi
       - uses: actions/setup-node@v5
         with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm ci
-      - run: npm run typecheck
-      - run: npm run build
-      - run: npm test
+          node-version: "24"
+      - name: The tagged tree passed every required check on its pull request
         env:
-          CI: "true"
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/release-proof.mjs verify --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --required "$REQUIRED_CHECKS" --tag "$GITHUB_REF_NAME"
 
   publish:
-    needs: macos
+    needs: proof
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # the GitHub release
+      id-token: write # npm trusted publishing
     steps:
       - uses: actions/checkout@v5
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-node@v5
         with:
@@ -81,12 +108,19 @@ jobs:
 
       - run: npm ci
 
-      # prepublishOnly runs the typecheck and the build.
-      - run: npm publish --access public
+      # Build before the final tag read, so no lifecycle script delays the check-to-publish handoff.
+      - run: npm run prepublishOnly
+      - name: Publish the proven commit while the remote tag still names it
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/release-proof.mjs tag --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --tag "$GITHUB_REF_NAME"
+          npm publish --access public --ignore-scripts
 
       - name: GitHub release from the changelog
         env:
           GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           version="${GITHUB_REF_NAME#v}"
           awk -v v="$version" '
@@ -98,4 +132,5 @@ jobs:
             echo
             echo "Install: \`npx toolroll up\` · \`npm i -g toolroll\` · \`brew install ap9000/toolroll/toolroll\` — https://toolroll.dev/install"
           } >> release-notes.md
+          node scripts/release-proof.mjs tag --repo "$GITHUB_REPOSITORY" --sha "$GITHUB_SHA" --tag "$GITHUB_REF_NAME"
           gh release create "$GITHUB_REF_NAME" --title "Toolroll $version" --notes-file release-notes.md --verify-tag

@@ -5,6 +5,7 @@
  * takes the owner there. Everything here reads what is already recorded — runner readiness reports, sign-in pauses,
  * plan-limit readings, tool tests, skill tests, integration checks — and never probes anything that spends.
  */
+import { isAcpProvider } from "./acp-agents.js";
 import { projectBatchChecks } from "./batch-policy.js";
 import type { Store } from "./store.js";
 import type { ChatControl } from "./chat-controls.js";
@@ -81,7 +82,7 @@ function agentsOf(store: Store, repo: string, now: Date, authMode: (provider: Pr
     // Signed out only on a real sign-in failure: a sign-in pause from a run, the worker's login check saying not logged
     // in, or the key a key-only provider needs missing. A provider on an API key gets the key step, never the sign-in.
     const pause = authPauseOf(store, pair.provider);
-    const mode = pause?.authMode ?? (SUBSCRIPTION_CAPABLE[pair.provider] ? authMode(pair.provider) : "api-key");
+    const mode = pause?.authMode ?? (isAcpProvider(pair.provider) ? "agent-login" : SUBSCRIPTION_CAPABLE[pair.provider] ? authMode(pair.provider) : "api-key");
     const key = mode === "api-key";
     const outWords = key ? "Needs a working API key" : "Signed out";
     const outNext = (detail: string) => key ? `Save a working API key: run \`${messageCommand({ provider: pair.provider, authMode: "api-key" })}\` on this computer${detail}.` : `Sign in: run \`${messageCommand({ provider: pair.provider, authMode: "subscription" })}\` on this computer${detail}.`;
@@ -184,7 +185,8 @@ export function integrationCapabilities(list: readonly Integration[]): Capabilit
   return list.map(one => {
     const link: ChatControl = one.group === "agents" ? "providers" : one.group === "tools" ? "tools" : INTEGRATION_LINK[one.key.replace(/^.*:/, "").toLowerCase()] ?? INTEGRATION_LINK[one.name.toLowerCase()] ?? "integrations";
     const lets = one.usedBy.length > 0 ? `use ${one.name} for ${one.usedBy.join(", ")}` : `use ${one.name}`;
-    const next = one.action.kind === "setup" ? `Not set up: set up ${one.name} in Settings` : one.action.kind === "fix" ? `Fix: ${one.action.words}` : null;
+    const next = one.action.kind === "setup" ? `Not set up: set up ${one.name} in Settings` : one.action.kind === "fix" ? `Fix: ${one.action.words}`
+      : one.action.kind === "switch" ? (one.action.words !== null ? `Fix: ${one.action.words}` : one.action.on ? `Turned off: turn ${one.name} on in Settings → Integrations` : null) : null;
     return { name: one.name, kind: one.group, state: STATE_WORDS[one.state], ok: one.state === "connected", account: one.account, usedBy: one.usedBy, lastError: one.lastError, lets, next, link: next === null ? null : link };
   });
 }
@@ -204,7 +206,7 @@ export function capabilitiesOf(store: Store, input: { repos: readonly string[]; 
  * report on a task, attempt or check does (crew work must run), and a timed one does when it is reported on a chat app. */
 const FLOW_WORK = new Set(["create", "edit", "kit", "starter", "add_trigger", "resume_trigger", "add_card"]);
 export function needsCapabilities(name: string, args: Record<string, unknown>, channel: string | undefined): boolean {
-  if (name === "propose_task") return true;
+  if (name === "propose_task" || name === "propose_sweep") return true;
   if (name === "propose_flow") return FLOW_WORK.has(String(args["operation"]));
   if (name === "commit_to") return args["when"] === "time" ? channel !== undefined && channel !== "chat" : true;
   return false;

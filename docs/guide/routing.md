@@ -1,4 +1,22 @@
-# Quality and agent routing
+# Models, spend and routing
+
+## Choosing models: Settings → Models
+
+**Settings → Models** is one editor for which model plans, builds and reviews.
+**Sized by job** is the default (a fresh install starts on it): small tasks
+build on Haiku, routine tasks on Sonnet, large or risky tasks on Opus, and
+planning and review always use Opus. **Opus for everything** is one click
+away. Every change shows its exact before → after first, needs your password,
+and is logged; approved work keeps the models it was approved with. **Switch
+to it** appears when a newer model ships. The same rows can be set from the
+terminal with `config set` (below).
+
+## Spend
+
+**Settings → Spend** shows API dollars, plan usage and unknown cost
+separately (never added together, and unknown never shown as $0) by project,
+model, role and person, with the most expensive runs and a CSV export. Your
+monthly limits are set there too.
 
 ## Quality modes
 

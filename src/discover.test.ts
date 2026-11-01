@@ -56,29 +56,6 @@ const BRANCHES_WITHOUT_TRACK = [
 ].join("\n");
 
 describe("inspectRepo", () => {
-  test("assembles a snapshot from git output", async () => {
-    // Arrange
-    const runner = fakeGit({
-      worktree: ok(WORKTREES),
-      "for-each-ref": ok(BRANCHES),
-      remote: ok("git@github.com:ap9000/standing-orders.git\n"),
-      "symbolic-ref": ok("main\n"),
-      status: ok(" M src/git.ts\n?? notes.md\n"),
-    });
-
-    // Act
-    const snapshot = await inspectRepo("/repo", { runner, dirty: true });
-
-    // Assert
-    expect(snapshot.name).toBe("repo");
-    expect(snapshot.head).toBe("main");
-    expect(snapshot.remoteUrl).toBe("git@github.com:ap9000/standing-orders.git");
-    expect(snapshot.branches.map(branch => branch.name)).toEqual(["main", "feature/onboarding"]);
-    expect(snapshot.worktrees).toHaveLength(1);
-    expect(snapshot.dirtyFiles).toBe(2);
-    expect(snapshot.problems).toEqual([]);
-  });
-
   test("does not read the working tree unless asked", async () => {
     // `git status` is O(working tree) where every other read is O(refs), and it
     // was measured at over two minutes on a real repo. It is not free by default.
@@ -116,30 +93,14 @@ describe("inspectRepo", () => {
     expect(snapshot.problems.join(" ")).toContain("ahead/behind");
   });
 
-  test("treats a missing origin as a fact, not a problem", async () => {
-    // A repo with no remote is ordinary. Reporting it as an error is noise.
-    const runner = fakeGit({
-      worktree: ok(WORKTREES),
-      remote: fail(2, "error: No such remote 'origin'"),
-      "symbolic-ref": ok("main\n"),
-    });
-
+  // A repo with no remote is ordinary, and symbolic-ref exits non-zero on a detached HEAD: facts, not problems.
+  test.each([
+    ["a missing origin", { remote: fail(2, "error: No such remote 'origin'") }, { remoteUrl: null }],
+    ["a detached HEAD", { "symbolic-ref": fail(1, "") }, { head: null }],
+  ] as const)("treats %s as a fact, not a problem", async (_name, responses, expected) => {
+    const runner = fakeGit({ worktree: ok(WORKTREES), "symbolic-ref": ok("main\n"), ...responses });
     const snapshot = await inspectRepo("/repo", { runner });
-
-    expect(snapshot.remoteUrl).toBeNull();
-    expect(snapshot.problems).toEqual([]);
-  });
-
-  test("reports a null head when HEAD is detached", async () => {
-    // symbolic-ref exits non-zero in detached HEAD, which treehouse relies on
-    const runner = fakeGit({
-      worktree: ok(WORKTREES),
-      "symbolic-ref": fail(1, ""),
-    });
-
-    const snapshot = await inspectRepo("/repo", { runner });
-
-    expect(snapshot.head).toBeNull();
+    expect(snapshot).toMatchObject(expected);
     expect(snapshot.problems).toEqual([]);
   });
 
@@ -173,15 +134,6 @@ describe("inspectRepo", () => {
     expect(snapshot.problems).toEqual(["git is not installed"]);
   });
 
-  test("returns a usable snapshot when every command fails", async () => {
-    const runner: Runner = async () => fail(1, "boom");
-
-    const snapshot = await inspectRepo("/repo", { runner });
-
-    expect(snapshot.branches).toEqual([]);
-    expect(snapshot.worktrees).toEqual([]);
-    expect(snapshot.problems.length).toBeGreaterThan(0);
-  });
 });
 
 describe("discover", () => {

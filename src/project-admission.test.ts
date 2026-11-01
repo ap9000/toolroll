@@ -4,14 +4,14 @@
  * and the command line's authority — the owner, or the lead for an owner
  * who may manage every project, never anything else.
  */
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
-import { addedWords, admitProject, commandLineActor, releaseProject } from "./project-admission.js";
+import { admitProject, commandLineActor, releaseProject } from "./project-admission.js";
 import { loadProjectRegistry } from "./repos.js";
 
 const NOW = new Date("2026-10-05T12:00:00.000Z");
@@ -41,7 +41,6 @@ test("a folder inside a repository is admitted at its root, once, with who and f
   expect(await loadProjectRegistry(registryFile)).toEqual({ repos: [repo], roots: [] });
   expect(store.listProjects().map(one => one.path)).toEqual([repo]);
   expect(ledger("project added")).toEqual([expect.objectContaining({ actor: "alex", repo, source: "access", outcome: "added", detail: "from cli" })]);
-  expect(addedWords("vamarketplacenew", true, true)).toBe("Added vamarketplacenew; it is in the console now.");
 });
 
 test("a plain folder is refused before anything is written", async () => {
@@ -154,4 +153,39 @@ test("first admission refuses local remotes outside the checkout, file URLs and 
     expect(result).toMatchObject({ ok: true, remote: { url: null } });
     expect(store.projectRemote(project)).toBeNull();
   }
+});
+
+test("authority that moves while the git proof waits admits nothing: not in the registry, not in the store", async () => {
+  // The proof is held until the test lets it go; meanwhile the caller's authority moves.
+  let letGo!: () => void;
+  const held = new Promise<void>(done => { letGo = done; });
+  let proofs = 0;
+  const exec = async (_file: string, args: readonly string[]) => {
+    proofs++;
+    await held;
+    return { code: 0, stdout: args.includes("--show-toplevel") ? `${repo}\n` : "", stderr: "", timedOut: false, notFound: false };
+  };
+  let authority = true;
+  const console = { label: "alex", origin: "console" as const };
+  const admitting = admitProject(store, { registryFile, path: repo, actor: console, now: NOW, exec, stillAllowed: () => authority });
+  await vi.waitFor(() => expect(proofs).toBe(1));
+  authority = false;
+  letGo();
+  expect(await admitting).toMatchObject({ ok: false, reason: "moved" });
+  expect(await loadProjectRegistry(registryFile)).toEqual({ repos: [], roots: [] });
+  expect(store.listProjects()).toEqual([]);
+  expect(ledger("project added")).toEqual([]);
+});
+
+test("authority that moves between the registry and the store takes back the registry line it added, and only that", async () => {
+  const other = join(base, "already-saved");
+  mkdirSync(other);
+  execFileSync("git", ["init", "-q"], { cwd: other });
+  await admitProject(store, { registryFile, path: other, actor: owner, now: NOW });
+  // Allowed under the registry lock, refused in the transaction.
+  const answers = [true, false];
+  const moved = await admitProject(store, { registryFile, path: repo, actor: { label: "alex", origin: "console" }, now: NOW, stillAllowed: () => answers.shift() ?? false });
+  expect(moved).toMatchObject({ ok: false, reason: "moved" });
+  expect(await loadProjectRegistry(registryFile)).toEqual({ repos: [other], roots: [] });
+  expect(store.listProjects().map(one => one.path)).toEqual([other]);
 });

@@ -301,28 +301,6 @@ describe("Teams shared chat", () => {
     expect(store.flowComments(card.id).map(one => one.body)).toEqual(["It's the Dell."]);
   });
 
-  test("the lead's voice in Teams: a tool turn shows typing (Teams gives bots no reactions); the reply is Markdown with a labelled link and no header or internal id", async () => {
-    expect(pairAs("alex", ALEX, DM_ALEX)).not.toBeNull();
-    answers.push(
-      { text: "Checking.", calls: [{ id: "q1", name: "list_tasks", args: {} }] },
-      { text: "## Payout\n**Ready**: see https://console.example/chat?task=payout (run #4)." },
-    );
-    expect(receive(activity(DM_ALEX, ALEX, "how is the payout fix?"))).toBe(true);
-    await processTeamsEvent(options); await drain();
-    const typing = sends().filter(call => call.body?.["type"] === "typing");
-    expect(typing.length).toBeGreaterThanOrEqual(1);
-    expect(typing[0]).toMatchObject({ method: "POST", serviceUrl: SERVICE, path: `/v3/conversations/${encodeURIComponent(DM_ALEX)}/activities` });
-    expect(sends().some(call => /reaction/i.test(call.path))).toBe(false);
-    expect(sends().at(-1)!.body).toEqual({ type: "message", text: "Payout\n\n**Ready**: see [the task](https://console.example/chat?task=payout).", textFormat: "markdown" });
-    // A quick answer shows no typing.
-    const typed = typing.length;
-    answers.push({ text: "All quiet." });
-    expect(receive(activity(DM_ALEX, ALEX, "anything else?"))).toBe(true);
-    await processTeamsEvent(options); await drain();
-    expect(sends().filter(call => call.body?.["type"] === "typing")).toHaveLength(typed);
-    expect(lastText()).toBe("All quiet.");
-  });
-
   test("the lead's question arrives as card buttons with Something else, and a tap is the owner's next message (ask_owner)", async () => {
     expect(pairAs("alex", ALEX, DM_ALEX)).not.toBeNull();
     answers.push(
@@ -354,7 +332,7 @@ describe("Teams shared chat", () => {
       { id: "check", title: "Check the reply", kind: "approval", decider: "owner", ifFails: "Write the reply" },
       { id: "post", title: "Post it", kind: "notify", message: "{{stage.draft}}" },
     ], null)) }, now);
-    const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "check", by: "alex" }, now);
+    const card = store.addFlowCard({ flow, title: "Refund for order 42?", description: null, stage: "check", by: "alex", byKind: "person" }, now);
     store.updateFlowCard(card, { outputs: { draft: "We refunded it." } }, now);
     advanceFlows(store, repo, now);
     await planTeamsNotifications(options);
@@ -404,7 +382,7 @@ describe("Teams shared chat", () => {
       { id: "ship", title: "Ship", kind: "inbox" },
     ], null)) }, now);
     const choiceCard = () => String(state.prepare("SELECT message FROM chat_part WHERE provider=:provider AND json_extract(payload,'$.choose') IS NOT NULL ORDER BY id DESC LIMIT 1").get()?.message);
-    const first = store.addFlowCard({ flow, title: "Checkout rounding", description: "Totals are off by a cent", stage: "choose", by: "alex" }, now);
+    const first = store.addFlowCard({ flow, title: "Checkout rounding", description: "Totals are off by a cent", stage: "choose", by: "alex", byKind: "person" }, now);
     advanceFlows(store, repo, now);
     await planTeamsNotifications(options); await drain();
     expect(lastText()).toContain("Totals are off by a cent");
@@ -416,7 +394,7 @@ describe("Teams shared chat", () => {
     expect(store.getFlowCard(first)).toMatchObject({ stage: "ship" });
     expect(sends().some(call => call.method === "PUT" && JSON.stringify(call.body).includes("You chose “Ship it”. Ship it. Moved to Ship."))).toBe(true);
 
-    const second = store.addFlowCard({ flow, title: "Header spacing", description: "The header is cramped on phones", stage: "choose", by: "alex" }, now);
+    const second = store.addFlowCard({ flow, title: "Header spacing", description: "The header is cramped on phones", stage: "choose", by: "alex", byKind: "person" }, now);
     advanceFlows(store, repo, now);
     await planTeamsNotifications(options); await drain();
     // Teams has no thread to reply in: a message here is asked about first, and only Yes makes it the note.

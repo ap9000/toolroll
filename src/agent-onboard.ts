@@ -288,6 +288,8 @@ export type OnboardIo = {
   /** Whether the project can open pull requests at Complete, in one line: on, the one command that turns it on, or
    * what to fix first. Turning it on stays a person's password step. */
   pullRequests?: (repo: string) => Promise<string>;
+  /** For a project that uses youiyoux, the one line that says its change requests become tasks; null otherwise. */
+  youiyoux?: (repo: string) => Promise<string | null>;
   /** --starter, as typed: a comma list of starter flow ids to switch on. */
   starterFlag?: string | undefined;
   /** The project's starter flows, and switching one on — its trigger and zones. */
@@ -456,6 +458,7 @@ export async function runOnboard(io: OnboardIo): Promise<number> {
 
   const projectData = project.state === "added" || project.state === "already" ? { path: project.path, added: project.state === "added" } : null;
   const pullRequests = projectData === null || io.pullRequests === undefined ? null : await io.pullRequests(projectData.path);
+  const youiyoux = projectData === null || io.youiyoux === undefined ? null : await io.youiyoux(projectData.path);
   const offered = projectData === null ? [] : await offerStarters(io, projectData.path);
   if (!Array.isArray(offered)) return refuse("usage", offered.usage, 2);
   const projectProblem = (() => {
@@ -475,6 +478,7 @@ export async function runOnboard(io: OnboardIo): Promise<number> {
       project: projectData,
       ...(projectProblem === null ? {} : { projectProblem }),
       ...(pullRequests === null ? {} : { pullRequests }),
+      ...(youiyoux === null ? {} : { youiyoux }),
       ...(offered.length === 0 ? {} : { starters: offered.map(one => ({ ...one, ...(one.state === "off" ? { command: `toolroll onboard --starter ${one.id}` } : {}) })) }),
       agents: reports,
       skill: skillData,
@@ -489,6 +493,7 @@ export async function runOnboard(io: OnboardIo): Promise<number> {
   io.write([
     projectLine,
     ...(pullRequests === null ? [] : [`pull requests ${pullRequests}`]),
+    ...(youiyoux === null ? [] : [`youiyoux  ${youiyoux}`]),
     ...starterLines(offered),
     `agents    ${reports.map(one => `${one.name}: ${[one.words, one.plan].filter(Boolean).join(" · ")}`).join("; ")}`,
     skillLine(),

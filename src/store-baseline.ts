@@ -10,7 +10,7 @@ import type { Database } from "./store.js";
  * (update through 0.9.x first).
  *
  * Captured from a database 0.5.0 created, never edited by hand: its shape
- * digest below must match one this text creates (store-baseline.test.ts), and
+ * digest below must match one this text creates (store-baseline.slow.test.ts), and
  * the upgrade path compares it with the published 0.5.0 package itself.
  */
 export const BASELINE_SCHEMA_VERSION = 107;

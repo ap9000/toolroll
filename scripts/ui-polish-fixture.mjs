@@ -239,7 +239,12 @@ export function startFixture(options = {}) {
     fileCount: 2, additions: 13, deletions: 1, binaryCount: 0,
     files: [{ path: 'src/payout.ts', additions: 4, deletions: 1 }, { path: 'src/payout.test.ts', additions: 9, deletions: 0 }], filesTruncated: false,
   };
-  if (options.learning || options.assignmentPresentation) stat.head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+  // Every finished build records a real commit, an approved check command and its sealed receipt, so a verdict that
+  // says the check passed is backed by a check the task page can read (task-card truth, 2026-10-27): the fixture never
+  // shows a passing verdict beside a check that "couldn't be read".
+  // Without Git (`git: false`) the synthetic head stays the recorded one, consistent with the diff-stat.
+  const headOf = where => options.git === false ? stat.head : execFileSync('git', ['rev-parse', 'HEAD'], { cwd: where, encoding: 'utf8' }).trim();
+  stat.head = headOf(repo);
   const fixturePatch = options.sameTaskRevisions ? PATCH + `diff --git a/${LONG_FEEDBACK_PATH} b/${LONG_FEEDBACK_PATH}\n--- a/${LONG_FEEDBACK_PATH}\n+++ b/${LONG_FEEDBACK_PATH}\n@@ -1 +1 @@\n-old\n+new\n` : PATCH;
   if (options.sameTaskRevisions) { stat.files.push({ path: LONG_FEEDBACK_PATH, additions: 1, deletions: 1 }); stat.fileCount++; stat.additions++; stat.deletions++; }
   const fixtureProof = options.sameTaskRevisions ? { ...PROOF, changed: [...PROOF.changed, LONG_FEEDBACK_PATH] } : PROOF;
@@ -257,8 +262,8 @@ export function startFixture(options = {}) {
     screenshots: [{ path: 'evidence/payout-dashboard.png', ok: true, bytes: png.length, dims: imageDimensions(png, 'png') }],
     approvedCriteria: doneScope.acceptance,
   });
-  if (options.learning || options.assignmentPresentation) store.recordOutcomeFacts(run, { headRevision: stat.head });
-  if (options.assignmentPresentation) {
+  store.recordOutcomeFacts(run, { headRevision: stat.head });
+  {
     // Display-only synthetic candidate, consistent with the recorded diff-stat.
     // This fixture never represents an executed production check or deployment.
     for (const project of [repo, repo2].filter(Boolean)) store.setVerifyCommand({ repo: project, command: 'npm test', timeoutMs: 60000, approvedBy: 'polish-fixture' }, hoursAgo(28));
@@ -273,7 +278,7 @@ export function startFixture(options = {}) {
   // only the adjudication facts differ, exactly as the plane records them.
   const finished = (id, title, at, facts) => {
     const where = facts.repo ?? repo;
-    const resultStat = options.assignmentPresentation ? { ...stat, head: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: where, encoding: 'utf8' }).trim() } : stat;
+    const resultStat = { ...stat, head: headOf(where) };
     const filed = fileTaskProposal(store, {
       id, title, repo: where,
       goal: facts.goal ?? `Fix ${title.toLowerCase()} and prove it with the ledger fixtures.`,
@@ -318,7 +323,7 @@ export function startFixture(options = {}) {
       screenshots: facts.noProof === true ? [] : [{ path: 'evidence/payout-dashboard.png', ok: true, bytes: png.length, dims: imageDimensions(png, 'png') }],
       approvedCriteria: scope.acceptance,
     });
-    if (options.assignmentPresentation) {
+    {
       store.recordOutcomeFacts(runId, { headRevision: resultStat.head });
       if (verify.configured && verify.ran) sealVerificationReceipt(store, evidenceRoot, runId, resultStat.head, store.liveVerifyCommand(facts.repo ?? repo), verify, hoursAgo(at));
     }
@@ -558,7 +563,7 @@ export function startFixture(options = {}) {
     }
     return { ok: true, answer: { text: 'One task is waiting for your approval (**Rework the portfolio ledger export**) and one finished with verified evidence (**Fix the payout rounding drift**). Nothing is building right now.', calls: [], tokensIn: 100, tokensOut: 40, reportedCostMicrousd: null } };
   };
-  const server = createDecisionServer({ store, evidenceRoot, ...(options.slack ? {configDir:root,slackFetcher:options.slack.fetcher} : {}), ...(options.discord ? {configDir:root,discordFetcher:options.discord.fetcher} : {}), ...(repo2 === null ? { repo } : { repos: [repo, repo2, repo3] }), chatEnv: {}, subscriptionChatRunner: options.runner ?? runner });
+  const server = createDecisionServer({ store, evidenceRoot, ...(options.slack ? {configDir:root,slackFetcher:options.slack.fetcher} : {}), ...(options.discord ? {configDir:root,discordFetcher:options.discord.fetcher} : {}), ...(repo2 === null ? { repo } : { repos: [repo, repo2, repo3] }), ...(options.settingsHome === true ? { telegramTokenFile: join(root, 'telegram.token'), connectionHome: join(root, 'provider-home') } : {}), chatEnv: {}, subscriptionChatRunner: options.runner ?? runner });
   const addReviewNotes = runId => {
     const source = store.getRun(runId), now = new Date();
     const taskId = store.externalIdFor(source.taskRef);

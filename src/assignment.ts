@@ -4,10 +4,10 @@
 import { createHash } from "node:crypto";
 import { currentActor, withActor } from "./actor.js";
 import { replacedWords } from "./task-status.js";
-import { COMPLETER_ACTOR, COMPLETION_ACTION, familyChangedFiles, landedReasonOf } from "./result-completion.js";
+import { COMPLETER_ACTOR, COMPLETION_ACTION, COMPLETION_BY_MACHINE, COMPLETION_BY_PERSON, familyChangedFiles, landedReasonOf, personCompletionOwed } from "./result-completion.js";
 import { homedir } from "node:os";
 import { readSchemaVersion, stopFactOf, type Store, type ProofVerdictRow, type ProofAcceptanceRow, type Artifact } from "./store.js";
-import { approvalOf } from "./scope.js";
+import { approvalOf, liveReleaseOf, machineActing } from "./scope.js";
 import { openWorkDecisionOf, taskWorkSummaryOf, workDecisionAction, type WorkAction, type WorkSummaryAccess } from "./work-summary.js";
 import { evidenceRoot, readVerifiedArtifact, readVerifiedReport, verifyArtifact } from "./evidence.js";
 import { sweepIfMoved } from "./sweep-gate.js";
@@ -21,7 +21,7 @@ import { requiredCheckCommandFor, runCheckLevel, type CheckLevel } from "./check
 import { followUpChecksOf, withFollowUps } from "./result-follow-ups.js";
 import { buildReviewOf, findingWords, type BuildReviewView } from "./review-switch.js";
 import { NEEDS, WAITS, processNeedOf, resultHoldUpSentence, type NeedKey, type WaitKey } from "./needs-you.js";
-import { assignmentStageOf, checkBackingOf, completionBlockersOf, requirementWordOf, type ChecksBatch, type CompletionBlocker } from "./task-status.js";
+import { assignmentStageOf, checkBackingOf, completionBlockersOf, receiptChecksOf, requirementWordOf, type ChecksBatch, type CompletionBlocker } from "./task-status.js";
 import { releaseCoverageOf, type ReleaseCoverage, type ReleaseMemo } from "./release-coverage.js";
 import { leadClaimOf, type LeadClaim } from "./lead-voice.js";
 
@@ -38,6 +38,9 @@ export type AssignmentChecks = {
   batch?: ChecksBatch | null;
   /** Checks Off: the passing full release check that contains this commit (release-coverage.ts), read now, never sealed. */
   release?: ReleaseCoverage | null;
+  /** Why a saved check can't be read, when it is the project's check command approved again since it ran (its files
+   * are intact; running checks again settles it). Presentation only, never sealed. */
+  cause?: "command-changed" | null;
 };
 export type AssignmentReceipt = {
   digest: string; rootId: string; taskId: string; runId: number;
@@ -103,7 +106,7 @@ function olderStoreSafe<T>(read: () => T, absent: T): T {
   try { return read(); } catch (error) { if (error instanceof TypeError || /no such (table|column)/.test(String(error))) return absent; throw error; }
 }
 /** A check as the receipt digest seals it: presentation-only fields (check-levels.ts) left out. */
-const sealedChecks = ({ level: _level, running: _running, batch: _batch, release: _release, ...proof }: AssignmentChecks): Omit<AssignmentChecks, "level" | "running" | "batch" | "release"> => proof;
+const sealedChecks = ({ level: _level, running: _running, batch: _batch, release: _release, cause: _cause, ...proof }: AssignmentChecks): Omit<AssignmentChecks, "level" | "running" | "batch" | "release" | "cause"> => proof;
 const OWNER_ACTION = "assignment claimed";
 const CHECK_ACTION = COMPLETION_ACTION;
 const actorOf = (owner: AssignmentOwner) => `${owner.kind}:${owner.id}`;
@@ -133,7 +136,7 @@ function ownerOf(store: Store, rootId: string, repo: string | null): AssignmentS
 // Report the recorded check outcome, never turn a model verdict into a check.
 // Follow-up checks on the same commit (Run checks) upgrade a pass and show a failure.
 export function assignmentChecksForRun(store: Store, root: string | undefined, runId: number, now: Date): AssignmentChecks {
-  const own = buildChecks(store, root, runId);
+  const own = recordedFailureStands(store, runId, buildChecks(store, root, runId));
   const run = store.getRun(runId);
   const followUps = followUpChecksOf(store, runId, now, root);
   if (followUps.length === 0) return own;
@@ -152,16 +155,39 @@ export function assignmentChecksForRun(store: Store, root: string | undefined, r
       detail: read.status === "passed" ? `${words} passed.` : `${words} failed (exit ${read.exitCode}).` } : {}) };
 }
 
+/** A failure the builder recorded (run_check) stands when its saved receipt can't be read now or says nothing ran:
+ * fail closed, every surface reads the same known failure and its exit code (task-status.ts approvedCheckOf). */
+function recordedFailureStands(store: Store, runId: number, own: AssignmentChecks): AssignmentChecks {
+  if (own.status !== "unavailable" && own.status !== "not-run") return own;
+  const recorded = olderStoreSafe(() => store.runCheckFor(runId), null);
+  if (recorded?.status !== "failed") return own;
+  return { ...own, status: "failed", exitCode: recorded.exitCode,
+    detail: `${own.level === "quick" ? "Quick checks" : "Checks"} failed${recorded.exitCode === null ? "" : ` (exit ${recorded.exitCode})`}. ${own.detail}` };
+}
+
+const COMMAND_MISSING_OR_CHANGED = "The original approved verification command is missing or changed.";
+
 function buildChecks(store: Store, root: string | undefined, runId: number): AssignmentChecks {
   const level = runCheckLevel(store, runId);
   const unavailable = (detail: string): AssignmentChecks => ({ status: "unavailable", exitCode: null, command: null, logArtifactId: null, detail, level });
   if (root === undefined) return unavailable("Saved checks are unavailable.");
   try {
     const gate = verificationEvidence(store, root, runId);
-    if (!gate.ok) return unavailable(gate.problem);
+    if (!gate.ok) {
+      // The approved command changed since this check ran: nothing is missing, the check just no longer binds to it.
+      const run = store.getRun(runId), repo = run === null ? null : store.refById(run.taskRef)?.repo ?? null;
+      const live = repo === null ? null : store.liveVerifyCommand(repo);
+      const changed = gate.problem === COMMAND_MISSING_OR_CHANGED && live !== null && run !== null && live.approvedAt > run.startedAt;
+      return changed ? { ...unavailable(gate.problem), cause: "command-changed" } : unavailable(gate.problem);
+    }
     const receipt = gate.bytes === null ? null : JSON.parse(gate.bytes);
     if (receipt === null) return { ...unavailable(level === "off" ? "Checks were off for this build." : "No machine check is recorded."), status: "not-run" };
     const ran = receipt.result.ran === true, exitCode = ran ? receipt.result.exitCode : null;
+    // A release check whose coverage fell short (release-once.md) failed, whatever its command exited with.
+    if (receipt.result.failure === "coverage-incomplete") return { status: "failed", exitCode: null, command: receipt.command.command, logArtifactId: receipt.log.artifactId, level,
+      detail: "Checks didn't cover everything this release owed, or a required test went missing." };
+    if (receipt.result.failure === "no-result") return { status: "failed", exitCode: null, command: receipt.command.command, logArtifactId: receipt.log.artifactId, level,
+      detail: "Checks gave no complete result, so they can't count as a pass." };
     // The sealed receipt names the grant that ran: the quick one, or the full one.
     const sealedLevel: CheckLevel = typeof receipt.command?.repo === "string" && receipt.command.repo.startsWith("quick:") ? "quick" : "full";
     const words = sealedLevel === "quick" ? "Quick checks" : "Checks";
@@ -336,6 +362,17 @@ export function assignmentOf(store: Store, taskId: string, now: Date, access: As
         access: access.principal === "operator" ? "operator-control" : "operator-handoff", retry: "refresh-before-acting" };
       need = { key: "rebuild", build: result.id };
     }
+    // Rewritten after the build and not approved yet: Build again can't start an unapproved plan, so the yes is the
+    // one action (approve-scope opens the approval on the task page); Build again follows it.
+    // Builds only (a scout's report is not built again), and never ahead of an open question: approving answers neither.
+    else if (current.state === "done" && result !== null && result.role === "builder" && questions.length === 0 &&
+      scope !== null && scope.termsProblem == null && !approvalOf(scope).approved && !!result.scopeDigest && scope.digest !== result.scopeDigest &&
+      store.activeHolds(current.refId, now).length === 0 && unfinished === null && store.currentLiveLease(current.refId, now) === null && store.finalResultReason(result.id) === null) {
+      detail = NEEDS.replan.sentence({ build: result.id });
+      primaryAction = { code: "approve-scope", label: NEEDS.replan.action.label, target: { taskId: current.id, runId: null, decisionId: null },
+        access: access.principal === "operator" ? "operator-control" : "operator-handoff", retry: "refresh-before-acting" };
+      need = { key: "replan", build: result.id };
+    }
   }
   if (earlierActive.length > 0) {
     attention.push(`${earlierActive.length} earlier task version${earlierActive.length === 1 ? " is" : "s are"} still active.`);
@@ -343,6 +380,8 @@ export function assignmentOf(store: Store, taskId: string, now: Date, access: As
       state = "needs-decision";
       detail = "Earlier work is still active. Resolve it before completing this assignment.";
       const earlier = earlierActive[0]!;
+      // The earlier version's act replaces this one's, and with it this version's need (its rebuild or replan).
+      need = null;
       primaryAction = taskWorkSummaryOf(store, earlier.id, now, access)?.primaryAction ?? {
         code: "inspect-task", label: "Review active work", target: { taskId: earlier.id, runId: null, decisionId: null }, access: "read", retry: "read-again",
       };
@@ -403,10 +442,12 @@ function readinessOf(store: Store, receipt: AssignmentReceipt, repo: string | nu
   const high = review === null || review.sentBackAs !== null || review.state !== "reviewed" ? 0 : review.high.length;
   const checkRequired = olderStoreSafe(() => requiredCheckCommandFor(store, repo, receipt.taskId, receipt.checks.level), null) !== null;
   const matrix = receipt.proof?.matrix ?? [];
-  const backing = checkBackingOf(receipt.checks);
-  const verdict = shownVerdictOf(receipt.proof?.verdict ?? null, { checkFailed: !report && receipt.checks.status === "failed", highFindings: high,
+  // The approved check as every surface reads it: a recorded pass the saved receipt can't show doesn't count.
+  const checks = receiptChecksOf(receipt);
+  const backing = checkBackingOf(checks);
+  const verdict = shownVerdictOf(receipt.proof?.verdict ?? null, { checkFailed: !report && checks?.status === "failed", highFindings: high,
     reviewPending: review?.state === "pending", criteriaPassed: matrix.every(row => requirementWordOf(row, null, backing) === "Met") });
-  const blockers = completionBlockersOf({ report, checks: receipt.checks, checkRequired, matrix, verdict: receipt.proof?.verdict ?? null,
+  const blockers = completionBlockersOf({ report, checks, checkRequired, matrix, verdict: receipt.proof?.verdict ?? null,
     accepted: receipt.proofAcceptance !== null, high });
   return { verdict, checksOff: !report && receipt.checks.level === "off", blockers };
 }
@@ -457,21 +498,36 @@ export function assignmentEvidenceIntact(store: Store, root: string, receipt: As
 function acknowledgeCurrent(store: Store, current: AssignmentSnapshot, receiptDigest: string, actor: string, now: Date, root: string, access: AssignmentAccess): MutationResult {
   if (!/^[a-f0-9]{64}$/.test(receiptDigest) || current.receipt?.digest !== receiptDigest) return { ok: false, reason: "stale", message: "The result changed. Read the current assignment before checking it." };
   const receipt = current.receipt;
+  // The nightly check of main is a check only (release-once.md, part 3): nobody completes it.
+  if (store.handle.prepare("SELECT 1 AS hit FROM nightly_check WHERE task = ?").get(current.receipt!.taskId) !== undefined) return { ok: false, reason: "check-only", message: "The nightly check of main is only a check; it isn't completed." };
   if (current.state !== "ready-to-check" && current.state !== "complete") return { ok: false, reason: "not-ready", message: "This assignment still has unresolved execution, scope or decisions." };
+  // A release task completes only while its release approval stands for it (release-once.md, liveReleaseOf).
+  const release = liveReleaseOf(store, current.receipt!.taskId, "complete", now);
+  if (release.applies && !release.ok) return { ok: false, reason: "release", message: `This release can't be completed: ${release.why}.` };
+  // Who is completing, from trusted context (approval policy §1.7a): a person, or a machine credential (the lead's
+  // token, a remote API run) that may complete ordinary work but is never the second person on protected work.
+  const person = actor.startsWith("operator:") && !machineActing() ? actor.slice("operator:".length) : null;
+  const marked = actor.startsWith("operator:") ? (person === null ? COMPLETION_BY_MACHINE : COMPLETION_BY_PERSON) : null;
   if (current.state !== "complete") {
     // The one readiness guard: a failed or missing required check, an unresolved requirement or HIGH finding refuses.
     const blockers = current.readiness?.blockers ?? [];
     if (blockers.length > 0) return { ok: false, reason: "not-ready", message: blockers.map(one => one.message).join(" ") };
     // v102: declared paths are only a promise. A result whose actual diff reaches protected files, on a
     // scope one person approved, completes only by someone else — two people have then seen the work.
-    const problem = store.protectedResultProblem(receipt.taskId, familyChangedFiles(store, receipt.taskId, receipt.runId, root), actor.startsWith("operator:") ? actor.slice("operator:".length) : null);
+    const problem = store.protectedResultProblem(receipt.taskId, familyChangedFiles(store, receipt.taskId, receipt.runId, root), person);
     if (problem !== null) return { ok: false, reason: "approval-rules", message: problem };
     store.recordAction({ at: now.toISOString(), actor, repo: current.repo,
-      taskId: current.rootId, runId: receipt.runId, action: CHECK_ACTION, outcome: receiptDigest, source: "work" });
+      taskId: current.rootId, runId: receipt.runId, action: CHECK_ACTION, outcome: receiptDigest, source: "work", detail: marked });
     const ref = store.lookupRef(current.rootId);
     // Whose act this is, even outside a command that named its person: the operator who marked it.
     const by = currentActor() ?? (actor.startsWith("operator:") ? { account: actor.slice("operator:".length), lead: false } : null);
     if (ref !== null) store.noteTaskAct(ref.id, "completed", now, undefined, by);
+    store.bumpWake();
+  } else if (person !== null && personCompletionOwed(store, receipt.taskId, receipt.runId, receiptDigest, person, root)) {
+    // Already complete, but no person's completion is on record that lets protected work publish (a machine's, or one
+    // from before completions said who made them): this person's completion is recorded now (approval policy §1.7a).
+    store.recordAction({ at: now.toISOString(), actor, repo: current.repo,
+      taskId: current.rootId, runId: receipt.runId, action: CHECK_ACTION, outcome: receiptDigest, source: "work", detail: COMPLETION_BY_PERSON });
     store.bumpWake();
   }
   const assignment = assignmentOf(store, current.rootId, now, access, root)!;

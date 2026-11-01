@@ -1,48 +1,14 @@
 /**
- * Button and Dialog adapt shadcn/ui's Radix composition (MIT).
+ * Dialog adapts shadcn/ui's Radix composition (MIT).
  * See THIRD_PARTY_NOTICES.md for the pinned upstream source and modifications.
  */
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { Slot } from "@radix-ui/react-slot";
 import type { ComponentProps, ReactNode } from "react";
 
 export function cn(...values: Array<string | false | null | undefined>): string {
   return values.filter(Boolean).join(" ");
 }
 
-export type ButtonProps = ComponentProps<"button"> & {
-  variant?: "primary" | "secondary" | "ghost" | "danger";
-  size?: "default" | "sm" | "icon";
-  asChild?: boolean;
-};
-
-export function Button({ className, variant = "primary", size = "default", asChild = false, type, ...props }: ButtonProps) {
-  const Component = asChild ? Slot : "button";
-  return <Component
-    data-slot="button"
-    data-variant={variant}
-    data-size={size}
-    className={cn("ui-button", `ui-button--${variant}`, `ui-button--${size}`, className)}
-    {...(!asChild ? { type: type ?? "button" } : {})}
-    {...props}
-  />;
-}
-
-export type BadgeProps = ComponentProps<"span"> & {
-  tone?: "neutral" | "success" | "warning" | "attention" | "danger" | "info";
-};
-export function Badge({ className, tone = "neutral", ...props }: BadgeProps) {
-  return <span data-slot="badge" data-tone={tone} className={cn("ui-badge", `ui-badge--${tone}`, className)} {...props} />;
-}
-export function Input({ className, ...props }: ComponentProps<"input">) {
-  return <input className={cn("ui-input", className)} {...props} />;
-}
-export function Textarea({ className, ...props }: ComponentProps<"textarea">) {
-  return <textarea className={cn("ui-textarea", className)} {...props} />;
-}
-export function Label({ className, ...props }: ComponentProps<"label">) {
-  return <label className={cn("ui-label", className)} {...props} />;
-}
 export type DisclosureProps = ComponentProps<"details"> & { summary: ReactNode };
 export function Disclosure({ summary, className, children, ...props }: DisclosureProps) {
   return <details className={cn("ui-disclosure", className)} {...props}>

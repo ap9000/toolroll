@@ -41,7 +41,6 @@ describe("`toolroll routine …` after routines became scheduled flows", () => {
       }
     }
     expect(existsSync(db)).toBe(false);
-    expect(ROUTINES_MOVED).toBe("Routines are now scheduled flows: see `toolroll flows list` (your routines were moved there).");
   });
 
   test("an existing database is left byte for byte as it was", async () => {

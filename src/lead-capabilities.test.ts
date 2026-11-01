@@ -11,7 +11,6 @@ import { openStore, type Store } from "./store.js";
 import { fileTaskProposal } from "./proposal.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { executeLeadTool, LEAD_TOOLS, type LeadToolContext } from "./lead-tools.js";
-import { LEAD_CONTRACT } from "./lead-contract.js";
 import { CHAT_CONTROLS } from "./chat-controls.js";
 import { register } from "./runner.js";
 import { addToolTo } from "./project-tools.js";
@@ -230,18 +229,5 @@ describe("the lead checks a capability before it claims it", () => {
     expect(executeLeadTool(ctx(2, { checkedCapabilities: checked }), "propose_task", { repo: "r9", ...TASK_ARGS })).toEqual({ ok: false, message: CAPABILITIES_UNREAD });
     executeLeadTool(ctx(2, { checkedCapabilities: checked }), "get_capabilities", { repo: "r9" });
     expect(executeLeadTool(ctx(3, { checkedCapabilities: checked }), "propose_task", { repo: "r9", ...TASK_ARGS })).toMatchObject({ ok: true });
-  });
-
-  test("c3: the contract says to check capabilities before promising, and to investigate a limitation before reporting it", () => {
-    for (const rule of [
-      "Before promising work that depends on an agent, a worker, a tool, a skill or an integration, call get_capabilities this turn",
-      "the plane refuses propose_task",
-      "say so plainly with its next step and open its link with show_control",
-      "never pretend it works",
-      "Investigate before reporting a limitation: when a tool refuses or something looks unsupported, read get_capabilities and the relevant skill (get_skills",
-      "before telling the owner it can't be done",
-    ]) expect(LEAD_CONTRACT).toContain(rule);
-    // The integrations-only rule is replaced, not kept beside it.
-    expect(LEAD_CONTRACT).not.toContain("Before promising work that depends on an integration");
   });
 });

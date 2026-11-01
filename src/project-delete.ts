@@ -18,12 +18,10 @@ import type { ExecResult } from "./exec.js";
 import type { Runner } from "./worktree.js";
 import { teardownGit, refusal } from "./teardown-git.js";
 import { BUILT_IN, type Database, type Store } from "./store.js";
-import { BRANCH_PREFIX, BRANCH_PREFIXES, isOwnBranch } from "./names.js";
+import { BRANCH_PREFIXES, isOwnBranch } from "./names.js";
 
 /** The tables whose history is the audit record itself: never touched. */
 const KEPT = new Set(["action_ledger", "ledger_seal", "ledger_checkpoint"]);
-/** What Toolroll names the branches it makes: toolroll/…, and standing-orders/… from before the rename. */
-export const OWN_BRANCH = BRANCH_PREFIX;
 export const OWN_BRANCHES = BRANCH_PREFIXES;
 
 export type ProjectHoldings = {
@@ -65,7 +63,7 @@ function doomed(db: Database, repo: string): Doomed {
 const SETTINGS: [table: string, column: string][] = [
   ["approval_policy", "repo"], ["verify_command", "repo"], ["worktree_setup", "repo"], ["backend_grant", "repo"], ["publication_grant", "repo"],
   ["intake_grant", "repo"], ["capability", "repo"], ["project_tool", "repo"], ["phase_config", "scope"], ["phase_tier_config", "scope"],
-  ["learning_policy", "repo"], ["operating_mode", "repo"], ["project_knowledge", "repo"],
+  ["learning_policy", "repo"], ["operating_mode", "repo"], ["project_knowledge", "repo"], ["live_detail_setting", "repo"],
   ["project_decision", "repo"], ["flow_script", "repo"], ["workflow_recipe", "repo"], ["team_lead_project", "project"],
 ];
 
@@ -287,7 +285,7 @@ function deleteRows(store: Store, repo: string, d: Doomed, now: Date): number {
   const mirrors = json(list(db, `SELECT local_task_id FROM external_mirror WHERE ${IN("local_task_id")}`, K));
   del("external_intent", IN("mirror"), mirrors);
   del("external_mirror", IN("local_task_id"), mirrors);
-  for (const [table, column] of [["scope_approval_vote", "task_id"], ["scope_author", "task_id"], ["plan_authorization", "task_id"], ["tool_seal", "task"], ["mcp_idempotency", "task_id"], ["coordinator_event", "task_id"], ["workflow_preview", "task_id"]] as const) del(table, IN(column), K);
+  for (const [table, column] of [["scope_approval_vote", "task_id"], ["scope_author", "task_id"], ["plan_authorization", "task_id"], ["tool_seal", "task"], ["mcp_idempotency", "task_id"], ["coordinator_event", "task_id"], ["workflow_preview", "task_id"], ["task_source", "task_id"]] as const) del(table, IN(column), K);
   del("workflow_preview", "repo = ?", repo);
   del("coding_handoff_scope", `id IN (SELECT id FROM coding_handoff WHERE json_extract(payload, '$.repo') = ?)`, repo);
   del("coding_handoff", "json_extract(payload, '$.repo') = ?", repo);

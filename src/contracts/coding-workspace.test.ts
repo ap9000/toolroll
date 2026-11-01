@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { assertContract, type SampleVerdict } from "./contract-test.js";
 import { codingSessionDocument, codingSessionRecordSchema, parseCodingSessionDocument, readCodingSessionRecord, type CodingSession } from "./coding-workspace.js";
@@ -80,14 +79,5 @@ describe("the coding workspace record contract", () => {
     expect(() => parseCodingSessionDocument("{")).toThrow("A saved coding session could not be read: payload: not JSON");
     expect(() => parseCodingSessionDocument(JSON.stringify("unreadable"))).toThrow("payload: must be an object");
     expect(() => parseCodingSessionDocument(JSON.stringify({ ...current, version: 2 }))).toThrow("version: made by a newer Toolroll");
-  });
-});
-
-describe("the Zod revamp plan", () => {
-  it("marks item 12 done in the wave 2 table and records it under Done", () => {
-    const plan = readFileSync(new URL("../../docs/plans/zod-revamp.md", import.meta.url), "utf8");
-    expect(plan).toMatch(/^\| 12 ✅ \| \*\*Coding handoff and context\*\*/m);
-    const done = plan.slice(plan.indexOf("\n## Done\n"));
-    expect(done).toMatch(/^- \*\*12\. Coding handoff and context\*\* \(2026-10-0\d\)\./m);
   });
 });

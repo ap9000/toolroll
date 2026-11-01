@@ -1,11 +1,16 @@
+import { steerControlsFor } from "../steer-controls.js";
+import { canReveal, cdCommandOf, localCheckoutOf } from "../checkout-proof.js";
+import { instanceHttpAnswer } from "../console-instance.js";
 import { handlersOf } from './handler-registry.js';
-import { html, joinHtml, postForm, type Html } from "../html.js";
+import { html, joinHtml, postForm, type Html, reauth } from "../html.js";
 /** pages handlers, moved without changing their route bodies. */
 import { createHmac,randomBytes } from "node:crypto";
-import { existsSync,opendirSync,readdirSync,realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { type ServerResponse } from "node:http";
 import { homedir,hostname } from "node:os";
-import { dirname,join } from "node:path";
+import { basename,dirname,join,resolve } from "node:path";
+import { buildersFor } from "../dispatch.js";
+import { listFolder,localOrigins } from "../folder-look.js";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { setImmediate as yieldEventLoop } from "node:timers/promises";
@@ -21,8 +26,13 @@ import { run as execRun } from "../exec.js";
 import { computeGaps } from "../gaps.js";
 import { LEDGER_CSV_HEADER,ledgerCsvRows } from "../ledger-csv.js";
 import { ledgerBody } from "../ledger-view.js";
-import { agentRowOf,agentsBoardOf,agentFactsFor,sealedDiffOf } from "../agents-board.js";
+import { agentLanesOf, agentRowOf, agentsBoardOf, agentFactsFor, laneWindowOf, sealedDiffOf } from "../agents-board.js";
 import { markAgentSeen } from "../agent-board.js";
+import { agentsLiveOf } from "../agents-live.js";
+import { readChildWindow } from "../live-children-read.js";
+import { leadFiledLinks } from "./agents-live-filed.js";
+import { readMainWindow } from "../live-main-read.js";
+import { runLiveCommands } from "../store.js";
 import type { BrowserAgentDetail,BrowserAgentsView } from "../browser-workspace.js";
 import { prometheusMetrics } from "../metrics.js";
 import { readMonitoring } from "../monitoring-settings.js";
@@ -43,15 +53,20 @@ import { tally } from "../summary.js";
 import type { EdgeContext,HandlerContext } from './handler-context.js';
 import { serveInstallAsset } from "./pages-assets.js";
 import { healthz } from "./remote-hooks.js";
+import { slowRequestLines, SLOW_REQUEST_MS } from "../latency-timeline.js";
 import type { ServerRuntime } from './runtime.js';
-import { projectChip,refuse,regionScript,relativeAge,screen,settingsRows,transcriptScript,WORKSPACE_STYLE,workToolRows,type NavRow } from "./chrome.js";
+import { leadsStillAdmitted, leadTilesFor } from './agents-live-lead.js';
+import { refuse, regionScript, screen, settingsRows, WORKSPACE_STYLE, workToolRows, type NavRow } from "./chrome.js";
 import { redirect,respond,safeReturn,SAFETY,taskHref } from "./http.js";
-import { browsePage,fleetBody,fleetScript,githubIdentityOf,githubReposPage,homePage,originUrlOf,portfolioOverview,projectsPage,systemPage,workbenchRail } from "./render-pages.js";
+import { assignmentOf } from "../assignment.js";
+import { assignmentTaskStatusOf } from "../assignment-presentation.js";
+import { browsePage,fleetBody,fleetScript,githubIdentityOf,githubReposPage,homePage,portfolioOverview,projectsPage,startBuilderHtml,systemPage,workbenchRail } from "./render-pages.js";
 import { capsPage } from "./render-settings.js";
 import { decisionAnswerScript,taskBody } from "./render-tasks.js";
 import { type Who } from "./session.js";
+import { rereadBrowser } from "./live.js";
 export function createPagesHandlers(runtime: ServerRuntime) {
-  const { clock, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, projectOf, lookupSession } = runtime;
+  const { identities, clock, lastChecks, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession } = runtime;
 
   // The filesystem browser (operator request): pick a project folder by
   // looking, not typing. CONFINED to exactly what opening allows —
@@ -64,40 +79,32 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const { url, who, response } = ctx;
     if (who.via !== "cookie") return refuse(response, who, 403, "browsing feeds a browser session's act");
     const browseRoots =
-      ceiling.roots.length > 0 ? [...ceiling.roots] : unscopedMode ? [realpathSync(homedir())] : [];
+      ceiling.roots.length > 0 ? [...ceiling.roots] : unscopedMode ? [identities.hot(homedir())] : [];
     if (browseRoots.length === 0) {
       return refuse(response, who, 404, "this server was configured with an explicit repo list — the openable projects are all on the projects page", "/projects");
     }
     const asked = url.searchParams.get("at") ?? browseRoots[0] as string;
-    const canonical = canonicalProject(asked);
-    const inside =
-      canonical !== null &&
-      browseRoots.some(root => canonical === root || canonical.startsWith(`${root}/`));
-    if (canonical === null || !inside) {
+    const within = (path: string) => browseRoots.some(root => path === root || path.startsWith(`${root}/`));
+    // Spelled outside every root: refused before anything is read. Inside, the look resolves links and checks again.
+    if (!within(resolve(asked))) {
       return refuse(response, who, 403, "that path is outside what this server may browse", "/projects/browse");
     }
-    let entries: { name: string; path: string; git: boolean }[] = [];
-    try {
-      entries = readdirSync(canonical, { withFileTypes: true })
-        .filter(one => one.isDirectory() || one.isSymbolicLink())
-        .filter(one => !one.name.startsWith(".") && one.name !== "node_modules")
-        .slice(0, 400)
-        .map(one => {
-          const path = join(canonical, one.name);
-          // Resolve NOW so a symlink pointing outside the fence renders
-          // as nothing rather than as a door.
-          const resolved = canonicalProject(path);
-          if (resolved === null || !browseRoots.some(root => resolved === root || resolved.startsWith(`${root}/`))) {
-            return null;
-          }
-          return { name: one.name, path: resolved, git: existsSync(join(resolved, ".git")) };
-        })
-        .filter((one): one is { name: string; path: string; git: boolean } => one !== null)
-        .sort((a, b) => Number(b.git) - Number(a.git) || a.name.localeCompare(b.name))
-        .slice(0, 200);
-    } catch {
-      return refuse(response, who, 404, "that directory cannot be read", "/projects/browse");
+    // Read off the console's thread (folder-look.ts): a folder that doesn't answer never freezes the console.
+    const looked = await listFolder(asked, browseRoots, { ...(options.folderLook === undefined ? {} : { runner: options.folderLook }), ...(options.folderLookMs === undefined ? {} : { deadlineMs: options.folderLookMs }) });
+    if (!looked.ok) {
+      return looked.why === "no-answer"
+        ? refuse(response, who, 503, "This folder didn't answer. It may be on a drive that's disconnected, or waiting on macOS. Try again in a moment.", "/projects")
+        : refuse(response, who, 404, "that directory cannot be read", "/projects/browse");
     }
+    const canonical = looked.value.at;
+    if (canonical === null || !within(canonical)) {
+      return refuse(response, who, 403, "that path is outside what this server may browse", "/projects/browse");
+    }
+    // The look kept only folders inside a root; checked here again, as before.
+    const entries = looked.value.entries
+      .filter(one => within(one.path))
+      .sort((a, b) => Number(b.git) - Number(a.git) || a.name.localeCompare(b.name))
+      .slice(0, 200);
     const root = browseRoots.find(one => canonical === one || canonical.startsWith(`${one}/`)) as string;
     const parent = canonical === root ? null : canonical.slice(0, canonical.lastIndexOf("/")) || root;
     const csrf = who.session.csrf;
@@ -126,48 +133,31 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   async function projectsGithub(ctx: HandlerContext): Promise<void> {
     const { who, response } = ctx;
     if (store.isDemo()) return refuse(response, who, 403, "the sandbox never talks to GitHub");
-    const listed = await (options.ghList ?? listGithubRepos)();
+    // The last listing (docs/plans/get-side-effects.md): List repositories posts; opening the page asks GitHub nothing.
+    const listed = lastChecks.known<Awaited<ReturnType<typeof listGithubRepos>>>("github-repos")?.value ?? null;
     // What this machine already has, matched by the clone's own recorded
     // origin — registered projects first, then the immediate children of
     // the configured roots. Identities are compared case-insensitively
     // (GitHub's rule); the FIRST match wins.
     const localByIdentity = new Map<string, string>();
     const registered = new Set<string>();
-    for (const project of store.listProjects()) {
-      if (!visible(project.path)) continue;
-      registered.add(project.path);
-      const identity = githubIdentityOf(originUrlOf(project.path) ?? "");
-      if (identity !== null && !localByIdentity.has(identity.toLowerCase())) {
-        localByIdentity.set(identity.toLowerCase(), project.path);
-      }
-    }
+    for (const project of store.listProjects()) if (visible(project.path)) registered.add(project.path);
     // Roots are walked ONLY when there are listed repos to match against
-    // (finding 1), through an iterator that stops at 400 entries — a
-    // directory with a million children costs 400 stats, not a scan.
-    if (listed.ok && listed.repos.length > 0) {
-      for (const root of ceiling.roots) {
-        const children: string[] = [];
-        try {
-          const dir = opendirSync(root);
-          try {
-            for (let seen = 0; seen < 400; seen++) {
-              const entry = dir.readSync();
-              if (entry === null) break;
-              if (entry.isDirectory()) children.push(join(root, entry.name));
-            }
-          } finally {
-            dir.closeSync();
-          }
-        } catch {
-          // an unreadable root offers nothing
+    // (finding 1), at most 400 folders a root. Every read runs off the
+    // console's thread (folder-look.ts): a folder that doesn't answer
+    // leaves its copies unmatched and the page says so.
+    const roots = listed !== null && listed.ok && listed.repos.length > 0 ? [...ceiling.roots] : [];
+    let localUnanswered = false;
+    if (registered.size > 0 || roots.length > 0) {
+      const looked = await localOrigins([...registered], roots, { ...(options.folderLook === undefined ? {} : { runner: options.folderLook }), ...(options.folderLookMs === undefined ? {} : { deadlineMs: options.folderLookMs }) });
+      if (looked.ok) {
+        const children = looked.value.found.filter(one => roots.some(root => one.path.startsWith(`${root}/`)));
+        for (const one of [...looked.value.registered.filter(row => registered.has(row.path)), ...children]) {
+          const identity = githubIdentityOf(one.url ?? "");
+          if (identity !== null && !localByIdentity.has(identity.toLowerCase())) localByIdentity.set(identity.toLowerCase(), one.path);
         }
-        for (const child of children) {
-          if (!existsSync(join(child, ".git"))) continue;
-          const identity = githubIdentityOf(originUrlOf(child) ?? "");
-          if (identity !== null && !localByIdentity.has(identity.toLowerCase())) {
-            localByIdentity.set(identity.toLowerCase(), child);
-          }
-        }
+      } else {
+        localUnanswered = looked.why === "no-answer";
       }
     }
     return sendScreen(
@@ -180,10 +170,18 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         csrf: who.via === "cookie" ? who.session.csrf : "",
         cloneReady: ceiling.roots.length > 0,
         openProject: who.via === "cookie" ? who.session.project ?? null : null,
+        localUnanswered,
       }),
     );
   }
 
+  // List repositories / Refresh list: ask the GitHub CLI signed in on this machine, then show the page.
+  async function projectsGithubList(ctx: HandlerContext): Promise<void> {
+    const { who, response } = ctx;
+    if (store.isDemo()) return refuse(response, who, 403, "the sandbox never talks to GitHub");
+    await lastChecks.run("github-repos", () => (options.ghList ?? listGithubRepos)());
+    return redirect(response, "/projects/github");
+  }
   async function projectsIndex(ctx: HandlerContext): Promise<void> {
     const { url, who, response } = ctx;
     return void projectsScreen(response, who, url.searchParams.get("said"), 200, safeReturn(url.searchParams.get("return")));
@@ -357,7 +355,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         runners: store.listRunners(),
         worktrees: store
           .listWorktrees()
-          .filter(one => project === null || sameRepo(one.repo, project)),
+          .filter(one => project === null || one.repo === project || identities.hot(one.repo) === identities.hot(project)),
         episode: project === null ? null : store.latestWatchEpisode(project),
         now,
       }),
@@ -387,7 +385,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         }),
         building: store.liveClaims(project, now),
         runners: store.listRunners(),
-        worktrees: store.listWorktrees().filter(one => project === null || sameRepo(one.repo, project)),
+        worktrees: store.listWorktrees().filter(one => project === null || one.repo === project || identities.hot(one.repo) === identities.hot(project)),
         episode: project === null ? null : store.latestWatchEpisode(project),
         outboxPending: store.pendingForAttention().length,
         // External work at a glance (arc 3 finding 24): every dispatch
@@ -417,11 +415,55 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   /** What the board says after a Reply or a steer, in fixed words (never text from the address). */
   const AGENT_SAID: Record<string, { tone: "info" | "error"; text: string }> = {
     replied: { tone: "info", text: "Reply sent. The agent reads it at its next check." },
-    steered: { tone: "info", text: "Note sent. The agent reads it at its next check." },
+    steered: { tone: "info", text: "Note sent. It shows in the conversation with whether the agent has read it." },
+    "steer-ended": { tone: "error", text: "That attempt ended before your note, so nothing was sent. Your note is kept below." },
+    "steered-next": { tone: "info", text: "Note sent. The task's next attempt reads it before starting." },
+    "steer-next-finished": { tone: "error", text: "This task is finished, so there's no next attempt to send it to. Your note is kept below." },
+    "steer-invalid": { tone: "error", text: "That note will not store. Your note is still in the box." },
+    "steer-stale": { tone: "error", text: "That form was already used. Your note is still in the box — send it again." },
     "reply-closed": { tone: "error", text: "That question was already answered." },
     "reply-stale": { tone: "error", text: "This attempt ended before your reply, so nothing was sent." },
     "reply-invalid": { tone: "error", text: "Write a reply of up to 1,500 characters." },
+    "steer-no-notes": { tone: "error", text: "This agent takes no notes right now, so nothing was sent. Stop it to change its course." },
+    stopping: { tone: "info", text: "Stopping. The work so far is kept." },
+    pausing: { tone: "info", text: "Pausing. It stops at the end of its current step." },
+    "pausing-with-note": { tone: "info", text: "Pausing. Your note goes to it as soon as it stops." },
+    "pause-note-stale": { tone: "error", text: "That form was already used, so your note was not sent. It is still in the box — send it again." },
+    resuming: { tone: "info", text: "Resuming. It carries on where it stopped." },
+    revealed: { tone: "info", text: "Shown in Finder." },
+    "reveal-refused": { tone: "error", text: "That checkout couldn't be shown: it isn't this attempt's running checkout on this computer any more." },
+    "reveal-mac-only": { tone: "error", text: "Show in Finder works on a Mac. Copy the command instead." },
+    "reveal-failed": { tone: "error", text: "Finder didn't show it. The path is above; copy the command instead." },
   };
+
+  /**
+   * The opened agent's head (docs/plans/one-page-task-and-agent.md): its task's status in the task page's own words and
+   * that status's one action as a link to the task page tab holding its form, and where this run opens there — a
+   * result (the shared predicate: a finished builder or scout run) on the Result tab at this run, a plan on the Plan
+   * tab, anything else on its record.
+   */
+  function agentTaskHeadOf(taskId: string, runId: number, live: boolean, access: ReturnType<typeof workAccess>, now: Date): Pick<BrowserAgentDetail, "task" | "open"> {
+    const family = store.taskFamilyOf(taskId, access.repos, access.includeUnplaced);
+    const root = family?.root.id ?? taskId;
+    const versionOf = (id: string): string => family !== null && id !== family.current.id ? `version=${encodeURIComponent(id)}&` : "";
+    const run = store.getRun(runId);
+    const open = live || run === null ? null
+      : run.finishedAt !== null && (run.role === "builder" || run.role === "scout") ? { label: run.role === "scout" ? "Report" : "Result", href: `${taskHref(root)}?${versionOf(taskId)}tab=result&run=${runId}` }
+      : run.role === "planner" ? { label: "Plan", href: `${taskHref(root)}?${versionOf(taskId)}tab=plan` }
+      : { label: "Record", href: `/r/${runId}?record=1` };
+    let task: BrowserAgentDetail["task"] = null;
+    try {
+      const assignment = family === null ? null : assignmentOf(store, family.current.id, now, access, evidenceRoot);
+      if (assignment !== null) {
+        const words = assignmentTaskStatusOf(assignment);
+        const wants = words.primaryAction?.href ?? "";
+        // A result to review is on the Result tab; everything else the task page heads with (the approval, a retry…).
+        const href = /^\/review\?result=|[?&]result=/.test(wants) ? `${taskHref(root)}?tab=result` : taskHref(root);
+        task = { headline: words.headline, sentence: words.sentence, tone: words.tone, action: { label: words.primaryAction?.label ?? "Open task", href } };
+      }
+    } catch { task = null; }
+    return { task, open };
+  }
 
   // The Agents board (one place to check on running agents): rows by state, and the opened agent's live view.
   async function agentsPage(ctx: HandlerContext): Promise<void> {
@@ -429,37 +471,60 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const now = clock();
     const access = workAccess();
     const asked = url.searchParams.get("run");
+    // The Live grid only watches (docs/plans/agents-view.md §3): it branches off before an opened agent is built, so
+    // viewing it never marks a run seen, takes a watch or offers a composer — a reload of ?view=live&run=… included.
+    const watching = url.searchParams.get("view") === "live";
+    // Live is a browser session's only, like its reads (no token sees the grid).
+    if (watching && who.via !== "cookie") return respond(response, 403, "text/plain; charset=utf-8", "The Live view is for a signed-in browser.");
     let selected: BrowserAgentDetail | null = null;
-    if (asked !== null && /^[1-9][0-9]{0,9}$/.test(asked)) {
+    if (!watching && asked !== null && /^[1-9][0-9]{0,9}$/.test(asked)) {
       const run = store.getRun(Number(asked));
       const facts = run === null || !runVisible(run) ? null : agentFactsFor(store, run.id, access, who.name);
       if (facts !== null) {
         // Opening a finished agent is viewing it: it leaves this person's unread Done.
         if (facts.outcome !== null && markAgentSeen(store, who.name, facts.runId, now)) facts.seen = true;
         const live = facts.outcome === null;
+        const composer = live ? steerControlsFor(store, facts.taskId, facts.runId, now, who.role === "approver") : null;
         const sealed = live ? null : sealedDiffOf(store, evidenceRoot, facts.runId);
         // A reply's own word first; otherwise the note that the agent asked past the questions cap.
         const said = AGENT_SAID[url.searchParams.get("said") ?? ""] ?? (facts.questionNote === null ? null : { tone: "info" as const, text: facts.questionNote });
         selected = {
           ...agentRowOf(store, facts, now, evidenceRoot), live,
           question: live && facts.question !== null ? { ...facts.question, action: `${taskHref(facts.taskId)}/reply` } : null,
-          transcript: options.localRunner === undefined ? null : `/r/${facts.runId}?fragment=transcript`,
-          // The live look at its checkout needs this machine's runner and pool, as the run page's does.
-          peek: live && options.localRunner !== undefined && options.poolRoot !== undefined ? `/r/${facts.runId}?fragment=peek` : null,
+          // The conversation's window: its notes answer anywhere; its transcript only from the machine that runs it (the window says so).
+          transcript: `/r/${facts.runId}?fragment=transcript&shape=records`,
+          // The live look at its checkout needs this machine's runner — the one running it — and pool, as the run page's does.
+          peek: live && options.localRunner !== undefined && run!.runner === options.localRunner && options.poolRoot !== undefined ? `/r/${facts.runId}?fragment=peek` : null,
           files: (sealed?.files ?? []).slice(0, 30).map(one => ({ path: one.path, added: one.additions, removed: one.deletions })),
           filesMore: Math.max(0, (sealed?.fileCount ?? 0) - 30),
-          steer: live ? { action: `${taskHref(facts.taskId)}/steer`, run: facts.runId } : null,
+          // A note goes only to an attempt that reads notes (steer-controls.ts); the composer says what it takes.
+          steer: composer?.steer ?? null,
+          controls: composer?.controls ?? null,
+          checkout: (() => {
+            if (!live || who.role !== "approver" || store.isDemo()) return null;
+            const proof = localCheckoutOf(store, facts.runId, { runner: options.localRunner, poolRoot: options.poolRoot }, now);
+            // Show in Finder only where it can work (a Mac); elsewhere the path and the command stand alone.
+            return proof.ok ? { path: proof.path, cd: cdCommandOf(proof.path), reveal: canReveal(options.revealPath !== undefined) ? `/r/${facts.runId}/reveal` : null } : null;
+          })(),
           canAct: who.role === "approver" && !store.isDemo(),
           taskHref: taskHref(facts.taskId),
           // The run's own address: a finished result opens on its result page, anything else on its record.
           resultHref: live ? null : `/r/${facts.runId}`,
+          ...agentTaskHeadOf(facts.taskId, facts.runId, live, access, now),
           room: `agent:${facts.runId}`, said,
         };
       }
     }
+    // The Live grid is drawn in the browser from its own read-only reads (agents-live-view.tsx): no board facts here.
+    if (watching) {
+      const view: BrowserAgentsView = { kind: "agents", groups: [], selected: null, lanes: null, empty: null, live: true };
+      return sendScreen(response, 200, screen("Agents", html`<h1>Agents</h1><p class="meta">Live needs JavaScript.</p>`, { chrome: chromeFor(project, "runs"), workspace: { view } }));
+    }
     const groups = agentsBoardOf(store, now, access, who.name, evidenceRoot);
-    const view: BrowserAgentsView = { kind: "agents", groups, selected,
-      empty: groups.length === 0 ? "No agents in the last day. They show here the moment one starts." : null };
+    const lanes = selected === null ? agentLanesOf(store, now, access, who.name, laneWindowOf(url.searchParams.get("window"))) : null;
+    const view: BrowserAgentsView = { kind: "agents", groups, selected, lanes,
+      // Empty only when nothing ran at all: a planner or review on the timeline is activity too.
+      empty: groups.length === 0 && (lanes === null || lanes === undefined) ? "No agents in the last day. They show here the moment one starts." : null };
     const fallback = joinHtml([
       html`<h1>Agents</h1>`,
       groups.length === 0 ? html`<p class="meta">${view.empty ?? ""}</p>` : joinHtml(groups.map(group => joinHtml([
@@ -471,7 +536,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   }
 
   async function fleetPage(ctx: HandlerContext): Promise<void> {
-    const { url, who, response, project } = ctx;
+    const { url, response, project } = ctx;
     // Cross-project by design: which agent is on which project is the
     // question, so this screen is a survey — reads are still filtered
     // through the ceiling before a card renders. No project needed.
@@ -494,7 +559,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         html`<p class="meta" id="fleet-region-stamp"></p>`,
         html`<h2>Register a worker</h2>`,
         postForm("/fleet/runner/register", html`<label>Name<input type="text" name="name" placeholder="builder-2" maxlength="60" required></label><label>Capacity<input type="text" name="capacity" inputmode="numeric" value="1" aria-label="capacity"></label><label>Your password, typed again<input type="password" name="token" autocomplete="current-password" required></label><button type="submit">Register — its token is shown once</button>`, { attrs: { class: "card" } }),
-        html`<details class="arm-danger"><summary>Retire a worker</summary>${postForm("/fleet/runner/retire", html`<label>Which worker<input type="text" name="name" placeholder="builder-1" required></label><label>Your password, typed again<input type="password" name="token" autocomplete="current-password" required></label><button type="submit" class="danger">Retire it</button>`, { attrs: { class: "card" } })}</details>`,
+        html`<details class="arm-danger"><summary>Retire a worker</summary>${postForm("/fleet/runner/retire", html`<label>Which worker<input type="text" name="name" placeholder="builder-1" required></label>${reauth(html`<label>Your password, typed again<input type="password" name="token" autocomplete="current-password" required></label>`)}<button type="submit" class="danger">Retire it</button>`, { attrs: { class: "card" } })}</details>`,
       ], "\n"),
       // The password fields make this screen sensitive: sendScreen strips
       // the chrome additions and keeps the reorder poller — the named
@@ -573,9 +638,12 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   async function health(ctx: HandlerContext): Promise<void> {
     const { request, response } = ctx;
     const health = store.telemetry.snapshot();
+    // Beside /healthz, for an instance operator: where the slowest recent console answers spent their time (route ids
+    // and milestones only).
+    const slow = slowRequestLines(store);
     return request.headers.accept?.includes('application/json')
-      ? respond(response, 200, 'application/json; charset=utf-8', JSON.stringify(health))
-      : respond(response, 200, 'text/plain; charset=utf-8', `${healthWords(health)}\n`);
+      ? respond(response, 200, 'application/json; charset=utf-8', JSON.stringify({ ...health, slowRequests: slow }))
+      : respond(response, 200, 'text/plain; charset=utf-8', `${healthWords(health)}\n${slow.length === 0 ? "" : `\nSlow console requests (over ${SLOW_REQUEST_MS} ms), newest first:\n${slow.join("\n")}\n`}`);
   }
 
   // v104: Prometheus metrics, for an instance operator (a scraper sends one's API token).
@@ -609,10 +677,16 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       return refuse(response, who, 403, "selecting a project is a browser session's act");
     }
     const askedPath = (body.get("path") ?? "").trim();
-    const canonicalPick = askedPath === "" ? null : canonicalProject(askedPath);
+    // Resolved off the console's thread (project-identity.ts): a folder that doesn't answer is said, never waited on.
+    const decidedOn = identities.generation();
+    const picked = askedPath === "" ? null : await identities.resolveNow(askedPath);
+    if (picked === "no-answer") return refuse(response, who, 503, "That project's folder didn't answer. It may be on a drive that's disconnected, or waiting on macOS. Try again in a moment.");
+    const canonicalPick = picked;
     if ((askedPath !== "" && canonicalPick === null) || (canonicalPick !== null && (!visible(canonicalPick) || !(await authorizedProject(liveCeiling(), canonicalPick))))) {
       return refuse(response, who, 403, "that project is outside this console's reach");
     }
+    // An identity that changed during the awaits above undoes what they proved.
+    if (identities.generation() !== decidedOn) return refuse(response, who, 409, "a project folder changed while this was being checked — try again");
     who.session.project = canonicalPick;
     who.session.projectRevision += 1;
     sessions.persist(who.session);
@@ -642,7 +716,12 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       return refuse(response, who, 403, "opening a project is a browser session's act");
     }
     const asked = (body.get("path") ?? "").trim();
-    const canonical = asked === "" ? null : canonicalProject(asked);
+    const decidedOn = identities.generation();
+    const resolved = asked === "" ? null : await identities.resolveNow(asked);
+    if (resolved === "no-answer") {
+      return void projectsScreen(response, who, "that folder didn't answer — it may be on a drive that's disconnected, or waiting on macOS; try again in a moment", 503, safeReturn(body.get("return")));
+    }
+    const canonical = resolved;
     if (canonical === null) {
       return void projectsScreen(response, who, "that path does not exist on this server", 400, safeReturn(body.get("return")));
     }
@@ -660,13 +739,19 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     if (!visible(canonical)) {
       return void projectsScreen(response, who, "That project is outside your access.", 403, safeReturn(body.get("return")));
     }
+    // An identity that changed during the awaits above undoes what they proved.
+    if (identities.generation() !== decidedOn) return void projectsScreen(response, who, "a project folder changed while this was being checked — try again", 409, safeReturn(body.get("return")));
     // Opening an allowed repository admits it the same way `repos add` does
     // (project-admission.ts). A co-located `up` notices the durable list and
     // connects its builder; there is no separate restart or binding step.
-    const admitted = await admitProject(store, { registryFile: options.registryPath ?? null, path: canonical, actor: { label: who.name, origin: "console" }, now });
+    // The admission asks again, inside its registry lock and its transaction, about the repo it proves.
+    const stillAllowed = (repo: string): boolean => identities.generation() === decidedOn && visible(repo);
+    const admitted = await admitProject(store, { registryFile: options.registryPath ?? null, path: canonical, actor: { label: who.name, origin: "console" }, now, stillAllowed });
     if (!admitted.ok) {
-      return void projectsScreen(response, who, admitted.reason === "not-git" ? "that path is not a git repository" : `that project is valid, but it could not be added — ${admitted.message}`, 400, safeReturn(body.get("return")));
+      return void projectsScreen(response, who, admitted.reason === "not-git" ? "that path is not a git repository" : `that project is valid, but it could not be added — ${admitted.message}`, admitted.reason === "moved" ? 409 : 400, safeReturn(body.get("return")));
     }
+    // And once more before the session follows it.
+    if (!stillAllowed(admitted.repo)) return void projectsScreen(response, who, "a project folder changed while this was being checked — try again", 409, safeReturn(body.get("return")));
     deletedRepos.delete(admitted.repo);
     who.session.project = admitted.repo;
     who.session.projectRevision++;
@@ -685,7 +770,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const body = readForm(posted, CONSOLE_FORMS.runnerRegister);
     if (who.via !== "cookie") return refuse(response, who, 403, "runner registration is a browser surface");
     const token = body.get("token") ?? "";
-    if (!authenticateApprover(who, token).ok) {
+    // A worker credential is minted here: a credential act, a password typed now even with Passwordless on.
+    if (!authenticateCredential(who, token).ok) {
       return refuse(response, who, 403, "registering a worker takes your password, typed again", "/fleet");
     }
     const name = (body.get("name") ?? "").trim();
@@ -743,12 +829,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const rootIndex = Number(body.get("root") ?? "0");
     const rootRaw = Number.isInteger(rootIndex) ? ceiling.roots[rootIndex] : undefined;
     if (rootRaw === undefined) return projectsScreen(response, who, "pick one of the configured roots", 400);
-    let root: string;
-    try {
-      root = realpathSync(rootRaw);
-    } catch {
-      return projectsScreen(response, who, "that projects root does not resolve right now", 400);
-    }
+    const root = await identities.resolveNow(rootRaw);
+    if (root === null || root === "no-answer") return projectsScreen(response, who, "that projects root does not resolve right now", 400);
     const previewed = await (options.ghPreview ?? previewGithubRepo)(shape.owner, shape.name);
     if (!previewed.ok) return projectsScreen(response, who, previewed.message, 400);
     const reparsed = parseGithubRepo(previewed.preview.nameWithOwner);
@@ -794,7 +876,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     // (finding 22/33) — the record is consumed from the RETURNED live
     // session, synchronously, before the first await.
     const password = body.get("token") ?? "";
-    if (password === "" || !authenticateApprover(who, password).ok) {
+    if (!authenticateApprover(who, password).ok) {
       return projectsScreen(response, who, "cloning takes your password, typed again", 403);
     }
     const cookieId = /(?:^|;\s*)standing-orders_session=([0-9a-f]{64})/.exec(request.headers.cookie ?? "")?.[1];
@@ -807,17 +889,15 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       return projectsScreen(response, who, "that preview expired or was already used — preview again", 400);
     }
     live.onboard?.delete(nonce); // consumed BEFORE the first await
+    // Identities as this confirmation found them: the admission below re-checks against them (project-identity.ts).
+    const decidedOn = identities.generation();
     if (record.large && body.get("big-ok") !== "1") {
       return projectsScreen(response, who, "that repository is large (or its size is unknown) — tick the box to clone it anyway", 400);
     }
     const rootRaw = ceiling.roots[record.rootIndex];
     if (rootRaw === undefined) return projectsScreen(response, who, "the configured roots changed — preview again", 400);
-    let root: string;
-    try {
-      root = realpathSync(rootRaw);
-    } catch {
-      return projectsScreen(response, who, "that projects root does not resolve right now", 400);
-    }
+    const root = await identities.resolveNow(rootRaw);
+    if (root === null || root === "no-answer") return projectsScreen(response, who, "that projects root does not resolve right now", 400);
     if (dirname(record.target) !== root) return projectsScreen(response, who, "the configured roots changed — preview again", 400);
 
     const cloned = await (options.ghClone ?? cloneGithubRepo)(record.nameWithOwner, root, async (cwd: string) => {
@@ -832,15 +912,17 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       return projectsScreen(response, who, "the clone answered with a different path than the preview promised — refused; nothing was enrolled", 400);
     }
     // authorizedProject AFTER the repository exists (finding 20).
-    const proved = await authorizedProject(liveCeiling(), cloned.target);
-    const admitted = proved ? (canonicalProject(cloned.target) ?? cloned.target) : null;
+    const clonedAt = await identities.resolveNow(cloned.target);
+    const admitted = typeof clonedAt === "string" && clonedAt !== "no-answer" && (await authorizedProject(liveCeiling(), clonedAt)) ? clonedAt : null;
     if (admitted === null) {
       return projectsScreen(response, who, `the clone landed at ${cloned.target} but did not prove under the ceiling — it was left in place; enroll it by hand`, 400);
     }
-    const joined = await admitProject(store, { registryFile: options.registryPath ?? null, path: admitted, actor: { label: who.name, origin: "console" }, now });
+    const stillAllowed = (repo: string): boolean => identities.generation() === decidedOn && visible(repo);
+    const joined = await admitProject(store, { registryFile: options.registryPath ?? null, path: admitted, actor: { label: who.name, origin: "console" }, now, stillAllowed });
     if (!joined.ok) {
-      return projectsScreen(response, who, `${cloned.target} is cloned but not added — ${joined.message}`, 400);
+      return projectsScreen(response, who, `${cloned.target} is cloned but not added — ${joined.message}`, joined.reason === "moved" ? 409 : 400);
     }
+    if (!stillAllowed(joined.repo)) return projectsScreen(response, who, `${cloned.target} is cloned but wasn't opened — a project folder changed while it was being checked; try again`, 409);
     deletedRepos.delete(admitted);
     who.session.project = admitted;
     who.session.projectRevision += 1;
@@ -874,7 +956,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const recentPaths = new Set(recent.map(one => one.path));
     const candidates = new Set<string>();
     for (const path of consoleProjects()) {
-      const canonical = canonicalProject(path) ?? path;
+      const canonical = identities.hot(path);
       if (!recentPaths.has(canonical) && visible(canonical)) candidates.add(canonical);
     }
     const open = who.via === "cookie" ? who.session.project : null;
@@ -915,9 +997,19 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         who.via === "cookie" ? (path: string) => projectCheckLevel(store, path).level : undefined),
     );
   }
+  async function instanceEdge(ctx: EdgeContext): Promise<void> {
+    const { request, response, url } = ctx;
+    const secret = options.instanceSecret?.() ?? null;
+    if (secret === null) return respond(response, 404, "application/json; charset=utf-8", JSON.stringify({ error: "not-up" }));
+    // Bound to what THIS console saw as the receiving end of this very connection — never the Host header.
+    const answer = instanceHttpAnswer(secret, url.searchParams.getAll("c").length === 1 ? url.searchParams.get("c") : null, { address: request.socket.localAddress, port: request.socket.localPort });
+    response.setHeader("Cache-Control", "no-store");
+    return respond(response, answer.status, "application/json; charset=utf-8", answer.body);
+  }
+
   async function healthzEdge(ctx: EdgeContext): Promise<void> {
     const { response, method } = ctx;
-    return healthz(store, response, method === 'HEAD');
+    return healthz(store, response, method === 'HEAD', options.draining?.() === true);
   }
 
   async function browserAsset(ctx: EdgeContext): Promise<void> {
@@ -952,9 +1044,87 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     return respond(response, 200, "application/json", JSON.stringify({ proof: createHmac("sha256", Buffer.from(identity, "hex")).update(challenge).digest("hex") }));
   }
 
+  // The Live grid (docs/plans/agents-view.md §3), kept after every other handler.
+  /** The Live grid's tiles (JSON, read-only): every role's running agents and those that just ended, that this viewer
+   * may see — the console's ceiling and the account's own access, proved per run, on every request. */
+  async function agentsLive(ctx: HandlerContext): Promise<void> {
+    const { who, request, response } = ctx;
+    response.setHeader("cache-control", "no-store");
+    // A browser session only (the route says so too): live output is never a token's to read.
+    if (who.via !== "cookie") return respond(response, 403, "application/json", JSON.stringify({ error: "session" }));
+    const browser = who as typeof who & { via: "cookie" };
+    const canSee = (run: { taskRef: number }) => { const repo = taskRepoOf(run.taskRef); return repo !== null && visible(repo) && store.accountCanAccess(who.name, repo); };
+    const tiles = agentsLiveOf(store, clock(), { canSee, localRunner: options.localRunner });
+    // The viewer's own lead turns, admitted as their chat is, from the session as it is saved now.
+    const current = rereadBrowser(runtime, request, browser);
+    const leads = current === null ? [] : leadTilesFor(runtime, current);
+    // Re-proved right before delivery: the session still held, each tile's run still in view from its current row, and
+    // each lead turn still admitted, from the session as it is saved now.
+    const again = current === null ? null : rereadBrowser(runtime, request, browser);
+    if (again === null) return respond(response, 401, "application/json", JSON.stringify({ error: "session" }));
+    const shown = tiles.filter(tile => { const run = store.getRun(tile.runId); return run !== null && canSee(run); });
+    // Work the viewer's own lead filed nests under it (docs/plans/lead-dispatched-tiles.md): proved from the store now,
+    // for the tiles already shown, and only ever for their owner.
+    const filed = again.role === "approver" ? leadFiledLinks(store, again.name, shown.map(tile => tile.runId)) : new Map();
+    return respond(response, 200, "application/json", JSON.stringify({ tiles: shown.map(tile => ({ ...tile, filedBy: filed.get(tile.runId) ?? null })), leads: leadsStillAdmitted(runtime, again, leads) }));
+  }
+
+  /** This console's key for the Live grid's read cursors: random, in memory only (never where a build can reach), so a
+   * restart makes old cursors start over visibly. A cursor is state, never permission. */
+  const liveCursorKey = randomBytes(32);
+
+  /** One window of a run's live output for the Live grid (JSON, read-only): its own records or its subagents'. Access
+   * is proved before the read (ceiling, account, this computer's run) and again after it, before a byte is sent. */
+  async function agentsLiveRead(ctx: HandlerContext): Promise<void> {
+    const { url, who, response } = ctx;
+    response.setHeader("cache-control", "no-store");
+    // A browser session only (the route says so too): live output is never a token's to read.
+    if (who.via !== "cookie") return respond(response, 403, "application/json", JSON.stringify({ error: "session" }));
+    const runId = Number(url.pathname.slice("/agents/live/".length));
+    const file = url.searchParams.get("file");
+    const cursor = url.searchParams.get("cursor");
+    if ((file !== "main" && file !== "sub") || [...url.searchParams.keys()].some(key => key !== "file" && key !== "cursor")) {
+      return respond(response, 400, "application/json", JSON.stringify({ error: "request" }));
+    }
+    const browser = who as typeof who & { via: "cookie" };
+    // The saved session still held (not just the cookie), and the run still in view from its current row.
+    const allowed = (): boolean => {
+      if (rereadBrowser(runtime, ctx.request, browser) === null) return false;
+      const run = store.getRun(runId);
+      const repo = run === null ? null : taskRepoOf(run.taskRef);
+      return run !== null && repo !== null && runVisible(run) && store.accountCanAccess(who.name, repo);
+    };
+    if (!allowed()) return respond(response, 404, "application/json", JSON.stringify({ error: "run" }));
+    if (options.localRunner === undefined || store.getRun(runId)?.runner !== options.localRunner) {
+      return allowed() ? respond(response, 200, "application/json", JSON.stringify({ error: "off" })) : respond(response, 404, "application/json", JSON.stringify({ error: "run" }));
+    }
+    const read = { key: liveCursorKey, commands: runLiveCommands(store, runId) };
+    const window = file === "sub" ? readChildWindow(evidenceRoot, runId, cursor, read) : readMainWindow(evidenceRoot, runId, cursor, read);
+    // Re-proved after the read: a narrowed account or a run gone from view gets nothing it read.
+    if (!allowed() || store.getRun(runId)?.runner !== options.localRunner) return respond(response, 404, "application/json", JSON.stringify({ error: "run" }));
+    return respond(response, 200, "application/json", JSON.stringify(window.ok ? window : { error: window.reason }));
+  }
+
+  /** Start a builder (Settings revamp S4): the command, and whether a builder that may build the open project is
+   * checking in, as dispatch decides. Read-only; a project-limited person sees only a project they may see. */
+  async function startBuilderPage(ctx: HandlerContext): Promise<void> {
+    const { response, now, project, url, who } = ctx;
+    // ?task=<id>: that task's own saved project (a builder there, as dispatch decides for it), never the open one; the
+    // session's selection is left alone. Unknown, unplaced or not visible to this person: 404, the same answer.
+    const taskId = url.searchParams.get("task");
+    const ref = taskId === null ? null : store.lookupRef(taskId.slice(0, 200));
+    if (taskId !== null && (ref === null || ref.repo === null || !visible(ref.repo))) return refuse(response, who, 404, "That task is not available.", "/work");
+    const shown = ref !== null ? ref.repo : project !== null && visible(project) ? project : null;
+    const connected = shown === null ? null : buildersFor(store, shown, now, ref?.assignedRunner ?? null).alive.length > 0;
+    return sendScreen(response, 200, screen("Start a builder", startBuilderHtml({
+      heading: "h1", project: shown === null ? null : basename(shown), connected, managed: !restricted(),
+    }), { chrome: chromeFor(project, "none") }));
+  }
+
   const registrations = handlersOf("pages", {
     "projects.browse": projectsBrowse,
     "projects.github": projectsGithub,
+    "projects.github-list": projectsGithubList,
     "projects.page": projectsIndex,
     "home": homeRedirect,
     "morning": morningAlias,
@@ -962,8 +1132,11 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "ledger": ledgerPage,
     "activity": activityPage,
     "system": systemScreen,
+    "start-builder": startBuilderPage,
     "peek": peekPage,
     "agents": agentsPage,
+    "agents.live": agentsLive,
+    "agents.live.read": agentsLiveRead,
     "fleet": fleetPage,
     "ledger.export": ledgerExport,
     "menu": menuPage,
@@ -980,6 +1153,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "projects.onboard-confirm": onboardConfirm,
   }, {
     "edge.healthz": healthzEdge,
+    "edge.instance": instanceEdge,
     "edge.browser-asset": browserAsset,
     "edge.workspace-style": workspaceStyle,
     "edge.install-asset": installAsset,

@@ -6,7 +6,10 @@ import { type BrowserWorkspace } from './browser-workspace.js';
 import { html, jsonScript, replaceMarkup, scriptElement, type Html } from './html.js';
 
 const assets = new Map<string, { body: Buffer; type: string }>();
-function readAsset(name: 'workspace.js' | 'workspace.css' | 'THIRD_PARTY_NOTICES.txt'): Buffer | null {
+/** The fixed public assets: the workspace, Live mode's own small bundle, and the notices. */
+const BROWSER_ASSETS = [['workspace.js', 'text/javascript; charset=utf-8'], ['workspace.css', 'text/css; charset=utf-8'], ['terminal.js', 'text/javascript; charset=utf-8'],
+  ['terminal.css', 'text/css; charset=utf-8'], ['THIRD_PARTY_NOTICES.txt', 'text/plain; charset=utf-8']] as const;
+function readAsset(name: typeof BROWSER_ASSETS[number][0]): Buffer | null {
   // Compiled installation first; the second location supports source-based
   // development/tests after the browser build. No request supplies a file path.
   for (const location of [new URL(`./browser/${name}`, import.meta.url), new URL(`../dist/browser/${name}`, import.meta.url)]) {
@@ -15,8 +18,8 @@ function readAsset(name: 'workspace.js' | 'workspace.css' | 'THIRD_PARTY_NOTICES
   return null;
 }
 export function browserAssetsAvailable(): boolean {
-  if (assets.size === 3) return true;
-  for (const [name, type] of [['workspace.js', 'text/javascript; charset=utf-8'], ['workspace.css', 'text/css; charset=utf-8'], ['THIRD_PARTY_NOTICES.txt', 'text/plain; charset=utf-8']] as const) {
+  if (assets.size === BROWSER_ASSETS.length) return true;
+  for (const [name, type] of BROWSER_ASSETS) {
     const body = readAsset(name);
     if (body === null) return false;
     assets.set(`/assets/${name}`, { body, type });
@@ -25,7 +28,7 @@ export function browserAssetsAvailable(): boolean {
 }
 
 export function serveBrowserAsset(request: IncomingMessage, response: ServerResponse, path: string): boolean {
-  if (path !== '/assets/workspace.js' && path !== '/assets/workspace.css' && path !== '/assets/THIRD_PARTY_NOTICES.txt') return false;
+  if (!BROWSER_ASSETS.some(([name]) => path === `/assets/${name}`)) return false;
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     response.writeHead(405, { allow: 'GET, HEAD', 'cache-control': 'no-store' }); response.end(); return true;
   }

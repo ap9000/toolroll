@@ -1,0 +1,122 @@
+{
+ "updates": [
+  {
+   "sessionUpdate": "available_commands_update",
+   "availableCommands": [
+    {
+     "name": "memory",
+     "description": "Manage memory."
+    },
+    {
+     "name": "memory show",
+     "description": "Shows the current memory contents."
+    }
+   ]
+  }
+ ],
+ "initialize": {
+  "protocolVersion": 1,
+  "authMethods": [
+   {
+    "id": "oauth-personal",
+    "name": "Log in with Google",
+    "description": "Log in with your Google account"
+   },
+   {
+    "id": "gemini-api-key",
+    "name": "Gemini API key",
+    "description": "Use an API key with Gemini Developer API",
+    "_meta": {
+     "api-key": {
+      "provider": "google"
+     }
+    }
+   },
+   {
+    "id": "vertex-ai",
+    "name": "Vertex AI",
+    "description": "Use an API key with Vertex AI GenAI API"
+   },
+   {
+    "id": "gateway",
+    "name": "AI API Gateway",
+    "description": "Use a custom AI API Gateway",
+    "_meta": {
+     "gateway": {
+      "protocol": "google",
+      "restartRequired": "false"
+     }
+    }
+   }
+  ],
+  "agentInfo": {
+   "name": "gemini-cli",
+   "title": "Gemini CLI",
+   "version": "0.60.0"
+  },
+  "agentCapabilities": {
+   "loadSession": true,
+   "promptCapabilities": {
+    "image": true,
+    "audio": true,
+    "embeddedContext": true
+   },
+   "mcpCapabilities": {
+    "http": true,
+    "sse": true
+   }
+  }
+ },
+ "session/new": {
+  "sessionId": "2eacfff4-0259-4ca6-a86b-a087d71d9a3f",
+  "modes": {
+   "availableModes": [
+    {
+     "id": "default",
+     "name": "Default",
+     "description": "Prompts for approval"
+    },
+    {
+     "id": "autoEdit",
+     "name": "Auto Edit",
+     "description": "Auto-approves edit tools"
+    },
+    {
+     "id": "yolo",
+     "name": "YOLO",
+     "description": "Auto-approves all tools"
+    },
+    {
+     "id": "plan",
+     "name": "Plan",
+     "description": "Read-only mode"
+    }
+   ],
+   "currentModeId": "default"
+  },
+  "models": {
+   "availableModels": [
+    {
+     "modelId": "auto",
+     "name": "Auto",
+     "description": "Let Gemini CLI decide the best model for the task: gemini-3.1-pro-preview, gemini-3.5-flash"
+    },
+    {
+     "modelId": "gemini-3.1-pro-preview",
+     "name": "gemini-3.1-pro-preview"
+    },
+    {
+     "modelId": "gemini-3-flash-preview",
+     "name": "gemini-3-flash-preview"
+    }
+   ],
+   "currentModelId": "auto"
+  }
+ },
+ "sessionId": "2eacfff4-0259-4ca6-a86b-a087d71d9a3f",
+ "promptError": {
+  "code": 429,
+  "message": "You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://ai.google.dev/gemini-api/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit. \n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, limit: 0, model: gemini-3.1-pro\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-3.1-pro\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 0, model: gemini-3.1-pro\n* Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_input_token_count, limit: 0, model: gemini-3.1-pro\nPlease retry in 15h10m58.217394303s."
+ },
+ "note": "Recorded 2026-10-19 against gemini-cli 0.60.0 --acp. The prompt was answered with a JSON-RPC 429 (free-tier quota exhausted): a negative fixture only."
+}

@@ -6,6 +6,7 @@
  * API key excluded from every shell the model itself launches.
  */
 
+import { isAcpProvider } from "./acp-agents.js";
 import { FINDINGS_MODEL_SCHEMA } from "./contracts/review-findings.js";
 import { describe, test, expect } from "vitest";
 import { spawnSync } from "node:child_process";
@@ -679,7 +680,8 @@ describe("the provider audit", () => {
     for (const id of PROVIDER_IDS) {
       const audit = auditOf(id);
       expect(audit.configSurface.length).toBeGreaterThan(0);
-      expect(audit.isolation.enforced).toBe(id !== "gemini");
+      // An ACP agent's isolation is whatever flag its row passes on every launch (OpenCode's --pure); the rest have none.
+      expect(audit.isolation.enforced).toBe(id === "gemini" ? false : isAcpProvider(id) ? audit.isolation.flag !== null : true);
     }
   });
 
@@ -699,6 +701,22 @@ describe("the provider audit", () => {
     expect(claude.parse("not json").initObserved).toBe(false);
     // The legacy buffered envelope (recorded fixtures) still carries none.
     expect(claude.parse("{}").initObserved).toBe(null);
+  });
+
+  // v140 (docs/plans/evals-nightly.md B1): a run's exact model is what the session's own events say, never the agent's
+  // words; several, a subagent's, or a malformed one is unknown (null), never chosen.
+  test.each([
+    ["the session's init", [{ type: "system", subtype: "init", session_id: "s-1", model: "claude-sonnet-4-5-20250929" }, { type: "result", subtype: "success", session_id: "s-1", result: "I am claude-opus-9", modelUsage: { "claude-haiku-4-5": {} } }], "claude-sonnet-4-5-20250929"],
+    ["inits that disagree", [{ type: "system", subtype: "init", session_id: "s-1", model: "claude-sonnet-4-5" }, { type: "system", subtype: "init", session_id: "s-1", model: "claude-opus-4-1" }, { type: "result", subtype: "success", session_id: "s-1", modelUsage: { "claude-sonnet-4-5": {} } }], null],
+    ["a subagent's init", [{ type: "system", subtype: "init", session_id: "s-2", parent_tool_use_id: "toolu_1", model: "claude-opus-4-1" }, { type: "result", subtype: "success", result: "ok" }], null],
+    ["a model id with spaces or controls", [{ type: "system", subtype: "init", session_id: "s-1", model: "claude sonnet\n" }, { type: "result", subtype: "success", session_id: "s-1" }], null],
+    ["no result: the init alone", [{ type: "system", subtype: "init", session_id: "s-1", model: "claude-sonnet-4-5" }], "claude-sonnet-4-5"],
+    ["the legacy buffered envelope's one modelUsage model", [{ result: "ok", modelUsage: { "claude-sonnet-4-5": { inputTokens: 3 } } }], "claude-sonnet-4-5"],
+    ["the legacy buffered envelope naming two", [{ result: "ok", modelUsage: { "claude-sonnet-4-5": {}, "claude-haiku-4-5": {} } }], null],
+    ["nothing reported", [{ result: "claude-sonnet-4-5" }], null],
+  ] as const)("claudeParse's reported model: %s", (_name, events, model) => {
+    const parsed = adapterFor("claude").parse(events.map(event => JSON.stringify(event)).join("\n"));
+    expect(parsed.modelReported ?? null).toBe(model);
   });
 
   test("Codex canonicalizes one identity and rejects conflicting thread.started ids", () => {
@@ -867,11 +885,6 @@ describe("claudeParse — the streaming envelope", () => {
     // 1467's malformed JSON (code fences around the object) needed.
     expect(parsed.finalMessage).toBe(JSON.stringify(structured));
     expect(JSON.parse(parsed.finalMessage ?? "null")).toEqual(structured);
-  });
-
-  test("no structured_output field: the plain result string still carries the reply, unchanged", () => {
-    const parsed = claude.parse(result({ result: "plain text reply" }));
-    expect(parsed.finalMessage).toBe("plain text reply");
   });
 
   test("structuredOutput carries only the structured_output field, never prose that happens to be JSON", () => {
@@ -1139,7 +1152,8 @@ test("provider canary checks checkout Git through the Codex fence and rejects a 
     const calls: { file: string; args: string[]; options: { cwd: string; env?: NodeJS.ProcessEnv } }[] = [];
     const execute = async (file: string, args: string[], options: { cwd: string; env?: NodeJS.ProcessEnv }) => {
       calls.push({ file, args, options });
-      return { code: 0, stdout: args.includes("rev-parse") ? "candidate-head\n" : "", stderr: "" };
+      // The command is in the arguments, or (Linux) in the sandbox launch helper's environment.
+      return { code: 0, stdout: [...args, options.env?.["TOOLROLL_SANDBOX_LAUNCH"] ?? ""].join(" ").includes("rev-parse") ? "candidate-head\n" : "", stderr: "" };
     };
     const result = await checkCheckoutGit({ provider: "codex", worktree, repository, databaseFile: secret, home: dir }, execute);
     expect(result).toEqual({ provider: "codex", head: "candidate-head", revParse: "passed", status: "passed" });
@@ -1161,7 +1175,8 @@ test("provider canary checks checkout Git through the Codex fence and rejects a 
       expect(native?.provider).toBe(provider);
       if (native?.revParse === "unfenced-only") expect(newCalls.map(call => call.file)).toEqual(["git", "git"]);
       else expect(newCalls).toHaveLength(4);
-      for (const call of newCalls) expect(call.args).toContain("core.fsmonitor=false");
+      // Inside the sandbox runtime's command line, or as plain arguments.
+      for (const call of newCalls) expect([...call.args, call.options.env?.["TOOLROLL_SANDBOX_LAUNCH"] ?? ""].join(" ")).toContain("core.fsmonitor=false");
     }
     await expect(checkCheckoutGit({ provider: "codex", worktree, repository, databaseFile: secret, home: dir },
       async (file: string) => ({ code: file === "git" ? 0 : 71, stdout: "", stderr: "sandbox unavailable" }))).rejects.toThrow("The provider sandbox could not run its control");

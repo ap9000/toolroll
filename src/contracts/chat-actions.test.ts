@@ -28,6 +28,8 @@ const REQUESTS: Record<ChatActionOperation, Record<string, unknown>> = {
   tool_remove: { repo: "/work/app", name: "shop" },
   flow_create: { repo: "/work/app", name: "Fixes", definition: { steps: [{ kind: "task", title: "Build" }] } },
   flow_starter: { repo: "/work/app", starter: "ci-fix" },
+  sweep_file: { repo: "/work/app", title: "Bug sweep", brief: "Reproduce first.", items: [{ title: "a", item: "one" }, { title: "b", item: "two" }], acceptance: [{ id: "c1", statement: "s", evidence: ["check"] }], maxParallel: 2 },
+  sweep_cancel_rest: { sweep: 1 },
   flow_edit: { flow: 3, name: "Fixes" },
   flow_card_add: { flow: 3, title: "Footer year", description: null },
   flow_card_move: { card: 12, zone: "review" },
@@ -165,13 +167,5 @@ describe("a saved proposal's action", () => {
       expect(readSharedAction(payload)).toEqual({ ok: true, value: { version: 1, ...payload } });
       expect(readSharedAction({ ...payload, version: 0 })).toEqual({ ok: true, value: { version: 1, ...payload } });
     }
-  });
-});
-
-describe("the plan", () => {
-  it("marks item 11 done, with its Done entry", () => {
-    const plan = readFileSync(new URL("../../docs/plans/zod-revamp.md", import.meta.url), "utf8");
-    expect(plan).toContain("| 11 ✅ | **Chat actions and channel callbacks**");
-    expect(plan).toMatch(/^- \*\*11\. Chat actions and channel callbacks\*\* \(2026-10-06\)/m);
   });
 });

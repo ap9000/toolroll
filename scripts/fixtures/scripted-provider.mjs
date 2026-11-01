@@ -42,19 +42,82 @@
  *
  * The same file counts real turns: `countingProvider` puts shims on the PATH that write each call to a journal and
  * then run the real CLI, unchanged. Both journals are one JSON line per call: { at, provider, role, turn, mode, … }.
+ *
+ * A build or planner that writes only its workspace (agent-fence.ts, arc 2) can't write the world's folder. There the
+ * stand-in keeps its journal and claimed answers in a spool in the project's build cache folder, which such a run may
+ * write (Toolroll points npm_config_cache inside it): `<cache>/e2e-<world tag>`. The world reads every spool beside its
+ * own journal, each line in the order it first saw it, and removes the spools when it exits.
  */
 import { spawn } from "node:child_process";
 import { constants as osConstants } from "node:os";
-import { randomUUID } from "node:crypto";
-import { accessSync, appendFileSync, chmodSync, constants, existsSync, mkdirSync, openSync, closeSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { accessSync, appendFileSync, chmodSync, constants, existsSync, mkdirSync, openSync, closeSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { createInterface } from "node:readline";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const PROVIDERS = ["claude", "codex"];
 const SELF = fileURLToPath(import.meta.url);
 const SCRIPTED_ENV = "TOOLROLL_SCRIPTED_PROVIDER", COUNT_ENV = "TOOLROLL_COUNTED_PROVIDER", REAL_ENV = "TOOLROLL_REAL_PROVIDER";
 const JOURNAL = "journal.jsonl", RULES = "rules.json", USED = "used";
+
+// ------------------------------------------------------------------ where a call is written down
+
+/** The spool's name: one per world, so worlds running at once never read each other's calls. */
+const spoolName = dir => `e2e-${createHash("sha256").update(resolve(dir)).digest("hex").slice(0, 16)}`;
+/** Where Toolroll keeps its projects' build cache folders (agent-fence.ts buildCacheFolder), for this home. */
+function buildCacheRoot(home = homedir()) {
+  const xdg = process.env["XDG_CACHE_HOME"];
+  const root = process.platform === "darwin" ? join(home, "Library", "Caches") : xdg !== undefined && isAbsolute(xdg) ? xdg : join(home, ".cache");
+  return join(root, "toolroll-builds");
+}
+/** This run's spool: inside the cache folder Toolroll gave a workspace-only run, or null for any other run. */
+function spoolOf(dir) {
+  const npm = process.env["npm_config_cache"];
+  return npm === undefined || !isAbsolute(npm) ? null : join(dirname(npm), spoolName(dir));
+}
+const denied = error => ["EPERM", "EACCES", "EROFS"].includes(error?.code);
+/** Write in the world's folder, or, where the fence refuses it, in this run's spool. */
+function inPlace(dir, write) {
+  try { return write(dir); } catch (error) {
+    const spool = denied(error) ? spoolOf(dir) : null;
+    if (spool === null) throw error;
+    mkdirSync(join(spool, USED), { recursive: true });
+    return write(spool);
+  }
+}
+const record = (dir, entry) => inPlace(dir, base => appendFileSync(join(base, JOURNAL), `${JSON.stringify(entry)}\n`));
+/** Every spool of this world there now. */
+function spools(dir) {
+  const root = buildCacheRoot();
+  let projects = [];
+  try { projects = readdirSync(root); } catch { return []; }
+  return projects.map(one => join(root, one, spoolName(dir))).filter(path => existsSync(path));
+}
+/** A world's journal: its own and its spools', each complete line once, in the order the world first read it. */
+function journalOf(dir) {
+  const seen = new Set(), entries = [];
+  return () => {
+    for (const base of [dir, ...spools(dir)]) {
+      let text = "";
+      try { text = readFileSync(join(base, JOURNAL), "utf8"); } catch { continue; }
+      const lines = text.split("\n");
+      lines.pop(); // the part after the last newline is still being written
+      lines.forEach((line, index) => {
+        const key = `${base}\0${index}`;
+        if (seen.has(key) || line === "") return;
+        seen.add(key);
+        try { entries.push(JSON.parse(line)); } catch { /* not a call */ }
+      });
+    }
+    return [...entries];
+  };
+}
+/** Remove this world's spools once it's done (a crash leaves only a small folder in a cache). */
+function removeSpoolsOnExit(dir) {
+  process.on("exit", () => { for (const spool of spools(dir)) { try { rmSync(spool, { recursive: true, force: true }); } catch { /* left */ } } });
+}
 
 // ------------------------------------------------------------------ for the journeys
 
@@ -100,7 +163,7 @@ export function scriptedProvider(dir) {
       save();
       return ids;
     },
-    journal: () => readJournal(dir),
+    journal: (removeSpoolsOnExit(dir), journalOf(dir)),
   };
 }
 
@@ -114,13 +177,14 @@ export function countingProvider(dir, path = process.env.PATH ?? "") {
     const real = which(provider, path, [resolve(bin)]);
     if (real !== null) shims[provider] = shim(bin, provider, { [COUNT_ENV]: dir, [REAL_ENV]: real });
   }
-  return { mode: "real", dir, bin, shims, add: () => [], journal: () => readJournal(dir) };
+  removeSpoolsOnExit(dir);
+  return { mode: "real", dir, bin, shims, add: () => [], journal: journalOf(dir) };
 }
 
 const source = one => one instanceof RegExp ? { source: one.source, flags: one.flags } : { source: String(one), flags: "" };
 
 export function readJournal(dir) {
-  try { return readFileSync(join(dir, JOURNAL), "utf8").split("\n").filter(Boolean).flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } }); } catch { return []; }
+  return journalOf(dir)();
 }
 
 /** What a journal says: model turns (a CLI asked to answer), how many were scripted, real and unanswered. */
@@ -206,11 +270,14 @@ function matches(rule, { role, provider, text, call }) {
     && rule.when.every(one => test(one, text))
     && !rule.unless.some(one => test(one, text));
 }
-/** Claim one of a rule's `times` answers: an exclusive create, so two turns at once can't both take the last one. */
+/** Claim one of a rule's `times` answers: an exclusive create, so two turns at once can't both take the last one. A
+ * claim in a spool (a workspace-only run's) counts as taken everywhere. */
 function claim(dir, rule) {
   if (rule.times === undefined || rule.times === null) return true;
   for (let n = 0; n < rule.times; n += 1) {
-    try { closeSync(openSync(join(dir, USED, `${rule.id}-${n}`), "wx")); return true; } catch { /* taken */ }
+    const name = `${rule.id}-${n}`;
+    if (spools(dir).some(spool => existsSync(join(spool, USED, name)))) continue;
+    try { inPlace(dir, base => closeSync(openSync(join(base, USED, name), "wx"))); return true; } catch { /* taken */ }
   }
   return false;
 }
@@ -362,15 +429,15 @@ async function turn(dir, call, prompt, cwd, signal) {
   const entry = { at: new Date().toISOString(), provider: call.provider, role, turn: true, mode: "scripted", rule: rule?.id ?? (answer === null ? null : "default"), journey: rule?.journey ?? null, step: lead.step, resume: call.resume, prompt: lead.said.slice(0, 160), ...(lead.results.length === 0 ? {} : { toolResults: lead.results }) };
   if (answer === null) {
     const error = `nothing scripted answers this ${role} turn: ${lead.said.replace(/\s+/g, " ").slice(0, 200)}`;
-    appendFileSync(join(dir, JOURNAL), `${JSON.stringify({ ...entry, ok: false, error })}\n`);
+    record(dir, { ...entry, ok: false, error });
     return { ok: false, error };
   }
   try {
     const done = await perform(role, answer, { prompt, call, cwd, step: lead.step, signal });
-    appendFileSync(join(dir, JOURNAL), `${JSON.stringify({ ...entry, ok: true, ...(done.mcp.length === 0 ? {} : { mcp: done.mcp }) })}\n`);
+    record(dir, { ...entry, ok: true, ...(done.mcp.length === 0 ? {} : { mcp: done.mcp }) });
     return { ok: true, ...done };
   } catch (error) {
-    appendFileSync(join(dir, JOURNAL), `${JSON.stringify({ ...entry, ok: false, error: error.message, ...(answer.fail === undefined ? {} : { intended: true }) })}\n`);
+    record(dir, { ...entry, ok: false, error: error.message, ...(answer.fail === undefined ? {} : { intended: true }) });
     return { ok: false, error: error.message };
   }
 }
@@ -476,7 +543,7 @@ async function plain(provider, argv) {
 function passThrough(dir, provider, argv) {
   const call = readCall(provider, argv);
   const isTurn = provider === "claude" ? argv.includes("-p") || argv.includes("--print") : argv[0] === "exec";
-  appendFileSync(join(dir, JOURNAL), `${JSON.stringify({ at: new Date().toISOString(), provider, role: isTurn ? (call.schema?.properties?.calls ? "lead" : "turn") : argv[0] ?? "", turn: isTurn, mode: "real", ok: true })}\n`);
+  record(dir, { at: new Date().toISOString(), provider, role: isTurn ? (call.schema?.properties?.calls ? "lead" : "turn") : argv[0] ?? "", turn: isTurn, mode: "real", ok: true });
   const env = { ...process.env };
   const real = env[REAL_ENV];
   delete env[COUNT_ENV]; delete env[REAL_ENV];

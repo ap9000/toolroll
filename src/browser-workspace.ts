@@ -1,6 +1,7 @@
 /** The browser consumes this contract with a type-only import. All HTML is
  * produced by the existing trusted server renderers, never by a model-supplied
  * fragment. These projections do not authenticate, mutate or grant authority. */
+import { DISPLAY_STATES as DISPLAY_ORDER, type DisplayState, type StateCounts } from './agent-state-words.js';
 import type { TeamSnapshot } from './team-contract.js';
 import type { RunActivity } from './activity-line.js';
 import type { BrandIconId } from './brand-icons.js';
@@ -9,7 +10,7 @@ import { browserCrewFromIndex } from './browser-crew.js';
 export { browserCrewFromIndex, browserWorkActionHref } from './browser-crew.js';
 import type { Store } from './store.js';
 import type { WorkSummaryAccess } from './work-summary.js';
-import { workIndexPage, type WorkIndexItem, type WorkIndexPage } from './work-index.js';
+import { workIndexPage } from './work-index.js';
 import type { StatusTone } from './workspace-ui.js';
 import type { Ask, AskChip } from './needs-you.js';
 import type { WorkIndexGroup } from './work-index.js';
@@ -19,6 +20,74 @@ import type { AcceptLabel, ResultActFacts, ResultActs } from './result-acts.js';
 import type { FirstRunStep, FirstTaskSuggestion, JourneyStep } from './first-run.js';
 
 export type BrowserProject = { name: string; path: string; href: string; knowledgeHref: string };
+/** A project's state for one person (agent-state.ts): the strongest of its counts, the counts, and its tasks with
+ * something live, asking, failed or unread (strongest first, `more` beyond those shown). `path` null: work with no
+ * project yet. */
+export type BrowserProjectState = { path: string | null; name: string; href: string; state: DisplayState; counts: StateCounts;
+  tasks: BrowserRailTask[]; more: number;
+  /** Everything here that needs this person, as opaque keys (one per obligation and version: the chime's subjects),
+   * with the task and agent each is about so a tab already showing one stays quiet. */
+  asks: BrowserAsk[];
+  /** The projects folded together to keep a snapshot inside one live frame: their counts summed, `more` of them. */
+  others?: true };
+
+/** The most a summary snapshot may take in UTF-8 bytes, as the summary room sends it (JSON inside JSON, plus the
+ * frame's envelope), well inside one live frame (live-bus.ts STREAM_LIMIT_BYTES). */
+export const SUMMARY_BUDGET = 24_000;
+/** The frame around a snapshot: its event line, room, revision and the JSON around `at`. Generous on purpose. */
+const SUMMARY_ENVELOPE_BYTES = 512;
+const utf8 = new TextEncoder();
+/** A snapshot's size on the wire: UTF-8 bytes of the JSON string the frame carries, plus its envelope. */
+export function summaryFrameBytes(value: unknown): number {
+  return utf8.encode(JSON.stringify({ at: JSON.stringify(value) })).length + SUMMARY_ENVELOPE_BYTES;
+}
+const clip = (text: string, max: number) => text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+/**
+ * A summary snapshot that fits one live frame, with every count kept: long words are clipped, then rail tasks become
+ * `more` (from the project listing most), then the quietest projects fold into one `others` entry with their counts
+ * summed. Nothing is dropped silently: whatever is not listed is counted.
+ */
+export function boundProjectSummary(rows: readonly BrowserProjectState[], budget = SUMMARY_BUDGET): BrowserProjectState[] {
+  const size = summaryFrameBytes;
+  let out = rows.map(one => ({ ...one, name: clip(one.name, 80), tasks: one.tasks.map(task => ({ ...task, title: clip(task.title, 120), line: clip(task.line, 120) })) }));
+  while (size(out) > budget) {
+    const fullest = out.reduce((best, one, index) => one.tasks.length > (out[best]?.tasks.length ?? -1) ? index : best, -1);
+    if (fullest === -1 || out[fullest]!.tasks.length === 0) break;
+    const one = out[fullest]!;
+    out[fullest] = { ...one, tasks: one.tasks.slice(0, -1), more: one.more + 1 };
+  }
+  if (size(out) <= budget) return out;
+  // Fold the quietest projects (weakest state last in the list) into one entry until it fits.
+  const strength = (one: BrowserProjectState) => DISPLAY_ORDER.indexOf(one.state);
+  const order = out.map((one, index) => ({ one, index })).sort((a, b) => strength(b.one) - strength(a.one) || b.index - a.index);
+  const folded = new Set<number>();
+  const othersOf = (): BrowserProjectState | null => {
+    if (folded.size === 0) return null;
+    const counts = Object.fromEntries(DISPLAY_ORDER.map(key => [key, [...folded].reduce((sum, index) => sum + out[index]!.counts[key], 0)])) as StateCounts;
+    const state = DISPLAY_ORDER.find(key => key !== 'idle' && counts[key] > 0) ?? 'idle';
+    return { path: null, name: `${folded.size} more ${folded.size === 1 ? 'project' : 'projects'}`, href: '/projects', state, counts, tasks: [], more: folded.size, others: true,
+      asks: [...folded].flatMap(index => out[index]!.asks) };
+  };
+  const assemble = () => { const others = othersOf(); return [...out.filter((_, index) => !folded.has(index)), ...(others === null ? [] : [others])]; };
+  for (const { index } of order) {
+    if (size(assemble()) <= budget) break;
+    folded.add(index);
+  }
+  // Still too large: the oldest asks go last (their counts stay; only their chimes are lost).
+  let assembled = assemble();
+  while (size(assembled) > budget) {
+    const fullest = assembled.reduce((best, one, index) => one.asks.length > (assembled[best]?.asks.length ?? -1) ? index : best, -1);
+    if (fullest === -1 || assembled[fullest]!.asks.length === 0) break;
+    assembled = assembled.map((one, index) => index === fullest ? { ...one, asks: one.asks.slice(0, -1) } : one);
+  }
+  return assembled;
+}
+/** One thing that needs this person, as the chime knows it: an opaque key (never words), and what it is about. */
+export type BrowserAsk = { key: string; task: string | null; run: number | null;
+  /** When it last changed (ISO): one older than the chime's memory reaches back is never news. */
+  at: string };
+/** One task on the rail: its state, and its agent's last act when one is at work (else the state's words). */
+export type BrowserRailTask = { id: string; title: string; href: string; state: DisplayState; line: string };
 /** count: tasks waiting on a person, shown beside Tasks when above zero. */
 export type BrowserNavigationItem = { label: string; href: string; active: boolean; count?: number;
   /** What the count covers, said aloud and on hover: "3 need you in shop". */
@@ -97,6 +166,8 @@ export type BrowserTasksView = {
   newTask: BrowserLink;
   /** v105: subscription windows and monthly budgets, one tile each (an instance operator's; null when there are none). */
   limits: BrowserLimits | null;
+  /** The stored-state filter (Any state, Queued, Running, Done, Failed, Cancelled), each a real link starting on page one. */
+  states?: (BrowserLink & { active: boolean })[];
 };
 /** One limit: a plan's usage window ("Claude · 5-hour, 48%") or a monthly budget ("shop · Budget, $4.20 of $10"). */
 export type BrowserTaskGroup = WorkIndexGroup;
@@ -105,6 +176,8 @@ export type BrowserLimitTile = {
   detail: string; tone: 'neutral' | 'warning' | 'danger'; marks: number[]; title: string | null; href: string | null;
 };
 export type BrowserLimits = { tiles: BrowserLimitTile[] };
+/** The sidebar's usage chip (limits-ui.ts usageChipOf): the most-used subscription window, stale when its reading is old. */
+export type BrowserUsageChip = { text: string; tone: BrowserLimitTile['tone']; stale: boolean; href: string; title: string };
 export type BrowserSettingsView = {
   kind: 'settings';
   said: string | null;
@@ -120,7 +193,7 @@ export type BrowserSettingsView = {
   quality: { mode: string; canManage: boolean; changed: string | null } | null;
   providers: {
     provider: string; name: string; tone: 'ok' | 'warn' | 'off' | 'neutral'; words: string;
-    connection: { words: string; facts: string; checkHref: string } | null;
+    connection: { words: string; facts: string; checkAction: string } | null;
     usage: string; envName: string; subscriptionCapable: boolean; mode: 'subscription' | 'api-key'; set: boolean;
   }[] | null;
   legacyWebhookWarning?: string;
@@ -205,6 +278,12 @@ export type BrowserTaskView = {
   live?: { room: string; at: string | null } | null;
   /** Stop, on the Building card: the exact live build's stop form (posts its run id). */
   stop?: { action: string; run: number } | null;
+  /** The running attempt's composer (steer-controls.ts): what it takes, said plainly, and its note box when it takes
+   * notes. Pause and Stop stay as `pause` and `stop`. */
+  steering?: { controls: BrowserAgentControls; steer: { action: string; run: number } | null } | null;
+  /** This task's latest attempts, newest first: a draft this tab wrote for one that has since ended shows with a way
+   * to send it to the next attempt. */
+  steerRecent?: number[];
   /** Pause and Pause and steer, beside Stop: the same exact live Claude build, one request id per form (Pause, the note,
    * Resume), where its latest pause stands (null: running), and until when a paused build can wait before it ends. */
   pause?: { action: string; run: number; state: "pausing" | "paused" | null; requests: [string, string, string]; until?: string | null; limitMs?: number | null } | null;
@@ -228,7 +307,27 @@ export type BrowserTaskView = {
   details?: BrowserTaskDetailGroup[];
   /** Where to message the agent when this page carries no conversation (null: messaging isn't available here). */
   chatHref?: string | null;
+  /** One page per task (docs/plans/one-page-task-and-agent.md): the tab the address names (Activity when none). */
+  tab?: BrowserTaskTab;
+  /** The Result tab: the selected attempt's result exactly as its result page shows it, whether it is the task's
+   * current one (the header then owns its status and ceremonies), and every result attempt to pick from. Null: none yet. */
+  result?: { selected: NonNullable<BrowserResultView["selected"]>; current: boolean; attempts: { label: string; href: string; current: boolean }[];
+    /** What the result shows, as one stamp (every check, note and control in it; never a form's fresh request token): the
+     * page holds the result it loaded and says when a newer one is ready, so its evidence and decision always agree. */
+    revision: string } | null;
+  /** Where the approval sits: under the header when it is the thing to do now, else at the top of the Plan tab. */
+  approvalPlacement?: "lead" | "plan";
+  /** ⋯ More actions: the task's secondary acts, the same order on the task and agent pages, destructive last. */
+  more?: BrowserTaskMore[];
 };
+export type BrowserTaskTab = "activity" | "result" | "plan";
+/** One ⋯ item: a plain link, a copy of this page's address, a one-click POST (never a ceremony), or a go-to that switches
+ * to the tab holding the item's own form, opens it and focuses it (`target`: that element's id). */
+export type BrowserTaskMore = { group: "work" | "share" | "danger"; label: string } & (
+  | { kind: "link"; href: string }
+  | { kind: "copy" }
+  | { kind: "post"; action: string; fields: Record<string, string> }
+  | { kind: "goto"; tab: BrowserTaskTab; target: string });
 /** One project on the Projects page; opening it is a POST to /projects/open. */
 export type BrowserProjectRow = {
   name: string; path: string; shortPath: string; open: boolean;
@@ -320,7 +419,13 @@ export type BrowserResultView = {
     next: { kind: string; title: string; detail: string; control: string } | null;
     /** Accept and finish: the exact receipt read; `accept` when the one request also records the person's acceptance
      * (`note`: the words over the reason field it asks for, or null for none). */
-    complete: { action: string; receipt: string; run: number; accept?: { note: string | null } | null } | null;
+    complete: { action: string; receipt: string; run: number; accept?: { note: string | null } | null; returnTo?: string } | null;
+    /** How its run went (docs/plans/run-efficiency.md): recorded numbers only, unknowns null. */
+    efficiency?: import("./run-efficiency.js").RunEfficiency | null;
+    /** What its network was and what its proxy saw (egress.ts): display only. */
+    network?: import("./egress.js").RunNetworkRecord | null;
+    /** Where the time went: its release check's parts and the task's deploys (latency-timeline.ts), display only. */
+    timing?: import("./latency-timeline.js").TimingView | null;
     /** Words for the result's Accept: Accept and finish when offered, else the Needs you acceptance. */
     decision: BrowserResultDecision | null;
     checks: { detail: string; problem: boolean; logHref: string | null } | null;
@@ -389,10 +494,14 @@ export type BrowserFlowSentItem = { number: number; title: string; lines: string
 
 export type BrowserFlowCard = {
   id: number; title: string; description: string | null; stage: string; state: "active" | "done" | "cancelled";
-  waiting: string | null; task: { id: string; href: string } | null; createdBy: string; updatedAt: string;
+  waiting: string | null; task: { id: string; href: string;
+    /** Its running attempt's composer (steer-controls.ts), for an approver: what it takes, its controls, its note box. */
+    composer?: { controls: BrowserAgentControls; steer: { action: string; run: number } | null } } | null; createdBy: string; updatedAt: string;
   canDecide: boolean; outputs: { stage: string; title: string; text: string }[]; history: { text: string; at: string }[];
   /** Where a trigger found it: a GitHub or Linear issue, another flow's card, a button, a schedule. */
-  source: { kind: string; label: string; url: string | null } | null;
+  /** `proved` and `host` (v126): how an outside event's delivery was proved ("signed by Sentry", "unsigned") and its
+   * link's host, always shown beside the link. */
+  source: { kind: string; label: string; url: string | null; proved?: string; host?: string | null; shown?: string | null } | null;
   /** Who is responsible for it, who follows it, and whether the viewer does. */
   owner: string | null; watchers: string[]; watching: boolean;
   /** Owned by the viewer, followed by them, or waiting on their decision. */
@@ -428,8 +537,14 @@ export type BrowserFlowTrigger = {
   /** Where the status points a person (a plane review's long waits: Needs you). */
   statusLink: BrowserLink | null;
   button: { label: string; questions: string[] } | null;
-  /** A webhook trigger: whether it can prove deliveries yet (Linear needs its signing secret pasted). */
-  hook: { ready: boolean; needsSecret: boolean } | null;
+  /** A webhook trigger: whether it can prove deliveries yet (Linear, Sentry and Vercel need their signing secret pasted).
+   * v126: a webhook's sender (who signs it; "none" is the address alone), whether Toolroll makes its secret, and a
+   * warning in words when anyone could add cards (unsigned) or any project could (a Sentry or Vercel webhook unscoped). */
+  hook: { ready: boolean; needsSecret: boolean; sender: string | null; makesSecret: boolean; warning: string | null; readerNote: string | null;
+    /** v126: deliveries turned away because too many were already held, until a person clears it, and how to resend them. */
+    dropped: { count: number; since: string; resend: string } | null;
+    /** v126: the Sentry or Vercel project (and Vercel team) it takes deliveries from; null: any the secret covers. */
+    scope: { project: string | null; team: string | null } | null } | null;
   checkable: boolean;
   /** A button shared as a public form (its link works). */
   shared: boolean;
@@ -505,6 +620,11 @@ export type BrowserAgentRow = {
   agent: string;
 };
 export type BrowserAgentQuestion = { id: number; key: string; text: string; action: string };
+export type BrowserAgentControls = {
+  send: "live" | "mailbox" | null; words: string;
+  pause: { action: string; run: number; state: "pausing" | "paused" | null; requests: [string, string, string]; until: string | null } | null;
+  stop: { action: string; run: number; label: string } | null;
+};
 export type BrowserAgentDetail = BrowserAgentRow & {
   live: boolean;
   question: BrowserAgentQuestion | null;
@@ -516,30 +636,76 @@ export type BrowserAgentDetail = BrowserAgentRow & {
   filesMore: number;
   /** Steer the running agent (POST /t/<task>/steer): null once it has finished. */
   steer: { action: string; run: number } | null;
+  /** What this running attempt takes (steer-capabilities.ts): how a note reaches it (or why none does), Pause and
+   * Stop for the exact run each names. Null when it is not running or this person may not act. */
+  controls?: BrowserAgentControls | null;
+  /** Cockpit E: this running attempt's checkout, proved to be on this machine — the cd command to copy, and where Show
+   * in Finder posts. Absent off this machine, for a viewer, or once it ends. Nothing is ever launched in it. */
+  /** `reveal` is null where Finder can't be asked (not a Mac): the path and the command stand alone. */
+  checkout?: { path: string; cd: string; reveal: string | null } | null;
   /** Whether this person may reply or steer (an approver, outside the demo); a viewer sees the question but no composer. */
   canAct: boolean;
   /** The task, and once finished the run's own page (its result page when it built one). */
   taskHref: string; resultHref: string | null;
+  /** The task this agent works on, as its page heads it: the status words, and its one action as a way to the task page's
+   * tab that holds it (never a form here: the task page's own form is the one that acts). Null when it can't be read. */
+  task?: { headline: string; sentence: string; tone: string; action: { label: string; href: string } } | null;
+  /** Where this run opens on its task's page: a result → its Result tab at this run, a plan → the Plan tab, anything
+   * else (a review, an attempt that isn't a result) → its own record. Null while it runs. */
+  open?: { label: string; href: string } | null;
   /** The exact-run live room: updates, and a watch that keeps this person's pings quiet. */
   room: string;
   said: { tone: 'info' | 'error'; text: string } | null;
 };
+/** One run on the timeline: its role, and when it started and ended (null: still running). */
+export type BrowserLaneSegment = { runId: number; role: 'planner' | 'builder' | 'reviewer' | 'scout'; agent: string; startedAt: string; endedAt: string | null; outcome: string | null; href: string };
+/** One task's row on the timeline: its runs in order, and the board's word for where it stands ('planning' before a build). */
+export type BrowserAgentLane = { taskId: string; title: string; project: string | null; href: string; group: AgentGroupKey | 'planning'; segments: BrowserLaneSegment[] };
+/** The agent timeline (after the "Agent lanes" pattern): one row per task over a window ending now. */
+export type BrowserAgentLanes = {
+  since: string; now: string;
+  windows: { key: AgentLaneWindow; label: string; href: string; active: boolean }[];
+  lanes: BrowserAgentLane[];
+  /** Tasks in the window past the rows shown. */
+  more: number;
+  /** Every task in the window with a live run, not just the rows shown. */
+  running: number;
+};
+export type AgentLaneWindow = '30m' | '2h' | '24h';
+
 export type BrowserAgentsView = {
   kind: 'agents';
   groups: { key: AgentGroupKey; label: string; rows: BrowserAgentRow[] }[];
+  /** The timeline above the board; empty lanes when nothing ran in the window but something did today; null when nothing ran in a day. */
+  lanes?: BrowserAgentLanes | null;
   selected: BrowserAgentDetail | null;
   /** Shown when nothing is on the board. */
   empty: string | null;
+  /** The Live grid (?view=live): every running agent's live output, watching only. */
+  live?: boolean;
 };
 
 export type BrowserView = BrowserTasksView | BrowserSettingsView | BrowserTaskView | BrowserProjectsView | BrowserResultView | BrowserFlowView | BrowserAgentsView;
 
 export type BrowserWorkspace = {
   version: 1; path: string; title: string; user: string; csrf: string; sensitive: boolean;
+  /** Passwordless is on for this signed-in browser: ceremony password fields are left out (docs/plans/passwordless.md). */
+  passwordless?: boolean;
+  /** The session's open project (its path), or null: the sidebar's project picker names it. */
+  openProject?: string | null;
+  /** The settings frame's breadcrumb ("Settings / <page>"; settings-kit.ts): the header shows it as links. */
+  crumbs?: { label: string; href: string | null }[];
   /** What this person named their lead (Settings → Lead): the chat header and every lead message say it. */
   leadName?: string;
   refreshUrl: string; receipt: { request: string; received: boolean } | null;
   projects: BrowserProject[]; crew: BrowserCrewItem[]; crewTruncated: boolean;
+  /** The sidebar's project states; absent on a sensitive page. The summary room keeps them current. */
+  projectStates?: BrowserProjectState[];
+  /** Cockpit B2: this session's remembered password — minutes left, and where Forget posts. Absent unless it is
+   * live on a direct local request; never on a sensitive page. */
+  fresh?: { minutes: number; forget: string };
+  /** The most-used subscription window, for an operator; absent for everyone else and on a sensitive page. */
+  usage?: BrowserUsageChip;
   conversation: BrowserConversation | null;
   team?: TeamSnapshot;
   focus: { id: string; title: string; html: string } | null;

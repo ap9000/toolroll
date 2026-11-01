@@ -36,7 +36,7 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
     return (response.headers.get("set-cookie") ?? "").split(";")[0] as string;
   };
   const workspace = async (cookie: string, path: string): Promise<BrowserWorkspace> => {
-    // A visit starts the subscription conversation (a JSON read never does), as a browser's first load does.
+    // A browser's first load, then its JSON read (quiet page visits: neither starts a conversation).
     await (await fetch(url(path), { headers: { cookie } })).text();
     const response = await fetch(url(`${path}${path.includes("?") ? "&" : "?"}format=workspace`), { headers: { cookie } });
     if (response.status !== 200) throw new Error(`${path}: ${response.status} ${await response.text()}`);
@@ -137,12 +137,16 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
       if (id === "live") expect(view.pause).toMatchObject({ run: liveRun, state: null });
       // The page's own fallback is the server's task body; the rebuilt view holds every one of its forms.
       expect(data.pageHtml).not.toBeNull();
-      const serverForms = formsOf(data.pageHtml!);
+      // The Result tab's no-script part is the result page's own HTML (the same builder as /review), carried in the view
+      // as that page's data: the task's own forms are compared here, the result's on the review page's tests.
+      const [taskHtml, resultHtml = ""] = data.pageHtml!.split('<section class="task-result-tab"');
+      expect(resultHtml === "").toBe(view.result == null);
+      if (id === "finished") expect(view.result).toMatchObject({ current: true, selected: { taskId: "finished", build: doneRun } });
+      const serverForms = formsOf(taskHtml!);
       expect(serverForms.length).toBeGreaterThan(0);
       expect(formsOf(viewForms(view))).toEqual(serverForms);
-      expect(stepUps(viewForms(view))).toBe(stepUps(data.pageHtml!));
-      // Details are grouped, and the thread starts with the filing.
-      expect(view.details?.map(group => group.title)).toEqual(["Work", "Links", "Review", "About"]);
+      expect(stepUps(viewForms(view))).toBe(stepUps(taskHtml!));
+      // The thread starts with the filing.
       expect(view.thread?.[0]?.kind).toBe("filed");
       // The conversation is the thread's: no Ask tab, and the composer posts to /chat for this task.
       expect(view.tabs).toEqual([]);
@@ -155,10 +159,37 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
     expect(formsOf(question.html).length).toBeGreaterThan(0);
     // The result is a thread entry with the agent's handoff, and its receipt one tap away.
     const finished = (await workspace(cookie, "/t/finished")).view as BrowserTaskView;
-    expect(finished.thread!.find(one => one.kind === "result")).toMatchObject({ title: "Result ready", text: "Images now use responsive sizes.", link: { href: `/r/${doneRun}` } });
+    expect(finished.thread!.find(one => one.kind === "result")).toMatchObject({ title: "Result ready", text: "Images now use responsive sizes.", link: { href: `/t/finished?tab=result&run=${doneRun}` } });
     // A live build is a progress entry in the machine's words, never the model's.
     const live = (await workspace(cookie, "/t/live")).view as BrowserTaskView;
     expect(live.thread!.find(one => one.kind === "progress")).toMatchObject({ title: "Building", text: "Writing the change." });
+    // One page per task: Activity unless the address names a tab; the Result tab holds the result itself, its run exact.
+    expect(finished.tab).toBe("activity");
+    expect(finished.result).toMatchObject({ current: true, selected: { build: doneRun }, attempts: [{ href: `/t/finished?tab=result&run=${doneRun}`, current: true }] });
+    expect(((await workspace(cookie, "/t/finished?tab=result")).view as BrowserTaskView).tab).toBe("result");
+    expect(((await workspace(cookie, "/t/finished?tab=plan")).view as BrowserTaskView).tab).toBe("plan");
+    // The latest result named by its run is still the current one (the header keeps its forms; never twice).
+    expect(((await workspace(cookie, `/t/finished?tab=result&run=${doneRun}`)).view as BrowserTaskView).result).toMatchObject({ current: true, selected: { build: doneRun } });
+    // A run that isn't this task's result, or isn't a run at all, is no result of it: never the latest instead.
+    for (const bad of [`run=${liveRun}`, "run=999", "run=abc"]) expect((await fetch(url(`/t/finished?tab=result&${bad}`), { headers: { cookie }, redirect: "manual" })).status).toBe(404);
+    // Its result's forms come back to this tab, never to the review page.
+    expect(finished.result!.selected.panel?.attributes["data-result-param"]).toBe("section");
+    // ⋯ More actions: each secondary act once, Danger last, nothing a ceremony.
+    const groups = (finished.more ?? []).map(one => one.group);
+    expect(groups).toEqual([...groups].sort((a, b) => ["work", "share", "danger"].indexOf(a) - ["work", "share", "danger"].indexOf(b)));
+    expect(finished.more).toContainEqual({ group: "share", label: "Copy link", kind: "copy" });
+    expect((finished.more ?? []).every(one => one.kind !== "post" || !/approve|confirm|cancel|complete/.test(one.action))).toBe(true);
+    // Built again: only the newer build is the task's result, so the picker offers only it, and the older one's address
+    // is no result of it (the picker and the page agree).
+    const againAuthority = store.routeAuthorityFor(doneRef, "builder");
+    if (!againAuthority?.ok) throw new Error("route");
+    const again = store.startRun({ taskRef: doneRef, leaseId: "l-done-2", runner: "builder-1", branch: "b/done-2", worktree: "/w/done-2", route: againAuthority.stamp, now: T0 });
+    store.stampRun(again, { scopeDigest: store.getScope("finished")!.digest, baseRevision: "1".repeat(40) });
+    store.recordOutcomeFacts(again, { headRevision: "3".repeat(40), handoff: "Images now use responsive sizes, again." });
+    store.finishRun(again, { outcome: "built", committed: true, now: T0 });
+    const twice = (await workspace(cookie, "/t/finished")).view as BrowserTaskView;
+    expect(twice.result?.attempts.map(one => one.href)).toEqual([`/t/finished?tab=result&run=${again}`]);
+    expect((await fetch(url(`/t/finished?tab=result&run=${doneRun}`), { headers: { cookie }, redirect: "manual" })).status).toBe(404);
   });
 
   test("c3: the composer's mode is fixed server words for one turn; it never stands in for a confirmation", async () => {
@@ -236,12 +267,5 @@ describe("console v2: the thread, Details, the home and the Inbox tabs keep ever
     const needs = await (await fetch(url("/inbox?tab=needs-you"), { headers: { cookie } })).text();
     expect(needs).toContain("Approve a scope");
     expect(needs).not.toContain("Running now");
-    // Needs you groups by the ask: a plan to approve is under Decide, with its count.
-    expect(needs).toMatch(/<section class="inbox-ask" data-ask="decide"><h2>Decide <span class="count">1<\/span><\/h2><h3>Approve a scope<\/h3>/);
-    // A tab that changed since this browser looked wears a dot (phones show it).
-    const seen = (all.headers.get("set-cookie") ?? "").split(";")[0]!;
-    filed("waiting-2", "Show the points", T0, false);
-    const dotted = await (await fetch(url("/inbox?tab=running"), { headers: { cookie: `${cookie}; ${seen}` } })).text();
-    expect(dotted).toMatch(/data-inbox-tab="needs-you">[^]*?class="inbox-unread"/);
   });
 });

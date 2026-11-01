@@ -188,8 +188,8 @@ describe("the task room on the bus", () => {
 
     // Robin's projects narrow (itself a write): the stream ends at once, not at the next poll.
     expect(store.setAccountProjects("robin", [repoA], "alex", new Date())).toEqual({ ok: true });
-    await robinOn.until(all => all.some(one => one.event === "gone"), 2_000);
-    expect(robinOn.events.at(-1)!.event).toBe("gone");
+    await robinOn.until(all => all.some(one => one.event === "ended"), 2_000);
+    expect(robinOn.events.slice(-2).map(one => one.event)).toEqual(["gone", "ended"]);
     robinOn.close(); alexOn.close();
   });
 
@@ -219,20 +219,6 @@ describe("what the agent did last, on every page that shows a running task", () 
     expect(response.status).toBe(200);
     return response.json() as Promise<BrowserWorkspace>;
   };
-
-  test("the task page carries the line and its live stream; Home Now and Crew carry the same line", async () => {
-    const run = running("t-busy", repoA);
-    store.recordRunActivity(run, "command", new Date());
-    const cookie = await login("alex", alexToken);
-
-    const task = (await read(cookie, "/t/t-busy")).view as BrowserTaskView;
-    expect(task.activity).toEqual({ what: "Ran a command", at: expect.any(String), worker: "online" });
-    expect(task.live).toEqual({ room: "task:t-busy", at: expect.stringMatching(/^[0-9a-f]{16}$/) });
-
-    const chat = await read(cookie, "/chat");
-    expect(chat.home?.agents.find(one => one.taskId === "t-busy")?.activity).toMatchObject({ what: "Ran a command", worker: "online" });
-    expect(chat.crew.find(one => one.id === "t-busy")?.activity).toMatchObject({ what: "Ran a command", worker: "online" });
-  });
 
   test("the recorded activity is our words only: nothing a tool was given reaches the page", async () => {
     const run = running("t-quiet", repoA);

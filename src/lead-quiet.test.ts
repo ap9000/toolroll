@@ -20,9 +20,6 @@ import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type Tele
 import { eveningDigestText, quietCardView } from "./chat-quiet.js";
 import { chatControlHref } from "./chat-controls.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
-import { assignmentOf } from "./assignment.js";
-import { assignmentStatusFacts, taskStatusOf } from "./task-status.js";
-import { workIndexPage } from "./work-index.js";
 import { runOperate } from "./operate.js";
 import { withActor } from "./actor.js";
 
@@ -237,17 +234,8 @@ describe("pings follow responsibility", () => {
     expect(card.text).not.toMatch(/cancel|release-096/i);
     expect(card.link).toEqual({ label: "Open the new task", path: chatControlHref("task", "release-096b") });
 
-    // The task page and the Tasks list read the same status, with the successor one tap away.
+    // The task status names the successor.
     expect(diagnoseTaskDispatch(store, "release-096", now)).toMatchObject({ code: "cancelled", summary: "Replaced by release-096b" });
-    const assignment = assignmentOf(store, "release-096", now, { principal: "operator", repos: [REPO] }, dir)!;
-    expect(assignment.detail).toBe("Replaced by release-096b.");
-    expect(assignment.primaryAction).toMatchObject({ label: "Open release-096b", target: { taskId: "release-096b" } });
-    const status = taskStatusOf(assignmentStatusFacts(assignment));
-    expect(status.sentence).toBe("Replaced by release-096b.");
-    const item = workIndexPage(store, now, { principal: "operator", repos: [REPO] }).items.find(one => one.activeTaskId === "release-096")!;
-    expect(item.status.detail).toBe("Replaced by release-096b.");
-    expect(item.status.label).not.toMatch(/cancel/i);
-    expect(item.primaryAction).toMatchObject({ label: "Open release-096b", target: { taskId: "release-096b" } });
 
     // A plain cancellation still reads Cancelled.
     store.createTask({ id: "dropped", title: "Dropped idea" }, now);

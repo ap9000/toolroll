@@ -1,4 +1,5 @@
 /** Read-only suggestions for the shared desktop and browser setup flow. */
+import { withAcp, type KeyedProviderId } from "./acp-agents.js";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -6,18 +7,20 @@ import { join } from "node:path";
 import { validModelId, type ProviderId } from "./provider.js";
 import { planInstall, applyInstall, skillContent, SKILL_DIR, SKILL_FILE } from "./skills.js";
 
-export const ASSISTANTS: Record<ProviderId, { name: string; description: string }> = {
+export const ASSISTANTS: Record<ProviderId, { name: string; description: string }> = withAcp<KeyedProviderId, { name: string; description: string }>({
   claude: { name: "Claude", description: "Use Claude Code for your tasks." },
   codex: { name: "Codex", description: "Use your OpenAI coding assistant." },
   gemini: { name: "Gemini", description: "Use Google's coding assistant." },
   openrouter: { name: "OpenRouter", description: "Use a model from your OpenRouter account." },
-};
+}, agent => ({ name: agent.name, description: `Use ${agent.name} for builds, once it's checked on this computer.` }));
 export type ModelChoice = { value: string; label: string };
 export function modelChoices(provider: ProviderId, configured: string | null, home = homedir()): ModelChoice[] {
   // Aliases documented at https://code.claude.com/docs/en/model-config.
   let choices: ModelChoice[] = provider === "claude"
-    ? [{ value: "sonnet", label: "Sonnet — everyday coding" }, { value: "opus", label: "Opus — complex tasks" },
-      { value: "haiku", label: "Haiku — smaller tasks" }]
+    // Exact ids first: Sonnet 5.5 builds routine tasks under "Sized by job" (Settings → Models); the short names float.
+    ? [{ value: "claude-sonnet-5-5", label: "Sonnet 5.5 — routine tasks" }, { value: "claude-opus-5-5", label: "Opus 5.5 — large or risky tasks" },
+      { value: "claude-haiku-5-5", label: "Haiku 5.5 — small tasks" }, { value: "sonnet", label: "Sonnet (floating) — moves to the newest version" },
+      { value: "opus", label: "Opus (floating) — moves to the newest version" }, { value: "haiku", label: "Haiku (floating) — moves to the newest version" }]
     : [];
   if (provider === "codex") {
     // Use the local CLI's own catalog, including account-specific availability.

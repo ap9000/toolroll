@@ -1,13 +1,15 @@
 /**
- * The first run: three plain steps to a first result, and three first tasks
+ * The first run: four plain steps to a first result, and three first tasks
  * to try. Everything here is derived from live facts on each render; the
  * list retires permanently with the first Ready result (the
  * 'first-success-at' installation fact). A suggestion only drafts words in
  * the composer: nothing is filed until the person sends it and confirms.
  */
 import { run } from "./exec.js";
+import { hardenedGit } from "./teardown-git.js";
 import type { Runner } from "./backend.js";
 import { githubIssues } from "./issues.js";
+import { START_BUILDER_HREF } from "./needs-you.js";
 
 export const SIGN_IN_COMMAND = "claude auth login";
 export const SANDBOX_COMMAND = "npx toolroll demo";
@@ -32,11 +34,11 @@ export function signInCommandFor(states: { claude: SignInState; codex: SignInSta
 
 export type FirstRunAction = { kind: "link"; label: string; href: string } | { kind: "command"; command: string };
 /** `checking`: the answer is not in yet, so the step is shown neither done nor to do. */
-export type FirstRunStep = { key: "agent" | "project" | "task"; title: string; done: boolean; action: FirstRunAction | null; checking?: true };
+export type FirstRunStep = { key: "agent" | "project" | "builder" | "task"; title: string; done: boolean; action: FirstRunAction | null; checking?: true };
 /** agentSignedIn is null until this machine's first sign-in check has answered. */
 export type FirstRunFacts = { agentSignedIn: boolean | null; projects: number; hasTask: boolean; firstResultAt: string | null; signInCommand?: string };
 
-/** The three steps, each done or with the one action that does it; null once the first result has arrived. */
+/** The steps (the builder step is added by withBuilderStep), each done or with the one action that does it; null once the first result has arrived. */
 export function firstRunSteps(facts: FirstRunFacts): FirstRunStep[] | null {
   if (facts.firstResultAt !== null) return null;
   const project = facts.projects > 0;
@@ -46,6 +48,16 @@ export function firstRunSteps(facts: FirstRunFacts): FirstRunStep[] | null {
     { key: "project", title: "Project added", done: project, action: project ? null : { kind: "link", label: "Add a project", href: "/projects" } },
     { key: "task", title: "Your first task", done: facts.hasTask, action: facts.hasTask ? null : { kind: "link", label: "New task", href: "/tasks/new" } },
   ];
+}
+
+/** The builder step, before the first task: under `toolroll serve` nothing connects a builder, and a task filed then
+ * waits forever, so the steps never all read done without one. It leads to Start a builder, which shows the command. */
+export function withBuilderStep(steps: FirstRunStep[] | null, connected: boolean): FirstRunStep[] | null {
+  if (steps === null) return null;
+  const builder: FirstRunStep = { key: "builder", title: "Builder connected", done: connected,
+    action: connected ? null : { kind: "link", label: "Start a builder", href: START_BUILDER_HREF } };
+  const task = steps.findIndex(one => one.key === "task");
+  return task < 0 ? [...steps, builder] : [...steps.slice(0, task), builder, ...steps.slice(task)];
 }
 
 export type OpenIssue = { number: number; title: string };
@@ -110,7 +122,8 @@ export async function findFirstTasks(repo: string, runner: Runner = run): Promis
   let todos: TodoComment[] = [];
   if (issues.length < 3) {
     try {
-      const result = await runner("git", [...TODO_GREP_ARGS], { cwd: repo, timeoutMs: 5_000 });
+      // The project's repository is shared with builds that can write its config: the hardened read (teardown-git.ts).
+      const result = await (runner === run ? hardenedGit(run, "read") : runner)("git", [...TODO_GREP_ARGS], { cwd: repo, timeoutMs: 5_000 });
       if (result.code === 0 || result.stdout !== "") todos = parseTodoLines(result.stdout);
     } catch { todos = []; }
   }
@@ -131,7 +144,9 @@ export function firstResultWords(since: string, at: string): string | null {
 export const JOURNEY_STEPS = [["plan", "Plan"], ["approve", "You approve"], ["build", "Build"], ["checks", "Checks"], ["ready", "Ready"]] as const;
 export type JourneyKey = (typeof JOURNEY_STEPS)[number][0];
 /** `stuck`: the step it stopped at (Failed, Stopped, or waiting on something other than the approval). */
-export type JourneyStep = { key: JourneyKey; label: string; state: "done" | "current" | "stuck" | "todo" };
+/** `skipped`: a stage the task went past without it happening (its checks didn't run or couldn't be read). `needsYou`:
+ * the current or stuck step waits on a person, so it is the one step drawn amber. */
+export type JourneyStep = { key: JourneyKey; label: string; state: "done" | "current" | "stuck" | "skipped" | "todo"; needsYou?: true };
 
 /**
  * Where the first task stands on Plan → You approve → Build → Checks → Ready, from the one stage every surface reads
@@ -152,4 +167,69 @@ export function firstTaskJourney(read: { stage: "queued" | "planning" | "needs-y
     : { index: built ? 3 : approved ? 2 : 0, stuck: true };
   return JOURNEY_STEPS.map(([key, label], index) => ({ key, label,
     state: index < at.index ? "done" : index === at.index ? (at.stuck ? "stuck" : "current") : "todo" }));
+}
+
+/** The approved check as the task's status reads it (task-status.ts `approvedCheckStateOf`), for its road: `null` when
+ * nothing says (the step is then shown skipped, never done). The road reads this one answer, never a row's words. */
+export type RoadChecks = "passed" | "running" | "failed" | "not-run" | "off" | "unreadable" | null;
+/**
+ * Any task's road (the read-only stepper on its page, after ReUI's Stepper): the first task's five steps, told only
+ * from recorded facts. You approve is done only when the plan was approved (a rewritten plan waiting on approval
+ * stands there again); a task that never needed one shows it skipped. Checks is done only when the approved check
+ * passed; a running, missing or Off check says so, and with no checks fact it is skipped. A failed check, or one that
+ * can't be read, stops the road at Checks: Ready isn't done (fail closed), even on a task a person marked complete.
+ * A research report has no Checks step: a report stopped there stops at
+ * Ready. The step that waits on a person carries `needsYou`.
+ */
+export function taskRoad(read: Parameters<typeof firstTaskJourney>[0], approved: boolean, built: boolean, facts: { report?: boolean; checks?: RoadChecks }): JourneyStep[] {
+  const replan = read.stage === "needs-you" && read.need === "replan";
+  const plainApproved = approved && !replan;
+  let steps: JourneyStep[] = firstTaskJourney(replan ? { stage: "needs-you", need: "approval" } : read, plainApproved, built);
+  const complete = read.stage === "complete";
+  // A finished build that waits on something other than its check (a hold, a decision) stops after Checks, at Ready,
+  // when its check passed, didn't run or is Off: the road never calls a passing check stuck.
+  let waitsAtReady = false;
+  steps = steps.map(step => {
+    if (step.key === "approve" && step.state === "done" && !plainApproved) return { ...step, state: "skipped" };
+    if (step.key === "checks" && step.state === "stuck" && built) {
+      switch (facts.checks ?? null) {
+        case "passed": waitsAtReady = true; return { ...step, state: "done" };
+        case "not-run": waitsAtReady = true; return { ...step, state: "skipped", label: "Checks not run" };
+        case "off": waitsAtReady = true; return { ...step, state: "skipped", label: "Checks at release" };
+        case "running": return { ...step, state: "current", label: "Checks running" };
+        case "failed": return { ...step, label: "Checks failed" };
+        case "unreadable": return { ...step, label: "Checks unreadable" };
+        default: return step;
+      }
+    }
+    if (step.key !== "checks" || (step.state !== "done" && step.state !== "current")) return step;
+    // At Checks now: only a recorded failure, an unreadable check or a running check changes how it reads.
+    if (step.state === "current") return facts.checks === "failed" ? { ...step, state: "stuck", label: "Checks failed" }
+      : facts.checks === "unreadable" ? { ...step, state: "stuck", label: "Checks unreadable" }
+      : facts.checks === "running" ? { ...step, label: "Checks running" } : step;
+    switch (facts.checks ?? null) {
+      case "passed": return step;
+      case "running": return { ...step, state: "current", label: "Checks running" };
+      case "failed": return { ...step, state: "stuck", label: "Checks failed" };
+      case "not-run": return { ...step, state: "skipped", label: "Checks not run" };
+      case "off": return { ...step, state: "skipped", label: "Checks at release" };
+      case "unreadable": return { ...step, state: "stuck", label: "Checks unreadable", ...(complete ? {} : { needsYou: true as const }) };
+      default: return { ...step, state: "skipped" };
+    }
+  });
+  if (waitsAtReady) steps = steps.map(step => step.key === "ready" ? { ...step, state: "stuck" } : step);
+  // A road stopped at Checks (failed, or unreadable) has not reached Ready.
+  const at = steps.find(step => step.key === "checks");
+  if (facts.report !== true && at !== undefined && at.state === "stuck") {
+    steps = steps.map(step => step.key === "ready" && step.state === "done" ? { ...step, state: "todo" } : step);
+  }
+  if (facts.report === true) {
+    const checks = steps.find(step => step.key === "checks");
+    if (checks !== undefined && (checks.state === "current" || checks.state === "stuck")) {
+      steps = steps.map(step => step.key === "ready" ? { ...step, state: checks.state } : step);
+    }
+    steps = steps.filter(step => step.key !== "checks");
+  }
+  const waiting = read.stage === "needs-you";
+  return steps.map(step => waiting && (step.state === "current" || step.state === "stuck") ? { ...step, needsYou: true } : step);
 }

@@ -5,7 +5,8 @@
  */
 import { createContext, useContext } from "react";
 import type { ComponentProps, ReactNode } from "react";
-import { Button, cn } from "./primitives.js";
+import { Button } from "../components/ui/button.js";
+import { cn } from "./primitives.js";
 
 export function Plan({ className, ...props }: ComponentProps<"section">) {
   return <section data-slot="plan" className={cn("ui-plan", className)} {...props} />;

@@ -19,21 +19,29 @@
  * the agent. A tool connected by signing in gives a run only an access token
  * of its own (oauth-run-token.ts).
  */
+import { inReadOnlyRequest } from "./read-only-request.js";
 import { toolRefusal } from "./policy.js";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
+import { isProtectedEnvName } from "./protected-storage.js";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
+import { realpathSync } from "node:fs";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { scanForSecrets } from "./evidence.js";
 import type { Store, ToolActionInfo } from "./store.js";
 import { namedPath } from "./names.js";
 import { startToolBroker, type BrokerOptions, type ToolBroker } from "./tool-broker.js";
-import type { FenceMethod } from "./agent-fence.js";
+import { buildCacheFolder, fenceFor, linuxFenceAvailable, macosFenceAvailable, runFolders, type FenceMethod, type LaunchFence } from "./agent-fence.js";
+import { confined, ContainmentRefusal } from "./exec.js";
+import { poolRootOf } from "./worktree.js";
+import type { ProviderId } from "./contracts/provider.js";
+import { isAcpProvider } from "./acp-agents.js";
 import { SecretStoreError, destroyOwnFile, prepareSecretFolder, registerSecretFolder, pathIn, readOwnFile, readSealed, removeValue, secretBackend, secretFolder, secretStorage, serviceOf, withSecretLock, withSecretLockAsync, writeOwnFile, writeSealed, type SecretBackend, type SecretFolder, type SecretItem, type SecretStoreKind } from "./tool-secret-store.js";
 import { ACCESS, GRANTED, REFRESH, mintRunToken, mintsRunTokens, oneAtATime, runScope, scopeList, signedIn } from "./oauth-run-token.js";
 import { HEADER_NAME, SECRET_NAME, TOOL_NAME as NAME, TOOL_SPEC_LIMITS as LIMITS, readToolSpec, type ToolSecret, type ToolSpec } from "./contracts/integration-metadata.js";
+import { canonicalJson } from "./canonical-json.js";
 
 export type { ToolSecret, ToolSpec };
 
@@ -107,19 +115,10 @@ export function catalogTool(id: string): (ToolSpec & { label: string }) | null {
   return TOOL_CATALOG.find(one => one.name === id) ?? null;
 }
 
-function canonical(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>).filter(([, v]) => v !== undefined).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
 /** What a build is held to: how the server starts and which secrets it names — never their values or its description. */
 export function toolDigest(spec: ToolSpec): string {
   const { about: _about, ...terms } = spec;
-  return createHash("sha256").update(`standing-orders:tool:v1:${canonical(terms)}`, "utf8").digest("hex").slice(0, 32);
+  return createHash("sha256").update(`standing-orders:tool:v1:${canonicalJson(terms)}`, "utf8").digest("hex").slice(0, 32);
 }
 
 const str = (value: unknown, cap: number, what: string): string => {
@@ -318,6 +317,16 @@ function moveIn(backend: SecretBackend | null, folder: SecretFolder, repo: strin
 export function readToolSecrets(repo: string, tool: string, state?: string): Record<string, string> {
   const folder = secretFolder(state);
   const backend = secretBackend();
+  // A page visit moves nothing (docs/plans/get-side-effects.md): it reads the store, else the file not yet moved in.
+  if (inReadOnlyRequest()) {
+    const stored = readStored(backend, folder, repo, tool);
+    if (stored !== null) return stored;
+    for (const file of [legacyFile(folder, repo, tool), backend === null ? null : toolFile(folder, repo, tool, ".json")]) {
+      if (file === null || !existsSync(file)) continue;
+      try { const values = readSecretFile(file); if (values !== null) return values; } catch { /* kept as it is, and never used */ }
+    }
+    return {};
+  }
   moveIn(backend, folder, repo, tool);
   return readStored(backend, folder, repo, tool) ?? {};
 }
@@ -462,13 +471,16 @@ function fromCodexEntry(raw: unknown, environment: NodeJS.ProcessEnv): FoundTool
  * Codex's (from `codex mcp list --json`, passed in). The first of each
  * name wins; unusable entries are left out.
  */
-export function discoverTools(repo: string, codexServers: unknown[] | null, home: string = homedir(), environment: NodeJS.ProcessEnv = process.env): FoundTool[] {
+export function discoverTools(repo: string, codexServers: unknown[] | null, home: string = homedir(), environment: NodeJS.ProcessEnv = process.env,
+  projectConfig?: Record<string, unknown> | null): FoundTool[] {
   const found: FoundTool[] = [];
   const add = (one: FoundTool | null) => { if (one !== null && !found.some(other => other.spec.name === one.spec.name)) found.push(one); };
   const readJson = (file: string): Record<string, unknown> | null => {
     try { const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown; return parsed !== null && typeof parsed === "object" ? parsed as Record<string, unknown> : null; } catch { return null; }
   };
-  const project = readJson(join(repo, ".mcp.json"));
+  // The project's own file as given (the console reads it off its thread: folder-look.ts), else as last read there
+  // (savedProjectMcp), else read here (the CLI and the worker).
+  const project = projectConfig !== undefined ? projectConfig : savedProjectMcp.has(repo) ? savedProjectMcp.get(repo) ?? null : readJson(join(repo, ".mcp.json"));
   for (const [name, raw] of Object.entries((project?.["mcpServers"] ?? {}) as Record<string, unknown>)) add(fromClaudeEntry(name, raw, "this project's .mcp.json"));
   const claude = readJson(join(home, ".claude.json"));
   const perProject = ((claude?.["projects"] ?? {}) as Record<string, Record<string, unknown>>)[repo]?.["mcpServers"] ?? {};
@@ -492,7 +504,7 @@ type McpRequest = { method: string; params: unknown; doing: string };
 type McpAnswer = { ok: true; result: unknown } | { ok: false; problem: string };
 
 /** Start the server once, ask for its tools, and stop it: the proof a build can use it. */
-export async function testTool(spec: ToolSpec, values: Record<string, string>, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv; omitEnv?: readonly string[] } = {}): Promise<{ ok: true; tools: string[] } | { ok: false; problem: string }> {
+export async function testTool(spec: ToolSpec, values: Record<string, string>, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv; omitEnv?: readonly string[]; server: ToolServer }): Promise<{ ok: true; tools: string[] } | { ok: false; problem: string }> {
   const answer = await exchange(spec, values, { method: "tools/list", params: {}, doing: "listing its tools" }, options);
   return answer.ok ? { ok: true, tools: toolNames(answer.result) } : answer;
 }
@@ -502,7 +514,7 @@ export async function testTool(spec: ToolSpec, values: Record<string, string>, o
  * its description, what input it takes, and whether it says it only reads.
  * A subagent is offered these, each under its own rule.
  */
-export async function listProjectToolActions(spec: ToolSpec, values: Record<string, string>, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv; omitEnv?: readonly string[] } = {}): Promise<{ ok: true; actions: ToolActionInfo[] } | { ok: false; problem: string }> {
+export async function listProjectToolActions(spec: ToolSpec, values: Record<string, string>, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv; omitEnv?: readonly string[]; server: ToolServer }): Promise<{ ok: true; actions: ToolActionInfo[] } | { ok: false; problem: string }> {
   const answer = await exchange(spec, values, { method: "tools/list", params: {}, doing: "listing its tools" }, options);
   return answer.ok ? { ok: true, actions: toolActions(answer.result) } : answer;
 }
@@ -525,7 +537,7 @@ export type ToolCall = { ok: true; text: string; isError: boolean } | { ok: fals
  * "Use a tool" step. The answer's text parts are kept; a tool that says it
  * failed (isError) is an answer, not trouble reaching it.
  */
-export async function callProjectTool(spec: ToolSpec, values: Record<string, string>, name: string, args: Record<string, unknown>, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv; omitEnv?: readonly string[] } = {}): Promise<ToolCall> {
+export async function callProjectTool(spec: ToolSpec, values: Record<string, string>, name: string, args: Record<string, unknown>, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv; omitEnv?: readonly string[]; server: ToolServer }): Promise<ToolCall> {
   const answer = await exchange(spec, values, { method: "tools/call", params: { name, arguments: args }, doing: `using ${name}` }, options);
   if (!answer.ok) return answer;
   const result = (answer.result ?? {}) as { content?: unknown; isError?: unknown; structuredContent?: unknown };
@@ -535,22 +547,28 @@ export async function callProjectTool(spec: ToolSpec, values: Record<string, str
   return { ok: true, text, isError: result.isError === true };
 }
 
-function exchange(spec: ToolSpec, values: Record<string, string>, request: McpRequest, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv; omitEnv?: readonly string[] }): Promise<McpAnswer> {
+function exchange(spec: ToolSpec, values: Record<string, string>, request: McpRequest, options: { timeoutMs?: number; env?: NodeJS.ProcessEnv; omitEnv?: readonly string[]; server: ToolServer }): Promise<McpAnswer> {
   const missing = missingSecrets(spec, values);
   if (missing.length > 0) return Promise.resolve({ ok: false, problem: `Set ${missing.join(", ")} first.` });
   const timeoutMs = options.timeoutMs ?? 60_000;
-  return spec.transport === "http" ? exchangeHttp(spec, values, timeoutMs, request) : exchangeStdio(spec, values, timeoutMs, options.env ?? process.env, options.omitEnv ?? [], request);
+  if (spec.transport === "http") return exchangeHttp(spec, values, timeoutMs, request);
+  // A local server starts only in the server fence its caller made (toolServerFor), never bare.
+  if ("problem" in options.server) return Promise.resolve({ ok: false, problem: options.server.problem });
+  return exchangeStdio(spec, values, timeoutMs, options.env ?? process.env, options.omitEnv ?? [], request, options.server.fence);
 }
 
-function exchangeStdio(spec: ToolSpec, values: Record<string, string>, timeoutMs: number, base: NodeJS.ProcessEnv, omit: readonly string[], request: McpRequest): Promise<McpAnswer> {
+function exchangeStdio(spec: ToolSpec, values: Record<string, string>, timeoutMs: number, base: NodeJS.ProcessEnv, omit: readonly string[], request: McpRequest, fence: LaunchFence | null): Promise<McpAnswer> {
   return new Promise(resolve => {
     const env: NodeJS.ProcessEnv = { ...base };
     for (const name of omit) delete env[name];
     Object.assign(env, values);
     let child: ReturnType<typeof spawn>;
     try {
-      child = spawn(spec.command!, spec.args, { env, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
+      const launch = confined(spec.command!, spec.args, { ...(fence ?? {}), temp: env["TMPDIR"] });
+      // A fenced server gets no chat or vault variable (protected-storage.ts) but the tool's own secrets, set by name.
+      child = spawn(launch.file, launch.args, { env: fence === null ? { ...env, ...launch.env } : { ...Object.fromEntries(Object.entries(env).filter(([name]) => !isProtectedEnvName(name) || Object.hasOwn(values, name))), ...launch.env }, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
     } catch (error) {
+      if (error instanceof ContainmentRefusal) { resolve({ ok: false, problem: error.message }); return; }
       resolve({ ok: false, problem: `It could not start: ${error instanceof Error ? error.message : "unknown error"}.` });
       return;
     }
@@ -632,7 +650,7 @@ export type ToolLaunch = { tools: ResolvedTool[]; skipped: { name: string; reaso
 /** Everything a provider spawn needs to use exactly these tools, and the
  * cleanup. `privateDir` holds the run's launch files, which name the broker
  * and its token, never a tool's secret (tool-broker.ts). */
-export type ToolLaunchArgs = { argv: string[]; env: Record<string, string>; omitEnv: string[]; cleanup: () => void; privateDir?: string; serverPids?: () => number[] };
+export type ToolLaunchArgs = { argv: string[]; env: Record<string, string>; omitEnv: string[]; cleanup: () => void; privateDir?: string; serverPids?: () => number[]; brokerPort?: number };
 
 const toml = (value: string) => `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
 const tomlList = (values: readonly string[]): string => `[${values.map(toml).join(",")}]`;
@@ -672,7 +690,7 @@ export async function claudeToolArgs(launch: ToolLaunch, options: ToolLaunchOpti
     omitEnv: [],
     cleanup,
     privateDir: dir,
-    ...(broker === null ? {} : { serverPids: broker.pids }),
+    ...(broker === null ? {} : { serverPids: broker.pids, brokerPort: broker.port }),
   };
 }
 
@@ -716,7 +734,7 @@ export async function codexToolArgs(launch: ToolLaunch, options: ToolLaunchOptio
     const enabled = options.enabledTools?.[tool.spec.name];
     if (enabled !== undefined) argv.push("-c", `${key}.enabled_tools=${tomlList(enabled)}`);
   }
-  return { argv, env: {}, omitEnv: [], cleanup, privateDir: dir, serverPids: broker.pids };
+  return { argv, env: {}, omitEnv: [], cleanup, privateDir: dir, serverPids: broker.pids, brokerPort: broker.port };
 }
 
 /** Gemini: no way yet to hand it exactly these servers, so it gets none. */
@@ -791,7 +809,7 @@ export type ToolContainment = { platform: NodeJS.Platform; fence: FenceMethod };
  * read (OpenRouter uses the same harness); Claude's own file rules and Linux's bubblewrap don't stop it, and on Linux
  * hidepid hides nothing from the same user, so Linux never starts one.
  */
-export function secretToolRefusal(provider: "claude" | "codex" | "openrouter" | "gemini", containment: ToolContainment): string | null {
+export function secretToolRefusal(provider: ProviderId, containment: ToolContainment): string | null {
   if (provider === "codex" || provider === "openrouter") return "This tool needs a Claude build to protect its sign-in details.";
   if (containment.platform === "linux") return "Toolroll doesn't start tools with sign-in details on Linux: a build there could read them from the running tool.";
   if (containment.platform !== "darwin" || containment.fence !== "macos-sandbox") return "This build has no macOS sandbox, so it could read this tool's sign-in details. Toolroll didn't start it.";
@@ -806,13 +824,14 @@ export function secretToolRefusal(provider: "claude" | "codex" | "openrouter" | 
 export async function prepareRunTools(
   store: Pick<Store, "projectTools" | "getRun" | "refById" | "getScope" | "toolSealFor" | "recordRunTools" | "orgPolicy">,
   runId: number,
-  provider: "claude" | "codex" | "openrouter" | "gemini",
+  provider: ProviderId,
   options: { home?: string; now: Date; containment: ToolContainment; readOnly?: Readonly<Record<string, readonly string[]>>; withheld?: Readonly<Record<string, string>>; broker?: BrokerOptions; fetcher?: typeof fetch },
 ): Promise<ToolLaunchArgs> {
   const launch = limitedTo(toolLaunchFor(store, runId, options.home), options.readOnly, options.withheld);
   // A local server with secrets starts only where the build can't read its environment; the rest are left out,
-  // saying why, before the broker exists. Gemini starts none (below).
-  const refusal = provider === "gemini" ? null : secretToolRefusal(provider, options.containment);
+  // saying why, before the broker exists. Gemini and ACP agents start none (below).
+  const toolless = provider === "gemini" || isAcpProvider(provider);
+  const refusal = toolless ? null : secretToolRefusal(provider, options.containment);
   if (refusal !== null) {
     launch.tools = launch.tools.filter(one => {
       if (one.spec.transport === "http" || Object.keys(one.values).length === 0) return true;
@@ -820,14 +839,15 @@ export async function prepareRunTools(
       return false;
     });
   }
-  const revokes = provider === "gemini" ? [] : await signInRun(launch, { readOnly: options.readOnly !== undefined, now: options.now, ...(options.home === undefined ? {} : { home: options.home }), ...(options.fetcher === undefined ? {} : { fetcher: options.fetcher }) });
+  const revokes = toolless ? [] : await signInRun(launch, { readOnly: options.readOnly !== undefined, now: options.now, ...(options.home === undefined ? {} : { home: options.home }), ...(options.fetcher === undefined ? {} : { fetcher: options.fetcher }) });
   const revoke = () => Promise.all(revokes.splice(0).map(one => one())).then(() => undefined);
   const offered: ToolLaunchOptions = { ...(options.readOnly === undefined ? {} : { enabledTools: options.readOnly }), ...(options.broker === undefined ? {} : { broker: options.broker }) };
   let launched: ToolLaunchArgs;
   try {
     launched = provider === "claude" ? await claudeToolArgs(launch, offered)
       : provider === "codex" || provider === "openrouter" ? await codexToolArgs(launch, offered)
-          : { argv: [...GEMINI_NO_TOOLS_ARGV], env: {}, omitEnv: [], cleanup: () => undefined };
+          : provider === "gemini" ? { argv: [...GEMINI_NO_TOOLS_ARGV], env: {}, omitEnv: [], cleanup: () => undefined }
+            : { argv: [], env: {}, omitEnv: [], cleanup: () => undefined };
   } catch (error) {
     // Tokens were made for a run that won't start: each is revoked, and the run with them.
     if (revokes.length === 0) throw error;
@@ -836,13 +856,13 @@ export async function prepareRunTools(
   }
   // The run's own sign-ins end with it: the broker closes first, so nothing uses a token as it is revoked.
   const prepared: ToolLaunchArgs = revokes.length === 0 ? launched : { ...launched, cleanup: () => { launched.cleanup(); void revoke(); } };
-  const skipped = provider === "gemini"
-    ? [...launch.skipped, ...launch.tools.map(one => ({ name: one.spec.name, reason: "Gemini builds can't use project tools yet" }))]
+  const skipped = toolless
+    ? [...launch.skipped, ...launch.tools.map(one => ({ name: one.spec.name, reason: provider === "gemini" ? "Gemini builds can't use project tools yet" : "ACP agents can't use project tools yet" }))]
     : launch.skipped;
   try {
     store.recordRunTools(runId, JSON.stringify({
       provider,
-      tools: provider === "gemini" ? [] : launch.tools.map(one => ({ name: one.spec.name, digest: one.digest })),
+      tools: toolless ? [] : launch.tools.map(one => ({ name: one.spec.name, digest: one.digest })),
       skipped,
     }), options.now);
   } catch (error) {
@@ -909,7 +929,7 @@ function limitedTo(launch: ToolLaunch, readOnly: Readonly<Record<string, readonl
 }
 
 /** When a launch's tools cannot be prepared, it still gets none of anything else's: the same isolation with an empty list. */
-export function noToolsArgs(provider: "claude" | "codex" | "openrouter" | "gemini"): ToolLaunchArgs {
+export function noToolsArgs(provider: ProviderId): ToolLaunchArgs {
   if (provider === "claude") return { argv: ["--mcp-config", '{"mcpServers":{}}'], env: {}, omitEnv: [], cleanup: () => undefined };
   if (provider === "gemini") return { argv: [...GEMINI_NO_TOOLS_ARGV], env: {}, omitEnv: [], cleanup: () => undefined };
   return { argv: [], env: {}, omitEnv: [], cleanup: () => undefined };
@@ -944,10 +964,11 @@ export function removeToolFrom(store: ToolWrites, repo: string, name: string, by
 }
 
 /** Test one tool of a project and keep the answer on it. */
-export async function testToolOf(store: ToolWrites, repo: string, name: string, now: Date, options: { home?: string | undefined; timeoutMs?: number; omitEnv?: readonly string[] } = {}): Promise<ToolTest | null> {
+export async function testToolOf(store: ToolWrites & ToolServerStore, repo: string, name: string, now: Date, options: { home?: string | undefined; timeoutMs?: number; omitEnv?: readonly string[]; available?: () => boolean } = {}): Promise<ToolTest | null> {
   const tool = projectToolsOf(store, repo).find(one => one.name === name);
   if (tool === undefined) return null;
-  const outcome = await testTool(tool.spec, readToolSecrets(repo, name, options.home), { ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }), ...(options.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) });
+  const server = toolServerFor(store, repo, { ...(options.home === undefined ? {} : { home: options.home }), ...(options.available === undefined ? {} : { available: options.available }) });
+  const outcome = await testTool(tool.spec, readToolSecrets(repo, name, options.home), { server, ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }), ...(options.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) });
   const test: ToolTest = outcome.ok ? { at: now.toISOString(), ok: true, tools: outcome.tools, problem: null } : { at: now.toISOString(), ok: false, tools: [], problem: outcome.problem };
   store.recordProjectToolTest(repo, name, JSON.stringify(test));
   return test;
@@ -989,7 +1010,7 @@ export function secretsSetFor(repo: string, tool: ToolSpec, state?: string): str
   if (names === null) {
     const values = readToolSecrets(repo, tool.name, state);
     names = Object.keys(values).filter(name => values[name] !== "");
-    if (backend !== null) writeNames(folder, repo, tool.name, names);
+    if (backend !== null && !inReadOnlyRequest()) writeNames(folder, repo, tool.name, names);
   }
   return tool.secrets.filter(one => names!.includes(one.name)).map(one => one.name);
 }
@@ -1013,3 +1034,33 @@ export function splitCommandLine(line: string): string[] {
   if (started) parts.push(current);
   return parts;
 }
+
+/** What a tool server started outside a build needs of the store: the plane's own records of its state and pools. */
+export type ToolServerStore = Pick<Store, "databaseFile" | "listWorktrees" | "unfencedAgentsAllowed">;
+/** How a tool server started outside a build runs (toolServerFor): inside `fence`, or with none where there is nothing to
+ * fence (a store with no database file) or an instance operator allowed unconfined agents; or not at all. */
+export type ToolServer = { fence: LaunchFence | null } | { problem: string };
+
+/**
+ * The server fence for a project tool started outside a build (docs/plans/sandbox-parity.md C2): discovery, its Test
+ * button, a flow's "Use a tool" step, a subagent's call. As the broker's servers are fenced: Toolroll's state, every
+ * other launch's folder and the checkout pools denied, and nothing a build writes (its project's caches) read, so no
+ * byte a build wrote can load into a process that holds the tool's secrets. Required: where this machine can't confine
+ * it, it doesn't start unless an instance operator allowed unconfined agents.
+ */
+export function toolServerFor(store: ToolServerStore, repo: string, options: { home?: string; available?: () => boolean } = {}): ToolServer {
+  const databaseFile = store.databaseFile();
+  if (databaseFile === null || databaseFile === "" || databaseFile === ":memory:") return { fence: null };
+  const available = options.available ?? (() => macosFenceAvailable() || linuxFenceAvailable());
+  if (!available()) return store.unfencedAgentsAllowed() ? { fence: null }
+    : { problem: "This machine can't confine the tool's server (no macOS sandbox, no working bubblewrap), so it was not started." };
+  const home = options.home ?? homedir();
+  const poolRoots = [join(dirname(databaseFile), "worktrees"), ...store.listWorktrees().map(record => poolRootOf(record.path, record.repo))];
+  const cache = buildCacheFolder(repo, home);
+  const untrusted = existsSync(cache) ? [realpathSync(cache)] : [];
+  return { fence: fenceFor("tool-server", { databaseFile, worktree: null, home, boundary: null, binding: null, runFolders: runFolders(null), poolRoots, extra: untrusted }) };
+}
+
+/** Each project's `.mcp.json` as the console last read it off its thread (its background pass): what its pages and the
+ * lead offer, so neither reads a project folder on the console's thread. */
+export const savedProjectMcp = new Map<string, Record<string, unknown> | null>();

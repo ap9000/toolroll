@@ -1,0 +1,23 @@
+{
+  "id": "math-subtract",
+  "kind": "build",
+  "title": "Add a subtract function",
+  "goal": "Add subtract(a, b) to src/math.js, keeping add, with a test in test/math.test.js that also checks a negative result: subtract(2, 5) is -3.",
+  "touches": [
+    "src/math.js",
+    "test/math.test.js"
+  ],
+  "pin": {
+    "provider": "claude",
+    "model": "claude-sonnet-5-5"
+  },
+  "maxDispatches": 2,
+  "timeoutMinutes": 15,
+  "grade": {
+    "files": [
+      "src/math.js"
+    ]
+  },
+  "expected": "pass",
+  "validatedBy": null
+}

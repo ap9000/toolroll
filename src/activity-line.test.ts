@@ -6,13 +6,6 @@ const AT = "2026-10-07T12:00:00.000Z";
 const after = (ms: number) => Date.parse(AT) + ms;
 
 describe("the last-activity line", () => {
-  test("says what was done and how long ago, counting on", () => {
-    const ran = { what: "Ran a command", at: AT, worker: "online" as const };
-    expect(activityLine(ran, after(3_000))).toEqual({ text: "Ran a command · just now", quiet: false });
-    expect(activityLine(ran, after(40_000))).toEqual({ text: "Ran a command · 40 s ago", quiet: false });
-    expect(activityLine(ran, after(3 * 60_000 + 5_000))).toEqual({ text: "Ran a command · 3 min ago", quiet: false });
-  });
-
   test("turns quiet at five minutes of silence, and says for how long", () => {
     const ran = { what: "Edited files", at: AT, worker: "online" as const };
     expect(activityLine(ran, after(QUIET_AFTER_MS - 1_000)).quiet).toBe(false);

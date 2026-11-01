@@ -1,8 +1,9 @@
 /** Optional, project-local advice. Core review and approval never depend on it. */
+import { inReadOnlyRequest } from "./read-only-request.js";
+import { checkoutGitSync } from './teardown-git.js';
 import { createHash } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
-import { realpathSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import type { Store } from './store.js';
 import { readVerifiedArtifact, scanForSecrets } from './evidence.js';
 import { normalizeStructuredJson } from "./structured-output.js";
@@ -47,7 +48,6 @@ export type LearningEvidence = { runId?: number; artifactId: number; sha256: str
 export type LearningCandidate = { kind: 'project' | 'system'; observation: string; action: string; paths: string[]; phases: ('plan' | 'build' | 'review')[]; evidence: LearningEvidence[] };
 type Payload = LearningCandidate & { environment: string; fingerprint: string; platform: string; head: string };
 export type Lesson = { id: number; repo: string; source: number; reviewer: number; status: string; version: number; payload: Payload; sha: string; identity: string; adoptedBy: string | null };
-export type LearningEvent = { snapshot: string | null; outcome: string | null; id: number; actor: string; at: string; action: string; before: string; after: string; reason: string; lesson: number | null; run: number | null; evidence: LearningEvidence[] };
 export const learningSha = (text: string): string => createHash('sha256').update(text).digest('hex');
 const text = (x: unknown, max: number): x is string => typeof x === 'string' && x.trim().length > 0 && Buffer.byteLength(x) <= max && !/[\x00-\x1f\x7f]/.test(x);
 const pathOk = (x: unknown): x is string => text(x, 300) && !x.startsWith('/') && !x.includes('\\') && !/^[A-Za-z]:/.test(x) && x.split('/').every(p => p !== '.' && p !== '..' && p !== '') && !/[\*?\[\]:]/.test(x);
@@ -56,7 +56,10 @@ const git = (repo: string, args: string[], seen?: Map<string, string>): string =
   const key = JSON.stringify([repo, args]);
   const known = seen?.get(key);
   if (known !== undefined) return known;
-  const out = execFileSync('git', ['--no-optional-locks', '-C', repo, ...args], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024, stdio: ['ignore', 'pipe', 'pipe'] }).trimEnd();
+  // Bounded, and no hook or fsmonitor program: it also runs from the console's background pass.
+  // No lazy fetch either: a partial clone's fetch runs whatever transport command the shared config names.
+  // Every git version through a frozen read view, bounded (eval-harness review 1, finding 7).
+  const out = checkoutGitSync(repo, args, { timeoutMs: 10_000, maxBuffer: 2 * 1024 * 1024 }).trimEnd();
   seen?.set(key, out);
   return out;
 };
@@ -71,8 +74,33 @@ export const legacyIdentityOf = (repo: string, common: string, st: IdentityFacts
   learningSha(JSON.stringify([repo, common, sameValue(st.dev), sameValue(st.ino), st.birthtimeMs]));
 function identityFacts(repo: string, seen?: Map<string, string>): { common: string; st: IdentityFacts } {
   if (canonicalProject(repo) !== repo) throw new Error('Project identity changed.');
-  const common = realpathSync(resolve(repo, git(repo, ['rev-parse', '--git-common-dir'], seen)));
+  // A page visit starts no git (docs/plans/get-side-effects.md): it reads the same answer from the folder itself.
+  const common = realpathSync(resolve(repo, inReadOnlyRequest() ? commonDirOnDisk(repo) : git(repo, ['rev-parse', '--git-common-dir'], seen)));
   return { common, st: statSync(common) };
+}
+/** The shared Git folder as git finds it for a checkout: `.git` itself, or the folder a `.git` file names, through its
+ * `commondir` when it is a linked worktree. Throws when the folder holds neither. */
+function commonDirOnDisk(repo: string): string {
+  const dotGit = join(repo, '.git');
+  if (lstatSync(dotGit).isDirectory()) return dotGit;
+  const named = /^gitdir: (.+)$/m.exec(smallFile(dotGit))?.[1]?.trim();
+  if (!named) throw new Error('Project identity is unavailable.');
+  const gitDir = resolve(repo, named);
+  if (!lstatSync(gitDir).isDirectory()) throw new Error('Project identity is unavailable.');
+  const commondir = join(gitDir, 'commondir');
+  if (!existsSync(commondir)) return gitDir;
+  return resolve(gitDir, smallFile(commondir).trim());
+}
+/** A small plain file's text, read through one descriptor that follows no link and never waits (a FIFO, a device or a
+ * file swapped in between is refused, never read), at most 4 KiB. */
+function smallFile(path: string): string {
+  const fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile() || st.size > 4096) throw new Error('Project identity is unavailable.');
+    const buffer = Buffer.alloc(4096);
+    return buffer.subarray(0, readSync(fd, buffer, 0, 4096, 0)).toString('utf8');
+  } finally { closeSync(fd); }
 }
 export function learningIdentity(repo: string, seen?: Map<string, string>): string {
   const { common, st } = identityFacts(repo, seen);
@@ -120,7 +148,8 @@ export function reconcileIdentity(store: Store, repo: string, seen?: Map<string,
   let done = reconciled.get(store);
   if (!done) reconciled.set(store, done = new Set());
   const key = `${repo}\n${legacy}`;
-  if (legacy !== current && !done.has(key)) {
+  // Carrying saved rows to the current identity is a write: never a page visit's (the background pass does it).
+  if (legacy !== current && !done.has(key) && !inReadOnlyRequest()) {
     if (!store.handle.prepare('SELECT 1 FROM project_identity_carry WHERE repo=? AND from_identity=? AND to_identity=?').get(repo, legacy, current)
       && store.handle.prepare(STORED_IDENTITY).get(repo, legacy)) {
       // Damaged knowledge history keeps its own error; retry on the next read.
@@ -351,7 +380,8 @@ function supported(store: Store, root: string, lesson: Lesson, seen?: Map<string
 }
 export function learningView(store: Store, root: string, repo: string, actor: string, before = 0) {
   admission(store, repo, actor);
-  recoverLearning(store, root, repo);
+  // Recovering learning from reviewed runs writes: the console's background pass and each run's start do it.
+  if (!inReadOnlyRequest()) recoverLearning(store, root, repo);
   const identity = learningIdentity(repo), accepted = acceptedIdentities(store, repo);
   const p = store.handle.prepare('SELECT * FROM learning_policy WHERE repo=?').get(repo);
   const revision = Number(p?.['revision'] ?? 0), enabled = accepted.has(String(p?.['identity'])) && p?.['enabled'] === 1;
@@ -420,6 +450,19 @@ export function learningContext(store: Store, root: string, runId: number, phase
       // advice may inform its proposal; only an approval can authorize a build.
       const unscopedPlan = phase === 'plan' && scope === null && !run.scopeDigest;
       const eligible: Lesson[] = [];
+      // The checkout's status, read once for every lesson (one command on one checkout): a hardened read costs a
+      // private view and several git processes, and this runs inside the transaction. A failed read fails every lesson
+      // that reaches it, as each read alone would have.
+      let status: { lines: string[] } | { error: unknown } | null = null;
+      const statusLines = (cwd: string): string[] => {
+        status ??= (() => {
+          // A build's checkout: status runs filters, so the hardened read (teardown-git.ts checkoutGitSync).
+          try { return { lines: checkoutGitSync(cwd, ['status', '--porcelain', '--untracked-files=all'], { timeoutMs: 10_000, maxBuffer: 2 * 1024 * 1024 }).trimEnd().split('\n') }; }
+          catch (error) { return { error }; }
+        })();
+        if ('error' in status) throw status.error;
+        return status.lines;
+      };
       if (policy && (paths.length > 0 || unscopedPlan)) {
         for (const row of store.handle.prepare("SELECT * FROM project_lesson WHERE repo=? AND identity IN (SELECT value FROM json_each(?)) AND status='adopted' ORDER BY id DESC LIMIT 100").all(repo, carried)) {
           try {
@@ -428,7 +471,7 @@ export function learningContext(store: Store, root: string, runId: number, phase
             supported(store, root, l, seen);
             if (l.payload.environment !== environmentFingerprint(store, repo) || learningFingerprint(repo, head, l.payload.paths, seen) !== l.payload.fingerprint) continue;
             const cwd = run.worktree ?? repo;
-            const dirty = git(cwd, ['status', '--porcelain', '--untracked-files=all'], seen).split('\n').some(line => { const p = line.slice(3); return configPath(p) || l.payload.paths.includes(p); });
+            const dirty = statusLines(cwd).some(line => { const p = line.slice(3); return configPath(p) || l.payload.paths.includes(p); });
             if (!dirty) eligible.push(l);
           } catch { /* stale, conflicting source or tampered advice is ineligible */ }
         }

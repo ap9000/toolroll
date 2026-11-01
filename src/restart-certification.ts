@@ -25,7 +25,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync, realpathSync, readdirSync, statSync } from "node:fs";
-import { bootIdentity, currentBootId, provenDeadByBootChange, type BootIdentity } from "./boot-identity.js";
+import { bootIdentity, provenDeadByBootChange, type BootIdentity } from "./boot-identity.js";
 import { containmentStatus, currentContainment } from "./containment.js";
 import { daemonStatus, type ServiceDefinition, type ServiceStatus, type SupervisorRunner } from "./daemon.js";
 import { isAlive } from "./runner.js";
@@ -275,9 +275,4 @@ export function assertNoSecret(json: string, secrets: readonly string[]): void {
   for (const secret of secrets) {
     if (secret !== "" && json.includes(secret)) throw new Error("the certification output would contain a credential; refusing to write it");
   }
-}
-
-/** The current boot id, for scripts that print it beside a baseline. */
-export function bootIdNow(): string | null {
-  return currentBootId();
 }

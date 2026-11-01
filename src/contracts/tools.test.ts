@@ -300,11 +300,3 @@ describe("output diagnostics", () => {
     }
   });
 });
-
-describe("docs/plans/zod-revamp.md", () => {
-  it("marks item 5 done", () => {
-    const doc = readFileSync(new URL("../../docs/plans/zod-revamp.md", import.meta.url), "utf8");
-    expect(doc).toMatch(/^\| 5 ✅ \| \*\*Lead tool inputs and outputs\*\*/m);
-    expect(doc.slice(doc.indexOf("## Done"))).toContain("**5. Lead tools and the MCP gateway**");
-  });
-});

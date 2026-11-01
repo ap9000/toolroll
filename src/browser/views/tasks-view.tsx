@@ -5,15 +5,15 @@
  * step is one quiet button. Filtering and paging stay server-side (real
  * URLs), so Back and bookmarks work. Usage folds to one line on a desk and
  * sits below the list on a phone, so the first task is near the top. */
-import { ArrowRight, ChevronDown, ChevronRight, Ellipsis, Inbox, LayoutGrid, ListTodo, Plus, Sparkles, Code2, ListOrdered, Briefcase } from "lucide-react";
+import { ArrowRight, ChevronDown, ChevronRight, Ellipsis, Inbox, LayoutGrid, Plus, Sparkles, Code2, ListOrdered, Briefcase } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { BrowserLimits, BrowserLimitTile, BrowserTasksView } from "../../browser-workspace.js";
 import { Button, Card, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, cn } from "../components/ui/index.js";
-import { HeadlineBadge } from "./status-summary.js";
+import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
 
 const TOOL_ICONS: Record<string, ReactNode> = {
   "/inbox": <Inbox />, "/code": <Code2 />, "/board": <LayoutGrid />, "/board?view=order": <ListOrdered />,
-  "/tasks": <ListTodo />, "/recipes": <Sparkles />, "/workbench": <Briefcase />,
+  "/recipes": <Sparkles />, "/workbench": <Briefcase />,
 };
 
 const LIMIT_FILL: Record<BrowserLimitTile["tone"], string> = { neutral: "bg-foreground", warning: "bg-warning", danger: "bg-destructive" };
@@ -55,13 +55,21 @@ function LimitTiles({ limits, id, className }: { limits: BrowserLimits; id?: str
 
 /** Each limit as a word and a percentage: the plan's name for its first window, the window's name after it
  * ("Claude 48% · Weekly 83% · Codex 12%"). */
-export function usageSummary(limits: BrowserLimits): { key: string; text: string; tone: BrowserLimitTile["tone"] }[] {
+export function usageSummary(limits: BrowserLimits): { key: string; text: string; tone: BrowserLimitTile["tone"]; percent: number }[] {
   const named = new Set<string>();
   return limits.tiles.map(tile => {
     const word = named.has(tile.name) ? tile.window : tile.name;
     named.add(tile.name);
-    return { key: tile.key, text: `${word} ${Math.round(Math.max(0, tile.percent))}%`, tone: tile.tone };
+    const percent = Math.round(Math.max(0, tile.percent));
+    return { key: tile.key, text: `${word} ${percent}%`, tone: tile.tone, percent };
   });
+}
+
+/** A hairline meter (the same fill as the limit tiles' bars, at 4px), so the windows compare at a glance. */
+function Meter({ percent, tone }: { percent: number; tone: BrowserLimitTile["tone"] }) {
+  return <span aria-hidden="true" className="relative inline-block h-1 w-7 shrink-0 overflow-hidden rounded-full bg-neutral-soft">
+    <span className={cn("absolute inset-y-0 left-0 rounded-full", LIMIT_FILL[tone])} style={{ width: `${Math.min(100, percent)}%` }} />
+  </span>;
 }
 
 /** A row's chip. A waiting row sits under its group heading (Decide, Review, Unblock), so its chip names the
@@ -70,14 +78,23 @@ export function usageSummary(limits: BrowserLimits): { key: string; text: string
  * ungrouped list, or a row no heading covers) such a row wears its headline in the same ink chip, so every row
  * shows a state word and every waiting row reads alike.
  * Every other row wears its headline, the same words as the task page, the result and Crew. */
+function glyphOf(row: BrowserTasksView["rows"][number]): GlyphKind {
+  if (row.ask === "decide") return "decide";
+  if (row.ask === "review") return "review";
+  if (row.ask === "unblock") return row.chip === "Failed" ? "failed" : "unblock";
+  const tone = row.status.tone;
+  return tone === "live" ? "building" : tone === "done" || tone === "ready" ? "done" : tone === "problem" ? "failed" : "idle";
+}
+
 function TaskChip({ row, grouped }: { row: BrowserTasksView["rows"][number]; grouped: boolean }) {
-  const place = "text-caption desk:col-start-1 desk:row-start-1 desk:justify-self-start phone:col-start-1 phone:row-start-2 phone:self-center";
-  if (row.ask === null) return <HeadlineBadge label={row.status.label} tone={row.status.tone === "attention" ? "neutral" : row.status.tone} className={place} />;
-  if (row.chip === null && grouped) return <span className={cn("sr-only", place)} data-headline={row.status.label}>{row.status.label}</span>;
-  // Outside a group, a chip-less waiting row wears the same ink chip, its headline as the word.
+  const place = "inline-flex w-fit shrink-0 items-center gap-1.5 whitespace-nowrap text-[12px] leading-[18px] desk:col-start-1 desk:row-start-1 desk:justify-self-start phone:col-start-1 phone:row-start-2 phone:self-center";
+  const glyph = <StatusGlyph kind={glyphOf(row)} />;
+  if (row.ask === null) return <span data-headline={row.status.label} className={cn(place, "text-muted-foreground")}>{glyph}{row.status.label}</span>;
+  if (row.chip === null && grouped) return <span className={place}>{glyph}<span className="sr-only" data-headline={row.status.label}>{row.status.label}</span></span>;
+  // Outside a group, a chip-less waiting row shows its headline as the word.
   return <span data-ask={row.ask} {...(row.chip === null ? {} : { "data-chip": row.chip })} data-headline={row.status.label} title={row.status.label}
-    className={cn("inline-flex w-fit shrink-0 items-center whitespace-nowrap rounded-badge bg-primary px-1.5 py-px font-semibold leading-[18px] text-primary-foreground", place)}>
-    {row.chip === null ? row.status.label : <><span className="sr-only">{row.status.label}: </span>{row.chip}</>}
+    className={cn(place, "font-medium text-foreground")}>
+    {glyph}{row.chip === null ? row.status.label : <><span className="sr-only">{row.status.label}: </span>{row.chip}</>}
   </span>;
 }
 
@@ -94,6 +111,8 @@ function TaskRow({ row, grouped = false }: { row: BrowserTasksView["rows"][numbe
         {row.project && <span className="text-foreground/80">{row.project}</span>}
         {row.project && <span aria-hidden="true">·</span>}
         <span className="tabular-nums">{row.age}</span>
+        <span aria-hidden="true">·</span>
+        <span className="min-w-0 font-mono text-mono [overflow-wrap:anywhere]" data-task-id>{row.id}</span>
       </p>
       {/* A failed row's problem line is vermilion; every other detail stays muted. */}
       {row.detail && <p className={cn("mt-1 text-[12.5px] phone:col-span-full phone:leading-[1.35]", row.status.label === "Failed" ? "text-destructive" : "text-muted-foreground")}
@@ -112,6 +131,8 @@ function TaskRow({ row, grouped = false }: { row: BrowserTasksView["rows"][numbe
 
 /** The rows in the view's groups, in order, each under a small heading with its count; a plain list otherwise.
  * On a desk every group shares one grid (chip, title, action), so chips and actions line up down the page. */
+const GROUP_GLYPH: Record<BrowserTasksView["rows"][number]["group"], GlyphKind> = { decide: "decide", review: "review", unblock: "unblock", building: "building", rest: "idle" };
+
 function TaskList({ view }: { view: BrowserTasksView }) {
   const grid = "desk:grid desk:grid-cols-[auto_minmax(0,1fr)_auto]";
   if (view.groups === null) return <ul className={cn(grid, "border-t border-border")}>{view.rows.map(row => <TaskRow key={row.id} row={row} />)}</ul>;
@@ -120,8 +141,8 @@ function TaskList({ view }: { view: BrowserTasksView }) {
   const loose = view.rows.filter(row => !placed.has(row.group));
   return <div className={cn(grid, "flex flex-col gap-5 phone:gap-3.5 desk:gap-0")}>
     {sections.map((section, index) => <section key={section.key} data-task-group={section.key} aria-labelledby={`task-group-${section.key}`} className="desk:contents">
-      <h2 id={`task-group-${section.key}`} className={cn("flex items-baseline gap-2 border-b border-border px-2 pb-1.5 text-body leading-5 desk:col-span-3 font-semibold", index > 0 && "desk:mt-6")}>
-        {section.label}<span className="font-mono text-mono tabular-nums text-muted-foreground font-medium">{section.count}</span>
+      <h2 id={`task-group-${section.key}`} className={cn("flex items-center gap-2 rounded-md bg-raised px-2.5 py-2 text-body leading-5 desk:col-span-3 font-semibold", index > 0 && "desk:mt-5")}>
+        <StatusGlyph kind={GROUP_GLYPH[section.key]} />{section.label}<span className="font-mono text-mono tabular-nums text-muted-foreground font-medium">{section.count}</span>
       </h2>
       <ul className="desk:contents">{section.rows.map(row => <TaskRow key={row.id} row={row} grouped />)}</ul>
     </section>)}
@@ -135,7 +156,7 @@ function UsageToggle({ limits, open, onToggle, controls }: { limits: BrowserLimi
   return <button type="button" aria-expanded={open} aria-controls={controls} onClick={onToggle} data-usage-summary
     className="ml-auto inline-flex min-h-8 min-w-0 items-center gap-1.5 rounded-md px-2 text-[12.5px] text-muted-foreground transition-colors hover:bg-raised hover:text-foreground phone:hidden">
     <span className="sr-only">Usage: </span>
-    <span className="truncate tabular-nums">{parts.map((part, index) => <span key={part.key}>{index > 0 && <span aria-hidden="true"> · </span>}<span className={LIMIT_TEXT[part.tone]}>{part.text}</span></span>)}</span>
+    <span className="flex min-w-0 items-center gap-3 truncate tabular-nums">{parts.map(part => <span key={part.key} className="inline-flex items-center gap-1.5"><span className={LIMIT_TEXT[part.tone]}>{part.text}</span><Meter percent={part.percent} tone={part.tone} /></span>)}</span>
     <ChevronRight aria-hidden="true" className={cn("size-3.5 shrink-0 motion-safe:transition-transform", open && "rotate-90")} />
   </button>;
 }
@@ -163,6 +184,18 @@ function ScrollStrip({ label, className, children }: { label: string; className:
   return <nav ref={ref} aria-label={label} className={cn("[scrollbar-width:none] [&::-webkit-scrollbar]:hidden", className)}
     data-scrolls={more.before || more.after ? (more.after ? "more" : "end") : undefined}
     style={fade === undefined ? undefined : { maskImage: fade, WebkitMaskImage: fade }}>{children}</nav>;
+}
+
+/** The stored-state filter (the old task list's): a menu of real links, so Back and bookmarks keep it. */
+function StateFilter({ states }: { states: NonNullable<BrowserTasksView["states"]> }) {
+  const current = states.find(one => one.active) ?? states[0];
+  return <DropdownMenu>
+    <DropdownMenuTrigger asChild><Button variant="ghost" size="sm" className="ml-2 shrink-0" aria-label={`State: ${current?.label ?? "Any state"}`} data-state-filter>
+      {current?.label ?? "Any state"}<ChevronDown /></Button></DropdownMenuTrigger>
+    <DropdownMenuContent align="start">
+      {states.map(one => <DropdownMenuItem key={one.href} asChild><a href={one.href} aria-current={one.active ? "page" : undefined}>{one.label}</a></DropdownMenuItem>)}
+    </DropdownMenuContent>
+  </DropdownMenu>;
 }
 
 export function TasksView({ view }: { view: BrowserTasksView }) {
@@ -199,6 +232,7 @@ export function TasksView({ view }: { view: BrowserTasksView }) {
           </li>)}
         </ul>
       </ScrollStrip>
+      {view.states !== undefined && <StateFilter states={view.states} />}
     </div>
 
     {view.empty !== null ? <Card className="items-start py-10">

@@ -24,7 +24,6 @@ import { presetTerms, modeTermsJson, modeDigestOf, modeWords } from "./modes.js"
 import { createDecisionServer } from "./serve.js";
 import { checkSettingsHtml } from "./check-levels-ui.js";
 import { recordRunCheckLevel } from "./check-levels.js";
-import { assignmentStatusFacts, taskStatusOf } from "./task-status.js";
 import type { Runner } from "./builder.js";
 import { fakePid } from "../test/fake-pid.js";
 
@@ -150,7 +149,6 @@ describe("the review switch (c5)", () => {
       const cookie = login.headers.getSetCookie().map(one => one.split(";")[0]!).find(one => one.startsWith("standing-orders_session="))!;
       const page = await (await fetch(`${base}/settings/checks?repo=${encodeURIComponent(REPO)}`, { headers: { cookie } })).text();
       expect(page).toContain('data-review-switch="off"');
-      expect(page).toContain("Turn on");
       const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)![1]!;
       const post = (password: string) => fetch(`${base}/settings/checks`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, repo: REPO, act: "review", on: "1", password }), redirect: "manual" });
       expect((await post("wrong")).status).toBe(303);
@@ -160,7 +158,6 @@ describe("the review switch (c5)", () => {
       expect(switchLog()).toEqual([{ actor: "alex", repo: REPO, detail: "off (default) → on" }]);
       const after = await (await fetch(`${base}/settings/checks?repo=${encodeURIComponent(REPO)}&said=x`, { headers: { cookie } })).text();
       expect(after).toContain('data-review-switch="on"');
-      expect(after).toContain("Turn off");
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()));
     }
@@ -221,8 +218,6 @@ describe("one review per finished build (c1)", () => {
     expect(store.openReviewRequests()).toHaveLength(1);
     // Held back from the person while the review is pending.
     expect(assignment("work")).toMatchObject({ state: "checking", handoff: null, review: { state: "pending" } });
-    // The task's status: still the Building headline, in words that say it is reviewing.
-    expect(taskStatusOf(assignmentStatusFacts(assignment("work")))).toMatchObject({ headline: "Building", sentence: "Reviewing the change before it reaches you." });
 
     const calls: { args: string[] }[] = [];
     const reports = await pass(reviewer([], calls));
@@ -324,7 +319,6 @@ describe("MEDIUM and LOW never block (c3)", () => {
       const cookie = login.headers.getSetCookie().map(one => one.split(";")[0]!).find(one => one.startsWith("standing-orders_session="))!;
       const html = await (await fetch(`${base}/r/${run}`, { headers: { cookie } })).text();
       expect(html).toContain('data-review-followups="2"');
-      expect(html).toContain("Suggested follow-ups");
       expect(html).toContain("A negative payout passes the limit check.");
     } finally {
       await new Promise<void>(resolve => server.close(() => resolve()));

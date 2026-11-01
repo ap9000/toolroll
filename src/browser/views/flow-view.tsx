@@ -6,6 +6,7 @@
  * back or fails. Every change is the server's: it answers with the flow as
  * it now stands, and every open page hears the moment it changes (v88),
  * with the faces of whoever else has it open. */
+import { SteerControls, SteerNote } from "./steer-composer.js";
 import { roomName, useLiveRoom } from "../live.js";
 import { NEEDS } from "../../needs-you.js";
 import { Background, BackgroundVariant, BaseEdge, Controls, EdgeLabelRenderer, Handle, MarkerType, NodeResizer, Position, ReactFlow, ReactFlowProvider, applyNodeChanges, getSmoothStepPath, useReactFlow, type Connection, type Edge, type EdgeProps, type Node, type NodeChange, type NodeProps } from "@xyflow/react";
@@ -13,9 +14,10 @@ import "@xyflow/react/dist/style.css";
 import { Bell, BellOff, Bot, CalendarClock, Download, Ellipsis, Hourglass, LineChart, ListChecks, MessageSquareReply, Copy, Flag, GitPullRequest, Hammer, Inbox, Megaphone, MessageSquare, MousePointerClick, Pencil, PenLine, Plus, Search, Send, Signpost, Split, Globe, Mail, Wrench, SquareKanban, UserCheck, Webhook, Workflow, X, Zap } from "lucide-react";
 import { threadWhen } from "./task-view.js";
 import { deadlineWords, shortWhen, viewerZone } from "../../when-html.js";
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { BrowserFlowCard, BrowserFlowSentItem, BrowserFlowStage, BrowserFlowTrigger, BrowserFlowView } from "../../browser-workspace.js";
 import { unattendedCoverWords, unattendedEndAfterWords, unattendedLimitWords, untilDayWords } from "../../flow-unattended-words.js";
+import { Passwordless } from "../ui/post-form.js";
 import { Badge, Button, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, Input, Label, Textarea, cn, toast } from "../components/ui/index.js";
 
 /** A person's initials in a small circle, the same colour for the same name everywhere. */
@@ -450,8 +452,11 @@ function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard
       </div>
       <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close"><X className="size-4" /></Button>
     </div>
-    {card.source !== null && <p className="text-caption text-muted-foreground font-normal">From {card.source.url === null ? card.source.label
-      : <a className="font-medium text-primary underline-offset-4 hover:underline" href={card.source.url} {...(card.source.url.startsWith("/") ? {} : { target: "_blank", rel: "noreferrer" })}>{card.source.label}</a>}</p>}
+    {card.source !== null && (card.source.shown != null && card.source.url !== null
+      // v126: an outside event's card says how it was proved, and its link shows where it goes (host and path).
+      ? <p className="text-caption text-muted-foreground font-normal break-all">From {card.source.label}{card.source.proved === undefined ? null : ` (${card.source.proved})`} · <a className="font-medium text-primary underline-offset-4 hover:underline" href={card.source.url} target="_blank" rel="noopener noreferrer">{card.source.shown}</a></p>
+      : <p className="text-caption text-muted-foreground font-normal">From {card.source.url === null ? card.source.label
+        : <a className="font-medium text-primary underline-offset-4 hover:underline" href={card.source.url} {...(card.source.url.startsWith("/") ? {} : { target: "_blank", rel: "noopener noreferrer" })}>{card.source.label}</a>}{card.source.proved === undefined ? null : ` (${card.source.proved})`}</p>)}
     {card.description !== null && <p className="whitespace-pre-wrap text-body">{card.description}</p>}
     {card.waiting !== null && card.question == null && card.choose == null && card.state === "active" && <p className="rounded-md bg-muted px-3 py-2 text-body">{card.waiting}{card.deadline != null && <span className="block text-muted-foreground">{deadlineWords(card.deadline)}</span>}</p>}
     {card.question != null && <SubagentQuestion question={card.question} csrf={csrf} apply={apply} />}
@@ -460,6 +465,10 @@ function CardPanel({ card, view, csrf, apply, onClose }: { card: BrowserFlowCard
     {card.question != null && card.deadline != null && <p className="text-caption text-muted-foreground font-normal">{deadlineWords(card.deadline)}</p>}
     <CardPeople card={card} view={view} csrf={csrf} apply={apply} />
     {card.task !== null && <a className="text-body text-primary underline-offset-4 hover:underline font-medium" href={card.task.href}>Open its task</a>}
+    {card.task?.composer != null && <div className="flex flex-col gap-1" data-flow-task-composer>
+      <SteerControls controls={card.task.composer.controls} back={`flow:${view.flow.id}:${card.id}`} />
+      {card.task.composer.steer !== null && <SteerNote key={`${card.id}:${card.task.composer.steer.run}`} steer={card.task.composer.steer} controls={card.task.composer.controls} back={`flow:${view.flow.id}:${card.id}`} />}
+    </div>}
     {card.draft !== null && !card.canDecide && <details className="rounded-md border px-3 py-2" open data-flow-draft>
       <summary className="cursor-pointer text-body font-medium">Draft from {card.draft.title}</summary>
       <p className="mt-2 whitespace-pre-wrap text-[12.5px]">{card.draft.text}</p>
@@ -936,14 +945,18 @@ function CopyLine({ label, value }: { label: string; value: string }) {
 function RevealBox({ kind, reveal, onDone }: { kind: string; reveal: Reveal; onDone: () => void }) {
   return <div className="flex flex-col gap-2 rounded-lg border border-primary/40 bg-primary/5 p-3" data-trigger-reveal>
     <p className="text-body font-semibold">Copy these now. They aren't shown again.</p>
-    {reveal.address === null
+    {reveal.path === "" ? null : reveal.address === null
       ? <p className="text-caption font-normal">Save your public webhook address below first, then choose New address. <span className="break-all font-mono">{reveal.path}</span></p>
       : <CopyLine label="Address" value={reveal.address} />}
     {reveal.secret !== null && <CopyLine label="Secret" value={reveal.secret} />}
     <p className="text-caption text-muted-foreground font-normal">{kind === "github" ? "In GitHub: Settings → Webhooks → Add webhook. Paste the address and the secret, choose application/json, and pick the events this trigger watches (Issues, Pull requests or Workflow runs)."
       : kind === "linear" ? "In Linear: Settings → API → Webhooks → New webhook. Paste the address and choose Issues. Then paste Linear's signing secret on this trigger."
       : kind === "form" ? "Share this link. Anyone who has it can add a card without signing in; the work it starts still waits for your approval."
-      : "Post JSON to the address. A title field becomes the card's title; description, its details."}</p>
+      : kind === "sentry" ? "In Sentry: Settings → Developer Settings → Internal Integration. Paste the address as its Webhook URL, turn on Alert Rule Action and Issue events, then paste its Client Secret on this trigger."
+      : kind === "vercel" ? "In Vercel: Settings → Webhooks. Paste the address, choose Deployment Error, then paste the secret Vercel shows on this trigger."
+      : kind === "standard" ? "Give the sender the address and the secret (whsec_…): it signs each delivery the Standard Webhooks way."
+      : kind === "github-style" ? "Give the sender the address and the secret: it signs each delivery's body with HMAC-SHA256 in an X-Hub-Signature-256: sha256=… header."
+      : "Post JSON to the address. A title field becomes the card's title; description, its details. Anyone with the address can post: choose who signs it to close that."}</p>
     <Button type="button" size="sm" variant="outline" className="self-start" onClick={onDone}>Done</Button>
   </div>;
 }
@@ -960,6 +973,8 @@ function AddTrigger({ view, csrf, open, onResult }: { view: BrowserFlowView; csr
   const [fields, setFields] = useState<Record<string, string>>({});
   const [scripted, setScripted] = useState(false);
   const [busy, setBusy] = useState(false);
+  // A trigger that takes deliveries mints a webhook address: a credential act, so it asks for the password (passwordless.md).
+  const [password, setPassword] = useState("");
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const defaults: Record<string, Record<string, string>> = {
     schedule: { schedule: `daily 09:00 ${timezone}` }, github: { repo: setup.githubRepo ?? "", watch: "issues", from: "team", delivery: "poll", branch: "main" },
@@ -967,6 +982,10 @@ function AddTrigger({ view, csrf, open, onResult }: { view: BrowserFlowView; csr
     "plane-review": { at: "07:30", timeZone: timezone },
   };
   const v = (key: string) => fields[key] ?? defaults[kind]?.[key] ?? "";
+  const ingress = kind === "webhook" || ((kind === "github" || kind === "linear") && v("delivery") === "webhook");
+  // Items from anyone (GitHub from anyone, mail from any sender): an ordinary step-up (chat-management.md §0a.3).
+  const anyone = !ingress && ((kind === "github" && v("from") === "anyone") || (kind === "email" && v("sender").trim() === ""));
+  const passwordless = useContext(Passwordless);
   const set = (key: string) => (event: { target: { value: string } }) => setFields(current => ({ ...current, [key]: event.target.value }));
   const source = setup.otherFlows.find(one => String(one.id) === v("flow"));
   const submit = async (event: { preventDefault: () => void }) => {
@@ -974,7 +993,8 @@ function AddTrigger({ view, csrf, open, onResult }: { view: BrowserFlowView; csr
     const trigger: Record<string, unknown> = { kind, zone: v("zone") || null };
     for (const key of TRIGGER_KEYS[kind] ?? []) trigger[key] = key === "questions" ? v(key).split("\n") : key === "flow" ? Number(v(key)) : v(key) || null;
     setBusy(true);
-    const result = await send(`${view.flow.href}/triggers`, { trigger: JSON.stringify(trigger) }, csrf);
+    const result = await send(`${view.flow.href}/triggers`, { trigger: JSON.stringify(trigger), ...(ingress || anyone ? { password } : {}) }, csrf);
+    if (result.ok) setPassword("");
     setBusy(false);
     onResult(result, kind);
     if (result.ok) setFields({});
@@ -1058,7 +1078,9 @@ function AddTrigger({ view, csrf, open, onResult }: { view: BrowserFlowView; csr
       {kind !== "chat" && <Field label="Cards start in"><select className={SELECT} value={v("zone")} onChange={set("zone")}>
         <option value="">{view.stages.find(one => one.id === view.start)?.title ?? "The first zone"}</option>
         {view.stages.filter(one => one.id !== view.start).map(one => <option key={one.id} value={one.id}>{one.title}</option>)}</select></Field>}
-      {kind !== "chat" && <Button type="submit" size="sm" className="self-start" disabled={busy || (kind === "flow" && setup.otherFlows.length === 0)}><Plus className="size-4" />Add trigger</Button>}
+      {ingress && <StepUp view={view} password={password} setPassword={setPassword} credential />}
+      {anyone && <StepUp view={view} password={password} setPassword={setPassword} />}
+      {kind !== "chat" && <Button type="submit" size="sm" className="self-start" disabled={busy || (kind === "flow" && setup.otherFlows.length === 0) || (ingress && !stepUpReady(view, password)) || (anyone && !stepUpReady(view, password, passwordless))}><Plus className="size-4" />Add trigger</Button>}
     </form>
   </details>;
 }
@@ -1066,6 +1088,7 @@ function AddTrigger({ view, csrf, open, onResult }: { view: BrowserFlowView; csr
 /** Installation settings a trigger may need: the Linear key (behind the password) and the public webhook address. */
 function TriggerSettings({ view, csrf, apply }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void }) {
   const setup = view.triggerSetup;
+  const passwordless = useContext(Passwordless);
   const [key, setKey] = useState("");
   const [password, setPassword] = useState("");
   const [address, setAddress] = useState(setup.hooksBase ?? "");
@@ -1080,8 +1103,8 @@ function TriggerSettings({ view, csrf, apply }: { view: BrowserFlowView; csrf: s
         : <form className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); void act(`${view.flow.href}/linear-key`, { key, password }); }}>
             <Field label="Linear key" hint="From Linear → Settings → Security & access → Personal API keys. Kept on this computer only.">
               <Input type="password" autoComplete="off" value={key} onChange={event => setKey(event.target.value)} placeholder="lin_api_…" /></Field>
-            <StepUp view={view} password={password} setPassword={setPassword} />
-            <Button type="submit" size="sm" className="self-start" disabled={busy || key.trim() === "" || !stepUpReady(view, password)}>Save key</Button>
+            <StepUp view={view} password={password} setPassword={setPassword} credential />
+            <Button type="submit" size="sm" className="self-start" disabled={busy || key.trim() === "" || !stepUpReady(view, password, passwordless)}>Save key</Button>
           </form>}
       <form className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); void act(`${view.flow.href}/hooks-address`, { address }); }}>
         <Field label="Public webhook address" hint="The https site your reverse proxy (Caddy, for example) serves. Have it pass only paths starting /hooks/ to this console.">
@@ -1092,16 +1115,91 @@ function TriggerSettings({ view, csrf, apply }: { view: BrowserFlowView; csrf: s
   </details>;
 }
 
-/** A step-up: the person's password, or (signed in with the identity provider) that sign-in, confirmed or to confirm. */
-function StepUp({ view, password, setPassword }: { view: BrowserFlowView; password: string; setPassword: (value: string) => void }) {
+/** A step-up: the person's password, or (signed in with the identity provider) that sign-in, confirmed or to confirm.
+ * Passwordless (docs/plans/passwordless.md): an ordinary one shows nothing; a credential act (`credential`) always asks. */
+function StepUp({ view, password, setPassword, credential = false }: { view: BrowserFlowView; password: string; setPassword: (value: string) => void; credential?: boolean }) {
+  const passwordless = useContext(Passwordless);
+  if (!credential && passwordless) return null;
   if (view.stepUp === undefined) return <Field label="Your Toolroll password"><Input type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} /></Field>;
   return view.stepUp.fresh
     ? <p className="text-body text-success" data-sso-step-up="confirmed">✓ Confirmed with {view.stepUp.label}</p>
     : <a className="text-body underline" data-sso-step-up="confirm" href={view.stepUp.confirmHref}>Confirm with {view.stepUp.label}</a>;
 }
-const stepUpReady = (view: BrowserFlowView, password: string) => view.stepUp === undefined ? password !== "" : view.stepUp.fresh;
+const stepUpReady = (view: BrowserFlowView, password: string, passwordless = false) => passwordless || (view.stepUp === undefined ? password !== "" : view.stepUp.fresh);
+
+/** A one-click action that opens a way in (a form link, a new webhook address): it asks for the password first, inline. */
+function CredentialAction({ view, label, busy, className, onConfirm }: { view: BrowserFlowView; label: string; busy: boolean; className?: string; onConfirm: (password: string) => Promise<boolean> }) {
+  const [asking, setAsking] = useState(false);
+  const [password, setPassword] = useState("");
+  if (!asking) return <Button size="sm" variant="outline" className={className} disabled={busy} onClick={() => setAsking(true)}>{label}</Button>;
+  return <span className="flex w-full flex-wrap items-end gap-2" data-credential-action>
+    <StepUp view={view} password={password} setPassword={setPassword} credential />
+    <Button size="sm" disabled={busy || !stepUpReady(view, password)} onClick={() => void onConfirm(password).then(done => { if (done) { setAsking(false); setPassword(""); } })}>{label}</Button>
+    <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setAsking(false); setPassword(""); }}>Cancel</Button>
+  </span>;
+}
+
+const SECRET_LABELS: Record<string, { label: string; hint: string }> = {
+  linear: { label: "Linear's signing secret", hint: "Linear shows it when you create the webhook." },
+  sentry: { label: "Sentry's Client Secret", hint: "In Sentry: Settings → Developer Settings → your Internal Integration → Client Secret." },
+  vercel: { label: "Vercel's webhook secret", hint: "Vercel shows it once when you create the webhook (an integration's webhooks use its Client Secret)." },
+};
+const SENDER_CHOICES: [string, string][] = [["none", "Unsigned (the address alone)"], ["standard", "Standard Webhooks"], ["github-style", "GitHub-style signature"], ["sentry", "Sentry"], ["vercel", "Vercel"]];
+
+/** v126: how a webhook's deliveries are proved, changed only here behind one password: who signs them, a new secret
+ * Toolroll makes (Standard, GitHub-style; shown once, the address kept), or the sender's own pasted (Sentry, Vercel) —
+ * first or as a replacement. New address is its own button and keeps the secret. */
+function WebhookSigning({ trigger, view, csrf, apply, onReveal }: { trigger: BrowserFlowTrigger; view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onReveal: (reveal: Reveal) => void }) {
+  const hook = trigger.hook!;
+  const current = hook.sender ?? "none";
+  const [sender, setSender] = useState(current);
+  const [secret, setSecret] = useState("");
+  const [project, setProject] = useState(hook.scope?.project ?? "");
+  const [team, setTeam] = useState(hook.scope?.team ?? "");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const go = async (path: string, fields: Record<string, string>) => {
+    setBusy(true);
+    const result = await send(`${view.flow.href}/triggers/${trigger.id}/${path}`, { ...fields, password }, csrf);
+    setBusy(false); apply(result);
+    if (result.ok) { setPassword(""); setSecret(""); }
+    if (result.reveal !== undefined) onReveal(result.reveal);
+  };
+  const changing = sender !== current;
+  const words = SECRET_LABELS[current];
+  const ready = stepUpReady(view, password);
+  return <details className="mt-2 rounded-md border px-2 py-1.5" open={!hook.ready || hook.warning !== null} data-trigger-signing={current}>
+    <summary className="cursor-pointer text-body font-medium">Signing{hook.ready && current !== "none" ? "" : " · needs you"}</summary>
+    <div className="mt-2 flex flex-col gap-2">
+      {hook.warning !== null && <p className={cn("text-caption font-normal", current === "none" || !hook.ready ? "text-warning" : "text-muted-foreground")} data-trigger-signing-warning>{hook.warning}</p>}
+      {hook.readerNote !== null && <p className="text-caption text-muted-foreground font-normal" data-trigger-reader-note>{hook.readerNote}</p>}
+      <Field label="Signed by" hint="Who signs this webhook's deliveries. Changing it keeps the address and drops the secret: it then needs one again.">
+        <select className="h-9 rounded-md border bg-background px-2 text-body" value={sender} onChange={event => setSender(event.target.value)} data-trigger-sender>
+          {SENDER_CHOICES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </select>
+      </Field>
+      {!changing && hook.scope !== null && <Field label={current === "vercel" ? "Vercel project ID" : "Sentry project"} hint={current === "vercel" ? "Only this project's deployments add cards (prj_…, from the project's Settings). Blank takes any project the secret covers." : "Only this project's issues add cards (its slug or number). Blank takes any project the integration sees."}>
+        <Input value={project} onChange={event => setProject(event.target.value)} data-trigger-project />
+      </Field>}
+      {!changing && current === "vercel" && <Field label="Vercel team ID" hint="Only deliveries from this team (team_…). Blank takes any.">
+        <Input value={team} onChange={event => setTeam(event.target.value)} data-trigger-team />
+      </Field>}
+      {!changing && words !== undefined && <Field label={hook.ready ? `Replace ${words.label}` : words.label} hint={words.hint}>
+        <Input type="password" autoComplete="off" value={secret} onChange={event => setSecret(event.target.value)} data-trigger-secret />
+      </Field>}
+      <StepUp view={view} password={password} setPassword={setPassword} />
+      <div className="flex flex-wrap gap-1.5">
+        {changing && <Button type="button" size="sm" disabled={busy || !ready} onClick={() => void go("sender", { sender })}>Change who signs it</Button>}
+        {!changing && hook.makesSecret && <Button type="button" size="sm" variant="outline" disabled={busy || !ready} onClick={() => void go("setup", {})} data-trigger-setup>{hook.ready ? "Replace secret" : "Set up"}</Button>}
+        {!changing && words !== undefined && <Button type="button" size="sm" disabled={busy || !ready || secret.trim() === ""} onClick={() => void go("secret", { secret })}>{hook.ready ? "Replace secret" : "Save secret"}</Button>}
+        {!changing && hook.scope !== null && (project.trim() !== (hook.scope.project ?? "") || team.trim() !== (hook.scope.team ?? "")) && <Button type="button" size="sm" variant="outline" disabled={busy || !ready} onClick={() => void go("scope", { project, team })} data-trigger-save-scope>Save project</Button>}
+      </div>
+    </div>
+  </details>;
+}
 
 function LinearSecret({ trigger, view, csrf, apply }: { trigger: BrowserFlowTrigger; view: BrowserFlowView; csrf: string; apply: (result: Said) => void }) {
+  const words = SECRET_LABELS[trigger.hook?.sender ?? trigger.kind] ?? SECRET_LABELS["linear"]!;
   const [secret, setSecret] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
@@ -1110,8 +1208,8 @@ function LinearSecret({ trigger, view, csrf, apply }: { trigger: BrowserFlowTrig
     const result = await send(`${view.flow.href}/triggers/${trigger.id}/secret`, { secret, password }, csrf);
     setBusy(false); apply(result); if (result.ok) { setSecret(""); setPassword(""); }
   }}>
-    <Field label="Linear's signing secret" hint="Linear shows it when you create the webhook."><Input type="password" autoComplete="off" value={secret} onChange={event => setSecret(event.target.value)} /></Field>
-    <StepUp view={view} password={password} setPassword={setPassword} />
+    <Field label={words.label} hint={words.hint}><Input type="password" autoComplete="off" value={secret} onChange={event => setSecret(event.target.value)} /></Field>
+    <StepUp view={view} password={password} setPassword={setPassword} credential />
     <Button type="submit" size="sm" className="self-start" disabled={busy || secret.trim() === "" || !stepUpReady(view, password)}>Save secret</Button>
   </form>;
 }
@@ -1130,6 +1228,7 @@ function UnattendedStatus({ view, csrf, apply }: { view: BrowserFlowView; csrf: 
 
 /** Signing "Runs on its own": every term visible before the password, the limits chosen here said as they'll be signed. */
 function UnattendedPanel({ view, csrf, apply, onClose }: { view: BrowserFlowView; csrf: string; apply: (result: Said) => void; onClose?: () => void }) {
+  const passwordless = useContext(Passwordless);
   const [days, setDays] = useState(1);
   const [budget, setBudget] = useState("");
   const [runs, setRuns] = useState("");
@@ -1177,7 +1276,7 @@ function UnattendedPanel({ view, csrf, apply, onClose }: { view: BrowserFlowView
           <StepUp view={view} password={password} setPassword={setPassword} />
           {covered.length === 0 && <p className="text-body text-muted-foreground" data-flow-unattended-none>Pick a schedule above to sign.</p>}
           {problem !== null && <p className="text-body text-destructive" role="alert">{problem}</p>}
-          <Button type="submit" className="self-start" disabled={busy || covered.length === 0 || !stepUpReady(view, password)}>{busy ? "Signing…" : "Sign"}</Button>
+          <Button type="submit" className="self-start" disabled={busy || covered.length === 0 || !stepUpReady(view, password, passwordless)}>{busy ? "Signing…" : "Sign"}</Button>
         </form>}
   </div>;
 }
@@ -1186,12 +1285,13 @@ function TriggersPanel({ view, csrf, apply, focus, onPress, onClose }: { view: B
   const [reveal, setReveal] = useState<{ kind: string; reveal: Reveal } | null>(null);
   const [busy, setBusy] = useState(false);
   const base = `${view.flow.href}/triggers`;
-  const act = async (path: string, kind: string) => {
+  const act = async (path: string, kind: string, fields: Record<string, string> = {}) => {
     setBusy(true);
-    const result = await send(path, {}, csrf);
+    const result = await send(path, fields, csrf);
     setBusy(false);
     apply(result);
     if (result.reveal !== undefined) setReveal({ kind, reveal: result.reveal });
+    return result.ok;
   };
   const live = view.triggers.filter(one => one.state !== "removed");
   useEffect(() => { if (focus !== null) document.querySelector(`[data-trigger-row="${focus}"]`)?.scrollIntoView({ block: "nearest" }); }, [focus]);
@@ -1215,13 +1315,19 @@ function TriggersPanel({ view, csrf, apply, focus, onPress, onClose }: { view: B
         <summary className="cursor-pointer text-body font-medium">What each run files</summary>
         <ul className="mt-1 flex flex-col gap-1 text-caption text-muted-foreground font-normal">{trigger.order.slice(0, -1).map((line, index) => <li key={index} className="break-words">{line}</li>)}</ul>
       </details>}
-      {trigger.hook?.needsSecret === true && !trigger.hook.ready && <LinearSecret trigger={trigger} view={view} csrf={csrf} apply={apply} />}
+      {trigger.hook?.dropped != null && <div className="mt-2 flex flex-col gap-1.5 rounded-md border border-attention/50 p-2" data-trigger-dropped>
+        <p className="text-body font-medium">{trigger.hook.dropped.count === 1 ? "1 delivery was" : `${trigger.hook.dropped.count} deliveries were`} turned away since {ago(trigger.hook.dropped.since)}: too many were already waiting.</p>
+        <p className="text-caption text-muted-foreground font-normal">{trigger.hook.dropped.resend}</p>
+        <Button size="sm" variant="outline" className="self-start" disabled={busy} onClick={() => void act(`${base}/${trigger.id}/dropped`, trigger.kind)}>Clear</Button>
+      </div>}
+      {trigger.hook?.sender != null && <WebhookSigning trigger={trigger} view={view} csrf={csrf} apply={apply} onReveal={revealed => setReveal({ kind: trigger.hook?.sender ?? trigger.kind, reveal: revealed })} />}
+      {trigger.hook?.sender == null && trigger.hook?.needsSecret === true && !trigger.hook.ready && <LinearSecret trigger={trigger} view={view} csrf={csrf} apply={apply} />}
       <div className="mt-2 flex flex-wrap gap-1.5">
         {trigger.button !== null && trigger.state === "active" && <Button size="sm" onClick={() => onPress(trigger.id)}>Start</Button>}
-        {trigger.button !== null && <Button size="sm" variant="outline" disabled={busy} onClick={() => void act(`${base}/${trigger.id}/share`, "form")}>{trigger.shared ? "New form link" : "Share as a form"}</Button>}
+        {trigger.button !== null && <CredentialAction view={view} busy={busy} label={trigger.shared ? "New form link" : "Share as a form"} onConfirm={password => act(`${base}/${trigger.id}/share`, "form", { password })} />}
         {trigger.shared && <Button size="sm" variant="ghost" disabled={busy} onClick={() => void act(`${base}/${trigger.id}/unshare`, "form")}>Stop sharing</Button>}
         {trigger.checkable && trigger.state === "active" && <Button size="sm" variant="outline" disabled={busy} onClick={() => void act(`${base}/${trigger.id}/check`, trigger.kind)}>{trigger.kind === "schedule" ? "Run now" : "Check now"}</Button>}
-        {trigger.hook !== null && <Button size="sm" variant="outline" disabled={busy} onClick={() => void act(`${base}/${trigger.id}/renew`, trigger.kind)}>New address</Button>}
+        {trigger.hook !== null && <CredentialAction view={view} busy={busy} label="New address" onConfirm={password => act(`${base}/${trigger.id}/renew`, trigger.kind, { password })} />}
         <Button size="sm" variant="ghost" disabled={busy} onClick={() => void act(`${base}/${trigger.id}/${trigger.state === "paused" ? "resume" : "pause"}`, trigger.kind)}>{trigger.state === "paused" ? "Turn on" : "Pause"}</Button>
         <Button size="sm" variant="ghost" className="text-destructive" disabled={busy} onClick={() => void act(`${base}/${trigger.id}/remove`, trigger.kind)}>Remove</Button>
       </div>
@@ -1688,6 +1794,15 @@ function PhoneFlow({ view: initial, csrf }: { view: BrowserFlowView; csrf: strin
   const button = pressing === null ? null : view.triggers.find(one => one.id === pressing && one.button !== null && one.state === "active") ?? null;
   const live = view.triggers.filter(one => one.state !== "removed");
   const [busy, setBusy] = useState(false);
+  // v126: what a webhook's set-up or new address shows once, on the phone too.
+  const [reveal, setReveal] = useState<{ kind: string; reveal: Reveal } | null>(null);
+  const renew = async (trigger: BrowserFlowTrigger, password: string) => {
+    setBusy(true);
+    const result = await send(`${view.flow.href}/triggers/${trigger.id}/renew`, { password }, csrf);
+    setBusy(false); apply(result);
+    if (result.reveal !== undefined) setReveal({ kind: trigger.hook?.sender ?? trigger.kind, reveal: result.reveal });
+    return result.ok;
+  };
   const toggle = async (trigger: BrowserFlowTrigger) => {
     setBusy(true);
     apply(await send(`${view.flow.href}/triggers/${trigger.id}/${trigger.state === "paused" ? "resume" : "pause"}`, {}, csrf));
@@ -1718,8 +1833,21 @@ function PhoneFlow({ view: initial, csrf }: { view: BrowserFlowView; csrf: strin
     })}
     {live.length > 0 && <section className="rounded-lg border p-3" data-flow-triggers>
       <h2 className="text-title-sm">Triggers</h2>
+      {reveal !== null && <div className="mt-2"><RevealBox kind={reveal.kind} reveal={reveal.reveal} onDone={() => setReveal(null)} /></div>}
       <ul className="mt-2 flex flex-col gap-2">{live.map(one => <li key={one.id} className="text-body" data-trigger-row={one.id}><span className="font-medium">{one.name}</span> · {one.detail}
         <div className={cn("text-caption font-normal", one.failing ? "text-warning" : "text-muted-foreground")}>{one.state === "paused" ? "Paused" : one.status === null ? `Starts in ${one.zone}` : <>{ago(one.statusAt)}: {one.status}<StatusLink link={one.statusLink} /></>}</div>
+        {/* v126: what a webhook needs, said here too; its secrets are managed on the full panel. */}
+        {one.hook?.warning != null && <p className={cn("mt-1 text-caption font-normal", one.hook.sender === "none" || !one.hook.ready ? "text-warning" : "text-muted-foreground")} data-trigger-signing-warning>{one.hook.warning}</p>}
+        {one.hook?.readerNote != null && <p className="mt-1 text-caption text-muted-foreground font-normal" data-trigger-reader-note>{one.hook.readerNote}</p>}
+        {one.hook?.dropped != null && <div className="mt-1.5 flex flex-col gap-1 rounded-md border border-attention/50 p-2" data-trigger-dropped>
+          <p className="text-body font-medium">{one.hook.dropped.count === 1 ? "1 delivery was" : `${one.hook.dropped.count} deliveries were`} turned away since {ago(one.hook.dropped.since)}: too many were already waiting.</p>
+          <p className="text-caption text-muted-foreground font-normal">{one.hook.dropped.resend}</p>
+          {view.canEdit && <Button size="sm" variant="outline" className="min-h-11 self-start" disabled={busy} onClick={async () => { setBusy(true); apply(await send(`${view.flow.href}/triggers/${one.id}/dropped`, {}, csrf)); setBusy(false); }}>Clear</Button>}
+        </div>}
+        {/* v126: the whole set-up on the phone as well: who signs it, its secret, its project, and a new address. */}
+        {view.canEdit && one.hook?.sender != null && <WebhookSigning trigger={one} view={view} csrf={csrf} apply={apply} onReveal={revealed => setReveal({ kind: one.hook?.sender ?? one.kind, reveal: revealed })} />}
+        {view.canEdit && one.hook?.sender == null && one.hook?.needsSecret === true && !one.hook.ready && <LinearSecret trigger={one} view={view} csrf={csrf} apply={apply} />}
+        {view.canEdit && one.hook != null && <span data-trigger-renew><CredentialAction view={view} busy={busy} className="mt-1.5 min-h-11" label="New address" onConfirm={password => renew(one, password)} /></span>}
         {/* A schedule's standing order (what a routine was): its approval in view, its terms on demand, and on or off here. */}
         {one.order !== undefined && <>
           <p className="mt-1 text-caption break-words font-normal" data-trigger-approval>{one.order.at(-1)}</p>

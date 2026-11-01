@@ -152,6 +152,11 @@
     "title": "Webhook",
     "titleField": "data.title",
     "bodyField": null,
+    "sender": "none",
+    "project": null,
+    "team": null,
+    "idField": null,
+    "urlField": null,
     "zone": null
    }
   },

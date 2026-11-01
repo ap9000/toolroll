@@ -29,7 +29,7 @@ Approve the exact scope once. Get results back Ready with the diff, the passing 
 
 ## Quick start
 
-macOS or Linux, Node.js 22.13+, git, and a signed-in `claude`, `codex` or
+macOS or Linux, Node.js 22.13+, git 2.41+, and a signed-in `claude`, `codex` or
 `gemini` CLI.
 
 ```sh
@@ -38,7 +38,8 @@ toolroll demo              # optional: a seeded sandbox, no model calls, no spen
 toolroll up                # the app and a builder; opens http://127.0.0.1:4180
 ```
 
-`up` prints your login once and keeps running. Then, in a repository:
+`up` saves your password in `up-login.txt` and prints the command that shows
+it (never the password itself), then keeps running. Then, in a repository:
 
 ```sh
 toolroll onboard --yes     # add it as a project, install the agent skill
@@ -106,12 +107,13 @@ the CLI or MCP. Every act lands in one ledger.
 |---|---|
 | **Approvals** | Digest-bound scopes, password step-up, typed decisions with reversibility, expiring operating modes |
 | **Agents** | Claude Code, Codex, Gemini, OpenRouter; an exact model per phase; subscription or API key |
+| **Models** | One editor (Settings → Models): "Sized by job" by default (Haiku for small tasks, Sonnet for routine, Opus for large or risky, Opus plans and reviews), or "Opus for everything"; every change shown before → after and logged |
 | **Surfaces** | Web console (desktop and phone), CLI, Telegram, Slack, Discord, Teams, MCP |
 | **Flows** | Zones on a canvas; triggers from schedules, GitHub, Linear, webhooks, email and chat; scripts, drafts, AI triage |
 | **Team** | Team server, OpenID Connect sign-in, per-person API tokens, project grants, subagents |
 | **Audit** | Hash-chained action ledger (`toolroll ledger verify`), evidence packs, full export |
-| **Spend** | Measured cost per run, monthly budgets, plan windows, zero tokens while idle |
-| **Safety** | Agent fence (Seatbelt, bubblewrap, Codex sandbox), keychain-sealed secrets, per-run tool broker |
+| **Spend** | A Spend page in Settings: API dollars, plan usage and unknown cost kept apart, by project, model, role and person, with CSV export; monthly limits, plan windows, zero tokens while idle |
+| **Safety** | Agent fence on Anthropic's sandbox-runtime (Seatbelt, bubblewrap) and Codex's sandbox, per-scope network and write rules, keychain-sealed secrets, per-run tool broker |
 | **Operations** | Crash recovery, backups and restore, Prometheus metrics, OpenTelemetry traces |
 
 ## For agents
@@ -135,7 +137,7 @@ docs for language models.
 - [Chat and your phone](docs/guide/chat-and-phone.md)
 - [Flows](docs/guide/flows.md) · [Steps that reach outside](docs/guide/steps-outside.md) · [Subagents](docs/guide/subagents.md)
 - [Running unattended](docs/guide/unattended.md) · [Fleets and trackers](docs/guide/fleet.md)
-- [Security](docs/guide/security.md) · [Quality and agent routing](docs/guide/routing.md)
+- [Security](docs/guide/security.md) · [Models, spend and routing](docs/guide/routing.md)
 - [A team server](docs/team-server.md) · [Linux](docs/guide/linux.md)
 - [All docs](docs/guide/README.md)
 

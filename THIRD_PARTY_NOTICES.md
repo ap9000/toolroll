@@ -247,14 +247,14 @@ limitations under the License.
 
 ## shadcn/ui — MIT
 
-Button and Dialog composition in `src/browser/ui/primitives.tsx` adapts:
+Dialog composition in `src/browser/ui/primitives.tsx` adapts:
 https://github.com/shadcn-ui/ui/tree/a87a63b2ca25143d26c8bd0903e4e9bc77b3f824/apps/v4/registry/new-york-v4/ui
 
 Source inspected 20 September 2026, revision
-`a87a63b2ca25143d26c8bd0903e4e9bc77b3f824`, files `button.tsx` and
-`dialog.tsx`. Adaptations replace Tailwind/CVA with local class variants, use
-individual Radix packages, default buttons to type=button, and leave dialog
-close controls to the calling surface. Radix supplies focus and dismissal behavior.
+`a87a63b2ca25143d26c8bd0903e4e9bc77b3f824`, file `dialog.tsx`. Adaptations
+replace Tailwind/CVA with local class variants, use individual Radix packages,
+and leave dialog close controls to the calling surface. Radix supplies focus
+and dismissal behavior.
 
 The rebuilt views (23 September 2026) add `src/browser/components/ui/`:
 button, badge, card, tabs, radio-group, select, switch, label, input,
@@ -319,6 +319,46 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+
+## ReUI — MIT
+
+Components in `src/browser/components/ui/` adapt free, MIT-licensed ReUI
+primitives and examples (the Radix base) from:
+https://github.com/keenthemes/reui/tree/067aa0d/registry-reui/bases/radix/reui
+
+Source inspected 27 October 2026, revision `067aa0d`. Files copied by hand (the
+shadcn CLI and ReUI's registry CSS variables are not used) and cut to Toolroll's
+tokens:
+
+- `badge.tsx` — the light badge and its status-dot example (`c-badge-22`): one
+  20px chip size and a decorative dot on the existing tones, plus a "Needs you"
+  tone. The style variants, solid fills and focus/invert tones are omitted.
+- `frame.tsx` — the well of panels: one geometry (a raised well, hairline,
+  concentric panel corners) with the style variants, spacing scale, stacking
+  modes and panel shadows omitted; `FramePanel` can render as its child.
+- `alert.tsx` — cut to a neutral and a destructive tone with an icon column;
+  the info, warning, success and invert tones, the title/action slots and the
+  style variants are omitted.
+- `timeline.tsx` — cut to a read-only vertical list (item, indicator on a
+  hairline rail, content, date); the active-step context, horizontal mode and
+  styled indicators are omitted.
+- `stepper.tsx` — its read-only horizontal layout (indicator, separator,
+  title, `aria-current="step"`) is followed by the task page's road
+  (`src/browser/first-run.tsx` `Journey`); no stepper source is copied, and
+  the controlled state, keyboard navigation and triggers are omitted.
+
+No ReUI Pro blocks, icons or templates are included.
+
+MIT License
+
+Copyright (c) 2025 Keenthemes Inc
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 ## Integration logos: Simple Icons (CC0 1.0) and svgl (MIT)
@@ -488,3 +528,23 @@ INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
+
+## Anthropic sandbox-runtime — Apache-2.0
+
+Copyright Anthropic PBC. https://github.com/anthropics/sandbox-runtime
+
+`@anthropic-ai/sandbox-runtime` 0.0.79 is a dependency, installed whole from npm with its own `LICENSE` (and its
+prebuilt Linux seccomp helpers, `vendor/seccomp/<arch>/apply-seccomp`). Toolroll calls it for every sandbox it runs
+(`src/sandbox-runtime.ts`, `src/sandbox-launch.ts`) and copies or modifies none of its code.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.

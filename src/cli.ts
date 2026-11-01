@@ -32,10 +32,10 @@ import {
 import { GUIDES, guideNamed } from "./guides.js";
 import { parseGithubRepo, previewGithubRepo, cloneGithubRepo, isLargeRepo } from "./onboard.js";
 import { run as execRun } from "./exec.js";
+import { isBareInvocation, runQuickStart, type QuickStartSeams } from "./quick-start.js";
 import { COMMAND_GUIDE, SURFACE_NOTES, SURFACE_SCHEMA_VERSION } from "./surface.js";
-import { runSessionCommand, SESSION_CLI_ACTIONS, type SessionCliOptions } from "./session-cli.js";
-import { maybeRunTeamCommand, TEAM_CLI_ACTIONS, type TeamCliOptions } from "./team-cli.js";
-import { deprecationWarning } from "./deprecations.js";
+import { hasCentralProfile, maybeRunConnectCommand, type ConnectOptions } from "./connect-cli.js";
+import { removedCommand, removedMessage } from "./deprecations.js";
 import { maybeRunRemoteCommand, type RemoteExecOptions } from "./remote-exec.js";
 import { discover, inspectAll, type RepoSnapshot } from "./discover.js";
 import { readPulls } from "./pulls.js";
@@ -154,19 +154,9 @@ export function parseArgs(argv: readonly string[]): ParseResult {
 }
 
 /** The commands that operate the queue rather than report on the world. */
-/** Every verb the CLI routes OUTSIDE runOperate. Exported (with
- * OPERATE_COMMANDS) so the declared command guide's drift tests compare
- * exact sets instead of regex-reading source. "" is the no-verb report,
- * which answers as `scan`. */
-export const TOP_LEVEL_COMMANDS: readonly string[] = [
-  "", "pulls", "graph", "repos", "repos add", "repos remove", "repos add-from-github",
-  "link", "unlink", "update", "release", "contract", "skills list", "skills get", "skills install", "demo",
-  ...SESSION_CLI_ACTIONS.map(action => `session ${action}`),
-  ...TEAM_CLI_ACTIONS,
-];
-
 export const OPERATE_COMMANDS = new Set([
   "up",
+  "evals",
   // Only `lead token` reaches here; the central service's lead verbs answer first.
   "lead",
   "onboard",
@@ -221,7 +211,7 @@ export const OPERATE_COMMANDS = new Set([
   "reconcile",
   "run",
   "flows",
-  "config", "chat", "proposals", "mode", "chat-approval", "people", "tokens", "keys",
+  "config", "chat", "proposals", "mode", "chat-approval", "people", "tokens", "keys", "agents",
   "setup",
   "verify",
   "intake",
@@ -235,9 +225,8 @@ export const OPERATE_COMMANDS = new Set([
 export type MainOptions = {
   binSource?: string;
   operate?: OperateOptions;
-  session?: SessionCliOptions;
-  team?: TeamCliOptions;
-  /** Injected by tests: the remote CLI's profile, fetch and output streams (defaults to `team`'s profile seams). */
+  connect?: ConnectOptions;
+  /** Injected by tests: the remote CLI's profile, fetch and output streams (defaults to `connect`'s profile seams). */
   remote?: RemoteExecOptions;
   /** Injected by tests: the gh-facing halves of `repos add-from-github` —
    * the verb's parsing, gating, and enrollment are what CLI tests prove;
@@ -245,6 +234,8 @@ export type MainOptions = {
   onboard?: { preview?: typeof previewGithubRepo; clone?: typeof cloneGithubRepo };
   update?: UpdateCliDeps;
   release?: ReleaseCliDeps;
+  /** Tests: bare `toolroll` in a repository (quick-start.ts) — its repository, agent check, proofs and actions. */
+  quickStart?: Partial<QuickStartSeams>;
 };
 
 /**
@@ -388,16 +379,24 @@ async function dispatch(
   // v115: routines became scheduled flows. Every old `routine …` invocation answers with one line pointing there —
   // hidden from help and the contract, before anything remote or local opens, changing nothing.
   if (argv[0] === "routine") return routinesMoved(argv, write);
+  // D5: the central team CLI and native sessions are gone; each old invocation says so and changes nothing.
+  const connectOptions = mainOptions.connect ?? mainOptions.remote;
+  const removed = removedCommand(argv, () => hasCentralProfile(connectOptions ?? {}));
+  if (removed !== null) {
+    const message = removedMessage(removed.named, removed.kind);
+    write(argv.includes("--json") ? envelopeJson({ ok: false, command: removed.named, reason: "removed", message }) : message);
+    return 2;
+  }
   // A saved API token sends commands marked remote to the central server, before anything local opens.
   // Command families below load when their command runs, so one command never pays for the others.
-  if (argv[0] === 'health') return (await import("./health-cli.js")).runHealthCommand(argv.slice(1), write, mainOptions.team ?? mainOptions.remote);
+  if (argv[0] === 'health') return (await import("./health-cli.js")).runHealthCommand(argv.slice(1), write, mainOptions.connect ?? mainOptions.remote);
   // This computer's own service, read here and never on a central server.
   if (argv[0] === 'doctor') return (await import("./doctor.js")).runDoctorCommand(argv.slice(1), write);
-  const central = await maybeRunRemoteCommand(argv, mainOptions.remote ?? mainOptions.team);
+  const central = await maybeRunRemoteCommand(argv, mainOptions.remote ?? mainOptions.connect);
   if (typeof central === "number") return central;
   if (central !== null) argv = central.local;
-  const team = await maybeRunTeamCommand(argv, write, mainOptions.team);
-  if (team !== null) return team;
+  const connected = await maybeRunConnectCommand(argv, write, mainOptions.connect);
+  if (connected !== null) return connected;
   if ((argv[0] === "chat" || argv[0] === "brief") && argv.includes("--local")) argv = argv.filter(arg => arg !== "--local");
   const [first, ...rest] = argv;
   if (first === "help") {
@@ -415,12 +414,6 @@ async function dispatch(
     return runReleaseCommand(rest, write, { releaseLease: lease => runOperate("worker", ["release", ...lease], write, mainOptions.operate ?? {}), ...mainOptions.release });
   }
   if (first === "contract") return runContractCommand(rest, write);
-  if (first === "session") {
-    // D5: native coding sessions are deprecated. They still run this release; each use says so once, on stderr.
-    (mainOptions.session?.stderr ?? (line => process.stderr.write(`${line}\n`)))(deprecationWarning(`session ${rest.find(arg => !arg.startsWith("-")) ?? ""}`.trim(), "session"));
-    // D7: it runs on the saved connection over /api/cli, signed in with that profile's API token.
-    return runSessionCommand(rest, write, { ...(mainOptions.remote ?? mainOptions.team), ...mainOptions.session });
-  }
   if (first === "demo") return runDemoCommand(rest, write);
   if (first === "skills") return runSkillsCommand(rest, write);
   if (first === "repos") return runReposCommand(rest, write, mainOptions.onboard);
@@ -428,6 +421,22 @@ async function dispatch(
   if (first === "graph") return runGraphCommand(rest, write);
   if (first !== undefined && OPERATE_COMMANDS.has(first)) {
     return runOperate(first, rest, write, mainOptions.operate ?? {});
+  }
+  // Cockpit B1: the scan by name, and bare `toolroll` in a repository starting (or attaching to) its console.
+  if (first === "scan") argv = rest;
+  else if (isBareInvocation(argv)) {
+    const databaseFile = mainOptions.operate?.databaseFile ?? databasePath(process.env, homedir());
+    const started = await runQuickStart(argv, write, {
+      databaseFile, cwd: process.cwd(), env: process.env, terminal: process.stdout.isTTY === true,
+      build: (await import("./monitoring.js")).packageVersion(),
+      findRepo: async cwd => { const top = await execRun("git", ["rev-parse", "--show-toplevel"], { cwd, timeoutMs: 10_000 }); return top.code === 0 ? top.stdout.trim() : null; },
+      enrolled: async repo => { const loaded = await loadRepos(registryBeside(databaseFile)); return !("error" in loaded) && loaded.repos.includes(repo); },
+      admit: repo => runReposCommand(["add", repo], write, mainOptions.onboard),
+      startUp: () => runOperate("up", [], write, mainOptions.operate ?? {}),
+      openBrowser: async url => { (await import("./operate.js")).openBrowser(url); },
+      ...mainOptions.quickStart,
+    });
+    if (started !== null) return started;
   }
 
   const parsed = parseArgs(argv);
@@ -604,11 +613,13 @@ function renderMissingJson(roots: readonly string[], missingRoots: readonly stri
 async function runReposCommand(argv: readonly string[], write: Write, onboard?: MainOptions["onboard"]): Promise<number> {
   // `repos` honors the machine contract like everything else (audit TG-3):
   // --json answers with one envelope, whatever the outcome.
+  // The lead adds with its token (--token <t>, --token=<t> or TOOLROLL_LEAD_TOKEN); the owner needs none. A token is
+  // random base64url and may start with "--": it is the next argument, whatever it looks like.
+  const tokenAt = argv.findIndex(argument => argument === "--token" || argument.startsWith("--token="));
+  const tokenInline = tokenAt !== -1 && argv[tokenAt] !== "--token";
+  const tokenFlag = tokenAt === -1 ? undefined : tokenInline ? argv[tokenAt]!.slice("--token=".length) : argv[tokenAt + 1];
   const json = argv.includes("--json");
-  // The lead adds with its token (--token or TOOLROLL_LEAD_TOKEN); the owner needs none.
-  const tokenAt = argv.indexOf("--token");
-  const tokenFlag = tokenAt === -1 ? undefined : argv[tokenAt + 1];
-  const bare = argv.filter((argument, index) => argument !== "--json" && (tokenAt === -1 || (index !== tokenAt && index !== tokenAt + 1)));
+  const bare = argv.filter((argument, index) => argument !== "--json" && (tokenAt === -1 || (index !== tokenAt && (tokenInline || index !== tokenAt + 1))));
   const remoteAt = bare.indexOf("--remote");
   const remoteUrl = remoteAt === -1 ? undefined : bare[remoteAt + 1];
   const [action, ...paths] = bare.filter((_, i) => remoteAt === -1 || (i !== remoteAt && i !== remoteAt + 1));
@@ -619,7 +630,8 @@ async function runReposCommand(argv: readonly string[], write: Write, onboard?: 
   }
   const databaseFile = databasePath(process.env, homedir());
   const file = registryBeside(databaseFile);
-  if (tokenAt !== -1 && (tokenFlag === undefined || tokenFlag.startsWith("-"))) {
+  // A dash-led token is the token, unless it is exactly one of this command's flags (never swallowed).
+  if (tokenAt !== -1 && (tokenFlag === undefined || tokenFlag === "" || (!tokenInline && ["--json", "--remote", "--token"].includes(tokenFlag)))) {
     const message = "--token needs the lead token";
     write(json ? envelopeJson({ ok: false, command: `repos ${action ?? ""}`.trim(), reason: "usage", message }) : message);
     return USAGE_EXIT;
@@ -1434,7 +1446,7 @@ async function runDemoCommand(argv: readonly string[], write: Write): Promise<nu
   const now = new Date();
   const { sandbox, store, seed, evidenceRoot, passwordFile, lead } = createDemoSandbox(now);
   const server = createDecisionServer({
-    store, evidenceRoot, clock: () => new Date(), repos: seed.repos, demoLead: lead,
+    store, evidenceRoot, clock: () => new Date(), repos: seed.repos, demoLead: lead, backgroundChecks: true,
     ...(allowedHosts.length === 0 ? {} : { allowedHosts }),
   });
   await new Promise<void>((ready, failed) => {

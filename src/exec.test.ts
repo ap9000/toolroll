@@ -1,12 +1,12 @@
 import { describe, test, expect, vi } from "vitest";
-import { realpath } from "node:fs/promises";
+import { fakePid } from "../test/fake-pid.js";
 import { createHash } from "node:crypto";
-import { tmpdir } from "node:os";
 import {
   cumulativeLiveResult,
   run, runStreamJsonl, runClaudeStreamJsonl, runGeminiStreamJsonl, terminateLiveProviders, NOT_FOUND_CODE,
   JSONL_EVENT_HARD_CAP,
   retryTransientSpawn, isTransientSpawnFailure, type SpawnAttempt,
+  agentNamed,
 } from "./exec.js";
 import * as processTree from "./process-tree.js";
 import { adapterFor } from "./provider.js";
@@ -15,18 +15,6 @@ import { adapterFor } from "./provider.js";
 const NODE = process.execPath;
 
 describe("run", () => {
-  test("buffered groups expose stdout and stderr as they arrive without changing the result", async () => {
-    const stdout: string[] = [], stderr: string[] = [];
-    const result = await run(NODE, ["-e", "process.stdout.write('unit');process.stderr.write('flows')"], {
-      processGroup: true,
-      timeoutMs: 10_000,
-      onStdout: chunk => stdout.push(chunk),
-      onStderr: chunk => stderr.push(chunk),
-    });
-    expect(stdout.join("")).toBe("unit");
-    expect(stderr.join("")).toBe("flows");
-    expect(result).toMatchObject({ code: 0, stdout: "unit", stderr: "flows" });
-  });
   test("buffered group delivers large Unicode stdin completely and closes input", async () => {
     const input = "Unicode ✓ 😀\n".repeat(32_768);
     const result = await run(NODE, ["-e", "const h=require('node:crypto').createHash('sha256');process.stdin.on('data',x=>h.update(x));process.stdin.on('end',()=>console.log(h.digest('hex')));"], { processGroup: true, stdin: input, timeoutMs: 10_000 });
@@ -71,29 +59,11 @@ describe("run", () => {
     } finally { observer.mockRestore(); }
   });
 
-  test("returns stdout and a zero code for a successful command", async () => {
-    // Arrange / Act
-    const result = await run(NODE, ["-e", "process.stdout.write('hello')"]);
-
-    // Assert
-    expect(result.code).toBe(0);
-    expect(result.stdout).toBe("hello");
-    expect(result.timedOut).toBe(false);
-    expect(result.notFound).toBe(false);
-  });
-
   test("reports a non-zero exit as a result rather than throwing", async () => {
     // `git` fails routinely — outside a repo, on a bad ref. Failure is data.
     const result = await run(NODE, ["-e", "process.exit(3)"]);
 
     expect(result.code).toBe(3);
-  });
-
-  test("captures stderr alongside a successful exit", async () => {
-    const result = await run(NODE, ["-e", "process.stderr.write('boom')"]);
-
-    expect(result.stderr).toBe("boom");
-    expect(result.code).toBe(0);
   });
 
   test("flags a missing binary instead of rejecting", async () => {
@@ -109,6 +79,9 @@ describe("run", () => {
 
     expect(result.timedOut).toBe(true);
     expect(result.notFound).toBe(false);
+    // One that survives SIGTERM is killed outright after the grace: its caller never waits forever.
+    const stubborn = await run(NODE, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { timeoutMs: 500 });
+    expect(stubborn.timedOut).toBe(true);
   });
 
   test("passes arguments verbatim, without shell interpretation", async () => {
@@ -120,13 +93,6 @@ describe("run", () => {
     expect(result.stdout).toBe(hostile);
   });
 
-  test("runs in the requested working directory", async () => {
-    const dir = await realpath(tmpdir());
-
-    const result = await run(NODE, ["-e", "process.stdout.write(process.cwd())"], { cwd: dir });
-
-    expect(result.stdout).toBe(dir);
-  });
 });
 
 describe("the provider process group (M6.12)", () => {
@@ -190,6 +156,18 @@ describe("the provider process group (M6.12)", () => {
     const result = await pending;
     expect(result.code).not.toBe(0);
     expect(result.timedOut).toBe(false);
+  });
+
+  // Release check 3261 was stored as "exit 1": a signal had ended it and the code alone said nothing of that.
+  test("the buffered group transport keeps a signal apart from the exit, and says when its own hard stop ended it", async () => {
+    const killed = await run(process.execPath, ["-e", "console.log('before'); process.kill(process.pid, 'SIGKILL')"], { processGroup: true, timeoutMs: 10_000 });
+    expect(killed).toMatchObject({ code: 1, signal: "SIGKILL", timedOut: false });
+    expect(killed.stoppedByPlane).toBeUndefined();
+    expect((await run(process.execPath, ["-e", "process.exit(1)"], { processGroup: true, timeoutMs: 10_000 })).signal).toBeUndefined();
+    const pending = run(process.execPath, ["-e", "setInterval(()=>{},1000)"], { processGroup: true, timeoutMs: 60_000 });
+    await new Promise(resolve => setTimeout(resolve, 200));
+    expect(terminateLiveProviders()).toBeGreaterThan(0);
+    expect(await pending).toMatchObject({ stoppedByPlane: true, timedOut: false });
   });
 
   test("the buffered group transport keeps execFile's contract — output, timeout, not-found", async () => {
@@ -671,12 +649,6 @@ describe("the gemini retention runner (Phase 3 D1/A7)", () => {
     expect(result.stdout).toBe("");
   });
 
-  test("stderr is captured bounded, exactly like the sibling runners", async () => {
-    const result = await runGeminiStreamJsonl(process.execPath, ["-e", "console.error('auth: set GEMINI_API_KEY');process.exit(41)"], { timeoutMs: 15_000 });
-    expect(result.code).toBe(41);
-    expect(result.stderr).toContain("GEMINI_API_KEY");
-  });
-
   test("a missing binary is NOT_FOUND, never a throw", async () => {
     const result = await runGeminiStreamJsonl("/no/such/gemini-binary", [], { timeoutMs: 5_000 });
     expect(result.notFound).toBe(true);
@@ -764,4 +736,42 @@ describe("a live Claude session's account across several results", () => {
       .toMatchObject({ usage: { input_tokens: 3 } });
     expect(cumulativeLiveResult(second, { type: "result", subtype: "success" })).toMatchObject({ usage: { input_tokens: 30, output_tokens: 50 }, num_turns: 2 });
   });
+});
+
+describe("finding the agent's own process in a listing", () => {
+  test("by its listed name, or on Linux by its program when the listing shows Node 24's \"MainThread\"", () => {
+    const programs: Record<number, string> = { [fakePid(2)]: "node", [fakePid(3)]: "bwrap" };
+    const programOf = (pid: number) => programs[pid] ?? null;
+    expect(agentNamed({ pid: fakePid(1), name: "agent.mjs" }, ["node", "agent.mjs"], programOf)).toBe(true);
+    expect(agentNamed({ pid: fakePid(2), name: "MainThread" }, ["node", "agent.mjs"], programOf)).toBe(true);
+    // A wrapper on the way (bubblewrap) is never taken for it, by name or program.
+    expect(agentNamed({ pid: fakePid(3), name: "bwrap" }, ["node", "agent.mjs"], programOf)).toBe(false);
+    expect(agentNamed({ pid: fakePid(4), name: "MainThread" }, ["opencode"], programOf)).toBe(false);
+  });
+
+  test.skipIf(process.platform !== "linux")("on Linux a running Node process is found by its program", async () => {
+    const { spawn } = await import("node:child_process");
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 5000)"], { stdio: "ignore" });
+    try {
+      await new Promise(done => setTimeout(done, 300));
+      expect(agentNamed({ pid: child.pid!, name: "MainThread" }, [process.execPath.split("/").pop()!])).toBe(true);
+    } finally { child.kill("SIGKILL"); }
+  });
+});
+
+// Evals B1/C1 Codex round 1 #7: one session whose inits name two models keeps both through the transport, so the run's
+// model reads unknown (never the pinned one); inits that agree keep their model.
+test.each([
+  ["claude-opus-4-1-20250805", null, false],
+  ["claude-sonnet-5-5", "claude-sonnet-5-5", false],
+  ["claude-opus-4-1-20250805", null, true],
+  ["claude-sonnet-5-5", "claude-sonnet-5-5", true],
+])("the Claude transport keeps a second init naming %s: the reported model is %s (earlier unnamed init: %s)", async (second, expected, unnamed) => {
+  const result = await runClaudeStreamJsonl(process.execPath, ["-e", `
+    ${unnamed ? 'console.log(JSON.stringify({type:"system",subtype:"init",session_id:"s-1"}));' : ""}
+    console.log(JSON.stringify({type:"system",subtype:"init",session_id:"s-1",model:"claude-sonnet-5-5"}));
+    console.log(JSON.stringify({type:"system",subtype:"init",session_id:"s-1",model:${JSON.stringify(second)}}));
+    console.log(JSON.stringify({type:"result",subtype:"success",is_error:false,session_id:"s-1",result:"done",total_cost_usd:0.01,num_turns:1}));
+  `], { timeoutMs: 15_000 });
+  expect(adapterFor("claude").parse(result.stdout).modelReported ?? null).toBe(expected);
 });

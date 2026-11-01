@@ -21,7 +21,7 @@ with a person in charge of every decision that matters.
 ## Control
 
 - [Security](security.md): approvals, the agent fence, permissions, secrets, sign-in, tokens, the ledger
-- [Quality and agent routing](routing.md): quality modes and which model plans, builds and repairs
+- [Models, spend and routing](routing.md): the Models editor, the Spend page, quality modes and which model plans, builds and repairs
 - [Models](../MODELS.md): model lists and default agents
 
 ## Run it for a team

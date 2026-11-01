@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { assertContract, type SampleVerdict } from "./contract-test.js";
 import {
@@ -6,7 +5,6 @@ import {
   stagedStartedAt, supervisorPidsOf, updateRequestIs, updaterStartingOf, type JournalRead,
 } from "./update-journal.js";
 import { codingItemSchema, codingRequestSchema, readCodingCustodyWitness, readCodingItem, readCodingRequest, readCodingRpcId } from "./coding-activity.js";
-import { parseDarwinNativeSnapshot } from "../process-recovery-native.js";
 
 const verdict = (read: JournalRead<unknown>): SampleVerdict => read.ok ? { ok: true } : { ok: false, lines: read.issues.map(issue => issue.line) };
 const id = "8b0c6a1e-3f7d-4a52-9c1e-2d4f6b8a0c1e";
@@ -146,32 +144,5 @@ describe("the coding activity contracts", () => {
     expect(readCodingCustodyWitness(JSON.stringify(witness))).toEqual(witness);
     expect(readCodingCustodyWitness(JSON.stringify({ ...witness, descendants: null }))).toBeNull();
     expect(readCodingCustodyWitness("null")).toBeNull();
-  });
-});
-
-describe("the native census contract", () => {
-  const row = { pid: 1, ppid: 0, uid: 0, birthMs: 1, uniqueId: "1", parentUniqueId: "0", traced: false, executable: "/sbin/launchd", originalParentVersion: 0 };
-  const census = (extra: object = {}) => JSON.stringify({ schema: 1, bootId: "0774c645-ad9a-4d83-9efb-eca6506656c5", collectorPid: 2, complete: false, processes: [{ ...row, extra: "dropped" }, { ...row, pid: 2, uniqueId: "18446744073709551615", pidVersion: 4 }], errors: [], ...extra });
-  it("keeps its reason codes and rebuilds each identity in its sealed key order", () => {
-    const parsed = parseDarwinNativeSnapshot(census({ unknown: true }));
-    expect(JSON.stringify(parsed.processes[0])).toBe(JSON.stringify(row));
-    expect(Object.keys(parsed.processes[1]!)).toEqual([...Object.keys(row), "pidVersion"]);
-    expect(() => parseDarwinNativeSnapshot(census({ schema: 2 }))).toThrow("malformed-native-census");
-    expect(() => parseDarwinNativeSnapshot(census({ errors: ["new-error"] }))).toThrow("malformed-native-census");
-    expect(() => parseDarwinNativeSnapshot(census({ processes: [row, { ...row, pid: 2, uniqueId: "18446744073709551616" }] }))).toThrow("malformed-process-identity");
-    expect(() => parseDarwinNativeSnapshot(census({ processes: [row, row] }))).toThrow("malformed-process-identity");
-    expect(() => parseDarwinNativeSnapshot(census({ processes: [row, { ...row, pid: 2, traced: undefined }] }))).toThrow("malformed-process-identity");
-  });
-});
-
-describe("the zod revamp plan", () => {
-  it("marks item 19 done in the wave 4 table, with one Done entry", () => {
-    const plan = readFileSync(new URL("../../docs/plans/zod-revamp.md", import.meta.url), "utf8");
-    expect(plan).toMatch(/^\| 19 ✅ \| \*\*Journals and recovery state\*\*/m);
-    expect(plan.match(/^- \*\*19\. Journals and recovery state\*\*/gm)).toHaveLength(1);
-    const done = plan.split("- **19. Journals and recovery state**")[1]!.split(/^- \*\*/m)[0]!;
-    expect(done).toContain("Compatibility revision (comment 855)");
-    expect(done).toContain("null, missing and wrong-typed informational fields");
-    expect(done).not.toContain("wrong-typed or null field the old reader never looked at");
   });
 });

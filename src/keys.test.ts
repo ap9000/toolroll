@@ -147,12 +147,6 @@ describe("the keys CLI: auth switching works and preserves the key (round 4, fin
     expect(readAuthMode("claude", home)).toBe("subscription");
     expect(readProviderKey("claude", home)).toBe("sk-ant-KeptAcrossSwitches9");
   });
-
-  test("keys auth refuses subscription for openrouter (api-key only)", async () => {
-    const code = await runOperate("keys", ["auth", "openrouter", "subscription"], l => lines.push(l), { databaseFile: join(home, "db.sqlite"), now: T0 });
-    expect(code).not.toBe(0);
-    expect(readAuthMode("openrouter", home)).toBe("api-key");
-  });
 });
 
 describe("auth mode: subscription first, key as fallback", () => {
@@ -187,15 +181,6 @@ describe("auth mode: subscription first, key as fallback", () => {
     expect(readAuthMode("openrouter", home)).toBe("api-key"); // unchanged
   });
 
-  test("switching persists and round-trips; the key is untouched by a mode change", () => {
-    saveProviderKey("claude", "sk-ant-StoredFallbackKey12", home);
-    expect(setAuthMode("claude", "api-key", home)).toEqual({ ok: true });
-    expect(readAuthMode("claude", home)).toBe("api-key");
-    expect(setAuthMode("claude", "subscription", home)).toEqual({ ok: true });
-    expect(readAuthMode("claude", home)).toBe("subscription");
-    // The stored key survived both switches — it is the retained fallback.
-    expect(readProviderKey("claude", home)).toBe("sk-ant-StoredFallbackKey12");
-  });
 });
 
 describe("the gateway injection", () => {

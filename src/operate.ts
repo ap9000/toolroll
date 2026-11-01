@@ -1,3 +1,8 @@
+import { mintSecret } from "./secret-mint.js";
+import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
+import { inspectAcpAgent } from "./acp-inspect.js";
+import { runAcpChecks } from "./acp-check.js";
+import { verifyLaunch } from "./acp-attest.js";
 import { notificationClaimHeld, claimNotifications, finalizeNotification, notificationDestination } from "./notification-delivery.js";
 import { adapterPolicy } from "./server/route-policy.js";
 import { UNSENT_REPLY_MS } from "./telegram-settings.js";
@@ -5,7 +10,7 @@ import { checkPublicCommand } from "./public-check.js";
 import { leadNameOf } from "./lead-identity.js";
 import { maybeTriggerRepair } from "./dispose.js";
 import { CHECK_LEVEL_HINTS, CHECK_LEVEL_WORDS, isCheckLevel, liveQuickCommand, projectCheckLevel, quickVerifyKey, setProjectCheckLevel, setTaskCheckLevel, suggestQuickCommand } from "./check-levels.js";
-import { fileAddTestsTask, followUpChecksOf, requestFollowUpChecks, runFollowUpCheck, runWaitingChecks } from "./result-follow-ups.js";
+import { fileAddTestsTask, requestFollowUpChecks, runFollowUpCheck, runWaitingChecks } from "./result-follow-ups.js";
 import { runBatchChecks } from "./batch-checks.js";
 import { BATCH_HINT, BATCH_WINDOW_MS, projectBatchChecks, setProjectBatchChecks } from "./batch-policy.js";
 import { buildReviewPass } from "./build-review.js";
@@ -39,6 +44,7 @@ import { createConnectionChecker } from "./provider-connection.js";
 import { checkIntegrations, integrationsBrokenLine, integrationsNow, renderIntegrations, type Integration, type IntegrationIo } from "./integrations.js";
 import { buildHandoff, handoffLines, loginAccount, runOnboard, type HandoffLogin, type OnboardIo } from "./agent-onboard.js";
 import { backupFiles, backupFolderOf, backupOwner, backupNow, restoreDatabase, startBackups } from "./backup.js";
+import { startLiveBackups } from "./live-backup.js";
 import { pushLimitSink } from "./provider-limits.js";
 import { heuristicSizing, installFilingSizer, ownerSizer, refineFiledSizing, settleSizings, type Sizer } from "./task-sizing.js";
 import { tierLines, tierReport } from "./tier-report.js";
@@ -49,10 +55,17 @@ import { origin, readMonitoring } from "./monitoring-settings.js";
 import { logEvent } from "./log.js";
 import type { FlowAdvance } from "./flow-engine.js";
 import { FLOW_EVERY_MS, flowHousekeeping, moveCards, moveCardsAfter, type FlowIo } from "./flow-cadence.js";
+import { NO_YOUIYOUX_PASS, youiyouxOnboardLine } from "./youiyoux-intake.js";
 import { readHooksBase, scheduleFromWords, type TriggerIo } from "./flow-triggers.js";
 import { sendSubagentSummaries } from "./subagent-admin.js";
 import { runRequestedUndos, sendSubagentWeeklies } from "./subagent-week.js";
 import { refreshConnections } from "./mcp-connect.js";
+import { releaseCheckPurposeFor, releaseTermsFor } from "./release-carry.js";
+import { refreshTrustedMains, settleReleaseChecks } from "./nightly-check.js";
+import { githubNightlyRepos, readGithubNightlies, type GhRead } from "./nightly-github.js";
+import { exec as releaseExec, githubReads } from "./release-adapters.js";
+import { releaseTools } from "./release-git.js";
+import type { ReleaseCheckPurpose, ReleaseTerms } from "./contracts/release-terms.js";
 import { SECRETS_FIRST, startToolSecrets, toolSecretStorage } from "./project-tools.js";
 import type { StepIo } from "./flow-steps.js";
 import {followDiscord} from "./discord.js";
@@ -95,46 +108,41 @@ import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
  */
 
 import { homedir, hostname } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import {
-  openStore,
-  openStoreNoMigrate,
-  CONCURRENT_WRITER_WAIT_MS,
-  isDatabaseBusy,
-  databasePath,
-  BUILT_IN,
-  DEFAULT_ACTOR,
-  parseCapabilityKey,
-  verifiedAuthor,
-  isDigestTime,
-  RESULT_SCREENSHOTS,
-  type ResultScreenshots,
-  type Capability,
-  type ReviewRetryState,
-  type Store,
-  type TaskState,
+  openStore, openStoreNoMigrate, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
+import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { ghDispatchAdapter, mirrorTaskId, syncPass, type DispatchAdapter } from "./sync.js";
 import { LIVE_FILE_BOUND, LIVE_RETAIN_MS, sweepLiveLogs } from "./live.js";
-import { configPath, addRepos, removeRepos, updateRepos, loadRepos, loadProjectRegistry, updateProjectRegistry } from "./repos.js";
+import { addRepos, removeRepos, updateRepos, loadRepos, loadProjectRegistry, updateProjectRegistry, registryRemovals } from "./repos.js";
 import { deleteProject, holdingsWords, projectHoldings, projectRunning } from "./project-delete.js";
 import { pushPass } from "./push.js";
 import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, writeFileSync } from "node:fs";
 import { BRANCH_PREFIX, envTwins, envValue, existingOrFirst, taskBranches } from "./names.js";
 import { claimActor, currentActor, withActor, type Actor } from "./actor.js";
 import { parseLeadToken } from "./api-tokens.js";
+import { MAX_NETWORK_HOSTS, normalizeHost, type ProjectNetwork } from "./egress.js";
+import { isWritesMode, writesWords, type WritesMode } from "./writes-mode.js";
+import { linuxFenceAvailable, macosFenceAvailable } from "./agent-fence.js";
+import { parseMachLookup, parseReadDeny, readDenyWords, type ProjectSandbox } from "./project-sandbox.js";
+import { CHECK_ACCESS_WARNINGS, checkAccessRunsAs, checkAccessWords, isCheckAccess, signInHostsMissing, signInsUnavailableWords, widerThan, type CheckAccess } from "./check-access.js";
 import { CLI_PASSWORD_SOURCE, withPasswordSource } from "./sign-in-guard.js";
 import { admissionRecorded, admitProject, commandLineActor } from "./project-admission.js";
 import { leadClaim, leadSay, noteLeadWork } from "./lead-voice.js";
 import { createServer as createNetServer } from "node:net";
 import { spawn as spawnChild } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { superviseController } from "./controller-supervisor.js";
+import { buildIdentity, memoryChannel, RoleGenerations, roleMessage, type ParentToRole, type RolePort, type RoleToParent, type UpConsoleConfig, type UpRoleName, type UpRoleStart, type UpWorkerConfig } from "./up-processes.js";
 // Every envelope is checked against its command's schema (logged, never refused), then serialized unchanged.
 import { checkedEnvelopeJson as envelopeJson } from "./contracts/cli.js";
 import { auditCommand } from "./audit-cli.js";
-import { closedQuestionWords, hasDisguisedText, hasForbiddenControls, validateNote } from "./decision.js";
+import { closedQuestionWords, hasDisguisedText, validateNote } from "./decision.js";
 import { readVerifiedArtifact, readVerifiedReport, storeEvidence } from "./evidence.js";
 import { contractChangesOf, decodePlanContractRecord, describeContractChanges, encodePlannerSource, plannerSourceOf } from "./planner-source.js";
 
@@ -170,7 +178,7 @@ function planContractLines(store: Store, evidenceRoot: string, taskId: string): 
   ];
 }
 import { verdictWords as proofVerdictWords, matrixWords, semanticCoverage, coverageWords } from "./proof.js";
-import { probeRepo, isVerified } from "./probe.js";
+import { probeRepo } from "./probe.js";
 import {
   diagnoseTaskDispatch,
   diagnosisIsDispatchable,
@@ -209,6 +217,8 @@ import {
   type TelegramTransport,
 } from "./telegram.js";
 import type { TelegramConversationOptions } from "./telegram-lead.js";
+import { projectIdentities, type ProjectIdentities } from "./project-identity.js";
+import { lookIdentities, type FolderLookOptions } from "./folder-look.js";
 import { scanRepo } from "./capscan.js";
 import { computeGaps, describeCapability, type Gap } from "./gaps.js";
 import { ask as promptAsk, askHidden as promptHidden, confirm as promptConfirm, interactive as promptInteractive, underAgent } from "./prompt.js";
@@ -220,29 +230,14 @@ import { projectAuthority } from "./project-access.js";
 import { authorizedProject, canonicalProject, projectName, resolveCeiling } from "./project.js";
 import { tally, spendLine } from "./summary.js";
 import {
-  bodyHashOf,
-  describePublicationGrant,
-  observeChecks,
-  publicationBody,
-  publishPass,
-  type PublishExec,
-  sweepMerges,
+  describePublicationGrant, observeChecks, publishPass, type PublishExec, sweepMerges,
 } from "./publish.js";
 import { checkPublishing, publishingOf, savePublishing, followPullRequests, newestPullRequestOf } from "./pull-request-flow.js";
 import { starterOf, startersFor, switchOnStarter } from "./flow-starters.js";
 
 type CapabilityKind = Capability["kind"];
 import {
-  acquire,
-  acquireIfReady,
-  type FailureClass,
-  heartbeat,
-  release,
-  reap,
-  currentClaim,
-  DEFAULT_LEASE_MS,
-  SYNC_MAX_AGE_MS,
-  finalize,
+  acquire, acquireIfReady, heartbeat, release, reap, currentClaim, DEFAULT_LEASE_MS, SYNC_MAX_AGE_MS, finalize,
 } from "./claim.js";
 import { disposeBuildOutcome, holdStaleApproval, regateTask } from "./dispose.js";
 import {
@@ -268,17 +263,24 @@ import {
   removeRunnerRepoAuthed,
   registerRunnerIfIdle,
   retireRunnerIfCurrent,
+  drainRunnerIfCurrent,
+  RUNNER_HEARTBEAT_MS,
+  MAX_WATCH_LEASE_MS,
   normalizeRunnerName,
   validRunnerName,
   canonicalRepos,
   RUNNER_NAME_MAX,
   RUNNER_CAPACITY_MAX,
   parseRunnerCapacity,
+  hashToken as hashRunnerToken,
+  type Runner as RunnerRow,
 } from "./runner.js";
+import { credentialDigest, recordedHolderProvedGone, processGone, processStart, readRunnerProcessRecord, runnerProcessFile, sealRunnerProcessRecord, writeRunnerProcessRecord, type RunnerProcessRecord, type RunnerProcessRole } from "./runner-process.js";
+import { stopProcessTree } from "./process-tree.js";
 import { mintCoordinator, revokeCoordinator, listCoordinators } from "./coordinator.js";
 import { serveMcp } from "./mcp.js";
 import { createInterface } from "node:readline";
-import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, fileAndSealUnderMode, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha } from "./scope.js";
+import { propose, approve, addApprover, authenticateAccount, authenticateApprover as passwordApprover, describeScope, approvalOf, hashToken as hashApproverToken, type ExecutionProfile, modeFilingCoverage, acceptanceLinesToInput, parseAcceptanceCriteria, splitAcceptanceRubric, rubricIsPlaceholder, isCommitSha, credentialProof, rememberedLogin, personApprovalOf } from "./scope.js";
 import { CHAT_APPROVE_ALL, presetTerms, modeTermsJson, modeDigestOf, modeTermsFromJson, modeWords, MODE_MAX_DAYS, type ModeName } from "./modes.js";
 import { WorktreePool, type BaseStanding } from "./worktree.js";
 import { baseStandingWords, freshBaseFor, taskBaseOf } from "./task-base.js";
@@ -294,11 +296,12 @@ import { fileTaskProposal, validateTaskText } from "./proposal.js";
 import { TEMPLATES, templateByName } from "./templates.js";
 import { isDirectChatProvider, isSubscriptionChatProvider, priceOf, PRICED_MODELS } from "./converse.js";
 import { resolvePhaseAgent, resolveScopeProfile, resolveRouteCandidates, routeOfTask, INSTALLATION_SCOPE, type TaskRoute } from "./agentconfig.js";
+import { applyModelChoices, stateDigest, type ApplyResult, type ExtraWrite, type ModelChange, type Slot, type SlotPhase } from "./model-choices.js";
 import { isTaskSize, legOf, projectRoute, routeDigestOf, routeWords, TASK_SIZES, PHASES as ROUTE_PHASES, type TaskSize, type ReadinessLookup, type ReadinessObservation, type RouteOverride, type RouteStamp } from "./phase-routing.js";
 import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runner.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
-import { activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, loadWebhookTargets, effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, saveConsoleUrl, savePrimary } from "./webhooks.js";
+import { activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, loadWebhookTargets, effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, readUpConsoleUrl, saveConsoleUrl, savePrimary, UP_CONSOLE_FILE } from "./webhooks.js";
 import { auditOf, inspectionOf, isProviderId, MONEY_CAPABILITIES, PROVIDER_IDS, validModelId, validateSpec, type ProviderAudit, type ProviderId, ALL_CREDENTIAL_ENV } from "./provider.js";
 import { attestProvider, attestationOf, versionInRange, type AttestOutcome, type AttestationRange } from "./attest.js";
 import {
@@ -310,8 +313,11 @@ import { plan as planTask } from "./planner.js";
 import { attachTmux, elapsedWords, openInTmux, PEEK_TAIL_LINES, runPeek, snapshotLiveRuns } from "./peek-cli.js";
 import { scout as scoutTask } from "./scout.js";
 import { profileDigestOf } from "./scope.js";
-import { PROVIDER_KEY_ENV, SUBSCRIPTION_CAPABLE, clearProviderKey, keyStatus, readAuthMode, readAuthModeStrict, readProviderKey, saveProviderKey, setAuthMode, verifyProviderKey, verdictWords, type AuthMode } from "./keys.js";
+import { PROVIDER_KEY_ENV, clearProviderKey, keyStatus, readAuthMode, readAuthModeStrict, readProviderKey, saveProviderKey, setAuthMode, verifyProviderKey, verdictWords } from "./keys.js";
 import { run, terminateLiveProviders, run as execRun } from "./exec.js";
+import { hardenedGit, lazyFetchSafeGit, noLazyFetch, PARTIAL_CLONE_REFUSAL } from "./teardown-git.js";
+import { installedGitFloorProblem } from "./git-floor.js";
+import { noticeGitIncidents } from "./git-incident.js";
 import { containmentNotice, containmentStatus, currentContainment, describeContainment, resolveContainment, type EffectiveContainment } from "./containment.js";
 import { readPulls } from "./pulls.js";
 import { startMaintenance } from "./maintenance.js";
@@ -325,6 +331,7 @@ import { installationStatus, renderInstallationStatus, renderTaskWait, repairSta
 import { latestRelease, newerRelease, notifySecurityRelease, notifyVersionLive, recordRunnerVersion, startUpdateChecks, updateLine, type ReleaseIo } from "./releases.js";
 import { installMethod } from "./install-method.js";
 import { PACKAGE_VERSION } from "./version.js";
+import { machineActing } from "./scope.js";
 
 export type Write = (line: string) => void;
 
@@ -378,6 +385,10 @@ export type OperateOptions = {
   flowStepIo?: Partial<StepIo>;
   /** Injected by tests: how often a worker's flow passes run beside its builds (default FLOW_EVERY_MS). */
   flowEveryMs?: number;
+  /** Injected by tests: the operating system this runs on (check access: no sign-ins on Linux yet). */
+  platform?: NodeJS.Platform;
+  /** Injected by tests: whether this machine has an OS fence for checks (macOS sandbox or bubblewrap). */
+  fenceAvailable?: () => boolean;
   /** Injected by tests: how `flows import` fetches a flow file's address. */
   flowFetch?: FetchLike;
   /** Injected by tests: how `integrations` checks reach services (fetch, gh, sign-in checks, mail servers). */
@@ -392,9 +403,13 @@ export type OperateOptions = {
   upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void };
   /** Injected by tests: the classifier that sizes filed tasks (none by default under test). */
   filingSizer?: Sizer;
+  /** Set only by up-role-child.ts: this process is one role of a `toolroll up` (the console or the worker). */
+  upRole?: UpRoleHost;
+  /** Injected by tests: how the console looks at project folders off its thread (folder-look.ts). */
+  folderLook?: FolderLookOptions;
 };
 
-export type OnboardSeams = Partial<Pick<OnboardIo, "home" | "env" | "cwd" | "interactive" | "confirm" | "findRepo" | "checkConnection" | "pullRequests">>;
+export type OnboardSeams = Partial<Pick<OnboardIo, "home" | "env" | "cwd" | "interactive" | "confirm" | "findRepo" | "checkConnection" | "pullRequests" | "youiyoux">>;
 
 const STATES: readonly TaskState[] = ["queued", "running", "done", "failed", "cancelled"];
 
@@ -415,6 +430,18 @@ export const OPERATE_HELP = `toolroll — operating the queue
   toolroll project show              show the current project and credential reference
   toolroll project rules --repo <p>  a project's approval rules; an instance operator changes them with
                                         --not-requester on|off, --protect none|project, --protect-paths "a/**,b/**"
+  toolroll project network --repo <p> [--allow h,…] [--remove h,…] [--open|--allowlist] [--local any|none]
+                                        what the project's builds may reach on the network; an approver changes it
+                                        (new scopes seal it; approved ones keep theirs)
+  toolroll project writes --repo <p> [workspace|anywhere]
+                                        where the project's builds may write: only their checkout, caches and temp
+                                        (workspace, the default), or anywhere outside Toolroll's fenced folders;
+                                        an approver changes it (new scopes seal it; approved ones keep theirs)
+  toolroll project check-access --repo <p> [sandboxed|sign-ins|unsandboxed]
+                                        how far the project's checks reach: sandboxed (the default), with model
+                                        and GitHub sign-ins, or not sandboxed; an instance operator widens it
+  toolroll config unconfined-agents [allow|refuse]
+                                        whether builds run where this machine can't confine them (instance operator)
   toolroll project concurrency [<n>] --repo <p>
                                         how many of a project's tasks build at once (default 2, never past the
                                         worker's capacity); an approver changes it with <n>
@@ -573,6 +600,8 @@ External trackers — build what a tracker nominates, under local approvals
                                         app; they start without a restart.
                                         --repo still adds an exact path;
                                         --no-open skips the browser;
+                                        the app and the builder run as two
+                                        processes (--single-process: one);
                                         --host 0.0.0.0 --allow-host name:port
                                         reaches a phone over a tailnet;
                                         --runner names the worker;
@@ -805,6 +834,9 @@ export const KEYS_ACTIONS = ["status", "set", "clear", "verify", "auth"] as cons
  * tests): every value-taking flag any verb reads, and every boolean.
  * A --flag in neither set is a typo, refused by name.
  */
+/** Flags whose value is a secret someone types or pastes: taken as the next argument even when it starts with "--". */
+export const SECRET_VALUE_FLAGS: ReadonlySet<string> = new Set(["token", "password"]);
+
 export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "key", "db", "runner", "ttl", "state", "on", "reason", "until", "id", "backend",
   "allow", "selector", "paths", "credentials", "repo", "token", "capacity",
@@ -813,6 +845,9 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "choose", "note", "max-open-decisions", "name", "days", "publication", "auto-approve", "review-auto", "port", "host", "allow-host",
   "for", "tick-every", "bridge-every", "reconcile-every", "incarnation",
   "say", "ceiling-usd", "cap-usd",
+  // evals: the cases a diagnostic campaign runs, its k, an attempt's world and what its builds may not read, and the
+  // stuck campaign a person ends (recover --abandon).
+  "case", "k", "world", "deny", "abandon",
   "token-file", "bin", "poll", "github", "remote", "head-prefix", "password",
   // v102: project rules.
   "not-requester", "protect", "protect-paths",
@@ -845,13 +880,23 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "token-name",
   // task pause / task steer --now: the asker's own request id, so a repeat is the same request.
   "request",
+  // project sandbox (sandbox parity C9): read denies and macOS services.
+  "read-deny", "mach",
+  // task scope --release <version>:<pr>:<branch>: a release scope's terms (release-once.md).
+  "release",
 ]);
 export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
+  // evals run: a report-only campaign; keep each attempt's world for a look afterwards.
+  "diagnostic", "keep",
+  // task scope --release ... --no-carry: every later commit asks again.
+  "no-carry",
   "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file",
   "clear", "follow", "ready", "all-tasks", "inbound-only", "help", "undo", "anyone", "allow-dispatch", "allow-merge", "merge-delete-branch",
-  "no-open", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
+  "no-open", "single-process", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
   "self-heal", "plan-auto", "chat-approve", "full-access", "repair-auto", "review-retry-auto", "no-local",
   "html", "csv", "alerts-only",
+  // project network: what its builds may reach (--open | --allowlist).
+  "open", "allowlist",
   // v105: the full export.
   "zip",
   // Settings → Integrations: the last checks, without checking again.
@@ -873,6 +918,10 @@ export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   // task steer: pause the running Claude build, then send the note.
   "now",
 ]);
+
+/** `project network` reads --remove <hosts> and --local any|none as values, where every other verb's --remove and
+ * --local are switches. */
+const PROJECT_NETWORK_VALUE_FLAGS: ReadonlySet<string> = new Set(["remove", "local"]);
 
 export function parseOperateArgs(argv: readonly string[], ownValues: ReadonlySet<string> = new Set()): Args | { error: string } {
   const positional: string[] = [];
@@ -912,11 +961,11 @@ export function parseOperateArgs(argv: readonly string[], ownValues: ReadonlySet
     const value = equals === -1 ? argv[++index] : argument.slice(equals + 1);
     // A following --flag is not a value — consuming it would swallow a real
     // flag and leave this one holding a name-shaped lie.
-    // Minted 32-byte base64url credentials may begin with two hyphens.
-    // Accept that exact token shape without swallowing a following flag.
-    // Explicit --name=value also carries arbitrary literal leading hyphens.
-    const mintedToken = name === "token" && value !== undefined && /^[A-Za-z0-9_-]{43}$/.test(value);
-    if (value === undefined || (equals === -1 && value.startsWith("--") && !mintedToken)) return { error: `--${name} needs a value` };
+    // A secret (a password, a token) is random base64url and may begin with two hyphens: it is the next argument
+    // unless that argument is exactly a flag this parser knows (a real flag is never swallowed, finding 22). Other flags
+    // never take a following --flag. Explicit --name=value carries arbitrary literal leading hyphens for every flag.
+    const namesFlag = (one: string) => { const flag = one.slice(2).split("=")[0]!; return booleans.has(flag) || wantsValue.has(flag); };
+    if (value === undefined || (equals === -1 && value.startsWith("--") && (!SECRET_VALUE_FLAGS.has(name) || namesFlag(value)))) return { error: `--${name} needs a value` };
     // `flows import --param a=1 --param b=2`: each value kept, one per line.
     flags.set(name, name === "param" && typeof flags.get(name) === "string" ? `${flags.get(name)}\n${value}` : value);
     if (name === "repo") {
@@ -934,7 +983,8 @@ export async function runOperate(
   write: Write,
   options: OperateOptions = {},
 ): Promise<number> {
-  return withPasswordSource(CLI_PASSWORD_SOURCE, () => runOperateLocal(command, argv, write, options));
+  // Each command gets its own remembered-login holder (Passwordless: "cli-login" is this command's, never the next one's).
+  return withPasswordSource(CLI_PASSWORD_SOURCE, () => rememberedLogin.run({ login: null }, () => runOperateLocal(command, argv, write, options)));
 }
 
 async function runOperateLocal(
@@ -943,7 +993,7 @@ async function runOperateLocal(
   write: Write,
   options: OperateOptions = {},
 ): Promise<number> {
-  const parsed = parseOperateArgs(argv, command === "flows" ? FLOWS_VALUE_FLAGS : undefined);
+  const parsed = parseOperateArgs(argv, ownValueFlags(command, argv));
   // A parse error precedes the flags map, so JSON mode is read from the raw
   // argv — the envelope contract holds even for the earliest refusal.
   if ("error" in parsed) return fail(write, argv.includes("--json"), command, "usage", parsed.error, EXIT.usage);
@@ -1088,6 +1138,8 @@ async function dispatchOn(
       ...(options.flowTriggerIo === undefined ? {} : { flowTriggerIo: options.flowTriggerIo }),
       ...(options.flowStepIo === undefined ? {} : { flowStepIo: options.flowStepIo }),
       ...(options.flowEveryMs === undefined ? {} : { flowEveryMs: options.flowEveryMs }),
+      ...(options.platform === undefined ? {} : { platform: options.platform }),
+      ...(options.fenceAvailable === undefined ? {} : { fenceAvailable: options.fenceAvailable }),
       ...(options.flowFetch === undefined ? {} : { flowFetch: options.flowFetch }),
       ...(options.integrationIo === undefined ? {} : { integrationIo: options.integrationIo }),
       ...(options.shouldStop === undefined ? {} : { shouldStop: options.shouldStop }),
@@ -1097,6 +1149,9 @@ async function dispatchOn(
       ...(options.installBin === undefined ? {} : { installBin: options.installBin }),
       ...(options.onboardSeams === undefined ? {} : { onboardSeams: options.onboardSeams }),
       ...(options.upSeams === undefined ? {} : { upSeams: options.upSeams }),
+      ...(options.upRole === undefined ? {} : { upRole: options.upRole }),
+      ...(options.folderLook === undefined ? {} : { folderLook: options.folderLook }),
+      ...(upNeedsOneProcess(options) ? { upOneProcess: true } : {}),
       ...(activeRemote() === null ? {} : { principal: activeRemote()! }),
     });
     return await enter(run);
@@ -1161,7 +1216,7 @@ export async function runOperateAs(
   if (row.remote === "step-up") return refuse("step-up", REMOTE_MESSAGES["step-up"]);
   const scope = REMOTE_SCOPES.get(row.invocation);
   if (row.remote !== "yes" || scope === undefined) return refuse("not-remote", REMOTE_MESSAGES.no);
-  const parsed = parseOperateArgs(rest, root === "flows" ? FLOWS_VALUE_FLAGS : undefined);
+  const parsed = parseOperateArgs(rest, ownValueFlags(root, rest));
   if ("error" in parsed) return refuse("usage", parsed.error);
   // The parser's positionals must spell the same row (a value flag can't hide a subcommand).
   if (remoteRowOf(root, parsed.positional)?.invocation !== row.invocation) return refuse("not-remote", REMOTE_MESSAGES.unknown);
@@ -1209,6 +1264,8 @@ function remoteFile(remote: RemoteRun, path: string): string {
 const LEAD_COMMANDS: ReadonlySet<string> = new Set(["task", "assignment", "status", "ready", "brief", "peek", "check-progress", "notifications", "lead"]);
 
 type Context = {
+  /** Injected by tests: how the console looks at project folders off its thread. */
+  folderLook?: FolderLookOptions;
   /** A remote run's person (runOperateAs): every credential check resolves to them. Absent for every local command. */
   principal?: RemoteRun;
   /** The lead token this command runs under: it signs in as its owner. */
@@ -1248,6 +1305,10 @@ type Context = {
   flowStepIo?: Partial<StepIo>;
   /** Injected by tests: how often a worker's flow passes run beside its builds (default FLOW_EVERY_MS). */
   flowEveryMs?: number;
+  /** Injected by tests: the operating system this runs on (default process.platform). */
+  platform?: NodeJS.Platform;
+  /** Injected by tests: whether this machine has an OS fence for checks (default: probed). */
+  fenceAvailable?: () => boolean;
   /** Injected by tests: how `flows import` fetches a flow file's address. */
   flowFetch?: FetchLike;
   integrationIo?: Partial<IntegrationIo>;
@@ -1266,6 +1327,10 @@ type Context = {
   installBin?: string;
   onboardSeams?: OnboardSeams;
   upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void };
+  /** This process is one role of a `toolroll up`, started by it (never from the command line). */
+  upRole?: UpRoleHost;
+  /** In-memory seams a child process can't receive: `up` runs its console and worker in this one process. */
+  upOneProcess?: boolean;
   /** Test seam: this computer's tailnet names (production asks `tailscale status`). */
   tailnetNames?: () => Promise<readonly string[]>;
 };
@@ -1353,6 +1418,8 @@ async function dispatch(
   switch (command) {
     case "status":
       return statusCommand(positional, flags, context);
+    case "evals":
+      return evalsCommand(positional, flags, context);
     case "ready":
       return readyCommand(flags, context);
     case "task":
@@ -1402,6 +1469,10 @@ async function dispatch(
       if (positional[0] === "rules") return projectRulesCommand(positional, flags, context);
       if (positional[0] === "delete") return projectDeleteCommand(positional, flags, context);
       if (positional[0] === "concurrency") return projectConcurrencyCommand(positional, flags, context);
+      if (positional[0] === "network") return projectNetworkCommand(positional, flags, context);
+      if (positional[0] === "writes") return projectWritesCommand(positional, flags, context);
+      if (positional[0] === "check-access") return projectCheckAccessCommand(positional, flags, context);
+      if (positional[0] === "sandbox") return projectSandboxCommand(positional, flags, context);
       if (positional[0] === "checks") return projectChecksCommand(positional, flags, context);
       if (positional[0] === "demo") return projectDemoCommand(positional, flags, context);
       return runProjectCommand(positional, flags, context);
@@ -1473,6 +1544,7 @@ async function dispatch(
     case "flows":
       return flowsCommand(positional, flags, context);
     case "config":
+      if (positional[0] === "unconfined-agents") return unconfinedAgentsCommand(positional, flags, context);
       return configCommand(positional, flags, context);
     case "chat":
       return chatCommand(flags, context);
@@ -1493,6 +1565,8 @@ async function dispatch(
       });
     case "keys":
       return keysCommand(positional, flags, context);
+    case "agents":
+      return agentsCommand(positional, flags, context);
     case "setup":
       return setupCommand(positional, flags, context);
     case "verify":
@@ -1509,11 +1583,11 @@ async function dispatch(
     case "sync":
       return syncCommand(flags, context);
     case "serve":
-      return serveCommand(flags, context);
+      return gitTooOld(command, context) ?? serveCommand(flags, context);
     case "watch":
-      return watchCommand(flags, context);
+      return gitTooOld(command, context) ?? watchCommand(flags, context);
     case "up":
-      return upCommand(flags, context);
+      return gitTooOld(command, context) ?? upCommand(flags, context);
     case "onboard":
       return onboardCommand(flags, context);
     case "daemon":
@@ -1529,14 +1603,7 @@ async function dispatch(
     case "revoke":
       return revokeCommand(positional, flags, context);
     default:
-      return fail(
-        context.write,
-        context.json,
-        command,
-        "usage",
-        `unknown command \`${command}\``,
-        EXIT.usage,
-      );
+      return fail(context.write, context.json, command, "usage", `unknown command \`${command}\``, EXIT.usage);
   }
 }
 
@@ -1587,9 +1654,7 @@ async function readyCommand(
   if (backendName !== BUILT_IN) {
     const repo = repoFrom(flags);
     const backend = openBackend(backendName, store, repo);
-    if (backend === null) {
-      return fail(write, json, "ready", "usage", `no backend \`${backendName}\``, EXIT.usage);
-    }
+    if (backend === null) return fail(write, json, "ready", "usage", `no backend \`${backendName}\``, EXIT.usage);
 
     const result = await backend.listReady();
     if (!result.ok) return fail(write, json, "ready", result.reason, result.message, EXIT.failed);
@@ -1684,18 +1749,12 @@ function claimCommand(
   // protects those leases would be protecting the wrong thing. This is what
   // "auth from the first commit" is for — it is only cheap now.
   const token = text(flags, "token");
-  if (token === undefined) {
-    return fail(write, json, "claim", "usage", "--token proves the runner is who it says", EXIT.usage);
-  }
+  if (token === undefined) return fail(write, json, "claim", "usage", "--token proves the runner is who it says", EXIT.usage);
   const auth = authenticate(store, runner, token);
-  if (!auth.ok) {
-    return fail(write, json, "claim", auth.reason, describeAuth(auth.reason, runner), EXIT.refused);
-  }
+  if (!auth.ok) return fail(write, json, "claim", auth.reason, describeAuth(auth.reason, runner), EXIT.refused);
 
   const backend = text(flags, "backend") ?? BUILT_IN;
-  if (backend === BUILT_IN && store.getTask(id) === null) {
-    return fail(write, json, "claim", "unknown-task", `no task \`${id}\``, EXIT.refused);
-  }
+  if (backend === BUILT_IN && store.getTask(id) === null) return fail(write, json, "claim", "unknown-task", `no task \`${id}\``, EXIT.refused);
 
   const ttl = readTtl(flags);
   if (ttl === null) return fail(write, json, "claim", "usage", "--ttl takes whole seconds", EXIT.usage);
@@ -1718,9 +1777,7 @@ function claimCommand(
       // tasks" while letting the asker declare which those are is not a rule.
       origin: store.originOf(backend, id),
     });
-    if (!verdict.ok) {
-      return fail(write, json, "claim", verdict.reason, verdict.message, EXIT.refused);
-    }
+    if (!verdict.ok) return fail(write, json, "claim", verdict.reason, verdict.message, EXIT.refused);
   }
 
   const ref = store.refFor(backend, id);
@@ -1734,17 +1791,7 @@ function claimCommand(
   if (!result.ok) {
     // Two distinct refusals: somebody HOLDS it right now, or it is
     // RESERVED for a specific worker whoever asks (queue columns, v19).
-    if (result.reason === "reserved") {
-      return fail(
-        write,
-        json,
-        "claim",
-        "reserved",
-        `${id} is reserved for ${result.reservedFor} — only that worker takes it`,
-        EXIT.refused,
-        { reservedFor: result.reservedFor },
-      );
-    }
+    if (result.reason === "reserved") return fail(write, json, "claim", "reserved", `${id} is reserved for ${result.reservedFor} — only that worker takes it`, EXIT.refused, { reservedFor: result.reservedFor });
     if (result.reason === "external") {
       const said: Record<string, string> = {
         "stale-mirror": "this tracker item has not been seen recently — run `toolroll sync` first",
@@ -1756,51 +1803,15 @@ function claimCommand(
         detail: result.detail,
       });
     }
-    if (result.reason === "mode-ended") {
-      return fail(write, json, "claim", "mode-ended", result.message, EXIT.refused);
-    }
-    if (result.reason === "unauthenticated") {
-      return fail(write, json, "claim", "unauthenticated", describeAuth(result.detail, runner), EXIT.refused);
-    }
-    if (result.reason === "unplaced") {
-      return fail(
-        write,
-        json,
-        "claim",
-        "unplaced",
-        "this task has no repository — preserve its history and file a replacement with `task add <title> --repo <path>`, then approve the new scope",
-        EXIT.refused,
-      );
-    }
-    if (result.reason === "unauthorized-repo") {
-      return fail(
-        write,
-        json,
-        "claim",
-        "unauthorized-repo",
-        `this runner is not bound to ${result.repo} — \`runner bind\` adds it`,
-        EXIT.refused,
-      );
-    }
-    if (result.reason === "coordinator-filed") {
-      return fail(
-        write,
-        json,
-        "claim",
-        "coordinator-filed",
-        "a coordinator filed this — nothing runs until the operator signs its scope",
-        EXIT.refused,
-      );
-    }
-    return fail(
-      write,
-      json,
-      "claim",
-      result.reason,
-      `held by ${result.by} until ${result.until}`,
-      EXIT.refused,
-      { holder: result.by, until: result.until },
-    );
+    if (result.reason === "mode-ended") return fail(write, json, "claim", "mode-ended", result.message, EXIT.refused);
+    if (result.reason === "unauthenticated") return fail(write, json, "claim", "unauthenticated", describeAuth(result.detail, runner), EXIT.refused);
+    if (result.reason === "unplaced") return fail(write, json, "claim", "unplaced", "this task has no repository — preserve its history and file a replacement with `task add <title> --repo <path>`, then approve the new scope", EXIT.refused);
+    if (result.reason === "unauthorized-repo") return fail(write, json, "claim", "unauthorized-repo", `this runner is not bound to ${result.repo} — \`runner bind\` adds it`, EXIT.refused);
+    if (result.reason === "coordinator-filed") return fail(write, json, "claim", "coordinator-filed", "a coordinator filed this — nothing runs until the operator signs its scope", EXIT.refused);
+    if (result.reason === "sweep-limit") return fail(write, json, "claim", "sweep-limit", `its sweep already has ${result.limit} running at once — it starts when one finishes`, EXIT.refused, { sweep: result.sweep, limit: result.limit });
+    if (result.reason === "watch-custody") return fail(write, json, "claim", "watch-custody", "This worker no longer holds the project; restart the watch", EXIT.refused);
+    if (result.reason === "draining") return fail(write, json, "claim", "draining", `Toolroll is restarting (draining): ${runner} takes no new work until it is back (by ${result.until})`, EXIT.refused, { until: result.until });
+    return fail(write, json, "claim", result.reason, `held by ${result.by} until ${result.until}`, EXIT.refused, { holder: result.by, until: result.until });
   }
 
   // Taking a task is what makes it running; leaving that to the caller would
@@ -1939,10 +1950,8 @@ async function runnerCommand(
     if (acting === null) {
       return fail(write, json, "runner register", "usage", "`runner register <name> --repo <path> --as <you> --token <t>` — minting runner authority is an operator act", EXIT.usage);
     }
-    const authenticated = authenticateApprover(store, acting.name, acting.token);
-    if (!authenticated.ok) {
-      return fail(write, json, "runner register", authenticated.reason, describeApproveFailure(authenticated.reason, name), EXIT.refused);
-    }
+    const authenticated = credentialApprover(store, acting.name, acting.token);
+    if (!authenticated.ok) return fail(write, json, "runner register", authenticated.reason, describeApproveFailure(authenticated.reason, name), EXIT.refused);
     const repos = context.repoList ?? [];
     if (repos.length === 0) {
       return fail(write, json, "runner register", "usage", "--repo names at least one repository this runner may build — authority binds at the mint", EXIT.usage);
@@ -1952,9 +1961,7 @@ async function runnerCommand(
     // a worker, no paste step. The file must not already exist: a second
     // mint never silently overwrites a credential a running watch holds.
     const tokenFile = text(flags, "token-file");
-    if (tokenFile !== undefined && existsSync(tokenFile)) {
-      return fail(write, json, "runner register", "token-file-exists", `${tokenFile} already exists — remove it first if that worker is gone, or name another file`, EXIT.refused);
-    }
+    if (tokenFile !== undefined && existsSync(tokenFile)) return fail(write, json, "runner register", "token-file-exists", `${tokenFile} already exists — remove it first if that worker is gone, or name another file`, EXIT.refused);
     const { runner, token, reclaimed } = register(store, {
       name,
       host: hostname(),
@@ -1995,14 +2002,10 @@ async function runnerCommand(
 
   if (action === "heartbeat") {
     const token = text(flags, "token");
-    if (name === undefined || token === undefined) {
-      return fail(write, json, "runner heartbeat", "usage", "`runner heartbeat <name> --token <token>`", EXIT.usage);
-    }
+    if (name === undefined || token === undefined) return fail(write, json, "runner heartbeat", "usage", "`runner heartbeat <name> --token <token>`", EXIT.usage);
 
     const result = heartbeatRunner(store, name, token, now);
-    if (!result.ok) {
-      return fail(write, json, "runner heartbeat", result.reason, describeAuth(result.reason, name), EXIT.refused);
-    }
+    if (!result.ok) return fail(write, json, "runner heartbeat", result.reason, describeAuth(result.reason, name), EXIT.refused);
     return succeed(write, json, "runner heartbeat", { runner: result.runner }, () => [
       `${name} checked in.`,
     ]);
@@ -2036,22 +2039,13 @@ async function runnerCommand(
   }
 
   if (action === "retire") {
-    if (name === undefined) {
-      return fail(write, json, "runner retire", "usage", "which runner?", EXIT.usage);
-    }
+    if (name === undefined) return fail(write, json, "runner retire", "usage", "which runner?", EXIT.usage);
     // Retiring is revoking authority — the same operator act as minting it.
     const acting = await askCredentials(flags, context);
-    if (acting === null) {
-      return fail(write, json, "runner retire", "usage", "`runner retire <name> --as <you> --token <t>` — revoking runner authority is an operator act", EXIT.usage);
-    }
-    const authenticated = authenticateApprover(store, acting.name, acting.token);
-    if (!authenticated.ok) {
-      return fail(write, json, "runner retire", authenticated.reason, describeApproveFailure(authenticated.reason, name), EXIT.refused);
-    }
+    const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+    if (acting === null || !verified?.ok) return refuseApprover(context, "runner retire", verified, "`runner retire <name> --as <you> --token <t>` — revoking runner authority is an operator act", name);
     const retired = store.retireRunner(name, now, mutationFrom(flags, now));
-    if (!retired) {
-      return fail(write, json, "runner retire", "unknown", `no runner \`${name}\``, EXIT.refused);
-    }
+    if (!retired) return fail(write, json, "runner retire", "unknown", `no runner \`${name}\``, EXIT.refused);
     return succeed(write, json, "runner retire", { name }, () => [`${name} is retired.`]);
   }
 
@@ -2067,18 +2061,14 @@ async function runnerCommand(
     if (acting === null) {
       return fail(write, json, "runner bind", "usage", "`runner bind <name> --repo <path> --as <you> --token <t>` — binding repositories is an operator act", EXIT.usage);
     }
-    const authenticated = authenticateApprover(store, acting.name, acting.token);
-    if (!authenticated.ok) {
-      return fail(write, json, "runner bind", authenticated.reason, describeApproveFailure(authenticated.reason, name), EXIT.refused);
-    }
+    const authenticated = credentialApprover(store, acting.name, acting.token);
+    if (!authenticated.ok) return fail(write, json, "runner bind", authenticated.reason, describeApproveFailure(authenticated.reason, name), EXIT.refused);
     const repos = context.repoList ?? [];
     if (repos.length === 0) {
       return fail(write, json, "runner bind", "usage", "--repo names at least one repository", EXIT.usage);
     }
     const bound = store.bindRunnerRepos(name, canonicalRepos(repos), now);
-    if (!bound.ok) {
-      return fail(write, json, "runner bind", bound.reason, describeAuth(bound.reason, name), EXIT.refused);
-    }
+    if (!bound.ok) return fail(write, json, "runner bind", bound.reason, describeAuth(bound.reason, name), EXIT.refused);
     return succeed(write, json, "runner bind", { name, repos: bound.repos }, () => [
       `${name} may build in:`,
       ...bound.repos.map(one => `  ${one}`),
@@ -2090,22 +2080,14 @@ async function runnerCommand(
     // ledger as before → after. It never stops running work: claims already
     // held keep going, and the new number applies at the next claim.
     const given = positional[2];
-    if (name === undefined || given === undefined || positional.length > 3) {
-      return fail(write, json, "runner capacity", "usage", "`runner capacity <name> <n> --as <you> --token <t>`", EXIT.usage);
-    }
+    if (name === undefined || given === undefined || positional.length > 3) return fail(write, json, "runner capacity", "usage", "`runner capacity <name> <n> --as <you> --token <t>`", EXIT.usage);
     const capacity = parseRunnerCapacity(given, { allowZero: true });
-    if (capacity === null) {
-      return fail(write, json, "runner capacity", "usage", `capacity is a whole number of tasks, 0 to ${RUNNER_CAPACITY_MAX}; 0 stops new builds`, EXIT.usage);
-    }
+    if (capacity === null) return fail(write, json, "runner capacity", "usage", `capacity is a whole number of tasks, 0 to ${RUNNER_CAPACITY_MAX}; 0 stops new builds`, EXIT.usage);
     const acting = await askCredentials(flags, context);
     const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
-    if (acting === null || verified === null || !verified.ok || !store.isInstanceOperator(acting.name)) {
-      return fail(write, json, "runner capacity", "refused", "An instance operator changes a worker's capacity: pass --as and --token (or use the remembered login).", EXIT.refused);
-    }
+    if (acting === null || !verified?.ok || !store.isInstanceOperator(acting.name)) return fail(write, json, "runner capacity", "refused", "An instance operator changes a worker's capacity: pass --as and --token (or use the remembered login).", EXIT.refused);
     const changed = store.setRunnerCapacity(name, capacity, acting.name, now);
-    if (!changed.ok) {
-      return fail(write, json, "runner capacity", changed.reason, changed.reason === "retired" ? `${name} is retired` : `no runner \`${name}\``, EXIT.refused);
-    }
+    if (!changed.ok) return fail(write, json, "runner capacity", changed.reason, changed.reason === "retired" ? `${name} is retired` : `no runner \`${name}\``, EXIT.refused);
     const running = store.liveClaimCount(name, now);
     if (changed.after === 0) {
       return succeed(write, json, "runner capacity", { name, before: changed.before, after: changed.after, running }, () => [
@@ -2121,14 +2103,7 @@ async function runnerCommand(
     ]);
   }
 
-  return fail(
-    write,
-    json,
-    "runner",
-    "usage",
-    `unknown \`runner ${action}\` — try list, register, bind, capacity, heartbeat, reap, retire`,
-    EXIT.usage,
-  );
+  return fail(write, json, "runner", "usage", `unknown \`runner ${action}\` — try list, register, bind, capacity, heartbeat, reap, retire`, EXIT.usage);
 }
 
 /**
@@ -2169,10 +2144,8 @@ async function coordinatorCommand(
     if (acting === null) {
       return fail(write, json, "coordinator mint", "usage", "`coordinator mint <name> --repo <path> --as <you> --token <t>` — minting filing authority is an operator act", EXIT.usage);
     }
-    const authenticated = authenticateApprover(store, acting.name, acting.token);
-    if (!authenticated.ok) {
-      return fail(write, json, "coordinator mint", authenticated.reason, describeApproveFailure(authenticated.reason, name), EXIT.refused);
-    }
+    const authenticated = credentialApprover(store, acting.name, acting.token);
+    if (!authenticated.ok) return fail(write, json, "coordinator mint", authenticated.reason, describeApproveFailure(authenticated.reason, name), EXIT.refused);
     const repos = context.repoList ?? [];
     if (repos.length === 0) {
       return fail(write, json, "coordinator mint", "usage", "--repo names at least one repository this coordinator may file into", EXIT.usage);
@@ -2211,17 +2184,10 @@ async function coordinatorCommand(
   }
 
   if (action === "revoke") {
-    if (name === undefined) {
-      return fail(write, json, "coordinator revoke", "usage", "which coordinator? (`coordinator list` shows cids)", EXIT.usage);
-    }
+    if (name === undefined) return fail(write, json, "coordinator revoke", "usage", "which coordinator? (`coordinator list` shows cids)", EXIT.usage);
     const acting = await askCredentials(flags, context);
-    if (acting === null) {
-      return fail(write, json, "coordinator revoke", "usage", "`coordinator revoke <cid> --as <you> --token <t>` — revoking is an operator act", EXIT.usage);
-    }
-    const authenticated = authenticateApprover(store, acting.name, acting.token);
-    if (!authenticated.ok) {
-      return fail(write, json, "coordinator revoke", authenticated.reason, describeApproveFailure(authenticated.reason, name), EXIT.refused);
-    }
+    const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+    if (acting === null || !verified?.ok) return refuseApprover(context, "coordinator revoke", verified, "`coordinator revoke <cid> --as <you> --token <t>` — revoking is an operator act", name);
     const revoked = revokeCoordinator(store, name, acting.name, now);
     if (!revoked.ok) {
       const said = revoked.reason === "unknown" ? `no coordinator \`${name}\` — \`coordinator list\` shows cids` : "already revoked";
@@ -2384,21 +2350,15 @@ async function buildCommand(
   const token = text(flags, "token");
   const branch = text(flags, "branch");
 
-  if (id === undefined || runner === undefined || token === undefined || branch === undefined) {
-    return fail(write, json, "build", "usage", "`toolroll build <id> --runner <name> --token <t> --branch <b> --repo <path>`", EXIT.usage);
-  }
+  if (id === undefined || runner === undefined || token === undefined || branch === undefined) return fail(write, json, "build", "usage", "`toolroll build <id> --runner <name> --token <t> --branch <b> --repo <path>`", EXIT.usage);
 
   const auth = authenticate(store, runner, token);
-  if (!auth.ok) {
-    return fail(write, json, "build", auth.reason, describeAuth(auth.reason, runner), EXIT.refused);
-  }
+  if (!auth.ok) return fail(write, json, "build", auth.reason, describeAuth(auth.reason, runner), EXIT.refused);
 
   const repo = repoFrom(flags);
   // Standalone build proves membership BEFORE leasing anything (MCP spec
   // v6, round-4 finding 2): the caller's --repo is a claim, not authority.
-  if (!auth.runner.repos.includes(canonicalProject(repo) ?? resolve(repo))) {
-    return fail(write, json, "build", "unauthorized-repo", `${runner} is not bound to ${repo} — \`runner bind\` adds it`, EXIT.refused);
-  }
+  if (!auth.runner.repos.includes(canonicalProject(repo) ?? resolve(repo))) return fail(write, json, "build", "unauthorized-repo", `${runner} is not bound to ${repo} — \`runner bind\` adds it`, EXIT.refused);
   // Only a task that exists: a lookup must never register an id before the task is filed (its ledger history would be the task's).
   if (store.getTask(id) === null) return fail(write, json, "build", "unknown-task", `No task ${id}.`, EXIT.refused);
   const pool = text(flags, "pool") ?? join(dirname(databasePath(process.env, homedir())), "worktrees");
@@ -2413,9 +2373,7 @@ async function buildCommand(
     now,
     ...(text(flags, "base") === undefined ? {} : { base: text(flags, "base") as string }),
   });
-  if (!leased.ok) {
-    return fail(write, json, "build", leased.reason, leased.message, EXIT.refused);
-  }
+  if (!leased.ok) return fail(write, json, "build", leased.reason, leased.message, EXIT.refused);
 
   // The standalone road records its attempt and carries its exact lease the
   // same as tick's — a park sealed here goes through the same fenced
@@ -2596,10 +2554,11 @@ function flowIoOf(context: Context, pool: string, git: CommandRunner, base: stri
     replies: { fetch: context.flowTriggerIo?.fetch ?? fetch, dir: context.flowTriggerIo?.dir ?? dir,
       ...(context.flowTriggerIo?.mail === undefined ? {} : { mail: context.flowTriggerIo.mail }) },
     // Check and update steps run outside a model: an approved command in a fresh copy of the card's work, or a comment on the issue it came from.
-    steps: { gh: context.flowStepIo?.gh ?? run, git: context.flowStepIo?.git ?? git, shell: context.flowStepIo?.shell ?? run, fetch: context.flowStepIo?.fetch ?? fetch,
+    steps: { gh: context.flowStepIo?.gh ?? run, git: context.flowStepIo?.git ?? (git === run ? hardenedGit(run) : git), shell: context.flowStepIo?.shell ?? run, fetch: context.flowStepIo?.fetch ?? fetch,
       dir: context.flowStepIo?.dir ?? dir, scratch: context.flowStepIo?.scratch ?? join(pool, "flow-checks"), base,
       ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }) },
     ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }),
+    youiyouxGit: gitOf(context.gitRunner),
   };
 }
 
@@ -2636,23 +2595,17 @@ async function tickCommand(
   const runner = text(flags, "runner");
   const token = text(flags, "token");
 
-  if (runner === undefined || token === undefined) {
-    return fail(write, json, "tick", "usage", "`toolroll tick --runner <name> --token <t> --repo <path> [--max <n>] [--base <ref>]`", EXIT.usage);
-  }
+  if (runner === undefined || token === undefined) return fail(write, json, "tick", "usage", "`toolroll tick --runner <name> --token <t> --repo <path> [--max <n>] [--base <ref>]`", EXIT.usage);
 
   // Heartbeat rather than bare auth: a pass that is about to hold leases for
   // half an hour should also be on record as alive.
   const auth = heartbeatRunner(store, runner, token, clock());
-  if (!auth.ok) {
-    return fail(write, json, "tick", auth.reason, describeAuth(auth.reason, runner), EXIT.refused);
-  }
+  if (!auth.ok) return fail(write, json, "tick", auth.reason, describeAuth(auth.reason, runner), EXIT.refused);
   if (updateAdmissionPaused(store.raw())) return fail(write, json, "tick", "updating", UPDATE_PAUSED, EXIT.refused);
 
   const maxGiven = text(flags, "max");
   const maxAsked = maxGiven === undefined ? 1 : Number(maxGiven);
-  if (!Number.isInteger(maxAsked) || maxAsked <= 0) {
-    return fail(write, json, "tick", "usage", "--max takes a whole number of tasks", EXIT.usage);
-  }
+  if (!Number.isInteger(maxAsked) || maxAsked <= 0) return fail(write, json, "tick", "usage", "--max takes a whole number of tasks", EXIT.usage);
   // The service's build lanes (project-concurrency.ts): a lane over its
   // project's fair share still runs its housekeeping but starts no
   // unattended build this pass; an extra lane only builds.
@@ -2660,18 +2613,14 @@ async function tickCommand(
   const buildsOnly = flags.has("builds-only");
   const syncAgeGiven = text(flags, "sync-max-age");
   const syncMaxAgeMs = syncAgeGiven === undefined ? SYNC_MAX_AGE_MS : Number(syncAgeGiven) * 1000;
-  if (!Number.isInteger(syncMaxAgeMs) || syncMaxAgeMs <= 0) {
-    return fail(write, json, "tick", "usage", "--sync-max-age takes whole seconds", EXIT.usage);
-  }
+  if (!Number.isInteger(syncMaxAgeMs) || syncMaxAgeMs <= 0) return fail(write, json, "tick", "usage", "--sync-max-age takes whole seconds", EXIT.usage);
 
   const repo = repoFrom(flags);
   // THE PRE-I/O MEMBERSHIP CHECK (MCP spec v6, round-4 finding 1): the
   // pass proves its canonical repo is in the runner's BOUND list before
   // any git access, probe, or schedule fires. The --repo flag stops being
   // authority on every runner road, not only at the claim.
-  if (!auth.runner.repos.includes(canonicalProject(repo) ?? resolve(repo))) {
-    return fail(write, json, "tick", "unauthorized-repo", `${runner} is not bound to ${repo} — \`runner bind\` adds it`, EXIT.refused);
-  }
+  if (!auth.runner.repos.includes(canonicalProject(repo) ?? resolve(repo))) return fail(write, json, "tick", "unauthorized-repo", `${runner} is not bound to ${repo} — \`runner bind\` adds it`, EXIT.refused);
   const pool = text(flags, "pool") ?? join(dirname(databasePath(process.env, homedir())), "worktrees");
   const model = text(flags, "model");
   const repairModel = text(flags, "repair-model");
@@ -2691,15 +2640,24 @@ async function tickCommand(
     ...(context.gitRunner === undefined ? {} : { runner: context.gitRunner }),
   });
 
+  // ACP agent checks (acp-check.ts) run in a watch's own pass, under its lease, before anything is dispatched — one
+  // at a time per runner. Only a watch's full pass runs them (never a build lane, never a bare tick).
+  const watchOwner = text(flags, "incarnation");
+  if (watchOwner !== undefined && !buildsOnly) {
+    await runAcpChecks({
+      store, runner, token, pool: worktrees, clock,
+      watch: { repo: canonicalProject(repo) ?? resolve(repo), owner: watchOwner },
+      progress: line => { if (!json) write(line); },
+    });
+  }
+
   // Where a first attempt's branch grows from, resolved once per pass. A
   // detached HEAD refuses the pass rather than guessing: an unattended commit
   // onto "wherever the operator happened to be" is not a default.
   let base = text(flags, "base");
   if (base === undefined) {
     const head = await git("git", ["symbolic-ref", "--short", "-q", "HEAD"], { cwd: repo });
-    if (head.code !== 0 || head.stdout.trim() === "") {
-      return fail(write, json, "tick", "git", `${repo} has no branch checked out — say --base explicitly`, EXIT.refused);
-    }
+    if (head.code !== 0 || head.stdout.trim() === "") return fail(write, json, "tick", "git", `${repo} has no branch checked out — say --base explicitly`, EXIT.refused);
     base = head.stdout.trim();
   }
 
@@ -3008,6 +2966,14 @@ async function tickCommand(
       : ([store.getScope(id)?.approvedProfile?.provider].filter((one): one is ProviderId => one !== null && one !== undefined) as ProviderId[]);
     let unattestedLane: string | null = null;
     for (const candidate of new Set(skipProviders)) {
+      // An ACP agent is admitted by its own check on this runner (absence is denial), read here the way the gateway reads it.
+      if (isAcpProvider(candidate)) {
+        const checked = store.acpAttestationFor(candidate, runner);
+        const verified = checked === null ? null : verifyLaunch(checked.launch);
+        if (checked === null) { unattestedLane = `${ACP_AGENTS[candidate].name} isn't checked on ${runner} — run \`toolroll agents check ${candidate}\` there`; break; }
+        if (verified !== null && !verified.ok) { unattestedLane = verified.problem; break; }
+        continue;
+      }
       if (attestationOf(candidate) === null) continue;
       let verdict = attestedThisPass.get(candidate);
       if (verdict === undefined) {
@@ -3039,7 +3005,10 @@ async function tickCommand(
     // budget is raised (the 100% alert went out; the task page and the spend page say why).
     // Budgets are dollars: work that runs only on subscriptions passes (see Store.budgetGate).
     // Each provider as it bills now.
-    const budgeted = budgetHold(ref.id, store.agentsFor([spec.provider, ...skipProviders]));
+    // An ACP agent bills as its declaration for the exact model it would run on this runner.
+    const sealedModel = store.getScope(id)?.approvedProfile?.model ?? null;
+    const budgeted = budgetHold(ref.id, [...new Set([spec.provider, ...skipProviders])].map(provider =>
+      isAcpProvider(provider) ? store.agentFor(provider, provider === spec.provider ? spec.model ?? sealedModel : sealedModel, runner) : store.agentsFor([provider])[0]!));
     if (budgeted.over !== null) {
       dispatched.push({ id, outcome: "skipped", reason: "budget", detail: budgetWords(budgeted) });
       continue;
@@ -3471,8 +3440,9 @@ async function tickCommand(
         if (exists.code !== 0 && text(flags, "base") === undefined) buildBase = source.head;
         else {
           const descendant = exists.code === 0 ? branch : base;
-          const ancestry = await git("git", ["--no-lazy-fetch", "--no-replace-objects", "merge-base", "--is-ancestor", source.head, descendant], { cwd: repo });
-          if (ancestry.code !== 0) problem = "the requested revision base does not contain its source head";
+          // On a git without --no-lazy-fetch, through a frozen read view that refuses a partial clone (lazyFetchSafeGit).
+          const ancestry = await lazyFetchSafeGit(git)("git", [...noLazyFetch(), "-c", "protocol.allow=never", "--no-replace-objects", "merge-base", "--is-ancestor", source.head, descendant], { cwd: repo });
+          if (ancestry.code !== 0) problem = ancestry.stderr.includes(PARTIAL_CLONE_REFUSAL) ? PARTIAL_CLONE_REFUSAL : "the requested revision base does not contain its source head";
         }
       }
       if (problem !== null) {
@@ -3724,8 +3694,10 @@ async function tickCommand(
 
   settleFinished();
   const replied = replyPass.taken > 0 || replyPass.problem !== null;
-  const flows = flowPass.moved + flowPass.filed.length + flowPass.problems.length + triggerPass.added + triggerPass.problems.length + stepPass.ran + stepPass.problems.length === 0 && !replied ? {} : { flows: { ...flowPass,
-    ...(triggerPass.added + triggerPass.problems.length === 0 ? {} : { triggers: triggerPass }), ...(stepPass.ran + stepPass.problems.length === 0 ? {} : { steps: stepPass }), ...(replied ? { replies: replyPass } : {}) } };
+  const requestPass = housekeeping?.youiyoux ?? NO_YOUIYOUX_PASS;
+  const requested = requestPass.filed + requestPass.copied + requestPass.decided + requestPass.problems.length > 0;
+  const flows = flowPass.moved + flowPass.filed.length + flowPass.problems.length + triggerPass.added + triggerPass.problems.length + stepPass.ran + stepPass.problems.length === 0 && !replied && !requested ? {} : { flows: { ...flowPass,
+    ...(triggerPass.added + triggerPass.problems.length === 0 ? {} : { triggers: triggerPass }), ...(requested ? { youiyoux: requestPass } : {}), ...(stepPass.ran + stepPass.problems.length === 0 ? {} : { steps: stepPass }), ...(replied ? { replies: replyPass } : {}) } };
 
   const summary = () => {
     const lines = [`Considered ${considered}, built ${built}, parked ${parked}, broke ${broke}.`];
@@ -3767,15 +3739,7 @@ async function tickCommand(
       ...flows,
     });
   }
-  return fail(
-    write,
-    json,
-    "tick",
-    "nothing-dispatched",
-    "everything ready is waiting on a person or held by somebody else",
-    EXIT.refused,
-    { considered, dispatched, ...flows },
-  );
+  return fail(write, json, "tick", "nothing-dispatched", "everything ready is waiting on a person or held by somebody else", EXIT.refused, { considered, dispatched, ...flows });
 }
 
 /**
@@ -4055,9 +4019,7 @@ async function briefCommand(
   // (§6): the last watch episode's window and runner, instead of "the last
   // 24 hours" — which can mix two windows, or none.
   const episode = flags.has("latest-watch") ? store.latestWatchEpisode(repo) : null;
-  if (flags.has("latest-watch") && episode === null) {
-    return fail(write, json, "brief", "no-watch", "no watch episode recorded for this repo yet — run `toolroll watch` first", EXIT.refused);
-  }
+  if (flags.has("latest-watch") && episode === null) return fail(write, json, "brief", "no-watch", "no watch episode recorded for this repo yet — run `toolroll watch` first", EXIT.refused);
   const since =
     episode?.startedAt ??
     text(flags, "since") ??
@@ -4271,13 +4233,9 @@ async function decideCommand(
   }
 
   const id = Number(idText);
-  if (!Number.isInteger(id) || id <= 0) {
-    return fail(write, json, "decide", "usage", "`toolroll decide [<id>] [--choose <option>]`", EXIT.usage);
-  }
+  if (!Number.isInteger(id) || id <= 0) return fail(write, json, "decide", "usage", "`toolroll decide [<id>] [--choose <option>]`", EXIT.usage);
   const decision = store.getDecision(id);
-  if (decision === null) {
-    return fail(write, json, "decide", "unknown-decision", `no decision ${id}`, EXIT.refused);
-  }
+  if (decision === null) return fail(write, json, "decide", "unknown-decision", `no decision ${id}`, EXIT.refused);
 
   const choice = text(flags, "choose");
   if (choice === undefined) {
@@ -4324,21 +4282,9 @@ async function decideCommand(
   }
 
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(
-      write,
-      json,
-      "decide",
-      "usage",
-      "answering takes `--as <you> --token <t>` — who decided is recorded, not asserted",
-      EXIT.usage,
-    );
-  }
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  if (acting === null || !verified?.ok) return refuseApprover(context, "decide", verified, "answering takes `--as <you> --token <t>` — who decided is recorded, not asserted", String(id));
   const { name: asWho, token } = acting;
-  const authenticated = authenticateApprover(store, asWho, token);
-  if (!authenticated.ok) {
-    return fail(write, json, "decide", authenticated.reason, describeApproveFailure(authenticated.reason, String(id)), EXIT.refused);
-  }
 
   const note = text(flags, "note");
   const answered = store.answerDecision(
@@ -4399,10 +4345,22 @@ async function startConsole(options: {
   registryPath?: string;
   upConsole?: boolean;
   editorLinks?: "vscode";
+  instanceSecret?: () => string | null;
+  draining?: () => boolean;
 }): Promise<{ server: ReturnType<typeof createDecisionServer>; port: number; url: string }> {
   const { context } = options;
+  // A git incident (teardown-git.ts) raises an attention notification in this console's outbox.
+  noticeGitIncidents(context.store, context.clock);
+  // Every project folder this console starts with is resolved off its thread, under a deadline, after it is listening
+  // (consoleIdentitiesInBackground): the console answers at once, and a project shows up once its folder answers. Until
+  // then it is unresolved and kept restrictive; one that doesn't answer (a drive away, an iCloud folder macOS is
+  // holding) is looked at again by the background pass (project-identity.ts).
+  const identities = projectIdentities(context.folderLook);
   const server = createDecisionServer({
+    identities,
     store: context.store,
+    // Sign-in, integration and model checks, and the tidy-ups no page visit does (docs/plans/get-side-effects.md).
+    backgroundChecks: true,
     ...(context.desktopIdentity === undefined ? {} : { desktopIdentity: context.desktopIdentity }),
     ...(context.additionalProjectRepos === undefined || options.currentRepos === undefined ? {} : { additionalProjectRepos: options.currentRepos }),
     evidenceRoot: context.evidenceRoot,
@@ -4425,6 +4383,8 @@ async function startConsole(options: {
     ...(options.registryPath === undefined ? {} : { registryPath: options.registryPath }),
     ...(options.upConsole === undefined ? {} : { upConsole: options.upConsole }),
     ...(options.editorLinks === undefined ? {} : { editorLinks: options.editorLinks }),
+    ...(options.instanceSecret === undefined ? {} : { instanceSecret: options.instanceSecret }),
+    ...(options.draining === undefined ? {} : { draining: options.draining }),
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -4432,6 +4392,7 @@ async function startConsole(options: {
   }).catch(error => {
     throw new Error(`could not listen on ${options.host}:${options.port} — ${describe(error)}`);
   });
+  consoleIdentitiesInBackground(identities, [...options.repos ?? [], ...options.projectRoots ?? [], ...context.store.listProjects().map(one => one.path), ...context.store.knownRepos()]);
   // v104: monitoring runs beside the console (every setup has one): one loop sends the audit stream and traces where
   // Settings → Monitoring says, and stops when the console does. A lease keeps a second process from sending too.
   const stopMonitoring = startMonitoring({
@@ -4467,9 +4428,7 @@ async function serveCommand(
   const port = Number(portGiven ?? 4180);
   // Validated like demo's --port — a NaN handed to listen() surfaced as a
   // baffling bind failure instead of a usage answer (round-4 finding 11).
-  if (portGiven !== undefined && (!Number.isInteger(port) || port < 1 || port >= 65536)) {
-    return fail(write, json, "serve", "usage", "--port is a whole number under 65536", EXIT.usage);
-  }
+  if (portGiven !== undefined && (!Number.isInteger(port) || port < 1 || port >= 65536)) return fail(write, json, "serve", "usage", "--port is a whole number under 65536", EXIT.usage);
   const host = text(flags, "host") ?? "127.0.0.1";
   const allow = text(flags, "allow-host");
   // The authorization ceiling: --repo (comma-separable) names repos this
@@ -4489,12 +4448,8 @@ async function serveCommand(
   // allow-list of one, and which is meaningless without the machine's
   // runner assertion — links bind to runs this machine owns.
   const editor = text(flags, "editor");
-  if (editor !== undefined && editor !== "vscode") {
-    return fail(write, json, "serve", "usage", "--editor supports: vscode", EXIT.usage);
-  }
-  if (editor !== undefined && localRunner === undefined) {
-    return fail(write, json, "serve", "usage", "--editor needs --runner <name> — links bind to the worktrees this machine's runner owns", EXIT.usage);
-  }
+  if (editor !== undefined && editor !== "vscode") return fail(write, json, "serve", "usage", "--editor supports: vscode", EXIT.usage);
+  if (editor !== undefined && localRunner === undefined) return fail(write, json, "serve", "usage", "--editor needs --runner <name> — links bind to the worktrees this machine's runner owns", EXIT.usage);
 
   // The first-account road (setup review): with no approver, the login
   // page offers to create one, gated by this code — printed below, once.
@@ -4550,18 +4505,11 @@ async function requeueTask(
 ): Promise<number> {
   const { store, write, json, clock } = context;
   const [id] = positional;
-  if (id === undefined) {
-    return fail(write, json, "task requeue", "usage", "`toolroll task requeue <id> --as <you> --token <t>`", EXIT.usage);
-  }
+  if (id === undefined) return fail(write, json, "task requeue", "usage", "`toolroll task requeue <id> --as <you> --token <t>`", EXIT.usage);
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(write, json, "task requeue", "usage", "requeueing takes `--as <you> --token <t>` — who overrode the stall is recorded, not asserted", EXIT.usage);
-  }
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  if (acting === null || !verified?.ok) return refuseApprover(context, "task requeue", verified, "requeueing takes `--as <you> --token <t>` — who overrode the stall is recorded, not asserted", id);
   const { name: asWho, token } = acting;
-  const authenticated = authenticateApprover(store, asWho, token);
-  if (!authenticated.ok) {
-    return fail(write, json, "task requeue", authenticated.reason, describeApproveFailure(authenticated.reason, id), EXIT.refused);
-  }
 
   const result = store.requeueTask(id, asWho, clock());
   if (!result.ok) {
@@ -4571,6 +4519,8 @@ async function requeueTask(
       claimed: `a runner holds ${id} right now — wait for the attempt to end, or stop it`,
       "accepted-result": `${id}'s last result was accepted; change it through a revision, not a rerun`,
       published: `${id}'s last result is published; revise it through its pull request`,
+      // Only an Approve & build again asks for an exact build; the CLI never does.
+      moved: `${id} changed since its page was read; read it again`,
     };
     return fail(write, json, "task requeue", result.reason, why[result.reason], EXIT.refused);
   }
@@ -4585,7 +4535,8 @@ async function requeueTask(
  * `toolroll task regate <id>` — the approved check again on the last
  * attempt's exact commit (v70). A new attempt whose prepared candidate is
  * that commit: no agent, a fresh receipt and proof, the ordinary review.
- * The operator's yes seals the rerun scope; who asked is recorded.
+ * The operator's yes seals the rerun scope; who asked is recorded. A task
+ * that already names a prepared candidate keeps its approved scope as it is.
  */
 async function regateTaskCommand(
   positional: readonly string[],
@@ -4594,21 +4545,14 @@ async function regateTaskCommand(
 ): Promise<number> {
   const { store, write, json, clock } = context;
   const [id] = positional;
-  if (id === undefined) {
-    return fail(write, json, "task regate", "usage", "`toolroll task regate <id> --as <you> --token <t>`", EXIT.usage);
-  }
+  if (id === undefined) return fail(write, json, "task regate", "usage", "`toolroll task regate <id> --as <you> --token <t>`", EXIT.usage);
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(write, json, "task regate", "usage", "rerunning the check takes `--as <you> --token <t>` — the rerun scope is approved in your name", EXIT.usage);
-  }
-  const authenticated = authenticateApprover(store, acting.name, acting.token);
-  if (!authenticated.ok) {
-    return fail(write, json, "task regate", authenticated.reason, describeApproveFailure(authenticated.reason, id), EXIT.refused);
-  }
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  if (acting === null || !verified?.ok) return refuseApprover(context, "task regate", verified, "rerunning the check takes `--as <you> --token <t>` — the rerun scope is approved in your name", id);
   const result = regateTask(store, id, clock(), { kind: "operator", name: acting.name, token: acting.token });
   if (!result.ok) return fail(write, json, "task regate", result.reason, result.message, EXIT.refused);
   return succeed(write, json, "task regate", { id, run: result.run, head: result.head }, () => [
-    `${id} is queued again: the approved check runs on commit ${result.head.slice(0, 7)} exactly as attempt #${result.run} left it, with no agent. A fresh review follows.`,
+    `${id} is queued again: the approved check runs on commit ${result.head.slice(0, 7)}, the same files attempt #${result.run} checked, with no agent. A fresh review follows.`,
   ]);
 }
 
@@ -4625,47 +4569,30 @@ async function planTaskCommand(
 ): Promise<number> {
   const { store, write, json, clock } = context;
   const [id] = positional;
-  if (id === undefined) {
-    return fail(write, json, "task plan", "usage", "`toolroll task plan <id> --as <you> --token <t>`", EXIT.usage);
-  }
+  if (id === undefined) return fail(write, json, "task plan", "usage", "`toolroll task plan <id> --as <you> --token <t>`", EXIT.usage);
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(write, json, "task plan", "usage", "planning takes `--as <you> --token <t>` — it dispatches an agent that spends", EXIT.usage);
-  }
-  const authenticated = authenticateApprover(store, acting.name, acting.token);
-  if (!authenticated.ok) {
-    return fail(write, json, "task plan", authenticated.reason, describeApproveFailure(authenticated.reason, id), EXIT.refused);
-  }
-  if (store.getTask(id) === null) {
-    return fail(write, json, "task plan", "refused", `no task ${id}`, EXIT.refused);
-  }
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  if (acting === null || !verified?.ok) return refuseApprover(context, "task plan", verified, "planning takes `--as <you> --token <t>` — it dispatches an agent that spends", id);
+  if (store.getTask(id) === null) return fail(write, json, "task plan", "refused", `no task ${id}`, EXIT.refused);
   const ref = store.refFor(BUILT_IN, id);
   // Plan pins (P2/C7): a named pair binds the PLAN phase only, refused
   // while a live plan claim is spending on the previous answer.
   const pinProvider = text(flags, "provider");
   const pinModel = text(flags, "model");
   if (pinProvider !== undefined) {
-    if (!isProviderId(pinProvider)) {
-      return fail(write, json, "task plan", "usage", `unknown provider \`${pinProvider}\``, EXIT.usage);
-    }
+    if (!isProviderId(pinProvider)) return fail(write, json, "task plan", "usage", `unknown provider \`${pinProvider}\``, EXIT.usage);
     // A plan pin is an exact pair (v47): the route freezes model ids, and
     // a pin with no model would bind nothing exact.
-    if (pinModel === undefined || pinModel === "") {
-      return fail(write, json, "task plan", "usage", "a plan pin names an exact --model with --provider — approvals bind exact routing", EXIT.usage);
-    }
+    if (pinModel === undefined || pinModel === "") return fail(write, json, "task plan", "usage", "a plan pin names an exact --model with --provider — approvals bind exact routing", EXIT.usage);
     const valid = validateSpec({ provider: pinProvider, model: pinModel });
     if (!valid.ok) return fail(write, json, "task plan", "invalid", valid.problem, EXIT.usage);
     const pinned = store.setPlanPins(ref.id, pinProvider, pinModel, clock());
-    if (!pinned.ok) {
-      return fail(write, json, "task plan", "refused", "a planner holds this task right now — the pin would reroute a live spend", EXIT.refused);
-    }
+    if (!pinned.ok) return fail(write, json, "task plan", "refused", "a planner holds this task right now — the pin would reroute a live spend", EXIT.refused);
   } else if (pinModel !== undefined) {
     return fail(write, json, "task plan", "usage", "--model rides --provider for a plan pin", EXIT.usage);
   }
   const result = store.requestPlan(ref.id, clock());
-  if (!result.ok) {
-    return fail(write, json, "task plan", "refused", result.reason, EXIT.refused);
-  }
+  if (!result.ok) return fail(write, json, "task plan", "refused", result.reason, EXIT.refused);
   const autoPlan = authorizePlanUnderMode(store, id, acting.name, clock());
   return succeed(write, json, "task plan", { id, autoPlan, ...(pinProvider === undefined ? {} : { planProvider: pinProvider, planModel: pinModel ?? null }) }, () => [
     `${id} will be planned before it is built: the next pass dispatches a planner${pinProvider === undefined ? "" : ` on ${pinProvider}${pinModel === undefined ? "" : ` \u00b7 ${pinModel}`}`}.`,
@@ -4705,9 +4632,7 @@ async function reviewTaskCommand(
   if (flags.has("run") || flags.has("all")) return fail(write, json, "task review", "usage", "--run and --all require --brief.", EXIT.usage);
   const [runText] = positional;
   const runId = Number(runText ?? "");
-  if (runText === undefined || !Number.isInteger(runId) || runId < 1) {
-    return fail(write, json, "task review", "usage", "`toolroll task review <run-id>`", EXIT.usage);
-  }
+  if (runText === undefined || !Number.isInteger(runId) || runId < 1) return fail(write, json, "task review", "usage", "`toolroll task review <run-id>`", EXIT.usage);
   // Read-only: the run's one automatic review, when it had one.
   const review = buildReviewOf(store, runId);
   if (review !== null) {
@@ -4750,27 +4675,16 @@ async function incidentCommand(
     return EXIT.refused;
   }
 
-  if (action !== "resolve") {
-    return fail(write, json, "incident", "usage", "`toolroll incident [list|resolve <id>]`", EXIT.usage);
-  }
+  if (action !== "resolve") return fail(write, json, "incident", "usage", "`toolroll incident [list|resolve <id>]`", EXIT.usage);
   const id = Number(idText);
-  if (!Number.isInteger(id) || id <= 0) {
-    return fail(write, json, "incident resolve", "usage", "`toolroll incident resolve <id> --as <you> --token <t>`", EXIT.usage);
-  }
+  if (!Number.isInteger(id) || id <= 0) return fail(write, json, "incident resolve", "usage", "`toolroll incident resolve <id> --as <you> --token <t>`", EXIT.usage);
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(write, json, "incident resolve", "usage", "resolving takes `--as <you> --token <t>` — who looked is recorded, not asserted", EXIT.usage);
-  }
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  if (acting === null || !verified?.ok) return refuseApprover(context, "incident resolve", verified, "resolving takes `--as <you> --token <t>` — who looked is recorded, not asserted", String(id));
   const { name: asWho, token } = acting;
-  const authenticated = authenticateApprover(store, asWho, token);
-  if (!authenticated.ok) {
-    return fail(write, json, "incident resolve", authenticated.reason, describeApproveFailure(authenticated.reason, String(id)), EXIT.refused);
-  }
 
   const resolved = store.resolveIncident(id, asWho, clock());
-  if (!resolved) {
-    return fail(write, json, "incident resolve", "unknown-or-resolved", `no unresolved incident ${id}`, EXIT.refused);
-  }
+  if (!resolved) return fail(write, json, "incident resolve", "unknown-or-resolved", `no unresolved incident ${id}`, EXIT.refused);
   return succeed(write, json, "incident resolve", { id, by: asWho }, () => [
     `Resolved incident ${id}, as ${asWho}. The task's hold is lifted; the next tick may take it.`,
   ]);
@@ -4812,22 +4726,16 @@ async function webhookCommand(
   }
 
   if (action === "primary") {
-    if (which === undefined || !isMessagingChannel(which)) {
-      return fail(write, json, "webhook primary", "usage", "primary is one of telegram, slack, discord", EXIT.usage);
-    }
+    if (which === undefined || !isMessagingChannel(which)) return fail(write, json, "webhook primary", "usage", "primary is one of telegram, slack, discord", EXIT.usage);
     const primary = effectivePrimary(process.env, dir, telegramConfigured);
-    if (!primary.configured.includes(which)) {
-      return fail(write, json, "webhook primary", "unconfigured", `${which} is not configured — set it up first, then choose it`, EXIT.refused);
-    }
+    if (!primary.configured.includes(which)) return fail(write, json, "webhook primary", "unconfigured", `${which} is not configured — set it up first, then choose it`, EXIT.refused);
     savePrimary(dir, which);
     return succeed(write, json, "webhook primary", { primary: which }, () => [
       `Alerts now go to ${which}. ${which === "telegram" ? "Buttons and replies work there as always." : "Telegram (if configured) still accepts taps and replies — it just stops sending alerts."}`,
     ]);
   }
 
-  if (action !== "set" || which !== "console-url" || value === undefined) {
-    return fail(write, json, "webhook", "usage", "`toolroll webhook [status|primary <service>|set console-url <url>]`", EXIT.usage);
-  }
+  if (action !== "set" || which !== "console-url" || value === undefined) return fail(write, json, "webhook", "usage", "`toolroll webhook [status|primary <service>|set console-url <url>]`", EXIT.usage);
   const saved = saveConsoleUrl(dir, value);
   if (!saved.ok) return fail(write, json, "webhook set", "invalid", saved.message, EXIT.usage);
   return succeed(write, json, "webhook set", { which }, () => [`Console links will open ${value.replace(/\/+$/, "")}.`]);
@@ -4847,9 +4755,7 @@ function resumeProviderCommand(
   const { store, write, json } = context;
   const command = "providers resume";
   const provider = positional[0];
-  if (provider === undefined || !isProviderId(provider) || positional.length > 1) {
-    return fail(write, json, command, "usage", `Use \`toolroll providers resume <${PROVIDER_IDS.join("|")}>\`.`, EXIT.usage);
-  }
+  if (provider === undefined || !isProviderId(provider) || positional.length > 1) return fail(write, json, command, "usage", `Use \`toolroll providers resume <${PROVIDER_IDS.join("|")}>\`.`, EXIT.usage);
   const who = text(flags, "as") ?? process.env["USER"] ?? "operator";
   const lifted = liftAuthPause(store, provider, "person", who, context.clock());
   if (lifted === null) return succeed(write, json, command, { provider, resumed: 0, paused: false }, () => [`${provider} is not paused.`]);
@@ -4888,6 +4794,13 @@ async function providersCommand(
   const probed = await Promise.all(
     PROVIDER_IDS.map(async id => {
       const facts = inspectionOf(id);
+      // An ACP agent is looked at, never run (acp-inspect.ts): its version is its package's, read; whether it may
+      // run is its conformance check.
+      if (isAcpProvider(id)) {
+        const seen = inspectAcpAgent(id);
+        const version = { code: seen.found ? 0 : 127, stdout: seen.found ? (seen.package?.version ?? "") : "", stderr: "", notFound: !seen.found, timedOut: false };
+        return { id, facts, version, installed: seen.found, identity: seen.found ? `not checked on this computer — run \`toolroll agents check ${id}\`` : null };
+      }
       // A version probe carries no key (Codex gemini verify, finding 2).
       const version = await probe(facts.binary, ["--version"], { timeoutMs: 5_000, omitEnv: ALL_CREDENTIAL_ENV });
       const installed = version.code === 0 && !version.notFound;
@@ -4944,14 +4857,10 @@ async function providersCommand(
   if (flags.has("report")) {
     const runnerName = text(flags, "runner");
     const runnerToken = text(flags, "token");
-    if (runnerName === undefined || runnerToken === undefined) {
-      return fail(write, json, "providers", "usage", "`toolroll providers --report --runner <name> --token <t>` records readiness under that runner", EXIT.usage);
-    }
-    const observed = await observeProviderReadiness((file, args, options) => probe(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }));
+    if (runnerName === undefined || runnerToken === undefined) return fail(write, json, "providers", "usage", "`toolroll providers --report --runner <name> --token <t>` records readiness under that runner", EXIT.usage);
+    const observed = await observeProviderReadiness((file, args, options) => probe(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }), process.env, PROVIDER_IDS, provider => store.acpAttestationFor(provider, runnerName));
     const reported = reportProviderReadinessAuthed(store, { name: runnerName, token: runnerToken, observations: observed }, context.clock());
-    if (!reported.ok) {
-      return fail(write, json, "providers", reported.reason, describeAuth(reported.reason, runnerName), EXIT.refused);
-    }
+    if (!reported.ok) return fail(write, json, "providers", reported.reason, describeAuth(reported.reason, runnerName), EXIT.refused);
     recorded = observed;
   }
 
@@ -5025,6 +4934,71 @@ async function providersCommand(
  * own — these are 0600 files under the operator's home, and whoever can
  * write them already owns the machine's spend.
  */
+/**
+ * `toolroll agents …` — the coding agents Toolroll runs over ACP (acp-agents.ts): what is installed here, which are
+ * checked on which runner, and how each checked model is billed. An agent runs only once its conformance check passed
+ * on that runner (acp-check.ts); asking for one, or declaring a model billed by the agent's own plan, takes a password.
+ *
+ *   agents                                        each agent: installed, checked, billing
+ *   agents check <agent> --model <m> [--runner r] ask the runner's watch to check it (password)
+ *   agents revoke <agent> [--runner r]            the agent stops running there
+ *   agents billing <agent> <model> plan|metered [--runner r]
+ */
+async function agentsCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { store, write, json, clock } = context;
+  const [action = "list", provider, ...rest] = positional;
+  const runners = store.listRunners().filter(one => one.retiredAt === null).map(one => one.name);
+  const runnerGiven = text(flags, "runner");
+  const runner = runnerGiven ?? (runners.length === 1 ? runners[0]! : undefined);
+  if (action === "list") {
+    const rows = ACP_PROVIDER_IDS.map(id => {
+      const seen = inspectAcpAgent(id);
+      const checked = runners.flatMap(name => { const one = store.acpAttestationFor(id, name); return one === null ? [] : [{ runner: name, agent: one.agent, models: one.models, at: one.recordedAt }]; });
+      const latest = store.acpChecksFor(id, 1)[0] ?? null;
+      return { provider: id, name: ACP_AGENTS[id].name, installed: seen.found ? seen.realpath : null, checked, latestCheck: latest === null ? null : { id: latest.id, state: latest.state, model: latest.model, result: latest.result } };
+    });
+    if (json) { write(envelopeJson({ ok: true, command: "agents", agents: rows })); return EXIT.ok; }
+    for (const row of rows) {
+      write(`  ${row.name.padEnd(10)} ${row.installed === null ? "not installed" : row.installed}`);
+      for (const one of row.checked) write(`             checked on ${one.runner}: ${one.agent.name} ${one.agent.version}, ${one.models.length} models (${one.at.slice(0, 10)})`);
+      if (row.latestCheck !== null && row.latestCheck.state !== "passed") write(`             check #${row.latestCheck.id} (${row.latestCheck.model}): ${row.latestCheck.state}${row.latestCheck.result === null ? "" : ` — ${row.latestCheck.result}`}`);
+    }
+    write("  → `agents check <agent> --model <id>` asks this runner's watch to check one; it runs on the watch's next pass");
+    return EXIT.ok;
+  }
+  if (!["check", "revoke", "billing"].includes(action)) return fail(write, json, "agents", "usage", "`toolroll agents [check|revoke|billing]`", EXIT.usage);
+  if (provider === undefined || !isAcpProvider(provider)) return fail(write, json, `agents ${action}`, "usage", `which agent? ${ACP_PROVIDER_IDS.join(", ")}`, EXIT.usage);
+  if (runner === undefined || !runners.includes(runner)) return fail(write, json, `agents ${action}`, "usage", `which runner? --runner ${runners.join(" | ") || "<name>"}`, EXIT.usage);
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, `agents ${action}`, "usage", "this takes your name and password — `--as <you>` and the hidden prompt", EXIT.usage);
+  const verified = verifyApproverByPassword(store, acting.name, acting.token, store.knownRepos().filter(repo => store.accountCanAccess(acting.name, repo)));
+  if (!verified.ok) return fail(write, json, `agents ${action}`, "unauthenticated", "that is not an approver, or the password does not match", EXIT.refused);
+  // Which agents a runner admits, and how they bill, hold for every project the runner serves: an operator's call.
+  if (!store.isInstanceOperator(verified.who.name)) return fail(write, json, `agents ${action}`, "forbidden", "only an installation operator can check, revoke or set billing for a runner's agents", EXIT.refused);
+  const name = ACP_AGENTS[provider].name;
+  const now = clock();
+  if (action === "revoke") {
+    const revoked = store.revokeAcpAttestation(provider, runner, verified.who.name, now);
+    return succeed(write, json, "agents revoke", { provider, runner, revoked }, () => [revoked ? `${name} no longer runs on ${runner}; check it again to bring it back.` : `${name} wasn't checked on ${runner}.`]);
+  }
+  if (action === "billing") {
+    const [model, kind] = rest;
+    if (model === undefined || !validModelId(model) || (kind !== "plan" && kind !== "metered")) return fail(write, json, "agents billing", "usage", "`agents billing <agent> <model> plan|metered`", EXIT.usage);
+    const revision = store.declareAcpBilling({ provider, runner, model, kind, by: verified.who.name }, now);
+    return succeed(write, json, "agents billing", { provider, runner, model, kind, revision }, () => [kind === "plan"
+      ? `${name} on ${model} (${runner}) is billed by ${name}'s own plan: its runs count as $0, unmeasured, and monthly budgets don't hold them. Runs already started keep the terms they started with.`
+      : `${name} on ${model} (${runner}) is metered: its cost is unknown, so capped work and hard budgets hold it.`]);
+  }
+  // check
+  const model = text(flags, "model");
+  if (model === undefined || !validModelId(model)) return fail(write, json, "agents check", "usage", "`agents check <agent> --model <id>` — a model the agent offers (its own list shows after the check)", EXIT.usage);
+  const id = store.requestAcpCheck({ provider, runner, model, by: verified.who.name }, now);
+  return succeed(write, json, "agents check", { provider, runner, model, request: id }, () => [
+    `Check #${id} asked for: ${name} on ${model}, on ${runner}. Its watch runs it on its next pass (two short runs, in the fence; the model's own spend).`,
+    "→ `toolroll agents` shows how it went.",
+  ]);
+}
+
 async function keysCommand(
   positional: readonly string[],
   flags: Map<string, string | true>,
@@ -5032,11 +5006,10 @@ async function keysCommand(
 ): Promise<number> {
   const { write, json } = context;
   const [action, provider, ...rest] = positional;
-  if (action === undefined || !(KEYS_ACTIONS as readonly string[]).includes(action)) {
-    return fail(write, json, "keys", "usage", `unknown \`keys ${action ?? ""}\` — try ${KEYS_ACTIONS.join(", ")}`, EXIT.usage);
-  }
+  if (action === undefined || !(KEYS_ACTIONS as readonly string[]).includes(action)) return fail(write, json, "keys", "usage", `unknown \`keys ${action ?? ""}\` — try ${KEYS_ACTIONS.join(", ")}`, EXIT.usage);
   if (action === "status") {
-    const rows = PROVIDER_IDS.map(one => ({
+    // ACP agents sign in their own way: Toolroll keeps no key for them, so they aren't listed here.
+    const rows = PROVIDER_IDS.filter(isKeyedProvider).map(one => ({
       provider: one,
       envName: PROVIDER_KEY_ENV[one],
       ...keyStatus(one),
@@ -5059,9 +5032,8 @@ async function keysCommand(
     write("  → `keys auth <provider> subscription|api-key` switches; stored keys are kept either way");
     return EXIT.ok;
   }
-  if (provider === undefined || !isProviderId(provider)) {
-    return fail(write, json, `keys ${action}`, "usage", `which provider? ${PROVIDER_IDS.join(", ")}`, EXIT.usage);
-  }
+  if (provider === undefined || !isProviderId(provider)) return fail(write, json, `keys ${action}`, "usage", `which provider? ${PROVIDER_IDS.filter(isKeyedProvider).join(", ")}`, EXIT.usage);
+  if (!isKeyedProvider(provider)) return fail(write, json, `keys ${action}`, "refused", `${ACP_AGENTS[provider].name} signs in its own way (\`${ACP_AGENTS[provider].signIn}\`) — Toolroll keeps no key for it`, EXIT.refused);
   if (action === "clear") {
     const cleared = clearProviderKey(provider);
     const mode = readAuthMode(provider);
@@ -5075,21 +5047,15 @@ async function keysCommand(
   }
   if (action === "verify") {
     const stored = readProviderKey(provider);
-    if (stored === null) {
-      return fail(write, json, "keys verify", "refused", `no stored ${provider} key to verify`, EXIT.refused);
-    }
+    if (stored === null) return fail(write, json, "keys verify", "refused", `no stored ${provider} key to verify`, EXIT.refused);
     const verdict = await verifyProviderKey(provider, stored);
     return succeed(write, json, "keys verify", { provider, verdict }, () => [verdictWords(provider, verdict)]);
   }
   if (action === "auth") {
     const [wanted] = rest;
-    if (wanted !== "subscription" && wanted !== "api-key") {
-      return fail(write, json, "keys auth", "usage", `\`toolroll keys auth ${provider} subscription|api-key\``, EXIT.usage);
-    }
-    const set = setAuthMode(provider, wanted as AuthMode);
-    if (!set.ok) {
-      return fail(write, json, "keys auth", "refused", `${provider} has no subscription login — it is api-key only`, EXIT.refused);
-    }
+    if (wanted !== "subscription" && wanted !== "api-key") return fail(write, json, "keys auth", "usage", `\`toolroll keys auth ${provider} subscription|api-key\``, EXIT.usage);
+    const set = setAuthMode(provider, wanted);
+    if (!set.ok) return fail(write, json, "keys auth", "refused", `${provider} has no subscription login — it is api-key only`, EXIT.refused);
     return succeed(write, json, "keys auth", { provider, mode: wanted }, () => [
       wanted === "subscription"
         ? `${provider} now uses its own login; its stored key is kept as the fallback you can switch to.`
@@ -5105,17 +5071,13 @@ async function keysCommand(
       return fail(write, json, "keys set", "usage", `cannot read \`${file}\``, EXIT.usage);
     }
   } else {
-    if (process.stdin.isTTY) {
-      return fail(write, json, "keys set", "usage", "pipe the key in (\`toolroll keys set gemini < key.txt\` or via --key-file) — a key on an argv is visible to every process list", EXIT.usage);
-    }
+    if (process.stdin.isTTY) return fail(write, json, "keys set", "usage", "pipe the key in (\`toolroll keys set gemini < key.txt\` or via --key-file) — a key on an argv is visible to every process list", EXIT.usage);
     const chunks: Buffer[] = [];
     for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
     value = Buffer.concat(chunks).toString("utf8");
   }
   const saved = saveProviderKey(provider, value);
-  if (!saved.ok) {
-    return fail(write, json, "keys set", "implausible", "that does not look like an API key — check the paste", EXIT.refused);
-  }
+  if (!saved.ok) return fail(write, json, "keys set", "implausible", "that does not look like an API key — check the paste", EXIT.refused);
   // Save is instant (shape-checked); verification is a live credential
   // check that spends no tokens — skip it with --no-verify for an offline
   // machine or a provider you cannot reach right now.
@@ -5140,9 +5102,7 @@ async function peopleCommand(
 ): Promise<number> {
   const { store, write, json, clock } = context;
   const [action, ...rest] = positional;
-  if (action === undefined || !(PEOPLE_ACTIONS as readonly string[]).includes(action)) {
-    return fail(write, json, "people", "usage", `unknown \`people ${action ?? ""}\` — try ${PEOPLE_ACTIONS.join(", ")}`, EXIT.usage);
-  }
+  if (action === undefined || !(PEOPLE_ACTIONS as readonly string[]).includes(action)) return fail(write, json, "people", "usage", `unknown \`people ${action ?? ""}\` — try ${PEOPLE_ACTIONS.join(", ")}`, EXIT.usage);
 
   if (action === "list") {
     const accounts = store.accountFacts();
@@ -5166,13 +5126,10 @@ async function peopleCommand(
   }
 
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(write, json, `people ${action}`, "usage", `\`toolroll people ${action} … --as <you> --token <t>\``, EXIT.usage);
-  }
-  const authenticated = authenticateApprover(store, acting.name, acting.token);
-  if (!authenticated.ok) {
-    return fail(write, json, `people ${action}`, authenticated.reason, describeApproveFailure(authenticated.reason, acting.name), EXIT.refused);
-  }
+  if (acting === null) return fail(write, json, `people ${action}`, "usage", `\`toolroll people ${action} … --as <you> --token <t>\``, EXIT.usage);
+  // Inviting and widening access are credential acts; revoking only narrows.
+  const authenticated = (action === "revoke" ? authenticateApprover(store, acting.name, acting.token) : credentialApprover(store, acting.name, acting.token));
+  if (!authenticated.ok) return fail(write, json, `people ${action}`, authenticated.reason, describeApproveFailure(authenticated.reason, acting.name), EXIT.refused);
 
   const repoGiven = text(flags, "repo");
   const allProjects = flags.has("all-projects");
@@ -5191,9 +5148,7 @@ async function peopleCommand(
 
   if (action === "invite") {
     const roleFlag = text(flags, "role") ?? "viewer";
-    if (roleFlag !== "viewer" && roleFlag !== "approver") {
-      return fail(write, json, "people invite", "usage", "--role viewer|approver (viewer is the default)", EXIT.usage);
-    }
+    if (roleFlag !== "viewer" && roleFlag !== "approver") return fail(write, json, "people invite", "usage", "--role viewer|approver (viewer is the default)", EXIT.usage);
     if (noProjects) return fail(write, json, "people invite", "usage", "An invitation needs --repo <path> or all-project access.", EXIT.usage);
     const minted = store.mintInvite(roleFlag, acting.name, clock(), undefined, projects);
     return succeed(write, json, "people invite", { role: roleFlag, projects, path: `/join/${minted.token}`, expiresAt: minted.expiresAt }, () => [
@@ -5204,9 +5159,7 @@ async function peopleCommand(
   }
 
   const [name] = rest;
-  if (name === undefined || name.trim() === "") {
-    return fail(write, json, "people revoke", "usage", "`toolroll people revoke <name> --as <you> --token <t>`", EXIT.usage);
-  }
+  if (name === undefined || name.trim() === "") return fail(write, json, "people revoke", "usage", "`toolroll people revoke <name> --as <you> --token <t>`", EXIT.usage);
   const severed = store.revokeAccount(name.trim(), acting.name, clock());
   if (!severed.ok) {
     const words =
@@ -5235,7 +5188,8 @@ async function chatApprovalCommand(positional: readonly string[], flags: Map<str
   if (!["show", "on", "off"].includes(action)) return fail(write, json, "chat-approval", "usage", "Use chat-approval show | on | off [--repo <path>] [--full-access] [--cap-usd <n>] [--yes].", EXIT.usage);
   const acting = await askCredentials(flags, context);
   if (acting === null) return fail(write, json, command, "unauthenticated", "Approving from chat is your own setting: pass --as <you> --token <your password> (or sign in once with toolroll up).", EXIT.refused);
-  const authed = authenticateApprover(store, acting.name, acting.token);
+  // Turning approving from chat on (or changing its limits) is a credential act; showing or turning it off is not.
+  const authed = (action === "on" ? credentialApprover(store, acting.name, acting.token) : authenticateApprover(store, acting.name, acting.token));
   if (!authed.ok) return fail(write, json, command, "unauthenticated", "That name and password aren't an approver's. Nothing was changed.", EXIT.refused);
   const given = text(flags, "repo");
   const scope = given === undefined ? ALL_PROJECTS : canonicalProject(given) ?? resolve(given);
@@ -5272,16 +5226,12 @@ async function modeCommand(
 ): Promise<number> {
   const { store, write, json, clock } = context;
   const [action] = positional;
-  if (action === undefined || !(MODE_ACTIONS as readonly string[]).includes(action)) {
-    return fail(write, json, "mode", "usage", `unknown \`mode ${action ?? ""}\` — try ${MODE_ACTIONS.join(", ")}`, EXIT.usage);
-  }
+  if (action === undefined || !(MODE_ACTIONS as readonly string[]).includes(action)) return fail(write, json, "mode", "usage", `unknown \`mode ${action ?? ""}\` — try ${MODE_ACTIONS.join(", ")}`, EXIT.usage);
   const repoGiven = text(flags, "repo");
   // The same canonical string every other road stores for the repository
   // (a symlinked path — /var vs /private/var — must name the same mode).
   const repo = repoGiven === undefined ? undefined : canonicalProject(repoGiven) ?? resolve(repoGiven);
-  if (repo === undefined) {
-    return fail(write, json, "mode", "usage", "`mode` needs --repo <canonical path> — a mode is per-repository", EXIT.usage);
-  }
+  if (repo === undefined) return fail(write, json, "mode", "usage", "`mode` needs --repo <canonical path> — a mode is per-repository", EXIT.usage);
   const now = clock();
 
   if (action === "show") {
@@ -5298,13 +5248,10 @@ async function modeCommand(
   }
 
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(write, json, "mode", "usage", "signing or revoking a mode takes `--as <you> --token <t>`", EXIT.usage);
-  }
-  const authed = authenticateApprover(store, acting.name, acting.token);
-  if (!authed.ok) {
-    return fail(write, json, "mode", authed.reason, "that is not an active approver, or the token does not match", EXIT.refused);
-  }
+  if (acting === null) return fail(write, json, "mode", "usage", "signing or revoking a mode takes `--as <you> --token <t>`", EXIT.usage);
+  // Signing a mode that lets a chat app approve is a credential act; any other mode signing or revoking is ordinary.
+  const authed = (flag(flags, "chat-approve") ? credentialApprover(store, acting.name, acting.token) : authenticateApprover(store, acting.name, acting.token));
+  if (!authed.ok) return fail(write, json, "mode", authed.reason, "that is not an active approver, or the token does not match", EXIT.refused);
 
   if (action === "revoke") {
     // Lowering authority is one click for ANY approver (v4 doctrine).
@@ -5315,13 +5262,9 @@ async function modeCommand(
 
   // set: RAISING authority — the password ceremony above already ran.
   const nameGiven = text(flags, "name") ?? "standard";
-  if (nameGiven !== "standard" && nameGiven !== "hands-off") {
-    return fail(write, json, "mode set", "usage", "--name is standard or hands-off", EXIT.usage);
-  }
+  if (nameGiven !== "standard" && nameGiven !== "hands-off") return fail(write, json, "mode set", "usage", "--name is standard or hands-off", EXIT.usage);
   const daysGiven = Number(text(flags, "days") ?? "1");
-  if (!Number.isInteger(daysGiven) || daysGiven < 1 || daysGiven > MODE_MAX_DAYS) {
-    return fail(write, json, "mode set", "usage", `--days is 1 to ${MODE_MAX_DAYS} (a mode always expires)`, EXIT.usage);
-  }
+  if (!Number.isInteger(daysGiven) || daysGiven < 1 || daysGiven > MODE_MAX_DAYS) return fail(write, json, "mode set", "usage", `--days is 1 to ${MODE_MAX_DAYS} (a mode always expires)`, EXIT.usage);
   const expiry = new Date(now.getTime() + daysGiven * 24 * 60 * 60_000).toISOString();
   const terms = presetTerms(nameGiven as ModeName, expiry);
   // Explicit term overrides ride the same flags (all optional):
@@ -5329,19 +5272,13 @@ async function modeCommand(
   if (text(flags, "publication") === "notify") terms.publication = "notify";
   if (flag(flags, "auto-approve")) terms.autoApproveFiling = true;
   if (flag(flags, "plan-auto")) terms.planAuto = true;
-  if (["review-auto", "review-retry-auto", "repair-auto", "repair-max-attempts"].some(name => flags.has(name))) {
-    return fail(write, json, "mode set", "invalid", "Separate model review and automatic correction loops have been removed; finished work goes to the lead or user.", EXIT.refused);
-  }
-  if (terms.planAuto && !terms.autoApproveFiling) {
-    return fail(write, json, "mode set", "invalid", "--plan-auto requires automatic filing approval", EXIT.refused);
-  }
+  if (["review-auto", "review-retry-auto", "repair-auto", "repair-max-attempts"].some(name => flags.has(name))) return fail(write, json, "mode set", "invalid", "Separate model review and automatic correction loops have been removed; finished work goes to the lead or user.", EXIT.refused);
+  if (terms.planAuto && !terms.autoApproveFiling) return fail(write, json, "mode set", "invalid", "--plan-auto requires automatic filing approval", EXIT.refused);
   // Approving plans and merges from the signer's paired chat: never a preset default, only this flag.
   // The signature names every chat app it covers: a grant signed before that named Telegram alone, and stays so.
   if (flag(flags, "chat-approve")) { terms.chatApprove = true; terms.chatApproveChats = CHAT_APPROVE_ALL; }
   // Automerge requires a live merge-capable grant on the repo (D1).
-  if (terms.publication === "automerge" && !store.hasMergeCapableGrant(repo, now)) {
-    return fail(write, json, "mode set", "no-grant", "automerge needs a merge-capable publication grant on this repo — file one first", EXIT.refused);
-  }
+  if (terms.publication === "automerge" && !store.hasMergeCapableGrant(repo, now)) return fail(write, json, "mode set", "no-grant", "automerge needs a merge-capable publication grant on this repo — file one first", EXIT.refused);
   const digest = modeDigestOf(terms);
   const id = store.signMode(
     { repo, name: nameGiven, termsJson: modeTermsJson(terms), digest, signedBy: acting.name, absoluteExpiry: expiry, publication: terms.publication },
@@ -5360,9 +5297,7 @@ async function configCommand(
 ): Promise<number> {
   const { store, write, json, clock } = context;
   const [action, phase] = positional;
-  if (action !== undefined && !(CONFIG_ACTIONS as readonly string[]).includes(action)) {
-    return fail(write, json, "config", "usage", `unknown \`config ${action}\` — try ${CONFIG_ACTIONS.join(", ")}`, EXIT.usage);
-  }
+  if (action !== undefined && !(CONFIG_ACTIONS as readonly string[]).includes(action)) return fail(write, json, "config", "usage", `unknown \`config ${action}\` — try ${CONFIG_ACTIONS.join(", ")}`, EXIT.usage);
   const repoGiven = text(flags, "repo");
   const scope = repoGiven === undefined ? INSTALLATION_SCOPE : canonicalProject(repoGiven) ?? resolve(repoGiven);
 
@@ -5430,22 +5365,16 @@ async function configCommand(
     return EXIT.ok;
   }
 
-  if (action !== "set" && action !== "clear") {
-    return fail(write, json, "config", "usage", "`toolroll config [show|set <phase> --provider <p> [--model <m>]|clear <phase>] [--repo <path>] --as <you> --token <t>`", EXIT.usage);
-  }
+  if (action !== "set" && action !== "clear") return fail(write, json, "config", "usage", "`toolroll config [show|set <phase> --provider <p> [--model <m>]|clear <phase>] [--repo <path>] --as <you> --token <t>`", EXIT.usage);
 
   // Global dollar thresholds (v15, operator request): defaults for filings
   // and an installation-wide backstop. Authenticated like every spend
   // routing act; the per-task digest stays the authority.
   if (phase === "budgets") {
     const acting = await askCredentials(flags, context);
-    if (acting === null) {
-      return fail(write, json, `config ${action}`, "usage", "changing spend defaults takes `--as <you> --token <t>`", EXIT.usage);
-    }
+    if (acting === null) return fail(write, json, `config ${action}`, "usage", "changing spend defaults takes `--as <you> --token <t>`", EXIT.usage);
     const authedBudget = authenticateApprover(store, acting.name, acting.token);
-    if (!authedBudget.ok) {
-      return fail(write, json, `config ${action}`, "unauthenticated", "that is not an approver, or the token does not match", EXIT.refused);
-    }
+    if (!authedBudget.ok) return fail(write, json, `config ${action}`, "unauthenticated", "that is not an approver, or the token does not match", EXIT.refused);
     if (action === "clear") {
       store.setSpendDefaults({ buildPerRunMicrousd: null }, acting.name, clock());
       return succeed(write, json, "config clear", { budgets: null }, () => ["Spend defaults cleared — filings state their own numbers again."]);
@@ -5457,9 +5386,7 @@ async function configCommand(
       return Number.isFinite(value) && value > 0 ? Math.round(value * 1_000_000) : false;
     };
     const build = parseUsd("build-usd");
-    if (build === false) {
-      return fail(write, json, "config set", "usage", "--build-usd is a positive dollar amount", EXIT.usage);
-    }
+    if (build === false) return fail(write, json, "config set", "usage", "--build-usd is a positive dollar amount", EXIT.usage);
     store.setSpendDefaults({ buildPerRunMicrousd: build }, acting.name, clock());
     return succeed(write, json, "config set", { budgets: store.getSpendDefaults() }, () => [
       "Spend defaults set. New filings pre-fill from these; every approval still restates its own numbers:",
@@ -5472,17 +5399,11 @@ async function configCommand(
   // Installation-scoped only — a per-repo chat would splinter the spend
   // ceiling that makes the ledger a ceiling at all.
   if (phase === "chat") {
-    if (repoGiven !== undefined) {
-      return fail(write, json, `config ${action}`, "usage", "chat is installation-scoped — no --repo", EXIT.usage);
-    }
+    if (repoGiven !== undefined) return fail(write, json, `config ${action}`, "usage", "chat is installation-scoped — no --repo", EXIT.usage);
     const acting = await askCredentials(flags, context);
-    if (acting === null) {
-      return fail(write, json, `config ${action}`, "usage", "changing chat spend takes `--as <you> --token <t>`", EXIT.usage);
-    }
+    if (acting === null) return fail(write, json, `config ${action}`, "usage", "changing chat spend takes `--as <you> --token <t>`", EXIT.usage);
     const authedChat = authenticateApprover(store, acting.name, acting.token);
-    if (!authedChat.ok) {
-      return fail(write, json, `config ${action}`, "unauthenticated", "that is not an approver, or the token does not match", EXIT.refused);
-    }
+    if (!authedChat.ok) return fail(write, json, `config ${action}`, "unauthenticated", "that is not an approver, or the token does not match", EXIT.refused);
     if (action === "clear") {
       store.clearChatConfig();
       return succeed(write, json, "config clear", { chat: null }, () => ["Chat is off — the config row is gone."]);
@@ -5491,31 +5412,19 @@ async function configCommand(
     const requestedModel = text(flags, "model");
     const weeklyUsd = text(flags, "weekly-usd");
     const dailyGiven = text(flags, "daily-turns");
-    if (provider !== "anthropic-api" && provider !== "openrouter-api" && provider !== "claude-subscription" && provider !== "codex-subscription") {
-      return fail(write, json, "config set", "usage", "chat provider is one of claude-subscription, codex-subscription, anthropic-api, openrouter-api", EXIT.usage);
-    }
+    if (provider !== "anthropic-api" && provider !== "openrouter-api" && provider !== "claude-subscription" && provider !== "codex-subscription") return fail(write, json, "config set", "usage", "chat provider is one of claude-subscription, codex-subscription, anthropic-api, openrouter-api", EXIT.usage);
     const model = requestedModel ?? (isSubscriptionChatProvider(provider) ? "default" : "");
-    if (!validModelId(model)) {
-      return fail(write, json, "config set", "usage", "--model must be 1–128 letters, digits, dots, slashes, colons, underscores, or dashes", EXIT.usage);
-    }
+    if (!validModelId(model)) return fail(write, json, "config set", "usage", "--model must be 1–128 letters, digits, dots, slashes, colons, underscores, or dashes", EXIT.usage);
     const priced = isDirectChatProvider(provider) ? livePin(store, provider, model) ?? priceOf(model) : null;
-    if (isDirectChatProvider(provider) && priced === null) {
-      return fail(write, json, "config set", "unpriced-model", `chat reserves worst-case spend up front, so the model needs a price — run "toolroll models check" to load live prices, or pick one priced today: ${PRICED_MODELS.join(", ")}`, EXIT.refused);
-    }
+    if (isDirectChatProvider(provider) && priced === null) return fail(write, json, "config set", "unpriced-model", `chat reserves worst-case spend up front, so the model needs a price — run "toolroll models check" to load live prices, or pick one priced today: ${PRICED_MODELS.join(", ")}`, EXIT.refused);
     const weekly = Number(weeklyUsd);
-    if (isDirectChatProvider(provider) && (weeklyUsd === undefined || !Number.isFinite(weekly) || weekly <= 0)) {
-      return fail(write, json, "config set", "usage", "--weekly-usd <dollars> is required — chat without a ceiling is not configured, it is unbounded", EXIT.usage);
-    }
+    if (isDirectChatProvider(provider) && (weeklyUsd === undefined || !Number.isFinite(weekly) || weekly <= 0)) return fail(write, json, "config set", "usage", "--weekly-usd <dollars> is required — chat without a ceiling is not configured, it is unbounded", EXIT.usage);
     const daily = dailyGiven === undefined ? 50 : Number(dailyGiven);
-    if (!Number.isInteger(daily) || daily <= 0 || daily > 1_000) {
-      return fail(write, json, "config set", "usage", "--daily-turns is a whole number between 1 and 1000", EXIT.usage);
-    }
+    if (!Number.isInteger(daily) || daily <= 0 || daily > 1_000) return fail(write, json, "config set", "usage", "--daily-turns is a whole number between 1 and 1000", EXIT.usage);
     // The CLI pins from the compiled table (the console additionally offers
     // OpenRouter's live catalog — priced by the party that bills it).
     const pinned = isDirectChatProvider(provider) ? priced : { inMicrousd: 0, outMicrousd: 0 };
-    if (pinned === null) {
-      return fail(write, json, "config set", "unpriced-model", `no compiled price for ${model}`, EXIT.refused);
-    }
+    if (pinned === null) return fail(write, json, "config set", "unpriced-model", `no compiled price for ${model}`, EXIT.refused);
     store.setChatConfig(
       {
         provider,
@@ -5541,18 +5450,14 @@ async function configCommand(
     ]);
   }
 
-  if (phase === undefined || !["plan", "build", "repair", "review"].includes(phase)) {
-    return fail(write, json, `config ${action}`, "usage", "which phase? plan, build, repair, review — or chat", EXIT.usage);
-  }
+  if (phase === undefined || !["plan", "build", "repair", "review"].includes(phase)) return fail(write, json, `config ${action}`, "usage", "which phase? plan, build, repair, review — or chat", EXIT.usage);
 
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(write, json, `config ${action}`, "usage", "changing spend routing takes `--as <you> --token <t>`", EXIT.usage);
-  }
-  const authenticated = authenticateApprover(store, acting.name, acting.token);
-  if (!authenticated.ok) {
-    return fail(write, json, `config ${action}`, authenticated.reason, describeApproveFailure(authenticated.reason, phase), EXIT.refused);
-  }
+  // The credential generation the proof below is checked against, read BEFORE it: a rotation after this read makes
+  // the write refuse (model-choices.ts re-checks it inside the transaction), never borrow the new generation.
+  const provedGeneration = acting === null ? -1 : store.accountOf(acting.name)?.generation ?? -1;
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  if (acting === null || !verified?.ok) return refuseApprover(context, `config ${action}`, verified, "changing spend routing takes `--as <you> --token <t>`", phase);
 
   // The STRONG tier (v47): a second, named row per phase the routing policy
   // reaches for when size, quality, evidence, or publication demand it.
@@ -5560,42 +5465,48 @@ async function configCommand(
   // approvals are untouched — a sealed route never re-resolves.
   // The LIGHT tier (v2): the fast agent a small change builds on.
   const tierGiven = text(flags, "tier");
-  if (tierGiven !== undefined && tierGiven !== "strong" && tierGiven !== "light") {
-    return fail(write, json, `config ${action}`, "usage", "--tier is `light` or `strong` — the routine tier is the plain phase row", EXIT.usage);
-  }
+  if (tierGiven !== undefined && tierGiven !== "strong" && tierGiven !== "light") return fail(write, json, `config ${action}`, "usage", "--tier is `light` or `strong` — the routine tier is the plain phase row", EXIT.usage);
   // A light planner would never run (a small change makes no plan): refused rather than kept and ignored.
   // Clearing one left from before stays possible.
-  if (tierGiven === "light" && phase !== "build" && !(action === "clear" && phase === "plan" && !flag(flags, "also"))) {
-    return fail(write, json, `config ${action}`, "usage", "--tier light is for build only — a small change makes no plan, and repairs resume the builder's session", EXIT.usage);
-  }
+  if (tierGiven === "light" && phase !== "build" && !(action === "clear" && phase === "plan" && !flag(flags, "also"))) return fail(write, json, `config ${action}`, "usage", "--tier light is for build only — a small change makes no plan, and repairs resume the builder's session", EXIT.usage);
+
+  // Every row below — plain, tier, `--also`, and a leftover light planner's removal — is written through the one write
+  // path (model-choices.ts): one transaction, the actor re-proved as an instance operator at the credential generation
+  // proved above by a proof that still stands, the target and the resulting configuration checked, every row ledgered.
+  // A project named with --repo must be one Toolroll knows (the editor's own rule).
+  const projectKnown = repoGiven === undefined || (await knownProject(context, repoGiven, { listed: true, canonical: true })) !== undefined;
+  const proof = { actor: acting.name, generation: provedGeneration, method: verified.method };
+  const written = (slot: Slot | null, to: ModelChange["to"], extra: ExtraWrite[] = []) => writeModelRow(store, proof, scope, () => projectKnown, slot, to, clock(), extra);
+  // A configuration still missing a role's model is saved, and said (JSON: `incomplete`).
+  const said = (command: string, result: ApplyResult, payload: Record<string, unknown>, lines: () => string[]) => {
+    const incomplete = result.ok ? result.unresolved : null;
+    return succeed(write, json, command, { ...payload, ...(incomplete === null ? {} : { incomplete }) }, () => [...lines(), ...(incomplete === null ? [] : [`  ! new tasks can't be filed here yet: ${incomplete}`])]);
+  };
 
   // Another provider's candidate on the same tier (`--also`): one per provider, and at filing the one whose plan
   // has more room runs.
   if (flag(flags, "also")) {
-    if (phase !== "plan" && phase !== "build") {
-      return fail(write, json, `config ${action}`, "usage", "--also is for plan or build — repairs follow the build's provider", EXIT.usage);
-    }
+    if (phase !== "plan" && phase !== "build") return fail(write, json, `config ${action}`, "usage", "--also is for plan or build — repairs follow the build's provider", EXIT.usage);
     const tier = (tierGiven ?? "routine") as "light" | "routine" | "strong";
     const alsoProvider = text(flags, "provider");
-    if (alsoProvider !== undefined && !isProviderId(alsoProvider)) {
-      return fail(write, json, `config ${action}`, "usage", `--provider is one of ${PROVIDER_IDS.join(", ")}`, EXIT.usage);
-    }
+    if (alsoProvider !== undefined && !isProviderId(alsoProvider)) return fail(write, json, `config ${action}`, "usage", `--provider is one of ${PROVIDER_IDS.join(", ")}`, EXIT.usage);
     if (action === "clear") {
-      const removed = store.clearPhaseTierAlternates(scope, phase, tier, alsoProvider ?? null);
-      return succeed(write, json, "config clear", { scope, phase, tier, also: true, provider: alsoProvider ?? null, cleared: removed }, () => [
+      const alsoClear = written(null, null, [{ kind: "also-clear", phase, tier, provider: alsoProvider ?? null }]);
+      if (!alsoClear.ok) return fail(write, json, "config clear", alsoClear.reason, alsoClear.problem, EXIT.refused);
+      const removed = alsoClear.extra;
+      return said("config clear", alsoClear, { scope, phase, tier, also: true, provider: alsoProvider ?? null, cleared: removed }, () => [
         removed > 0 ? `Removed ${removed} other-provider ${tier} ${phase} agent${removed === 1 ? "" : "s"} at ${scope}; sealed routes are untouched.` : `No other-provider ${tier} ${phase} agent${alsoProvider === undefined ? "" : ` on ${alsoProvider}`} was configured at ${scope}.`,
       ]);
     }
     const alsoModel = text(flags, "model");
-    if (alsoProvider === undefined || alsoModel === undefined) {
-      return fail(write, json, "config set", "usage", "--also names an exact --provider and --model — approvals bind exact routing", EXIT.usage);
-    }
+    if (alsoProvider === undefined || alsoModel === undefined) return fail(write, json, "config set", "usage", "--also names an exact --provider and --model — approvals bind exact routing", EXIT.usage);
     const alsoValid = validateSpec({ provider: alsoProvider, model: alsoModel });
     if (!alsoValid.ok) return fail(write, json, "config set", "invalid", alsoValid.problem, EXIT.usage);
-    store.setPhaseTierAlternate(scope, phase, tier, alsoProvider, alsoModel, acting.name, clock());
+    const alsoSet = written(null, null, [{ kind: "also-set", phase, tier, provider: alsoProvider, model: alsoModel }]);
+    if (!alsoSet.ok) return fail(write, json, "config set", alsoSet.reason, alsoSet.problem, EXIT.refused);
     const resolvedNow = resolveRouteCandidates(store, scope === INSTALLATION_SCOPE ? null : scope);
     const own = !resolvedNow.ok ? null : tier === "routine" ? resolvedNow.candidates[phase].routine : tier === "light" ? resolvedNow.candidates[phase].light ?? null : resolvedNow.candidates[phase].strong;
-    return succeed(write, json, "config set", { scope, phase, tier, also: true, provider: alsoProvider, model: alsoModel }, () => [
+    return said("config set", alsoSet, { scope, phase, tier, also: true, provider: alsoProvider, model: alsoModel }, () => [
       `${tier} ${phase} at ${scope === INSTALLATION_SCOPE ? "the installation" : scope} can also run ${alsoProvider} · ${alsoModel}, set by ${acting.name}.`,
       own !== null && own.provider === alsoProvider && !own.source.includes("also")
         ? `  ! the ${tier} ${phase} agent already runs ${alsoProvider} (${own.model}) — this one is not used while it does.`
@@ -5604,58 +5515,67 @@ async function configCommand(
   }
 
   if (action === "clear") {
+    if (tierGiven === "light" && phase === "build") {
+      const lightWrite = written({ phase, tier: "light" }, null);
+      if (!lightWrite.ok) return fail(write, json, "config clear", lightWrite.reason, lightWrite.problem, EXIT.refused);
+      const clearedLight = lightWrite.diff.length > 0;
+      return said("config clear", lightWrite, { scope, phase, tier: "light", cleared: clearedLight }, () => [
+        clearedLight ? `Cleared the light ${phase} agent at ${scope} — small changes keep the default and say so; sealed routes are untouched.` : `No light ${phase} agent was configured at ${scope}.`,
+      ]);
+    }
     if (tierGiven === "light") {
-      const clearedLight = store.clearPhaseTierConfig(scope, phase, "light");
-      return succeed(write, json, "config clear", { scope, phase, tier: "light", cleared: clearedLight }, () => [
+      // A light planner from before light became build-only: removed here, never written.
+      const legacyClear = written(null, null, [{ kind: "legacy-light-clear", phase: phase as SlotPhase }]);
+      if (!legacyClear.ok) return fail(write, json, "config clear", legacyClear.reason, legacyClear.problem, EXIT.refused);
+      const clearedLight = legacyClear.extra > 0;
+      return said("config clear", legacyClear, { scope, phase, tier: "light", cleared: clearedLight }, () => [
         clearedLight ? `Cleared the light ${phase} agent at ${scope} — small changes keep the default and say so; sealed routes are untouched.` : `No light ${phase} agent was configured at ${scope}.`,
       ]);
     }
     if (tierGiven === "strong") {
-      const clearedStrong = store.clearPhaseTierConfig(scope, phase, "strong");
-      return succeed(write, json, "config clear", { scope, phase, tier: "strong", cleared: clearedStrong }, () => [
+      const strongWrite = written({ phase: phase as SlotPhase, tier: "strong" }, null);
+      if (!strongWrite.ok) return fail(write, json, "config clear", strongWrite.reason, strongWrite.problem, EXIT.refused);
+      const clearedStrong = strongWrite.diff.length > 0;
+      return said("config clear", strongWrite, { scope, phase, tier: "strong", cleared: clearedStrong }, () => [
         clearedStrong ? `Cleared the strong ${phase} agent at ${scope} — demanding routes keep the default and say so; sealed routes are untouched.` : `No strong ${phase} agent was configured at ${scope}.`,
       ]);
     }
-    const cleared = store.clearPhaseConfig(scope, phase);
-    return succeed(write, json, "config clear", { scope, phase, cleared }, () => [
+    const routineWrite = written({ phase: phase as SlotPhase, tier: "routine" }, null);
+    if (!routineWrite.ok) return fail(write, json, "config clear", routineWrite.reason, routineWrite.problem, EXIT.refused);
+    const cleared = routineWrite.diff.length > 0;
+    return said("config clear", routineWrite, { scope, phase, cleared }, () => [
       cleared ? `Cleared ${phase} at ${scope} — it resolves one layer down now.` : `Nothing was configured for ${phase} at ${scope}.`,
     ]);
   }
 
   const providerGiven = text(flags, "provider");
-  if (providerGiven === undefined || !isProviderId(providerGiven)) {
-    return fail(write, json, "config set", "usage", `--provider is one of ${PROVIDER_IDS.join(", ")}`, EXIT.usage);
-  }
+  if (providerGiven === undefined || !isProviderId(providerGiven)) return fail(write, json, "config set", "usage", `--provider is one of ${PROVIDER_IDS.join(", ")}`, EXIT.usage);
   const modelGiven = text(flags, "model") ?? null;
   const valid = validateSpec({ provider: providerGiven, model: modelGiven });
-  if (!valid.ok) {
-    return fail(write, json, "config set", "invalid", valid.problem, EXIT.usage);
-  }
+  if (!valid.ok) return fail(write, json, "config set", "invalid", valid.problem, EXIT.usage);
   if (tierGiven === "light") {
-    if (modelGiven === null) {
-      return fail(write, json, "config set", "usage", `a light ${phase} agent names an exact --model — approvals bind exact routing`, EXIT.usage);
-    }
-    store.setPhaseTierConfig(scope, phase, "light", providerGiven, modelGiven, acting.name, clock());
-    return succeed(write, json, "config set", { scope, phase, tier: "light", provider: providerGiven, model: modelGiven }, () => [
+    if (modelGiven === null) return fail(write, json, "config set", "usage", `a light ${phase} agent names an exact --model — approvals bind exact routing`, EXIT.usage);
+    const lightSet = written({ phase: phase as SlotPhase, tier: "light" }, { provider: providerGiven, model: modelGiven });
+    if (!lightSet.ok) return fail(write, json, "config set", lightSet.reason, lightSet.problem, EXIT.refused);
+    return said("config set", lightSet, { scope, phase, tier: "light", provider: providerGiven, model: modelGiven }, () => [
       `light ${phase} at ${scope === INSTALLATION_SCOPE ? "the installation" : scope} is ${providerGiven} · ${modelGiven}, set by ${acting.name}.`,
       "  small changes filed from now on build on it with no plan; sealed routes are untouched.",
     ]);
   }
   if (tierGiven === "strong") {
-    if (phase === "review" && providerGiven === "gemini") {
-      return fail(write, json, "config set", "invalid", "gemini has no isolation posture for the review phase yet — name claude or codex as the strong reviewer", EXIT.usage);
-    }
-    if (modelGiven === null) {
-      return fail(write, json, "config set", "usage", `a strong ${phase} agent names an exact --model — approvals bind exact routing`, EXIT.usage);
-    }
-    store.setPhaseTierConfig(scope, phase, "strong", providerGiven, modelGiven, acting.name, clock());
-    return succeed(write, json, "config set", { scope, phase, tier: "strong", provider: providerGiven, model: modelGiven }, () => [
+    if (phase === "review" && providerGiven === "gemini") return fail(write, json, "config set", "invalid", "gemini has no isolation posture for the review phase yet — name claude or codex as the strong reviewer", EXIT.usage);
+    if (modelGiven === null) return fail(write, json, "config set", "usage", `a strong ${phase} agent names an exact --model — approvals bind exact routing`, EXIT.usage);
+    const strongSet = written({ phase: phase as SlotPhase, tier: "strong" }, { provider: providerGiven, model: modelGiven });
+    if (!strongSet.ok) return fail(write, json, "config set", strongSet.reason, strongSet.problem, EXIT.refused);
+    return said("config set", strongSet, { scope, phase, tier: "strong", provider: providerGiven, model: modelGiven }, () => [
       `strong ${phase} at ${scope === INSTALLATION_SCOPE ? "the installation" : scope} is ${providerGiven}${modelGiven === null ? "" : ` · ${modelGiven}`}, set by ${acting.name}.`,
       "  large or risky, strict, screenshot-proof, and automerge routes filed from now on reach for it; sealed routes are untouched.",
       ...(phase === "repair" ? ["  a strong repair agent applies only when its provider is the build's — cross-provider repair does not exist."] : []),
     ]);
   }
-  store.setPhaseConfig(scope, phase, providerGiven, modelGiven, acting.name, clock());
+  // A routine row may still name no model on the command line (said below); the editor never writes one.
+  const routineSet = written({ phase: phase as SlotPhase, tier: "routine" }, { provider: providerGiven, model: modelGiven });
+  if (!routineSet.ok) return fail(write, json, "config set", routineSet.reason, routineSet.problem, EXIT.refused);
   const warnings: string[] = [];
   if (modelGiven === null) {
     warnings.push(`no --model named: approvals bind exact routing, so scopes cannot file until ${phase} has an exact model — \`config set ${phase} --provider ${providerGiven} --model <model>\``);
@@ -5666,7 +5586,7 @@ async function configCommand(
   if (providerGiven !== "claude") {
     warnings.push(`${providerGiven} does not report dollar cost: its runs land as UNMEASURED, and any schedule with a weekly limit fails closed on them by design.`);
   }
-  return succeed(write, json, "config set", { scope, phase, provider: providerGiven, model: modelGiven, warnings }, () => [
+  return said("config set", routineSet, { scope, phase, provider: providerGiven, model: modelGiven, warnings }, () => [
     `${phase} at ${scope === INSTALLATION_SCOPE ? "the installation" : scope} now runs ${providerGiven}${modelGiven === null ? "" : ` · ${modelGiven}`}, set by ${acting.name}.`,
     ...warnings.map(one => `  ! ${one}`),
   ]);
@@ -5692,9 +5612,7 @@ async function setupCommand(
   const repo = text(flags, "repo");
 
   if (action === "show") {
-    if (repo === undefined) {
-      return fail(write, json, "setup show", "usage", "which repo? --repo <path>", EXIT.usage);
-    }
+    if (repo === undefined) return fail(write, json, "setup show", "usage", "which repo? --repo <path>", EXIT.usage);
     const live = store.liveWorktreeSetup(repo);
     if (json) {
       write(envelopeJson({ ok: true, command: "setup show", repo, setup: live }));
@@ -5708,21 +5626,12 @@ async function setupCommand(
     return EXIT.ok;
   }
 
-  if (action !== "set" && action !== "clear") {
-    return fail(write, json, "setup", "usage", "`toolroll setup [show|set --command <cmd> [--timeout-seconds <n>] --yes|clear] --repo <path> --as <you> --token <t>`", EXIT.usage);
-  }
-  if (repo === undefined) {
-    return fail(write, json, `setup ${action}`, "usage", "which repo? --repo <path>", EXIT.usage);
-  }
+  if (action !== "set" && action !== "clear") return fail(write, json, "setup", "usage", "`toolroll setup [show|set --command <cmd> [--timeout-seconds <n>] --yes|clear] --repo <path> --as <you> --token <t>`", EXIT.usage);
+  if (repo === undefined) return fail(write, json, `setup ${action}`, "usage", "which repo? --repo <path>", EXIT.usage);
 
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(write, json, `setup ${action}`, "usage", "an approved setup runs unattended in every future worktree — changing it takes `--as <you> --token <t>`", EXIT.usage);
-  }
-  const authenticated = authenticateApprover(store, acting.name, acting.token);
-  if (!authenticated.ok) {
-    return fail(write, json, `setup ${action}`, authenticated.reason, describeApproveFailure(authenticated.reason, repo), EXIT.refused);
-  }
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  if (acting === null || !verified?.ok) return refuseApprover(context, `setup ${action}`, verified, "an approved setup runs unattended in every future worktree — changing it takes `--as <you> --token <t>`", repo);
 
   if (action === "clear") {
     const cleared = store.clearWorktreeSetup(repo, acting.name, clock());
@@ -5732,12 +5641,8 @@ async function setupCommand(
   }
 
   const command = text(flags, "command");
-  if (command === undefined || command.trim() === "") {
-    return fail(write, json, "setup set", "usage", "--command <cmd> is what every fresh checkout will run", EXIT.usage);
-  }
-  if (command.length > 2000 || hasDisguisedText(command)) {
-    return fail(write, json, "setup set", "invalid", "the command must be under 2000 characters with no control or bidi characters", EXIT.usage);
-  }
+  if (command === undefined || command.trim() === "") return fail(write, json, "setup set", "usage", "--command <cmd> is what every fresh checkout will run", EXIT.usage);
+  if (command.length > 2000 || hasDisguisedText(command)) return fail(write, json, "setup set", "invalid", "the command must be under 2000 characters with no control or bidi characters", EXIT.usage);
   // Literal credentials never become standing rows (audit IV-5): a command
   // that embeds a token is stored forever in plain text. Reference an
   // environment variable the runner already exports instead. `$TOKEN` is
@@ -5745,13 +5650,9 @@ async function setupCommand(
   const credentialShaped =
     /([A-Za-z0-9_-]*(?:token|secret|password|passwd|apikey|api_key|authorization|bearer|credential)[A-Za-z0-9_-]*\s*[=:]\s*)(?![$"']?\$)\S+/i.test(command) ||
     /\/\/[^\s/@]+:[^\s/@]+@/.test(command);
-  if (credentialShaped) {
-    return fail(write, json, "setup set", "credential-shaped", "the command appears to embed a credential — reference an environment variable the runner exports (e.g. $NPM_TOKEN) instead of a literal value", EXIT.usage);
-  }
+  if (credentialShaped) return fail(write, json, "setup set", "credential-shaped", "the command appears to embed a credential — reference an environment variable the runner exports (e.g. $NPM_TOKEN) instead of a literal value", EXIT.usage);
   const timeoutSeconds = Number(text(flags, "timeout-seconds") ?? "300");
-  if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 3600) {
-    return fail(write, json, "setup set", "invalid", "--timeout-seconds is 1..3600", EXIT.usage);
-  }
+  if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 3600) return fail(write, json, "setup set", "invalid", "--timeout-seconds is 1..3600", EXIT.usage);
 
   if (flags.get("yes") !== true) {
     if (json) {
@@ -5802,9 +5703,7 @@ async function verifyCommand(
   const repo = text(flags, "repo");
 
   if (action === "show") {
-    if (repo === undefined) {
-      return fail(write, json, "verify show", "usage", "which repo? --repo <path>", EXIT.usage);
-    }
+    if (repo === undefined) return fail(write, json, "verify show", "usage", "which repo? --repo <path>", EXIT.usage);
     const live = store.liveVerifyCommand(repo);
     const quick = liveQuickCommand(store, repo);
     const level = projectCheckLevel(store, repo);
@@ -5842,25 +5741,16 @@ async function verifyCommand(
     ]);
   }
 
-  if (action !== "set" && action !== "clear") {
-    return fail(write, json, "verify", "usage", "`toolroll verify [show|level quick|full|off|set --command <cmd>|--quick <cmd> [--timeout-seconds <n>] [--self-heal --setup-digest <shown>] --yes|clear [--level quick]] --repo <path> --as <you> --token <t>`", EXIT.usage);
-  }
+  if (action !== "set" && action !== "clear") return fail(write, json, "verify", "usage", "`toolroll verify [show|level quick|full|off|set --command <cmd>|--quick <cmd> [--timeout-seconds <n>] [--self-heal --setup-digest <shown>] --yes|clear [--level quick]] --repo <path> --as <you> --token <t>`", EXIT.usage);
   // The quick command is its own approved grant beside the full one.
   const quickValue = text(flags, "quick");
   const quickClear = action === "clear" && text(flags, "level") === "quick";
   const grantKey = repo === undefined ? undefined : quickValue !== undefined || quickClear ? quickVerifyKey(repo) : repo;
-  if (repo === undefined) {
-    return fail(write, json, `verify ${action}`, "usage", "which repo? --repo <path>", EXIT.usage);
-  }
+  if (repo === undefined) return fail(write, json, `verify ${action}`, "usage", "which repo? --repo <path>", EXIT.usage);
 
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(write, json, `verify ${action}`, "usage", "an approved verification command runs unattended after every future build — changing it takes `--as <you> --token <t>`", EXIT.usage);
-  }
-  const authenticated = authenticateApprover(store, acting.name, acting.token);
-  if (!authenticated.ok) {
-    return fail(write, json, `verify ${action}`, authenticated.reason, describeApproveFailure(authenticated.reason, repo), EXIT.refused);
-  }
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  if (acting === null || !verified?.ok) return refuseApprover(context, `verify ${action}`, verified, "an approved verification command runs unattended after every future build — changing it takes `--as <you> --token <t>`", repo);
 
   if (action === "clear") {
     const cleared = store.clearVerifyCommand(grantKey!, acting.name, clock());
@@ -5873,46 +5763,23 @@ async function verifyCommand(
   }
 
   const command = quickValue ?? text(flags, "command");
-  if (quickValue !== undefined && text(flags, "command") !== undefined) {
-    return fail(write, json, "verify set", "usage", "give the quick command with --quick \"<cmd>\" or the full one with --command, not both", EXIT.usage);
-  }
-  if (quickValue !== undefined && flags.get("self-heal") === true) {
-    return fail(write, json, "verify set", "usage", "--self-heal applies to the full command only", EXIT.usage);
-  }
-  if (command === undefined || command.trim() === "") {
-    return fail(write, json, "verify set", "usage", "--command <cmd> is what the plane re-runs after every commit", EXIT.usage);
-  }
-  if (command.length > 2000 || hasDisguisedText(command)) {
-    return fail(write, json, "verify set", "invalid", "the command must be under 2000 characters with no control or bidi characters", EXIT.usage);
-  }
+  if (quickValue !== undefined && text(flags, "command") !== undefined) return fail(write, json, "verify set", "usage", "give the quick command with --quick \"<cmd>\" or the full one with --command, not both", EXIT.usage);
+  if (quickValue !== undefined && flags.get("self-heal") === true) return fail(write, json, "verify set", "usage", "--self-heal applies to the full command only", EXIT.usage);
+  if (command === undefined || command.trim() === "") return fail(write, json, "verify set", "usage", "--command <cmd> is what the plane re-runs after every commit", EXIT.usage);
+  if (command.length > 2000 || hasDisguisedText(command)) return fail(write, json, "verify set", "invalid", "the command must be under 2000 characters with no control or bidi characters", EXIT.usage);
   // Same rule as an approved setup command (audit IV-5): a command that
   // embeds a literal credential is stored forever in plain text.
   const credentialShaped =
     /([A-Za-z0-9_-]*(?:token|secret|password|passwd|apikey|api_key|authorization|bearer|credential)[A-Za-z0-9_-]*\s*[=:]\s*)(?![$"']?\$)\S+/i.test(command) ||
     /\/\/[^\s/@]+:[^\s/@]+@/.test(command);
-  if (credentialShaped) {
-    return fail(write, json, "verify set", "credential-shaped", "the command appears to embed a credential — reference an environment variable the runner exports (e.g. $NPM_TOKEN) instead of a literal value", EXIT.usage);
-  }
+  if (credentialShaped) return fail(write, json, "verify set", "credential-shaped", "the command appears to embed a credential — reference an environment variable the runner exports (e.g. $NPM_TOKEN) instead of a literal value", EXIT.usage);
   const timeoutSeconds = Number(text(flags, "timeout-seconds") ?? "300");
-  if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 3600) {
-    return fail(write, json, "verify set", "invalid", "--timeout-seconds is 1..3600", EXIT.usage);
-  }
+  if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 3600) return fail(write, json, "verify set", "invalid", "--timeout-seconds is 1..3600", EXIT.usage);
   const selfHeal = flags.get("self-heal") === true;
   const expectedSetupDigest = text(flags, "setup-digest");
-  if (!selfHeal && expectedSetupDigest !== undefined) {
-    return fail(write, json, "verify set", "usage", "--setup-digest is only valid with --self-heal", EXIT.usage);
-  }
+  if (!selfHeal && expectedSetupDigest !== undefined) return fail(write, json, "verify set", "usage", "--setup-digest is only valid with --self-heal", EXIT.usage);
   const recoverySetup = selfHeal ? store.liveWorktreeSetup(repo) : null;
-  if (selfHeal && recoverySetup === null) {
-    return fail(
-      write,
-      json,
-      "verify set",
-      "setup-required",
-      "self-healing needs an approved project setup first — set the exact preparation command, then approve verification again with --self-heal",
-      EXIT.refused,
-    );
-  }
+  if (selfHeal && recoverySetup === null) return fail(write, json, "verify set", "setup-required", "self-healing needs an approved project setup first — set the exact preparation command, then approve verification again with --self-heal", EXIT.refused);
 
   if (flags.get("yes") !== true) {
     if (json) {
@@ -5958,26 +5825,8 @@ async function verifyCommand(
     return EXIT.refused;
   }
 
-  if (selfHeal && expectedSetupDigest === undefined) {
-    return fail(
-      write,
-      json,
-      "verify set",
-      "setup-digest-required",
-      `confirm self-healing with --setup-digest ${recoverySetup?.digest} exactly as previewed`,
-      EXIT.refused,
-    );
-  }
-  if (selfHeal && expectedSetupDigest !== recoverySetup?.digest) {
-    return fail(
-      write,
-      json,
-      "verify set",
-      "stale-approval",
-      `the approved setup changed after preview — expected ${expectedSetupDigest}, current ${recoverySetup?.digest}; preview verification again before approving`,
-      EXIT.refused,
-    );
-  }
+  if (selfHeal && expectedSetupDigest === undefined) return fail(write, json, "verify set", "setup-digest-required", `confirm self-healing with --setup-digest ${recoverySetup?.digest} exactly as previewed`, EXIT.refused);
+  if (selfHeal && expectedSetupDigest !== recoverySetup?.digest) return fail(write, json, "verify set", "stale-approval", `the approved setup changed after preview — expected ${expectedSetupDigest}, current ${recoverySetup?.digest}; preview verification again before approving`, EXIT.refused);
 
   const saved = store.setVerifyCommand(
     {
@@ -6058,13 +5907,8 @@ async function intakeCommand(
 
   if (action === "grant" || action === "clear") {
     const acting = await askCredentials(flags, context);
-    if (acting === null) {
-      return fail(write, json, `intake ${action}`, "usage", "an intake grant is standing authority — it takes `--as <you> --token <t>`", EXIT.usage);
-    }
-    const authenticated = authenticateApprover(store, acting.name, acting.token);
-    if (!authenticated.ok) {
-      return fail(write, json, `intake ${action}`, authenticated.reason, describeApproveFailure(authenticated.reason, repo), EXIT.refused);
-    }
+    const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+    if (acting === null || !verified?.ok) return refuseApprover(context, `intake ${action}`, verified, "an intake grant is standing authority — it takes `--as <you> --token <t>`", repo);
     if (action === "clear") {
       const cleared = store.clearIntakeGrant(repo, acting.name, clock());
       return succeed(write, json, "intake clear", { repo, cleared }, () => [
@@ -6073,12 +5917,8 @@ async function intakeCommand(
     }
     const github = text(flags, "github");
     const label = text(flags, "label");
-    if (github === undefined || !GITHUB_REPO_SHAPE.test(github)) {
-      return fail(write, json, "intake grant", "usage", "--github <owner/name> names the repository on GitHub", EXIT.usage);
-    }
-    if (label === undefined || !LABEL_SHAPE.test(label)) {
-      return fail(write, json, "intake grant", "usage", "--label <label> names the exact label that nominates an issue", EXIT.usage);
-    }
+    if (github === undefined || !GITHUB_REPO_SHAPE.test(github)) return fail(write, json, "intake grant", "usage", "--github <owner/name> names the repository on GitHub", EXIT.usage);
+    if (label === undefined || !LABEL_SHAPE.test(label)) return fail(write, json, "intake grant", "usage", "--label <label> names the exact label that nominates an issue", EXIT.usage);
     const reviewersRaw = text(flags, "reviewers");
     const reviewers =
       reviewersRaw === undefined
@@ -6111,14 +5951,10 @@ async function intakeCommand(
     ]);
   }
 
-  if (action !== "preview" && action !== "run" && action !== "pr-comments") {
-    return fail(write, json, "intake", "usage", "`toolroll intake [show|grant|clear|preview|run|pr-comments] --repo <path> …`", EXIT.usage);
-  }
+  if (action !== "preview" && action !== "run" && action !== "pr-comments") return fail(write, json, "intake", "usage", "`toolroll intake [show|grant|clear|preview|run|pr-comments] --repo <path> …`", EXIT.usage);
 
   const grant = store.liveIntakeGrant(repo);
-  if (grant === null) {
-    return fail(write, json, `intake ${action}`, "no-grant", `no intake grant for ${repo} — \`toolroll intake grant\` states the terms`, EXIT.refused);
-  }
+  if (grant === null) return fail(write, json, `intake ${action}`, "no-grant", `no intake grant for ${repo} — \`toolroll intake grant\` states the terms`, EXIT.refused);
 
   if (action === "pr-comments") {
     // PR review comments become LOCAL diff comments (M8.17): own PRs only
@@ -6127,9 +5963,7 @@ async function intakeCommand(
     // shared validator. Nothing here authorizes a spawn — ingested
     // comments wait on the run page for the same one-tap seal and the
     // same scope approval as comments typed in the console.
-    if (grant.reviewers === null || grant.reviewers.length === 0) {
-      return fail(write, json, "intake pr-comments", "no-reviewers", "the grant names no reviewers — `intake grant --reviewers <logins>` is the authority for this", EXIT.refused);
-    }
+    if (grant.reviewers === null || grant.reviewers.length === 0) return fail(write, json, "intake pr-comments", "no-reviewers", "the grant names no reviewers — `intake grant --reviewers <logins>` is the authority for this", EXIT.refused);
     const publications = store
       .openedPublications()
       .filter(
@@ -6216,9 +6050,7 @@ async function intakeCommand(
     ["issue", "list", "--repo", grant.github, "--label", grant.label, "--state", "open", "--limit", String(limit), "--json", "number,title,updatedAt"],
     { timeoutMs: 20_000 },
   );
-  if (asked.code !== 0) {
-    return fail(write, json, `intake ${action}`, "github-unreachable", `gh could not list ${grant.github}: ${(asked.stderr.split("\n")[0] ?? "").slice(0, 200)}`, EXIT.failed);
-  }
+  if (asked.code !== 0) return fail(write, json, `intake ${action}`, "github-unreachable", `gh could not list ${grant.github}: ${(asked.stderr.split("\n")[0] ?? "").slice(0, 200)}`, EXIT.failed);
   let issues: { number: number; title: string; updatedAt?: string }[];
   try {
     issues = JSON.parse(asked.stdout) as typeof issues;
@@ -6352,16 +6184,10 @@ function templateCommand(
     return EXIT.ok;
   }
 
-  if (action !== "show" && action !== "apply") {
-    return fail(write, json, `template ${action}`, "usage", "`toolroll template list | show <name> | apply <name> --repo <path> [--file]`", EXIT.usage);
-  }
-  if (name === undefined) {
-    return fail(write, json, `template ${action}`, "usage", "which template? `toolroll template list` names them", EXIT.usage);
-  }
+  if (action !== "show" && action !== "apply") return fail(write, json, `template ${action}`, "usage", "`toolroll template list | show <name> | apply <name> --repo <path> [--file]`", EXIT.usage);
+  if (name === undefined) return fail(write, json, `template ${action}`, "usage", "which template? `toolroll template list` names them", EXIT.usage);
   const template = templateByName(name);
-  if (template === null) {
-    return fail(write, json, `template ${action}`, "unknown", `no template named ${name} — \`toolroll template list\``, EXIT.refused);
-  }
+  if (template === null) return fail(write, json, `template ${action}`, "unknown", `no template named ${name} — \`toolroll template list\``, EXIT.refused);
 
   if (action === "show") {
     if (json) {
@@ -6400,20 +6226,9 @@ function templateCommand(
   }
 
   // apply
-  if (template.kind === "recipe") {
-    return fail(
-      write,
-      json,
-      "template apply",
-      "recipe",
-      `${template.name} cannot be applied: ${template.why} \`toolroll template show ${template.name}\` walks the ceremonies.`,
-      EXIT.refused,
-    );
-  }
+  if (template.kind === "recipe") return fail(write, json, "template apply", "recipe", `${template.name} cannot be applied: ${template.why} \`toolroll template show ${template.name}\` walks the ceremonies.`, EXIT.refused);
   const repoGiven = text(flags, "repo");
-  if (repoGiven === undefined) {
-    return fail(write, json, "template apply", "usage", "which repository? --repo <path> — a template never guesses where work lands", EXIT.usage);
-  }
+  if (repoGiven === undefined) return fail(write, json, "template apply", "usage", "which repository? --repo <path> — a template never guesses where work lands", EXIT.usage);
   const goal = text(flags, "goal") ?? template.goal;
   const outOfScope = text(flags, "not") ?? template.outOfScope;
   const touches =
@@ -6566,29 +6381,14 @@ async function daemonCommand(
     const runnerName = text(flags, "runner");
     const inlineToken = text(flags, "token");
     const tokenPath = text(flags, "token-file");
-    if (inlineToken !== undefined && tokenPath !== undefined) {
-      return fail(write, json, "daemon install", "usage", "choose one credential source: --token or --token-file", EXIT.usage);
-    }
+    if (inlineToken !== undefined && tokenPath !== undefined) return fail(write, json, "daemon install", "usage", "choose one credential source: --token or --token-file", EXIT.usage);
     const token = inlineToken ?? readTokenFile(tokenPath);
-    if (runnerName === undefined || token === undefined) {
-      return fail(write, json, "daemon install", "usage", "`toolroll daemon install --runner <name> (--token <t> | --token-file <path>) --repo <path>` (plus any watch flags to bake in)", EXIT.usage);
-    }
+    if (runnerName === undefined || token === undefined) return fail(write, json, "daemon install", "usage", "`toolroll daemon install --runner <name> (--token <t> | --token-file <path>) --repo <path>` (plus any watch flags to bake in)", EXIT.usage);
     const auth = authenticate(store, runnerName, token);
-    if (!auth.ok) {
-      return fail(write, json, "daemon install", auth.reason, describeAuth(auth.reason, runnerName), EXIT.refused);
-    }
+    if (!auth.ok) return fail(write, json, "daemon install", auth.reason, describeAuth(auth.reason, runnerName), EXIT.refused);
     const heartbeatBefore = store.getRunner(runnerName)?.runner.heartbeatAt ?? null;
     const located = await resolveBin();
-    if (located === null) {
-      return fail(
-        write,
-        json,
-        "daemon install",
-        "no-bin",
-        "`toolroll` is not on the PATH the service would use — run `toolroll link` first, or pass --bin <absolute path>",
-        EXIT.refused,
-      );
-    }
+    if (located === null) return fail(write, json, "daemon install", "no-bin", "`toolroll` is not on the PATH the service would use — run `toolroll link` first, or pass --bin <absolute path>", EXIT.refused);
 
     const watchFlags: string[] = [];
     for (const name of ["pool", "model", "repair-model", "provider", "plan-model", "plan-provider", "max", "turns", "tick-every", "bridge-every", "reconcile-every", "max-open-decisions", "containment"]) {
@@ -6625,22 +6425,11 @@ async function daemonCommand(
     }
 
     const installed = await installReplacingLegacy(plan, token, legacy, supervise);
-    if (!installed.ok) {
-      return fail(write, json, "daemon install", "supervisor", installed.message, EXIT.failed);
-    }
+    if (!installed.ok) return fail(write, json, "daemon install", "supervisor", installed.message, EXIT.failed);
     // The legacy watch beat for this runner until it stopped: only a beat after that proves the new one.
     const readySince = legacy === null ? heartbeatBefore : store.getRunner(runnerName)?.runner.heartbeatAt ?? null;
     const started = await daemonStatus(plan, supervise);
-    if (started.state !== "running") {
-      return fail(
-        write,
-        json,
-        "daemon install",
-        "not-running",
-        `the service was installed but did not stay running (${started.detail}) — read ${plan.logPath}; no work will be claimed until this is fixed`,
-        EXIT.failed,
-      );
-    }
+    if (started.state !== "running") return fail(write, json, "daemon install", "not-running", `the service was installed but did not stay running (${started.detail}) — read ${plan.logPath}; no work will be claimed until this is fixed`, EXIT.failed);
     // A supervisor PID is necessary but not sufficient: macOS can leave a
     // process stuck behind a protected-folder access check before it ever
     // opens the queue. The credentialed runner heartbeat is the end-to-end
@@ -6653,14 +6442,7 @@ async function daemonCommand(
       const macHint = process.platform === "darwin" && repo.startsWith(join(homedir(), "Documents"))
         ? " macOS may be blocking background access to Documents; grant the Node executable Full Disk Access, move the repository outside a protected folder, or keep `toolroll up` running from your terminal."
         : "";
-      return fail(
-        write,
-        json,
-        "daemon install",
-        "not-ready",
-        `the supervisor has a process, but ${runnerName} never reached its worker heartbeat.${macHint} Read ${plan.logPath}; no work will be claimed until the heartbeat appears`,
-        EXIT.failed,
-      );
+      return fail(write, json, "daemon install", "not-ready", `the supervisor has a process, but ${runnerName} never reached its worker heartbeat.${macHint} Read ${plan.logPath}; no work will be claimed until the heartbeat appears`, EXIT.failed);
     }
     return succeed(write, json, "daemon install", { label: plan.label, unit: plan.unitPath, logs: plan.logPath, state: started.state, pid: started.pid, heartbeatAt: liveRunner.heartbeatAt, action: installed.action, changed: installed.changed, replaced: legacy?.label ?? null, containment: containmentStatus(currentContainment()) }, () => [
       installed.action === "running" ? `${plan.label} was already running under this exact definition; left alone.` : installed.action === "reloaded" ? `Reloaded ${plan.label} under its changed definition.` : `Installed and started ${plan.label}.`,
@@ -6729,8 +6511,10 @@ async function daemonCommand(
 
 // ---- the watch loop --------------------------------------------------------
 
-const WATCH_LEASE_MS = 90_000;
-const WATCH_HEARTBEAT_MS = 30_000;
+// A watch lease lasts at most a minute and is renewed every 15 s (docs/plans/actors-lessons.md): a crashed worker's
+// projects are free within a minute, and a clean stop hands them back at once (retireRunnerIfCurrent).
+const WATCH_LEASE_MS = MAX_WATCH_LEASE_MS;
+const WATCH_HEARTBEAT_MS = RUNNER_HEARTBEAT_MS;
 
 /**
  * `toolroll watch` — the loop (§5, §6): the cron chain as one
@@ -6853,9 +6637,15 @@ async function runWatchLoop(args: {
   passes?: ProjectPasses;
   /** The service sends and receives Telegram itself; this loop never touches the bot. */
   serviceBridge?: boolean;
+  /** A restarted worker waits this long for its crashed predecessor's lease to lapse, then takes it over with recovery. */
+  leaseWaitMs?: number;
+  /** What ends that wait early, when not isStopping: a removed project's drain still waits to recover its predecessor. */
+  leaseWaitStopping?: () => boolean;
 }): Promise<WatchLoopResult> {
   const { context, flags, runner, token, repo, progress } = args;
   const { store } = context;
+  // A git incident in this worker's builds raises an attention notification in its outbox (once per store).
+  noticeGitIncidents(store, context.clock);
 
   const tickEveryMs = Number(text(flags, "tick-every") ?? 60_000);
   const bridgeEveryMs = Number(text(flags, "bridge-every") ?? 45_000);
@@ -6867,11 +6657,22 @@ async function runWatchLoop(args: {
 
   // The owner carries lifetime without changing the lease schema. Bounded watches cannot host automatic sweeps.
   const incarnation = `${runFor === null ? "toolroll-service:" : ""}${randomUUID()}`;
-  const lease = acquireWatchLeaseAuthed(
+  let lease = acquireWatchLeaseAuthed(
     store,
     { runner, token, repo, owner: incarnation, ttlMs: WATCH_LEASE_MS },
     new Date(),
   );
+  // Only expiry hands the lease over (store.acquireWatchLease): a predecessor still renewing keeps it, and the takeover
+  // recovers its incarnation in the same transaction, exactly as a fresh `up` after a crash would.
+  const waitUntil = Date.now() + (args.leaseWaitMs ?? 0);
+  let saidWaiting = false;
+  const waitStopping = args.leaseWaitStopping ?? args.isStopping;
+  while (!lease.ok && lease.reason === "watch-busy" && Date.now() < waitUntil && !waitStopping()) {
+    if (!saidWaiting) progress(`watch: ${repo} is still held by the previous worker until ${lease.until ?? "its lease lapses"}; taking it over then`);
+    saidWaiting = true;
+    await new Promise(resolve => setTimeout(resolve, 1_000));
+    lease = acquireWatchLeaseAuthed(store, { runner, token, repo, owner: incarnation, ttlMs: WATCH_LEASE_MS }, new Date());
+  }
   if (!lease.ok) {
     return {
       ok: false,
@@ -7053,6 +6854,13 @@ async function runWatchLoop(args: {
       if (batched > 0) progress(`watch: settled ${batched} batch-checked result(s)`);
       const ran = await runWaitingChecks(store, context.evidenceRoot, { now: context.clock, shouldStop: stopping });
       if (ran > 0) progress(`watch: ran ${ran} follow-up check(s)`);
+      // The nightly check of main and the release checks that clear its failures (release-once.md, part 3).
+      await refreshTrustedMains(store, context.evidenceRoot, context.clock(), context.gitRunner);
+      const settledChecks = settleReleaseChecks(store, context.evidenceRoot, context.clock());
+      if (settledChecks > 0) progress(`watch: settled ${settledChecks} release check(s)`);
+      // GitHub's nightly as release debt (nightly-github.ts): each opted-in project at most every 30 minutes, 60 s in
+      // all. A test's injected agent runner means a test: no real gh.
+      if (context.agentRunner === undefined) await refreshGithubNightlies(store, context.clock);
       // A finished check may send a build's card down its failure path: now, not on the next beat.
       if (ran + batched > 0) moveCards(store, repo, context.clock(), context.evidenceRoot);
     },
@@ -7094,8 +6902,8 @@ async function runWatchLoop(args: {
         base = head.stdout.trim();
       }
       const pass = await flowHousekeeping(store, repo, context.clock, flowIoOf(context, flowPool, flowGit, base), admissionStopped);
-      flowsDid(pass.flows.moved + pass.triggers.added + pass.steps.ran + pass.replies.taken, pass.flows.filed.length,
-        `flow pass — ${pass.triggers.added} card(s) added, ${pass.replies.taken} reply(ies) taken, ${pass.steps.ran} step(s) run, ${pass.flows.moved} moved`);
+      flowsDid(pass.flows.moved + pass.triggers.added + pass.steps.ran + pass.replies.taken, pass.flows.filed.length + pass.youiyoux.filed,
+        `flow pass — ${pass.triggers.added} card(s) added, ${pass.youiyoux.filed} youiyoux request(s) filed, ${pass.replies.taken} reply(ies) taken, ${pass.steps.ran} step(s) run, ${pass.flows.moved} moved`);
     },
   });
 
@@ -7386,15 +7194,11 @@ async function watchCommand(
   if (demoFence !== null) return demoFence;
   const runner = text(flags, "runner");
   const token = text(flags, "token") ?? readTokenFile(text(flags, "token-file"));
-  if (runner === undefined || token === undefined) {
-    return fail(write, json, "watch", "usage", "`toolroll watch --runner <name> --token <t>|--token-file <path> --repo <path> [--for <ms>]`", EXIT.usage);
-  }
+  if (runner === undefined || token === undefined) return fail(write, json, "watch", "usage", "`toolroll watch --runner <name> --token <t>|--token-file <path> --repo <path> [--for <ms>]`", EXIT.usage);
   // Passes built from these flags authenticate with the resolved token.
   flags.set("token", token);
   const auth = authenticate(store, runner, token);
-  if (!auth.ok) {
-    return fail(write, json, "watch", auth.reason, describeAuth(auth.reason, runner), EXIT.refused);
-  }
+  if (!auth.ok) return fail(write, json, "watch", auth.reason, describeAuth(auth.reason, runner), EXIT.refused);
   const repo = repoFrom(flags);
 
   // The envelope contract holds for long commands too (Codex M5-M8 audit,
@@ -7474,8 +7278,9 @@ async function watchCommand(
  *
  * COMPOSITION ONLY: identities mint through the atomic doors (a first
  * approver only while none exists; a runner only while its name is idle),
- * then the extracted console and one watch loop per repository run in this
- * one process, under one supervisor, over one shared store. Nothing here
+ * then the console and the worker (one watch loop per repository) run as two
+ * supervised processes over one shared store (isolated-checks.md, stage 1;
+ * up-processes.ts says what each holds). Nothing here
  * loosens a ceremony: approval, budgets, publication, and every fence work
  * exactly as they do for the long-hand verbs.
  */
@@ -7556,7 +7361,7 @@ async function resolveUpApprover(
       // the insert (finding 27). A refused insert unlinks only when an
       // UNRELATED approver won (finding 32).
       const name = asFlag ?? process.env["USER"] ?? process.env["USERNAME"] ?? "operator";
-      const password = randomBytes(12).toString("base64url");
+      const password = mintSecret(12);
       try {
         writeLoginFileDurably(loginFile, name, password);
       } catch (error) {
@@ -7642,7 +7447,7 @@ async function resolveUpApprover(
 }
 
 /** The platform browser opener — detached, silent, never load-bearing. */
-function openBrowser(url: string): void {
+export function openBrowser(url: string): void {
   // TOOLROLL_BROWSER_COMMAND names another program to open it with (it gets the address as its one argument).
   const chosen = envValue(process.env, "BROWSER_COMMAND");
   const command =
@@ -7658,8 +7463,6 @@ function openBrowser(url: string): void {
   }
 }
 
-/** Where `up` last served its console, kept beside the database so `onboard` names the same address. */
-const UP_CONSOLE_FILE = "up-console.json";
 
 function recordUpConsoleUrl(dir: string, url: string, now: Date): void {
   try {
@@ -7668,15 +7471,6 @@ function recordUpConsoleUrl(dir: string, url: string, now: Date): void {
     renameSync(temporary, file);
   } catch {
     // A display fact: a failed write only leaves onboard on the default port.
-  }
-}
-
-export function readUpConsoleUrl(dir: string): string | null {
-  try {
-    const parsed = JSON.parse(readFileSync(join(dir, UP_CONSOLE_FILE), "utf8")) as { url?: unknown };
-    return typeof parsed.url === "string" && /^https?:\/\/[^\s]+$/.test(parsed.url) ? parsed.url.replace(/\/+$/, "") : null;
-  } catch {
-    return null;
   }
 }
 
@@ -7701,9 +7495,7 @@ async function onboardCommand(flags: Map<string, string | true>, context: Contex
   const seams = context.onboardSeams ?? {};
   const portGiven = text(flags, "port");
   const port = Number(portGiven ?? 4180);
-  if (portGiven !== undefined && (!Number.isInteger(port) || port < 1 || port >= 65536)) {
-    return fail(write, json, "onboard", "usage", "--port is a whole number under 65536", EXIT.usage);
-  }
+  if (portGiven !== undefined && (!Number.isInteger(port) || port < 1 || port >= 65536)) return fail(write, json, "onboard", "usage", "--port is a whole number under 65536", EXIT.usage);
   // The console where `up` last served, unless --port says otherwise.
   const served = portGiven === undefined ? readUpConsoleUrl(dirname(context.databaseFile)) : null;
   const home = seams.home ?? homedir();
@@ -7759,6 +7551,8 @@ async function onboardCommand(flags: Map<string, string | true>, context: Contex
       if (!checked.ok) return `off: ${checked.message}`;
       return `off: turn on with toolroll publish setup --repo ${repo} --yes (asks your password), or in Settings → Projects`;
     }),
+    // A project that uses youiyoux has its change requests filed as tasks with no step of its own (youiyoux-intake.ts).
+    youiyoux: seams.youiyoux ?? (async repo => youiyouxOnboardLine(store, repo)),
     starterFlag: text(flags, "starter"),
     // Starter flows belong to a person: the flow's decisions ask them. With no account yet, none can be switched on.
     starters: {
@@ -7787,38 +7581,28 @@ async function upCommand(
   context: Context,
 ): Promise<number> {
   const { store, write, json, clock } = context;
+  // A role of an `up` that is already running (up-role-child.ts): no validation, identity or port of its own.
+  if (context.upRole !== undefined) return upRoleCommand(context, context.upRole);
   const demoFence = refuseDemo(context, "up");
   if (demoFence !== null) return demoFence;
 
   // 1. Validation, before anything at all.
   const portGiven = text(flags, "port");
   const port = Number(portGiven ?? 4180);
-  if (portGiven !== undefined && (!Number.isInteger(port) || port < 1 || port >= 65536)) {
-    return fail(write, json, "up", "usage", "--port is a whole number under 65536", EXIT.usage);
-  }
+  if (portGiven !== undefined && (!Number.isInteger(port) || port < 1 || port >= 65536)) return fail(write, json, "up", "usage", "--port is a whole number under 65536", EXIT.usage);
   const editorGiven = text(flags, "editor");
-  if (editorGiven !== undefined && editorGiven !== "vscode") {
-    return fail(write, json, "up", "usage", "--editor supports: vscode", EXIT.usage);
-  }
+  if (editorGiven !== undefined && editorGiven !== "vscode") return fail(write, json, "up", "usage", "--editor supports: vscode", EXIT.usage);
   const forGiven = text(flags, "for");
-  if (forGiven !== undefined && (!Number.isInteger(Number(forGiven)) || Number(forGiven) <= 0)) {
-    return fail(write, json, "up", "usage", "--for takes a positive whole number of milliseconds", EXIT.usage);
-  }
+  if (forGiven !== undefined && (!Number.isInteger(Number(forGiven)) || Number(forGiven) <= 0)) return fail(write, json, "up", "usage", "--for takes a positive whole number of milliseconds", EXIT.usage);
   const capacityGiven = text(flags, "capacity");
   const capacityFlag = capacityGiven === undefined ? null : parseRunnerCapacity(capacityGiven);
-  if (capacityGiven !== undefined && capacityFlag === null) {
-    return fail(write, json, "up", "usage", `--capacity is a whole number of tasks, 1 to ${RUNNER_CAPACITY_MAX}`, EXIT.usage);
-  }
+  if (capacityGiven !== undefined && capacityFlag === null) return fail(write, json, "up", "usage", `--capacity is a whole number of tasks, 1 to ${RUNNER_CAPACITY_MAX}`, EXIT.usage);
   const runnerFlag = text(flags, "runner");
-  if (runnerFlag !== undefined && !validRunnerName(runnerFlag)) {
-    return fail(write, json, "up", "usage", `a worker name is 1–${RUNNER_NAME_MAX} characters with no control characters`, EXIT.usage);
-  }
+  if (runnerFlag !== undefined && !validRunnerName(runnerFlag)) return fail(write, json, "up", "usage", `a worker name is 1–${RUNNER_NAME_MAX} characters with no control characters`, EXIT.usage);
   // --host / --allow-host (setup review): `up` reaches a phone over a
   // tailnet exactly as `serve` does, so one process is the whole install.
   const hostFlag = text(flags, "host") ?? "127.0.0.1";
-  if (!/^[A-Za-z0-9.:-]{1,253}$/.test(hostFlag)) {
-    return fail(write, json, "up", "usage", "--host is an address or a name", EXIT.usage);
-  }
+  if (!/^[A-Za-z0-9.:-]{1,253}$/.test(hostFlag)) return fail(write, json, "up", "usage", "--host is an address or a name", EXIT.usage);
   const allowFlag = text(flags, "allow-host");
   // --public-url: `up` serves a real domain exactly as `serve` does (one process is the whole team server).
   const publicUrlFlag = text(flags, "public-url");
@@ -7834,10 +7618,10 @@ async function upCommand(
   // folders they may be added from are installation state, not arguments a
   // person must repeat on every start.
   const registryPath = registryPathOf(context);
+  // Read before the list itself: a line removed after this (even if saved again) counts differently from now on.
+  const removalsAtStart = registryRemovals(registryPath);
   const loadedRegistry = await loadProjectRegistry(registryPath);
-  if ("error" in loadedRegistry) {
-    return fail(write, json, "up", "registry", loadedRegistry.error, EXIT.refused);
-  }
+  if ("error" in loadedRegistry) return fail(write, json, "up", "registry", loadedRegistry.error, EXIT.refused);
   const gitRun = context.gitRunner ?? ((file: string, args: readonly string[], opts?: { cwd?: string }) => run(file, [...args], { ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }), timeoutMs: 10_000 }));
 
   const rootInputs = (text(flags, "project-root") ?? "")
@@ -7847,9 +7631,7 @@ async function upCommand(
   const explicitRoots: string[] = [];
   for (const input of rootInputs) {
     const canonical = canonicalProject(input);
-    if (canonical === null) {
-      return fail(write, json, "up", "project-root", `${input} is not a directory this machine can use`, EXIT.refused);
-    }
+    if (canonical === null) return fail(write, json, "up", "project-root", `${input} is not a directory this machine can use`, EXIT.refused);
     if (!explicitRoots.includes(canonical)) explicitRoots.push(canonical);
   }
   const projectRoots = [...resolveCeiling([], addRepos(loadedRegistry.roots, explicitRoots)).ceiling.roots];
@@ -7860,20 +7642,26 @@ async function upCommand(
   // soon as a projects folder or saved repository exists.
   const repos: string[] = [];
   const proveRepo = async (input: string): Promise<string | null> => {
-    const top = await gitRun("git", ["rev-parse", "--show-toplevel"], { cwd: resolve(input) });
-    if (top.code !== 0) return null;
-    try {
-      return realpathSync(top.stdout.trim());
-    } catch {
-      return null;
-    }
+    // The checkout's real path is read off the thread, under a deadline (folder-look.ts): a folder that doesn't answer
+    // is unavailable, never a wait.
+    return (await upProveSaved(gitRun, input))?.root ?? null;
   };
+  // A saved project that doesn't answer now (a drive not connected, a folder macOS is holding) is looked at again
+  // while this start runs, and connects once it answers (upDeferredRetry).
+  const deferredRepos: string[] = [];
+  const deferredGenerations: Record<string, number> = {};
+  // The saved line(s) each project was proved from, so its removal is judged by its own line alone.
+  const repoLines: Record<string, string[]> = {};
   for (const input of loadedRegistry.repos) {
     const root = await proveRepo(input);
     if (root === null) {
-      progress(`saved project unavailable — skipped ${input}`);
-    } else if (!repos.includes(root)) {
-      repos.push(root);
+      progress(`saved project unavailable — skipped ${input}; it connects when it's back`);
+      deferredRepos.push(input);
+      // An unreadable removal record leaves no count that could match later: the authority can't be used.
+      deferredGenerations[input] = removalsAtStart === null ? -1 : removalsAtStart[input] ?? 0;
+    } else {
+      if (!repos.includes(root)) repos.push(root);
+      (repoLines[root] ??= []).push(input);
     }
   }
   const explicitRepos = context.repoList ?? [];
@@ -7883,16 +7671,7 @@ async function upCommand(
   if (explicitRepos.length > 0) {
     for (const input of explicitRepos) {
       const root = await proveRepo(input);
-      if (root === null) {
-        return fail(
-          write,
-          json,
-          "up",
-          "not-a-repository",
-          `${input} is not inside a git repository — choose a repository, set a projects folder once with \`--project-root <dir>\`, or try the sandbox with \`toolroll demo\``,
-          EXIT.refused,
-        );
-      }
+      if (root === null) return fail(write, json, "up", "not-a-repository", `${input} is not inside a git repository — choose a repository, set a projects folder once with \`--project-root <dir>\`, or try the sandbox with \`toolroll demo\``, EXIT.refused);
       if (!repos.includes(root)) repos.push(root);
       pinnedRepos.add(root);
     }
@@ -7901,16 +7680,9 @@ async function upCommand(
     if (cwdRepo !== null && !repos.includes(cwdRepo)) repos.push(cwdRepo);
     if (cwdRepo !== null) pinnedRepos.add(cwdRepo);
   }
-  if (repos.length === 0 && projectRoots.length === 0) {
-    return fail(
-      write,
-      json,
-      "up",
-      "no-projects",
-      "choose where your projects live once: `toolroll up --project-root <dir>`",
-      EXIT.refused,
-    );
-  }
+  // Saved projects that are only away for now still start the service: it serves an empty, restrictive set until they
+  // answer (never the unscoped mode), and connects each as it comes back.
+  if (repos.length === 0 && projectRoots.length === 0 && deferredRepos.length === 0) return fail(write, json, "up", "no-projects", "choose where your projects live once: `toolroll up --project-root <dir>`", EXIT.refused);
   // A person at a terminal reads three lines (onboarding); the folders are for --verbose, a service log, or an agent.
   const quietStart = !json && !flags.has("verbose") && (context.upSeams?.terminal ?? process.stdout.isTTY === true) && !underAgent(context.upSeams?.env ?? process.env);
   if (!quietStart) {
@@ -7926,14 +7698,10 @@ async function upCommand(
     probe.listen(port, "127.0.0.1", () => resolveProbe(true));
   });
   if (!reserved) {
-    return fail(
-      write,
-      json,
-      "up",
-      "port-busy",
-      `port ${port} is taken — another \`up\` or \`serve\` may already be running; stop it, or pick a different --port`,
-      EXIT.refused,
-    );
+    // The console that holds it said it is stopping: a restart is under way, so say that instead of "another one runs".
+    const holder = lifecycleOf(store, `console:${port}`);
+    if (holder?.state === "draining") return fail(write, json, "up", "port-busy", `Toolroll is restarting (draining): the console on port ${port} is stopping — try again in a few seconds`, EXIT.refused);
+    return fail(write, json, "up", "port-busy", `port ${port} is taken — another \`up\` or \`serve\` may already be running; stop it, or pick a different --port`, EXIT.refused);
   }
 
   // Under a coding agent nothing is asked and no secret is printed, even in a real terminal: what is shown lands in
@@ -7946,9 +7714,7 @@ async function upCommand(
   try {
     // 4. The approver (findings 2/8/17/21/27/29/32).
     const approverPlan = await resolveUpApprover(context, flags, canPrompt);
-    if ("refusal" in approverPlan) {
-      return fail(write, json, "up", "login", approverPlan.refusal, EXIT.refused);
-    }
+    if ("refusal" in approverPlan) return fail(write, json, "up", "login", approverPlan.refusal, EXIT.refused);
     approver = approverPlan;
     for (const note of approverPlan.notes) progress(note);
 
@@ -7956,16 +7722,7 @@ async function upCommand(
     // recovering runner authority on an UNVERIFIED operator identity was a
     // registration road around the ceremony. No verified password, no
     // runner — the login file or another approver restores the road.
-    if (!approverPlan.verified) {
-      return fail(
-        write,
-        json,
-        "up",
-        "login",
-        `${approverPlan.approver}'s password could not be verified — a runner only registers under a proven operator. Type it correctly, restore ${UP_LOGIN_FILE}, or have another approver re-add you.`,
-        EXIT.refused,
-      );
-    }
+    if (!approverPlan.verified) return fail(write, json, "up", "login", `${approverPlan.approver}'s password could not be verified — a runner only registers under a proven operator. Type it correctly, restore ${UP_LOGIN_FILE}, or have another approver re-add you.`, EXIT.refused);
 
     // 5. The runner, through the atomic door (findings 1/16/26/31), with
     // the suffix budget (finding 24) for generated names only.
@@ -7977,27 +7734,42 @@ async function upCommand(
       // The runner's authority is BOUND to the canonical roots this up
       // serves (MCP spec v6): the claim gate enforces membership, so an
       // unbound registration would deny-all its own dispatches.
-      const answer = registerRunnerIfIdle(store, { name, host: hostname(), repos, now: clock() });
+      // A holder whose every process is proved gone (its record beside the database) no longer blocks the name: an
+      // `up` killed outright can't leave a fresh heartbeat in the way of the next start (the 2026-10-29 deploy).
+      const tryRegister = () => registerRunnerIfIdle(store, { name, host: hostname(), repos, now: clock(),
+        previousGone: holder => recordedHolderProvedGone(runnerProcessFile(context.databaseFile, name), holder, hostname()) });
+      let answer = tryRegister();
+      // Wait for a draining holder to sign off or be proved gone, never just for its deadline to elapse.
+      const drainWaitUntil = Date.now() + 2 * 60_000;
+      let saidDraining = false;
+      while (!answer.ok && answer.reason === "runner-draining" && Date.now() < drainWaitUntil) {
+        if (!saidDraining) progress(`${answer.detail}; waiting for it to stop`);
+        saidDraining = true;
+        await new Promise(resolveWait => setTimeout(resolveWait, 1_000));
+        answer = tryRegister();
+      }
       if (answer.ok) {
         runnerName = name;
         runnerToken = answer.token;
+        if (answer.signedOff !== null) progress(`signed off the previous ${name}: its processes had already exited`);
         if (answer.recoveredRuns > 0) progress(`recovered ${answer.recoveredRuns} interrupted attempt(s) left by the previous ${name}`);
+        // Every process given this credential is recorded (pid and start time) before it gets it: this one now, each
+        // role child as it is spawned. A later start proves them gone by this record.
+        if (!recordRunnerProcess(context.databaseFile, { runner: answer.runner, credentialHash: hashRunnerToken(answer.token) }, "up", process.pid)) {
+          retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
+          return fail(write, json, "up", "runner-alive", "The worker process record could not be saved; nothing started", EXIT.refused);
+        }
         doorAnswer = answer;
         break;
       }
       doorAnswer = answer;
       if (runnerFlag !== undefined) break; // an explicit name is never suffixed around
+      if (answer.reason === "runner-draining") break; // a restart under way keeps its name
     }
     if (runnerName === "") {
       const detail = doorAnswer !== null && !doorAnswer.ok ? doorAnswer.detail : "no worker name could be taken";
-      return fail(
-        write,
-        json,
-        "up",
-        "runner-alive",
-        `${detail} — that worker looks alive; stop the other \`up\` or watch, or name a different worker with --runner`,
-        EXIT.refused,
-      );
+      if (doorAnswer !== null && !doorAnswer.ok && doorAnswer.reason === "runner-draining") return fail(write, json, "up", "runner-alive", `${detail}, and it hasn't yet — try again shortly`, EXIT.refused);
+      return fail(write, json, "up", "runner-alive", `${detail} — that worker looks alive; stop the other \`up\` or watch, or name a different worker with --runner`, EXIT.refused);
     }
 
     // 6. Enrollment: repositories and project roots are one atomic machine
@@ -8026,296 +7798,185 @@ async function upCommand(
     await new Promise<void>(done => probe.close(() => done()));
   }
 
-  // 7. The console, on the just-released port. The tiny window between the
-  // probe closing and this bind can lose a race; that failure tears down
-  // cleanly below instead of leaving identities half-claimed silently.
+  // 7–8. The console and the worker (docs/plans/isolated-checks.md, stage 1): two processes, each started and
+  // restarted by controller-supervisor, so a long check in the worker never holds a console response. With seams
+  // that can't cross a process (tests, the desktop host) or --single-process, the same two roles run in this one.
   const pool = join(dirname(context.databaseFile), "worktrees");
-  // Mutated only by the registry supervisor below. The console reads this
-  // proved set on each request, so its project rail and unified chat move
-  // with the live builder instead of freezing at process start.
-  const activeRepos = new Set<string>(repos);
-  let console_: Awaited<ReturnType<typeof startConsole>>;
-  try {
-    console_ = await startConsole({
-      context,
-      host: hostFlag,
-      port,
-      ...(allowFlag === undefined ? {} : { allowedHosts: allowFlag.split(",").map(one => one.trim()).filter(one => one !== "") }),
-      ...(publicUrlFlag === undefined ? {} : { publicUrl: publicUrlFlag }),
-      localRunner: runnerName,
-      poolRoot: pool,
-      repos,
-      currentRepos: () => [...activeRepos],
-      admittedRepos: () => [...activeRepos],
-      upConsole: true,
-      registryPath,
-      projectRoots,
-      ...(text(flags, "public-url") === undefined ? {} : { publicUrl: text(flags, "public-url") as string }),
-      ...(text(flags, "editor") === undefined ? {} : { editorLinks: "vscode" as const }),
-    });
-  } catch (error) {
-    retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
-    return fail(write, json, "up", "port-busy", `${describe(error)} — the port was taken while starting; try again`, EXIT.refused);
-  }
-
-  // 8. The project supervisor: one watch loop per proved repository, plus a
-  // tiny registry poll that can add more while this process stays up. The
-  // poll is deliberately plain filesystem I/O (portable across macOS,
-  // Linux, and Windows) and never invokes an agent while nothing changed.
+  const split = !flags.has("single-process") && context.upOneProcess !== true;
+  const build = upBuildIdentity();
+  const containmentFlag = text(flags, "containment") ?? null;
+  const stopGraceMs = Number(text(flags, "stop-grace") ?? 30_000);
   let stopping = false;
   let fatal: string | null = null;
-  let graceTimer: ReturnType<typeof setTimeout> | undefined;
   let runTimer: ReturnType<typeof setTimeout> | undefined;
-  const followControllers: AbortController[] = [];
   let resolveStopped: () => void = () => {};
   const stopped = new Promise<void>(resolveStop => (resolveStopped = resolveStop));
-  const stopGraceMs = Number(text(flags, "stop-grace") ?? 30_000);
-  const hardStop = () => {
-    const terminated = terminateLiveProviders();
-    if (terminated > 0) progress(`Stopped ${terminated} running build(s). Their work is saved, and each resumes when the builder starts again.`);
-  };
-  const stop = () => {
+  // What the worker serves now: relayed to the console (its project rail and chat), and a restarted worker's start.
+  let currentRepos: string[] = [...repos];
+  let consoleRole: UpRoleHandle | null = null;
+  let workerRole: UpRoleHandle | null = null;
+  // A stop that can't finish (a role that ignores its stop, a drain that hangs) still signs off: past the worker's own
+  // drain bound and a margin, both roles' process trees are stopped outright, the runner is retired, and `up` ends. A
+  // service's launchd window (ExitTimeOut 60 s, controller-service's 55 s) is longer than this at the default grace.
+  let resolveForced: () => void = () => {};
+  const forced = new Promise<void>(resolveForce => (resolveForced = resolveForce));
+  let forceTimer: ReturnType<typeof setTimeout> | undefined;
+  const stopDeadlineMs = Math.max(1, stopGraceMs) + 20_000;
+  const stop = (): void => {
     if (stopping) {
-      hardStop();
+      workerRole?.hardStop();
       return;
     }
     stopping = true;
     resolveStopped();
-    for (const controller of followControllers) controller.abort();
-    // The coding owner record is released first, whatever else is still
-    // finishing: launchd kills a service that outlasts its exit window, and a
-    // killed process cannot release it. Its outcome is read again at close.
-    console_.server.closeCoding().catch(() => {});
-    const building = store.liveClaimCount(runnerName, clock());
-    if (building > 0) {
-      progress(`Stopping: ${building} build(s) running. Waiting up to ${Math.round(stopGraceMs / 1000)}s for them to finish; any still running then is saved and resumes when the builder starts again.`);
-    }
-    graceTimer = setTimeout(hardStop, stopGraceMs);
-    graceTimer.unref?.();
+    // Draining, durably: no new work is admitted for this runner from now, and a restart waits for this drain's end
+    // (now + the forced-stop bound) instead of a heartbeat window.
+    try { if (runnerName !== "") drainRunnerIfCurrent(store, runnerName, runnerToken, clock(), new Date(clock().getTime() + stopDeadlineMs)); } catch { /* the heartbeat bound still holds */ }
+    forceTimer = setTimeout(() => {
+      fatal ??= `stopping took longer than ${Math.round(stopDeadlineMs / 1000)} s; its console and worker were stopped outright`;
+      workerRole?.kill();
+      consoleRole?.kill();
+      resolveForced();
+    }, stopDeadlineMs);
+    forceTimer.unref?.();
+    // The coding owner record is released first, whatever else is still finishing: launchd kills a service that
+    // outlasts its exit window, and a killed process cannot release it. The console keeps serving until the end.
+    consoleRole?.send({ type: "stopping" });
+    workerRole?.stop();
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
-  if (forGiven !== undefined) {
-    runTimer = setTimeout(stop, Number(forGiven));
-    runTimer.unref?.();
+  // The process that started `up` gone (its service supervisor killed, or the IPC parent that ran it): nobody is left to
+  // forward a stop, so `up` stops itself — it drains, retires its runner and ends instead of running on as an orphan.
+  let parentGone = false;
+  const parentAtStart = process.ppid;
+  const parentWatch = context.upSeams === undefined && parentAtStart > 1 ? setInterval(() => {
+    if (process.ppid === parentAtStart || parentGone) return;
+    parentGone = true;
+    progress("the process that started Toolroll is gone; stopping");
+    stop();
+  }, 1_000) : undefined;
+  parentWatch?.unref?.();
+  const onDisconnect = (): void => { if (!parentGone) { parentGone = true; progress("the process that started Toolroll closed its channel; stopping"); stop(); } };
+  if (context.upSeams === undefined && process.channel !== undefined && process.channel !== null) process.once("disconnect", onDisconnect);
+  // A log (a service, an agent, --json or --verbose) says whose each line is; a person at a terminal reads plain lines.
+  const labelled = split && (json || flags.has("verbose") || !(context.upSeams?.terminal ?? process.stdout.isTTY === true));
+  const roleLine = (role: UpRoleName) => (line: string): void => progress(labelled ? `[${role}] ${line}` : line);
+  const dropSignals = (): void => {
+    process.removeListener("SIGINT", stop);
+    process.removeListener("SIGTERM", stop);
+    process.removeListener("disconnect", onDisconnect);
+    if (parentWatch !== undefined) clearInterval(parentWatch);
+  };
+
+  const consoleConfig: UpConsoleConfig = {
+    host: hostFlag, port, allowedHosts: allowFlag === undefined ? null : allowFlag.split(",").map(one => one.trim()).filter(one => one !== ""),
+    publicUrl: publicUrlFlag ?? null, localRunner: runnerName, poolRoot: pool, repos: [...repos], projectRoots, registryPath, editor: editorGiven !== undefined,
+  };
+  const pendingLinks = new Map<number, (link: string | null) => void>();
+  let linkRequests = 0;
+  const roleSpawned = (role: RunnerProcessRole, pid: number): boolean => {
+    const held = store.getRunner(runnerName);
+    return held !== null && held.credentialHash === hashRunnerToken(runnerToken) && recordRunnerProcess(context.databaseFile, held, role, pid);
+  };
+  consoleRole = startUpRole({
+    role: "console", split, context, build, shutdownMs: 15_000, onSpawned: pid => roleSpawned("console", pid),
+    start: () => ({ type: "start", role: "console", databaseFile: context.databaseFile, containment: containmentFlag, build, config: { ...consoleConfig, repos: [...currentRepos] } }),
+    onMessage: message => {
+      if (message.type === "log") roleLine("console")(message.line);
+      else if (message.type === "sign-in-link") { pendingLinks.get(message.id)?.(message.link); pendingLinks.delete(message.id); }
+    },
+    // A restarted console is told what the worker serves now.
+    onReady: (_, again) => { if (again) { roleLine("console")("started again"); consoleRole?.send({ type: "repos", repos: [...currentRepos] }); } },
+    onEnded: (detail, restarting) => {
+      if (restarting) roleLine("console")(`${detail}; starting it again`);
+      else if (!stopping) { fatal = detail; stop(); }
+    },
+  });
+  const consoleReady = await consoleRole.ready;
+  if (!consoleReady.ok) {
+    dropSignals();
+    retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
+    if (consoleReady.reason === "port-busy") return fail(write, json, "up", "port-busy", `${consoleReady.detail} — the port was taken while starting; try again`, EXIT.refused);
+    return fail(write, json, "up", "failed", `the console could not start (${consoleReady.detail}) — nothing was left running`, EXIT.failed);
   }
+  const url = consoleReady.url;
 
-  const loopFlagsFor = (repo: string): Map<string, string | true> => {
-    const copy = new Map<string, string | true>();
-    // A bounded `up` must not advertise its child watches as an unbounded sweep service either.
-    if (forGiven !== undefined) copy.set("for", forGiven);
-    copy.set("runner", runnerName);
-    copy.set("token", runnerToken);
-    copy.set("repo", repo);
-    copy.set("pool", pool);
-    // The co-hosted console's stated origin rides into each loop's follower:
-    // a phone link must name THIS console, or not exist.
-    const publicUrl = text(flags, "public-url");
-    if (publicUrl !== undefined) copy.set("public-url", publicUrl);
-    return copy;
-  };
-  const prefix = (repo: string): string => (activeRepos.size > 1 ? `[${projectName(repo)}] ` : "");
-  // Containment at start: one plain sentence, once, for a person at a
-  // terminal; the exact status line with --verbose, in a service log (no
-  // terminal), and always when a required policy will refuse spawns.
-  const containmentDetail = flags.has("verbose") || !(context.upSeams?.terminal ?? process.stdout.isTTY === true);
-  let containmentSaid = false;
-  const containmentLines = (effective: EffectiveContainment): string[] => {
-    const notice = containmentNotice(effective);
-    if (notice !== null && !containmentSaid) progress(notice);
-    containmentSaid = true;
-    return containmentDetail || effective.refusal !== null ? [`watch: ${describeContainment(effective)}`] : [];
-  };
-  const loopResults = new Map<string, Promise<{ repo: string; result: WatchLoopResult }>>();
-  // One record of project passes for the whole service: fair scheduling
-  // across its projects (project-concurrency.ts).
-  const projectPasses = new ProjectPasses();
-  // Projects removed while running: each one's watch stops admitting work, finishes what it holds, then lets go.
-  const releasedRepos = new Set<string>();
-
-  const launchRepo = async (repo: string, bind: boolean): Promise<void> => {
-    if (loopResults.has(repo) || stopping) return;
-    if (bind) {
-      const bound = addRunnerReposAuthed(store, { name: runnerName, token: runnerToken, repos: [repo] }, clock());
-      if (!bound.ok) {
-        fatal = `the builder identity changed while adding ${repo} (${bound.reason})`;
-        stop();
-        return;
-      }
-      activeRepos.add(repo);
-      if (!store.listProjects().some(one => one.path === repo)) {
-        store.upsertProject(repo, projectName(repo), clock());
-      }
-    }
-    let markReady: () => void = () => {};
-    const ready = new Promise<void>(resolveReady => (markReady = resolveReady));
-    const loop = runWatchLoop({
-      flags: loopFlagsFor(repo),
-      context,
-      runner: runnerName,
-      token: runnerToken,
-      repo,
-      progress: line => progress(`${prefix(repo)}${line}`),
-      isStopping: () => stopping || releasedRepos.has(repo),
-      onFollowController: controller => followControllers.push(controller),
-      containmentLines,
-      passes: projectPasses,
-      serviceBridge: true,
-      onReady: () => {
-        markReady();
-        if (bind) progress(`${prefix(repo)}builder connected — queued work can start`);
+  if (!stopping) {
+    workerRole = startUpRole({
+      role: "worker", split, context, build, onSpawned: pid => roleSpawned("worker", pid),
+      // The worker drains its builds for the stop grace, then stops them; past that it is stopped outright.
+      shutdownMs: Math.max(1, stopGraceMs) + 15_000,
+      start: generation => ({
+        type: "start", role: "worker", databaseFile: context.databaseFile, containment: containmentFlag, build,
+        config: {
+          runner: runnerName, token: runnerToken, repos: generation === 1 ? [...repos] : [...currentRepos], pinnedRepos: [...pinnedRepos], projectRoots, registryPath, pool,
+          // What this start still holds for its saved projects that were away: a restarted worker never gets back an
+          // authority an earlier one gave up (connected, or removed from the saved list).
+          deferredRepos: [...deferredRepos], deferredGenerations: { ...deferredGenerations }, repoLines,
+          forMs: forGiven === undefined ? null : Number(forGiven), publicUrl: publicUrlFlag ?? null, stopGraceMs, verbose: flags.has("verbose"),
+          terminal: context.upSeams?.terminal ?? process.stdout.isTTY === true,
+          // A restart waits out a crashed predecessor's lease (at most a minute), then recovers it: as a fresh `up` after a crash.
+          leaseWaitMs: split ? WATCH_LEASE_MS + 15_000 : 0,
+        },
+      }),
+      onMessage: message => {
+        if (message.type === "log") roleLine("worker")(message.line);
+        else if (message.type === "deferred") {
+          // Only ever narrows: a worker's word can't give back an authority this start no longer holds.
+          const narrowed = upNarrowDeferred(deferredRepos, message.repos);
+          deferredRepos.length = 0;
+          deferredRepos.push(...narrowed);
+        }
+        else if (message.type === "repos") {
+          // The console's admitted projects widen only to what the builder is bound to in the store (the worker binds
+          // through the authenticated door before it reports): a worker's word alone admits nothing.
+          const bound = new Set(store.getRunner(runnerName)?.runner.repos ?? []);
+          currentRepos = message.repos.filter(repo => bound.has(repo));
+          consoleRole?.send({ type: "repos", repos: [...currentRepos] });
+        }
       },
-    }).then(
-      result => ({ repo, result }),
-      error => ({ repo, result: { ok: false as const, reason: "loop-failed" as const, detail: describe(error), ticks: 0, built: 0, broke: 0 } }),
-    );
-    loopResults.set(repo, loop);
-    void loop.then(({ repo: endedRepo, result }) => {
-      if (releasedRepos.has(endedRepo) && !stopping) {
-        // A removed project's watch has stopped: only now does the builder let go of it.
-        const unbound = removeRunnerRepoAuthed(store, { name: runnerName, token: runnerToken, repo: endedRepo }, clock());
-        if (!unbound.ok) {
-          fatal = `the builder identity changed while removing ${endedRepo} (${unbound.reason})`;
+      onReady: (_, again) => { if (again) roleLine("worker")("started again: its builds and checks continue"); },
+      onEnded: (detail, restarting) => {
+        // A builder whose credential no longer proves can't come back by restarting: the whole `up` stops, and the
+        // service's next start registers it again, as before the split.
+        if (restarting && authenticate(store, runnerName, runnerToken).ok) {
+          roleLine("worker")(`${detail}; starting it again — its interrupted builds are recovered first`);
+          return;
+        }
+        if (!stopping) {
+          fatal = restarting ? `the builder identity changed (${detail})` : detail;
           stop();
         }
-        loopResults.delete(endedRepo);
-        releasedRepos.delete(endedRepo);
-        progress(`project removed — ${projectName(endedRepo)} is no longer built here`);
-        markReady();
-        return;
-      }
-      // A loop that dies while its siblings live must not leave a partial
-      // cockpit standing silently (finding 5).
-      if (!result.ok && !stopping) {
-        fatal = `${prefix(endedRepo)}${result.detail}`;
-        stop();
-      }
-      markReady(); // acquisition failures must not strand startup readiness
+      },
     });
-    await ready;
-  };
-
-  await Promise.all(repos.map(repo => launchRepo(repo, false)));
-
-  // Telegram: one follower for the whole service, never one per project
-  // loop. Replies and notifications go out from it, over the same transport
-  // in the same cycle (Oct 2: a reply sent by a project loop's own follower
-  // failed "fetch failed" while notifications went out). A token saved
-  // while the service runs connects within seconds; a follower that dies
-  // is started again.
-  const telegramController = new AbortController();
-  followControllers.push(telegramController);
-  const telegramSupervisor = (async (): Promise<void> => {
-    const pause = (ms: number) => new Promise<void>(resolvePause => {
-      const timer = setTimeout(done, ms);
-      function done(): void { clearTimeout(timer); telegramController.signal.removeEventListener("abort", done); resolvePause(); }
-      // An aborted signal never fires again: without this a stop waited the whole pause.
-      if (telegramController.signal.aborted) done();
-      else telegramController.signal.addEventListener("abort", done, { once: true });
-    });
-    while (!stopping && !telegramController.signal.aborted) {
-      const follower = startTelegramFollower({
-        context, publicUrl: text(flags, "public-url"), signal: telegramController.signal, progress, label: "telegram:",
-        died: { prefix: "", then: "starting it again" }, owner: `service-${randomUUID()}`,
-      });
-      if (follower !== null) await follower;
-      // Without a token (or on a fenced network) look again shortly; the fence line is said once.
-      if (follower === null && loadBotToken(process.env, context.telegramTokenFile) !== null) break;
-      await pause(follower === null ? 2_000 : 5_000);
+    const workerReady = await workerRole.ready;
+    if (!workerReady.ok && fatal === null) {
+      fatal = workerReady.detail;
+      stop();
     }
-  })();
+  }
 
-  const dynamicCeiling = resolveCeiling(repos, projectRoots).ceiling;
-  const rejected = new Set<string>();
-  const registrySupervisor = (async (): Promise<void> => {
-    const sleep = (ms: number) => new Promise(resolveSleep => setTimeout(resolveSleep, ms));
-    while (!stopping) {
-      const loaded = await loadProjectRegistry(registryPath);
-      if ("error" in loaded) {
-        fatal = loaded.error;
-        stop();
-        break;
-      }
-      // Removed from the saved list: stop building it and take it out of the console. A pinned start keeps its own.
-      const saved = new Set(loaded.repos.map(one => canonicalProject(one) ?? one));
-      for (const repo of [...activeRepos]) {
-        if (stopping || pinnedRepos.has(repo) || saved.has(repo)) continue;
-        activeRepos.delete(repo);
-        releasedRepos.add(repo);
-        if (!loopResults.has(repo)) releasedRepos.delete(repo);
-      }
-      for (const candidate of loaded.repos) {
-        if (stopping) break;
-        const canonical = canonicalProject(candidate);
-        // Still letting go of an earlier removal: it rejoins on the next pass after its watch has stopped.
-        if (canonical !== null && (activeRepos.has(canonical) || releasedRepos.has(canonical))) continue;
-        const approvedAdditions = context.additionalProjectRepos?.() ?? [];
-        const admittedCeiling = resolveCeiling([...dynamicCeiling.repos, ...approvedAdditions], dynamicCeiling.roots).ceiling;
-        // A project added after this start (`repos add`, the lead, the console) carries its recorded admission; a
-        // registry line alone is not authority. Either way the folder is proved to be that Git checkout again.
-        const allowed = canonical !== null &&
-          ((await authorizedProject(admittedCeiling, canonical)) || admissionRecorded(store, canonical)) &&
-          (await proveRepo(canonical)) === canonical;
-        if (!allowed) {
-          if (!rejected.has(candidate)) {
-            rejected.add(candidate);
-            progress(`project not connected — ${candidate} isn't a Git repository added with \`toolroll repos add\` or the console`);
-          }
-          continue;
-        }
-        rejected.delete(candidate);
-        await launchRepo(canonical, true);
-      }
-      if (!stopping) await sleep(500);
-    }
-  })().catch(error => {
-    fatal = `the project registry stopped (${describe(error)})`;
-    stop();
-  });
-
-  // A runner with no projects still stays visibly alive while the UI waits
-  // for the first addition. Watch loops heartbeat during their passes; this
-  // machine-level pulse also covers the intentionally empty state.
-  // Provider readiness (v47): this machine's non-spending observations,
-  // recorded under its own runner name ONCE at start — so every route
-  // projection can say ready / unavailable / unknown per provider, and
-  // the dispatch gate can halt a leg this machine cannot run. There is no
-  // periodic readiness daemon: startup, an explicit `providers --report`,
-  // and the narrow pre-dispatch observation are the roads. Production
-  // only: a test's injected agent runner is a fake, and its readiness
-  // would be a fiction.
-  const observeReadiness = (): void => {
-    if (context.agentRunner !== undefined) return;
-    void observeProviderReadiness((file, args, options) => run(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }))
-      .then(observed => {
-        if (!stopping) reportProviderReadinessAuthed(store, { name: runnerName, token: runnerToken, observations: observed }, clock());
-      })
-      .catch(() => {
-        // A probe that cannot run leaves readiness unknown — never a fiction.
-      });
-  };
-  observeReadiness();
-  try { notifyVersionLive(context.store, dirname(context.databaseFile), PACKAGE_VERSION, clock()); } catch { /* A display fact; never blocks the worker. */ }
-  recordRunnerVersion(dirname(context.databaseFile), runnerName, PACKAGE_VERSION, clock());
+  // A runner with no projects still stays visibly alive while the UI waits for the first addition; the worker's
+  // loops also renew it with their leases. Across a worker restart this keeps the name held.
   const runnerHeartbeat = setInterval(() => {
     const beat = heartbeatRunner(store, runnerName, runnerToken, clock());
     if (!beat.ok && !stopping) {
       fatal = `the builder identity changed (${beat.reason})`;
       stop();
     }
-  }, 60_000);
+  }, RUNNER_HEARTBEAT_MS);
   runnerHeartbeat.unref?.();
 
   // 9. Readiness, then the ONE startup envelope / greeting (finding 11/20).
   const approverPlan2 = approver as UpApprover;
-  const url = console_.url;
   const terminal = !agentRunning && (context.upSeams?.terminal ?? process.stdout.isTTY === true);
   const upHandoff = buildHandoff({
     url,
     login: { account: approverPlan2.passwordFile === null ? approverPlan2.approver : loginAccount(approverPlan2.passwordFile) ?? approverPlan2.approver, file: approverPlan2.passwordFile },
   });
   recordUpConsoleUrl(dirname(context.databaseFile), url, clock());
-  if (fatal === null) {
+  if (fatal === null && !stopping) {
     if (json) {
       write(
         envelopeJson({
@@ -8342,12 +8003,21 @@ async function upCommand(
       // one-time sign-in link (single use, ten minutes, this computer only); it is never printed. The password stays
       // saved beside the database, for later and for other devices, and is never printed either.
       const account = approverPlan2.approver;
-      const link = account === null || flags.has("no-open") ? null : console_.server.mintSignInLink(account);
-      const home = homedir();
-      const file = approverPlan2.passwordFile === null ? null : approverPlan2.passwordFile.startsWith(`${home}/`) ? `~${approverPlan2.passwordFile.slice(home.length)}` : approverPlan2.passwordFile;
+      // The console mints it (its sign-in secrets stay there); it comes back only to be opened, never printed.
+      const link = account === null || flags.has("no-open") ? null : await new Promise<string | null>(resolveLink => {
+        const id = ++linkRequests;
+        const timer = setTimeout(() => { pendingLinks.delete(id); resolveLink(null); }, 10_000);
+        pendingLinks.set(id, value => { clearTimeout(timer); resolveLink(value); });
+        consoleRole?.send({ type: "sign-in-link", id, account });
+      });
+      // Every start says where the saved password is and the exact command that shows it, browser or not (Settings
+      // revamp S4, D2). Only the path is printed, never what the file holds: absolute (a relative --db names this
+      // directory), single-quoted (no ~ or $ expands), after `--` (a leading dash is never an option).
+      const saved = approverPlan2.passwordFile === null ? null : resolve(approverPlan2.passwordFile);
+      const showCommand = saved === null ? null : `cat -- '${saved.replaceAll("'", "'\\''")}'`;
       const signInWords = account === null
         ? `sign in as one of ${approverPlan2.approvers.join(", ")}`
-        : file === null ? `sign in as ${account} with your password` : `sign in as ${account}: the password is in ${file}`;
+        : showCommand === null ? `sign in as ${account} with your password` : `sign in as ${account}`;
       write("");
       write(`Toolroll is on ${url}`);
       if (link !== null) {
@@ -8356,30 +8026,32 @@ async function upCommand(
         (context.upSeams?.openBrowser ?? openBrowser)(new URL(link, url).toString());
       } else {
         write(`${signInWords.charAt(0).toUpperCase()}${signInWords.slice(1)}.`);
-        write("Ctrl-C stops it.");
       }
+      if (showCommand !== null) write(`Your password: run \`${showCommand}\``);
+      if (link === null) write("Ctrl-C stops it.");
     }
   }
+  // A bounded run (--for) counts from readiness, so a slow start never eats the window it asked for.
+  if (forGiven !== undefined && !stopping) {
+    runTimer = setTimeout(stop, Number(forGiven));
+    runTimer.unref?.();
+  }
 
-  // 10. Supervise to the end.
+  // 10. Supervise to the end: the worker drains first (its builds finish or are saved), the builder retires, and
+  // only then does the console stop serving.
   await stopped;
-  await registrySupervisor;
-  await Promise.all([...loopResults.values()]);
-  // The follower was aborted with the stop. A send or a chat turn it is still
-  // finishing keeps its own durable record; the service does not wait past
-  // this for it.
-  await new Promise<void>(done => {
-    const timer = setTimeout(done, TELEGRAM_STOP_WAIT_MS);
-    const finish = (): void => { clearTimeout(timer); done(); };
-    void telegramSupervisor.then(finish, finish);
-  });
+  if (workerRole !== null) await Promise.race([workerRole.done, forced]);
   clearInterval(runnerHeartbeat);
   if (runTimer !== undefined) clearTimeout(runTimer);
-  if (graceTimer !== undefined) clearTimeout(graceTimer);
-  process.removeListener("SIGINT", stop);
-  process.removeListener("SIGTERM", stop);
+  dropSignals();
   retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
-  await new Promise<void>(done => console_.server.close(() => done()));
+  consoleRole.stop();
+  const closed = await Promise.race([consoleRole.done, forced.then(() => ({ problem: null }))]);
+  if (forceTimer !== undefined) clearTimeout(forceTimer);
+  // With nobody left to wait for it, `up` ends once it has signed off, whatever handle lingers.
+  if (parentGone) setTimeout(() => process.exit(fatal === null ? EXIT.ok : EXIT.failed), 1_000).unref?.();
+  // A live terminal that couldn't be proved stopped (or any other close failure) is said, never "stopped".
+  if (closed.problem !== null && fatal === null) fatal = closed.problem;
 
   if (fatal !== null) {
     // The startup envelope (when json) already went out; the exit code is
@@ -8424,9 +8096,7 @@ async function bridgeCommand(
   const demoFence = refuseDemo(context, "bridge");
   if (demoFence !== null) return demoFence;
   const [channel, action] = positional;
-  if (channel !== "telegram") {
-    return fail(write, json, "bridge", "usage", "`toolroll bridge telegram [pair|unpair|token|status|digest|retry]`", EXIT.usage);
-  }
+  if (channel !== "telegram") return fail(write, json, "bridge", "usage", "`toolroll bridge telegram [pair|unpair|token|status|digest|retry]`", EXIT.usage);
 
   if (action === "retry") {
     // Replies already written and fenced on the pairing like every send: this only moves their next attempt to now.
@@ -8444,16 +8114,7 @@ async function bridgeCommand(
         removed ? "Token file removed." : "There was no token file to remove.",
       ]);
     }
-    if (value === undefined) {
-      return fail(
-        write,
-        json,
-        "bridge token",
-        "usage",
-        "`toolroll bridge telegram token <bot-token>` (from @BotFather), or --clear",
-        EXIT.usage,
-      );
-    }
+    if (value === undefined) return fail(write, json, "bridge token", "usage", "`toolroll bridge telegram token <bot-token>` (from @BotFather), or --clear", EXIT.usage);
     const saved = saveBotToken(context.telegramTokenFile, value);
     if (!saved.ok) return fail(write, json, "bridge token", "bad-token", saved.message, EXIT.refused);
     return succeed(write, json, "bridge token", { saved: true, file: context.telegramTokenFile }, () => [
@@ -8482,13 +8143,9 @@ async function bridgeCommand(
       ]);
     }
     const parsed = /^([1-9][0-9]{0,3})(m|h)$/.exec(every);
-    if (parsed === null) {
-      return fail(write, json, "bridge digest", "usage", "--every takes minutes or hours: 30m, 2h, 24h — or --off", EXIT.usage);
-    }
+    if (parsed === null) return fail(write, json, "bridge digest", "usage", "--every takes minutes or hours: 30m, 2h, 24h — or --off", EXIT.usage);
     const everyMs = Number(parsed[1]) * (parsed[2] === "h" ? 3_600_000 : 60_000);
-    if (everyMs < 5 * 60_000 || everyMs > 7 * 24 * 3_600_000) {
-      return fail(write, json, "bridge digest", "usage", "the digest cadence is between 5 minutes and 7 days", EXIT.usage);
-    }
+    if (everyMs < 5 * 60_000 || everyMs > 7 * 24 * 3_600_000) return fail(write, json, "bridge digest", "usage", "the digest cadence is between 5 minutes and 7 days", EXIT.usage);
     store.setTelegramDigest(everyMs, "cli", clock());
     return succeed(write, json, "bridge digest", { everyMs }, () => [
       `Digest every ${digestWords(everyMs)}. Routine facts are held and sent together; decisions and anything that needs you now still page at once.`,
@@ -8530,19 +8187,13 @@ async function bridgeCommand(
 
   if (action === "pair" || action === "unpair") {
     const acting = await askCredentials(flags, context);
-    if (acting === null) {
-      return fail(write, json, `bridge ${action}`, "usage", "`--as <you> --token <your password>` — pairing hands your authority to a chat, so it takes your credential", EXIT.usage);
-    }
+    if (acting === null) return fail(write, json, `bridge ${action}`, "usage", "`--as <you> --token <your password>` — pairing hands your authority to a chat, so it takes your credential", EXIT.usage);
     const { name: asWho, token } = acting;
-    const authenticated = authenticateApprover(store, asWho, token);
-    if (!authenticated.ok) {
-      return fail(write, json, `bridge ${action}`, authenticated.reason, describeApproveFailure(authenticated.reason, asWho), EXIT.refused);
-    }
+    const authenticated = (action === "pair" ? credentialApprover(store, asWho, token) : authenticateApprover(store, asWho, token));
+    if (!authenticated.ok) return fail(write, json, `bridge ${action}`, authenticated.reason, describeApproveFailure(authenticated.reason, asWho), EXIT.refused);
 
     if (action === "unpair") {
-      if (source === null) {
-        return fail(write, json, "bridge unpair", "no-token", "no bot token, so no bot to unpair", EXIT.refused);
-      }
+      if (source === null) return fail(write, json, "bridge unpair", "no-token", "no bot token, so no bot to unpair", EXIT.refused);
       const revoked = store.unpairTelegram(source.botId, asWho, clock());
       return succeed(write, json, "bridge unpair", { revoked }, () => [
         revoked
@@ -8566,21 +8217,10 @@ async function bridgeCommand(
     ]);
   }
 
-  if (action !== undefined) {
-    return fail(write, json, "bridge", "usage", "`toolroll bridge telegram [pair|unpair|token|status]`", EXIT.usage);
-  }
+  if (action !== undefined) return fail(write, json, "bridge", "usage", "`toolroll bridge telegram [pair|unpair|token|status]`", EXIT.usage);
 
   // The pass.
-  if (source === null) {
-    return fail(
-      write,
-      json,
-      "bridge",
-      "no-token",
-      `no bot token — set ${TOKEN_ENV}, run \`toolroll bridge telegram token <t>\`, or use the serve settings card`,
-      EXIT.refused,
-    );
-  }
+  if (source === null) return fail(write, json, "bridge", "no-token", `no bot token — set ${TOKEN_ENV}, run \`toolroll bridge telegram token <t>\`, or use the serve settings card`, EXIT.refused);
   const fenced = networkFence(context.telegramEnv ?? (context.telegramTransport === undefined ? process.env : {}));
   if (fenced !== null) return fail(write, json, "bridge", "network-fenced", networkFenceLine(fenced), EXIT.refused);
   const transport = context.telegramTransport ?? createTransport(source.token);
@@ -8643,9 +8283,7 @@ async function bridgeCommand(
     clock,
     ...(flags.has("inbound-only") ? { deliver: false } : {}),
   });
-  if (!passed.ok) {
-    return fail(write, json, "bridge", passed.reason, passed.message, EXIT.refused);
-  }
+  if (!passed.ok) return fail(write, json, "bridge", passed.reason, passed.message, EXIT.refused);
 
   const { report } = passed;
   const broke = report.problems.length > 0;
@@ -8656,12 +8294,8 @@ async function bridgeCommand(
     ...(report.backlog ? ["Telegram still holds more updates than one pass's budget — run it again."] : []),
     ...report.problems.map(problem => `  problem: ${problem}`),
   ];
-  if (broke) {
-    return fail(write, json, "bridge", "telegram-transport", lines().join("\n"), EXIT.failed, { report });
-  }
-  if (idle) {
-    return fail(write, json, "bridge", "idle", "nothing to send, nothing arrived", EXIT.refused, { report });
-  }
+  if (broke) return fail(write, json, "bridge", "telegram-transport", lines().join("\n"), EXIT.failed, { report });
+  if (idle) return fail(write, json, "bridge", "idle", "nothing to send, nothing arrived", EXIT.refused, { report });
   return succeed(write, json, "bridge", { report }, lines);
 }
 
@@ -8694,15 +8328,11 @@ async function publishCommand(
   const [action] = positional;
   // Bare `publish` IS an action: the publication pass (push branches,
   // open PRs, sweep merges) — only a NAMED unknown action refuses.
-  if (action !== undefined && !(PUBLISH_ACTIONS as readonly string[]).includes(action)) {
-    return fail(write, json, "publish", "usage", `unknown \`publish ${action}\` — try ${PUBLISH_ACTIONS.join(", ")}, or bare \`publish\` for the publication pass`, EXIT.usage);
-  }
+  if (action !== undefined && !(PUBLISH_ACTIONS as readonly string[]).includes(action)) return fail(write, json, "publish", "usage", `unknown \`publish ${action}\` — try ${PUBLISH_ACTIONS.join(", ")}, or bare \`publish\` for the publication pass`, EXIT.usage);
 
   if (action === "setup") {
     const mergeMethod = text(flags, "merge-method") ?? "squash";
-    if (!["squash", "merge", "rebase"].includes(mergeMethod)) {
-      return fail(write, json, "publish setup", "usage", "--merge-method is squash, merge or rebase", EXIT.usage);
-    }
+    if (!["squash", "merge", "rebase"].includes(mergeMethod)) return fail(write, json, "publish setup", "usage", "--merge-method is squash, merge or rebase", EXIT.usage);
     const checked = await checkPublishing(repo, context.publishExec === undefined ? {} : { exec: context.publishExec });
     if (!checked.ok) return fail(write, json, "publish setup", checked.reason, checked.message, EXIT.refused);
     const settings = { mergeMethod: mergeMethod as "squash" | "merge" | "rebase", mergeWhenGreen: flags.has("merge-when-green") };
@@ -8722,27 +8352,18 @@ async function publishCommand(
       return EXIT.refused;
     }
     const acting = await askCredentials(flags, context);
-    if (acting === null) {
-      return fail(write, json, "publish setup", "usage", "turning on pull requests takes --as <you> --token <your password>", EXIT.usage);
-    }
-    const authenticated = authenticateApprover(store, acting.name, acting.token, repo);
-    if (!authenticated.ok) {
-      return fail(write, json, "publish setup", authenticated.reason, describeApproveFailure(authenticated.reason, acting.name), EXIT.refused);
-    }
+    const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token, repo);
+    if (acting === null || !verified?.ok) return refuseApprover(context, "publish setup", verified, "turning on pull requests takes --as <you> --token <your password>", acting?.name);
     savePublishing(store, plan, acting.name, settings, clock());
     return succeed(write, json, "publish setup", { publishing: publishingOf(store, repo) }, () => ["Pull requests are on.", ...terms]);
   }
 
   if (action === "grant") {
     const github = text(flags, "github");
-    if (github === undefined || !/^[\w.-]+\/[\w.-]+$/.test(github)) {
-      return fail(write, json, "publish grant", "usage", "`--github <owner/name>` is required, exactly", EXIT.usage);
-    }
+    if (github === undefined || !/^[\w.-]+\/[\w.-]+$/.test(github)) return fail(write, json, "publish grant", "usage", "`--github <owner/name>` is required, exactly", EXIT.usage);
     const wantsMerge = flags.has("allow-merge");
     const mergeMethod = text(flags, "merge-method");
-    if (wantsMerge && (mergeMethod === undefined || !["squash", "merge", "rebase"].includes(mergeMethod))) {
-      return fail(write, json, "publish grant", "usage", "--allow-merge names its method: --merge-method squash|merge|rebase", EXIT.usage);
-    }
+    if (wantsMerge && (mergeMethod === undefined || !["squash", "merge", "rebase"].includes(mergeMethod))) return fail(write, json, "publish grant", "usage", "--allow-merge names its method: --merge-method squash|merge|rebase", EXIT.usage);
     const spec = {
       repo,
       githubRepo: github,
@@ -8793,14 +8414,9 @@ async function publishCommand(
     }
 
     const acting = await askCredentials(flags, context);
-    if (acting === null) {
-      return fail(write, json, "publish grant", "usage", "granting takes --as <you> --token <your password> — pushing your repos is a person's yes", EXIT.usage);
-    }
+    const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+    if (acting === null || !verified?.ok) return refuseApprover(context, "publish grant", verified, "granting takes --as <you> --token <your password> — pushing your repos is a person's yes", acting?.name);
     const { name: asWho, token } = acting;
-    const authenticated = authenticateApprover(store, asWho, token);
-    if (!authenticated.ok) {
-      return fail(write, json, "publish grant", authenticated.reason, describeApproveFailure(authenticated.reason, asWho), EXIT.refused);
-    }
 
     store.savePublicationGrant({ ...spec, grantedBy: asWho }, clock());
     return succeed(write, json, "publish grant", { granted: true, grant: spec }, () => [
@@ -8812,14 +8428,9 @@ async function publishCommand(
 
   if (action === "revoke") {
     const acting = await askCredentials(flags, context);
-    if (acting === null) {
-      return fail(write, json, "publish revoke", "usage", "`--as <you> --token <your password>`", EXIT.usage);
-    }
+    const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+    if (acting === null || !verified?.ok) return refuseApprover(context, "publish revoke", verified, "`--as <you> --token <your password>`", acting?.name);
     const { name: asWho, token } = acting;
-    const authenticated = authenticateApprover(store, asWho, token);
-    if (!authenticated.ok) {
-      return fail(write, json, "publish revoke", authenticated.reason, describeApproveFailure(authenticated.reason, asWho), EXIT.refused);
-    }
     const revoked = store.revokePublicationGrant(repo, asWho, clock());
     return succeed(write, json, "publish revoke", { revoked }, () => [
       revoked
@@ -8844,25 +8455,14 @@ async function publishCommand(
   if (action === "merge" || action === "refire") {
     const prGiven = positional[1];
     const pr = Number(prGiven);
-    if (prGiven === undefined || !Number.isInteger(pr) || pr <= 0) {
-      return fail(write, json, `publish ${action}`, "usage", `\`toolroll publish ${action} <pr> --as <you> --token <t>\``, EXIT.usage);
-    }
+    if (prGiven === undefined || !Number.isInteger(pr) || pr <= 0) return fail(write, json, `publish ${action}`, "usage", `\`toolroll publish ${action} <pr> --as <you> --token <t>\``, EXIT.usage);
     const acting = await askCredentials(flags, context);
-    if (acting === null) {
-      return fail(write, json, `publish ${action}`, "usage", "authorizing a merge takes `--as <you> --token <t>` — who said yes is recorded, not asserted", EXIT.usage);
-    }
-    const authenticated = authenticateApprover(store, acting.name, acting.token);
-    if (!authenticated.ok) {
-      return fail(write, json, `publish ${action}`, authenticated.reason, describeApproveFailure(authenticated.reason, acting.name), EXIT.refused);
-    }
+    const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+    if (acting === null || !verified?.ok) return refuseApprover(context, `publish ${action}`, verified, "authorizing a merge takes `--as <you> --token <t>` — who said yes is recorded, not asserted", acting?.name);
     const publication = store.openedPublications().find(one => one.prNumber === pr);
-    if (publication === undefined) {
-      return fail(write, json, `publish ${action}`, "unknown", `no open publication holds PR #${pr}`, EXIT.refused);
-    }
+    if (publication === undefined) return fail(write, json, `publish ${action}`, "unknown", `no open publication holds PR #${pr}`, EXIT.refused);
     const intent = store.mergeIntentFor(publication.id);
-    if (intent === null) {
-      return fail(write, json, `publish ${action}`, "no-intent", `PR #${pr} has no merge intent yet — the sweep writes one when a merge-capable grant covers it`, EXIT.refused);
-    }
+    if (intent === null) return fail(write, json, `publish ${action}`, "no-intent", `PR #${pr} has no merge intent yet — the sweep writes one when a merge-capable grant covers it`, EXIT.refused);
     if (action === "merge") {
       // The EXACT-INTENT ceremony (E1): the yes covers this head and no
       // other — a moved head refuses rather than authorizing the unseen.
@@ -8902,21 +8502,12 @@ async function publishCommand(
   if (action === "unblock" || action === "rearm") {
     const prGiven = positional[1];
     const pr = Number(prGiven);
-    if (prGiven === undefined || !Number.isInteger(pr) || pr <= 0) {
-      return fail(write, json, `publish ${action}`, "usage", `\`toolroll publish ${action} <pr> --as <you> --token <t>\``, EXIT.usage);
-    }
+    if (prGiven === undefined || !Number.isInteger(pr) || pr <= 0) return fail(write, json, `publish ${action}`, "usage", `\`toolroll publish ${action} <pr> --as <you> --token <t>\``, EXIT.usage);
     const acting = await askCredentials(flags, context);
-    if (acting === null) {
-      return fail(write, json, `publish ${action}`, "usage", `${action === "unblock" ? "lifting a repair hold" : "re-arming a refused merge"} takes \`--as <you> --token <t>\` — who decided is recorded, not asserted`, EXIT.usage);
-    }
-    const authenticated = authenticateApprover(store, acting.name, acting.token);
-    if (!authenticated.ok) {
-      return fail(write, json, `publish ${action}`, authenticated.reason, describeApproveFailure(authenticated.reason, acting.name), EXIT.refused);
-    }
+    const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+    if (acting === null || !verified?.ok) return refuseApprover(context, `publish ${action}`, verified, `${action === "unblock" ? "lifting a repair hold" : "re-arming a refused merge"} takes \`--as <you> --token <t>\` — who decided is recorded, not asserted`, acting?.name);
     const publication = store.openedPublications().find(one => one.prNumber === pr);
-    if (publication === undefined) {
-      return fail(write, json, `publish ${action}`, "unknown", `no open publication holds PR #${pr}`, EXIT.refused);
-    }
+    if (publication === undefined) return fail(write, json, `publish ${action}`, "unknown", `no open publication holds PR #${pr}`, EXIT.refused);
     if (action === "unblock") {
       const lifted = store.liftMergeBlocker(publication.id, acting.name, context.clock());
       store.resolveEpisodes(`merge-attn:${publication.id}`, context.clock());
@@ -8935,9 +8526,7 @@ async function publishCommand(
     ]);
   }
 
-  if (action !== undefined) {
-    return fail(write, json, "publish", "usage", "`toolroll publish [grant|revoke|status|unblock|rearm]`", EXIT.usage);
-  }
+  if (action !== undefined) return fail(write, json, "publish", "usage", "`toolroll publish [grant|revoke|status|unblock|rearm]`", EXIT.usage);
 
   // The pass.
   const report = await publishPass(store, {
@@ -8961,12 +8550,8 @@ async function publishCommand(
     ...report.problems.map(problem => `  problem: ${problem}`),
     ...merges.problems.map(problem => `  merge: ${problem}`),
   ];
-  if (report.problems.length > 0) {
-    return fail(write, json, "publish", "publish-problems", lines().join("\n"), EXIT.failed, { report });
-  }
-  if (idle) {
-    return fail(write, json, "publish", "idle", "nothing owed — no pending publications", EXIT.refused, { report });
-  }
+  if (report.problems.length > 0) return fail(write, json, "publish", "publish-problems", lines().join("\n"), EXIT.failed, { report });
+  if (idle) return fail(write, json, "publish", "idle", "nothing owed — no pending publications", EXIT.refused, { report });
   return succeed(write, json, "publish", { report }, lines);
 }
 
@@ -8994,9 +8579,7 @@ async function peekCommand(
   }
   const linesGiven = text(flags, "lines");
   const lines = linesGiven === undefined ? 12 : Number(linesGiven);
-  if (!Number.isInteger(lines) || lines < 1 || lines > PEEK_TAIL_LINES) {
-    return fail(write, json, "peek", "usage", `--lines is a whole number from 1 to ${PEEK_TAIL_LINES}`, EXIT.usage);
-  }
+  if (!Number.isInteger(lines) || lines < 1 || lines > PEEK_TAIL_LINES) return fail(write, json, "peek", "usage", `--lines is a whole number from 1 to ${PEEK_TAIL_LINES}`, EXIT.usage);
   const interactive = !json && process.stdout.isTTY === true && process.stdin.isTTY === true;
 
   if (flags.has("tmux")) {
@@ -9061,9 +8644,7 @@ async function outboxCommand(
     const demoFence = refuseDemo(context, "outbox deliver");
     if (demoFence !== null) return demoFence;
     const command = text(flags, "cmd");
-    if (command === undefined) {
-      return fail(write, json, "outbox deliver", "usage", "--cmd says how: it runs once per notification, reading $TOOLROLL_KIND, $TOOLROLL_SUBJECT, $TOOLROLL_BODY", EXIT.usage);
-    }
+    if (command === undefined) return fail(write, json, "outbox deliver", "usage", "--cmd says how: it runs once per notification, reading $TOOLROLL_KIND, $TOOLROLL_SUBJECT, $TOOLROLL_BODY", EXIT.usage);
 
     // The exact command owns a leased destination receipt, including across concurrent CLI invocations.
     const owner = `outbox-${randomUUID()}`;
@@ -9140,38 +8721,21 @@ async function enrollCommand(
   const backend = text(flags, "backend") ?? BUILT_IN;
 
   const mutations = readMutations(flags);
-  if (mutations === null) {
-    return fail(write, json, "enroll", "usage", `--allow takes ${MUTATION_CLASSES.join(", ")}`, EXIT.usage);
-  }
+  if (mutations === null) return fail(write, json, "enroll", "usage", `--allow takes ${MUTATION_CLASSES.join(", ")}`, EXIT.usage);
 
   const selectorFlag = text(flags, "selector") ?? "ours";
-  if (selectorFlag !== "ours" && selectorFlag !== "all") {
-    return fail(write, json, "enroll", "usage", "--selector is `ours` or `all`", EXIT.usage);
-  }
+  if (selectorFlag !== "ours" && selectorFlag !== "all") return fail(write, json, "enroll", "usage", "--selector is `ours` or `all`", EXIT.usage);
 
   const paths = readPaths(flags, backend);
-  if (paths.length === 0) {
-    return fail(
-      write,
-      json,
-      "enroll",
-      "usage",
-      `--paths says what may be written for backend \`${backend}\``,
-      EXIT.usage,
-    );
-  }
+  if (paths.length === 0) return fail(write, json, "enroll", "usage", `--paths says what may be written for backend \`${backend}\``, EXIT.usage);
 
   // External dispatch (v20): its own explicit yes, never in any default.
   // A dispatch grant binds EXACTLY ONE remote repository and mints this
   // plane's marker identity.
   const wantsDispatch = flags.has("allow-dispatch");
   const dispatchRepo = text(flags, "github");
-  if (wantsDispatch && backend !== "github-issues") {
-    return fail(write, json, "enroll", "usage", "--allow-dispatch is a github-issues authority in this release", EXIT.usage);
-  }
-  if (wantsDispatch && (dispatchRepo === undefined || !GITHUB_REPO_SHAPE.test(dispatchRepo))) {
-    return fail(write, json, "enroll", "usage", "--allow-dispatch binds exactly one tracker: name it with `--github <owner/name>`", EXIT.usage);
-  }
+  if (wantsDispatch && backend !== "github-issues") return fail(write, json, "enroll", "usage", "--allow-dispatch is a github-issues authority in this release", EXIT.usage);
+  if (wantsDispatch && (dispatchRepo === undefined || !GITHUB_REPO_SHAPE.test(dispatchRepo))) return fail(write, json, "enroll", "usage", "--allow-dispatch binds exactly one tracker: name it with `--github <owner/name>`", EXIT.usage);
 
   const grant = await proposeGrant({
     repo,
@@ -9266,17 +8830,11 @@ function grantsCommand(context: Context): number {
 }
 
 function checkProgressCommand(positional: readonly string[], context: Context): number {
-  if (positional.length !== 1 || !/^[1-9][0-9]{0,14}$/.test(positional[0] ?? "")) {
-    return fail(context.write, context.json, "check-progress", "usage", "use check-progress <run>", EXIT.usage);
-  }
+  if (positional.length !== 1 || !/^[1-9][0-9]{0,14}$/.test(positional[0] ?? "")) return fail(context.write, context.json, "check-progress", "usage", "use check-progress <run>", EXIT.usage);
   const run = Number(positional[0]);
-  if (!Number.isSafeInteger(run) || context.store.getRun(run) === null) {
-    return fail(context.write, context.json, "check-progress", "unknown-run", "no such run", EXIT.refused);
-  }
+  if (!Number.isSafeInteger(run) || context.store.getRun(run) === null) return fail(context.write, context.json, "check-progress", "unknown-run", "no such run", EXIT.refused);
   const progress = context.store.checkProgress(run);
-  if (progress === null) {
-    return fail(context.write, context.json, "check-progress", "no-progress", "this run has no saved check progress", EXIT.refused);
-  }
+  if (progress === null) return fail(context.write, context.json, "check-progress", "no-progress", "this run has no saved check progress", EXIT.refused);
   return succeed(context.write, context.json, "check-progress", { run, progress }, () => [progress.line]);
 }
 
@@ -9298,9 +8856,7 @@ function revokeCommand(
   if (revoked && outgoing?.dispatch === true && outgoing.remoteRepo != null) {
     void ghDispatchAdapter().deleteMarker(outgoing.remoteRepo);
   }
-  if (!revoked) {
-    return fail(write, json, "revoke", "no-grant", `${repo} was not enrolled for ${backend}`, EXIT.refused);
-  }
+  if (!revoked) return fail(write, json, "revoke", "no-grant", `${repo} was not enrolled for ${backend}`, EXIT.refused);
 
   return succeed(write, json, "revoke", { repo, backend }, () => [
     `Revoked. ${backend} in ${repo} is read-only again.`,
@@ -9447,14 +9003,10 @@ async function waitTask(
   for (const name of flags.keys()) {
     if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a task wait option.`, EXIT.usage);
   }
-  if (positional.length !== 1) {
-    return fail(context.write, context.json, command, "usage", "Use `toolroll task wait <id> [--timeout <seconds>]`.", EXIT.usage);
-  }
+  if (positional.length !== 1) return fail(context.write, context.json, command, "usage", "Use `toolroll task wait <id> [--timeout <seconds>]`.", EXIT.usage);
   const givenTimeout = text(flags, "timeout");
   const timeoutSeconds = givenTimeout === undefined ? null : Number(givenTimeout);
-  if (timeoutSeconds !== null && (!Number.isFinite(timeoutSeconds) || timeoutSeconds < 0)) {
-    return fail(context.write, context.json, command, "usage", "--timeout must be zero or a positive number of seconds.", EXIT.usage);
-  }
+  if (timeoutSeconds !== null && (!Number.isFinite(timeoutSeconds) || timeoutSeconds < 0)) return fail(context.write, context.json, command, "usage", "--timeout must be zero or a positive number of seconds.", EXIT.usage);
 
   const task = positional[0]!;
   const startedAt = Date.now();
@@ -9596,14 +9148,7 @@ function taskAction(
     case "route":
       return routeTaskCommand(rest, flags, context);
     default:
-      return fail(
-        context.write,
-        context.json,
-        "task",
-        "usage",
-        `unknown \`task ${action ?? ""}\` — try ${TASK_ACTIONS.join(", ")}`,
-        EXIT.usage,
-      );
+      return fail(context.write, context.json, "task", "usage", `unknown \`task ${action ?? ""}\` — try ${TASK_ACTIONS.join(", ")}`, EXIT.usage);
   }
 }
 
@@ -9628,15 +9173,11 @@ async function addTask(
   // A scout task lives in the built-in backend (v4 review, finding 2):
   // the deliverable is a column on OUR task_ref, stamped in the same
   // transaction as the filing — a tracker's item has no such promise.
-  if (flags.has("report") && backendName !== BUILT_IN) {
-    return fail(write, json, "task add", "usage", "--report files a scout task in the built-in backend only — drop --backend", EXIT.usage);
-  }
+  if (flags.has("report") && backendName !== BUILT_IN) return fail(write, json, "task add", "usage", "--report files a scout task in the built-in backend only — drop --backend", EXIT.usage);
   if (backendName !== BUILT_IN) {
     const repo = repoFrom(flags);
     const backend = openBackend(backendName, store, repo);
-    if (backend === null) {
-      return fail(write, json, "task add", "usage", `no backend \`${backendName}\``, EXIT.usage);
-    }
+    if (backend === null) return fail(write, json, "task add", "usage", `no backend \`${backendName}\``, EXIT.usage);
 
     const created = await backend.create({ title });
     if (!created.ok) {
@@ -9685,9 +9226,7 @@ async function addTask(
   const id = text(flags, "id") ?? (activeRemote() === null ? slug(title, now) : `task-${randomBytes(16).toString("hex")}`);
   // Re-filing: the new task replaces an earlier one, which is cancelled and reads "Replaced by <id>".
   const replaces = text(flags, "replaces");
-  if (replaces !== undefined && (replaces === id || store.getTask(replaces) === null)) {
-    return fail(write, json, "task add", "unknown-task", `no task \`${replaces}\` to replace`, EXIT.refused);
-  }
+  if (replaces !== undefined && (replaces === id || store.getTask(replaces) === null)) return fail(write, json, "task add", "unknown-task", `no task \`${replaces}\` to replace`, EXIT.refused);
   noteActingPerson(flags, context);
 
   // The existence check goes *inside* the replayed body. Outside it, a retry
@@ -9708,9 +9247,7 @@ async function addTask(
     result => result.ok,
   );
 
-  if (!outcome.ok) {
-    return fail(write, json, "task add", "exists", `\`${id}\` already exists`, EXIT.refused);
-  }
+  if (!outcome.ok) return fail(write, json, "task add", "exists", `\`${id}\` already exists`, EXIT.refused);
 
   const filedId = outcome.task.id;
   const remote = activeRemote();
@@ -9729,9 +9266,7 @@ async function addTask(
   const placedIn = text(flags, "repo");
   if (placedIn !== undefined) {
     const placed = store.placeTask(store.refFor(BUILT_IN, filedId).id, canonicalProject(placedIn) ?? resolve(placedIn));
-    if (typeof placed === "object" && !placed.ok) {
-      return fail(write, json, "task add", "scoped", "this task already has a scope — placement is immutable once somebody could have approved it", EXIT.refused);
-    }
+    if (typeof placed === "object" && !placed.ok) return fail(write, json, "task add", "scoped", "this task already has a scope — placement is immutable once somebody could have approved it", EXIT.refused);
   }
 
   if (replaces !== undefined) store.setTaskState(replaces, "cancelled", now, {}, undefined, outcome.task.id);
@@ -9834,18 +9369,12 @@ function requireTask(
   const { store, write, json, now } = context;
   const id = positional[0];
   const given = text(flags, "cap");
-  if (id === undefined || given === undefined) {
-    return fail(write, json, "task require", "usage", "`toolroll task require <id> --cap <kind:name>[,<kind:name>]` — or --cap none to clear", EXIT.usage);
-  }
-  if (store.getTask(id) === null) {
-    return fail(write, json, "task require", "unknown-task", `no task \`${id}\``, EXIT.refused);
-  }
+  if (id === undefined || given === undefined) return fail(write, json, "task require", "usage", "`toolroll task require <id> --cap <kind:name>[,<kind:name>]` — or --cap none to clear", EXIT.usage);
+  if (store.getTask(id) === null) return fail(write, json, "task require", "unknown-task", `no task \`${id}\``, EXIT.refused);
 
   const keys = given === "none" ? [] : given.split(",").map(one => one.trim()).filter(Boolean);
   for (const key of keys) {
-    if (parseCapabilityKey(key) === null) {
-      return fail(write, json, "task require", "usage", `\`${key}\` is not a capability key — say kind:name, like env:SUPABASE_KEY or cli:gh`, EXIT.usage);
-    }
+    if (parseCapabilityKey(key) === null) return fail(write, json, "task require", "usage", `\`${key}\` is not a capability key — say kind:name, like env:SUPABASE_KEY or cli:gh`, EXIT.usage);
   }
 
   store.setRequirements(store.refFor(BUILT_IN, id).id, keys, mutationFrom(flags, now));
@@ -9877,22 +9406,16 @@ async function capCommand(
   const repo = repoFrom(flags);
 
   if (action === "add") {
-    if (name === undefined) {
-      return fail(write, json, "cap add", "usage", "`toolroll cap add <name> [--kind env|cli|mcp|ci|other] [--probe <cmd>] [--expires <iso>]`", EXIT.usage);
-    }
+    if (name === undefined) return fail(write, json, "cap add", "usage", "`toolroll cap add <name> [--kind env|cli|mcp|ci|other] [--probe <cmd>] [--expires <iso>]`", EXIT.usage);
     const kind = (text(flags, "kind") ?? "env") as CapabilityKind;
-    if (!["env", "cli", "mcp", "ci", "other"].includes(kind)) {
-      return fail(write, json, "cap add", "usage", "--kind takes env, cli, mcp, ci or other", EXIT.usage);
-    }
+    if (!["env", "cli", "mcp", "ci", "other"].includes(kind)) return fail(write, json, "cap add", "usage", "--kind takes env, cli, mcp, ci or other", EXIT.usage);
 
     // An env capability can have its probe synthesized from a fixed template
     // — but only over a validated identifier, because the name lands inside
     // a shell line. Anything else the operator writes explicitly.
     let probe = text(flags, "probe") ?? null;
     if (probe === null && kind === "env") {
-      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
-        return fail(write, json, "cap add", "usage", `\`${name}\` is not an environment variable name — give --probe explicitly`, EXIT.usage);
-      }
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return fail(write, json, "cap add", "usage", `\`${name}\` is not an environment variable name — give --probe explicitly`, EXIT.usage);
       probe = `test -n "$${name}"`;
     }
 
@@ -9983,16 +9506,12 @@ async function capCommand(
   if (action === "probe") {
     const only = positional.slice(1);
     for (const key of only) {
-      if (parseCapabilityKey(key) === null) {
-        return fail(write, json, "cap probe", "usage", `\`${key}\` is not a capability key — say kind:name`, EXIT.usage);
-      }
+      if (parseCapabilityKey(key) === null) return fail(write, json, "cap probe", "usage", `\`${key}\` is not a capability key — say kind:name`, EXIT.usage);
     }
     const outcomes = await probeRepo(store, repo, `operator@${hostname()}`, clock(), {
       ...(only.length === 0 ? {} : { only: new Set(only) }),
     });
-    if (outcomes.length === 0) {
-      return fail(write, json, "cap probe", "empty", `nothing to probe for ${repo}`, EXIT.refused);
-    }
+    if (outcomes.length === 0) return fail(write, json, "cap probe", "empty", `nothing to probe for ${repo}`, EXIT.refused);
 
     const unverified = outcomes.filter(one => one.status !== "verified");
     const lines = () =>
@@ -10018,9 +9537,7 @@ function listTasks(flags: Map<string, string | true>, context: Context): number 
   const rawView = text(flags, 'view');
   const rawLimit = text(flags, 'limit');
   const limit = rawLimit === undefined ? 40 : Number(rawLimit);
-  if (wanted !== undefined && !STATES.includes(wanted as TaskState)) {
-    return fail(write, json, 'task list', 'usage', `--state takes one of ${STATES.join(', ')}`, EXIT.usage);
-  }
+  if (wanted !== undefined && !STATES.includes(wanted as TaskState)) return fail(write, json, 'task list', 'usage', `--state takes one of ${STATES.join(', ')}`, EXIT.usage);
   if (rawView !== undefined && !['all', 'needs-you', 'running', 'completed'].includes(rawView) ||
       !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
     return fail(write, json, 'task list', 'usage', '--view takes all, needs-you, running or completed; --limit takes 1–100', EXIT.usage);
@@ -10111,6 +9628,8 @@ function showTask(positional: readonly string[], context: Context): number {
     claim: currentClaim(store, ref.id, now),
     scope,
     approval: approvalOf(scope),
+    // Whether a person gave that approval, with their proof (approval policy): what the release gate reads.
+    personApproval: personApprovalOf(store, id),
     route: taskRouteView(routed, readiness),
     // Fresh base: the commit this task's work starts from, and how far current main has moved past it.
     base,
@@ -10268,22 +9787,15 @@ async function acceptTaskProof(
   if (task === null) return fail(write, json, "task accept", "unknown-task", `no task \`${id}\``, EXIT.refused);
 
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(write, json, "task accept", "usage", "accepting incomplete proof is a person's act — it takes `--as <you> --token <t>`", EXIT.usage);
-  }
-  const authenticated = authenticateApprover(store, acting.name, acting.token);
-  if (!authenticated.ok) {
-    return fail(write, json, "task accept", authenticated.reason, describeApproveFailure(authenticated.reason, id), EXIT.refused);
-  }
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  if (acting === null || !verified?.ok) return refuseApprover(context, "task accept", verified, "accepting incomplete proof is a person's act — it takes `--as <you> --token <t>`", id);
 
   const ref = store.refFor(BUILT_IN, id);
   // v40 fix: a reviewer run is never the attempt whose proof is accepted.
   const latest = store.runsFor(ref.id).find(
     one => one.finishedAt !== null && (one.role === "builder" || one.role === "scout"),
   );
-  if (latest === undefined) {
-    return fail(write, json, "task accept", "no-run", `${id} has no finished attempt to accept`, EXIT.refused);
-  }
+  if (latest === undefined) return fail(write, json, "task accept", "no-run", `${id} has no finished attempt to accept`, EXIT.refused);
   const rawNote = text(flags, "note");
   let note: string | null = null;
   if (rawNote !== undefined && rawNote.trim() !== "") {
@@ -10312,9 +9824,7 @@ async function repairTaskCommand(
   const { store, write, json, clock } = context;
   const [runText] = positional;
   const runId = Number(runText ?? "");
-  if (runText === undefined || !Number.isInteger(runId) || runId < 1) {
-    return fail(write, json, "task repair", "usage", "`toolroll task repair <run-id> [--yes] --as <you> --token <t>`", EXIT.usage);
-  }
+  if (runText === undefined || !Number.isInteger(runId) || runId < 1) return fail(write, json, "task repair", "usage", "`toolroll task repair <run-id> [--yes] --as <you> --token <t>`", EXIT.usage);
   let chain = store.repairChainFor(runId);
   if (chain === null && flags.get("yes") === true) {
     const acting = await askCredentials(flags, context);
@@ -10329,12 +9839,8 @@ async function repairTaskCommand(
       chain = store.repairChainFor(runId);
     }
   }
-  if (chain === null) {
-    return fail(write, json, "task repair", "unknown-task", `run ${runId} has no drafted repair — a repair is only drafted after a review names unmet criteria`, EXIT.refused);
-  }
-  if (chain.draftTask === null) {
-    return fail(write, json, "task repair", "refused", `no draft was ever made for run ${runId} — the chain stopped at ${chain.outcome} before drafting one`, EXIT.refused);
-  }
+  if (chain === null) return fail(write, json, "task repair", "unknown-task", `run ${runId} has no drafted repair — a repair is only drafted after a review names unmet criteria`, EXIT.refused);
+  if (chain.draftTask === null) return fail(write, json, "task repair", "refused", `no draft was ever made for run ${runId} — the chain stopped at ${chain.outcome} before drafting one`, EXIT.refused);
   const draftId = chain.draftTask;
   const yes = flags.get("yes") === true;
   if (!yes) {
@@ -10351,21 +9857,12 @@ async function repairTaskCommand(
     );
   }
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(write, json, "task repair", "usage", "approving a repair draft is a person's act — it takes `--as <you> --token <t>`", EXIT.usage);
-  }
-  const authenticated = authenticateApprover(store, acting.name, acting.token);
-  if (!authenticated.ok) {
-    return fail(write, json, "task repair", authenticated.reason, describeApproveFailure(authenticated.reason, draftId), EXIT.refused);
-  }
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  if (acting === null || !verified?.ok) return refuseApprover(context, "task repair", verified, "approving a repair draft is a person's act — it takes `--as <you> --token <t>`", draftId);
   const draftScope = store.getScope(draftId);
-  if (draftScope === null) {
-    return fail(write, json, "task repair", "no-scope", `${draftId} has no scope to approve`, EXIT.refused);
-  }
+  if (draftScope === null) return fail(write, json, "task repair", "no-scope", `${draftId} has no scope to approve`, EXIT.refused);
   const approved = approve(store, draftId, acting.name, clock(), draftScope.digest, acting.token);
-  if (!approved.ok) {
-    return fail(write, json, "task repair", approved.reason, approved.reason === "policy" ? `${draftId}: ${approved.message}` : describeApproveFailure(approved.reason, draftId), EXIT.refused);
-  }
+  if (!approved.ok) return fail(write, json, "task repair", approved.reason, approved.reason === "policy" ? `${draftId}: ${approved.message}` : describeApproveFailure(approved.reason, draftId), EXIT.refused);
   return succeed(write, json, "task repair", { run: runId, draft: draftId, approvedBy: acting.name }, () => [
     `Approved: ${draftId} (attempt ${chain.attempt}) will build on the next dispatch.`,
   ]);
@@ -10378,20 +9875,14 @@ async function stateTask(
 ): Promise<number> {
   const { store, write, json, now } = context;
   const [id, state] = positional;
-  if (id === undefined || state === undefined) {
-    return fail(write, json, "task state", "usage", "`toolroll task state <id> <state>`", EXIT.usage);
-  }
-  if (!STATES.includes(state as TaskState)) {
-    return fail(write, json, "task state", "usage", `state is one of ${STATES.join(", ")}`, EXIT.usage);
-  }
+  if (id === undefined || state === undefined) return fail(write, json, "task state", "usage", "`toolroll task state <id> <state>`", EXIT.usage);
+  if (!STATES.includes(state as TaskState)) return fail(write, json, "task state", "usage", `state is one of ${STATES.join(", ")}`, EXIT.usage);
 
   const backendName = text(flags, "backend") ?? BUILT_IN;
   if (backendName !== BUILT_IN) {
     const repo = repoFrom(flags);
     const backend = openBackend(backendName, store, repo);
-    if (backend === null) {
-      return fail(write, json, "task state", "usage", `no backend \`${backendName}\``, EXIT.usage);
-    }
+    if (backend === null) return fail(write, json, "task state", "usage", `no backend \`${backendName}\``, EXIT.usage);
 
     const moved = await backend.setState(id, state as TaskState);
     if (!moved.ok) {
@@ -10443,9 +9934,7 @@ function askTask(positional: readonly string[], flags: Map<string, string | true
   const { store, write, json, now } = context;
   const [id, ...extra] = positional;
   const person = text(flags, "person"), why = text(flags, "why")?.trim();
-  if (id === undefined || extra.length > 0 || person === undefined || why === undefined || why === "") {
-    return fail(write, json, "task ask", "usage", "`toolroll task ask <id> --person <name> --why \"what they need to do\"`", EXIT.usage);
-  }
+  if (id === undefined || extra.length > 0 || person === undefined || why === undefined || why === "") return fail(write, json, "task ask", "usage", "`toolroll task ask <id> --person <name> --why \"what they need to do\"`", EXIT.usage);
   if (why.length > 500 || /[\u0000-\u001f\u007f]/.test(why)) return fail(write, json, "task ask", "usage", "--why is at most 500 plain characters on one line", EXIT.usage);
   noteActingPerson(flags, context);
   if (currentActor() === null) return fail(write, json, "task ask", "unauthenticated", "Hand a task on as the lead (its lead token) or with your sign-in (--as and --token, or the remembered login).", EXIT.refused);
@@ -10467,10 +9956,8 @@ async function leadCommand(positional: readonly string[], flags: Map<string, str
   for (const name of flags.keys()) if (!["as", "token", "revoke", "db", "json"].includes(name)) return fail(write, json, command, "usage", `--${name} is not a lead token option.`, EXIT.usage);
   if (currentActor()?.lead === true) return fail(write, json, command, "refused", "A lead cannot mint lead tokens. The person it acts for runs this with their password.", EXIT.refused);
   const acting = await askCredentials(flags, context);
-  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
-  if (acting === null || verified === null || !verified.ok) {
-    return fail(write, json, command, "unauthenticated", "A lead token is minted behind your password: pass --as and --token (or use the remembered login).", EXIT.refused);
-  }
+  const verified = acting === null ? null : (flags.has("revoke") ? authenticateApprover(store, acting.name, acting.token) : credentialApprover(store, acting.name, acting.token));
+  if (acting === null || !verified?.ok) return fail(write, json, command, "unauthenticated", "A lead token is minted behind your password: pass --as and --token (or use the remembered login).", EXIT.refused);
   const now = context.clock();
   if (flags.has("revoke")) {
     const ended = store.revokeLeadCredentials(acting.name, acting.name, now);
@@ -10524,13 +10011,9 @@ function blockTask(
   const { store, write, json } = context;
   const id = positional[0];
   const on = text(flags, "on");
-  if (id === undefined || on === undefined) {
-    return fail(write, json, "task block", "usage", "`toolroll task block <id> --on <id>`", EXIT.usage);
-  }
+  if (id === undefined || on === undefined) return fail(write, json, "task block", "usage", "`toolroll task block <id> --on <id>`", EXIT.usage);
   for (const each of [id, on]) {
-    if (store.getTask(each) === null) {
-      return fail(write, json, "task block", "unknown-task", `no task \`${each}\``, EXIT.refused);
-    }
+    if (store.getTask(each) === null) return fail(write, json, "task block", "unknown-task", `no task \`${each}\``, EXIT.refused);
   }
 
   const result = store.addEdge(id, on, mutationFrom(flags, context.now));
@@ -10554,20 +10037,14 @@ async function steerTask(
   const { store, write, json } = context;
   const id = positional[0];
   const note = text(flags, "note");
-  if (id === undefined || note === undefined) {
-    return fail(write, json, "task steer", "usage", "`toolroll task steer <id> --note \"...\" --as <you> --token <t>` — steering speaks with the operator's voice, so it takes your credential; a running build's agent reads the note when it next checks for notes, otherwise the next attempt's brief quotes it, fenced, inside the approved scope", EXIT.usage);
-  }
+  if (id === undefined || note === undefined) return fail(write, json, "task steer", "usage", "`toolroll task steer <id> --note \"...\" --as <you> --token <t>` — steering speaks with the operator's voice, so it takes your credential; a running build's agent reads the note when it next checks for notes, otherwise the next attempt's brief quotes it, fenced, inside the approved scope", EXIT.usage);
   // Ruling 11: authorship derives from a VERIFIED principal, never a flag.
   // Missing credentials are usage (the invocation is incomplete); present
   // but wrong is not-an-approver — the same taxonomy as every ceremony.
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(write, json, "task steer", "usage", "steering takes `--as <you> --token <t>` — anonymous notes never reach an agent's brief", EXIT.usage);
-  }
+  if (acting === null) return fail(write, json, "task steer", "usage", "steering takes `--as <you> --token <t>` — anonymous notes never reach an agent's brief", EXIT.usage);
   const authed = authenticateApprover(store, acting.name, acting.token);
-  if (!authed.ok) {
-    return fail(write, json, "task steer", "not-an-approver", "that is not an approver, or the token does not match", EXIT.refused);
-  }
+  if (!authed.ok) return fail(write, json, "task steer", "not-an-approver", "that is not an approver, or the token does not match", EXIT.refused);
   // --now: Pause and steer — the running Claude build's turn stops, then this note continues it.
   if (flags.get("now") === true) return pauseRunningBuild("task steer", id, note, verifiedAuthor(acting.name), flags, context);
   const filed = store.fileSteerNote(id, verifiedAuthor(acting.name), note, context.now, mutationFrom(flags, context.now));
@@ -10680,17 +10157,11 @@ function unblockTask(
   const { store, write, json } = context;
   const id = positional[0];
   const on = text(flags, "on");
-  if (id === undefined || on === undefined) {
-    return fail(write, json, "task unblock", "usage", "`toolroll task unblock <id> --on <id>`", EXIT.usage);
-  }
-  if (store.getTask(id) === null) {
-    return fail(write, json, "task unblock", "unknown-task", `no task \`${id}\``, EXIT.refused);
-  }
+  if (id === undefined || on === undefined) return fail(write, json, "task unblock", "usage", "`toolroll task unblock <id> --on <id>`", EXIT.usage);
+  if (store.getTask(id) === null) return fail(write, json, "task unblock", "unknown-task", `no task \`${id}\``, EXIT.refused);
 
   const result = store.removeEdge(id, on, mutationFrom(flags, context.now));
-  if (!result.ok) {
-    return fail(write, json, "task unblock", "not-waiting", `${id} was not waiting on ${on}`, EXIT.refused);
-  }
+  if (!result.ok) return fail(write, json, "task unblock", "not-waiting", `${id} was not waiting on ${on}`, EXIT.refused);
   return succeed(write, json, "task unblock", { blocked: id, blocker: on }, () => [
     `${id} no longer waits for ${on}.`,
   ]);
@@ -10708,9 +10179,7 @@ function nextTask(
 ): number {
   const { store, write, json } = context;
   const id = positional[0];
-  if (id === undefined) {
-    return fail(write, json, "task next", "usage", "`toolroll task next <id> [--undo]`", EXIT.usage);
-  }
+  if (id === undefined) return fail(write, json, "task next", "usage", "`toolroll task next <id> [--undo]`", EXIT.usage);
   if (flags.has("undo")) {
     const cleared = store.clearTaskPriority(id, mutationFrom(flags, context.now));
     if (!cleared.ok) return fail(write, json, "task next", "unknown-task", `no task \`${id}\``, EXIT.refused);
@@ -10749,9 +10218,7 @@ function assignTask(
   const id = positional[0];
   const runner = text(flags, "runner");
   const anyone = flags.has("anyone");
-  if (id === undefined || (runner === undefined && !anyone) || (runner !== undefined && anyone)) {
-    return fail(write, json, "task assign", "usage", "`toolroll task assign <id> --runner <name> | --anyone`", EXIT.usage);
-  }
+  if (id === undefined || (runner === undefined && !anyone) || (runner !== undefined && anyone)) return fail(write, json, "task assign", "usage", "`toolroll task assign <id> --runner <name> | --anyone`", EXIT.usage);
   const moved = store.moveTask(
     { taskId: id, toRunner: runner ?? null, beforeTaskId: null },
     context.clock(),
@@ -10791,13 +10258,9 @@ async function reopenTask(
 ): Promise<number> {
   const { store, write, json } = context;
   const id = positional[0];
-  if (id === undefined) {
-    return fail(write, json, "task reopen", "usage", "`toolroll task reopen <id> --as <you> --token <t>`", EXIT.usage);
-  }
+  if (id === undefined) return fail(write, json, "task reopen", "usage", "`toolroll task reopen <id> --as <you> --token <t>`", EXIT.usage);
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(write, json, "task reopen", "usage", "reopening takes `--as <you> --token <t>` — who resumed external work is recorded, not asserted", EXIT.usage);
-  }
+  if (acting === null) return fail(write, json, "task reopen", "usage", "reopening takes `--as <you> --token <t>` — who resumed external work is recorded, not asserted", EXIT.usage);
   const reopened = store.reopenMirror(id, acting.name, context.clock());
   if (!reopened.ok) {
     const said: Record<string, string> = {
@@ -10830,9 +10293,7 @@ async function syncCommand(flags: Map<string, string | true>, context: Context):
     .listGrants()
     .filter(grant => grant.dispatch === true && grant.remoteRepo != null)
     .filter(grant => only === undefined || grant.repo === resolve(only));
-  if (grants.length === 0) {
-    return fail(write, json, "sync", "no-grant", "no tracker has a dispatch grant — `toolroll enroll <repo> --backend github-issues --github <owner/name> --allow-dispatch` states the terms", EXIT.refused);
-  }
+  if (grants.length === 0) return fail(write, json, "sync", "no-grant", "no tracker has a dispatch grant — `toolroll enroll <repo> --backend github-issues --github <owner/name> --allow-dispatch` states the terms", EXIT.refused);
   const adapter = ghDispatchAdapter();
   const reports = [];
   for (const grant of grants) {
@@ -10872,12 +10333,8 @@ async function scopeTask(
   const { store, write, json, now } = context;
   const id = positional[0];
   const goal = text(flags, "goal");
-  if (id === undefined || goal === undefined) {
-    return fail(write, json, "task scope", "usage", "`toolroll task scope <id> --goal <what success is> --acceptance <rubric> [--not <text>] [--touches a,b] [--candidate <commit>] [--budget-usd <n>]`", EXIT.usage);
-  }
-  if (store.getTask(id) === null) {
-    return fail(write, json, "task scope", "unknown-task", `no task \`${id}\``, EXIT.refused);
-  }
+  if (id === undefined || goal === undefined) return fail(write, json, "task scope", "usage", "`toolroll task scope <id> --goal <what success is> --acceptance <rubric> [--not <text>] [--touches a,b] [--candidate <commit>] [--budget-usd <n>]`", EXIT.usage);
+  if (store.getTask(id) === null) return fail(write, json, "task scope", "unknown-task", `no task \`${id}\``, EXIT.refused);
   // v39: this road bypasses proposeGuarded (a trusted local operator, not a
   // web form re-authenticating staleness) but not the rubric requirement —
   // every scope-producing road signs one, this one included.
@@ -10897,12 +10354,31 @@ async function scopeTask(
   // v69: a prepared commit. The machine checks it out as the attempt and
   // runs the gate and the review; no agent is dispatched for it.
   const candidateGiven = text(flags, "candidate");
-  if (candidateGiven !== undefined && !isCommitSha(candidateGiven)) {
-    return fail(write, json, "task scope", "usage", "--candidate is the full 40-character commit hash the machine will check out", EXIT.usage);
+  if (candidateGiven !== undefined && !isCommitSha(candidateGiven)) return fail(write, json, "task scope", "usage", "--candidate is the full 40-character commit hash the machine will check out", EXIT.usage);
+  // A release scope's terms (release-once.md), filled in from the plane's own records: `--release
+  // <version>:<pull request>:<branch>` with the candidate. Terms that can't be made (the checks run outside the
+  // sandbox, say) file the scope without them: every later commit then asks again, as before.
+  const releaseGiven = text(flags, "release");
+  let releaseTerms: ReleaseTerms | undefined;
+  let releaseCheck: ReleaseCheckPurpose | undefined;
+  let releaseNote: string | null = null;
+  if (releaseGiven !== undefined) {
+    const spec = /^(\d+\.\d+\.\d+):([1-9][0-9]*):([A-Za-z0-9._/-]+)$/.exec(releaseGiven);
+    if (spec === null || candidateGiven === undefined) return fail(write, json, "task scope", "usage", "--release takes <version>:<pull request>:<branch>, with --candidate <commit>", EXIT.usage);
+    const repo = store.lookupRef(id)?.repo ?? null;
+    if (repo === null) return fail(write, json, "task scope", "usage", "a release scope's task has to be placed in its project first", EXIT.usage);
+    const made = releaseTermsFor(store, { repo, version: spec[1]!, pr: Number(spec[2]), branch: spec[3]!, candidate: candidateGiven, now, noCarry: flags.get("no-carry") === true });
+    if (made.ok) releaseTerms = made.terms;
+    else {
+      releaseNote = `Later commits on this release will each ask for approval: ${made.why}.`;
+      // Without terms the candidate is still a release's check (pipeline-speed.md, P0): its purpose is sealed with the
+      // scope, from the plane's own records, so the check runs under the release's rules and the plane may rerun it on
+      // this same candidate after confirmed infrastructure. It never carries a later commit.
+      const purpose = releaseCheckPurposeFor(store, { repo, version: spec[1]!, pr: Number(spec[2]), branch: spec[3]!, candidate: candidateGiven });
+      if (purpose.ok) releaseCheck = purpose.purpose;
+    }
   }
-  if (acceptanceParse.criteria.length === 0) {
-    return fail(write, json, "task scope", "acceptance-required", "--acceptance named no valid criteria", EXIT.usage);
-  }
+  if (acceptanceParse.criteria.length === 0) return fail(write, json, "task scope", "acceptance-required", "--acceptance named no valid criteria", EXIT.usage);
 
   const touches = (text(flags, "touches") ?? "").split(",").map(one => one.trim()).filter(Boolean);
 
@@ -10917,9 +10393,7 @@ async function scopeTask(
       : defaults?.buildPerRunMicrousd != null
         ? defaults.buildPerRunMicrousd / 1_000_000
         : null;
-  if (budgetGiven !== undefined && (!Number.isFinite(Number(budgetGiven)) || Number(budgetGiven) <= 0)) {
-    return fail(write, json, "task scope", "bad-budget", "--budget-usd is a positive dollar amount", EXIT.usage);
-  }
+  if (budgetGiven !== undefined && (!Number.isFinite(Number(budgetGiven)) || Number(budgetGiven) <= 0)) return fail(write, json, "task scope", "bad-budget", "--budget-usd is a positive dollar amount", EXIT.usage);
   // v24 routing flags (foundations finding 5 — these used to be silently
   // swallowed by the global parser): explicit flags resolve HERE, and an
   // explicit ask that cannot resolve refuses rather than filing unresolved.
@@ -10934,9 +10408,7 @@ async function scopeTask(
       scopeRef === null ? undefined : { agentProvider: scopeRef.agentProvider, agentModel: scopeRef.agentModel },
       { provider: text(flags, "provider"), model: text(flags, "model"), repairModel: text(flags, "repair-model") },
     );
-    if (!resolvedRouting.ok) {
-      return fail(write, json, "task scope", resolvedRouting.reason, resolvedRouting.problem, EXIT.usage);
-    }
+    if (!resolvedRouting.ok) return fail(write, json, "task scope", resolvedRouting.reason, resolvedRouting.problem, EXIT.usage);
     explicitProfile = resolvedRouting.profile;
   }
   // C1/M3, the credentialed-CLI road: when --as/--token authenticate the
@@ -10981,6 +10453,8 @@ async function scopeTask(
         : null;
     const proposed = propose(store, {
       ...(candidateGiven === undefined ? {} : { candidate: candidateGiven }),
+      ...(releaseTerms === undefined ? {} : { releaseTerms, releaseCheck: null }),
+      ...(releaseCheck === undefined ? {} : { releaseCheck, releaseTerms: null }),
       taskId: id,
       goal,
       outOfScope: text(flags, "not") ?? null,
@@ -11013,9 +10487,7 @@ async function scopeTask(
     }
     return { ok: true, scope: proposed, sealedUnderMode, modeRefusedCoordinator };
   }));
-  if (!filed.ok) {
-    return fail(write, json, "task scope", filed.reason, filed.message, EXIT.refused);
-  }
+  if (!filed.ok) return fail(write, json, "task scope", filed.reason, filed.message, EXIT.refused);
   const scope = filed.scope;
   if (filed.modeRefusedCoordinator === true) {
     return succeed(write, json, "task scope", { scope, approvedUnderMode: false, quarantined: true }, () => [
@@ -11032,7 +10504,8 @@ async function scopeTask(
 
   // A changed scope on a planning task plans again (v119): say so once, instead of leaving the old plan implied.
   const replanned = (store.lookupRef(id)?.planningGeneration ?? 0) > generationBefore;
-  return succeed(write, json, "task scope", { scope, ...(replanned ? { planningRestarted: true } : {}) }, () => [
+  return succeed(write, json, "task scope", { scope, ...(replanned ? { planningRestarted: true } : {}), ...(releaseNote === null ? {} : { releaseNote }) }, () => [
+    ...(releaseNote === null ? [] : [releaseNote]),
     replanned
       ? `Scope written for ${id}. The scope changed, so planning starts again; nothing builds until somebody approves the new plan.`
       : `Scope written for ${id}. Nothing will build it until somebody approves it.`,
@@ -11071,12 +10544,8 @@ async function routeTaskCommand(
 ): Promise<number> {
   const { store, write, json, clock } = context;
   const id = positional[0];
-  if (id === undefined) {
-    return fail(write, json, "task route", "usage", "`toolroll task route <id> [--size <s>] [--risky yes|no] [--phase <p> --provider <p> --model <m> | --clear-phase <p>] [--digest <d>] --as <you> --token <t>`", EXIT.usage);
-  }
-  if (store.getTask(id) === null) {
-    return fail(write, json, "task route", "unknown-task", `no task \`${id}\``, EXIT.refused);
-  }
+  if (id === undefined) return fail(write, json, "task route", "usage", "`toolroll task route <id> [--size <s>] [--risky yes|no] [--phase <p> --provider <p> --model <m> | --clear-phase <p>] [--digest <d>] --as <you> --token <t>`", EXIT.usage);
+  if (store.getTask(id) === null) return fail(write, json, "task route", "unknown-task", `no task \`${id}\``, EXIT.refused);
   const ref = store.refFor(BUILT_IN, id);
   const phaseGiven = text(flags, "phase");
   const clearGiven = text(flags, "clear-phase");
@@ -11130,35 +10599,21 @@ async function routeTaskCommand(
   if (!editing) return show();
 
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(write, json, "task route", "usage", "changing a route takes `--as <you> --token <t>` — it reroutes spend", EXIT.usage);
-  }
-  if (sizeGiven !== undefined && !isTaskSize(sizeGiven)) {
-    return fail(write, json, "task route", "usage", `--size is one of ${TASK_SIZES.join(", ")}`, EXIT.usage);
-  }
-  if (riskyGiven !== undefined && riskyGiven !== "yes" && riskyGiven !== "no") {
-    return fail(write, json, "task route", "usage", "--risky is yes or no", EXIT.usage);
-  }
+  if (acting === null) return fail(write, json, "task route", "usage", "changing a route takes `--as <you> --token <t>` — it reroutes spend", EXIT.usage);
+  if (sizeGiven !== undefined && !isTaskSize(sizeGiven)) return fail(write, json, "task route", "usage", `--size is one of ${TASK_SIZES.join(", ")}`, EXIT.usage);
+  if (riskyGiven !== undefined && riskyGiven !== "yes" && riskyGiven !== "no") return fail(write, json, "task route", "usage", "--risky is yes or no", EXIT.usage);
   // A person's size outranks the classifier's; an unnamed half keeps what the task has.
   const sizeEdit = sizeGiven === undefined && riskyGiven === undefined ? undefined : {
     size: (sizeGiven as TaskSize | undefined) ?? ref.sizing?.size ?? "medium",
     risky: riskyGiven === undefined ? ref.sizing?.risky ?? false : riskyGiven === "yes",
   };
-  if (phaseGiven !== undefined && clearGiven !== undefined) {
-    return fail(write, json, "task route", "usage", "say --phase … --provider … --model … OR --clear-phase …, not both", EXIT.usage);
-  }
+  if (phaseGiven !== undefined && clearGiven !== undefined) return fail(write, json, "task route", "usage", "say --phase … --provider … --model … OR --clear-phase …, not both", EXIT.usage);
   const phase = phaseGiven ?? clearGiven;
-  if (phase !== undefined && !(ROUTE_PHASES as readonly string[]).includes(phase)) {
-    return fail(write, json, "task route", "usage", `--${phaseGiven !== undefined ? "phase" : "clear-phase"} is one of ${ROUTE_PHASES.join(", ")}`, EXIT.usage);
-  }
+  if (phase !== undefined && !(ROUTE_PHASES as readonly string[]).includes(phase)) return fail(write, json, "task route", "usage", `--${phaseGiven !== undefined ? "phase" : "clear-phase"} is one of ${ROUTE_PHASES.join(", ")}`, EXIT.usage);
   if (phaseGiven === "review") return fail(write, json, "task route", "model-review-retired", "Separate model review has been removed; no reviewer route is needed.", EXIT.refused);
   if (phaseGiven !== undefined) {
-    if (providerGiven === undefined || !isProviderId(providerGiven)) {
-      return fail(write, json, "task route", "usage", `--provider is one of ${PROVIDER_IDS.join(", ")}`, EXIT.usage);
-    }
-    if (modelGiven === undefined || modelGiven === "") {
-      return fail(write, json, "task route", "usage", "an override names an exact --model — approvals bind exact routing", EXIT.usage);
-    }
+    if (providerGiven === undefined || !isProviderId(providerGiven)) return fail(write, json, "task route", "usage", `--provider is one of ${PROVIDER_IDS.join(", ")}`, EXIT.usage);
+    if (modelGiven === undefined || modelGiven === "") return fail(write, json, "task route", "usage", "an override names an exact --model — approvals bind exact routing", EXIT.usage);
     const valid = validateSpec({ provider: providerGiven, model: modelGiven });
     if (!valid.ok) return fail(write, json, "task route", "invalid", valid.problem, EXIT.usage);
 
@@ -11180,9 +10635,7 @@ async function routeTaskCommand(
     clock(),
   );
   if (!edited.ok) {
-    if (edited.reason === "unauthenticated") {
-      return fail(write, json, "task route", edited.detail, describeApproveFailure(edited.detail as "no-approvers" | "not-an-approver", id), EXIT.refused);
-    }
+    if (edited.reason === "unauthenticated") return fail(write, json, "task route", edited.detail, describeApproveFailure(edited.detail as "no-approvers" | "not-an-approver", id), EXIT.refused);
     const code: Record<typeof edited.reason, string> = { "no-task": "unknown-task", "live-claim": "claimed", changed: "changed", nothing: "usage", "not-configured": "not-configured" };
     return fail(write, json, "task route", code[edited.reason], `${id}: ${edited.detail}`, edited.reason === "nothing" ? EXIT.usage : EXIT.refused);
   }
@@ -11201,19 +10654,13 @@ async function approveTask(
 ): Promise<number> {
   const { store, write, json, now } = context;
   const id = positional[0];
-  if (id === undefined) {
-    return fail(write, json, "task approve", "usage", "which task?", EXIT.usage);
-  }
+  if (id === undefined) return fail(write, json, "task approve", "usage", "which task?", EXIT.usage);
 
   const scope = store.getScope(id);
-  if (scope === null) {
-    return fail(write, json, "task approve", "no-scope", `${id} has no scope to approve — write one first`, EXIT.refused);
-  }
+  if (scope === null) return fail(write, json, "task approve", "no-scope", `${id} has no scope to approve — write one first`, EXIT.refused);
   // Console parity (v47): a plan leg changed after a draft asks for a real
   // re-plan — nothing approves the obsolete draft while the planner is owed.
-  if (store.lookupRef(id)?.plan === "requested") {
-    return fail(write, json, "task approve", "planning", `${id} is waiting on a planner — approval is blocked until the drafted plan lands`, EXIT.refused);
-  }
+  if (store.lookupRef(id)?.plan === "requested") return fail(write, json, "task approve", "planning", `${id} is waiting on a planner — approval is blocked until the drafted plan lands`, EXIT.refused);
 
   let saw = text(flags, "digest");
   let { name: asWho, token } = credentialsFrom(flags, context);
@@ -11263,9 +10710,7 @@ async function approveTask(
     // Unconfirmed is "no, not yet" — exit 3 in both modes (round-4 finding 10).
     return EXIT.refused;
   }
-  if (saw === undefined || asWho === undefined || token === undefined) {
-    return fail(write, json, "task approve", "usage", "approving non-interactively takes --yes --digest <d> --as <you> --token <t>", EXIT.usage);
-  }
+  if (saw === undefined || asWho === undefined || token === undefined) return fail(write, json, "task approve", "usage", "approving non-interactively takes --yes --digest <d> --as <you> --token <t>", EXIT.usage);
 
   // The digest is named rather than assumed, so an operator who read one scope
   // cannot approve a different one that replaced it while they were reading.
@@ -11289,6 +10734,8 @@ function describeApproveFailure(reason: string, id: string): string {
   // v102: the project's approval rules.
   if (reason === "requester") return `you filed ${id}, and this project needs someone else to approve it`;
   if (reason === "person-required") return `${id} is protected work: a person has to approve it, not an operating mode, a schedule or a subagent`;
+  // Approval policy, phase 1: the lead's token (or a remote API token) proves a credential, not a person.
+  if (reason === "machine-proof") return "only a person can approve this — approve it on the task page or from your paired chat";
   if (reason === "second-approver") return `your approval of ${id} is recorded; it is protected work, so a second person needs to approve it (toolroll task approve ${id} as them)`;
   if (reason === "no-approvers") {
     return "nobody can approve anything yet — `toolroll approver add <you>` mints the credential that lets a person say yes";
@@ -11323,9 +10770,7 @@ export const PROPOSALS_ACTIONS = ["list", "confirm", "dismiss"] as const;
 async function proposalsCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
   const { store, write, json, now } = context;
   const [action = "list", idGiven] = positional;
-  if (!(PROPOSALS_ACTIONS as readonly string[]).includes(action)) {
-    return fail(write, json, "proposals", "usage", `unknown \`proposals ${action}\` — try ${PROPOSALS_ACTIONS.join(", ")}`, EXIT.usage);
-  }
+  if (!(PROPOSALS_ACTIONS as readonly string[]).includes(action)) return fail(write, json, "proposals", "usage", `unknown \`proposals ${action}\` — try ${PROPOSALS_ACTIONS.join(", ")}`, EXIT.usage);
   store.sweepCoordinatorProposals(now);
   let repos: string[] | null;
   if (context.repoList !== undefined && context.repoList.length > 0) {
@@ -11398,9 +10843,7 @@ async function chatCommand(flags: Map<string, string | true>, context: Context):
   const { store, write, json } = context;
   if (flags.has("follow") && flags.has("no-follow")) return fail(write, json, "chat", "usage", "Choose --follow or --no-follow.", EXIT.usage);
   const credentials = await askCredentials(flags, context);
-  if (credentials === null) {
-    return fail(write, json, "chat", "usage", "the lead takes your name and password — `--as <you>` and the hidden prompt; `--token <t>` only where a script must (it lands in shell history)", EXIT.usage);
-  }
+  if (credentials === null) return fail(write, json, "chat", "usage", "the lead takes your name and password — `--as <you>` and the hidden prompt; `--token <t>` only where a script must (it lands in shell history)", EXIT.usage);
   const ceilingGiven = text(flags, "ceiling-usd");
   // The ceiling: the `--repo` list, or the ENROLLED registry beside the
   // database (slice-2 review, finding 5) — never the opened-project history.
@@ -11455,6 +10898,9 @@ function credentialsFrom(
     if (remembered !== null && (name === undefined || name === remembered.name)) {
       name = remembered.name;
       token = remembered.password;
+      // This command proves with the remembered login: under Passwordless that reads as "cli-login", never as typed.
+      const holder = rememberedLogin.getStore();
+      if (holder !== undefined) holder.login = { name, token };
     }
   }
   return { name, token };
@@ -11479,6 +10925,13 @@ async function askCredentials(
  * which scope.ts's authenticateAccount takes as that person (a viewer for a read token) and never checks as a
  * password; these add the token's own project limit.
  */
+/** A credential act from the CLI (docs/plans/passwordless.md §5): a password typed for this command; with Passwordless on,
+ * never the remembered login. */
+function credentialApprover(store: Store, by: string, token: string, repo?: string | null): ReturnType<typeof passwordApprover> {
+  const proved = authenticateApprover(store, by, token, repo);
+  return !proved.ok || credentialProof(proved.method) ? proved : { ok: false, reason: "not-an-approver" };
+}
+
 function authenticateApprover(store: Store, by: string, token: string, repo?: string | null): ReturnType<typeof passwordApprover> {
   const remote = activeRemote();
   if (remote !== null && repo !== undefined && !remote.allows(repo)) return { ok: false, reason: "not-an-approver" };
@@ -11553,9 +11006,7 @@ async function approverCommand(
 ): Promise<number> {
   const { store, write, json, now } = context;
   const [action, name] = positional;
-  if (action !== undefined && !(APPROVER_ACTIONS as readonly string[]).includes(action)) {
-    return fail(write, json, "approver", "usage", `unknown \`approver ${action}\` — try ${APPROVER_ACTIONS.join(", ")}`, EXIT.usage);
-  }
+  if (action !== undefined && !(APPROVER_ACTIONS as readonly string[]).includes(action)) return fail(write, json, "approver", "usage", `unknown \`approver ${action}\` — try ${APPROVER_ACTIONS.join(", ")}`, EXIT.usage);
 
   if (action === "list" || action === undefined) {
     const approvers = store.listApprovers();
@@ -11573,9 +11024,7 @@ async function approverCommand(
   }
 
   if (action === "add") {
-    if (name === undefined) {
-      return fail(write, json, "approver add", "usage", "an approver needs a name", EXIT.usage);
-    }
+    if (name === undefined) return fail(write, json, "approver add", "usage", "an approver needs a name", EXIT.usage);
     let password = text(flags, "password");
     const bootstrap = store.listApprovers().length === 0;
     let by: { name: string; token: string } | undefined;
@@ -11587,9 +11036,7 @@ async function approverCommand(
       const chosen = await askHidden(`password for ${name} (enter to auto-generate): `);
       if (chosen !== "") {
         const again = await askHidden("again: ");
-        if (again !== chosen) {
-          return fail(write, json, "approver add", "mismatch", "the two passwords did not match", EXIT.refused);
-        }
+        if (again !== chosen) return fail(write, json, "approver add", "mismatch", "the two passwords did not match", EXIT.refused);
         password = chosen;
       }
     }
@@ -11641,18 +11088,12 @@ function holdTask(
   const { store, write, json, now } = context;
   const id = positional[0];
   const reason = text(flags, "reason");
-  if (id === undefined || reason === undefined) {
-    return fail(write, json, "task hold", "usage", "`toolroll task hold <id> --reason <why>`", EXIT.usage);
-  }
-  if (store.getTask(id) === null) {
-    return fail(write, json, "task hold", "unknown-task", `no task \`${id}\``, EXIT.refused);
-  }
+  if (id === undefined || reason === undefined) return fail(write, json, "task hold", "usage", "`toolroll task hold <id> --reason <why>`", EXIT.usage);
+  if (store.getTask(id) === null) return fail(write, json, "task hold", "unknown-task", `no task \`${id}\``, EXIT.refused);
 
   const untilText = text(flags, "until");
   const until = untilText === undefined ? null : new Date(untilText);
-  if (until !== null && Number.isNaN(until.getTime())) {
-    return fail(write, json, "task hold", "usage", "--until takes a date, e.g. 2026-08-12T09:00:00Z", EXIT.usage);
-  }
+  if (until !== null && Number.isNaN(until.getTime())) return fail(write, json, "task hold", "usage", "--until takes a date, e.g. 2026-08-12T09:00:00Z", EXIT.usage);
 
   store.hold(store.refFor(BUILT_IN, id).id, reason, until, now, mutationFrom(flags, now));
   return succeed(write, json, "task hold", { id, reason, until: until?.toISOString() ?? null }, () => [
@@ -11668,9 +11109,7 @@ function unholdTask(
   const { store, write, json } = context;
   const id = positional[0];
   if (id === undefined) return fail(write, json, "task unhold", "usage", "which task?", EXIT.usage);
-  if (store.getTask(id) === null) {
-    return fail(write, json, "task unhold", "unknown-task", `no task \`${id}\``, EXIT.refused);
-  }
+  if (store.getTask(id) === null) return fail(write, json, "task unhold", "unknown-task", `no task \`${id}\``, EXIT.refused);
 
   const lifted = store.unhold(store.refFor(BUILT_IN, id).id, mutationFrom(flags, context.now));
   if (!lifted) return fail(write, json, "task unhold", "not-held", `${id} was not on hold`, EXIT.refused);
@@ -11696,18 +11135,11 @@ async function stopTaskCommand(
   const id = positional[0];
   const runText = text(flags, "run");
   const runId = Number(runText ?? "");
-  if (id === undefined || runText === undefined || !Number.isInteger(runId) || runId < 1) {
-    return fail(write, json, "task stop", "usage", "`toolroll task stop <id> --run <run-id> --as <you> --token <t>` — the stop names one exact attempt", EXIT.usage);
-  }
+  if (id === undefined || runText === undefined || !Number.isInteger(runId) || runId < 1) return fail(write, json, "task stop", "usage", "`toolroll task stop <id> --run <run-id> --as <you> --token <t>` — the stop names one exact attempt", EXIT.usage);
   if (store.getTask(id) === null) return fail(write, json, "task stop", "unknown-task", `no task \`${id}\``, EXIT.refused);
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(write, json, "task stop", "usage", "stopping takes `--as <you> --token <t>` — it is an operator's act and is recorded against your name", EXIT.usage);
-  }
-  const authenticated = authenticateApprover(store, acting.name, acting.token);
-  if (!authenticated.ok) {
-    return fail(write, json, "task stop", authenticated.reason, describeApproveFailure(authenticated.reason, id), EXIT.refused);
-  }
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  if (acting === null || !verified?.ok) return refuseApprover(context, "task stop", verified, "stopping takes `--as <you> --token <t>` — it is an operator's act and is recorded against your name", id);
   const asked = requestTaskStop(store, { taskId: id, runId, by: acting.name, via: "cli" }, clock());
   if (!asked.ok) return fail(write, json, "task stop", asked.reason, asked.detail, EXIT.refused, { run: runId });
   const control = taskControlOf(store, store.refFor(BUILT_IN, id).id, clock());
@@ -11739,25 +11171,16 @@ async function resumeTaskCommand(
   const id = positional[0];
   const runText = text(flags, "run");
   const runId = Number(runText ?? "");
-  if (id === undefined || runText === undefined || !Number.isInteger(runId) || runId < 1) {
-    return fail(write, json, "task resume", "usage", "`toolroll task resume <id> --run <run-id> --as <you> --token <t>` — the resume names the exact stopped attempt", EXIT.usage);
-  }
+  if (id === undefined || runText === undefined || !Number.isInteger(runId) || runId < 1) return fail(write, json, "task resume", "usage", "`toolroll task resume <id> --run <run-id> --as <you> --token <t>` — the resume names the exact stopped attempt", EXIT.usage);
   if (store.getTask(id) === null) return fail(write, json, "task resume", "unknown-task", `no task \`${id}\``, EXIT.refused);
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(write, json, "task resume", "usage", "resuming takes `--as <you> --token <t>` — it lets the next pass spend again", EXIT.usage);
-  }
-  const authenticated = authenticateApprover(store, acting.name, acting.token);
-  if (!authenticated.ok) {
-    return fail(write, json, "task resume", authenticated.reason, describeApproveFailure(authenticated.reason, id), EXIT.refused);
-  }
+  const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
+  if (acting === null || !verified?.ok) return refuseApprover(context, "task resume", verified, "resuming takes `--as <you> --token <t>` — it lets the next pass spend again", id);
   const pool = text(flags, "pool") ?? join(dirname(databasePath(process.env, homedir())), "worktrees");
   const worktrees = new WorktreePool(store, { root: pool });
   const resumed = resumeTaskStop(store, { taskId: id, runId, by: acting.name, via: "cli", occupied: path => worktrees.inUse(path) }, clock());
   if (!resumed.ok) {
-    if (resumed.reason === "review") {
-      return fail(write, json, "task resume", "review", `${resumed.detail} — separate model review has been removed; inspect the saved source result`, EXIT.refused, { run: runId });
-    }
+    if (resumed.reason === "review") return fail(write, json, "task resume", "review", `${resumed.detail} — separate model review has been removed; inspect the saved source result`, EXIT.refused, { run: runId });
     return fail(write, json, "task resume", resumed.reason, resumed.detail, EXIT.refused, { run: runId });
   }
   const control = taskControlOf(store, store.refFor(BUILT_IN, id).id, clock());
@@ -11789,20 +11212,14 @@ async function runCommand(
   const runId = Number(id ?? "");
   const why = text(flags, "why")?.trim();
   if (id === undefined || extra.length > 0 || !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(runId)) return fail(write, json, command, "usage", usage, EXIT.usage);
-  if (why === undefined || why === "" || why.length > 300 || /[\x00-\x1f\x7f]/.test(why)) {
-    return fail(write, json, command, "usage", "say why in one line with --why (at most 300 characters) — it is kept in the ledger", EXIT.usage);
-  }
+  if (why === undefined || why === "" || why.length > 300 || /[\x00-\x1f\x7f]/.test(why)) return fail(write, json, command, "usage", "say why in one line with --why (at most 300 characters) — it is kept in the ledger", EXIT.usage);
   const run = store.getRun(runId);
   if (run === null) return fail(write, json, command, "unknown-run", `no run #${runId}`, EXIT.refused);
   const acting = await askCredentials(flags, context);
-  if (acting === null) {
-    return fail(write, json, command, "usage", "settling takes `--as <you> --token <t>` — it is an approver's act and is recorded against your name", EXIT.usage);
-  }
+  if (acting === null) return fail(write, json, command, "usage", "settling takes `--as <you> --token <t>` — it is an approver's act and is recorded against your name", EXIT.usage);
   const authenticated = authenticateApprover(store, acting.name, acting.token);
   const repo = store.refById(run.taskRef)?.repo ?? null;
-  if (!authenticated.ok || !store.accountCanAccess(acting.name, repo)) {
-    return fail(write, json, command, "not-an-approver", "that is not an approver for this run's project, or the token does not match", EXIT.refused);
-  }
+  if (!authenticated.ok || !store.accountCanAccess(acting.name, repo)) return fail(write, json, command, "not-an-approver", "that is not an approver for this run's project, or the token does not match", EXIT.refused);
   const settled = store.settleRunWitnessesByApprover({ runId, by: acting.name, why }, clock());
   if (!settled.ok) return fail(write, json, command, settled.reason, settled.detail, EXIT.refused, { run: runId });
   return succeed(write, json, command, { run: runId, witnesses: settled.witnesses, repeated: settled.repeated }, () => [
@@ -11827,9 +11244,7 @@ async function projectRulesCommand(positional: readonly string[], flags: Map<str
   const repoFlag = text(flags, "repo");
   if (positional.length > 1 || repoFlag === undefined) return fail(context.write, context.json, command, "usage", "Use project rules --repo <project path> [--not-requester on|off] [--protect none|project] [--protect-paths \"infra/**,migrations/**\"].", EXIT.usage);
   // The projects Settings shows: those with work, and those registered (enrolled) with none yet.
-  const registered = await loadRepos(registryPathOf(context)).catch(() => ({ error: "unreadable" }));
-  const known = [...new Set([...context.store.knownRepos(), ...("error" in registered ? [] : registered.repos)])];
-  const repo = known.find(one => one === repoFlag || one === resolve(repoFlag));
+  const repo = await knownProject(context, repoFlag, { listed: false, canonical: false });
   if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
   const current = context.store.approvalRules(repo);
   const changing = ["not-requester", "protect", "protect-paths"].some(name => flags.has(name));
@@ -11845,9 +11260,7 @@ async function projectRulesCommand(positional: readonly string[], flags: Map<str
   if (paths !== null && !paths.ok) return fail(context.write, context.json, command, "usage", paths.problem, EXIT.usage);
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(context.store, acting.name, acting.token);
-  if (acting === null || verified === null || !verified.ok || !context.store.isInstanceOperator(acting.name)) {
-    return fail(context.write, context.json, command, "refused", "An instance operator changes approval rules: pass --as and --token (or use the remembered login).", EXIT.refused);
-  }
+  if (acting === null || !verified?.ok || !context.store.isInstanceOperator(acting.name)) return fail(context.write, context.json, command, "refused", "An instance operator changes approval rules: pass --as and --token (or use the remembered login).", EXIT.refused);
   const next = {
     notRequester: onOff === undefined ? current.notRequester : onOff === "on",
     protectProject: protect === undefined ? (paths !== null && paths.ok ? false : current.protectProject) : protect === "project",
@@ -11857,6 +11270,98 @@ async function projectRulesCommand(positional: readonly string[], flags: Map<str
   return succeed(context.write, context.json, command, { repo, rules: next }, () => [`${repo}: ${rulesSummary(next)}`]);
 }
 
+/**
+ * `project network --repo <p> [--allow h,…] [--remove h,…] [--open|--allowlist] [--local any|none]`: what the project's
+ * builds may reach (egress.ts). New scopes are written with it and their approvals seal it; scopes already approved
+ * keep the network they were approved with. Widening or narrowing it is an approver's act with a password typed now,
+ * kept in the ledger as before → after.
+ */
+async function projectNetworkCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
+  const command = "project network";
+  const allowed = new Set(["repo", "allow", "remove", "open", "allowlist", "local", "as", "token", "token-file", "token-env", "db", "json"]);
+  for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project network option.`, EXIT.usage);
+  const repoFlag = text(flags, "repo");
+  const local = flags.get("local");
+  if (positional.length > 1 || repoFlag === undefined || (flags.has("open") && flags.has("allowlist")) || (local !== undefined && local !== "any" && local !== "none")) return fail(context.write, context.json, command, "usage", "Use project network --repo <project path> [--allow host,…] [--remove host,…] [--open | --allowlist] [--local any|none].", EXIT.usage);
+  const repo = await knownProject(context, repoFlag, { listed: true, canonical: true });
+  if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
+  const current = context.store.projectNetwork(repo);
+  const words = (one: ProjectNetwork): string[] => [
+    `${repo}: ${one.mode === "open" ? "builds may reach any host" : `builds reach their agent's provider, the package registries the project uses${one.hosts.length === 0 ? "" : `, and ${one.hosts.join(", ")}`}`}.`,
+    one.loopback === "any" ? "On a Mac, builds may reach this Mac's local services (never Toolroll's own)." : "On a Mac, builds reach no local services but their own proxy and tools.",
+  ];
+  const listOf = (name: string): string[] | null => {
+    const given = text(flags, name);
+    if (given === undefined) return [];
+    const hosts = given.split(",").map(one => one.trim()).filter(Boolean).map(normalizeHost);
+    return hosts.some(one => one === null) ? null : hosts as string[];
+  };
+  const add = listOf("allow"), remove = listOf("remove");
+  if (add === null || remove === null) return fail(context.write, context.json, command, "usage", "A host is a name like api.stripe.com or *.stripe.com: no address, port or path.", EXIT.usage);
+  const changing = add.length > 0 || remove.length > 0 || flags.has("open") || flags.has("allowlist") || local !== undefined;
+  if (!changing) return succeed(context.write, context.json, command, { repo, network: current }, () => words(current));
+  const next: ProjectNetwork = {
+    mode: flags.has("open") ? "open" : flags.has("allowlist") ? "allowlist" : current.mode,
+    hosts: [...new Set([...current.hosts.filter(one => !remove.includes(one)), ...add])].sort(),
+    loopback: local === "any" ? "any" : local === "none" ? "proxy-only" : current.loopback,
+  };
+  if (next.hosts.length > MAX_NETWORK_HOSTS) return fail(context.write, context.json, command, "usage", `A project lists at most ${MAX_NETWORK_HOSTS} hosts.`, EXIT.usage);
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null ? null : credentialApprover(context.store, acting.name, acting.token, repo);
+  if (acting === null || !verified?.ok || !context.store.accountCanAccess(acting.name, repo)) return fail(context.write, context.json, command, "refused", "An approver for this project changes what its builds may reach, with their password: pass --as and --token.", EXIT.refused);
+  const changed = context.store.setProjectNetwork(repo, next, acting.name, context.clock());
+  return succeed(context.write, context.json, command, { repo, before: changed.before, network: changed.after }, () => [
+    ...words(changed.after),
+    "Scopes written from now on use this; scopes already approved keep the network they were approved with.",
+  ]);
+}
+
+/**
+ * `project writes --repo <p> [workspace|anywhere]`: where the project's builds may write (writes-mode.ts). `workspace`:
+ * only their checkout and its Git data, their caches, their temp folder and the provider state their CLI needs;
+ * `anywhere`: anywhere outside Toolroll's fenced folders. New scopes seal it; approved ones keep theirs. Changing it is
+ * an approver's act with a password typed now, kept in the ledger as before → after.
+ */
+async function projectWritesCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
+  const command = "project writes";
+  const allowed = new Set(["repo", "as", "token", "token-file", "token-env", "db", "json"]);
+  for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project writes option.`, EXIT.usage);
+  const repoFlag = text(flags, "repo");
+  const wanted = positional[1];
+  if (positional.length > 2 || repoFlag === undefined || (wanted !== undefined && !isWritesMode(wanted))) return fail(context.write, context.json, command, "usage", "Use project writes --repo <project path> [workspace | anywhere].", EXIT.usage);
+  const repo = await knownProject(context, repoFlag, { listed: true, canonical: true });
+  if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
+  const words = (one: WritesMode): string[] => [`${repo}: builds write ${writesWords(one)}.`];
+  const current = context.store.projectWrites(repo);
+  if (wanted === undefined) return succeed(context.write, context.json, command, { repo, writes: current }, () => words(current));
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null ? null : credentialApprover(context.store, acting.name, acting.token, repo);
+  if (acting === null || !verified?.ok || !context.store.accountCanAccess(acting.name, repo)) return fail(context.write, context.json, command, "refused", "An approver for this project changes where its builds may write, with their password: pass --as and --token.", EXIT.refused);
+  const changed = context.store.setProjectWrites(repo, wanted, acting.name, context.clock());
+  return succeed(context.write, context.json, command, { repo, before: changed.before, writes: changed.after }, () => [
+    ...words(changed.after),
+    "Scopes written from now on use this; scopes already approved keep what they were approved with.",
+  ]);
+}
+
+/** `config unconfined-agents [allow|refuse]`: whether a build may run on a machine that can't confine it at the OS
+ * (no macOS sandbox, no working bubblewrap). Refused unless an instance operator allows it, with a password. */
+async function unconfinedAgentsCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const command = "config unconfined-agents";
+  const { store, write, json } = context;
+  const wanted = positional[1];
+  if (positional.length > 2 || (wanted !== undefined && wanted !== "allow" && wanted !== "refuse")) return fail(write, json, command, "usage", "Use config unconfined-agents [allow|refuse].", EXIT.usage);
+  const words = (allowed: boolean) => [allowed
+    ? "Builds run even where this machine can't confine them (each such run says \"Not confined\")."
+    : "Builds this machine can't confine at the OS don't start."];
+  if (wanted === undefined) return succeed(write, json, command, { allowed: store.unfencedAgentsAllowed() }, () => words(store.unfencedAgentsAllowed()));
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null ? null : credentialApprover(store, acting.name, acting.token);
+  if (acting === null || !verified?.ok || !store.isInstanceOperator(acting.name)) return fail(write, json, command, "refused", "An instance operator changes this, with their password: pass --as and --token.", EXIT.refused);
+  store.setUnfencedAgentsAllowed(wanted === "allow", acting.name, context.clock());
+  return succeed(write, json, command, { allowed: wanted === "allow" }, () => words(wanted === "allow"));
+}
+
 /** `project concurrency [<n>] --repo <p>`: how many of a project's tasks build at once. Changing it is an approver's act. */
 async function projectConcurrencyCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
   const command = "project concurrency";
@@ -11864,9 +11369,7 @@ async function projectConcurrencyCommand(positional: readonly string[], flags: M
   for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project concurrency option.`, EXIT.usage);
   const repoFlag = text(flags, "repo");
   if (positional.length > 2 || repoFlag === undefined) return fail(context.write, context.json, command, "usage", "Use project concurrency [<n>] --repo <project path>.", EXIT.usage);
-  const registered = await loadRepos(registryPathOf(context)).catch(() => ({ error: "unreadable" }));
-  const known = [...new Set([...context.store.knownRepos(), ...("error" in registered ? [] : registered.repos)])];
-  const repo = known.find(one => one === repoFlag || one === resolve(repoFlag) || one === canonicalProject(repoFlag));
+  const repo = await knownProject(context, repoFlag, { listed: false, canonical: true });
   if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
   const workers = context.store.listRunners().filter(one => one.retiredAt === null && one.repos.includes(repo));
   const capacity = workers.length === 0 ? null : Math.max(...workers.map(one => one.capacity));
@@ -11881,9 +11384,7 @@ async function projectConcurrencyCommand(positional: readonly string[], flags: M
   if (n === null) return fail(context.write, context.json, command, "usage", `Builds at once is a whole number from 1 to ${RUNNER_CAPACITY_MAX}.`, EXIT.usage);
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(context.store, acting.name, acting.token);
-  if (acting === null || verified === null || !verified.ok || !context.store.accountCanAccess(acting.name, repo)) {
-    return fail(context.write, context.json, command, "refused", "An approver for this project changes how many tasks build at once: pass --as and --token (or use the remembered login).", EXIT.refused);
-  }
+  if (acting === null || !verified?.ok || !context.store.accountCanAccess(acting.name, repo)) return fail(context.write, context.json, command, "refused", "An approver for this project changes how many tasks build at once: pass --as and --token (or use the remembered login).", EXIT.refused);
   const changed = saveProjectConcurrency(context.databaseFile, repo, n);
   context.store.recordProjectConcurrency(acting.name, repo, changed.before, changed.after, context.clock());
   context.store.bumpWake();
@@ -11901,12 +11402,8 @@ async function projectChecksCommand(positional: readonly string[], flags: Map<st
   for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project checks option.`, EXIT.usage);
   const repoFlag = text(flags, "repo");
   const wanted = flags.get("batch");
-  if (positional.length > 1 || repoFlag === undefined || (wanted !== undefined && wanted !== "on" && wanted !== "off")) {
-    return fail(context.write, context.json, command, "usage", "Use project checks [--batch on|off] --repo <project path>.", EXIT.usage);
-  }
-  const registered = await loadRepos(registryPathOf(context)).catch(() => ({ error: "unreadable" }));
-  const known = [...new Set([...context.store.knownRepos(), ...context.store.listProjects().map(one => one.path), ...("error" in registered ? [] : registered.repos)])];
-  const repo = known.find(one => one === repoFlag || one === resolve(repoFlag) || one === canonicalProject(repoFlag));
+  if (positional.length > 1 || repoFlag === undefined || (wanted !== undefined && wanted !== "on" && wanted !== "off")) return fail(context.write, context.json, command, "usage", "Use project checks [--batch on|off] --repo <project path>.", EXIT.usage);
+  const repo = await knownProject(context, repoFlag, { listed: true, canonical: true });
   if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
   const level = projectCheckLevel(context.store, repo).level;
   const words = (on: boolean): string[] => [
@@ -11919,9 +11416,7 @@ async function projectChecksCommand(positional: readonly string[], flags: Map<st
   }
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(context.store, acting.name, acting.token, repo);
-  if (acting === null || verified === null || !verified.ok || !context.store.accountCanAccess(acting.name, repo)) {
-    return fail(context.write, context.json, command, "refused", "An approver for this project changes batch checks: pass --as and --token (or use the remembered login).", EXIT.refused);
-  }
+  if (acting === null || !verified?.ok || !context.store.accountCanAccess(acting.name, repo)) return fail(context.write, context.json, command, "refused", "An approver for this project changes batch checks: pass --as and --token (or use the remembered login).", EXIT.refused);
   const on = wanted === "on";
   const changed = setProjectBatchChecks(context.store, repo, on, acting.name, context.clock());
   return succeed(context.write, context.json, command, { repo, batch: on, before: changed.before, changed: changed.changed, windowMinutes: BATCH_WINDOW_MS / 60_000, level }, () => [
@@ -11938,9 +11433,7 @@ async function projectDemoCommand(positional: readonly string[], flags: Map<stri
   for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project demo option.`, EXIT.usage);
   const repoFlag = text(flags, "repo");
   if (positional.length > 2 || repoFlag === undefined) return fail(context.write, context.json, command, "usage", "Use project demo [<url>|off] --repo <project path>.", EXIT.usage);
-  const registered = await loadRepos(registryPathOf(context)).catch(() => ({ error: "unreadable" }));
-  const known = [...new Set([...context.store.knownRepos(), ...("error" in registered ? [] : registered.repos)])];
-  const repo = known.find(one => one === repoFlag || one === resolve(repoFlag) || one === canonicalProject(repoFlag));
+  const repo = await knownProject(context, repoFlag, { listed: false, canonical: true });
   if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
   const words = (url: string | null): string => url === null ? `${repo}: no demo; scouts screenshot public pages only.` : `${repo}: scouts may also screenshot ${url}.`;
   const given = positional[1];
@@ -11952,9 +11445,7 @@ async function projectDemoCommand(positional: readonly string[], flags: Map<stri
   if (url === null && given.trim().toLowerCase() !== "off") return fail(context.write, context.json, command, "usage", "The demo is an http or https address without a sign-in, or off.", EXIT.usage);
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(context.store, acting.name, acting.token);
-  if (acting === null || verified === null || !verified.ok || !context.store.accountCanAccess(acting.name, repo)) {
-    return fail(context.write, context.json, command, "refused", "An approver for this project sets its demo: pass --as and --token (or use the remembered login).", EXIT.refused);
-  }
+  if (acting === null || !verified?.ok || !context.store.accountCanAccess(acting.name, repo)) return fail(context.write, context.json, command, "refused", "An approver for this project sets its demo: pass --as and --token (or use the remembered login).", EXIT.refused);
   const changed = saveProjectDemo(context.databaseFile, repo, url);
   context.store.recordProjectDemo(acting.name, repo, changed.before, changed.after, context.clock());
   return succeed(context.write, context.json, command, { repo, before: changed.before, demoUrl: changed.after }, () => [words(changed.after)]);
@@ -11987,9 +11478,7 @@ async function projectDeleteCommand(positional: readonly string[], flags: Map<st
   const store = context.store;
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
-  if (acting === null || verified === null || !verified.ok || !store.isInstanceOperator(acting.name)) {
-    return fail(context.write, context.json, command, "refused", "An instance operator deletes projects: pass --as and --token (or use the remembered login).", EXIT.refused);
-  }
+  if (acting === null || !verified?.ok || !store.isInstanceOperator(acting.name)) return fail(context.write, context.json, command, "refused", "An instance operator deletes projects: pass --as and --token (or use the remembered login).", EXIT.refused);
   const holdings = projectHoldings(store, repo);
   const running = projectRunning(store, repo, context.clock());
   if (running.length > 0) return fail(context.write, context.json, command, "running", `Nothing was deleted: ${running.join(", ")}. Stop it, then try again.`, EXIT.refused);
@@ -12073,9 +11562,7 @@ async function restoreCommand(file: string, positional: readonly string[], flags
   let report;
   try { report = await restoreDatabase({ databaseFile: file, file: backupFile, dryRun, now }); }
   catch (error) { return fail(write, json, command, "failed", `The restore failed: ${describe(error)}. The database is unchanged.`, EXIT.failed); }
-  if (!report.ok) {
-    return fail(write, json, command, report.refusals[0]?.reason ?? "refused", ["Nothing was restored.", ...report.refusals.map(one => `  ${one.words}`)].join("\n"), EXIT.refused, { report });
-  }
+  if (!report.ok) return fail(write, json, command, report.refusals[0]?.reason ?? "refused", ["Nothing was restored.", ...report.refusals.map(one => `  ${one.words}`)].join("\n"), EXIT.refused, { report });
   const checked = `schema ${report.schemaVersion}, ledger chain verified (${report.ledger?.entries ?? 0} entries)`;
   return succeed(write, json, command, { report }, () => dryRun
     ? [`Dry run: ${report.file} can be restored (${checked}). Nothing was changed.`]
@@ -12128,9 +11615,7 @@ async function budgetCommand(positional: readonly string[], flags: Map<string, s
   const target = chosen[0]!;
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
-  if (acting === null || verified === null || !verified.ok || !store.isInstanceOperator(acting.name)) {
-    return fail(context.write, context.json, command, "refused", "An instance operator sets budgets: pass --as and --token (or use the remembered login).", EXIT.refused);
-  }
+  if (acting === null || !verified?.ok || !store.isInstanceOperator(acting.name)) return fail(context.write, context.json, command, "refused", "An instance operator sets budgets: pass --as and --token (or use the remembered login).", EXIT.refused);
   const known = target.scope === "installation" || (target.scope === "project" ? store.knownRepos().includes(target.key)
     : target.scope === "person" ? store.accountFacts().some(one => one.name === target.key && one.revokedAt === null)
     : store.handle.prepare("SELECT 1 FROM subagent WHERE id = ?").get(Number(target.key)) !== undefined);
@@ -12157,16 +11642,12 @@ async function notificationsCommand(positional: readonly string[], flags: Map<st
   for (const name of flags.keys()) if (!["as", "token", "token-file", "token-env", "db", "json", ...(muting ? ["repo"] : [])].includes(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a notifications option.`, EXIT.usage);
   const usage = "Use notifications quiet, notifications all, notifications digest <HH:MM>|off, notifications screenshots off|first|all, or notifications mute|unmute --repo <project>.";
   const valued = action === "digest" || action === "screenshots";
-  if (extra.length > 0 || (action !== undefined && !["quiet", "all", "digest", "screenshots", "mute", "unmute"].includes(action)) || valued !== (value !== undefined) || (muting && (value !== undefined || text(flags, "repo") === undefined))) {
-    return fail(context.write, context.json, command, "usage", usage, EXIT.usage);
-  }
+  if (extra.length > 0 || (action !== undefined && !["quiet", "all", "digest", "screenshots", "mute", "unmute"].includes(action)) || valued !== (value !== undefined) || (muting && (value !== undefined || text(flags, "repo") === undefined))) return fail(context.write, context.json, command, "usage", usage, EXIT.usage);
   if (action === "screenshots" && !RESULT_SCREENSHOTS.includes(value as ResultScreenshots)) return fail(context.write, context.json, command, "usage", "Screenshots with results is off, first (the first one) or all (up to 4).", EXIT.usage);
   if (action === "digest" && value !== "off" && !isDigestTime(value!)) return fail(context.write, context.json, command, "usage", "The digest time is HH:MM on a 24-hour clock, like 18:30, or off.", EXIT.usage);
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
-  if (acting === null || verified === null || !verified.ok) {
-    return fail(context.write, context.json, command, "refused", "Notifications are set per person: pass --as and --token (or use the remembered login).", EXIT.refused);
-  }
+  if (acting === null || !verified?.ok) return fail(context.write, context.json, command, "refused", "Notifications are set per person: pass --as and --token (or use the remembered login).", EXIT.refused);
   const now = context.clock();
   if (muting) {
     const typed = text(flags, "repo")!;
@@ -12221,16 +11702,12 @@ async function retentionCommand(positional: readonly string[], flags: Map<string
   }
   if (action !== "set") return fail(context.write, context.json, command, "usage", "Use retention show, retention preview or retention set <kind> <period>.", EXIT.usage);
   const [kind, period, ...extra] = rest;
-  if (kind === undefined || !isRetentionKind(kind) || period === undefined || extra.length > 0) {
-    return fail(context.write, context.json, command, "usage", `Use retention set <${RETENTION_KINDS.map(one => one.kind).join("|")}> <days, like 1d, 90d or 1y, or forever>.`, EXIT.usage);
-  }
+  if (kind === undefined || !isRetentionKind(kind) || period === undefined || extra.length > 0) return fail(context.write, context.json, command, "usage", `Use retention set <${RETENTION_KINDS.map(one => one.kind).join("|")}> <days, like 1d, 90d or 1y, or forever>.`, EXIT.usage);
   const days = parsePeriod(period);
   if (days === undefined) return fail(context.write, context.json, command, "usage", `A period is forever, or ${MIN_DAYS} day to 10 years (1d, 90d, 12w, 1y).`, EXIT.usage);
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
-  if (acting === null || verified === null || !verified.ok || !store.isInstanceOperator(acting.name)) {
-    return fail(context.write, context.json, command, "refused", "An instance operator sets retention: pass --as and --token (or use the remembered login).", EXIT.refused);
-  }
+  if (acting === null || !verified?.ok || !store.isInstanceOperator(acting.name)) return fail(context.write, context.json, command, "refused", "An instance operator sets retention: pass --as and --token (or use the remembered login).", EXIT.refused);
   const periods = store.setRetentionPeriod(kind, days, acting.name, context.clock());
   return succeed(context.write, context.json, command, { periods }, () => [`${label(kind)}: kept ${days === null ? "forever" : `for ${periodWords(days)}`}.`]);
 }
@@ -12497,9 +11974,7 @@ async function policyCommand(positional: readonly string[], flags: Map<string, s
   if (!["providers", "models", "tools", "ceiling"].some(name => flags.has(name))) return fail(context.write, context.json, command, "usage", "Say what to set: --providers, --models, --tools or --ceiling.", EXIT.usage);
   const acting = await askCredentials(flags, context);
   const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
-  if (acting === null || verified === null || !verified.ok || !store.isInstanceOperator(acting.name)) {
-    return fail(context.write, context.json, command, "refused", "An instance operator sets the policy: pass --as and --token (or use the remembered login).", EXIT.refused);
-  }
+  if (acting === null || !verified?.ok || !store.isInstanceOperator(acting.name)) return fail(context.write, context.json, command, "refused", "An instance operator sets the policy: pass --as and --token (or use the remembered login).", EXIT.refused);
   const current = store.orgPolicy();
   const listFlag = (name: string, now: readonly string[] | null): readonly string[] | null => {
     if (!flags.has(name)) return now;
@@ -12532,9 +12007,7 @@ async function ledgerCommand(positional: readonly string[], flags: Map<string, s
   const command = `ledger ${action ?? ""}`.trim();
   const allowed = new Set(action === "verify" ? ["checkpoint", "db", "json"] : action === "checkpoint" ? ["as", "token", "token-file", "token-env", "db", "json"] : ["from", "to", "out", "db", "json"]);
   for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a ${command} option.`, EXIT.usage);
-  if (extra.length > 0 || (action !== "verify" && action !== "checkpoint" && action !== "export")) {
-    return fail(context.write, context.json, command, "usage", "Use ledger verify, ledger checkpoint or ledger export --from <day> --to <day>.", EXIT.usage);
-  }
+  if (extra.length > 0 || (action !== "verify" && action !== "checkpoint" && action !== "export")) return fail(context.write, context.json, command, "usage", "Use ledger verify, ledger checkpoint or ledger export --from <day> --to <day>.", EXIT.usage);
   const store = context.store;
   if (action === "verify") {
     // The command walks the whole chain, every time.
@@ -12554,9 +12027,7 @@ async function ledgerCommand(positional: readonly string[], flags: Map<string, s
   if (action === "checkpoint") {
     const acting = await askCredentials(flags, context);
     const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
-    if (acting === null || verified === null || !verified.ok || !store.isInstanceOperator(acting.name)) {
-      return fail(context.write, context.json, command, "refused", "An instance operator makes checkpoints: pass --as and --token (or use the remembered login).", EXIT.refused);
-    }
+    if (acting === null || !verified?.ok || !store.isInstanceOperator(acting.name)) return fail(context.write, context.json, command, "refused", "An instance operator makes checkpoints: pass --as and --token (or use the remembered login).", EXIT.refused);
     const made = store.ledgerCheckpoint(acting.name, context.clock());
     if (made === null) return fail(context.write, context.json, command, "empty", "The ledger has no entries yet.", EXIT.refused);
     if ("problem" in made) return fail(context.write, context.json, command, "broken", `No checkpoint: the chain doesn't verify (${made.problem}).`, EXIT.failed);
@@ -12636,14 +12107,7 @@ function consoleLinkFor(context: Context, path: string): string | null {
 
 function refuseDemo(context: Context, command: string): number | null {
   if (!context.store.isDemo()) return null;
-  return fail(
-    context.write,
-    context.json,
-    command,
-    "demo-database",
-    "this database is a demo sandbox — it never spends money or touches a remote; point this command at a real database",
-    EXIT.refused,
-  );
+  return fail(context.write, context.json, command, "demo-database", "this database is a demo sandbox — it never spends money or touches a remote; point this command at a real database", EXIT.refused);
 }
 
 /** null means it was given and was not a whole number of seconds. */
@@ -12690,12 +12154,1039 @@ function databaseFailure(
   error: unknown,
 ): number {
   if (!isDatabaseBusy(error)) return fail(write, json, command, "database", describe(error), EXIT.failed);
-  return fail(
-    write,
-    json,
-    command,
-    "database-busy",
-    `The database ${file} stayed busy for ${CONCURRENT_WRITER_WAIT_MS / 1_000} seconds. Wait for the other Toolroll process to finish, then try again.`,
-    EXIT.failed,
-  );
+  return fail(write, json, command, "database-busy", `The database ${file} stayed busy for ${CONCURRENT_WRITER_WAIT_MS / 1_000} seconds. Wait for the other Toolroll process to finish, then try again.`, EXIT.failed);
+}
+
+/**
+ * The refusal every password-checked CLI act shares: no name or password given is a usage error with the act's own
+ * hint; a check that failed says why, about `subject`. The check itself stays at each call site.
+ */
+function refuseApprover(context: Context, command: string, verified: { ok: false; reason: string } | { ok: true } | null, usage: string, subject: string | undefined): number {
+  if (verified === null) return fail(context.write, context.json, command, "usage", usage, EXIT.usage);
+  const reason = verified.ok ? "" : verified.reason;
+  return fail(context.write, context.json, command, reason, describeApproveFailure(reason, subject ?? ""), EXIT.refused);
+}
+
+/** The project `--repo` names among those Toolroll knows: the database's, the listed projects' (when `listed`) and the
+ * registry's, matched as given, resolved, or (when `canonical`) canonical. */
+async function knownProject(context: Context, repoFlag: string, match: { listed: boolean; canonical: boolean }): Promise<string | undefined> {
+  const registered = await loadRepos(registryPathOf(context)).catch(() => ({ error: "unreadable" }));
+  const known = [...new Set([...context.store.knownRepos(), ...(match.listed ? context.store.listProjects().map(one => one.path) : []), ...("error" in registered ? [] : registered.repos)])];
+  return known.find(one => one === repoFlag || one === resolve(repoFlag) || (match.canonical && one === canonicalProject(repoFlag)));
+}
+
+// Last in the file, so the password tripwire's function positions (password-freshness.test.ts) stay as reviewed.
+/** The value flags a verb reads under a global switch's name, for parseOperateArgs. */
+export function ownValueFlags(command: string, argv: readonly string[]): ReadonlySet<string> | undefined {
+  if (command === "flows") return FLOWS_VALUE_FLAGS;
+  if (command === "project" && argv.find(arg => !arg.startsWith("-")) === "network") return PROJECT_NETWORK_VALUE_FLAGS;
+  return undefined;
+}
+
+// Last in the file, so the password tripwire's function positions (password-freshness.test.ts) stay as reviewed.
+/**
+ * `project check-access --repo <p> [sandboxed|sign-ins|unsandboxed]` (check-access.ts): how far the project's setup
+ * and check commands reach beyond the check fence. Widening is an instance operator's act with a password typed now
+ * (never a remembered sign-in or a single sign-on recheck); any approver for the project may narrow it back to
+ * sandboxed. New scopes seal it; approved ones keep theirs. The ledger keeps before → after.
+ */
+async function projectCheckAccessCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
+  const command = "project check-access";
+  const allowed = new Set(["repo", "as", "token", "token-file", "token-env", "db", "json"]);
+  for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project check-access option.`, EXIT.usage);
+  const repoFlag = text(flags, "repo");
+  const wanted = positional[1];
+  if (positional.length > 2 || repoFlag === undefined || (wanted !== undefined && !isCheckAccess(wanted))) return fail(context.write, context.json, command, "usage", "Use project check-access --repo <project path> [sandboxed | sign-ins | unsandboxed].", EXIT.usage);
+  const repo = await knownProject(context, repoFlag, { listed: true, canonical: true });
+  if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
+  const current = context.store.projectCheckAccess(repo);
+  const platform = context.platform ?? process.platform;
+  // How it actually runs here: with no OS fence and unconfined running allowed, without a sandbox whatever is saved; on
+  // a saved sign-ins level (off for now) runs sandboxed. Said, never hidden.
+  const fenced = context.fenceAvailable?.() ?? (macosFenceAvailable() || linuxFenceAvailable());
+  const runsAs = (one: CheckAccess): CheckAccess => checkAccessRunsAs(one, { platform, fenced, unconfinedAllowed: context.store.unfencedAgentsAllowed() });
+  const here = runsAs(current);
+  const words = (one: CheckAccess): string[] => {
+    if (runsAs(one) === "unsandboxed" && one !== "unsandboxed") return [`${repo}: saved as ${checkAccessWords(one)}, but this machine can't sandbox checks, so they run without a sandbox.`];
+    if (runsAs(one) !== one) return [`${repo}: saved with model and GitHub sign-ins, but its checks run sandboxed: sign-ins can't be shared with checks safely yet.`];
+    const missing = one === "sign-ins" ? signInHostsMissing(context.store.projectNetwork(repo)) : [];
+    return [`${repo}: checks run ${checkAccessWords(one)}.`, ...(one === "sandboxed" ? [] : [CHECK_ACCESS_WARNINGS[one]]),
+      // Never added for it: the operator widens the network separately, with their own password.
+      ...(missing.length === 0 ? [] : [`Model sign-ins need these hosts in this project's network allowlist: ${missing.join(", ")}. Add them with: toolroll project network --repo ${repo} --allow ${missing.join(",")}`])];
+  };
+  if (wanted === undefined) return succeed(context.write, context.json, command, { repo, checkAccess: current, ...(here === current ? {} : { runsAs: here }), ...(here === "sign-ins" ? { missingHosts: signInHostsMissing(context.store.projectNetwork(repo)) } : {}) }, () => words(current));
+  // Not available yet (check-access.ts signInsAvailable): refused before any password is asked for, nothing written.
+  const unavailable = wanted === "sign-ins" ? signInsUnavailableWords(platform) : null;
+  if (unavailable !== null) return fail(context.write, context.json, command, "refused", unavailable, EXIT.refused);
+  const widening = widerThan(wanted, current);
+  const acting = await askCredentials(flags, context);
+  const proved = acting === null ? null : authenticateApprover(context.store, acting.name, acting.token, repo);
+  if (widening) {
+    // Wider reach exposes the operator's own sign-ins or machine: an instance operator, with a password typed for this.
+    if (acting === null || proved === null || !proved.ok || proved.method !== "password-now" || !context.store.isInstanceOperator(acting.name)) {
+      return fail(context.write, context.json, command, "refused", "An instance operator widens what a project's checks reach, with their password typed now: pass --as and --token.", EXIT.refused);
+    }
+  } else if (acting === null || proved === null || !proved.ok || !credentialProof(proved.method) || !context.store.accountCanAccess(acting.name, repo)) {
+    return fail(context.write, context.json, command, "refused", "An approver for this project narrows what its checks reach, with their password: pass --as and --token.", EXIT.refused);
+  }
+  // The level is compared again inside the write: a change made while the password was asked for can't widen it here.
+  const changed = context.store.setProjectCheckAccess(repo, wanted, acting!.name, context.clock(), { may: widening ? "widen" : "narrow" });
+  if (changed === null) return fail(context.write, context.json, command, "refused", "The project's check access changed meanwhile, and this would now widen it: an instance operator widens it, with their password typed now.", EXIT.refused);
+  return succeed(context.write, context.json, command, { repo, before: changed.before, checkAccess: changed.after }, () => [
+    ...words(changed.after),
+    "Scopes written from now on use this; scopes already approved keep what they were approved with.",
+  ]);
+}
+
+/**
+ * `project sandbox --repo <p> [--read-deny <a,b>] [--mach <a,b>]` (project-sandbox.ts, sandbox parity C9): what the
+ * project's builds and checks may not read (paths, `~/…` or absolute) and the macOS services they may also use. Each list is replaced whole by its flag (an empty value clears it). New scopes seal it;
+ * approved ones keep theirs. Changing it is an approver's act with a password, kept in the ledger as before → after.
+ */
+async function projectSandboxCommand(positional: readonly string[], flags: Map<string, string | true>, context: Parameters<typeof taskCommand>[2]): Promise<number> {
+  const command = "project sandbox";
+  const allowed = new Set(["repo", "read-deny", "mach", "as", "token", "token-file", "token-env", "db", "json"]);
+  for (const name of flags.keys()) if (!allowed.has(name)) return fail(context.write, context.json, command, "usage", `--${name} is not a project sandbox option.`, EXIT.usage);
+  const repoFlag = text(flags, "repo");
+  if (positional.length > 1 || repoFlag === undefined) return fail(context.write, context.json, command, "usage", "Use project sandbox --repo <project path> [--read-deny <paths>] [--mach <services>] (comma-separated; empty clears).", EXIT.usage);
+  const repo = await knownProject(context, repoFlag, { listed: true, canonical: true });
+  if (repo === undefined) return fail(context.write, context.json, command, "not-found", "That isn't a project Toolroll knows.", EXIT.refused);
+  const words = (one: ProjectSandbox): string[] => [`${repo}: ${readDenyWords(one.readDeny)}`,
+    ...(one.machLookup.length === 0 ? [] : [`macOS services also allowed: ${one.machLookup.join(", ")}`])];
+  const current = context.store.projectSandbox(repo);
+  const asked = (name: string): string[] | undefined => { const value = flags.get(name); return value === undefined ? undefined : value === true ? [] : value.split(","); };
+  const changes = { readDeny: asked("read-deny"), machLookup: asked("mach") };
+  if (changes.readDeny === undefined && changes.machLookup === undefined) return succeed(context.write, context.json, command, { repo, sandbox: current }, () => words(current));
+  const parsed = { readDeny: parseReadDeny(changes.readDeny ?? current.readDeny), machLookup: parseMachLookup(changes.machLookup ?? current.machLookup) };
+  for (const [name, one] of Object.entries(parsed)) if (!one.ok) return fail(context.write, context.json, command, "usage", `${name}: ${one.problem}. Nothing changed.`, EXIT.usage);
+  const wanted: ProjectSandbox = { readDeny: parsed.readDeny.ok ? parsed.readDeny.list : [], machLookup: parsed.machLookup.ok ? parsed.machLookup.list : [] };
+  const acting = await askCredentials(flags, context);
+  const verified = acting === null ? null : credentialApprover(context.store, acting.name, acting.token, repo);
+  if (acting === null || !verified?.ok || !context.store.accountCanAccess(acting.name, repo)) return fail(context.write, context.json, command, "refused", "An approver for this project changes its sandbox, with their password: pass --as and --token.", EXIT.refused);
+  const changed = context.store.setProjectSandbox(repo, wanted, acting.name, context.clock());
+  if (changed === null) return fail(context.write, context.json, command, "refused", "An approver for this project changes its sandbox. Nothing changed.", EXIT.refused);
+  return succeed(context.write, context.json, command, { repo, before: changed.before, sandbox: changed.after }, () => [
+    ...words(changed.after),
+    "Scopes written from now on use this; scopes already approved keep what they were approved with.",
+  ]);
+}
+
+/** Starting the console or the worker on a git older than Toolroll's floor (git-floor.ts): refused, with one message
+ * naming the installed and the required version. Other commands aren't held. */
+function gitTooOld(command: string, context: Context): number | null {
+  const problem = installedGitFloorProblem();
+  return problem === null ? null : fail(context.write, context.json, command, "git-too-old", problem, EXIT.refused);
+}
+
+// ---- `up` as two processes: the console and the worker (isolated-checks.md, stage 1) ----
+
+/** What up-role-child.ts hands runOperate: the role's start, and its channel to the `up` that started it. */
+export type UpRoleHost = { start: UpRoleStart; port: RolePort };
+
+/** This build's identity, as each role reports it: the version and the code of this module. */
+function upBuildIdentity(): string {
+  return buildIdentity(PACKAGE_VERSION, fileURLToPath(import.meta.url));
+}
+
+/** Seams that live in this process's memory (a test's fake runner, a store wrapper, the desktop host's proof key): a
+ * child process can't receive them, so `up` keeps both of its roles in this process rather than drop them. */
+function upNeedsOneProcess(options: OperateOptions): boolean {
+  return options.openDatabase !== undefined || options.desktopIdentity !== undefined || options.additionalProjectRepos !== undefined ||
+    options.agentRunner !== undefined || options.gitRunner !== undefined || options.telegramTransport !== undefined || options.telegramEnv !== undefined ||
+    options.publishExec !== undefined || options.dispatchAdapter !== undefined || options.flowTriggerIo !== undefined || options.flowStepIo !== undefined ||
+    options.flowEveryMs !== undefined || options.platform !== undefined || options.fenceAvailable !== undefined || options.flowFetch !== undefined ||
+    options.integrationIo !== undefined || options.shouldStop !== undefined || options.leadSeams !== undefined || options.waitSleep !== undefined ||
+    options.releaseIo !== undefined || options.installBin !== undefined || options.tempRoots !== undefined || options.filingSizer !== undefined ||
+    options.now !== undefined || options.folderLook !== undefined;
+}
+
+/** The entry a role child runs: the built sibling when installed, the TypeScript source through tsx in a checkout. */
+/**
+ * Add one process to the record of who holds this runner's credential (runner-process.ts), replacing that role's
+ * earlier processes once they are gone. A complete authenticated record is required before delivering credentials.
+ */
+function recordRunnerProcess(databaseFile: string, holder: { runner: RunnerRow; credentialHash: string }, role: RunnerProcessRole, pid: number): boolean {
+  try {
+    const started = processStart(pid);
+    if (started === null) return false;
+    const file = runnerProcessFile(databaseFile, holder.runner.name);
+    const credential = credentialDigest(holder.credentialHash);
+    const current = readRunnerProcessRecord(file);
+    const same = current !== null && current.runner === holder.runner.name && current.registeredAt === holder.runner.registeredAt && current.credential === credential;
+    // Never bless a tampered or incomplete earlier list while appending a credential holder.
+    if (role !== "up" && (!same || current.signature !== sealRunnerProcessRecord(current, holder.credentialHash).signature)) return false;
+    // Keep every possibly live generation; truncating this list would erase custody.
+    const kept = same ? current.processes.filter(one => one.role !== role || !processGone(one)) : [];
+    const record: RunnerProcessRecord = { v: 1, runner: holder.runner.name, host: holder.runner.host, registeredAt: holder.runner.registeredAt, credential,
+      processes: [...kept.filter(one => one.pid !== pid), { pid, role, started }] };
+    if (record.processes.length > 64) return false;
+    writeRunnerProcessRecord(file, sealRunnerProcessRecord(record, holder.credentialHash));
+    return true;
+  } catch { return false; }
+}
+
+function upRoleChildCommand(role: UpRoleName): { file: string; argv: string[] } {
+  const source = import.meta.url.endsWith(".ts");
+  const entry = fileURLToPath(new URL(source ? "./up-role-child.ts" : "./up-role-child.js", import.meta.url));
+  // tsx by its resolved address: the child keeps this process's working directory, which may hold no node_modules.
+  // The role's name is the one argument: a process listing tells the two apart, and carries nothing secret.
+  return { file: process.execPath, argv: [...(source ? ["--import", import.meta.resolve("tsx")] : []), entry, role] };
+}
+
+type UpRoleReady = { ok: true; url: string; port: number | null; pid: number } | { ok: false; reason: "port-busy" | "start"; detail: string };
+type UpRoleHandle = {
+  /** The first readiness, or why the role ended before it. */
+  ready: Promise<UpRoleReady>;
+  send: (message: ParentToRole) => void;
+  /** Drain and end; nothing restarts it after. */
+  stop: () => void;
+  /** The second signal: stop its builds now. */
+  hardStop: () => void;
+  /** A stop that ran past its deadline: the role's whole process tree is stopped now, and nothing restarts it. */
+  kill: () => void;
+  /** The role ended for good: its own close problem, if it reported one. */
+  done: Promise<{ problem: string | null }>;
+  /** The live process's id (this process's when in-process). */
+  pid: () => number | null;
+};
+
+/**
+ * One role of `up`: a supervised child process (split), or the same role function in this process. Either way its
+ * messages pass the same checks (up-processes.ts), and its build must be this one's.
+ * - onReady fires on every readiness; `again` after a restart.
+ * - onEnded: the role ended while not stopping. `restarting` (split only) when the supervisor will start it again.
+ */
+function startUpRole(args: {
+  role: UpRoleName;
+  split: boolean;
+  context: Context;
+  build: string;
+  shutdownMs: number;
+  start: (generation: number) => UpRoleStart;
+  onMessage: (message: RoleToParent) => void;
+  onReady: (message: Extract<RoleToParent, { type: "ready" }>, again: boolean) => void;
+  onEnded: (detail: string, restarting: boolean) => void;
+  /** A role child was spawned with this pid, before its start (and any credential) is sent to it. */
+  onSpawned?: (pid: number) => boolean;
+}): UpRoleHandle {
+  const { role } = args;
+  let resolveReady: (value: UpRoleReady) => void = () => {};
+  const ready = new Promise<UpRoleReady>(resolve => (resolveReady = resolve));
+  // Readiness per generation (Codex review round 1, finding 5): a replacement's refusal is never hidden by an earlier
+  // generation having been ready.
+  const generations = new RoleGenerations();
+  let stopping = false;
+  // Reported once: the role ended for good (onEnded with restarting false), whichever path saw it first.
+  let endedForGood = false;
+  const endForGood = (detail: string): void => {
+    if (stopping || endedForGood) return;
+    endedForGood = true;
+    args.onEnded(detail, false);
+  };
+  let failed: { reason: "port-busy" | "start"; detail: string } | null = null;
+  let fatal: string | null = null;
+  let closedProblem: string | null = null;
+  let livePid: number | null = null;
+  // Shared by both transports: every message is checked against this role before anything acts on it.
+  const receive = (raw: unknown, abort: () => void): void => {
+    const message = roleMessage(raw, role);
+    if (message === null) return;
+    if (message.type === "ready") {
+      if (message.build !== args.build) {
+        // Never a console and a worker from different builds: stop rather than run a mixed pair.
+        fatal = `the ${role} is a different build (${message.build}) from this one (${args.build}) — restart Toolroll`;
+        failed = { reason: "start", detail: fatal };
+        generations.refused(fatal);
+        abort();
+        return;
+      }
+      livePid = message.pid;
+      const again = !generations.ready();
+      if (!again) resolveReady({ ok: true, url: message.url ?? "", port: message.port, pid: message.pid });
+      args.onReady(message, again);
+      return;
+    }
+    if (message.type === "failed") { failed = { reason: message.reason, detail: message.detail }; generations.refused(message.detail); return; }
+    if (message.type === "fatal") { fatal = message.detail; return; }
+    if (message.type === "closed") { closedProblem = message.problem; return; }
+    args.onMessage(message);
+  };
+
+  if (!args.split) {
+    const channel = memoryChannel(role);
+    channel.parent.onMessage(message => receive(message, () => channel.parent.stop(false)));
+    const running = upRoleCommand(args.context, { start: args.start(1), port: channel.port }).catch(error => {
+      fatal = describe(error);
+      return EXIT.failed as number;
+    });
+    const done = running.then(code => {
+      livePid = null;
+      if (!generations.wasReady()) resolveReady({ ok: false, ...(failed ?? { reason: "start" as const, detail: fatal ?? `the ${role} stopped while starting (exit ${code})` }) });
+      else endForGood(fatal ?? `the ${role} stopped (exit ${code})`);
+      return { problem: closedProblem };
+    });
+    return {
+      ready, done,
+      send: message => channel.parent.send(message),
+      stop: () => { stopping = true; channel.parent.stop(false); },
+      hardStop: () => { channel.parent.stop(true); },
+      kill: () => { stopping = true; channel.parent.stop(true); },
+      pid: () => livePid,
+    };
+  }
+
+  const controller = new AbortController();
+  let child: ChildProcess | null = null;
+  const command = upRoleChildCommand(role);
+  const supervised = superviseController({
+    file: command.file, argv: command.argv, signal: controller.signal, ipc: true, shutdownMs: args.shutdownMs,
+    // Each role's own output carries its name; a JSON log stays one JSON object a line.
+    label: envValue(process.env, "LOG_FORMAT") === "json" ? "" : `[${role}]`,
+    onSpawn: (owned, generation) => {
+      child = owned;
+      fatal = null;
+      failed = null;
+      generations.spawned();
+      owned.on("message", raw => receive(raw, () => controller.abort()));
+      owned.on("error", () => {});
+      let recorded = false;
+      try { recorded = owned.pid !== undefined && (args.onSpawned?.(owned.pid) ?? true); } catch { /* refuse credential delivery */ }
+      if (!recorded) {
+        fatal = "The worker process record could not be saved";
+        failed = { reason: "start", detail: fatal };
+        generations.refused(fatal);
+        owned.kill("SIGKILL");
+        controller.abort();
+        resolveReady({ ok: false, ...failed });
+        return;
+      }
+      // The start, including the runner token for the worker, goes over the private channel only.
+      owned.send(args.start(generation), error => { if (error !== null && error !== undefined) owned.kill("SIGTERM"); });
+    },
+    onState: state => {
+      if (state.phase !== "backoff") return;
+      child = null;
+      livePid = null;
+      const exit = state.exit?.signal ?? state.exit?.code ?? "unknown";
+      if (stopping && generations.wasReady()) return;
+      const verdict = generations.ended();
+      if (verdict === "fail-start") {
+        // A role that never became ready is not retried: the start fails as one, as before the split.
+        controller.abort();
+        resolveReady({ ok: false, ...(failed ?? { reason: "start" as const, detail: fatal ?? `the ${role} stopped while starting (exit ${exit})` }) });
+        return;
+      }
+      if (verdict === "end") {
+        // A replacement that refused its start (another build or database), or kept ending before it was ready: a
+        // restart can't fix that, so the whole `up` stops instead of looping with the other role still running.
+        controller.abort();
+        endForGood(generations.refusedWith() ?? fatal ?? `the ${role} kept stopping before it was ready (exit ${exit})`);
+        return;
+      }
+      // A build mismatch already aborted: that is the end, not a restart.
+      if (controller.signal.aborted) { endForGood(fatal ?? `the ${role} stopped (exit ${exit})`); return; }
+      args.onEnded(`${fatal === null ? "" : `${fatal} — `}the ${role} stopped unexpectedly (exit ${exit})`, true);
+    },
+  }).catch(error => { if (!generations.wasReady()) resolveReady({ ok: false, reason: "start", detail: describe(error) }); });
+  const done = supervised.then(() => {
+    if (!generations.wasReady()) resolveReady({ ok: false, ...(failed ?? { reason: "start" as const, detail: fatal ?? `the ${role} did not start` }) });
+    // The supervisor ended without `up` stopping it (an abort on a refusal emits no backoff): `up` hears it either way.
+    else endForGood(generations.refusedWith() ?? fatal ?? `the ${role} stopped`);
+    return { problem: closedProblem };
+  });
+  return {
+    ready, done,
+    send: message => {
+      const owned = child as ChildProcess | null;
+      if (owned !== null && owned.connected) { try { owned.send(message, () => {}); } catch { /* it is ending; the supervisor sees it */ } }
+    },
+    // The supervisor's stop is SIGTERM, which a role takes as "drain"; past shutdownMs its whole tree is stopped.
+    stop: () => { stopping = true; controller.abort(); },
+    hardStop: () => {
+      const owned = child as ChildProcess | null;
+      if (owned !== null && owned.connected) { try { owned.send({ type: "hard-stop" } satisfies ParentToRole, () => {}); } catch { /* ending */ } }
+    },
+    kill: () => {
+      stopping = true;
+      controller.abort();
+      const owned = child as ChildProcess | null;
+      // Only the still-owned ChildProcess is signalled, never a recorded pid.
+      if (owned !== null && owned.exitCode === null && owned.signalCode === null && !stopProcessTree(owned)) owned.kill("SIGKILL");
+    },
+    pid: () => livePid,
+  };
+}
+
+/** A role child's whole run (up-role-child.ts): the ordinary command prelude (containment, secrets, limits), then the
+ * role itself. Only a process started by `up` gets here; no command line selects a role. */
+export async function runUpRole(start: UpRoleStart, port: RolePort): Promise<number> {
+  return runOperate("up", ["--db", start.databaseFile, ...(start.containment === null ? [] : ["--containment", start.containment])],
+    line => port.send({ type: "log", line }), { upRole: { start, port } });
+}
+
+async function upRoleCommand(context: Context, host: UpRoleHost): Promise<number> {
+  const { start, port } = host;
+  // A role runs exactly this build, on exactly this database: anything else ends it before it touches either.
+  if (start.build !== upBuildIdentity()) {
+    port.send({ type: "failed", reason: "start", detail: `this ${start.role} is a different build (${upBuildIdentity()}) from the \`up\` that started it (${start.build})` });
+    return EXIT.refused;
+  }
+  if (resolve(start.databaseFile) !== resolve(context.databaseFile)) {
+    port.send({ type: "failed", reason: "start", detail: `the ${start.role} opened a different database` });
+    return EXIT.refused;
+  }
+  return start.role === "console" ? runUpConsoleRole(context, start.config, port, start.build) : runUpWorkerRole(context, start.config, port, start.build);
+}
+
+/** The console role: HTTP only — serving, reading, and the person's ceremonies. It never holds the runner token. */
+async function runUpConsoleRole(context: Context, config: UpConsoleConfig, port: RolePort, build: string): Promise<number> {
+  const { store, clock } = context;
+  const progress = (line: string): void => port.send({ type: "log", line });
+  // Mutated only by the worker's word (relayed by `up`): the console's project rail and unified chat follow the live
+  // builder instead of freezing at process start.
+  const activeRepos = new Set<string>(config.repos);
+  // Cockpit B1: this start's instance secret, minted once it is listening; the console answers its challenges with it.
+  let instanceSecret: string | null = null;
+  // v137: this console's lifecycle (service_lifecycle "console:<port>"): started, a short heartbeat, draining once
+  // its `up` stops, stopped at the end. While draining, /healthz and every page say Toolroll is restarting.
+  let draining = false;
+  let console_: Awaited<ReturnType<typeof startConsole>>;
+  try {
+    console_ = await startConsole({
+      instanceSecret: () => instanceSecret,
+      draining: () => draining,
+      context,
+      host: config.host,
+      port: config.port,
+      ...(config.allowedHosts === null ? {} : { allowedHosts: config.allowedHosts }),
+      ...(config.publicUrl === null ? {} : { publicUrl: config.publicUrl }),
+      localRunner: config.localRunner,
+      poolRoot: config.poolRoot,
+      repos: config.repos,
+      currentRepos: () => [...activeRepos],
+      admittedRepos: () => [...activeRepos],
+      upConsole: true,
+      registryPath: config.registryPath,
+      projectRoots: config.projectRoots,
+      ...(config.editor ? { editorLinks: "vscode" as const } : {}),
+    });
+  } catch (error) {
+    port.send({ type: "failed", reason: "port-busy", detail: describe(error) });
+    return EXIT.refused;
+  }
+  let codingClosed = false;
+  const closeCoding = (): void => {
+    if (codingClosed) return;
+    codingClosed = true;
+    console_.server.closeCoding().catch(() => {});
+  };
+  let resolveStopped: () => void = () => {};
+  const stopped = new Promise<void>(resolveStop => (resolveStopped = resolveStop));
+  port.onStop(() => resolveStopped());
+  const lifecycleComponent = `console:${console_.port}`;
+  const lifecycleHolder = `${process.pid}:${randomUUID().slice(0, 8)}`;
+  try { reportLifecycle(store, lifecycleComponent, "started", lifecycleHolder, clock(), { pid: process.pid }); } catch { /* reporting never stops the console */ }
+  const lifecycleBeat = setInterval(() => { try { beatLifecycle(store, lifecycleComponent, lifecycleHolder, clock()); } catch { /* the next beat tries again */ } }, RUNNER_HEARTBEAT_MS);
+  lifecycleBeat.unref?.();
+  port.onMessage(message => {
+    if (message.type === "repos") {
+      activeRepos.clear();
+      for (const repo of message.repos) activeRepos.add(repo);
+    } else if (message.type === "stopping") {
+      draining = true;
+      try { reportLifecycle(store, lifecycleComponent, "draining", lifecycleHolder, clock(), { drainUntil: new Date(clock().getTime() + 60_000) }); } catch { /* the flag above still answers */ }
+      closeCoding();
+    }
+    else if (message.type === "sign-in-link") {
+      let link: string | null = null;
+      try { link = console_.server.mintSignInLink(message.account); } catch { link = null; }
+      port.send({ type: "sign-in-link", id: message.id, link });
+    }
+  });
+
+  // Cockpit B1: who this console is, for bare `toolroll` to prove before it attaches: a fresh secret in the database
+  // (behind the agent fence), and a discovery-only socket beside it. A socket that can't open only means attaching
+  // isn't offered; the console runs either way. The socket is taken FIRST: only the console that owns it publishes a
+  // record. A second console on the same database (another port) never replaces the first one's record.
+  let mintedSecret: string | null = null;
+  const instanceSocket = await openInstanceSocket(context.databaseFile,
+    { pid: process.pid, build: packageVersion(), database: context.databaseFile, port: console_.port }, () => mintedSecret);
+  if (instanceSocket.ok) {
+    mintedSecret = await claimInstance(store, context.databaseFile, { pid: process.pid, port: console_.port, build: packageVersion(), socket: instanceSocket.name }, clock());
+    instanceSecret = mintedSecret;
+    if (mintedSecret === null) progress("attach: another console is running on this database — `toolroll` in a repository opens that one");
+  } else progress(`attach: ${instanceSocket.problem} — \`toolroll\` in a repository won't find this console`);
+
+  port.send({ type: "ready", role: "console", build, pid: process.pid, url: console_.url, port: console_.port });
+  await stopped;
+  draining = true;
+  closeCoding();
+  clearInterval(lifecycleBeat);
+  if (instanceSocket.ok) instanceSocket.close();
+  if (mintedSecret !== null) clearInstance(store, mintedSecret);
+  let closeProblem: string | null = null;
+  await new Promise<void>(done => console_.server.close(error => { closeProblem = error === undefined || error === null ? null : (error as Error).message; done(); }));
+  try { reportLifecycle(store, lifecycleComponent, "stopped", lifecycleHolder, clock()); } catch { /* a stale row lapses with its heartbeat */ }
+  port.send({ type: "closed", problem: closeProblem });
+  return closeProblem === null ? EXIT.ok : EXIT.failed;
+}
+
+/** The worker role: one watch loop per proved repository (builds, checks, batch checks, follow-ups, reconcilers, the
+ * storage sweep and checkout sizing), the project registry, and the service's one Telegram follower. It opens no
+ * port and mints no console secret. */
+async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: RolePort, build: string): Promise<number> {
+  const { store, clock } = context;
+  const progress = (line: string): void => port.send({ type: "log", line });
+  const runnerName = config.runner;
+  const runnerToken = config.token;
+  const pool = config.pool;
+  const registryPath = config.registryPath;
+  const pinnedRepos = new Set(config.pinnedRepos);
+  const gitRun = context.gitRunner ?? ((file: string, args: readonly string[], opts?: { cwd?: string }) => run(file, [...args], { ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }), timeoutMs: 10_000 }));
+  const proveRepo = async (input: string): Promise<string | null> => {
+    // The checkout's real path is read off the thread, under a deadline (folder-look.ts): a folder that doesn't answer
+    // is unavailable, never a wait.
+    return (await upProveSaved(gitRun, input))?.root ?? null;
+  };
+  // The proved set this worker builds; `up` relays each change to the console.
+  const activeRepos = new Set<string>(config.repos);
+  const reportRepos = (): void => port.send({ type: "repos", repos: [...activeRepos] });
+
+  // The historical signal shell: the first stop ends admission and starts the grace clock; the second — or the
+  // clock — stops every live provider group (M6.12).
+  let stopping = false;
+  let fatal: string | null = null;
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
+  const followControllers: AbortController[] = [];
+  let resolveStopped: () => void = () => {};
+  const stopped = new Promise<void>(resolveStop => (resolveStopped = resolveStop));
+  const hardStop = (): void => {
+    const terminated = terminateLiveProviders();
+    if (terminated > 0) progress(`Stopped ${terminated} running build(s). Their work is saved, and each resumes when the builder starts again.`);
+  };
+  const stop = (): void => {
+    if (stopping) {
+      hardStop();
+      return;
+    }
+    stopping = true;
+    resolveStopped();
+    for (const controller of followControllers) controller.abort();
+    const building = store.liveClaimCount(runnerName, clock());
+    if (building > 0) {
+      progress(`Stopping: ${building} build(s) running. Waiting up to ${Math.round(config.stopGraceMs / 1000)}s for them to finish; any still running then is saved and resumes when the builder starts again.`);
+    }
+    graceTimer = setTimeout(hardStop, config.stopGraceMs);
+    graceTimer.unref?.();
+  };
+  port.onStop(hard => {
+    if (!stopping) stop();
+    if (hard) hardStop();
+  });
+
+  const loopFlagsFor = (repo: string): Map<string, string | true> => {
+    const copy = new Map<string, string | true>();
+    // A bounded `up` must not advertise its child watches as an unbounded sweep service either.
+    if (config.forMs !== null) copy.set("for", String(config.forMs));
+    copy.set("runner", runnerName);
+    copy.set("token", runnerToken);
+    copy.set("repo", repo);
+    copy.set("pool", pool);
+    // The co-hosted console's stated origin rides into each loop's follower: a phone link must name THIS console, or not exist.
+    if (config.publicUrl !== null) copy.set("public-url", config.publicUrl);
+    return copy;
+  };
+  const prefix = (repo: string): string => (activeRepos.size > 1 ? `[${projectName(repo)}] ` : "");
+  // Containment at start: one plain sentence, once, for a person at a terminal; the exact status line with --verbose,
+  // in a service log (no terminal), and always when a required policy will refuse spawns.
+  const containmentDetail = config.verbose || !config.terminal;
+  let containmentSaid = false;
+  const containmentLines = (effective: EffectiveContainment): string[] => {
+    const notice = containmentNotice(effective);
+    if (notice !== null && !containmentSaid) progress(notice);
+    containmentSaid = true;
+    return containmentDetail || effective.refusal !== null ? [`watch: ${describeContainment(effective)}`] : [];
+  };
+  const loopResults = new Map<string, Promise<{ repo: string; result: WatchLoopResult }>>();
+  // One record of project passes for the whole service: fair scheduling across its projects (project-concurrency.ts).
+  const projectPasses = new ProjectPasses();
+  // Projects removed while running: each one's watch stops admitting work, finishes what it holds, then lets go.
+  const releasedRepos = new Set<string>();
+
+  const launchRepo = async (repo: string, bind: boolean, drain = false): Promise<void> => {
+    if (loopResults.has(repo) || stopping) return;
+    // A predecessor's watch on a project this start doesn't name (it was being removed): take it over, recovering what
+    // the predecessor held, and let it go (round 1, finding 2).
+    if (drain) releasedRepos.add(repo);
+    if (bind) {
+      const bound = addRunnerReposAuthed(store, { name: runnerName, token: runnerToken, repos: [repo] }, clock());
+      if (!bound.ok) {
+        fatal = `the builder identity changed while adding ${repo} (${bound.reason})`;
+        stop();
+        return;
+      }
+      activeRepos.add(repo);
+      reportRepos();
+      if (!store.listProjects().some(one => one.path === repo)) {
+        store.upsertProject(repo, projectName(repo), clock());
+      }
+    }
+    let markReady: () => void = () => {};
+    const ready = new Promise<void>(resolveReady => (markReady = resolveReady));
+    const loop = runWatchLoop({
+      flags: loopFlagsFor(repo),
+      context,
+      runner: runnerName,
+      token: runnerToken,
+      repo,
+      progress: line => progress(`${prefix(repo)}${line}`),
+      isStopping: () => stopping || releasedRepos.has(repo),
+      onFollowController: controller => followControllers.push(controller),
+      containmentLines,
+      passes: projectPasses,
+      serviceBridge: true,
+      leaseWaitMs: config.leaseWaitMs,
+      ...(drain ? { leaseWaitStopping: () => stopping } : {}),
+      onReady: () => {
+        markReady();
+        if (bind) progress(`${prefix(repo)}builder connected — queued work can start`);
+      },
+    }).then(
+      result => ({ repo, result }),
+      error => ({ repo, result: { ok: false as const, reason: "loop-failed" as const, detail: describe(error), ticks: 0, built: 0, broke: 0 } }),
+    );
+    loopResults.set(repo, loop);
+    void loop.then(({ repo: endedRepo, result }) => {
+      if (releasedRepos.has(endedRepo) && !stopping && !result.ok) {
+        // A removed project's watch that never held its lease (or lost it) has recovered nothing: keep the project
+        // bound so the next worker recovers it, and stop rather than strand its work (round 1, finding 2).
+        fatal = `${prefix(endedRepo)}${result.detail}`;
+        stop();
+        markReady();
+        return;
+      }
+      if (releasedRepos.has(endedRepo) && !stopping) {
+        // A removed project's watch has stopped: only now does the builder let go of it.
+        const unbound = removeRunnerRepoAuthed(store, { name: runnerName, token: runnerToken, repo: endedRepo }, clock());
+        if (!unbound.ok) {
+          fatal = `the builder identity changed while removing ${endedRepo} (${unbound.reason})`;
+          stop();
+        }
+        loopResults.delete(endedRepo);
+        releasedRepos.delete(endedRepo);
+        progress(`project removed — ${projectName(endedRepo)} is no longer built here`);
+        markReady();
+        return;
+      }
+      // A loop that dies while its siblings live must not leave a partial cockpit standing silently (finding 5).
+      if (!result.ok && !stopping) {
+        fatal = `${prefix(endedRepo)}${result.detail}`;
+        stop();
+      }
+      markReady(); // acquisition failures must not strand startup readiness
+    });
+    await ready;
+  };
+
+  // Before any new work: every watch a predecessor left needing recovery on a project this start doesn't name — one
+  // being removed when it died — is taken over (its incarnation recovered in that step) and let go. Only projects the
+  // store still binds to this runner; the start's own projects recover in their own loops below (round 1, finding 2).
+  const named = new Set(config.repos);
+  const boundNow = new Set(store.getRunner(runnerName)?.runner.repos ?? []);
+  const draining = [...new Set(predecessorWatches(store, runnerName, clock()).map(one => one.repo))].filter(repo => !named.has(repo) && boundNow.has(repo));
+  for (const repo of draining) progress(`${projectName(repo)} was being removed when the previous worker stopped: recovering its work first`);
+  await Promise.all(draining.map(repo => launchRepo(repo, false, true)));
+  await Promise.all(config.repos.map(repo => launchRepo(repo, false)));
+
+  // Telegram: one follower for the whole service, never one per project loop. Replies and notifications go out from
+  // it, over the same transport in the same cycle. A token saved while the service runs connects within seconds; a
+  // follower that dies is started again.
+  const telegramController = new AbortController();
+  followControllers.push(telegramController);
+  if (stopping) telegramController.abort();
+  const telegramSupervisor = (async (): Promise<void> => {
+    const pause = (ms: number) => new Promise<void>(resolvePause => {
+      const timer = setTimeout(done, ms);
+      function done(): void { clearTimeout(timer); telegramController.signal.removeEventListener("abort", done); resolvePause(); }
+      // An aborted signal never fires again: without this a stop waited the whole pause.
+      if (telegramController.signal.aborted) done();
+      else telegramController.signal.addEventListener("abort", done, { once: true });
+    });
+    while (!stopping && !telegramController.signal.aborted) {
+      const follower = startTelegramFollower({
+        context, publicUrl: config.publicUrl ?? undefined, signal: telegramController.signal, progress, label: "telegram:",
+        died: { prefix: "", then: "starting it again" }, owner: `service-${randomUUID()}`,
+      });
+      if (follower !== null) await follower;
+      // Without a token (or on a fenced network) look again shortly; the fence line is said once.
+      if (follower === null && loadBotToken(process.env, context.telegramTokenFile) !== null) break;
+      await pause(follower === null ? 2_000 : 5_000);
+    }
+  })();
+
+  // The start's own projects and folders were resolved by `up`: taken as they are, never read again on this thread.
+  const dynamicCeiling = resolveCeiling(config.repos, config.projectRoots, path => resolve(path)).ceiling;
+  const rejected = new Set<string>();
+  // Saved lines' identities, resolved off the thread under a deadline (project-identity.ts): a line whose folder
+  // doesn't answer is skipped this pass, and never holds up the others.
+  const lineIdentities = projectIdentities();
+  /** The saved line(s) each active project came from: `up`'s proof for the start's own, the line admitted for later ones. */
+  const admittedLines = new Map<string, string[]>(Object.entries(config.repoLines ?? {}));
+  const deferred = upDeferredRetry(config.deferredRepos ?? [], input => upProveSaved(gitRun, input));
+  const deferredGenerations = config.deferredGenerations ?? {};
+  const reportDeferred = (): void => port.send({ type: "deferred", repos: deferred.list() });
+  const registrySupervisor = (async (): Promise<void> => {
+    const sleep = (ms: number) => new Promise(resolveSleep => setTimeout(resolveSleep, ms));
+    while (!stopping) {
+      const loaded = await loadProjectRegistry(registryPath);
+      if ("error" in loaded) {
+        fatal = loaded.error;
+        stop();
+        break;
+      }
+      // A saved line removed while this start runs takes the start's authority for it with it, for good.
+      if (deferred.keepOnly(loaded.repos)) reportDeferred();
+      const plain = loaded.repos.filter(one => !deferred.has(one));
+      await lineIdentities.refresh(plain);
+      // Removed from the saved list: stop building it and take it out of the console. A pinned start keeps its own.
+      // Each project is judged by its own saved line (the one it was proved or admitted from, or itself), never by
+      // whether some other folder answered: an unrelated folder that is away never keeps a removed project building.
+      const saved = new Set(loaded.repos);
+      let removed = false;
+      for (const repo of [...activeRepos]) {
+        const lines = admittedLines.get(repo) ?? [repo];
+        if (stopping || pinnedRepos.has(repo) || saved.has(repo) || lines.some(line => saved.has(line))) continue;
+        activeRepos.delete(repo);
+        removed = true;
+        releasedRepos.add(repo);
+        if (!loopResults.has(repo)) releasedRepos.delete(repo);
+      }
+      if (removed) reportRepos();
+      for (const candidate of loaded.repos) {
+        if (stopping) break;
+        // Skipped at start because it didn't answer: connected on the start's own authority once it does.
+        if (deferred.has(candidate)) {
+          await connectDeferred(candidate);
+          continue;
+        }
+        const canonical = lineIdentities.known(candidate);
+        // Not answered yet: looked at again on the next pass.
+        if (canonical === undefined) continue;
+        // Still letting go of an earlier removal: it rejoins on the next pass after its watch has stopped.
+        if (canonical !== null && (activeRepos.has(canonical) || releasedRepos.has(canonical))) continue;
+        const approvedAdditions = context.additionalProjectRepos?.() ?? [];
+        // A start serving nothing yet (its saved projects all away) is an empty ceiling, never the unscoped mode: a
+        // name that matches no path stands in, so a line saved later still needs its recorded admission.
+        const admittedRepos = [...dynamicCeiling.repos, ...approvedAdditions];
+        const admittedCeiling = { repos: admittedRepos.length === 0 && dynamicCeiling.roots.length === 0 ? ["/\0nothing-admitted"] : admittedRepos, roots: dynamicCeiling.roots, canon: (path: string) => lineIdentities.known(path) ?? null };
+        // A project added after this start (`repos add`, the lead, the console) carries its recorded admission; a
+        // registry line alone is not authority. Either way the folder is proved to be that Git checkout again.
+        const allowed = canonical !== null &&
+          ((await authorizedProject(admittedCeiling, canonical)) || admissionRecorded(store, canonical)) &&
+          (await proveRepo(canonical)) === canonical;
+        if (!allowed) {
+          if (!rejected.has(candidate)) {
+            rejected.add(candidate);
+            progress(`project not connected — ${candidate} isn't a Git repository added with \`toolroll repos add\` or the console`);
+          }
+          continue;
+        }
+        rejected.delete(candidate);
+        admittedLines.set(canonical, [...new Set([...admittedLines.get(canonical) ?? [], candidate])]);
+        await launchRepo(canonical, true);
+      }
+      if (!stopping) await sleep(500);
+    }
+  })().catch(error => {
+    fatal = `the project registry stopped (${describe(error)})`;
+    stop();
+  });
+  /**
+   * A saved project the start couldn't reach, back now: connected only as the very folder that was saved (a parent
+   * checkout found because the saved one lost its .git is another project, needing its own admission), and only while
+   * the line is still saved, checked under the saved list's lock with the binding made inside it, so a removal racing
+   * the proof always wins.
+   */
+  async function connectDeferred(candidate: string): Promise<void> {
+    const proved = await deferred.retry(candidate);
+    if (proved === null || stopping) return;
+    // Only the very folder that was saved: the saved line must still resolve to itself, and git's checkout must be that
+    // folder. A parent checkout, or the saved path now leading somewhere else, is another project needing admission.
+    if (proved.line !== candidate || proved.root !== candidate) {
+      deferred.revoke(candidate);
+      reportDeferred();
+      progress(proved.root !== proved.line
+        ? `saved project not connected — ${candidate} came back as part of ${proved.root}; add it again to connect it`
+        : `saved project not connected — ${candidate} now leads to ${proved.line}; add it again to connect it`);
+      return;
+    }
+    const root = candidate;
+    if (activeRepos.has(root) || releasedRepos.has(root)) { deferred.revoke(candidate); reportDeferred(); return; }
+    // Bound under the saved list's lock: the line is still saved AND has not been removed since this start read it
+    // (its removal count unchanged, so a removal and a save again during the proof still counts as removed).
+    let launching: Promise<void> | null = null;
+    let removedSince = false;
+    await updateProjectRegistry(registryPath, current => {
+      if (stopping || !deferred.has(candidate)) return current;
+      const count = registryRemovals(registryPath)?.[candidate] ?? (registryRemovals(registryPath) === null ? -2 : 0);
+      if (!current.repos.includes(candidate) || count !== deferredGenerations[candidate]) {
+        deferred.revoke(candidate);
+        removedSince = true;
+        return current;
+      }
+      deferred.revoke(candidate);
+      admittedLines.set(root, [candidate]);
+      launching = launchRepo(root, true);
+      return current;
+    });
+    if (removedSince) {
+      reportDeferred();
+      progress(`saved project not connected — ${candidate} was removed while it was away; add it again to connect it`);
+      return;
+    }
+    if (launching === null) return;
+    reportDeferred();
+    progress(`saved project is back — connecting ${root}`);
+    await launching;
+  }
+
+  // Provider readiness (v47): this machine's non-spending observations, recorded under its own runner name ONCE at
+  // start — so every route projection can say ready / unavailable / unknown per provider, and the dispatch gate can
+  // halt a leg this machine cannot run. Production only: a test's injected agent runner is a fake, and its readiness
+  // would be a fiction.
+  if (context.agentRunner === undefined) {
+    void observeProviderReadiness((file, args, options) => run(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }), process.env, PROVIDER_IDS, provider => store.acpAttestationFor(provider, runnerName))
+      .then(observed => {
+        if (!stopping) reportProviderReadinessAuthed(store, { name: runnerName, token: runnerToken, observations: observed }, clock());
+      })
+      .catch(() => {
+        // A probe that cannot run leaves readiness unknown — never a fiction.
+      });
+  }
+  try { notifyVersionLive(context.store, dirname(context.databaseFile), PACKAGE_VERSION, clock()); } catch { /* A display fact; never blocks the worker. */ }
+  recordRunnerVersion(dirname(context.databaseFile), runnerName, PACKAGE_VERSION, clock());
+  // v137: the continuous database copy, off the hot path (live-backup.ts: a worker thread copies, checks and hashes).
+  // Never inside a project or a build checkout. A test's injected agent runner means a test: no background copies.
+  const stopLiveBackups = context.agentRunner === undefined
+    ? startLiveBackups(store, context.databaseFile, () => [...new Set([...activeRepos, ...store.knownRepos(), pool])])
+    : null;
+
+  // Ready once every project's loop holds its lease; a loop that failed to start ends this worker instead.
+  if (fatal === null && !stopping) port.send({ type: "ready", role: "worker", build, pid: process.pid, url: null, port: null });
+
+  await stopped;
+  await registrySupervisor;
+  await Promise.all([...loopResults.values()]);
+  await stopLiveBackups?.();
+  // The follower was aborted with the stop. A send or a chat turn it is still finishing keeps its own durable record;
+  // the service does not wait past this for it.
+  await new Promise<void>(done => {
+    const timer = setTimeout(done, TELEGRAM_STOP_WAIT_MS);
+    const finish = (): void => { clearTimeout(timer); done(); };
+    void telegramSupervisor.then(finish, finish);
+  });
+  if (graceTimer !== undefined) clearTimeout(graceTimer);
+  if (fatal !== null) {
+    port.send({ type: "fatal", detail: fatal });
+    return EXIT.failed;
+  }
+  return EXIT.ok;
+}
+
+/** GitHub's nightly as release debt (docs/plans/evals-nightly.md, part A): the watch loop's background read of each
+ * opted-in project's nightly runs, at most every 30 minutes, within a 60 s overall deadline, through the plane's own gh
+ * (release-adapters.ts githubReads). Nothing is read for a project that never opted in. */
+export async function refreshGithubNightlies(store: Store, now: () => Date, reads?: GhRead): Promise<number> {
+  if (githubNightlyRepos(store).length === 0) return 0;
+  return readGithubNightlies(store, { gh: reads ?? githubReads(releaseExec, releaseTools().gh, { retry: true }), now });
+}
+
+/**
+ * `toolroll evals run | attempt | cases | recover` (docs/plans/evals-nightly.md, part C).
+ *
+ * - `run [--diagnostic] [--case a,b] [--k n] --as <you> --token <password>`: admit a campaign (a person's proof, the
+ *   no release busy) and run it to its end from this installed plane. With no flags it is canonical,
+ *   refused while any case is a draft. Each attempt is a child process: `evals attempt`.
+ * - `attempt <campaign> <case> <n> --world <dir> --db <world db>`: one attempt's world (eval-world.ts). Only under its
+ *   runner's dispatch gate, and only on the world's own database.
+ * - `cases`: each installed case, its version, its pin, and whether a person has validated it yet.
+ * - `recover [--abandon <campaign>]`: settle campaigns whose runner stopped; with --abandon, a person ends a stuck one.
+ */
+export async function evalsCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { write, json } = context;
+  // Loaded when an eval command runs, so no other command (nor the console's bundle) pays for the eval runner.
+  const { admitEvalCampaign, campaignSpending, EVALS_ROOT, installedBuildDigest, loadEvalSet, planCampaign, recoverEvalCampaigns, runEvalCampaign } = await import("./evals.js");
+  const { inEvalWorld } = await import("./eval-gate.js");
+  const { evalCliEntry, runEvalWorld } = await import("./eval-world.js");
+  const action = positional[0];
+  const command = `evals${action === undefined ? "" : ` ${action}`}`;
+  const usage = "Use: toolroll evals run [--diagnostic] [--case <ids>] [--k <n>] --as <you> --token <password> | toolroll evals cases | toolroll evals recover [--abandon <campaign> --as <you> --token <password>]";
+  if (action === "recover" && flags.has("abandon")) return evalsAbandonCommand(flags, context);
+  if (action === "recover") {
+    // A campaign whose runner stopped: its unfinished attempts recorded as interrupted, then it ends incomplete.
+    const recovered = recoverEvalCampaigns(context.store, context.clock());
+    return succeed(write, json, command, { campaigns: recovered }, () => recovered.length === 0 ? ["No campaign is running."] : recovered.map(one => `${one.id}: ${one.recovered ? "recovered" : "left running"} (${one.why})`));
+  }
+  if (action === "cases") {
+    const set = loadEvalSet();
+    if (!set.ok) return fail(write, json, command, "unreadable", set.problem, EXIT.failed);
+    const cases = set.cases.map(one => ({ id: one.id, kind: one.kind, version: one.version, pin: one.pin, validatedBy: one.validatedBy, draft: one.validatedBy === null }));
+    return succeed(write, json, command, { manifestDigest: set.manifestDigest, cases }, () => cases.map(one => `${one.id} (${one.kind}) ${one.version.slice(0, 12)} on ${one.pin.model}: ${one.draft ? "draft, awaiting a person's validation" : `validated by ${one.validatedBy}`}`));
+  }
+  if (action === "attempt") {
+    // Only its campaign's runner starts an attempt: under the runner's dispatch gate, on the world's own database.
+    if (!inEvalWorld()) return fail(write, json, command, "refused", "An eval attempt runs only from its campaign's runner.", EXIT.refused);
+    const [, campaign, caseId, n] = positional;
+    const world = text(flags, "world");
+    if (campaign === undefined || caseId === undefined || n === undefined || !/^[1-9][0-9]?$/.test(n) || world === undefined) return fail(write, json, command, "usage", "Use: toolroll evals attempt <campaign> <case> <n> --world <dir> --db <world>/toolroll/orders.db", EXIT.usage);
+    let worldDir: string;
+    try { worldDir = realpathSync(world); } catch { return fail(write, json, command, "refused", "The world's folder can't be read.", EXIT.refused); }
+    if (resolve(context.databaseFile) !== join(worldDir, "toolroll", "orders.db")) return fail(write, json, command, "refused", "An eval attempt runs only on its world's own database.", EXIT.refused);
+    const set = loadEvalSet();
+    const one = set.ok ? set.cases.find(item => item.id === caseId) : undefined;
+    if (one === undefined) return fail(write, json, command, "refused", set.ok ? `No case is named ${caseId}.` : set.problem, EXIT.refused);
+    const deny = (text(flags, "deny") ?? "").split(",").filter(path => path !== "" && isAbsolute(path));
+    const report = await runEvalWorld(one, { worldDir, databaseFile: context.databaseFile, deny, timeoutMs: one.timeoutMinutes * 60_000 });
+    return succeed(write, json, command, { ...report }, () => [JSON.stringify(report)]);
+  }
+  if (action !== "run" || positional.length !== 1) return fail(write, json, command, "usage", usage, EXIT.usage);
+  if (inEvalWorld()) return fail(write, json, command, "refused", "An eval world doesn't start campaigns of its own.", EXIT.refused);
+  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined) return fail(write, json, command, "person-only", "Only a person starts an eval campaign: it spends money.", EXIT.refused);
+  const k = text(flags, "k");
+  const cases = text(flags, "case");
+  const set = loadEvalSet();
+  if (!set.ok) return fail(write, json, command, "unreadable", set.problem, EXIT.failed);
+  const planned = planCampaign(set, { ...(cases === undefined ? {} : { cases: cases.split(",").filter(Boolean) }), ...(k === undefined ? {} : { k: Number(k) }), diagnostic: flag(flags, "diagnostic") });
+  if (!planned.ok) return fail(write, json, command, "refused", planned.problem, EXIT.refused);
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, command, "usage", "An eval campaign is started with your password: add --as <you> --token <password>.", EXIT.usage);
+  const { plan } = planned;
+  const buildDigest = (): string => installedBuildDigest(PACKAGE_VERSION);
+  const sealed = { cases: plan.cases.map(one => ({ id: one.id, version: one.version, pin: one.pin, maxDispatches: one.maxDispatches })), k: plan.k, baseline: null, evals: EVALS_ROOT };
+  // A campaign whose runner stopped no longer holds its place.
+  recoverEvalCampaigns(context.store, context.clock());
+  const admitted = admitEvalCampaign(context.store, { kind: "eval", canonical: plan.canonical, manifestDigest: set.manifestDigest, buildDigest: buildDigest(), version: PACKAGE_VERSION, k: plan.k,
+    sealed, as: acting.name, token: acting.token, now: context.clock() });
+  if (!admitted.ok) return fail(write, json, command, admitted.reason, admitted.message, EXIT.refused);
+  const stateDir = dirname(context.databaseFile);
+  const entry = evalCliEntry();
+  const keep = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "SHELL", "TMPDIR"];
+  const ended = await runEvalCampaign(context.store, admitted.id, plan.cases, {
+    // Beside the plane's state folder, never inside it: a world's builds read-deny the plane's state.
+    workRoot: join(dirname(stateDir), "toolroll-eval-worlds", admitted.id),
+    buildDigest,
+    keepWorlds: flag(flags, "keep"),
+    now: context.clock,
+    command: input => ({ file: entry.file, args: [...entry.args, "evals", "attempt", input.campaign, input.caseId, String(input.n), "--world", input.worldDir, "--deny", stateDir, "--db", input.databaseFile, "--json"],
+      env: { ...Object.fromEntries(keep.flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!]])), XDG_CONFIG_HOME: join(input.worldDir, "config") } }),
+  });
+  const rows = context.store.handle.prepare("SELECT case_id, n, replaces, outcome, error_why, api_microusd, subscription_microusd, usage_unknown FROM eval_attempt WHERE campaign = ? ORDER BY case_id, n, replaces").all(admitted.id);
+  const nullable = (value: unknown): number | null => value === null || value === undefined ? null : Number(value);
+  const attempts = rows.map(row => ({ case: String(row["case_id"]), n: Number(row["n"]), replaces: Number(row["replaces"]), outcome: row["outcome"] === null ? null : String(row["outcome"]),
+    why: row["error_why"] === null ? null : String(row["error_why"]), apiMicrousd: nullable(row["api_microusd"]), subscriptionMicrousd: nullable(row["subscription_microusd"]), usageUnknown: Number(row["usage_unknown"]) === 1 }));
+  // What was actually spent, as recorded: API dollars and subscription usage apart, unknown never shown as measured.
+  const spent = campaignSpending(context.store, admitted.id);
+  const dollars = (micro: number | null, unknown: number): string => micro === null ? `unknown (${unknown} attempt${unknown === 1 ? "" : "s"} with unknown spending)` : `$${(micro / 1_000_000).toFixed(2)}`;
+  return succeed(write, json, command, { campaign: admitted.id, canonical: plan.canonical, state: ended.state, why: ended.why, attempts, spending: spent }, () => [
+    `Campaign ${admitted.id} (${plan.canonical ? "canonical" : "diagnostic"}) is ${ended.state}${ended.why === null ? "" : `: ${ended.why}`}.`,
+    ...attempts.map(one => `${one.case} #${one.n}${one.replaces === 0 ? "" : " (replacement)"}: ${one.outcome ?? "not finished"}${one.why === null ? "" : ` — ${one.why}`}`),
+    `API dollars: ${dollars(spent.apiMicrousd, spent.unknownAttempts)}. Subscription usage, not billed: ${dollars(spent.subscriptionMicrousd, spent.unknownAttempts)}.`,
+  ]);
+}
+
+/**
+ * `toolroll evals recover --abandon <campaign> --as <you> --token <password>` (PR #263 review): a person ends a campaign
+ * recovery can't settle (its runner or a world's processes can't be proven gone). Its unfinished attempts are recorded
+ * as errors and its spending as unknown, and it ends incomplete; nothing is signalled and no world is removed. A lead
+ * token, a machine or an eval world is refused; the password is checked inside the write (evals.ts abandonEvalCampaign).
+ */
+async function evalsAbandonCommand(flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { write, json } = context;
+  const command = "evals recover";
+  const { abandonEvalCampaign } = await import("./evals.js");
+  const { inEvalWorld } = await import("./eval-gate.js");
+  const id = text(flags, "abandon");
+  if (id === undefined || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(id)) return fail(write, json, command, "usage", "Use: toolroll evals recover --abandon <campaign> --as <you> --token <password>", EXIT.usage);
+  if (inEvalWorld() || machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined) return fail(write, json, command, "person-only", "Only a person abandons an eval campaign.", EXIT.refused);
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, command, "usage", "A campaign is abandoned with your password: add --as <you> --token <password>.", EXIT.usage);
+  const ended = abandonEvalCampaign(context.store, { id, as: acting.name, token: acting.token, now: context.clock() });
+  if (!ended.ok) return fail(write, json, command, ended.reason, ended.message, EXIT.refused);
+  return succeed(write, json, command, { campaign: id, state: "incomplete", attempts: ended.attempts, spending: "unknown" },
+    () => [`Campaign ${id} ended incomplete. ${ended.attempts} unfinished attempt${ended.attempts === 1 ? "" : "s"} recorded as errors; what it spent is unknown. Nothing was stopped: check for its processes yourself.`]);
+}
+
+/**
+ * The saved projects an `up` start couldn't reach (upCommand): each is proved again every `everyMs` while the worker
+ * runs, by `prove` (upProveSaved), so a folder that answers again connects without a restart. Only what the start itself
+ * read from the saved list is here, and the set only shrinks: a line connected, removed from the saved list
+ * (`keepOnly`) or come back as some other checkout (`revoke`) is gone for good, so a line saved again later needs its
+ * recorded admission like any other addition. `retry` answers the proof when one is due and answered, else null.
+ */
+export function upDeferredRetry<T>(inputs: readonly string[], prove: (input: string) => Promise<T | null>, everyMs = 5_000, now: () => number = Date.now): {
+  has: (input: string) => boolean;
+  list: () => string[];
+  retry: (input: string) => Promise<T | null>;
+  revoke: (input: string) => void;
+  keepOnly: (saved: readonly string[]) => boolean;
+} {
+  // Wall time, not the store's clock (a test's may stand still): this is only how often a folder is asked.
+  const nextAt = new Map<string, number>(inputs.map(input => [input, now() + everyMs]));
+  return {
+    has: input => nextAt.has(input),
+    list: () => [...nextAt.keys()],
+    retry: async input => {
+      const due = nextAt.get(input);
+      if (due === undefined || now() < due) return null;
+      nextAt.set(input, now() + everyMs);
+      return prove(input);
+    },
+    revoke: input => { nextAt.delete(input); },
+    keepOnly: saved => {
+      const keep = new Set(saved);
+      let changed = false;
+      for (const input of [...nextAt.keys()]) if (!keep.has(input)) { nextAt.delete(input); changed = true; }
+      return changed;
+    },
+  };
+}
+
+/**
+ * Whether a saved project's folder is a Git checkout now, read without blocking this thread: `git rev-parse
+ * --show-toplevel` (bounded, its own process), then the real paths of the saved line and of the checkout, resolved off
+ * the thread under a deadline (folder-look.ts). Null when it isn't one, or didn't answer.
+ */
+export async function upProveSaved(gitRun: (file: string, args: readonly string[], opts?: { cwd?: string }) => Promise<{ code: number | null; stdout: string }>,
+  input: string, look: FolderLookOptions = {}): Promise<{ line: string; root: string } | null> {
+  const top = await gitRun("git", ["rev-parse", "--show-toplevel"], { cwd: resolve(input) });
+  if (top.code !== 0) return null;
+  const answered = await lookIdentities([resolve(input), top.stdout.trim()], look);
+  if (!answered.ok) return null;
+  const line = answered.value.get(resolve(input)) ?? null, root = answered.value.get(top.stdout.trim()) ?? null;
+  return line === null || root === null ? null : { line, root };
+}
+
+/** What `up` hands its next worker after the worker reports which saved projects it still holds start authority for:
+ * only what both still hold. A worker's report can give up an authority, never add or give back one. */
+export function upNarrowDeferred(held: readonly string[], reported: readonly string[]): string[] {
+  const kept = new Set(reported);
+  return held.filter(one => kept.has(one));
+}
+
+/** Resolve the console's project identities after it is listening, never before: the deploy's health check and every
+ * page answer at once, and each project shows up as its folder answers (project-identity.ts `refresh`, its looks a
+ * few at a time under their deadline). Nothing waits on it; a pass that fails leaves those paths unresolved, which
+ * fails closed, for the background pass to try again. */
+export function consoleIdentitiesInBackground(identities: ProjectIdentities, paths: readonly string[]): void {
+  void identities.refresh(paths).catch(() => false);
+}
+
+/** `config set` and `config clear` on the command line, through Settings → Models' one write path (model-choices.ts,
+ * docs/plans/spend-dashboard.md slice 3), under the same target and resulting-configuration checks as the editor: the
+ * person proved themselves with their own password or login at `proved.generation`; a machine credential (a remote
+ * token, the lead's token) never changes which models run. The write re-proves them inside its transaction: still an
+ * unrestricted instance operator, at that very generation, by a proof that still stands. */
+export function writeModelRow(store: Store, proved: { actor: string; generation: number; method: string }, scope: string, knownProject: (repo: string) => boolean, slot: Slot | null, to: ModelChange["to"], now: Date, extra: readonly ExtraWrite[] = []): ApplyResult {
+  return applyModelChoices(store, { scope, change: slot === null ? [] : [{ slot, to }], expected: null, strict: false, knownProject, extra },
+    { ...proved, live: () => true }, now);
 }

@@ -3,7 +3,7 @@
  * the next daily sweep would remove. An instance operator's page; changes
  * take a step-up.
  */
-import { html, postForm, type Html } from "./html.js";
+import { html, postForm, type Html, reauth } from "./html.js";
 import { bytesWords } from "./storage.js";
 import { RETENTION_KINDS, countWords, periodChoices, periodLabel, type RetentionCount, type RetentionKind, type RetentionPeriods } from "./retention.js";
 
@@ -38,5 +38,5 @@ export function retentionHtml(view: RetentionView, notice: { said?: string | nul
   });
   const last = view.lastSweep === null ? "" : ` Last sweep ${view.lastSweep.slice(0, 10)}.`;
   return html`<article class="retention">${note}<p class="retention-next" data-retention-next>${nextWords(view)}${last}</p>${
-    postForm("/settings/retention", html`${rows}<label class="step-up">Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label><button type="submit">Save</button>`)}<p class="meta">Never removed: the action ledger, and anything a task still needs (unfinished tasks, results Ready for review, anything on hold).</p></article>`;
+    postForm("/settings/retention", html`${rows}${reauth(html`<label class="step-up">Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label>`)}<button type="submit">Save</button>`)}<p class="meta">Never removed: the action ledger, and anything a task still needs (unfinished tasks, results Ready for review, anything on hold).</p></article>`;
 }

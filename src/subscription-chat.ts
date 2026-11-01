@@ -10,6 +10,7 @@
  * are still interpreted and executed by lead.ts, where every act remains a
  * proposal that needs a human confirmation card.
  */
+import { takeEvalDispatch } from "./eval-gate.js";
 import { Buffer } from "node:buffer";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,12 +27,15 @@ import {
   type LeadToolCall,
   type LeadToolSchema,
 } from "./converse.js";
-import { run, type ExecResult } from "./exec.js";
+import { run } from "./exec.js";
+import { CLAUDE_NO_TOOLS_ARGS, claudeModelArgs, type CommandRunner } from "./claude-print.js";
 import { claudeStreamReader } from "./lead-progress.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import type { SubscriptionChatProviderId } from "./store.js";
 import { claudeLimitsOf, noteLimits } from "./provider-limits.js";
 import { claudeBillingFrom } from "./spend.js";
+import { primaryResultEvent, topLevelEvent } from "./stream-scope.js";
+import { claudeResultReport, codexUsageReport, reportedModelOf, type ClaudeInitModel, type ProviderReport } from "./reported-usage.js";
 
 export type SubscriptionLeadRequest = {
   provider: SubscriptionChatProviderId;
@@ -57,7 +61,6 @@ export type SubscriptionLeadRunner = (
   request: SubscriptionLeadRequest,
 ) => Promise<{ ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string }>;
 
-type CommandRunner = (file: string, args: readonly string[], options: Parameters<typeof run>[2]) => Promise<ExecResult>;
 
 const RESPONSE_CAP_BYTES = 65_536;
 
@@ -113,7 +116,7 @@ function exactKeys(value: Record<string, unknown>, keys: readonly string[]): boo
 /** Strictly turn the harness's structured output into the provider-neutral answer. */
 export function parseSubscriptionLeadAnswer(
   text: string,
-  usage: { tokensIn?: unknown; tokensOut?: unknown } = {},
+  usage: { tokensIn?: unknown; tokensOut?: unknown; report?: ProviderReport | null } = {},
 ): { ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string } {
   const parsed = strictJsonParse(Buffer.from(text, "utf8"), RESPONSE_CAP_BYTES, 8);
   if (!parsed.ok || typeof parsed.value !== "object" || parsed.value === null || Array.isArray(parsed.value)) {
@@ -147,13 +150,34 @@ export function parseSubscriptionLeadAnswer(
   }
   const tokensIn = typeof usage.tokensIn === "number" && tokenCount(usage.tokensIn) ? usage.tokensIn : 0;
   const tokensOut = typeof usage.tokensOut === "number" && tokenCount(usage.tokensOut) ? usage.tokensOut : 0;
-  return { ok: true, answer: { text: body["text"], calls, tokensIn, tokensOut, reportedCostMicrousd: null } };
+  return { ok: true, answer: { text: body["text"], calls, tokensIn, tokensOut, reportedCostMicrousd: null, ...reportFields(usage.report ?? null) } };
 }
 
-function codexOutput(stdout: string): { text: string | null; tokensIn: number; tokensOut: number } {
+/** The harness's own report on the answer (v140): every field null when it gave none, cache counts only when it
+ * reported them. Never `reportedCostMicrousd`: a subscription's reported cost is usage, not API dollars. */
+function reportFields(report: ProviderReport | null): Pick<LeadProviderAnswer, "modelReported" | "providerTurns" | "reportedCostUsd" | "cacheReadTokens" | "cacheWriteTokens"> {
+  return {
+    modelReported: report?.modelReported ?? null,
+    providerTurns: report?.providerTurns ?? null,
+    reportedCostUsd: report?.reportedCostUsd ?? null,
+    ...(report?.cacheReadTokens == null ? {} : { cacheReadTokens: report.cacheReadTokens }),
+    ...(report?.cacheWriteTokens == null ? {} : { cacheWriteTokens: report.cacheWriteTokens }),
+  };
+}
+
+/** Input tokens are everything the model read, cache included, when the harness reported every part (usageOf);
+ * otherwise its plain input count as before. */
+function tokensInOf(report: ProviderReport, plain: number): number {
+  return report.tokensIn !== null && tokenCount(report.tokensIn) ? report.tokensIn : plain;
+}
+
+type HarnessOutput = { text: string | null; tokensIn: number; tokensOut: number; report: ProviderReport | null };
+
+function codexOutput(stdout: string): HarnessOutput {
   let text: string | null = null;
   let tokensIn = 0;
   let tokensOut = 0;
+  let report: ProviderReport | null = null;
   let completed = 0;
   let invalid = false;
   for (const line of stdout.split("\n")) {
@@ -173,26 +197,30 @@ function codexOutput(stdout: string): { text: string | null; tokensIn: number; t
       const usage = event["usage"] as Record<string, unknown> | undefined;
       if (typeof usage?.["input_tokens"] === "number" && tokenCount(usage["input_tokens"])) tokensIn = usage["input_tokens"];
       if (typeof usage?.["output_tokens"] === "number" && tokenCount(usage["output_tokens"])) tokensOut = usage["output_tokens"];
+      report = codexUsageReport(usage);
     }
   }
   // A partial answer is not authority to run host tools. Process exit zero
   // alone is insufficient; the harness must finish this one turn successfully.
-  return { text: !invalid && completed === 1 ? text : null, tokensIn, tokensOut };
+  return { text: !invalid && completed === 1 ? text : null, tokensIn: report === null ? tokensIn : tokensInOf(report, tokensIn), tokensOut, report };
 }
 
-function claudeOutput(stdout: string): { text: string | null; tokensIn: number; tokensOut: number } {
+/** The closing `result` (the buffered run's whole output, or the streamed run's last primary result line), with the
+ * session's init model when the stream carried one. */
+function claudeOutput(stdout: string, init: ClaudeInitModel): HarnessOutput {
   const parsed = strictJsonParse(Buffer.from(stdout, "utf8"), RESPONSE_CAP_BYTES, 12);
-  if (!parsed.ok || typeof parsed.value !== "object" || parsed.value === null || Array.isArray(parsed.value)) return { text: null, tokensIn: 0, tokensOut: 0 };
+  if (!parsed.ok || typeof parsed.value !== "object" || parsed.value === null || Array.isArray(parsed.value)) return { text: null, tokensIn: 0, tokensOut: 0, report: null };
   const body = parsed.value as Record<string, unknown>;
   if (body["type"] !== "result" || body["subtype"] !== "success" || body["is_error"] !== false) {
-    return { text: null, tokensIn: 0, tokensOut: 0 };
+    return { text: null, tokensIn: 0, tokensOut: 0, report: null };
   }
   const usage = body["usage"] as Record<string, unknown> | undefined;
-  const tokensIn = typeof usage?.["input_tokens"] === "number" && tokenCount(usage["input_tokens"]) ? usage["input_tokens"] : 0;
+  const report = claudeResultReport(body, init);
+  const tokensIn = tokensInOf(report, typeof usage?.["input_tokens"] === "number" && tokenCount(usage["input_tokens"]) ? usage["input_tokens"] : 0);
   const tokensOut = typeof usage?.["output_tokens"] === "number" && tokenCount(usage["output_tokens"]) ? usage["output_tokens"] : 0;
   const structured = body["structured_output"];
-  if (typeof structured === "object" && structured !== null) return { text: JSON.stringify(structured), tokensIn, tokensOut };
-  return { text: typeof body["result"] === "string" ? body["result"] : null, tokensIn, tokensOut };
+  if (typeof structured === "object" && structured !== null) return { text: JSON.stringify(structured), tokensIn, tokensOut, report };
+  return { text: typeof body["result"] === "string" ? body["result"] : null, tokensIn, tokensOut, report };
 }
 
 /** The streamed run's closing `result` event: the same body the buffered
@@ -204,7 +232,8 @@ function lastResultLine(stdout: string): string {
     if (line === "") continue;
     try {
       const event = JSON.parse(line) as unknown;
-      if (typeof event === "object" && event !== null && (event as Record<string, unknown>)["type"] === "result") return line;
+      // The main query's result, never a subagent's or a background task's (stream-scope.ts).
+      if (typeof event === "object" && event !== null && primaryResultEvent(event as Record<string, unknown>)) return line;
     } catch { /* not an event line */ }
   }
   return "";
@@ -215,6 +244,10 @@ export async function performSubscriptionLeadRequest(
   request: SubscriptionLeadRequest,
   runner: CommandRunner = run,
 ): Promise<{ ok: true; answer: LeadProviderAnswer } | { ok: false; problem: string }> {
+  // An eval world (eval-gate.ts): each request takes one of the attempt's dispatch slots; past the limit nothing is
+  // sent ("status-": nothing billed).
+  const evalSlot = takeEvalDispatch(`chat:${request.provider}`);
+  if (evalSlot.active && !evalSlot.ok) return { ok: false, problem: "status-eval-dispatch-limit" };
   const dir = mkdtempSync(join(tmpdir(), "standing-orders-mate-"));
   try {
     const prompt = composeSubscriptionLeadPrompt(request);
@@ -242,9 +275,7 @@ export async function performSubscriptionLeadRequest(
         // Streaming (someone is watching): the same answer, delivered as
         // events whose final `result` line is the whole structured reply.
         "-p", ...(streaming ? ["--output-format", "stream-json", "--verbose", "--include-partial-messages"] : ["--output-format", "json"]), "--json-schema", JSON.stringify(schema),
-        "--safe-mode", "--no-session-persistence", "--tools", "", "--permission-mode", "dontAsk",
-        "--permission-prompts", "none", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-        ...(request.model === "default" ? [] : ["--model", request.model]),
+        ...CLAUDE_NO_TOOLS_ARGS, ...claudeModelArgs(request.model),
       ];
     }
     const result = await runner(command, args, {
@@ -261,31 +292,41 @@ export async function performSubscriptionLeadRequest(
     if (result.timedOut) return { ok: false, problem: "timeout" };
     if (result.notFound) return { ok: false, problem: "not-found" };
     // v105: a streamed Claude turn says its plan's usage windows, and (once it answered) how this computer's Claude bills
-    // with no key from us: the chat ran with every key left out.
+    // with no key from us: the chat ran with every key left out. v140: its session's init names the exact model.
+    let init: ClaudeInitModel = { model: null, conflict: false };
+    // v141: how this request was billed, as its own events said (streamed Claude only); null when they didn't say.
+    let billingReported: "subscription" | "api-key" | null = null;
     if (command === "claude" && streaming) {
       const seen = { keySource: null as string | null, model: null as string | null, planWindows: false };
+      const initModels = new Set<string>();
       let answered = false;
       for (const line of result.stdout.split("\n")) {
-        if (!line.includes('"rate_limit_event"') && !line.includes('"apiKeySource"') && !line.includes('"type":"result"')) continue;
+        if (!line.includes('"rate_limit_event"') && !line.includes('"apiKeySource"') && !line.includes('"init"') && !line.includes('"type":"result"')) continue;
         let event: Record<string, unknown>;
         try { event = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
         const reading = claudeLimitsOf(event);
         if (reading !== null) { seen.planWindows = true; noteLimits(reading); }
-        else if (event["type"] === "system" && event["subtype"] === "init") {
+        else if (event["type"] === "system" && event["subtype"] === "init" && topLevelEvent(event)) {
           seen.keySource = typeof event["apiKeySource"] === "string" ? event["apiKeySource"] : null;
           seen.model = typeof event["model"] === "string" ? event["model"] : null;
-        } else if (event["type"] === "result") answered = true;
+          // Every init the session sent names its model; inits that disagree leave it unknown, never chosen.
+          const named = reportedModelOf(event["model"]);
+          if (named !== null) initModels.add(named);
+        } else if (primaryResultEvent(event)) answered = true;
       }
+      init = { model: initModels.size === 1 ? [...initModels][0]! : null, conflict: initModels.size > 1 };
       const billing = answered ? claudeBillingFrom(seen) : null;
       if (billing !== null) noteLimits({ provider: "claude", plan: null, windows: [], partial: true, billing });
+      billingReported = billing;
     }
     if (result.code !== 0) return { ok: false, problem: `status-${result.code}` };
-    const output = request.provider === "codex-subscription" ? codexOutput(result.stdout) : claudeOutput(streaming ? lastResultLine(result.stdout) : result.stdout);
+    const output = request.provider === "codex-subscription" ? codexOutput(result.stdout) : claudeOutput(streaming ? lastResultLine(result.stdout) : result.stdout, init);
     if (output.text === null) return { ok: false, problem: "malformed-reply" };
     if (request.outputSchema !== undefined) {
-      return { ok: true, answer: { text: output.text, calls: [], tokensIn: output.tokensIn, tokensOut: output.tokensOut, reportedCostMicrousd: null } };
+      return { ok: true, answer: { text: output.text, calls: [], tokensIn: output.tokensIn, tokensOut: output.tokensOut, reportedCostMicrousd: null, ...reportFields(output.report), billingReported } };
     }
-    return parseSubscriptionLeadAnswer(output.text, output);
+    const parsed = parseSubscriptionLeadAnswer(output.text, output);
+    return parsed.ok ? { ok: true, answer: { ...parsed.answer, billingReported } } : parsed;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

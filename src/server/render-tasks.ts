@@ -1,5 +1,13 @@
 /** Task pages: approval, agents, plans, controls, decisions and the task body. */
-import { type Html,html,htmlString,joinHtml,postForm,replaceMarkup } from "../html.js";
+import { networkWords } from "../egress.js";
+import type { ReleaseView } from "../release-view.js";
+import { releaseAsksAgainWords, releaseTermsSentence } from "../scope.js";
+import { RELEASE_CI_RUNNING_WORDS } from "../release-ci-hold.js";
+import { writesWords } from "../writes-mode.js";
+import { checkAccessWords } from "../check-access.js";
+import { sandboxTermsWords } from "../project-sandbox.js";
+import { ACP_AGENTS, isAcpProfile } from "../acp-agents.js";
+import { type Html, html, htmlString, joinHtml, postForm, replaceMarkup, reauth } from "../html.js";
 import { closedQuestionReason, closedQuestionWords } from "../decision.js";
 import { type RunActivity } from "../activity-line.js";
 import { type AgentChoice } from "../agentconfig.js";
@@ -8,28 +16,28 @@ import { type AssignmentCard,assignmentCardOf,assignmentStatusOf,assignmentSumma
 import { type AssignmentSnapshot } from "../assignment.js";
 import { holdOwnerWords } from "../board.js";
 import { baseStandingWords, type TaskBaseView } from "../task-base.js";
-import { type BrowserTaskDetailGroup,type BrowserTaskFact,type BrowserTaskSection,type BrowserTaskThreadItem,type BrowserTaskView } from "../browser-workspace.js";
+import { type BrowserAgentControls,type BrowserTaskDetailGroup,type BrowserTaskFact,type BrowserTaskMore,type BrowserTaskSection,type BrowserTaskThreadItem,type BrowserTaskView } from "../browser-workspace.js";
 import { permissionPlainWords } from "../chat-decide.js";
 import { CHAT_TASK_ACTIONS } from "../chat-task-actions.js";
 import { type FormView } from "../contracts/console-api.js";
 import { type DispatchDiagnosis } from "../dispatch.js";
 import { type ReportView } from "../evidence.js";
-import { firstTaskJourney } from "../first-run.js";
+import { taskRoad, type RoadChecks } from "../first-run.js";
 import { starterForWork } from "../flow-starters.js";
 import { type Gap } from "../gaps.js";
 import { readAuthModeStrict } from "../keys.js";
-import { failedAttemptSentence,type FailureExplanation,retryNoteOf } from "../needs-you.js";
-import { agentsSummary,chosenWords,makesNoPlan,type PhaseRoute,postureWords,projectRoute,PHASES as ROUTE_PHASES,type RouteOverride,type RouteProjection,TASK_SIZES } from "../phase-routing.js";
+import { failedAttemptSentence,type FailureExplanation,retryNoteOf,START_BUILDER_COMMAND,startBuilderHref } from "../needs-you.js";
+import { chosenWords, makesNoPlan, PHASES as ROUTE_PHASES, type RouteOverride, type RouteProjection, TASK_SIZES } from "../phase-routing.js";
 import { type MilestoneState,parseExecutionPlanDocument } from "../plan.js";
 import { type ContractChange } from "../planner-source.js";
 import { projectName } from "../project.js";
 import { type CriterionMatrixRow,dispatchStatusToken,manualReviewOnly,plainReasonWords,type ProofVerdict,reviewConflict } from "../proof.js";
 import { providerName } from "../provider-auth.js";
-import { type Phase,PROVIDER_IDS } from "../provider.js";
+import { agentModelName } from "../model-names.js";
+import { type Phase } from "../provider.js";
 import { type QualityMode,qualityModeTitle } from "../quality.js";
-import { type TerminalDiffView } from "../result-evidence-readers.js";
 import { evidenceShortenedWords } from "../result-review.js";
-import { type AcceptanceCriterion,acceptanceToLines,approvalOf,chainFromJson,type Scope,scopeAuthorityOf,type UnattendedPermissionMode } from "../scope.js";
+import { type AcceptanceCriterion, acceptanceToLines, approvalOf, type Scope, scopeAuthorityOf, type UnattendedPermissionMode } from "../scope.js";
 import { type Artifact,type CheckProgress,type CoordinatorProposal,type Decision,type ExternalMirror,type Hold,type Incident,type PlanRevisionKind,type PlanRevisionStatus,type Publication,type PublicationGrant,type RepairChainRow,type ReviewRetryState,type RevisionLineage,type Run,type SteerNote,type Store,type Task } from "../store.js";
 import { runCostWords } from "../summary.js";
 import { type TaskControlView } from "../task-control.js";
@@ -41,8 +49,9 @@ import { type Chrome,isOverdue,oneLineOf,projectChip,regionScript,safePrUrl,scre
 import { steerDestinationWords, steerStandingParts } from "../steer-status.js";
 import { reviewHref,taskChatHref,taskHref } from "./http.js";
 import { coordinatorProposalsSection } from "./render-chat.js";
-import { completionReceiptCard,type CompletionReceiptView,criterionMatrixHtml,type EvidenceLinkMap,evidenceWords,homePhaseWords,incidentWords,needsCheck,pullRequestCardHtml,reasonWords,receiptStatusOf,repairChainHtml,reportItemsHtml,reviewRetryPanel,runNoun,runOutcomeBadge,semanticCoverageHtml,type TaskPullRequest,terminalDiffCard,verificationExplanation,verificationRecovered } from "./render-results.js";
+import { completionReceiptCard, type CompletionReceiptView, criterionMatrixHtml, type EvidenceLinkMap, evidenceWords, homePhaseWords, incidentWords, needsCheck, pullRequestCardHtml, reasonWords, receiptStatusOf, repairChainHtml, reportItemsHtml, reviewRetryPanel, runNoun, runOutcomeBadge, semanticCoverageHtml, type TaskPullRequest, verificationExplanation, verificationRecovered } from "./render-results.js";
 import { type Who } from "./session.js";
+import { linkWords, originNote, requestName, requestWords, type TaskOrigin } from "../task-source.js";
 
 /** What the task and approval views show about a drafted plan's contract
  * (contract handoff, task 1). A problem is a named problem, never a blank. */
@@ -152,14 +161,7 @@ export function acceptanceCeremonyHtml(criteria: readonly AcceptanceCriterion[])
 }
 /** "claude" + "opus" → "Claude Opus"; "claude-opus-5-5" → "Claude Opus 5.5"; anything else keeps its exact id. */
 export function agentNameWords(provider: string, model: string | null): string {
-  const name = providerName(provider);
-  if (model === null || model === "" || model === "default") return name;
-  const bare = model.startsWith(`${provider}-`) ? model.slice(provider.length + 1) : model;
-  const title = (word: string): string => `${word[0]!.toUpperCase()}${word.slice(1)}`;
-  if (/^[a-z]+$/.test(bare)) return `${name} ${title(bare)}`;
-  const versioned = /^([a-z]+)-(\d+(?:-\d+)*)$/.exec(bare);
-  if (versioned !== null) return `${name} ${title(versioned[1]!)} ${versioned[2]!.replace(/-/g, ".")}`;
-  return `${name} ${model}`;
+  return agentModelName(provider, model);
 }
 
 /** The permission a sealed profile grants, in two or three words. */
@@ -169,6 +171,7 @@ export function permissionWordsOf(profile: Scope["profile"] | null | undefined):
     ? profile.permissionArgv === "bypassPermissions" ? "Full access" : "Auto permissions"
     : profile.provider === "gemini"
       ? profile.approvalArgv === "yolo" ? "Full access" : "Auto permissions"
+      : isAcpProfile(profile) ? "Full access"
       : profile.sandboxMode === "danger-full-access" ? "Full access" : "Workspace sandbox";
 }
 
@@ -223,6 +226,33 @@ const fragmentString = (fragment: Html | ""): string => fragment === "" ? "" : h
  * Presentation only: the same hidden fields, nonce, digest and password
  * post to the same route, and the task page and chat card share it.
  */
+/** v126: a task's origin as a line of words (the identity line). */
+function originWords(origin: TaskOrigin): string {
+  const flow = origin.flow === null ? null : origin.flow === "hidden" ? "from a flow" : origin.flow === "removed" ? "from a flow (removed)" : `from flow “${origin.flow.name}”`;
+  const source = origin.source === null ? null : `${origin.source.label} (${origin.source.proved})`;
+  const request = origin.request == null ? null : `from ${requestName(origin.request)}`;
+  return [flow, source, request].filter(one => one !== null).join(" · ");
+}
+
+/** v126: a task's origin as a fact: the flow, linked for those who may open it, and the outside event, linked to where
+ * it lives, with that link's host always shown. */
+function originParts(origin: TaskOrigin): BrowserTaskFact["parts"] {
+  const parts: BrowserTaskFact["parts"] = [];
+  if (origin.flow !== null) parts.push(origin.flow === "hidden" ? "A flow" : origin.flow === "removed" ? "A flow (removed)" : { label: `Flow “${origin.flow.name}”`, href: origin.flow.href });
+  if (origin.source !== null) {
+    if (parts.length > 0) parts.push(" · ");
+    // The link shows where it goes (host and path), beside what it is.
+    parts.push(origin.source.label, ` (${origin.source.proved})`);
+    if (origin.source.url !== null) parts.push(" · ", { label: linkWords(origin.source.url), href: origin.source.url });
+  }
+  if (origin.request != null) {
+    if (parts.length > 0) parts.push(" · ");
+    const where = requestWords(origin.request);
+    parts.push(`${requestName(origin.request)}${where === "" ? "" : `: ${where}`}`);
+  }
+  return parts;
+}
+
 export function approvalSheetHtml(input: {
   surface: "task" | "chat";
   action: string;
@@ -239,7 +269,11 @@ export function approvalSheetHtml(input: {
   repairChain: RepairChainRow | null;
   route: RouteView | null | undefined;
   coordinator: { label: string; filedAgo: string | null } | null;
+  /** v126: where the work came from: an outside event's one line of context (never a term the approval agrees to). */
+  origin?: TaskOrigin | null;
   deliverable: "branch" | "report";
+  /** The plan was rewritten after this build: the yes builds again to it (the approve POST requeues). */
+  rebuild?: number | null;
   editHref: string;
   notNowHref: string;
   sticky: boolean;
@@ -248,6 +282,8 @@ export function approvalSheetHtml(input: {
   /** The in-place editor (task page): the scope route, a draft the server
    * refused (with why), whether it opens on arrival, and the plan's steps editor. */
   edit: { action: string; draft: URLSearchParams | null; problem: string | null; open: boolean; stepsHref: string | null } | null;
+  /** Cockpit B2: this person's password is remembered (when, ISO) and these terms may stand on it. */
+  freshSince?: string | null;
 }): Html {
   const { scope, route } = input;
   // A machine-drafted repair appends its brief to the signed goal; the row
@@ -303,10 +339,13 @@ export function approvalSheetHtml(input: {
     allowing.length === 0 ? "" : html`<p class="approval-allowing" data-approval-allowing>You’re allowing: ${allowing.join(" · ")}</p>`,
     yoursToCheck.length === 0 ? "" : html`<p class="approval-you-check" data-approval-you-check>You’ll check: ${yoursToCheck.join("; ")}</p>`,
   ]);
-  const after = input.deliverable === "report"
+  const rebuild = input.rebuild ?? null;
+  const after = rebuild !== null
+    ? html`Build #${rebuild} was made to the earlier plan. Approving builds it again to this one.`
+    : input.deliverable === "report"
     ? html`An agent investigates without changing the repository. You'll hear when its report is ready.`
     : html`An agent starts in its own branch. You'll hear when it's ready to review.`;
-  const submit = html`Approve & start`;
+  const submit = rebuild !== null ? html`Approve & build again` : html`Approve & start`;
 
   // Everything else the digest binds, one tap away.
   const detail = (title: string, body: Html, attrs: Html = html``): Html => isEmptyHtml(body) ? html`` : html`<section class="approval-detail"${attrs}><h3>${title}</h3>${body}</section>`;
@@ -414,6 +453,7 @@ export function approvalSheetHtml(input: {
       sentence === null ? "" : html`<p class="approval-revision">${sentence}</p>`,
       input.coordinator === null ? "" : html`<p class="approval-note">An agent filed this: <span class="mono">${input.coordinator.label}</span>${input.coordinator.filedAgo === null ? "" : html`, ${input.coordinator.filedAgo}`}. Nothing runs until you approve, and approving runs its request.</p>`,
       input.deliverable === "report" ? html`<p class="approval-note">Read-only: it reports back and changes nothing in the repository.</p>` : "",
+      originNote(input.origin) === null ? "" : html`<p class="approval-note" data-approval-origin>${originNote(input.origin)!}</p>`,
       html`<dl class="approval-rows">`,
       row("Goal", html`<p class="approval-goal">${goalShown}</p>`),
       row("Changes", changes),
@@ -426,15 +466,16 @@ export function approvalSheetHtml(input: {
       who.length === 0 ? "" : html`<p class="approval-who">${who.join(" · ")}</p>`,
       consent,
       html`<div class="approval-act" id="${input.surface === "task" ? "approval-confirm" : "chat-approval-confirm"}">`,
-      html`<label class="approval-password"><span class="visually-hidden">Your password</span><input type="password" name="token" autocomplete="current-password" placeholder="Your password" aria-describedby="${passwordNote}"></label>`,
-      html`<p class="approval-password-note" id="${passwordNote}">Your password signs this approval.</p>`,
+      html`${reauth(html`<label class="approval-password"><span class="visually-hidden">Your password</span><input type="password" name="token" autocomplete="current-password" placeholder="Your password" aria-describedby="${passwordNote}"></label>`)}`,
+      input.freshSince == null ? html`<p class="approval-password-note" id="${passwordNote}">Your password signs this approval.</p>`
+        : html`<p class="approval-password-note" id="${passwordNote}" data-approval-fresh>Your password from ${whenTime(input.freshSince)} is remembered on this computer — leave this blank to approve with it, or type it again.</p>`,
       html`<button type="submit" data-primary-action>${submit}</button></div>`,
       html`<p class="approval-after">${after}</p>`,
       html`<div class="approval-secondary">${editor ?? html`<a class="approval-link" href="${input.editHref}">Edit plan</a>`}<a class="approval-link" href="${input.notNowHref}">Not now</a></div>`,
       details,
     ]), {
       attrs: { class: "approve-form approval-sheet", id: input.surface === "task" ? "approve" : null, "data-sticky": input.sticky },
-      hidden: { nonce: input.nonce, digest: input.digest },
+      hidden: { nonce: input.nonce, digest: input.digest, ...(rebuild === null ? {} : { rebuild: String(rebuild) }) },
       returnTo: input.returnTo,
     }),
     editorForm,
@@ -461,6 +502,7 @@ export function permissionModeOfProfile(profile: Scope["profile"] | null | undef
     ? profile.permissionArgv === "bypassPermissions" ? "bypassPermissions" : "auto"
     : profile.provider === "gemini"
       ? profile.approvalArgv === "yolo" ? "bypassPermissions" : "auto"
+      : isAcpProfile(profile) ? "bypassPermissions"
       : profile.sandboxMode === "danger-full-access" ? "bypassPermissions" : "auto";
 }
 
@@ -569,8 +611,13 @@ export function profileWords(scope: Pick<Scope, "profile" | "profileState" | "un
         }, stops after ${profile.maxTurns} turns, ${Math.round(profile.timeoutSeconds / 60)} min ${profile.timeoutKind === "idle" ? "without progress" : "per attempt"}; repairs on ${repair}, ${profile.repairMaxTurns} turns / ${Math.round(profile.repairTimeoutSeconds / 60)} min</p>`
       : profile.provider === "gemini"
         ? html`<p class="meta">Runs on <span class="mono">gemini · ${profile.model}</span> — ${profile.approvalArgv === "yolo" ? "Full access via --approval-mode yolo; every tool auto-approved" : "Auto via --approval-mode auto_edit; edits auto-approved, other tools refused"}, no turn limit (${Math.round(profile.timeoutSeconds / 60)} min ${profile.timeoutKind === "idle" ? "without progress" : "per attempt"}), spend reported in tokens only; repairs on ${repair}, ${Math.round(profile.repairTimeoutSeconds / 60)} min</p>`
+        : isAcpProfile(profile)
+          ? html`<p class="meta">Runs on <span class="mono">${ACP_AGENTS[profile.provider].name} (via ACP) · ${profile.model}</span> — full access inside the OS fence; the agent runs any tool it chooses and nothing asks. No turn limit: stops after ${Math.round(profile.timeoutSeconds / 60)} min, or ${Math.round(profile.idleTimeoutSeconds / 60)} min silent; repairs on ${repair}, ${Math.round(profile.repairTimeoutSeconds / 60)} min, or ${Math.round(profile.repairIdleTimeoutSeconds / 60)} min silent.</p>`
         : html`<p class="meta">Runs on <span class="mono">${profile.provider} · ${profile.model}</span> — ${profile.sandboxMode === "danger-full-access" ? "FULL permissions via --dangerously-bypass-approvals-and-sandbox; nothing asks" : "workspace-write sandbox"}, no turn limit (${Math.round(profile.timeoutSeconds / 60)} min ${profile.timeoutKind === "idle" ? "without progress" : "per attempt"}); repairs on ${repair}, ${Math.round(profile.repairTimeoutSeconds / 60)} min</p>`;
-  return base;
+  // What the build may reach is part of what is approved (egress.ts): said on every approval form.
+  // Its sandbox terms (project-sandbox.ts): what it reads always, and any widening, part of what the yes agrees to.
+  const terms = sandboxTermsWords(profile);
+  return html`${base}<p class="meta" data-scope-network>${networkWords(profile.network ?? null)}</p><p class="meta" data-scope-writes>Writes: ${writesWords(profile.writes)}.</p>${profile.checkAccess === undefined ? "" : html`<p class="meta" data-scope-checks>Checks: ${checkAccessWords(profile.checkAccess)}.</p>`}<p class="meta" data-scope-reads>Reads: ${terms.reads}.</p>${terms.mach === null ? "" : html`<p class="meta" data-scope-mach>${terms.mach.charAt(0).toUpperCase()}${terms.mach.slice(1)}.</p>`}`;
 }
 /** The Agents view every console surface renders (v47): the SAME
  * projection the CLI prints — who plans, builds, and revises,
@@ -803,10 +850,34 @@ export function nonceHashOf(value: string): string {
 }
 
 /** The approve POST's refusal, in words a person can act on. */
+/** A release task's automatic approval, in words (docs/plans/auto-approve-green.md). */
+export function autoReleaseWords(auto: { kind: "checking" | "approved"; candidate: string }): string {
+  return auto.kind === "approved" ? `Approved automatically: CI and release check passed on ${auto.candidate.slice(0, 7)}`
+    : `Checking automatically: approves itself once CI and the release check pass on ${auto.candidate.slice(0, 7)}`;
+}
+
+/** " (password remembered from 10:42)" when the approval stood on a remembered password or sign-in; nothing otherwise. */
+export function approvalProofWords(proof: { method: string; at: string } | null | undefined): string {
+  if (proof == null) return "";
+  if (proof.method === "fresh-password") return ` (password remembered from ${whenText(proof.at)})`;
+  if (proof.method === "fresh-sso") return ` (sign-in remembered from ${whenText(proof.at)})`;
+  if (proof.method === "session") return " (passwordless: your signed-in session)";
+  if (proof.method === "cli-login") return " (passwordless: this computer's remembered login)";
+  if (proof.method === "chat") return " (from your paired chat)";
+  if (proof.method === "carried") return " (carried from the release approval)";
+  return "";
+}
+const whenText = (iso: string): string => new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).format(new Date(iso));
+
 export function approveRefusalWords(reason: string): string {
   if (reason === "requester" || reason === "person-required") return gateWords({ verdict: "refuse", reason });
+  if (reason === "machine-proof") return "not approved: only a person can approve this. Approve it on the task page or from your paired chat";
   if (reason === "unrouted") return "not approved: this scope predates agent routing and its old approval no longer stands — edit and re-file the scope so it is routed under today’s agents, then approve it";
   if (reason === "profile-unresolved") return "not approved: the scope cannot name an exact agent for every role — fix the agent setup and re-file it";
+  if (reason === "password-now") return "not approved: this needs your password typed now — protected work, raised permissions, or a plan an agent wrote can't use a remembered one";
+  // A wrong password, someone who isn't an approver (or not for this project), a revoked login: one answer for all, so
+  // the refusal never tells a guesser which it was.
+  if (reason === "not-an-approver") return "That password didn't match.";
   return `not approved: ${reason}`;
 }
 
@@ -836,7 +907,9 @@ export function taskRecoveryHref(taskId: string, diagnosis: DispatchDiagnosis | 
   if (diagnosis?.action === null || diagnosis?.action === undefined) return null;
   const task = taskHref(taskId);
   switch (diagnosis.action) {
+    // The task page only repeats that no builder is connected: lead to the command that connects one.
     case "start-worker":
+      return startBuilderHref(taskId);
     case "repair-dependency":
       return `${task}#run-status`;
     case "retry-task":
@@ -1017,7 +1090,7 @@ export function resumeCeremonyPage(chrome: Chrome, data: {
     data.gate === null ? "" : html`<p class="row"><strong>Before work starts:</strong> ${data.gate.summary} — ${data.gate.detail}</p>`,
     html`</div>`,
     postForm(`${taskHref(data.taskId)}/resume`, joinHtml([
-      html`<label>Confirm with your password<input type="password" name="token" autocomplete="current-password"></label>`,
+      html`${reauth(html`<label>Confirm with your password<input type="password" name="token" autocomplete="current-password"></label>`)}`,
       html`<button type="submit">Resume task</button>`,
     ], "\n"), { attrs: { class: "card resume-form" }, returnTo: data.returnTo, hidden: { nonce: data.nonceValue, run: control.run } }),
     back,
@@ -1205,7 +1278,7 @@ export function planRevisionLedgerHtml(ledger: PlanRevisionLedgerView | null | u
           : joinHtml([
             postForm(`${taskHref(taskId)}/accept-revision`, joinHtml([
               pendingRevision.authorityKind === "authority-change"
-                ? html`<input type="password" name="token" placeholder="approval password" required autocomplete="current-password">`
+                ? html`${reauth(html`<input type="password" name="token" placeholder="approval password" required autocomplete="current-password">`)}`
                 : "",
               html`<button type="submit">${pendingRevision.authorityKind === "authority-change" ? html`Approve changes &amp; continue` : html`Use revised plan &amp; continue`}</button>`,
             ]), { attrs: { class: "inline" }, hidden: { "revision-id": pendingRevision.id } }),
@@ -1387,6 +1460,8 @@ export function taskBodyParts(data: {
   /** Immutable filing provenance (v12) — the approver sees which door
    * filed this (console, cli, intake, template:<name>) at the yes. */
   filedVia?: string | null;
+  /** v126: where the work came from — the flow and the outside event — in words; null for everything else. */
+  origin?: TaskOrigin | null;
   /** Coordinator provenance when an agent filed this; null otherwise. */
   coordinator?: { label: string; filedAgo: string | null } | null;
   holds: Hold[];
@@ -1403,6 +1478,21 @@ export function taskBodyParts(data: {
   activity?: RunActivity | null;
   /** Live steering: the Claude build that takes Pause right now, and its latest pause (null: none, or it continued). */
   livePause?: LivePauseFact | null;
+  /** The running attempt's composer facts (steer-controls.ts), for this reader. */
+  steerComposer?: { controls: BrowserAgentControls; steer: { action: string; run: number } | null } | null;
+  /** This task's latest attempts, newest first (a tab's unsent draft for one that ended is offered on). */
+  steerRecent?: number[];
+  /** Cockpit B2: when this person's remembered password was given, when it may approve these terms. */
+  approvalFresh?: string | null;
+  /** Cockpit B2: how the current approval's person was proved (approval proved ledger), when it was a remembered one. */
+  approvalProof?: { method: string; at: string } | null;
+  /** A release task the plane approved (or is checking) itself (docs/plans/auto-approve-green.md): its candidate. */
+  autoRelease?: { kind: "checking" | "approved"; candidate: string } | null;
+  /** A release task filed while its pull request's CI still runs (a person may approve now; nothing deploys before CI passes). */
+  releaseCiRunning?: boolean;
+  /** One approval per release (release-once.md): the release this task belongs to, and whether this reader may stop it. */
+  release?: ReleaseView | null;
+  canStopRelease?: boolean;
   /** Workers that are both alive and authorized for this task's project. */
   worker?: { answering: number; registered: number; totalRegistered: number; lastHeard: string | null };
   /** Unmet capabilities that keep this exact task out of dispatch. */
@@ -1471,6 +1561,9 @@ export function taskBodyParts(data: {
   steering?: SteerNote[];
   /** A build's agent is running now and reads new notes when it next checks for them (v120). */
   steeringLive?: boolean;
+  /** The running build a note from this page is bound to (cockpit §4): the exact attempt, so a stale page's note is
+   * refused rather than filed for whatever runs later. Null: no build reads notes now (the note waits for the next). */
+  steeringRun?: number | null;
   /** The publication grant the publisher would act under — from
    * publicationGrantFor(repo) only; null when none, or no project. */
   grant?: PublicationGrant | null;
@@ -1632,11 +1725,11 @@ export function taskBodyParts(data: {
             firstConnection
               ? html`<p>Toolroll is open, but this project has not been connected to a builder yet.</p><p>On the machine where the project lives, open that folder and run:</p>`
               : html`<p>Toolroll is open, but this project's builder stopped checking in. Reopen Toolroll on the machine where the project lives.</p><p>If you normally start it from a terminal, open the project folder and run:</p>`,
-            html`<code class="dispatch-recovery-command">toolroll up</code>`,
+            html`<code class="dispatch-recovery-command">${START_BUILDER_COMMAND}</code>`,
             firstConnection
               ? html`<p class="meta">This is the normal start command: it opens the app, connects the project, and starts its builder. Keep Toolroll running; approved tasks begin automatically.</p>`
               : html`<p class="meta">This task resumes automatically when the builder reconnects. You do not need to file or approve it again.</p>`,
-            html`<p><a href="/system">See connection status →</a></p></div></details>`,
+            html`<p><a href="${startBuilderHref(task.id)}">See connection status →</a></p></div></details>`,
           ]);
         }
         // Never a link to this page's own acts: Retry sits on the status card and below.
@@ -1751,6 +1844,12 @@ export function taskBodyParts(data: {
           proofDetails,
         );
       }
+      // A recorded pass the check read now doesn't stand behind (unreadable, failed since, or not read here) never
+      // reads "passed": the box says what holds now (task-status.ts approvedCheckOf).
+      if (proof.proofVerdict === "verified" && !accepted && !(proof.receipt?.checks !== undefined && ["ready-to-review", "pr-opened", "merge-observed", "pr-closed"].includes(resultStatus.token))) {
+        return withReview(box(resultStatus.tone === "problem" ? "problem" : "ok", resultStatus.label,
+          html`<a href="/r/${proof.runId}">Build #${proof.runId}</a> finished. ${resultStatus.detail}${publicationWords}`, resultStatus.token), proofDetails);
+      }
       if (proof.proofVerdict === "verified" && !accepted) {
         const recovered = verificationRecovered(proof.proofReasons);
         return withReview(box(
@@ -1797,7 +1896,9 @@ export function taskBodyParts(data: {
     data.csrf === "" || task.state === "done" || task.state === "cancelled"
       ? ""
       : joinHtml([
-        postForm(`${taskHref(task.id)}/steer`, html`<input type="text" name="note" placeholder="guidance for the agent" aria-label="steering note" style="width:100%;max-width:28rem"><button type="submit">Steer</button>`, { attrs: { class: "row" } }),
+        postForm(`${taskHref(task.id)}/steer`, html`<input type="text" name="note" placeholder="guidance for the agent" aria-label="steering note" style="width:100%;max-width:28rem">${
+          data.steeringRun == null ? "" : html`<input type="hidden" name="run" value="${String(data.steeringRun)}"><input type="hidden" name="key" value="${randomUUID()}"><input type="hidden" name="return" value="task">`
+        }<button type="submit">${data.steeringRun == null ? "Save for the next attempt" : "Steer"}</button>`, { attrs: { class: "row" } }),
         html`<p class="meta">${steerDestinationWords(steeringLive)} A note can't widen the approved scope.</p>`,
       ]);
   const steeringCard =
@@ -1829,8 +1930,13 @@ export function taskBodyParts(data: {
           scope.touches.length === 0 ? "" : html`<p class="scope-paths"><strong>Touches</strong> ${scope.touches.join(", ")}</p>`,
           html`<p><strong>Quality</strong> ${qualityModeTitle(scope.qualityMode ?? "default")}</p>`,
           acceptanceCeremonyHtml(scope.acceptance),
-          approval.approved
-            ? html`<p class="meta scope-seal">Approved by ${approval.by} · ${whenTime(approval.at)} · <span class="seal">signs ${shortDigest(scope.digest)}</span><span class="so-sr-only"> — approval binds to this exact wording</span></p>`
+          scope.releaseTerms == null ? "" : html`<p><strong>Release</strong></p><p class="recap">${releaseTermsSentence(scope.releaseTerms)}</p>${data.releaseCiRunning === true ? html`<p class="meta">${RELEASE_CI_RUNNING_WORDS}</p>` : ""}${scope.releaseTerms.policy.carry ? html`<details><summary>What asks again</summary><ul>${joinHtml(releaseAsksAgainWords(scope.releaseTerms).map(line => html`<li>${line}</li>`), "")}</ul></details>` : ""}`,
+          approval.approved && data.autoRelease != null
+            ? html`<p class="meta scope-seal">${autoReleaseWords(data.autoRelease)} · <span class="seal">signs ${shortDigest(scope.digest)}</span></p>`
+            : approval.approved && data.release?.kind === "carried"
+            ? html`<p class="meta scope-seal">Carried from ${data.release.approver ?? "a person"}'s release approval · <a href="${taskHref(data.release.anchorTask)}">Release ${data.release.version}</a> · <span class="seal">signs ${shortDigest(scope.digest)}</span></p>`
+            : approval.approved
+            ? html`<p class="meta scope-seal">Approved by ${approval.by}${approvalProofWords(data.approvalProof)} · ${whenTime(approval.at)} · <span class="seal">signs ${shortDigest(scope.digest)}</span><span class="so-sr-only"> — approval binds to this exact wording</span></p>`
             : html`<p class="meta"><span class="seal">signs ${shortDigest(scope.digest)}</span> — approval binds to this exact wording</p><p class="meta">Not approved${approval.reason === "changed" ? " — approved once, then rewritten" : ""}</p>`,
           html`</div>`,
         ], "\n");
@@ -1951,6 +2057,10 @@ export function taskBodyParts(data: {
   const revisionInApproval = scope !== null && !approval.approved && data.plan !== "requested" &&
     scope.profileState !== "unresolved" && consentDoor.open && data.dispatch?.action !== "repair-dependency" &&
     (data.revision == null || !("problem" in data.revision));
+  // The approval is the next step when dispatch waits on it, or when the plan was rewritten after a build (the
+  // assignment's one action): then it is shown open under the status, never folded.
+  const approvalLeads = data.dispatch?.action === "approve-scope" ||
+    (data.assignment?.primaryAction?.code === "approve-scope" && data.assignment.primaryAction.target.taskId === task.id);
   const approveForm =
     scope === null || approval.approved || data.plan === "requested"
       ? ""
@@ -1966,6 +2076,7 @@ export function taskBodyParts(data: {
           csrf: data.csrf,
           nonce: data.nonce,
           digest: data.approvalDigest ?? scope.digest,
+          freshSince: data.approvalFresh ?? null,
           returnTo: null,
           scope,
           planDocument: data.plan === "drafted" ? data.planDocument : null,
@@ -1975,10 +2086,12 @@ export function taskBodyParts(data: {
           repairChain: data.repairChain ?? null,
           route: data.route,
           coordinator: data.coordinator ?? null,
+          origin: data.origin ?? null,
           deliverable: data.deliverable ?? "branch",
+          rebuild: data.assignment?.need != null && "key" in data.assignment.need && data.assignment.need.key === "replan" ? data.assignment.need.build : null,
           editHref: data.csrf !== "" && data.planSha != null && data.planDocument !== null ? "#plan-edit" : "#scope",
           notNowHref: "/work",
-          sticky: data.dispatch?.action === "approve-scope",
+          sticky: approvalLeads,
           earlier: { active: data.assignment?.earlierActive ?? 0, running: data.assignment?.earlierRunning ?? 0 },
           edit: data.csrf === "" ? null
             : { action: `${taskHref(task.id)}/scope`, draft: inlineScopeDraft ? data.scopeDraft ?? null : null, problem: inlineScopeDraft ? data.problem : null,
@@ -2144,8 +2257,12 @@ export function taskBodyParts(data: {
   const scopeRow =
     scope === null
       ? prop("scope", "none yet")
+      : approval.approved && data.autoRelease != null
+        ? prop("approved scope", html`<span class="seal">signs ${shortDigest(scope.digest)}</span> · ${autoReleaseWords(data.autoRelease)}`)
+      : approval.approved && data.release?.kind === "carried"
+        ? prop("approved scope", html`<span class="seal">signs ${shortDigest(scope.digest)}</span> · carried from ${data.release.approver ?? "a person"}'s release approval · <a href="${taskHref(data.release.anchorTask)}">Release ${data.release.version}</a>`)
       : approval.approved
-        ? prop("approved scope", html`<span class="seal">signs ${shortDigest(scope.digest)}</span> · ${qualityModeTitle(scope.qualityMode ?? "default")} · approved by ${approval.by} · ${whenTime(approval.at)}`)
+        ? prop("approved scope", html`<span class="seal">signs ${shortDigest(scope.digest)}</span> · ${qualityModeTitle(scope.qualityMode ?? "default")} · approved by ${approval.by}${approvalProofWords(data.approvalProof)} · ${whenTime(approval.at)}`)
         : prop("scope", approval.reason === "changed" ? "rewritten since its approval — needs a new yes" : "not approved");
   const strikesRow = data.strikes > 0 ? prop("strikes", `${data.strikes} failed attempt(s)`) : "";
   const propsCard = html`<div class="card props">${workerRow}${queueRow}${scopeRow}${publishesRow}${economics}${strikesRow}</div>`;
@@ -2159,8 +2276,11 @@ export function taskBodyParts(data: {
     facts.push({ label: "Queue", parts: [`${data.position.position} of ${data.position.total}${data.position.column === null ? " in the shared queue" : ` in ${data.position.column}'s queue`} · `, { label: "Reorder", href: "/board?view=order" }] });
   }
   facts.push(scope === null ? { label: "Scope", parts: ["none yet"] }
-    : approval.approved ? { label: "Approved scope", parts: [{ seal: `signs ${scope.digest.length <= 12 ? scope.digest : `${scope.digest.slice(0, 12)}…`}` }, ` · ${qualityModeTitle(scope.qualityMode ?? "default")} · approved by ${approval.by}`, ...(approval.at === null ? [] : [" · ", { at: approval.at }])] }
+    : approval.approved && data.autoRelease != null ? { label: "Approved scope", parts: [autoReleaseWords(data.autoRelease)] }
+    : approval.approved && data.release?.kind === "carried" ? { label: "Approved scope", parts: [`Carried from ${data.release.approver ?? "a person"}'s release approval · `, { label: `Release ${data.release.version}`, href: taskHref(data.release.anchorTask) }] }
+    : approval.approved ? { label: "Approved scope", parts: [{ seal: `signs ${scope.digest.length <= 12 ? scope.digest : `${scope.digest.slice(0, 12)}…`}` }, ` · ${qualityModeTitle(scope.qualityMode ?? "default")} · approved by ${approval.by}${approvalProofWords(data.approvalProof)}`, ...(approval.at === null ? [] : [" · ", { at: approval.at }])] }
     : { label: "Scope", parts: [approval.reason === "changed" ? "rewritten since its approval — needs a new yes" : "not approved"] });
+  if (data.release?.kind === "anchor") facts.push({ label: "Release", parts: [`Approved for release ${data.release.version}`, ...(data.release.landed.length === 0 ? [] : [` · later commits: ${data.release.landed.map(one => one.sha.slice(0, 7)).join(", ")}`]), ...(data.release.carrying ? [] : [` · later commits ask again`])] });
   facts.push({ label: "Publishes as", parts: [publishesAs] });
   // v102: who asked for it, and what the project's approval rules need.
   if (data.filer != null) facts.push({ label: "Filed by", parts: [data.filer.name === null ? "automation" : data.filer.kind === "coordinator" ? `${data.filer.name}, through a coordinator` : data.filer.name] });
@@ -2355,21 +2475,23 @@ export function taskBodyParts(data: {
       data.repo === null ? "" : ` · ${projectName(data.repo)}`}${
         data.coordinator !== null && data.coordinator !== undefined
           ? html` · filed by <span class="mono">${data.coordinator.label}</span>${data.coordinator.filedAgo === null ? "" : ` ${data.coordinator.filedAgo}`}`
-          : data.filedVia === null || data.filedVia === undefined
-            ? ""
-            : ` · filed via ${data.filedVia}`
+          : data.origin != null
+            ? ` · ${originWords(data.origin)}`
+            : data.filedVia === null || data.filedVia === undefined
+              ? ""
+              : ` · filed via ${data.filedVia}`
       }${data.deliverable === "report" ? html` · <span class="badge">Scout</span>` : ""}</p>`;
   // A pull request that can be merged (or opened) owns the one primary action; the result stays in its section.
   const pullRequestActs = data.csrf !== "" && (data.pullRequest?.view?.canMerge === true || (data.pullRequest?.view == null && data.pullRequest?.offer != null));
   const pullRequestFact = data.pullRequest?.fact != null && data.pullRequest.view?.runId === data.assignment?.receipt?.runId ? data.pullRequest.fact : undefined;
-  const assignmentOptions = data.assignment == null ? null : { workStatus: status, hideAction: (approveForm !== "" && data.dispatch?.action === "approve-scope") || pullRequestActs, problem: status.tone === "problem",
+  const assignmentOptions = data.assignment == null ? null : { workStatus: status, hideAction: (approveForm !== "" && approvalLeads) || pullRequestActs, problem: status.tone === "problem",
     planning: data.dispatch?.code === "running" && data.dispatch.role === "planner", ...(pullRequestFact === undefined ? {} : { pullRequest: pullRequestFact }),
     diagnostics: [...((status as WorkStatus).diagnostics ?? []), ...(status.tone === "problem" && status.detail !== data.assignment.detail ? [status] : [])] };
   // Say it once: a pull request that couldn't open, or merged, is the status
   // card's own row (its reason or merge commit under Details), not a second card.
   const pullRequestCard = data.pullRequest == null || (pullRequestFact !== undefined && (data.pullRequest.view?.state === "failed" || data.pullRequest.view?.state === "merged")) ? "" : pullRequestCardHtml(data.pullRequest, data.csrf);
   // The result takes over from the task status as soon as it is ready.
-  const statusHtml = html`${data.assignment != null && assignmentOptions !== null ? assignmentSummaryHtml(data.assignment, assignmentOptions) : receiptLeads ? completionReceiptCard(data.completion!.receipt!, task.id, "task", status) : taskStatusCard(status, task.id, data.dispatch ?? null, liveRunId, approveForm !== "" && data.dispatch?.action === "approve-scope")}${checkProgressHtml(data.checkProgress ?? null)}`;
+  const statusHtml = html`${data.assignment != null && assignmentOptions !== null ? assignmentSummaryHtml(data.assignment, assignmentOptions) : receiptLeads ? completionReceiptCard(data.completion!.receipt!, task.id, "task", status) : taskStatusCard(status, task.id, data.dispatch ?? null, liveRunId, approveForm !== "" && approvalLeads)}${checkProgressHtml(data.checkProgress ?? null)}`;
   // The exact-run control (v52), directly under the scheduler's answer:
   // the one place a person stops or resumes THIS attempt.
   const controlHtml = taskControlDetailsHtml(data.control ?? { kind: "none" }, task.id, data.csrf, "task", false, false, data.livePause ?? null);
@@ -2404,7 +2526,7 @@ export function taskBodyParts(data: {
     return joinHtml([
       html`<div class="card"><p><strong>External work</strong> <span class="meta">${link} · ${state}</span></p>`,
       reopenable
-        ? postForm(`${taskHref(task.id)}/reopen`, html`<input type="password" name="token" placeholder="your password" aria-label="your password" autocomplete="current-password"><button type="submit">Reopen — the approved scope stands</button>`, { attrs: { class: "row" } })
+        ? postForm(`${taskHref(task.id)}/reopen`, html`${reauth(html`<input type="password" name="token" placeholder="your password" aria-label="your password" autocomplete="current-password">`)}<button type="submit">Reopen — the approved scope stands</button>`, { attrs: { class: "row" } })
         : "",
       html`</div>`,
     ]);
@@ -2422,7 +2544,7 @@ export function taskBodyParts(data: {
         ? html`<div class="card"><p><strong>This task is waiting on you: an agent filed it, and it has no scope.</strong></p><p class="meta">Filed by <span class="mono">${data.coordinator.label}</span> — nothing plans, claims, or runs until you write a scope below and sign it. Your signature runs their request.</p></div>`
         : html`<div class="card task-scope-needed"><p><strong>No approved scope yet</strong></p><p class="meta"><strong>Plan first</strong> drafts it from the repository, or <a href="#scope">write it yourself</a>.</p></div>`
       : "";
-  const approvalHtml = dependencyChoiceNeeded || approveForm === "" ? "" : data.dispatch?.action === "approve-scope"
+  const approvalHtml = dependencyChoiceNeeded || approveForm === "" ? "" : approvalLeads
     ? html`<section class="task-plan-review" aria-label="Approve the plan">${approveForm}</section>`
     : html`<details class="task-secondary-approval"><summary>Updated approval terms</summary>${approveForm}</details>`;
   const optionsHtml = html`${identity}${dispatchStatus}${dependencyChoiceNeeded ? "" : actsBar}`;
@@ -2486,7 +2608,7 @@ export function taskBodyParts(data: {
       "scope",
       // The recipe road rides with the scope it reuses (UI polish
       // 2026-09-13), off the title-to-action path.
-      joinHtml([html`<h2>Scope</h2>`, scopeCard, data.repo !== null && data.scope !== null ? html`<p class="meta"><a href="/recipes/from-task?task=${encodeURIComponent(task.id)}">Reuse this scope as a recipe →</a></p>` : "", agentsCardHtml(task.id, data.route, data.canEditRoute === true), revisionInApproval ? "" : revisionCard, data.completion != null ? "" : repairChainHtml(data.repairChain ?? null), scopeForm], "\n"),
+      joinHtml([html`<h2>Scope</h2>`, scopeCard, releaseCardHtml(task.id, data.release ?? null, data.canStopRelease === true), data.repo !== null && data.scope !== null ? html`<p class="meta"><a href="/recipes/from-task?task=${encodeURIComponent(task.id)}">Reuse this scope as a recipe →</a></p>` : "", agentsCardHtml(task.id, data.route, data.canEditRoute === true), revisionInApproval ? "" : revisionCard, data.completion != null ? "" : repairChainHtml(data.repairChain ?? null), scopeForm], "\n"),
       scopeDraft !== undefined || (data.plan !== "requested" && approveForm === "" && !(scope === null && canPlan)),
     ),
     dependencyChoiceNeeded ? "" : section("waits for", waitsForCard, (data.waitsFor ?? []).length > 0, (data.waitsFor ?? []).length),
@@ -2615,7 +2737,9 @@ export function taskBodyParts(data: {
   review.push({ label: "Publishes as", parts: [publishesAs] });
   const about: BrowserTaskFact[] = [];
   const filedFact = facts.find(one => one.label === "Filed by");
-  about.push(filedFact ?? { label: "Filed by", parts: [filedBy ?? (data.filedVia == null ? "Not recorded" : `via ${data.filedVia}`)] });
+  about.push(filedFact ?? { label: "Filed by", parts: [filedBy ?? (data.origin != null ? "An automation" : data.filedVia == null ? "Not recorded" : `via ${data.filedVia}`)] });
+  // v126: where it came from — the flow (linked only for those who can see it) and the outside event, with its host.
+  if (data.origin != null) about.push({ label: "From", parts: originParts(data.origin) });
   about.push({ label: "Filed", parts: [{ at: rootFiled }] });
   about.push({ label: "Updated", parts: [{ at: task.updatedAt }] });
   for (const label of ["Audit", "This attempt", "Task total"]) {
@@ -2674,6 +2798,21 @@ export function taskBodyParts(data: {
     attempts: [...earlierStopped].sort((a, b) => a.id - b.id).map(run => ({ label: `${runNoun(run)[0]!.toUpperCase()}${runNoun(run).slice(1)} #${run.id}`, href: `/r/${run.id}`,
       text: run.outcome === null ? "Never finished." : run.outcome === "failed" ? failedAttemptSentence(run.reason) : run.reason === null ? null : (words => `${words.charAt(0).toUpperCase()}${words.slice(1)}.`)(reasonWords(run.reason)) })),
   };
+  // ⋯ More actions (docs/plans/one-page-task-and-agent.md): each secondary act once, in one place — Work, Share & reuse,
+  // then Danger last. A ceremony is never cloned here: its item goes to the tab that holds its one form.
+  const sectionIds = new Set(sectionParts.map(one => one.id));
+  const rootOf = data.rootId ?? task.id;
+  const more: BrowserTaskMore[] = [
+    ...(runChecks !== null && data.csrf !== "" ? [{ group: "work" as const, label: "Run checks", kind: "post" as const, action: runChecks.action, fields: { level: runChecks.level, return: runChecks.returnTo } }] : []),
+    ...(sectionIds.has("scope") && data.csrf !== "" ? [{ group: "work" as const, label: approval.approved || finished ? "Plan and agents" : "Edit plan", kind: "goto" as const, tab: "plan" as const, target: "scope" }] : []),
+    ...(sectionIds.has("waits-for") ? [{ group: "work" as const, label: "Dependencies", kind: "goto" as const, tab: "plan" as const, target: "waits-for" }] : []),
+    ...(sectionIds.has("holds") ? [{ group: "work" as const, label: "Holds", kind: "goto" as const, tab: "plan" as const, target: "holds" }] : []),
+    ...(data.csrf !== "" ? [{ group: "work" as const, label: "Task options", kind: "goto" as const, tab: "plan" as const, target: "task-diagnostics" }] : []),
+    { group: "share", label: "Copy link", kind: "copy" },
+    ...(facts.some(one => one.label === "Audit") ? [{ group: "share" as const, label: "Evidence pack", kind: "link" as const, href: `${taskHref(rootOf)}/evidence` }] : []),
+    ...(data.repo !== null && data.scope !== null ? [{ group: "share" as const, label: "Reuse as recipe", kind: "link" as const, href: `/recipes/from-task?task=${encodeURIComponent(task.id)}` }] : []),
+    ...(cancelForm !== "" ? [{ group: "danger" as const, label: "Cancel task", kind: "goto" as const, tab: "plan" as const, target: "cancel-task" }] : []),
+  ];
   const view: BrowserTaskView = {
     kind: "task",
     id: task.id,
@@ -2697,9 +2836,13 @@ export function taskBodyParts(data: {
     activity: liveRun === undefined ? null : data.activity ?? null,
     stop,
     pause,
+    steering: data.csrf !== "" ? data.steerComposer ?? null : null,
+    ...(data.csrf !== "" && (data.steerRecent?.length ?? 0) > 0 ? { steerRecent: data.steerRecent } : {}),
     record,
     earlier,
     approval: fragmentString(approvalHtml),
+    approvalPlacement: approvalLeads ? "lead" : "plan",
+    more,
     confirmStopped: data.csrf !== "" && data.assignment?.primaryAction?.code === "confirm-stopped" && data.assignment.primaryAction.target.runId !== null
       ? { action: `${taskHref(data.assignment.rootId)}/confirm-stopped`, run: data.assignment.primaryAction.target.runId, checked: needsCheck(data.assignment) } : null,
     rebuild,
@@ -2723,10 +2866,15 @@ export function taskBodyParts(data: {
       { id: "task-diagnostics", title: "Task options", html: htmlString(optionsHtml), open: optionsOpen, count: null },
     ],
     cancel: cancelForm === "" ? null : { html: htmlString(cancelForm), open: data.cancelDraft !== undefined },
-    journey: data.guide !== true || task.state === "cancelled" || data.status === undefined ? null : (() => {
+    // Every task's road (the first task's guide used to be the only one): facts only, so the checks step says when
+    // checks didn't run, and a research report has none.
+    journey: task.state === "cancelled" || data.status === undefined ? null : (() => {
       const planning = data.plan === "requested" && approveForm === "";
       const read = data.assignment != null ? assignmentStageOf(data.assignment, { token: data.status.token }, planning) : stageOfCode(data.status.token, { planning });
-      return firstTaskJourney(read, scope !== null && approvalOf(scope).approved, task.state === "done");
+      // The one answer the status card's headline and Project checks row read (task-status.ts approvedCheckOf).
+      const checks: RoadChecks = statusCard?.status.check ?? null;
+      const report = data.deliverable === "report" || data.report != null;
+      return taskRoad(read, scope !== null && approvalOf(scope).approved, task.state === "done", { checks, report });
     })(),
     // "Do this every time…": the starter flow that does this kind of work on its own, one yes away.
     thread,
@@ -2870,4 +3018,26 @@ export function decisionPage(
 export function taskOf(store: Store, decision: Decision): string {
   const run = store.getRun(decision.run);
   return run === null ? "?" : store.externalIdFor(run.taskRef) ?? "?";
+}
+
+/** A release task's own card (release-once.md, "What people see"): the release it's approved for, the later commits
+ * carried under it (on demand), what a later check must run again, the last nightly check of main, and one action to
+ * stop carrying. A carried task says whose approval it was carried from. */
+export function releaseCardHtml(taskId: string, release: ReleaseView | null, canStop: boolean): Html {
+  if (release === null) return html``;
+  if (release.kind === "carried") return html`<div class="card" id="release"><p><strong>Carried from ${release.approver ?? "a person"}'s release approval</strong></p><p class="meta"><a href="${taskHref(release.anchorTask)}">Release ${release.version}</a> · pull request #${release.pr}</p></div>`;
+  const until = new Intl.DateTimeFormat("en-US", { weekday: "short", hour: "numeric", minute: "2-digit" }).format(new Date(release.expiresAt));
+  const landed = release.landed.length === 0 ? html`<p class="meta">No later commits yet.</p>`
+    : html`<ul>${joinHtml(release.landed.map(one => html`<li><a href="${taskHref(one.task)}">${one.sha.slice(0, 7)}</a> · ${one.files.map(file => `${file.path} (+${file.added} −${file.deleted})`).join(", ")}</li>`), "")}</ul>`;
+  return joinHtml([
+    html`<div class="card" id="release">`,
+    html`<p><strong>Approved for release ${release.version}</strong></p>`,
+    html`<p class="meta">${release.carrying ? `Later commits on pull request #${release.pr} that only change tests, docs or the changelog ship without asking again, until it merges or ${until}.` : `Later commits ask for approval again: ${release.why ?? `the release is ${release.state}`}.`}</p>`,
+    html`<details><summary>Later commits (${release.landed.length})</summary>${landed}</details>`,
+    release.obligations.length === 0 ? "" : html`<details><summary>Still to pass (${release.obligations.length})</summary><ul>${joinHtml(release.obligations.map(one => html`<li>${one}</li>`), "")}</ul></details>`,
+    release.nightly === null ? "" : html`<p class="meta">Nightly check of main: ${release.nightly.outcome ?? "running"} at ${release.nightly.sha.slice(0, 7)}${release.openMainFailures > 0 ? ` · ${release.openMainFailures} open failure${release.openMainFailures === 1 ? "" : "s"}` : ""}</p>`,
+    ...release.githubNightly.map(line => html`<p class="meta">${line}</p>`),
+    release.carrying && canStop ? postForm(`${taskHref(taskId)}/stop-carrying`, html`<button type="submit" class="secondary">Stop carrying later commits</button>`, { attrs: { class: "inline" } }) : "",
+    html`</div>`,
+  ], "\n");
 }

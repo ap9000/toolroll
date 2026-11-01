@@ -9,7 +9,7 @@
  */
 import { quietSince, stuckSince, type AgentTurn, type ToolKind } from "./agent-board.js";
 import { activityLine } from "./activity-line.js";
-import type { AgentGroupKey, BrowserAgentRow } from "./browser-workspace.js";
+import type { AgentGroupKey, AgentLaneWindow, BrowserAgentLane, BrowserAgentLanes, BrowserAgentRow, BrowserLaneSegment } from "./browser-workspace.js";
 import { readVerifiedArtifact } from "./evidence.js";
 import { failedAttemptSentence } from "./needs-you.js";
 import { projectName } from "./project.js";
@@ -104,8 +104,11 @@ export function agentFactsSql(): string {
 }
 
 /** One exact build attempt, whatever its age (the opened row), in the admitted projects: a repair opens as its parent. */
+/** One attempt opened by its run: a build (a protocol repair opens as its build), or a planner, scout or reviewer —
+ * the board lists builds, but any running agent can be opened to see it and what it takes (cockpit §4). */
+const OPENED_FACTS = FACTS.replace("WHERE r.role = 'builder'", "WHERE r.role IN ('builder', 'planner', 'scout', 'reviewer')");
 export function agentFactsFor(store: Store, run: number, access: { repos: readonly string[] | null }, account: string): AgentFacts | null {
-  const row = store.handle.prepare(`${FACTS} AND r.id = (SELECT CASE WHEN role = 'repair' AND parent_run IS NOT NULL THEN parent_run ELSE id END FROM run WHERE id = $run) AND ($all = 1 OR tr.repo IN (SELECT value FROM json_each($repos)))`)
+  const row = store.handle.prepare(`${OPENED_FACTS} AND r.id = (SELECT CASE WHEN role = 'repair' AND parent_run IS NOT NULL THEN parent_run ELSE id END FROM run WHERE id = $run) AND ($all = 1 OR tr.repo IN (SELECT value FROM json_each($repos)))`)
     .get({ $account: account, $run: run, $all: access.repos === null ? 1 : 0, $repos: JSON.stringify(access.repos ?? []) });
   return row === undefined ? null : readFacts(row);
 }
@@ -231,4 +234,117 @@ export function agentRunFingerprint(store: Store, run: number): string | null {
       (SELECT count(*) || ':' || coalesce(max(id), 0) FROM task_steer WHERE task_ref = r.task_ref) AS steer
     FROM run r LEFT JOIN agent_now n ON n.run = r.id AND n.attempt_key = r.attempt_key WHERE r.id = ?`).get(run);
   return row === undefined ? null : Object.values(row).map(value => String(value)).join("|");
+}
+
+
+/** The timeline's windows, all rolling (so no server time zone decides what "today" means); two hours by default. */
+export const LANE_WINDOWS: readonly { key: AgentLaneWindow; label: string }[] = [{ key: "30m", label: "30m" }, { key: "2h", label: "2h" }, { key: "24h", label: "24h" }];
+/** Rows the timeline shows: twenty running tasks read as twelve rows and a count, not a wall. */
+export const LANE_ROWS = 12;
+/** Runs are found by their start back this far; a builder that finished in the window is also found by its finish
+ * (agent_board_recent), however long it ran. A planner, review, scout or repair run that lasted over a day and ended
+ * in the window is the one case left out: finding it would need a finish-time index over every role. */
+const LANE_LOOKBACK_MS = 24 * 60 * 60_000;
+const WINDOW_MS: Record<AgentLaneWindow, number> = { "30m": 30 * 60_000, "2h": 2 * 60 * 60_000, "24h": 24 * 60 * 60_000 };
+const LANE_ROLES = "('planner', 'builder', 'repair', 'reviewer', 'scout')";
+
+export function laneWindowOf(value: string | null): AgentLaneWindow {
+  return value === "30m" || value === "24h" ? value : "2h";
+}
+
+export function laneSinceOf(window: AgentLaneWindow, now: Date): Date {
+  return new Date(now.getTime() - WINDOW_MS[window]);
+}
+
+/** The window's tasks, one row each with whether a run is live and when it was last active, newest activity first,
+ * and the total and running counts over all of them. The candidates come from bounded index ranges (run_started;
+ * work_unfinished and agent_board_recent, named so SQLite never walks every run) and drive the join (CROSS JOIN), so no
+ * task's history is walked; the admitted projects only. */
+export function agentLanesSql(): string {
+  return `WITH candidate AS (
+      SELECT DISTINCT id FROM (
+        SELECT id FROM run WHERE started_at >= $lookback
+        UNION ALL SELECT id FROM run INDEXED BY work_unfinished WHERE outcome IS NULL
+        UNION ALL SELECT id FROM run INDEXED BY agent_board_recent WHERE role = 'builder' AND outcome IS NOT NULL AND finished_at >= $since
+      )
+    ), active AS (
+      SELECT r.task_ref, tr.external_id AS task_id, tr.repo, t.title,
+        MAX(r.outcome IS NULL) AS live, MAX(coalesce(r.finished_at, $now)) AS last_at, MAX(r.id) AS last_run, MIN(CASE WHEN r.outcome IS NOT NULL THEN r.id END) AS first_done
+      FROM candidate c CROSS JOIN run r ON r.id = c.id
+      CROSS JOIN task_ref tr ON tr.id = r.task_ref AND tr.backend = 'built-in' AND tr.repo IS NOT NULL
+      CROSS JOIN task t ON t.id = tr.external_id
+      WHERE r.role IN ${LANE_ROLES} AND (r.outcome IS NULL OR r.finished_at >= $since)
+        AND ($all = 1 OR tr.repo IN (SELECT value FROM json_each($repos)))
+      GROUP BY r.task_ref
+    )
+    SELECT a.*, (SELECT count(*) FROM active) AS total, (SELECT coalesce(sum(live), 0) FROM active) AS running
+    FROM active a ORDER BY a.live DESC, a.last_at DESC, a.last_run DESC LIMIT $rows`;
+}
+
+/** Segments one row keeps: its newest runs, so a task retried all day stays one readable row. */
+export const LANE_SEGMENTS = 40;
+/** One chosen task's live runs: all of them, through work_unfinished, so no cap can hide one. */
+export function laneLiveRunsSql(): string {
+  return `SELECT id, role, provider, outcome, started_at, finished_at FROM run INDEXED BY work_unfinished
+    WHERE task_ref = $ref AND outcome IS NULL AND role IN ${LANE_ROLES}`;
+}
+/** Rows one task's lookups read at most, newest first: a task with thousands of runs costs the same as one with a few. */
+export const LANE_TASK_READ = 2000;
+/** One chosen task's runs that finished in the window: a seek on its own runs from its first finished run in the
+ * window (lead_status_task_run), reading at most LANE_TASK_READ of its newest runs; the newest LANE_SEGMENTS. */
+export function laneRunsSql(): string {
+  return `SELECT id, role, provider, outcome, started_at, finished_at FROM (
+      SELECT id, role, provider, outcome, started_at, finished_at FROM run WHERE task_ref = $ref AND id >= $from ORDER BY id DESC LIMIT ${LANE_TASK_READ}
+    ) WHERE outcome IS NOT NULL AND finished_at >= $since AND role IN ${LANE_ROLES}
+    ORDER BY id DESC LIMIT ${LANE_SEGMENTS}`;
+}
+/** A task's newest build, whenever it ran, among its newest 500 runs: the row's state comes from it even when it
+ * finished before the window. A task with more runs than that since its last build reads as planning or idle. */
+export function laneNewestBuildSql(): string {
+  return `SELECT id FROM (SELECT id, role FROM run WHERE task_ref = $ref ORDER BY id DESC LIMIT 500) WHERE role = 'builder' LIMIT 1`;
+}
+
+/** The timeline: one row per task that ran in the window, running ones first, then the most recently active, the
+ * first LANE_ROWS of them; the counts cover every task in the window. A row's state is worked out from its own
+ * newest build as the board would (planning while only a planner runs, otherwise idle). With nothing in the window but something in the last day,
+ * the timeline stays (empty) so its window choice does too; with nothing in a day it is null. */
+export function agentLanesOf(store: Store, now: Date, access: { repos: readonly string[] | null }, account: string, window: AgentLaneWindow, path = "/agents"): BrowserAgentLanes | null {
+  const read = (since: Date, rows: number) => store.handle.prepare(agentLanesSql()).all({
+    $lookback: new Date(since.getTime() - LANE_LOOKBACK_MS).toISOString(), $since: since.toISOString(), $now: now.toISOString(),
+    $all: access.repos === null ? 1 : 0, $repos: JSON.stringify(access.repos ?? []), $rows: rows,
+  });
+  const since = laneSinceOf(window, now);
+  const tasks = read(since, LANE_ROWS);
+  if (tasks.length === 0 && (window === "24h" || read(laneSinceOf("24h", now), 1).length === 0)) return null;
+  const doneOf = store.handle.prepare(laneRunsSql()), liveOf = store.handle.prepare(laneLiveRunsSql()), newestBuildOf = store.handle.prepare(laneNewestBuildSql());
+  const lanes: BrowserAgentLane[] = tasks.map(row => {
+    const ref = Number(row["task_ref"]);
+    const taskId = String(row["task_id"]);
+    const done = row["first_done"] == null ? [] : doneOf.all({ $ref: ref, $from: Number(row["first_done"]), $since: since.toISOString() });
+    const runs = [...liveOf.all({ $ref: ref }), ...done].sort((a, b) => Number(a["id"]) - Number(b["id"]));
+    const segments: BrowserLaneSegment[] = runs.map(run => {
+      const role = String(run["role"]);
+      return {
+        runId: Number(run["id"]), role: role === "repair" ? "builder" : role as BrowserLaneSegment["role"], agent: providerName(String(run["provider"] ?? "claude")),
+        startedAt: String(run["started_at"]), endedAt: str(run, "finished_at"), outcome: str(run, "outcome"),
+        // Every role opens in the agent view (planners, scouts and reviewers too): what it is doing and what it takes.
+        href: `/agents?run=${Number(run["id"])}`,
+      };
+    });
+    // The row's state from the task's own newest build, as the board would place it (never the board's capped list),
+    // even when that build finished before the window.
+    const build = newestBuildOf.get({ $ref: ref });
+    const facts = build === undefined ? null : agentFactsFor(store, Number(build["id"]), access, account);
+    const group: BrowserAgentLane["group"] = facts !== null ? agentGroupOf(facts, facts.outcome === null ? runActivityOf(store, { id: facts.runId, runner: facts.runner, startedAt: facts.startedAt }, now).at : null, now).group
+      : segments.some(one => one.role === "planner" && one.endedAt === null) ? "planning" : "idle";
+    return { taskId, title: String(row["title"]), project: str(row, "repo") === null ? null : projectName(str(row, "repo")!), href: `/t/${encodeURIComponent(taskId)}`, group, segments };
+  });
+  const total = tasks.length === 0 ? 0 : Number(tasks[0]!["total"]);
+  return {
+    since: since.toISOString(), now: now.toISOString(),
+    windows: LANE_WINDOWS.map(one => ({ ...one, href: `${path}?window=${one.key}`, active: one.key === window })),
+    lanes, more: Math.max(0, total - lanes.length),
+    running: tasks.length === 0 ? 0 : Number(tasks[0]!["running"]),
+
+  };
 }

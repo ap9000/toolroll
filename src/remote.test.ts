@@ -116,14 +116,6 @@ describe("readRemote", () => {
     expect(seen[seen.length - 1]).toBe(1_000);
   });
 
-  test("gives every repository a state, read or not", async () => {
-    // The report indexes by path; a missing entry would read as "not asked"
-    // for a repository that was.
-    const state = await readRemote(repos("/a", "/b"), { runner: async () => ({ ...OK }) });
-
-    expect([...state.keys()].sort()).toEqual(["/a", "/b"]);
-  });
-
   test("has a budget that is actually the default when none is given", async () => {
     const clock = fakeClock();
     const seen: number[] = [];

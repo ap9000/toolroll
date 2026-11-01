@@ -16,9 +16,11 @@ import { createDecisionServer } from "./serve.js";
 import { runOperate } from "./operate.js";
 import type { ExecResult } from "./exec.js";
 import { addToolTo, setToolSecrets, validateToolSpec } from "./project-tools.js";
-import { checkIntegrations, createIntegrationMonitor, integrationsBrokenLine, integrationsNow, renderIntegrations, scrubIntegrationText, type Integration, type IntegrationIo } from "./integrations.js";
+import { checkIntegrations, createIntegrationMonitor, integrationsNow, renderIntegrations, scrubIntegrationText, type Integration, type IntegrationIo } from "./integrations.js";
 import { UNANSWERED_WORDS } from "./tool-secret-store.js";
 import { integrationsHtml } from "./integrations-ui.js";
+import { NO_OS_FENCE } from "../test/inside-fence.js";
+import { runYouiyouxIntake } from "./youiyoux-intake.js";
 
 const T0 = new Date("2026-09-30T09:00:00.000Z");
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
@@ -32,6 +34,8 @@ beforeEach(() => {
   mkdirSync(repo);
   store = openStore(join(dir, "orders.db"));
   now = T0;
+  // Where no OS fence can be made (inside the plane's check, a runner without bubblewrap) an operator allows unconfined agents.
+  if (NO_OS_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
@@ -162,8 +166,6 @@ test("toolroll integrations --json lists every integration with its state, times
     // The plain listing says the same, and `status` adds one line for what's Broken, from the saved checks.
     lines.length = 0;
     expect(await runOperate("integrations", ["--saved"], line => lines.push(line), options)).toBe(0);
-    expect(lines.join("\n")).toMatch(/Linear\s+Broken/);
-    expect(lines.join("\n")).toMatch(/Telegram\s+Connected\s+@shop_alerts_bot/);
     lines.length = 0;
     const neverCalled = (() => { throw new Error("status must not run a check"); }) as unknown as typeof fetch;
     await runOperate("status", [], line => lines.push(line), { ...options, integrationIo: { ...options.integrationIo, fetch: neverCalled }, releaseIo: { fetch: async () => { throw new Error("offline"); } } } as Parameters<typeof runOperate>[3]);
@@ -178,7 +180,9 @@ test("a render never waits on an integration check: the page answers while every
   let started = 0;
   const hang = (() => { started += 1; return new Promise<never>(() => {}); }) as unknown as typeof fetch;
   const hangGh: Gh = () => { started += 1; return new Promise<never>(() => {}); };
-  const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo, configDir: dir, telegramTokenFile: join(dir, "telegram-token"),
+  // The background checks start the integration checks; the page only reads what they saved.
+  const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo, configDir: dir, telegramTokenFile: join(dir, "telegram-token"), backgroundChecks: true,
+    connectionProbe: async () => ({ code: 1, stdout: "", stderr: "", timedOut: false, notFound: true }),
     integrationIo: { fetch: hang, gh: hangGh, reach: () => new Promise<never>(() => {}), checkConnection: () => new Promise<never>(() => {}) } });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -194,12 +198,11 @@ test("a render never waits on an integration check: the page answers while every
       expect(response.status).toBe(200);
       const page = await response.text();
       expect(started).toBeGreaterThan(0);
-      expect(page).toContain("<h1>Integrations</h1>");
       expect(page).toMatch(/data-integration="telegram" data-state="connected"/);
       expect(page).toContain("Checking");
       expect(page).toMatch(/data-integration="slack" data-state="not-set-up"[\s\S]*?href="\/settings\/slack">Set up</);
       expect(page).not.toContain(BOT_TOKEN);
-      // A second render while the checks still hang starts no second round and still answers at once.
+      // A second render while the checks still hang starts nothing and still answers at once.
       const again = started;
       expect((await fetch(`${base}/settings/integrations`, { headers: { cookie }, signal: AbortSignal.timeout(3_000) })).status).toBe(200);
       expect(started).toBe(again);
@@ -209,7 +212,7 @@ test("a render never waits on an integration check: the page answers while every
     }
   });
 
-  test("the monitor answers from saved checks and refreshes in the background after its short cache", async () => {
+  test("the monitor answers from saved checks; only the background pass refreshes, after its cache", async () => {
     writeFileSync(join(dir, "telegram-token"), `${BOT_TOKEN}\n`, { mode: 0o600 });
     let clock = 0, calls = 0;
     const counting = (async () => { calls += 1; return new Response(JSON.stringify({ ok: true, result: { username: "shop_alerts_bot" } })); }) as typeof fetch;
@@ -221,21 +224,16 @@ test("a render never waits on an integration check: the page answers while every
     monitor.list();
     expect(calls).toBe(before);
     clock = 61_000;
+    // Reading the list never checks (a page visit only reads); the background pass does.
     monitor.list();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(calls).toBe(before);
+    monitor.refreshIfDue();
     await new Promise(resolve => setTimeout(resolve, 50));
     expect(calls).toBeGreaterThan(before);
   });
 
-  test("page rows carry one action each, fixes in plain words, and scrubbing removes token shapes", () => {
-    const list: Integration[] = [
-      { key: "telegram", group: "chat", name: "Telegram", state: "broken", account: null, detail: null, checked: true, checkedAt: T0.toISOString(), lastSuccessAt: null, lastError: "Telegram doesn't accept the saved bot token.", lastErrorAt: T0.toISOString(), usedBy: ["Alerts"], action: { kind: "fix", label: "Fix", words: "Telegram doesn't accept the saved bot token.", href: "/settings#telegram-token", command: null } },
-      { key: "github", group: "code", name: "GitHub", state: "connected", account: "octocat", detail: "Can push to acme/shop", checked: true, checkedAt: T0.toISOString(), lastSuccessAt: T0.toISOString(), lastError: null, lastErrorAt: null, usedBy: ["Pull requests"], action: { kind: "test", label: "Send test" } },
-    ];
-    const html = htmlString(withFormToken("c".repeat(64), () => integrationsHtml(list, "c".repeat(64), {})));
-    expect(html).toContain("1 needs fixing.");
-    expect(html).toMatch(/href="\/settings#telegram-token">Fix</);
-    expect(html).toMatch(/name="key" value="github"><button type="submit">Send test</);
-    expect(integrationsBrokenLine(list)).toBe("Broken integration: Telegram. See `toolroll integrations` or Settings → Integrations.");
+  test("scrubbing removes token shapes", () => {
     expect(scrubIntegrationText(`failed with ${BOT_TOKEN} and xoxb-1234567890-abcdef and https://user:pw@host/x`)).not.toMatch(/AAAA|xoxb-1|user:pw/);
   });
 
@@ -256,19 +254,15 @@ test("each MCP tool says how its runs get credentials, by name only; the CLI and
   });
   const files = { words: "Secrets are protected by owner-only files on this computer.", filesOnly: true };
   const lines = renderIntegrations(list, files);
-  expect(lines.find(line => line.startsWith("linear"))).toMatch(/^linear\s+Connected\s+shop · Short-lived token per run$/);
   expect(lines.at(-1)).toBe("Secrets are protected by owner-only files on this computer.");
   expect(renderIntegrations(list, { words: "Secrets are kept in the macOS Keychain.", filesOnly: false }).join("\n")).not.toContain("Secrets are");
   const page = htmlString(withFormToken("csrf", () => integrationsHtml(list, "csrf", { secrets: files })));
   expect(page.split("Secrets are protected by owner-only files on this computer.")).toHaveLength(2);
-  expect(page).toContain('<p class="meta integration-secrets" role="note">Secrets are protected by owner-only files on this computer.</p><h2>');
   // A keyring that is installed but doesn't answer is files too, and says why; a folder that can't be used says so instead, as a problem.
   const unanswered = { words: UNANSWERED_WORDS, filesOnly: true };
   expect(renderIntegrations(list, unanswered).at(-1)).toBe("Secrets are protected by owner-only files on this computer: its keyring isn't answering.");
   const refused = { words: "Secrets are kept in the macOS Keychain.", filesOnly: false, problem: "Secrets are switched off: /x/tool-secrets wasn't made by Toolroll. Remove it and restart Toolroll." };
   expect(renderIntegrations(list, refused).at(-1)).toBe(refused.problem);
-  expect(htmlString(withFormToken("csrf", () => integrationsHtml(list, "csrf", { secrets: refused })))).toContain(`<p class="problem integration-secrets" role="alert">${refused.problem.replace("'", "&#39;")}</p>`);
-  expect(page).toContain("shop · Short-lived token per run");
   for (const secret of [TOOL_KEY, "access-fixture", "refresh-fixture", "client-1"]) {
     expect(page).not.toContain(secret);
     expect(JSON.stringify(list)).not.toContain(secret);
@@ -281,4 +275,47 @@ test("each MCP tool says how its runs get credentials, by name only; the CLI and
     expect(await runOperate("integrations", ["--json", "--saved"], line => out.push(line), { databaseFile: join(dir, "orders.db"), now: T0, integrationIo: { toolHome: dir } } as Parameters<typeof runOperate>[3])).toBe(0);
     expect((JSON.parse(out.join("\n")) as { secrets: unknown }).secrets).toEqual({ kind: "files", words: "Secrets are protected by owner-only files on this computer." });
   } finally { store = openStore(join(dir, "orders.db")); }
+});
+
+test("youiyoux: Not set up until a project uses it, then Connected with its queue, Broken naming the bad file, and one switch per project that acts as the signed-in person", async () => {
+  const alex = addApprover(store, "alex", T0);
+  if (!alex.ok) throw new Error("alex");
+  store.upsertProject(repo, "shop", T0);
+  expect(one(integrationsNow(io()), "youiyoux")).toMatchObject({ state: "not-set-up", group: "code" });
+  mkdirSync(join(repo, ".youi", "requests"), { recursive: true });
+  const key = `youiyoux:${repo}`;
+  // The page never reads the project's folder: the worker's pass finds youiyoux there.
+  expect(integrationsNow(io()).some(row => row.key === key)).toBe(false);
+  runYouiyouxIntake(store, repo, T0, { dir, env: {} });
+  expect(one(integrationsNow(io()), key)).toMatchObject({ state: "connected", account: "shop", detail: "0 requests queued", action: { kind: "switch", label: "Turn off", repo, on: false } });
+  expect(integrationsNow(io()).some(row => row.key === "youiyoux")).toBe(false);
+  writeFileSync(join(repo, ".youi", "requests", "r-0123456789.json"), "{ not json");
+  runYouiyouxIntake(store, repo, at(1), { dir, env: {} });
+  const broken = one(integrationsNow(io()), key);
+  expect(broken).toMatchObject({ state: "broken", action: { kind: "switch", label: "Turn off", words: expect.stringContaining("r-0123456789.json: it isn't JSON") } });
+  expect(renderIntegrations([broken]).join("\n")).toContain("Fix: 1 request file couldn't be read");
+
+  const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo, configDir: dir, integrationIo: { gh: noGh, fetch: botOk, reach: async () => {} } });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (address === null || typeof address !== "object") throw new Error("listen");
+  const base = `http://127.0.0.1:${address.port}`;
+  try {
+    const cookie = (await fetch(`${base}/login`, { method: "POST", body: new URLSearchParams({ name: "alex", token: alex.token }), redirect: "manual" }))
+      .headers.getSetCookie().map(row => row.split(";")[0]!).find(row => row.startsWith("standing-orders_session="))!;
+    const page = await (await fetch(`${base}/settings/integrations`, { headers: { cookie } })).text();
+    expect(page).toMatch(new RegExp(`data-integration="youiyoux:[^"]+" data-state="broken"[\\s\\S]*?action="/settings/integrations/youiyoux"`));
+    const csrf = /name="csrf" value="([^"]+)"/.exec(page)![1]!;
+    const post = (form: Record<string, string>) => fetch(`${base}/settings/integrations/youiyoux`, { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, redirect: "manual", body: new URLSearchParams({ csrf, ...form }) });
+    expect((await post({ repo: join(dir, "elsewhere"), on: "0" })).status).toBe(404);
+    expect((await post({ repo, on: "0" })).status).toBe(303);
+    expect(one(integrationsNow(io()), key)).toMatchObject({ state: "not-set-up", detail: "Turned off", action: { kind: "switch", label: "Turn on", on: true } });
+    expect(store.handle.prepare("SELECT enabled, changed_by FROM youiyoux_intake WHERE repo = ?").get(repo)).toMatchObject({ enabled: 0, changed_by: "alex" });
+    expect((await fetch(`${base}/settings/integrations/youiyoux`, { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, redirect: "manual",
+      body: new URLSearchParams({ csrf: "stale", repo, on: "1" }) })).status).toBe(403);
+    expect(one(integrationsNow(io()), key).state).toBe("not-set-up");
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
 });

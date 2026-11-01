@@ -25,11 +25,7 @@ import type {
 } from "./store.js";
 import { phoneText, projectLabel } from "./telegram-status.js";
 import {
-  CHAT_CONTROLS,
-  chatControlHref,
-  chatResultHref,
-  isChatControl,
-  type ChatControl,
+  CHAT_CONTROLS, chatControlHref, isChatControl, type ChatControl,
 } from "./chat-controls.js";
 import { CHAT_TASK_ACTIONS, isChatTaskAction } from "./chat-task-actions.js";
 export function channelRepos(
@@ -714,6 +710,11 @@ export const CHAT_ACTION_PARITY: Record<
     how: "Read by the model during a phone turn over the enrolled ceiling.",
     gap: null,
   },
+  find_tools: {
+    support: "direct",
+    how: "Searches the lead's own other tools by what it wants to do; what it finds is offered to it from its next step in the same reply. Same on every channel: the shared engine runs it.",
+    gap: null,
+  },
   list_repos: {
     support: "direct",
     how: "Read during a turn; projects are r1..rN in enrollment order, as on the console.",
@@ -787,6 +788,21 @@ export const CHAT_ACTION_PARITY: Record<
     support: "direct",
     how: "Card with Confirm/Dismiss through confirmLeadProposal (filed as a lead proposal, via telegram). The confirmed card links Review & start for the filed task while its scope waits; under a signed automatic mode it says the scope is approved and links the task.",
     gap: "Under manual approval the password step happens in the console, reached from the card's button.",
+  },
+  propose_sweep: {
+    support: "direct",
+    how: "A protected shared action (sweep_file): the card lists every item, the shared rules and the success test; confirming files them all and approves each scope.",
+    gap: "Starting a sweep approves work, so it opens the secure review in the console (the password, or Passwordless).",
+  },
+  get_sweep: {
+    support: "direct",
+    how: "Reads a sweep's table (each item's state, verdict and result) from the local database through the shared engine.",
+    gap: null,
+  },
+  propose_sweep_cancel: {
+    support: "direct",
+    how: "An ordinary shared action (sweep_cancel_rest): Confirm cancels every item not yet ready; finished results stay.",
+    gap: null,
   },
   propose_scope: {
     support: "direct",

@@ -31,6 +31,7 @@ import { createServer as createHttpServer } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { flag, groupList, mailSink, option, REAL_MODEL, SCRIPTED, Skip, sleep, world } from "./e2e-kit.mjs";
 
 /** The groups, in the order they're listed, with how many journeys each has (the first-run setup included), how many of
@@ -435,9 +436,13 @@ await journey("triggers", SCRIPTED, "A failing script sends the card back, and I
 const trigger = async (flow, fill) => {
   await page.goto(`${base}/flows/${flow}`); await page.waitForSelector("[data-zone]");
   await page.click("[data-open-triggers]"); await page.waitForSelector("[data-flow-triggers]");
-  await page.locator("[data-flow-triggers] details").first().evaluate(node => { node.open = true; });
+  // The add form's own section: a trigger's row can carry its own (a webhook's signing), above it.
+  await page.locator("[data-flow-triggers] details:has([data-add-trigger])").first().evaluate(node => { node.open = true; });
   const form = page.locator("[data-add-trigger]");
   await fill(form);
+  // A trigger that opens a way in (a webhook, a public form) is a credential act: its form asks for the password.
+  const asks = form.locator('input[type="password"]');
+  if (await asks.count()) await asks.first().fill(alexPassword);
   await form.locator('button[type="submit"]').click();
   await sleep(1200);
 };
@@ -447,6 +452,9 @@ const type = (form, label, value) => form.locator("label", { hasText: label }).l
 await journey("triggers", SCRIPTED, "A button shared as a public form makes a card without signing in", ["A failing script sends the card back, and Insights show where and why"], async () => {
   await trigger(checksFlow, async form => { await pick(form, "What starts cards", "button"); await type(form, "Button name", "Report a bug"); await type(form, "Questions it asks", "What happened?\nWhere?"); });
   const row = page.locator("[data-trigger-row]", { hasText: "Report a bug" });
+  // Sharing opens a way in, so it asks for the password inline before it shares.
+  await row.locator("button", { hasText: "Share as a form" }).click();
+  await row.locator('input[type="password"]').fill(alexPassword);
   await row.locator("button", { hasText: "Share as a form" }).click();
   await page.waitForSelector("[data-trigger-reveal]");
   const path = /\/hooks\/form\/[A-Za-z0-9_-]+/.exec(await page.locator("[data-trigger-reveal]").innerText())?.[0];
@@ -470,10 +478,14 @@ await journey("triggers", SCRIPTED, "A webhook trigger makes a card from a poste
   if (sent.status !== 202) throw new Error(`the delivery answered ${sent.status}: ${await sent.text()}`);
   await until("the webhook's card", async () => (await flowView(checksFlow)).cards.find(one => one.title === "Deploy failed on web-2"));
   const again = await fetch(`${base}${path}`, { method: "POST", headers: { "content-type": "application/json", "x-request-id": "e2e-1" }, body: JSON.stringify({ alert: { title: "Deploy failed on web-2" } }) });
-  if (!(await again.text()).includes("Nothing new")) throw new Error("the same delivery made a second card");
+  // A repeat is said for what it was (v126): received before, never a second card.
+  if (!(await again.text()).includes("Already received")) throw new Error("the same delivery wasn't recognised as a repeat");
+  if ((await flowView(checksFlow)).cards.filter(one => one.title === "Deploy failed on web-2").length !== 1) throw new Error("the same delivery made a second card");
 });
 
 await journey("triggers", SCRIPTED, "A GitHub trigger checks a real repository with gh (Check now)", ["A failing script sends the card back, and Insights show where and why"], async () => {
+  // gh needs its sign-in; inside a release check's fence that folder is (rightly) out of reach.
+  if (spawnSync("gh", ["auth", "status"], { stdio: "ignore", timeout: 15_000 }).status !== 0) throw new Skip("gh can't run signed in here (inside a check's fence its sign-in is out of reach)");
   await trigger(checksFlow, async form => { await pick(form, "What starts cards", "github"); await type(form, "Repository", "ap9000/standing-orders"); await pick(form, "Watch", "checks"); });
   const row = page.locator("[data-trigger-row]", { hasText: "Failed checks on main" });
   await row.locator("button", { hasText: "Check now" }).click();

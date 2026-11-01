@@ -48,6 +48,8 @@ export function tally<T extends Run>(runs: T[]): RunTally<T> {
  * key spend and must never be presented as a separate charge.
  */
 export function runCostWords(run: Pick<Run, "authMode" | "costUsd" | "tokensIn" | "tokensOut">, live = false): string {
+  // An ACP agent signs in its own way and reports no price Toolroll trusts.
+  if (run.authMode === "agent-login") return live ? "the agent's own sign-in · in progress" : "the agent's own sign-in · cost not measured";
   if (run.authMode === "subscription") {
     return run.costUsd === null
       ? live

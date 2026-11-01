@@ -1,10 +1,14 @@
 /** Presentation only: no fields are read, no requests are sent, and no
- * keyboard events are captured. A focused input alone is NOT a keyboard. */
+ * keyboard events are captured. A focused input alone is NOT a keyboard.
+ *
+ * It publishes the visible area (--viewport-height, --viewport-top): a phone's
+ * keyboard shrinks only the visual viewport on iOS (100dvh never moves), so a
+ * full-height app shell sized to it is what keeps the composer above the keys. */
 export const MOBILE_VIEWPORT_SCRIPT = String.raw`
 (function(){
   var root=document.documentElement,viewport=window.visualViewport;
   if(!viewport)return;
-  var phone=window.matchMedia('(max-width: 760px)'),baseline=window.innerHeight,frame=0;
+  var phone=window.matchMedia('(max-width: 900px)'),baseline=window.innerHeight,frame=0;
   function update(){
     frame=0;
     var active=document.activeElement;
@@ -18,8 +22,20 @@ export const MOBILE_VIEWPORT_SCRIPT = String.raw`
     var opening=open&&!root.hasAttribute('data-mobile-keyboard');
     var atEnd=opening&&window.innerHeight+window.scrollY>=root.scrollHeight-120;
     root.toggleAttribute('data-mobile-keyboard',Boolean(open));
+    // A pinch zoom shrinks the visual viewport too, and then a keyboard can't be told from the zoom: zoomed, the shell
+    // is the whole screen (the reader pans to the field), so a keyboard closed while zoomed never leaves it short.
+    if(Math.abs(viewport.scale-1)<0.01){
+      root.style.setProperty('--viewport-height',Math.round(viewport.height)+'px');
+      root.style.setProperty('--viewport-top',Math.max(0,Math.round(viewport.offsetTop))+'px');
+    }else{
+      root.style.removeProperty('--viewport-height');
+      root.style.removeProperty('--viewport-top');
+    }
     root.style.setProperty('--keyboard-inset',open?Math.round(gap)+'px':'0px');
     if(atEnd)window.scrollTo({top:root.scrollHeight,behavior:'instant'});
+    // In the app shell the field sits in its own scrolling panel, which the shell's new size just cut short:
+    // bring it back into that panel's view once the smaller layout is in.
+    if(opening&&active.closest('.so-workspace'))requestAnimationFrame(function(){active.scrollIntoView({block:'nearest',behavior:'instant'});});
   }
   function schedule(){if(!frame)frame=requestAnimationFrame(update);}
   viewport.addEventListener('resize',schedule);

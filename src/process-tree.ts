@@ -86,14 +86,6 @@ function recordExits(child: ChildProcess, rows: ProcessRow[]): void {
 }
 // Only fixed error codes survive; error messages/output can contain private data.
 const observationCodes = new Set(["EAGAIN", "EMFILE", "ENFILE", "ETIMEDOUT", "ENOBUFS", "ENOENT", "EPERM", "EACCES", "EIO", "ESRCH", "MALFORMED_SNAPSHOT", "SUPERVISOR_DIAGNOSTIC", "SQLITE_BUSY", "SQLITE_LOCKED", "SQLITE_READONLY", "SQLITE_IOERR", "SQLITE_CORRUPT", "SQLITE_FULL", "SQLITE_CONSTRAINT"]);
-/** Private supervisor pipe input. Keep only validated identifier diagnostics. */
-export function readProcessObservationFailure(value: unknown): ProcessObservationFailure | null {
-  if (typeof value !== "object" || value === null) return null;
-  const row = value as Record<string, unknown>;
-  const { phase, operation, code, rootPid, at, identityUnknown } = row;
-  if (!["sample", "periodic", "final-exit", "stop", "supervisor"].includes(String(phase)) || !["snapshot", "descendant-write", "exit-write", "signal", "diagnostic-read"].includes(String(operation)) || typeof code !== "string" || (code !== "UNKNOWN" && !observationCodes.has(code)) || (rootPid !== null && (!Number.isSafeInteger(rootPid) || Number(rootPid) <= 0)) || typeof at !== "string" || !Number.isFinite(Date.parse(at)) || new Date(at).toISOString() !== at || typeof identityUnknown !== "boolean") return null;
-  return { phase: phase as ProcessObservationFailure["phase"], operation: operation as ProcessObservationFailure["operation"], code, rootPid: rootPid as number | null, at, identityUnknown };
-}
 function failed(child: ChildProcess, phase: ProcessObservationFailure["phase"], operation: ProcessObservationFailure["operation"], error: unknown, identitiesPreserved = false): void {
   const tracked = observed.get(child);
   if (!tracked) return;

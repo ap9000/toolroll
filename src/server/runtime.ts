@@ -1,3 +1,6 @@
+import { type ProjectIdentities } from "../project-identity.js";
+import type { FreshFacts } from '../scope.js';
+import type { createPersonalQueueRuntime } from '../lead-queue-runtime.js';
 import type { FlowRooms } from '../flow-live.js';
 import type { IntegrationMonitor } from '../integrations.js';
 import type { OidcSettings } from '../oidc.js';
@@ -7,7 +10,8 @@ import type { TaskRooms } from '../task-live.js';
 /** Captured server state and shared guards. Getters preserve live state across requests. */
 import { type IncomingMessage,type ServerResponse } from "node:http";
 import { type AssignmentSnapshot } from '../assignment.js';
-import { type BrowserPhoneCard,type BrowserUpdates } from '../browser-workspace.js';
+import { type BrowserPhoneCard,type BrowserResultView,type BrowserTaskTab,type BrowserUpdates } from '../browser-workspace.js';
+import type { Html } from '../html.js';
 import { CodingWorkspace } from '../coding-workspace.js';
 import { type FormFieldOf,type FormView } from "../contracts/console-api.js";
 import type { DemoLead } from "../demo.js";
@@ -84,8 +88,10 @@ export interface ServerRuntime {
   clock: () => Date;
   taskRooms: TaskRooms;
   identify: (request: IncomingMessage, touch?: boolean, limited?: boolean, refusedToken?: { principal?: Principal; }) => Who | null;
-  liveCeiling: () => { repos: string[]; roots: readonly string[]; };
-  taskScreen: (response: ServerResponse, who: Who, taskId: string, problem: string | null, status: number, scopeDraft?: URLSearchParams, cancelDraft?: string, editPlan?: boolean) => void;
+  liveCeiling: () => { repos: string[]; roots: readonly string[]; canon?: (path: string) => string | null };
+  /** Project identities without reading folders on the console's thread (project-identity.ts). */
+  identities: ProjectIdentities;
+  taskScreen: (response: ServerResponse, who: Who, taskId: string, problem: string | null, status: number, scopeDraft?: URLSearchParams, cancelDraft?: string, editPlan?: boolean, page?: TaskPageExtras) => void;
   runVisible: (run: Run) => boolean;
   runIsLive: (run: Pick<Run, "outcome" | "leaseId" | "taskRef">) => boolean;
   options: ServeOptions;
@@ -107,21 +113,32 @@ export interface ServerRuntime {
   demoLeadHere: () => DemoLead | null;
   teamBrowserReply: (reply: TeamResponse, actor: { name: string; generation: number; }, csrf: string) => TeamResponse;
   team: ReturnType<typeof createTeamRuntime>;
+  /** The personal lead queue (lead-queue-runtime.ts): a message sent while the person's lead is busy waits here. */
+  personalQueue: ReturnType<typeof createPersonalQueueRuntime>;
   teamChatProvider: TeamChatProviderResolver;
   pullRequestTargetOf: (runId: number) => string | null;
   chatEnablement: () => ChatEnablement;
-  startLeadConversation: (who: Who & { via: "cookie"; }, principal: VerifiedApprover, enabled: Extract<ChatEnablement, { ok: true; }>, ceilingUsd: number, follow: boolean, now: Date) => number;
+  startLeadConversation: (who: Who & { via: "cookie"; }, principal: VerifiedApprover, enabled: Extract<ChatEnablement, { ok: true; }>, ceilingUsd: number, follow: boolean, now: Date, scope?: LeadThreadScope, request?: string) => number;
   projectFamilyPeek: (repo: string, now: Date) => ProjectPeek;
   needsYouBadge: (project: string | null) => { count: number; saturated: boolean; };
   liveRefreshSeconds: () => number;
+  /** One work index page for an already-admitted reader, read at most once per workspace revision (console-chrome.ts). */
+  sharedIndexPage: (access: import("../work-summary.js").WorkSummaryAccess, options: import("../work-index.js").WorkIndexOptions) => import("../work-index.js").WorkIndexPage;
   chatKeyFor: (provider: DirectChatProviderId) => { key: string; source: "environment" | "stored"; } | null;
   chatCatalog: () => Promise<import("../converse.js").CatalogModel[] | null>;
+  /** The catalog as last fetched: what a page shows. A page never fetches. */
+  chatCatalogKnown: () => import("../converse.js").CatalogModel[] | null;
   leadRecheckedAt: number;
   checkLocalAgents: (fresh?: boolean) => Promise<void>;
   localSignIn: { at: number; signedIn: boolean; states: Record<"claude" | "codex", ProviderConnection["state"] | "unverified">; } | null;
   agentSignInCommand: () => string;
   connectionCheck: (provider: ProviderId, fresh?: boolean) => Promise<ProviderConnection>;
-  modelCatalog: (key: string | null, refresh?: boolean) => Promise<OpenRouterModels>;
+  /** What the last sign-in check said: what a page shows. A page never checks (docs/plans/get-side-effects.md). */
+  connectionKnown: (provider: ProviderId) => ProviderConnection | null;
+  /** The last answer of each other check a page shows; a page only reads it. */
+  lastChecks: import("./last-checks.js").LastChecks;
+  checkRelease: () => Promise<{ version: string } | { problem: string }>;
+  modelCatalog: ((key: string | null, refresh?: boolean) => Promise<OpenRouterModels>) & { known: (key: string | null) => OpenRouterModels | null };
   modelSeams: CatalogSeams;
   toolsViewOf: (repo: string, codex: unknown[] | null, kit?: string | null, wanted?: string | null) => ToolsView;
   codexServers: (repo: string) => Promise<unknown[] | null>;
@@ -135,6 +152,8 @@ export interface ServerRuntime {
   settingsUpdates: (actor: string, csrf: string) => BrowserUpdates | null;
   phoneSetup: (who: Who) => BrowserPhoneCard | undefined;
   authenticateApprover: (who: Who, token: string, repo?: string | null) => ReturnType<typeof checkApproverPassword>;
+  /** A credential act (passwordless.md's closed list): a password typed now, never a session or a remembered one. */
+  authenticateCredential: (who: Who, token: string, repo?: string | null) => ReturnType<typeof checkApproverPassword>;
   projectOf: (who: Who, request: IncomingMessage) => string | null | undefined;
   bustBadge: () => void;
   revisionDestination: (child: string, back: string) => string;
@@ -148,6 +167,8 @@ export interface ServerRuntime {
   consumeApprovalNonce: (nonce: string, name: string, taskId: string, digest: string) => boolean;
   recordSignIn: (actor: string, action: string, outcome: string, detail?: string | null) => void;
   ssoProvider: { issuer: string; provider: OidcProvider; at: number; } | null;
+  /** The identity provider as last discovered; a page never discovers it. */
+  providerKnown: (issuer: string) => import("../oidc.js").OidcProvider | null;
   providerFor: (issuer: string) => Promise<{ ok: true; provider: OidcProvider; } | { ok: false; said: string; }>;
   connectVisits: Map<string, ConnectVisit>;
   defaultProject: string | null;
@@ -157,11 +178,13 @@ export interface ServerRuntime {
   signInLinks: Map<string, { account: string; expires: number; }>;
   linkKey: (code: string) => string;
   fromThisComputer: (request: IncomingMessage) => boolean;
+  /** Cockpit B2: the request's live password-freshness facts (null off a browser session). */
+  freshFactsOf: (request: IncomingMessage, who: Who | null) => FreshFacts | null;
   passwordAllowed: (name: string) => boolean;
   arrival: (request: IncomingMessage) => { agent: string | null; address: string; };
   cookieSecure: "" | "; Secure";
-  ssoVisits: Map<string, { visit: OidcVisit; provider: OidcProvider; redirect: string; intent: SsoIntent; returnTo: string; expires: number; }>;
-  ssoHandoffs: Map<string, { claims: OidcClaims; issuer: string; intent: SsoIntent; returnTo: string; expires: number; }>;
+  ssoVisits: Map<string, { visit: OidcVisit; provider: OidcProvider; redirect: string; intent: SsoIntent; returnTo: string; expires: number; startedAt: number; session: { hash: string; generation: number } | null; }>;
+  ssoHandoffs: Map<string, { claims: OidcClaims; issuer: string; intent: SsoIntent; returnTo: string; expires: number; checkedAt: number | null; session: { hash: string; generation: number } | null; }>;
   joinSourceOf: (request: IncomingMessage) => string;
   signInBudget: SourceBudget;
   signInActor: (name: string | null) => string;
@@ -187,3 +210,9 @@ export interface ServerRuntime {
   revisionLedgerOf: (taskRef: number) => PlanRevisionLedgerView;
   firstTasks: Map<string, { until: number; found: FirstTaskSuggestion[] | null; reading: boolean; }>;
 }
+
+/** What the task page's GET adds (docs/plans/one-page-task-and-agent.md): the tab its address names, and the Result tab's
+ * selected result (its no-script HTML and its view), whether it is the task's current one. Refusals re-render without. */
+export type TaskPageExtras = { tab?: BrowserTaskTab; result?: { html: Html; selected: NonNullable<BrowserResultView["selected"]>; current: boolean } | null;
+  /** The result runs the attempt picker may offer (the Result tab would show each); absent: every finished result run. */
+  admissible?: ReadonlySet<number> };

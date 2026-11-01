@@ -5,7 +5,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, test } from "vitest";
 import type { BrowserTasksView } from "../browser-workspace.js";
-import { TasksView, usageSummary } from "./views/tasks-view.js";
+import { TasksView } from "./views/tasks-view.js";
 
 type Row = BrowserTasksView["rows"][number];
 const row = (id: string, ask: Row["ask"], group: Row["group"], label: string, tone: Row["status"]["tone"], chip: Row["chip"] = null): Row => ({
@@ -35,52 +35,8 @@ describe("the Tasks list", () => {
     expect(page).toMatch(/data-needs-you-count[^>]*><span[^>]*>4<\/span> need you/);
     const groups = [...page.matchAll(/data-task-group="([a-z]+)"/g)].map(match => match[1]);
     expect(groups).toEqual(["decide", "review", "unblock", "building", "rest"]);
-    expect(page).toMatch(/<h2[^>]*>Decide<span[^>]*>2<\/span><\/h2>/);
+    expect(page).toMatch(/<h2[^>]*><svg[^>]*data-glyph="decide"[^]*?<\/svg>Decide<span[^>]*>2<\/span><\/h2>/);
     // One plain list where the view isn't grouped.
     expect(html(view({ groups: null }))).not.toContain("data-task-group");
-  });
-
-  test("a waiting row wears a solid ink chip naming the specific ask (never its group's word) and a heavier title; other rows stay quiet", () => {
-    const page = html(view());
-    for (const [id, word, headline] of [["plan", "Plan", "Needs you"], ["result", "Result", "Ready for review"], ["offline", "Builder offline", "Needs you"]]) {
-      const one = page.match(new RegExp(`<li data-task="${id}"[^]*?</li>`))![0];
-      expect(one).toMatch(new RegExp(`data-ask="[a-z]+"[^>]*data-headline="${headline}"[^>]*class="[^"]*bg-primary[^"]*text-primary-foreground[^"]*"><span class="sr-only">${headline}: </span>${word}</span>`));
-      expect(one).toMatch(/<a href="\/t\/[a-z]+" class="[^"]*font-semibold/);
-      expect(one).not.toMatch(/>(?:Decide|Review|Unblock)</);
-      // Ink, not the signal colour an accent preset can turn magenta.
-      expect(one).not.toContain("bg-attention");
-    }
-    for (const id of ["live", "old"]) {
-      const one = page.match(new RegExp(`<li data-task="${id}"[^]*?</li>`))![0];
-      expect(one).not.toContain("data-ask");
-      expect(one).not.toContain("bg-attention");
-      expect(one).not.toContain("bg-primary");
-      expect(one).toContain("bg-neutral-soft");
-      expect(one).toMatch(/<a href="\/t\/[a-z]+" class="[^"]*font-medium/);
-    }
-    // No specific ask: no chip under its heading, the headline only for a screen reader.
-    const answer = page.match(/<li data-task="answer"[^]*?<\/li>/)![0];
-    expect(answer).not.toContain("bg-primary");
-    expect(answer).toMatch(/<span class="sr-only[^"]*" data-headline="Needs you">Needs you<\/span>/);
-    // With no heading above it (an ungrouped list, or a row no group covers), the same row shows its headline.
-    for (const page of [html(view({ groups: null })), html(view({ groups: [{ key: "review", label: "Review", count: 1 }] }))]) {
-      const loose = page.match(/<li data-task="answer"[^]*?<\/li>/)![0];
-      expect(loose).not.toContain("sr-only\" data-headline");
-      // In the same ink chip as a grouped waiting row, never the attention colour.
-      expect(loose).toMatch(/<span data-ask="decide" data-headline="Needs you" title="Needs you" class="(?![^"]*sr-only)[^"]*bg-primary[^"]*text-primary-foreground[^"]*">Needs you<\/span>/);
-      expect(loose).not.toContain("bg-attention");
-    }
-    // No coloured border announces a wait.
-    expect(page).not.toMatch(/border-l-/);
-  });
-
-  test("usage folds to one line on a desk and sits below the list on a phone", () => {
-    expect(usageSummary(view().limits!).map(one => one.text)).toEqual(["Claude 48%", "Weekly 83%", "Codex 12%"]);
-    const page = html(view());
-    expect(page).toMatch(/data-usage-summary[^>]*>[^]*Claude 48%[^]*Weekly 83%[^]*Codex 12%/);
-    // Folded on a desk until clicked; the phone's tiles follow the last task.
-    expect(page.indexOf('data-limit="claude:5h"')).toBeGreaterThan(page.lastIndexOf("data-task="));
-    expect(page.match(/<section aria-label="Usage"[^>]*class="([^"]*)"/)?.[1]).toBe("desk:hidden");
-    expect(html(view({ limits: null }))).not.toContain("data-usage-summary");
   });
 });

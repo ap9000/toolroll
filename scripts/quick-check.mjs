@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 export const SECURITY_CRITICAL = [
   "src/agent-fence.ts", "src/tool-broker.ts", "src/provider-home.ts", "src/invoke.ts", "src/project-tools.ts",
   "src/landed-cleanup.ts", "src/worktree.ts", "src/checkout-cleanup.ts", "src/flow-unattended.ts", "src/teardown-git.ts",
+  "src/sandbox-runtime.ts",
 ];
 export const ATTACK_SUITE = ["vitest", "run", "--config", "test/attacks/vitest.config.ts"];
 const TEST = /\.test\.tsx?$/;

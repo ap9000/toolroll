@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
-import { addToolTo, catalogTool, prepareRunTools, projectToolsOf, readToolSecrets, removeToolFrom, secretToolRefusal, setToolSecrets, testTool } from "./project-tools.js";
+import { addToolTo, catalogTool, prepareRunTools, projectToolsOf, readToolSecrets, removeToolFrom, secretToolRefusal, setToolSecrets } from "./project-tools.js";
 import { CONNECT_CALLBACK, ONE_CLICK, connectedSpec, connectionsOf, discoverSignIn, finishConnect, grantOf, oneClickServices, readOnlyGrant, refreshConnections, readsOnly, researchToolsOf, scopeList, startConnect } from "./mcp-connect.js";
 import { scoutProxyEnv } from "./scout.js";
 
@@ -118,38 +118,6 @@ test("a stand-in takes a service's place only at a loopback address", () => {
   expect(oneClickServices({ STANDING_ORDERS_TEST_CONNECT: "stripe|Stripe|http://127.0.0.1:5123/mcp" }).find(one => one.id === "stripe")?.url).toBe("http://127.0.0.1:5123/mcp");
   expect(oneClickServices({ STANDING_ORDERS_TEST_CONNECT: "stripe|Stripe|http://evil.example/mcp" }).find(one => one.id === "stripe")?.url).toBe("https://mcp.stripe.com/");
   expect(oneClickServices({ STANDING_ORDERS_TEST_CONNECT: "stripe|Stripe|https://127.0.0.1/mcp" }).find(one => one.id === "stripe")?.url).toBe("https://mcp.stripe.com/");
-});
-
-test("Mobbin, PostHog and Better Stack connect by signing in; Figma connects through its desktop app, with no key", () => {
-  const listed = connectionsOf(store, repo);
-  expect(listed.filter(one => ["mobbin", "figma", "posthog", "betterstack", "figma-desktop"].includes(one.id))).toEqual([
-    { id: "mobbin", label: "Mobbin", about: "Real app screens and flows to learn from.", state: "open" },
-    { id: "posthog", label: "PostHog", about: "Product analytics, funnels and events.", state: "open" },
-    { id: "betterstack", label: "Better Stack", about: "Uptime checks and incidents.", state: "open" },
-    { id: "figma-desktop", label: "Figma (desktop app)", about: "Open the Figma desktop app, turn on the Dev Mode MCP server in Preferences, then Connect.", state: "open", local: true },
-  ]);
-  expect(oneClickServices({}).map(one => one.id)).not.toContain("figma");
-  expect(connectedSpec("figma")).toBeNull();
-  // The desktop app's Dev Mode server on this computer: streamable HTTP, no key (it uses the app's own sign-in).
-  const { label, ...figma } = catalogTool("figma-desktop")!;
-  expect(label).toBe("Figma (desktop app)");
-  expect(figma).toMatchObject({ transport: "http", url: "http://127.0.0.1:3845/mcp", secrets: [], bearer: null, headerSecrets: {} });
-  expect(addToolTo(store, repo, figma, "Figma (desktop app), connected on this computer", "alex", T0, { home: dir })).toMatchObject({ ok: true, spec: { name: "figma-desktop", url: "http://127.0.0.1:3845/mcp" } });
-  expect(connectionsOf(store, repo).find(one => one.id === "figma-desktop")?.state).toBe("connected");
-});
-
-test("the desktop app's test says plainly when Figma isn't running or its server is off", async () => {
-  const { label: _label, ...figma } = catalogTool("figma-desktop")!;
-  const refused = vi.fn(async () => { throw new TypeError("fetch failed", { cause: Object.assign(new Error("connect ECONNREFUSED 127.0.0.1:3845"), { code: "ECONNREFUSED" }) }); });
-  vi.stubGlobal("fetch", refused);
-  try {
-    expect(await testTool(figma, {})).toEqual({ ok: false, problem: "The Figma desktop app isn't running, or its Dev Mode MCP server is off. Open Figma and turn the server on in Preferences." });
-    expect(refused).toHaveBeenCalledWith("http://127.0.0.1:3845/mcp", expect.anything());
-    // Any other unreachable tool keeps the general words.
-    expect(await testTool({ ...figma, name: "mine", url: "http://127.0.0.1:3846/mcp" }, {})).toEqual({ ok: false, problem: "It could not be reached." });
-  } finally {
-    vi.unstubAllGlobals();
-  }
 });
 
 /**
@@ -354,27 +322,6 @@ test("the gallery's research tools read only: Sentry, Cloudflare, Vercel, Interc
   }
   // A research launch gets exactly the reads, by server.
   expect(researchToolsOf(projectToolsOf(store, repo)).reads).toEqual(Object.fromEntries(Object.entries(services).map(([id, one]) => [id, one.reads])));
-});
-
-test("a build gets the project's Figma desktop app with every action", async () => {
-  const { label: _label, ...figma } = catalogTool("figma-desktop")!;
-  expect(addToolTo(store, repo, figma, "Figma (desktop app), connected on this computer", "alex", T0, { home: dir })).toMatchObject({ ok: true });
-  let recorded = "";
-  const runs = {
-    projectTools: (one: string) => store.projectTools(one), orgPolicy: () => store.orgPolicy(),
-    getRun: () => ({ taskRef: 1 }), refById: () => ({ repo, externalId: "figma-frame" }), getScope: () => null, toolSealFor: () => null,
-    recordRunTools: (_run: number, json: string) => { recorded = json; },
-  } as unknown as Parameters<typeof prepareRunTools>[0];
-  for (const provider of ["claude", "codex"] as const) {
-    const build = await prepareRunTools(runs, 9, provider, { home: dir, now: T0, containment: FENCED });
-    try {
-      expect(JSON.parse(recorded), provider).toMatchObject({ tools: [{ name: "figma-desktop" }], skipped: [] });
-      if (provider === "codex") expect(build.argv.join(" ")).toContain("figma-desktop");
-      expect(build.argv.join(" "), provider).not.toContain("enabled_tools");
-    } finally {
-      build.cleanup();
-    }
-  }
 });
 
 test("a sign-in asks for every scope the server lists, so a server that needs one late in its list (PostHog's user:read) accepts the token", async () => {

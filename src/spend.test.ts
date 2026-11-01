@@ -19,7 +19,6 @@ import { subagentReady } from "./subagent-work.js";
 import { runOperate } from "./operate.js";
 import { setAuthMode } from "./keys.js";
 import { claudeLimitsOf, codexLimitsOf, noteLimits, pushLimitSink } from "./provider-limits.js";
-import { limitsView } from "./limits-ui.js";
 import { runClaudeStreamJsonl } from "./exec.js";
 
 let dir: string, file: string, store: Store, home: string | undefined;
@@ -174,7 +173,7 @@ test("an automatic repair counts as its source's filer; a task's chat as the tas
   store.handle.prepare(`INSERT INTO mate_turn (approver, session, thread, credential_key, state, created_at, deadline_at, reserved_microusd, settled_microusd) VALUES ('sam', ?, ?, 'k', 'answered', ?, ?, 1, 700000)`)
     .run(session, thread, NOW.toISOString(), NOW.toISOString());
   const flow = store.createFlow({ repo: "/repo/desk", name: "Inbox", definitionJson: "{}", by: "alex" }, NOW);
-  const card = store.addFlowCard({ flow, title: "A note", description: null, stage: "sort", by: "alex" }, NOW);
+  const card = store.addFlowCard({ flow, title: "A note", description: null, stage: "sort", by: "alex", byKind: "person" }, NOW);
   store.handle.prepare(`INSERT INTO flow_step_run (card, entry, stage, kind, state, started_at, decision_json) VALUES (?, 1, 'sort', 'sort', 'passed', ?, ?)`)
     .run(card, NOW.toISOString(), JSON.stringify({ model: "jev", cost: 0.0042 }));
   const month = monthOf(NOW);
@@ -247,7 +246,9 @@ test("the Spend page, its CSV and budgets are an instance operator's; the task p
   const sam = addApprover(store, "sam", NOW, { name: "alex", token: alex.token });
   if (!sam.ok) throw new Error("sam");
   expect(store.setAccountProjects("sam", [REPO], "alex", NOW)).toEqual({ ok: true });
-  work({ name: "alex", kind: "person" }, { costUsd: 3 }, new Date());
+  const keyed = work({ name: "alex", kind: "person" }, { costUsd: 3 }, new Date());
+  // Its own evidence proved the key (invoke.ts records the basis); without it the run's money would read as unknown.
+  store.handle.prepare("UPDATE run SET billing_basis = 'evidence' WHERE id = ?").run(keyed.run);
   const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo: REPO });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -259,8 +260,12 @@ test("the Spend page, its CSV and budgets are an instance operator's; the task p
     const cookie = await signIn("alex", alex.token);
     const page = await (await fetch(`${base}/spend`, { headers: { cookie } })).text();
     expect(page).toContain("<h1>Spend</h1>");
-    expect(page).toContain('data-spend-total="3000000"');
-    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)![1]!;
+    expect(page).toContain('data-amount-kind="api" data-microusd="3000000"');
+    // Limits change on Settings → Spend, not on the Spend page.
+    expect(page).not.toContain('action="/spend/budget"');
+    const settings = await (await fetch(`${base}/settings/spend`, { headers: { cookie } })).text();
+    expect(settings).toContain('action="/spend/budget"');
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(settings)![1]!;
     const post = (fields: Record<string, string>) => fetch(`${base}/spend/budget`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, ...fields }), redirect: "manual" });
     expect((await post({ target: `project:${REPO}`, usd: "2", stop: "1", action: "save", password: "wrong" })).headers.get("location")).toContain("problem=");
     expect(store.budgets()).toEqual([]);
@@ -269,13 +274,14 @@ test("the Spend page, its CSV and budgets are an instance operator's; the task p
     expect((await post({ target: "project:/somewhere/else", usd: "2", action: "save", password: alex.token })).headers.get("location")).toContain("problem=");
     const csv = await fetch(`${base}/spend?format=csv`, { headers: { cookie } });
     expect(csv.headers.get("content-type")).toContain("text/csv");
-    expect(await csv.text()).toContain("time_utc,kind,project,person");
+    expect(await csv.text()).toContain("time_utc,source,role,project,person");
     // A queued task under the used-up budget says why it waits.
     store.createTask({ id: "waiting", title: "waiting", filedBy: { name: "alex", kind: "person" } }, new Date());
     store.placeTask(store.refFor("built-in", "waiting").id, REPO);
     expect(await (await fetch(`${base}/t/waiting`, { headers: { cookie } })).text()).toContain("monthly budget is used up");
     const samCookie = await signIn("sam", sam.token);
     expect((await fetch(`${base}/spend`, { headers: { cookie: samCookie }, redirect: "manual" })).status).toBe(403);
+    expect((await fetch(`${base}/settings/spend`, { headers: { cookie: samCookie }, redirect: "manual" })).status).toBe(403);
     // Tasks shows the plan's windows and the budgets to whoever runs the installation, and to no one else.
     store.recordProviderLimits({ provider: "claude", plan: null, windows: [{ window: "five_hour", usedPercent: 48, windowMinutes: 300, resetsAt: new Date(Date.now() + 3_600_000).toISOString(), reached: false }] }, new Date());
     const tasks = await (await fetch(`${base}/work`, { headers: { cookie } })).text();
@@ -305,7 +311,7 @@ test("the command line shows the month and sets budgets for an instance operator
   }
 });
 
-test("a plan's windows: Claude says them each turn, Codex when asked; the latest reading is kept and shown as tiles", async () => {
+test("a plan's windows: Claude says them each turn, Codex when asked; the latest reading is kept", async () => {
   // As Claude Code 2.1 writes it (captured 2026-09-28).
   const event = { type: "rate_limit_event", rate_limit_info: { status: "allowed", resetsAt: 1790655000, rateLimitType: "five_hour", overageStatus: "rejected", isUsingOverage: false,
     unifiedWindows: { five_hour: { utilization: 0.48, resetsAt: 1790655000 }, seven_day: { utilization: 0.4, resetsAt: 1791010800 } } } };
@@ -330,29 +336,14 @@ test("a plan's windows: Claude says them each turn, Codex when asked; the latest
   store.recordProviderLimits({ provider: "claude", plan: null, windows: [{ window: "five_hour", usedPercent: 50, windowMinutes: 300, resetsAt: "2026-09-29T02:50:00.000Z", reached: false }] }, read);
   expect(store.providerLimits().filter(one => one.provider === "claude").map(one => one.window)).toEqual(["five_hour"]);
 
-  store.setBudget({ scope: "project", key: REPO, limitMicrousd: 10_000_000, hardStop: true }, "alex", NOW);
-  work({ name: "alex", kind: "person" }, { costUsd: 9 });
-  const at = new Date("2026-09-28T23:40:00.000Z");
-  const view = limitsView(store.providerLimits(), store.monthSpend(NOW).budgets, { project: repo => repo.split("/").pop()!, subagent: String }, at)!;
-  expect(view.tiles.map(tile => [tile.name, tile.window, tile.value, tile.unit, tile.tone, tile.detail])).toEqual([
-    ["Claude", "5-hour", "50", "%", "neutral", "Resets in 3 h 10 min · read 40m ago"],
-    ["Codex Pro", "Weekly", "85", "%", "warning", expect.stringMatching(/^Resets \w{3} \d+ (AM|PM) · read 40m ago$/)],
-    ["shop", "Budget", "$9.00", "of $10", "warning", "Stops API work at 100%"],
-  ]);
-  // A window that has turned over since the reading starts again.
-  const later = limitsView(store.providerLimits(), [], { project: String, subagent: String }, new Date("2026-09-29T03:00:00.000Z"))!;
-  expect(later.tiles[0]).toMatchObject({ value: "0", detail: "New window" });
-  expect(limitsView([], [], { project: String, subagent: String }, NOW)).toBeNull();
-
   // Odd lines: a window named like an object's own property still reads; a bare "rejected" names one window and
-  // leaves the others; Codex's reached reason marks its fullest window; an internal plan name isn't shown.
+  // leaves the others; Codex's reached reason marks its fullest window.
   expect(claudeLimitsOf({ type: "rate_limit_event", rate_limit_info: { unifiedWindows: { constructor: { utilization: 0.1 } } } })?.windows[0]).toMatchObject({ window: "constructor", windowMinutes: null });
   store.recordProviderLimits(claudeLimitsOf({ type: "rate_limit_event", rate_limit_info: { unifiedWindows: { five_hour: { utilization: 0.2 }, seven_day: { utilization: 0.3 } } } })!, read);
   store.recordProviderLimits(claudeLimitsOf({ type: "rate_limit_event", rate_limit_info: { status: "rejected", rateLimitType: "five_hour" } })!, read);
   expect(store.providerLimits().filter(one => one.provider === "claude").map(one => `${one.window}:${one.usedPercent}`)).toEqual(["five_hour:100", "seven_day:30"]);
   const codex = codexLimitsOf({ rateLimits: { primary: { usedPercent: 99, windowDurationMins: 300 }, secondary: { usedPercent: 40, windowDurationMins: 10080 }, rateLimitReachedType: "rate_limit_reached", planType: "self_serve_business_usage_based" } })!;
   expect(codex.windows.map(one => one.reached)).toEqual([true, false]);
-  expect(limitsView(codex.windows.map(one => ({ ...one, provider: "codex", plan: codex.plan, observedAt: NOW.toISOString() })), [], { project: String, subagent: String }, NOW)!.tiles[0]!.name).toBe("Codex");
   // A command that ends inside a longer one leaves the longer one's sink in place.
   const seen: string[] = [];
   const outer = pushLimitSink(reading => seen.push(`outer:${reading.provider}`));

@@ -7,11 +7,14 @@
  * Approving a plan or merging needs the password, which never goes in chat, so they act in chat only where the owner
  * turned approving from chat on (their lasting setting, chat-approval.ts, or a signed mode's chatApprove term), for
  * their own chat; otherwise, and for a plan that widens permissions, exceeds the limit or touches protected paths, the
- * card keeps its link.
+ * card keeps its link. The change requests one youiyoux pass filed come as one card that shows every word of each
+ * task's terms, with Approve all and each one's own Approve (the requests card, below).
  *
  * The same in every chat app: Telegram's bridge and the shared engine Slack, Discord and Teams run on (chat-delivery.ts)
  * offer, mint and answer these through the same tokens (the `channel` column). Every act runs through the door the
  * console uses. */
+import { NIGHTLY_CHECK_ONLY, RELEASE_MERGES_ONLY, nightlyTaskRef, releaseTaskRef } from "./store.js";
+import { isAcpProfile } from "./acp-agents.js";
 import { DECIDE_ACTS, readDecideActionRow, type DecideActionRow } from "./contracts/chat-callback-rows.js";
 import type { ContractResult } from "./contracts/contract.js";
 import { createHash, randomBytes } from "node:crypto";
@@ -19,7 +22,7 @@ import { acceptAndCompleteAsOperator, assignmentOf, owedAcceptance } from "./ass
 import { chatControlHref, chatResultHref } from "./chat-controls.js";
 import { applyChatTaskAction, chatTaskStamp } from "./chat-task-actions.js";
 import { chatTitle } from "./chat-voice.js";
-import { readVerifiedArtifact } from "./evidence.js";
+import { readVerifiedArtifact, scanForSecrets } from "./evidence.js";
 import { effectiveChatApproval, type ChatApprovalLimits } from "./chat-approval.js";
 import { chatApproveChatsOf, chatNames, modeTermsFromJson, type ModeTerms } from "./modes.js";
 import { parseExecutionPlanDocument } from "./plan.js";
@@ -28,8 +31,18 @@ import { pullRequestFollowOf } from "./pull-request-flow.js";
 import { requestResultChanges } from "./result-actions.js";
 import { revisionSourceOf } from "./result-review.js";
 import type { Scope } from "./scope.js";
+import { APPROVAL_PROOF, approvalOf, approvalProofDetail, deployGateScope, quarantinedAuthor } from "./scope.js";
+import { releaseCardOf, type ReleaseCard } from "./release-card.js";
 import type { Store } from "./store.js";
-import { phoneText } from "./telegram-status.js";
+import { releaseCiHoldOf, releaseCiHoldWords } from "./release-ci-hold.js";
+import { phoneText, projectLabel } from "./telegram-status.js";
+import { permissionPlainWords, scopeTermsText, shownTermsDigest } from "./chat-terms.js";
+import { YOUIYOUX_CARD_KIND, YOUIYOUX_FILED_VIA, YOUIYOUX_HOME_PATH } from "./contracts/youiyoux-request.js";
+import { FILED_PER_PASS, requestKindWord, requestPassOf } from "./youiyoux-intake.js";
+import { discordPlain } from "./reply-shape.js";
+import { PLATFORM_LIMITS } from "./text-limits.js";
+
+export { permissionPlainWords };
 
 /** The tokens live in chat_decide_action and the open "What should change?" in chat_decide_prompt (store.ts). */
 export type DecideAct = (typeof DECIDE_ACTS)[number];
@@ -37,7 +50,9 @@ export type DecideTarget =
   | { kind: "result"; taskId: string; run: number }
   | { kind: "failed"; taskId: string }
   | { kind: "plan"; taskId: string }
-  | { kind: "merge"; taskId: string; run: number };
+  | { kind: "merge"; taskId: string; run: number }
+  /** The tasks one youiyoux pass filed (youiyoux-intake.ts), named by any one of them. */
+  | { kind: "requests"; taskId: string };
 export type DecideChannel = "telegram" | "slack" | "discord" | "teams";
 /** Who is tapping, where: one paired person's binding on one channel, and the chat the card is in. */
 export type DecideSeat = { channel: DecideChannel; binding: number; chat: string; approver: string; generation: number };
@@ -60,13 +75,16 @@ export const DECIDE_LABELS = {
 } as const;
 
 const OFFER_TTL_MS = 7 * 86_400_000;
+const CHANNEL_NAMES: Record<DecideChannel, string> = { telegram: "Telegram", slack: "Slack", discord: "Discord", teams: "Teams" };
 const CONFIRM_TTL_MS = 10 * 60_000;
 const PROMPT_TTL_MS = 30 * 60_000;
 export const WHAT_SHOULD_CHANGE = "What should change?";
 
-type ActSpec = { act: DecideAct; run: number | null; digest: string };
-/** What a card offers: an optional replacement text (the plan card) and rows of acts and links. */
-export type DecideOffer = { text: string | null; rows: Array<Array<ActSpec | DecideLink>> };
+/** `taskId`: the task the button acts on, when it isn't the card's own (a youiyoux card's one-task Approve). */
+type ActSpec = { act: DecideAct; run: number | null; digest: string; label?: string; taskId?: string };
+/** What a card offers: an optional replacement text (the plan card) and rows of acts and links; a release card also
+ * sends its full terms as a file with it (`file`), where the chat app can. */
+export type DecideOffer = { text: string | null; rows: Array<Array<ActSpec | DecideLink>>; file?: { name: string; text: string } };
 
 const sha = (text: string): string => createHash("sha256").update(text).digest("hex");
 const isAct = (one: ActSpec | DecideLink): one is ActSpec => "act" in one;
@@ -92,35 +110,28 @@ export function chatApproveMode(store: Store, repo: string | null, approver: str
   return { ok: true, digest: mode.digest, limits: { fullAccess: terms.permissionDefault === "escalated", capMicrousd: terms.perAttemptBudgetMicrousd }, source: "mode" };
 }
 
-/** What a plan's yes allows an agent to do, in a few plain words (the approval sheet's "You're allowing"). */
-export function permissionPlainWords(profile: Scope["profile"] | null | undefined): string | null {
-  if (profile === null || profile === undefined) return null;
-  const full = "full access, nothing asks first";
-  if (profile.provider === "claude") {
-    return profile.permissionArgv === "bypassPermissions" ? full
-      : profile.permissionArgv === "auto" ? "file edits and routine commands; anything risky stops"
-      : "file edits only; commands are refused";
-  }
-  if (profile.provider === "gemini") return profile.approvalArgv === "yolo" ? full : "file edits only; other tools are refused";
-  return profile.sandboxMode === "danger-full-access" ? full : "file edits and commands inside the project only";
-}
-
 function fullAccess(profile: Scope["profile"] | null | undefined): boolean {
   if (profile === null || profile === undefined) return false;
   return profile.provider === "claude" ? profile.permissionArgv === "bypassPermissions"
-    : profile.provider === "gemini" ? profile.approvalArgv === "yolo" : profile.sandboxMode === "danger-full-access";
+    : profile.provider === "gemini" ? profile.approvalArgv === "yolo" : isAcpProfile(profile) ? true : profile.sandboxMode === "danger-full-access";
 }
 
 const money = (micro: number): string => `$${(micro / 1_000_000).toFixed(2)}`;
 
 /** A plan this person's chat may approve now: the term, the plan's exact bytes, and none of the reasons it must open
  * Toolroll instead. `digest` binds the scope and the plan document the card shows. */
-export function planInChat(store: Store, taskId: string, approver: string, now: Date, channel: DecideChannel, root?: string):
+export function planInChat(store: Store, taskId: string, approver: string, now: Date, channel: DecideChannel, root?: string,
+  /** A youiyoux card asking (requestsOffer): its own words are checked there, every one shown. */
+  from?: "requests"):
   { ok: true; modeDigest: string; source: "setting" | "mode"; digest: string; scope: Scope } | { ok: false; why: string } {
+  // A change request's terms are outside text: they approve in chat only on its own card, which shows every word.
+  if (from !== "requests" && store.filedViaOf(taskId) === YOUIYOUX_FILED_VIA) return { ok: false, why: OUTSIDE_TERMS };
   const ref = store.lookupRef(taskId);
   const scope = store.getScope(taskId);
   if (ref === null || ref.repo === null || scope === null) return { ok: false, why: "This plan isn't available now." };
-  if (scope.approvedDigest != null && scope.approvedDigest === scope.digest) return { ok: false, why: "This plan is already approved." };
+  // Approved only as dispatch reads it (approval policy): an old seal a lead token made, or one whose authority has
+  // ended, is no approval, so the person can approve it here.
+  if (approvalOf(scope).approved && store.modeApprovalLive(ref.id, now)) return { ok: false, why: "This plan is already approved." };
   if (ref.plan === "requested") return { ok: false, why: "The plan is still being written." };
   const mode = chatApproveMode(store, ref.repo, approver, now, channel);
   if (!mode.ok) return mode;
@@ -128,7 +139,7 @@ export function planInChat(store: Store, taskId: string, approver: string, now: 
   const family = store.taskFamilyOf(taskId, [ref.repo], false);
   if (family === null || family.problem !== null || family.current.id !== taskId) return { ok: false, why: "A newer version of this task is current." };
   // What the mode's seal refuses anyway, said first: model- or coordinator-written terms, an unreadable route.
-  if (ref.coordinatorCid !== null || (scope.proposedVia ?? null) !== null) return { ok: false, why: "This plan was written for you, so you approve it in Toolroll." };
+  if (ref.coordinatorCid !== null || quarantinedAuthor(scope.proposedVia ?? null)) return { ok: false, why: "This plan was written for you, so you approve it in Toolroll." };
   if (scope.profileState === "unresolved" || scope.routeEra == null || (scope.termsProblem ?? null) !== null) return { ok: false, why: "This plan can't say exactly which agents run, so you approve it in Toolroll." };
   const yours = mode.source === "setting" ? "your chat approval setting" : "your mode";
   if (fullAccess(scope.profile) && !mode.limits.fullAccess) return { ok: false, why: `This plan asks for more access than ${yours} allows.` };
@@ -157,6 +168,10 @@ export function planInChat(store: Store, taskId: string, approver: string, now: 
 export function mergeInChat(store: Store, taskId: string, run: number, approver: string, now: Date, channel: DecideChannel):
   { ok: true; modeDigest: string; source: "setting" | "mode"; head: string } | { ok: false; why: string } {
   const ref = store.lookupRef(taskId);
+  // The nightly check of main never merges (release-once.md, part 3).
+  if (ref !== null && nightlyTaskRef(store, ref.id)) return { ok: false, why: NIGHTLY_CHECK_ONLY };
+  // A release's result merges only through its coordinator.
+  if (ref !== null && releaseTaskRef(store, ref.id)) return { ok: false, why: RELEASE_MERGES_ONLY };
   const publication = store.publicationForRun(run);
   const follow = publication === null ? null : pullRequestFollowOf(store, publication.id);
   if (ref === null || ref.repo === null || publication === null || follow === null || publication.prNumber === null) return { ok: false, why: "This result has no pull request to merge." };
@@ -165,6 +180,176 @@ export function mergeInChat(store: Store, taskId: string, run: number, approver:
   const mode = chatApproveMode(store, ref.repo, approver, now, channel);
   if (!mode.ok) return mode;
   return { ok: true, modeDigest: mode.digest, source: mode.source, head: publication.headSha };
+}
+
+// ---- a youiyoux pass's card -----------------------------------------------------------------
+
+/**
+ * What one youiyoux pass filed (youiyoux-intake.ts), as one card: every task still waiting on this person, Approve all,
+ * and each one's own Approve and Open. Its terms are outside text (anyone who can write the project's folder wrote
+ * them), so a task is approved here only when this card shows every word of its terms (chat-terms.ts), the whole card
+ * arrives as one message every chat app shows as written, and every plan rule holds (planInChat). Its button carries
+ * each task with the digest of the words shown; the seal recomputes that digest from the live scope (store.ts). A task
+ * that can't be shown whole, or may not be approved here, is named with its link to Toolroll instead.
+ */
+const REQUESTS_DIGEST = "youiyoux:";
+const OPEN_IN_TOOLROLL = "Open in Toolroll";
+const OUTSIDE_TERMS = "A youiyoux request is approved from its own youiyoux card, which shows every word, or in Toolroll.";
+const TOO_LONG = "its full terms don't fit in one chat message";
+/** Room left under each app's limit for the question a tap adds ("Approve 10 tasks?") and the names it leaves out. */
+const ROOM = 400;
+
+type Listed = { taskId: string; digest: string };
+const listedDigest = (list: readonly Listed[]): string => `${REQUESTS_DIGEST}${list.map(one => `${one.taskId}=${one.digest}`).join(",")}`;
+const LISTABLE_ID = /^[A-Za-z0-9._-]{1,64}$/;
+
+function listedOf(digest: string): Listed[] | null {
+  if (!digest.startsWith(REQUESTS_DIGEST)) return null;
+  const list: Listed[] = [];
+  for (const one of digest.slice(REQUESTS_DIGEST.length).split(",")) {
+    const match = /^([A-Za-z0-9._-]{1,64})=([0-9a-f]{64})$/.exec(one);
+    if (match === null) return null;
+    list.push({ taskId: match[1]!, digest: match[2]! });
+  }
+  return list.length === 0 || list.length > FILED_PER_PASS ? null : list;
+}
+
+/** Whether a card's words arrive as one message that shows each of them as written: within Telegram's part, Slack's and
+ * (after its escapes) Discord's limits, with room for the question a tap adds. Teams draws card text as Markdown, where
+ * a link's label hides its address, and Slack turns `:name:` into an emoji: there such words never approve. */
+export function shownWhole(text: string, channel: DecideChannel): boolean {
+  switch (channel) {
+    case "telegram": return text.length + ROOM <= 3_900;
+    case "slack": return text.length + ROOM <= PLATFORM_LIMITS.slack && !/:[a-z0-9_+'-]+:/i.test(text);
+    case "discord": return discordPlain(text).length + ROOM <= PLATFORM_LIMITS.discord;
+    case "teams": return false;
+  }
+}
+
+/** Words a chat message never carries (chat-display.ts hides them elsewhere): a key, or an absolute folder on this
+ * computer (a home folder, a drive). A project's own relative paths and a page's route are fine. */
+function privateWords(text: string): boolean {
+  return scanForSecrets(text).length > 0 || /\b\d{5,}:[A-Za-z0-9_-]{20,}\b/.test(text) || /(?:^|[\s"'`(<[=:,])(?:\/Users\/|\/home\/|\/root\/|~\/)|(?:[A-Za-z]:[\\/]|\\\\)/.test(text);
+}
+
+/** Still waiting on a person's yes: not finished, and no approval on its current terms. */
+function waitsForApproval(store: Store, taskId: string): boolean {
+  const state = store.getTask(taskId)?.state;
+  const scope = store.getScope(taskId);
+  return state !== undefined && state !== "done" && state !== "cancelled" && scope !== null && !(scope.approvedDigest != null && scope.approvedDigest === scope.digest);
+}
+
+type CardItem = { n: number; taskId: string; name: string; listed: Listed | null; why: string | null };
+
+/** The card for the pass `taskId` was filed in, as it stands for this person now; null when nothing waits on them. */
+function requestsOffer(store: Store, taskId: string, who: VerifiedApprover, now: Date, channel: DecideChannel, root?: string, said?: string): DecideOffer | null {
+  const waiting = requestPassOf(store, taskId).filter(id => {
+    const ref = store.lookupRef(id);
+    return ref !== null && ref.repo !== null && who.repos.includes(ref.repo) && store.filedViaOf(id) === YOUIYOUX_FILED_VIA && waitsForApproval(store, id);
+  });
+  if (waiting.length === 0) return null;
+  const repo = store.lookupRef(waiting[0]!)!.repo!;
+  const what = requestKindWord(store, waiting);
+  const head = `${waiting.length === 1 ? `A youiyoux ${what} waits` : `${waiting.length} youiyoux ${what}s wait`} for you · ${projectLabel(repo)}`;
+  const mode = chatApproveMode(store, repo, who.name, now, channel);
+  const items: CardItem[] = waiting.map((id, index) => ({ n: index + 1, taskId: id, name: title(store, id), listed: null, why: null }));
+  const block = (item: CardItem): string => `${item.n}. ${item.name}\n${scopeTermsText(store.getScope(item.taskId)!)}`;
+  const compose = (): string => {
+    const shown = items.filter(one => one.listed !== null);
+    const open = items.filter(one => one.listed === null);
+    return [...(said === undefined ? [] : [said]), head,
+      ...shown.map(block),
+      ...(open.length === 0 ? [] : [[...(shown.length === 0 ? [] : ["Open in Toolroll to approve:"]), ...open.map(one => `${one.n}. ${one.name}${one.why === null ? "" : `: ${one.why}`}`)].join("\n")])].join("\n\n");
+  };
+  if (!mode.ok) {
+    // Nothing approves here: each task's title, files and goal in short, and its link.
+    const summary = items.map(one => {
+      const scope = store.getScope(one.taskId)!;
+      // The request's own goal, without the line the intake puts first (which request, on which route).
+      const goal = scope.goal.startsWith("From youiyoux request ") && scope.goal.includes("\n\n") ? scope.goal.slice(scope.goal.indexOf("\n\n") + 2) : scope.goal;
+      return [`${one.n}. ${one.name}`, `Files: ${scope.touches.length === 0 ? "any file (no file list)" : phoneText(scope.touches.join(", "), 160)}`, phoneText(goal, 200)].join("\n");
+    });
+    return { text: [head, `${mode.why} Open each to approve it in Toolroll.`, ...summary].join("\n\n"),
+      rows: items.map(one => [{ label: waiting.length === 1 ? OPEN_IN_TOOLROLL : `Open ${one.n}`, path: chatControlHref("approval", one.taskId) }]) };
+  }
+  for (const item of items) {
+    const plan = planInChat(store, item.taskId, who.name, now, channel, root, "requests");
+    if (!plan.ok) { item.why = plan.why; continue; }
+    if (passwordOnlySeal(plan.scope) || deployGateScope(plan.scope) || !LISTABLE_ID.test(item.taskId)) { item.why = "it needs your password in Toolroll"; continue; }
+    // Shown whole means shown raw: words chat text otherwise hides (a key, a folder on this computer) stay in Toolroll.
+    if (privateWords(scopeTermsText(plan.scope))) { item.why = "its terms name a key or a folder on this computer"; continue; }
+    // In order, each whole or not at all: one that doesn't fit beside the ones before it is named instead.
+    item.listed = { taskId: item.taskId, digest: shownTermsDigest(plan.scope) };
+    if (!shownWhole(compose(), channel)) { item.listed = null; item.why = TOO_LONG; }
+  }
+  const shown = items.filter(one => one.listed !== null);
+  const rows: Array<Array<ActSpec | DecideLink>> = [];
+  if (shown.length > 0) rows.push([{ act: "approve", run: null, digest: listedDigest(shown.map(one => one.listed!)), taskId: shown[0]!.taskId,
+    label: shown.length > 1 ? `Approve all (${shown.length})` : items.length === 1 ? DECIDE_LABELS.approve : `Approve ${shown[0]!.n}` }]);
+  for (const item of items) {
+    rows.push([...(item.listed !== null && shown.length > 1 ? [{ act: "approve" as const, run: null, digest: listedDigest([item.listed]), taskId: item.taskId, label: `Approve ${item.n}` }] : []),
+      { label: waiting.length === 1 ? OPEN_IN_TOOLROLL : `Open ${item.n}`, path: chatControlHref("approval", item.taskId) }]);
+  }
+  return { text: compose(), rows };
+}
+
+type RequestsNow = { ok: true; ready: Array<{ taskId: string; name: string; digest: string; plan: { modeDigest: string; source: "setting" | "mode" } }>; skipped: Array<{ name: string; why: string }> }
+  | { ok: false; why: string };
+
+/** The tasks a youiyoux card's button names, as they stand now: each still waiting, within every rule, on exactly the
+ * words the card showed (ready), or named with why not (skipped). */
+function requestsNow(store: Store, tokenTask: string, digest: string, who: VerifiedApprover, now: Date, channel: DecideChannel, root?: string): RequestsNow {
+  const listed = listedOf(digest);
+  const repo = store.lookupRef(tokenTask)?.repo ?? null;
+  if (listed === null || repo === null) return { ok: false, why: "That button can't be read." };
+  const mode = chatApproveMode(store, repo, who.name, now, channel);
+  if (!mode.ok) return mode;
+  const ready: Extract<RequestsNow, { ok: true }>["ready"] = [];
+  const skipped: Extract<RequestsNow, { ok: true }>["skipped"] = [];
+  for (const one of listed) {
+    const ref = store.lookupRef(one.taskId);
+    const name = title(store, one.taskId);
+    if (ref === null || ref.repo !== repo || !who.repos.includes(repo) || store.filedViaOf(one.taskId) !== YOUIYOUX_FILED_VIA) { skipped.push({ name, why: "it isn't available here now" }); continue; }
+    const plan = planInChat(store, one.taskId, who.name, now, channel, root, "requests");
+    if (!plan.ok) { skipped.push({ name, why: plan.why }); continue; }
+    if (passwordOnlySeal(plan.scope) || deployGateScope(plan.scope)) { skipped.push({ name, why: "it needs your password in Toolroll" }); continue; }
+    if (shownTermsDigest(plan.scope) !== one.digest) { skipped.push({ name, why: "its terms changed since this card was sent" }); continue; }
+    ready.push({ taskId: one.taskId, name, digest: one.digest, plan });
+  }
+  return { ok: true, ready, skipped };
+}
+
+/** The owner's own yes from chat, sealed as theirs ("chat"), never as a mode's: it stands like the console's after the
+ * mode or setting ends. `terms`: the digest of every word a youiyoux card showed, which the seal checks. */
+function sealPlanInChat(store: Store, who: VerifiedApprover, seat: DecideSeat, repo: string, taskId: string, plan: { modeDigest: string; source: "setting" | "mode" }, now: Date, terms?: string): boolean {
+  if (!store.sealScopeApproval(taskId, who.name, now, {}, { kind: "chat", modeDigest: plan.modeDigest, ...(terms === undefined ? {} : { card: "terms" as const, cardDigest: terms }) })) return false;
+  // The person's proof beside the seal, bound to these exact words (approval policy §1.2): a paired-chat tap, never a
+  // password. Release, deploy and the protected counters read it as a person's.
+  const sealedDigest = store.getScope(taskId)?.approvedDigest ?? "";
+  store.recordAction({ at: now.toISOString(), actor: who.name, repo, taskId, runId: null, action: APPROVAL_PROOF, outcome: "chat",
+    source: "request", detail: approvalProofDetail(now.getTime(), store.accountOf(who.name)?.generation ?? 0, sealedDigest) });
+  store.recordAction({ at: now.toISOString(), actor: who.name, repo, taskId, runId: null, action: "plan approved in chat", outcome: "approved",
+    source: "request", detail: `via ${seat.channel} · chat binding #${seat.binding} · ${plan.source} ${plan.modeDigest}${terms === undefined ? "" : ` · youiyoux card, terms ${terms}`}` });
+  return true;
+}
+
+/** A youiyoux card's yes: each task it names that still stands as shown is sealed, each with its own proof; the rest are
+ * named, never approved. The card then offers what still waits, so one can be approved after another. */
+function approveRequests(store: Store, seat: DecideSeat, who: VerifiedApprover, tokenTask: string, digest: string, target: DecideTarget, body: string, message: string, root: string | undefined, now: Date): DecideTapOutcome {
+  const read = requestsNow(store, tokenTask, digest, who, now, seat.channel, root);
+  if (!read.ok) return { ack: "Not done.", edit: { text: `${body}\n\n✗ Not done: ${read.why}`, rows: linksFor(target), tokens: [] } };
+  const approved: string[] = [];
+  const skipped = [...read.skipped];
+  for (const one of read.ready) {
+    if (sealPlanInChat(store, who, seat, store.lookupRef(one.taskId)!.repo!, one.taskId, one.plan, now, one.digest)) approved.push(one.name);
+    else skipped.push({ name: one.name, why: "it couldn't be approved from chat. Open it in Toolroll." });
+  }
+  const said = [...(approved.length === 0 ? [] : [`✓ Approved ${approved.map(name => `"${name}"`).join(", ")}. Work starts when a worker is free.`]),
+    ...skipped.map(one => `✗ Not approved: "${one.name}": ${one.why}`)].join("\n");
+  const ack = approved.length === 0 ? "Not done." : "Approved.";
+  const again = requestsOffer(store, tokenTask, who, now, seat.channel, root, said);
+  if (again === null) return { ack, edit: { text: `${body}\n\n${said}`, rows: skipped.length === 0 ? [] : linksFor(target), tokens: [] } };
+  return { ack, edit: { text: again.text ?? said, ...mintDecideButtons(store, seat, target, again, now, message) } };
 }
 
 /** The plan card: title, goal in two lines, what changes, done when, and what the yes allows. On Telegram the yes's
@@ -241,9 +426,29 @@ export function decideOffer(store: Store, target: DecideTarget, who: VerifiedApp
     case "plan": {
       const plan = planInChat(store, target.taskId, who.name, now, channel, root);
       if (!plan.ok) return null;
+      const release = deployGateScope(plan.scope);
+      // Checks beyond the sandbox seal only on the person's password (store.ts sealScopeApproval): the card says so and
+      // links to the approval in Toolroll, and offers no Continue or Approve that would dead-end. A release or a plan.
+      if (passwordOnlySeal(plan.scope)) {
+        let head: string[];
+        try { head = release ? releaseCardOf(store, plan.scope, plan.digest, { profile: permissionPlainWords }).short.split("\n").slice(0, 3)
+          : planCardText(store, target.taskId, plan.scope, root, channel).split("\n").slice(0, 1); }
+        catch { head = [title(store, target.taskId)]; }
+        return { text: [...head, "", needsPassword(plan.scope)].join("\n"), rows: [[{ label: "Approve in Toolroll", path: chatControlHref("approval", target.taskId) }]] };
+      }
+      // A deploy gate is approved from chat only through its release card (chat-management.md §0a.5).
+      if (release) {
+        const release = releaseInChat(store, target.taskId, who.name, now, channel, "offer", root);
+        if (!release.ok) return null;
+        const card = release.card;
+        return { text: channel === "telegram" ? card.short : `${card.short}\n\n${card.full}`,
+          rows: [[{ act: "approve", run: null, digest: releaseDigest(card), label: "Continue" }], [{ label: DECIDE_LABELS.edit, path: chatControlHref("approval", target.taskId) }, { act: "not-now", run: null, digest: releaseDigest(card) }]],
+          ...(channel === "telegram" ? { file: { name: card.fileName, text: card.full } } : {}) };
+      }
       return { text: planCardText(store, target.taskId, plan.scope, root, channel),
         rows: [[{ act: "approve", run: null, digest: plan.digest }], [{ label: DECIDE_LABELS.edit, path: chatControlHref("approval", target.taskId) }, { act: "not-now", run: null, digest: plan.digest }]] };
     }
+    case "requests": return requestsOffer(store, target.taskId, who, now, channel, root);
     case "merge": {
       const merge = mergeInChat(store, target.taskId, target.run, who.name, now, channel);
       if (!merge.ok) return null;
@@ -303,9 +508,9 @@ export function mintDecideButtons(store: Store, seat: DecideSeat, target: Decide
   const tokens: string[] = [];
   const rows = offer.rows.map(row => row.map((one): DecideButton => {
     if (!isAct(one)) return { label: one.label, link: one };
-    const token = mint(store, seat, message, one, target.taskId, "offer", now);
+    const token = mint(store, seat, message, one, one.taskId ?? target.taskId, "offer", now);
     tokens.push(token);
-    return { label: DECIDE_LABELS[one.act], token };
+    return { label: one.label ?? DECIDE_LABELS[one.act], token };
   }));
   return { rows, tokens };
 }
@@ -343,8 +548,13 @@ export function isDecideToken(store: Store, token: string): boolean {
 
 export type DecideTapOutcome = {
   ack: string;
+  /** A release card's full terms, sent as a file before its Approve is offered (chat apps that limit a message). */
+  file?: { name: string; text: string };
   /** The card repainted: its text and buttons now. */
   edit?: { text: string; rows: DecideButton[][]; tokens: string[] };
+  /** With `file`, where the chat app carries the terms only as a file: the card instead of `edit` when the file didn't
+   * arrive. No Approve, a fresh Continue to send it again; the channel drops whichever set it doesn't show. */
+  unsent?: { text: string; rows: DecideButton[][]; tokens: string[] };
   /** Ask "What should change?": the person's next message is the feedback. `id` names the prompt, so the channel can
    * record the message it sent (a reply to anything else is not the feedback). */
   prompt?: { id: number; text: string };
@@ -357,6 +567,60 @@ export type DecideTapOutcome = {
 /** A merge approved in chat, waiting on GitHub: what its ledger line names once the answer is back. */
 export type ChatMerge = { runId: number; taskId: string; by: string; repo: string; via: string };
 
+/** A release card's acts carry its card digest (release-card.ts), never a plan's. */
+const RELEASE_DIGEST = "release:";
+/** Why a password-only scope (passwordOnlySeal) isn't approved from chat, for a release or a plan. */
+const needsPassword = (scope: Scope): string => `This ${deployGateScope(scope) ? "release" : "plan"}'s checks run outside the sandbox, so it's approved in Toolroll with your password.`;
+/** Whether only a person's password ceremony seals this scope (store.ts sealScopeApproval): checks that reach beyond the
+ * sandbox (sign-ins, or none at all) or extra macOS services, sealed into its profile. */
+const passwordOnlySeal = (scope: Scope): boolean => {
+  const profile = scope.profile as (Record<string, unknown> | null | undefined);
+  return profile != null && (profile["checkAccess"] !== undefined || profile["machLookup"] !== undefined);
+};
+const releaseDigest = (card: ReleaseCard): string => `${RELEASE_DIGEST}${card.digest}`;
+
+/** Where a release card is tapped: the person's binding and the chat the tap came from. */
+export type ReleaseSeat = Pick<DecideSeat, "channel" | "binding" | "chat" | "approver">;
+
+/**
+ * Whether a release card's tap comes from the person's own private chat with Toolroll (chat-management.md §0a.5), from
+ * the binding's own record, failing closed: Telegram, a private chat (a positive id, which Telegram makes equal to the
+ * user's own id) that is the binding's chat and its user's; Slack, a direct-message channel (D…) that is the binding's.
+ * Any other chat app, a missing chat or binding, or another person's binding is not.
+ */
+export function privateReleaseChat(store: Store, seat: ReleaseSeat): boolean {
+  const row = store.handle.prepare("SELECT member, channel, approver FROM chat_binding WHERE provider = ? AND id = ? AND revoked IS NULL").get(seat.channel, seat.binding);
+  if (row === undefined || String(row["approver"]) !== seat.approver || seat.chat !== String(row["channel"])) return false;
+  if (seat.channel === "telegram") return /^[1-9][0-9]*$/.test(seat.chat) && seat.chat === String(row["member"]);
+  if (seat.channel === "slack") return /^D[A-Z0-9]+$/.test(seat.chat);
+  return false;
+}
+
+/**
+ * A deploy gate this person may approve from this chat now, through its release card: every plain-plan rule
+ * (planInChat: their Approve from chat setting and limits, no coordinator-, lead- or scout-written text, organisation
+ * policy, protected work), never a nightly check, only in their private chat, and the card as the live records say
+ * it now (chat-management.md §0a.5).
+ */
+export function releaseInChat(store: Store, taskId: string, approver: string, now: Date, channel: DecideChannel,
+  /** The seat a tap came from, checked strictly; "offer" only where the card is drawn for the binding's own chat (no act). */
+  seat: ReleaseSeat | "offer", root?: string):
+  { ok: true; card: ReleaseCard; modeDigest: string; source: "setting" | "mode"; scope: Scope } | { ok: false; why: string } {
+  const plan = planInChat(store, taskId, approver, now, channel, root);
+  if (!plan.ok) return plan;
+  if (!deployGateScope(plan.scope)) return { ok: false, why: "This plan isn't a release." };
+  if (passwordOnlySeal(plan.scope)) return { ok: false, why: needsPassword(plan.scope) };
+  const ref = store.lookupRef(taskId);
+  if (ref === null || nightlyTaskRef(store, ref.id)) return { ok: false, why: NIGHTLY_CHECK_ONLY };
+  if (seat !== "offer" && (seat.channel !== channel || !privateReleaseChat(store, seat))) return { ok: false, why: "A release is approved only in your private chat with Toolroll." };
+  let card: ReleaseCard;
+  try { card = releaseCardOf(store, plan.scope, plan.digest, { profile: permissionPlainWords }); }
+  catch { return { ok: false, why: "This release's terms can't be shown here, so you approve it in Toolroll." }; }
+  // What changed is part of what's approved: a list that couldn't be read (or was refused as rewritten history) is no card.
+  if (plan.scope.releaseTerms != null && card.changes.commits === null) return { ok: false, why: "This release's list of changes couldn't be read, so you approve it in Toolroll." };
+  return { ok: true, card, modeDigest: plan.modeDigest, source: plan.source, scope: plan.scope };
+}
+
 const QUESTIONS: Record<"accept" | "retry" | "approve" | "merge", (name: string) => string> = {
   accept: name => `Accept and finish "${name}"?`,
   retry: name => `Retry "${name}"? It queues another attempt.`,
@@ -364,7 +628,8 @@ const QUESTIONS: Record<"accept" | "retry" | "approve" | "merge", (name: string)
   merge: name => `Merge "${name}"?`,
 };
 
-function targetOf(row: Pick<ActionRow, "act" | "taskId" | "run">): DecideTarget {
+function targetOf(row: Pick<ActionRow, "act" | "taskId" | "run" | "digest">): DecideTarget {
+  if (row.digest.startsWith(REQUESTS_DIGEST)) return { kind: "requests", taskId: row.taskId };
   switch (row.act) {
     case "accept": case "changes": return { kind: "result", taskId: row.taskId, run: row.run ?? 0 };
     case "retry": return { kind: "failed", taskId: row.taskId };
@@ -374,7 +639,26 @@ function targetOf(row: Pick<ActionRow, "act" | "taskId" | "run">): DecideTarget 
 }
 
 /** Why the card's act no longer applies, or null while it still does — checked at the offer and again at the yes. */
-function staleWhy(store: Store, row: Pick<ActionRow, "act" | "taskId" | "run" | "digest">, who: VerifiedApprover, now: Date, channel: DecideChannel, root?: string): string | null {
+/**
+ * A release card's terms, then its Approve (Continue, and a release card refreshed after it changed): the full terms
+ * (a file on Telegram, where a message is limited; inline elsewhere), Approve and Cancel bound to this card's digest,
+ * and on Telegram the card to show instead when the file didn't arrive: no Approve, a Continue to send it again.
+ */
+function releaseContinue(store: Store, seat: DecideSeat, message: string, taskId: string, name: string, card: ReleaseCard, now: Date, ack: string, lead: string | null): DecideTapOutcome {
+  const spec: ActSpec = { act: "approve", run: null, digest: releaseDigest(card) };
+  const yes = mint(store, seat, message, spec, taskId, "yes", now);
+  const cancel = mint(store, seat, message, spec, taskId, "cancel", now);
+  const text = `${seat.channel === "telegram" ? card.short : `${card.short}\n\n${card.full}`}${lead === null ? "" : `\n\n${lead}`}`;
+  // Telegram carries the terms only as the file: Approve shows only once that file has arrived (telegram.ts).
+  const again = seat.channel === "telegram" ? mint(store, seat, message, spec, taskId, "offer", now) : null;
+  return { ack, file: { name: card.fileName, text: card.full },
+    edit: { text: `${text}\n\nApprove release "${name}"? This approves exactly these terms${seat.channel === "telegram" ? `, every one in ${card.fileName}` : ""}.`,
+      rows: [[{ label: "Approve", token: yes }, { label: DECIDE_LABELS.cancel, token: cancel }]], tokens: [yes, cancel] },
+    ...(again === null ? {} : { unsent: { text: `${text}\n\nThe terms file didn't arrive, so Approve isn't shown. Tap Continue to send it again.`,
+      rows: [[{ label: "Continue", token: again }]], tokens: [again] } }) };
+}
+
+function staleWhy(store: Store, row: Pick<ActionRow, "act" | "taskId" | "run" | "digest"> & { chat?: string; binding?: number }, who: VerifiedApprover, now: Date, channel: DecideChannel, root?: string): string | null {
   switch (row.act) {
     case "accept": case "changes": {
       const fresh = resultFresh(store, row.taskId, row.run ?? 0, who, now, root);
@@ -387,8 +671,23 @@ function staleWhy(store: Store, row: Pick<ActionRow, "act" | "taskId" | "run" | 
       return retryStamp(store, row.taskId, who) === row.digest ? null : "This task changed since this card was sent.";
     }
     case "approve": case "not-now": {
+      if (row.digest.startsWith(RELEASE_DIGEST)) {
+        // The button's own seat as it was minted: its binding's chat, checked against the binding's record.
+        const release = releaseInChat(store, row.taskId, who.name, now, channel, { channel, binding: row.binding ?? -1, chat: row.chat ?? "", approver: who.name }, root);
+        if (!release.ok) return release.why;
+        return releaseDigest(release.card) === row.digest ? null : "This release changed while you were reading.";
+      }
+      if (row.digest.startsWith(REQUESTS_DIGEST)) {
+        const read = requestsNow(store, row.taskId, row.digest, who, now, channel, root);
+        if (!read.ok) return read.why;
+        if (read.ready.length > 0) return null;
+        return read.skipped.length === 1 ? `"${read.skipped[0]!.name}": ${read.skipped[0]!.why}` : "None of these wait for your approval as this card showed them.";
+      }
       const plan = planInChat(store, row.taskId, who.name, now, channel, root);
       if (!plan.ok) return plan.why;
+      // A deploy gate's plain plan card never approves it: only its release card does.
+      if (deployGateScope(plan.scope)) return "This is a release: approve it from its release card.";
+      if (passwordOnlySeal(plan.scope)) return needsPassword(plan.scope);
       return plan.digest === row.digest ? null : "The plan changed since this card was sent.";
     }
     case "merge": {
@@ -406,6 +705,7 @@ export function linksFor(target: DecideTarget): DecideButton[][] {
     case "merge": return [[{ label: "Open task", link: { label: "Open task", path: chatControlHref("task", target.taskId) } }]];
     case "plan": return [[{ label: "Review & start", link: { label: "Review & start", path: chatControlHref("approval", target.taskId) } }]];
     case "failed": return [[{ label: "Open task", link: { label: "Open task", path: chatControlHref("task", target.taskId) } }]];
+    case "requests": return [[{ label: OPEN_IN_TOOLROLL, link: { label: OPEN_IN_TOOLROLL, path: YOUIYOUX_HOME_PATH } }]];
   }
 }
 
@@ -429,11 +729,11 @@ export function planWhereNow(store: Store, taskId: string, who: VerifiedApprover
   return { said: `"${name}" is under way.`, rows: [] };
 }
 
-const QUESTION_STARTS = ["Accept and finish \"", "Retry \"", "Approve and start \"", "Merge \""];
+const QUESTION_STARTS = ["Accept and finish \"", "Retry \"", "Approve and start \"", "Merge \"", "Approve release "];
 /** The card's words without a question this module appended. */
 function cardBody(shown: string): string {
   const at = shown.lastIndexOf("\n\n");
-  return at >= 0 && QUESTION_STARTS.some(start => shown.startsWith(start, at + 2)) ? shown.slice(0, at) : shown;
+  return at >= 0 && (QUESTION_STARTS.some(start => shown.startsWith(start, at + 2)) || /^Approve \d+ tasks\?/.test(shown.slice(at + 2))) ? shown.slice(0, at) : shown;
 }
 
 /**
@@ -484,7 +784,23 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
   }
 
   const why = staleWhy(store, row, who, now, seat.channel, input.root);
-  if (why !== null) return stale(why);
+  if (why !== null) {
+    // A release that changed while it was read: the new card, with fresh buttons, so the person reads it again.
+    // Through the same gate as Continue: the new terms go first (as a file where the chat app limits a message), and
+    // Approve shows only once they arrived; else a Continue to send them again. A release that is now password-only
+    // gets its card with the link to Toolroll.
+    if (row.digest.startsWith(RELEASE_DIGEST) && row.act === "approve" && why === "This release changed while you were reading.") {
+      spend();
+      const release = releaseInChat(store, row.taskId, who.name, now, seat.channel, seat, input.root);
+      if (release.ok) return releaseContinue(store, seat, input.message, row.taskId, name, release.card, now, why, `${why} Here it is now.`);
+      const offer = decideOffer(store, target, who, now, seat.channel, input.root);
+      if (offer !== null && offer.file === undefined) {
+        const minted = mintDecideButtons(store, seat, target, offer, now, input.message);
+        return { ack: why, edit: { text: `${offer.text ?? body}\n\n${why} Here it is now.`, ...minted } };
+      }
+    }
+    return stale(why);
+  }
 
   if (row.phase === "offer") {
     if (row.act === "changes") {
@@ -495,6 +811,26 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
       spend();
       return { ack: "Okay, it waits.", edit: { text: `${body}\n\nNot now. It waits for you in Tasks.`,
         rows: [[{ label: DECIDE_LABELS.edit, link: { label: DECIDE_LABELS.edit, path: chatControlHref("approval", row.taskId) } }]], tokens: [] } };
+    }
+    // A release card's Continue: the card again from the live records, its full terms as a file, then Approve.
+    if (row.act === "approve" && row.digest.startsWith(RELEASE_DIGEST)) {
+      const release = releaseInChat(store, row.taskId, who.name, now, seat.channel, seat, input.root);
+      if (!release.ok) return stale(release.why);
+      spend();
+      return releaseContinue(store, seat, input.message, row.taskId, name, release.card, now, "Read the terms, then approve.", null);
+    }
+    // A youiyoux card's Approve: how many still stand as the card showed them, and which don't (named, never approved).
+    if (row.act === "approve" && row.digest.startsWith(REQUESTS_DIGEST)) {
+      const read = requestsNow(store, row.taskId, row.digest, who, now, seat.channel, input.root);
+      if (!read.ok) return stale(read.why);
+      spend();
+      const spec: ActSpec = { act: row.act, run: row.run, digest: row.digest };
+      const yes = mint(store, seat, input.message, spec, row.taskId, "yes", now);
+      const cancel = mint(store, seat, input.message, spec, row.taskId, "cancel", now);
+      const asked = [read.ready.length === 1 ? QUESTIONS.approve(read.ready[0]!.name) : `Approve ${read.ready.length} tasks?`,
+        ...read.skipped.map(one => `"${one.name}" isn't included: ${one.why}`)].join("\n");
+      return { ack: "Confirm below.", edit: { text: `${body}\n\n${asked}`,
+        rows: [[{ label: DECIDE_LABELS.yes, token: yes }, { label: DECIDE_LABELS.cancel, token: cancel }]], tokens: [yes, cancel] } };
     }
     // The first tap asks; only the yes acts, bound to exactly what this button was.
     spend();
@@ -521,12 +857,34 @@ export function applyDecideTap(store: Store, seat: DecideSeat, input: { token: s
       return retried.ok ? done("✓ Queued again. Existing approvals and holds still apply.") : notDone(retried.message);
     }
     case "approve": {
+      if (row.digest.startsWith(RELEASE_DIGEST)) {
+        const ciHold = releaseCiHoldOf(store, row.taskId);
+        if (ciHold !== null) return notDone(releaseCiHoldWords(ciHold));
+        const release = releaseInChat(store, row.taskId, who.name, now, seat.channel, seat, input.root);
+        if (!release.ok) return notDone(release.why);
+        const cardDigest = release.card.digest;
+        // The seal knows which card it came from: a chat seal of a deploy gate needs this evidence (store.ts).
+        if (!store.sealScopeApproval(row.taskId, who.name, now, {}, { kind: "chat", modeDigest: release.modeDigest, card: "release", cardDigest })) return notDone("the release couldn't be approved from chat. Open it in Toolroll.");
+        const sealedDigest = store.getScope(row.taskId)?.approvedDigest ?? "";
+        store.recordAction({ at: now.toISOString(), actor: who.name, repo: ref.repo, taskId: row.taskId, runId: null, action: APPROVAL_PROOF, outcome: "chat", source: "request",
+          detail: JSON.stringify({ v: 1, at: now.toISOString(), generation: store.accountOf(who.name)?.generation ?? 0, digest: sealedDigest, card: "release", cardDigest }) });
+        const where = `${CHANNEL_NAMES[seat.channel]} · chat binding #${seat.binding}`;
+        store.recordAction({ at: now.toISOString(), actor: who.name, repo: ref.repo, taskId: row.taskId, runId: null, action: "release approved in chat", outcome: "approved",
+          source: "request", detail: `via ${where} · ${release.source} ${release.modeDigest} · card ${cardDigest}` });
+        // Said everywhere the person hears from Toolroll (their other chats and push), naming the chat it came from.
+        const terms = release.scope.releaseTerms ?? null;
+        store.enqueueNotification({ dedupeKey: `release-approved-chat:${row.taskId}:${cardDigest}`, kind: "release-approved", recipient: who.name, pushClass: "attention",
+          subject: `Release${terms === null ? "" : ` ${terms.packageVersion}`} approved from ${CHANNEL_NAMES[seat.channel]}`,
+          body: `You approved "${name}"${terms === null ? "" : ` (${terms.approvedSha.slice(0, 7)}, pull request #${terms.pr})`} from ${CHANNEL_NAMES[seat.channel]}. If that wasn't you, stop it in Toolroll now.`,
+          link: chatControlHref("task", row.taskId), source: { taskRef: ref.id } }, now);
+        return done("✓ Release approved. It deploys when its check passes and someone runs the release.");
+      }
+      if (row.digest.startsWith(REQUESTS_DIGEST)) return approveRequests(store, seat, who, row.taskId, row.digest, target, body, input.message, input.root, now);
       const plan = planInChat(store, row.taskId, who.name, now, seat.channel, input.root);
       if (!plan.ok) return notDone(plan.why);
-      // The owner's own yes, sealed as theirs ("chat"), never as a mode's: it stands like the console's after the mode or setting ends.
-      if (!store.sealScopeApproval(row.taskId, who.name, now, {}, { kind: "chat", modeDigest: plan.modeDigest })) return notDone("the plan couldn't be approved from chat. Open it in Toolroll.");
-      store.recordAction({ at: now.toISOString(), actor: who.name, repo: ref.repo, taskId: row.taskId, runId: null, action: "plan approved in chat", outcome: "approved",
-        source: "request", detail: `via ${seat.channel} · chat binding #${seat.binding} · ${plan.source} ${plan.modeDigest}` });
+      if (deployGateScope(plan.scope)) return notDone("This is a release: approve it from its release card.");
+      if (passwordOnlySeal(plan.scope)) return notDone(needsPassword(plan.scope));
+      if (!sealPlanInChat(store, who, seat, ref.repo, row.taskId, plan, now)) return notDone("the plan couldn't be approved from chat. Open it in Toolroll.");
       return done("✓ Approved. Work starts when a worker is free.");
     }
     case "merge": {
@@ -612,6 +970,7 @@ export function applyDecideFeedback(store: Store, seat: DecideSeat, prompt: Deci
 
 /** The link a card keeps when it can't act in chat: a plan's is Review & start, where the password step lives. */
 export function decideFallbackLink(target: DecideTarget | null): DecideLink | null {
+  if (target?.kind === "requests") return { label: OPEN_IN_TOOLROLL, path: YOUIYOUX_HOME_PATH };
   return target?.kind === "plan" ? { label: "Review & start", path: chatControlHref("approval", target.taskId) } : null;
 }
 
@@ -620,6 +979,7 @@ export function decideTargetOf(row: { kind: string; taskId: string | null; run: 
   if (row.taskId === null) return null;
   if (row.kind === "acceptance-ready" && row.run !== null) return { kind: "result", taskId: row.taskId, run: row.run };
   if (row.kind === "plan-ready") return { kind: "plan", taskId: row.taskId };
+  if (row.kind === YOUIYOUX_CARD_KIND) return { kind: "requests", taskId: row.taskId };
   if (row.kind === "pull-request-ready" && row.run !== null) return { kind: "merge", taskId: row.taskId, run: row.run };
   if (/fail|exhausted|stalled|fenced/.test(row.kind)) return { kind: "failed", taskId: row.taskId };
   return null;

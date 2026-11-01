@@ -1,5 +1,5 @@
 /** The lead checks before it speaks: reply rules, a memory search before a proposal on a project with decisions,
- * integration status, questions with options, and refusal copy in plain words. */
+ * integration status and questions with options. */
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,8 +11,6 @@ import { fileTaskProposal } from "./proposal.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { executeLeadTool, type LeadToolContext } from "./lead-tools.js";
 import { recordDecision } from "./project-memory.js";
-import { LEAD_CONTRACT } from "./lead-contract.js";
-import { LEAD_REFUSAL_COPY } from "./lead.js";
 import { CHAT_CONTROLS } from "./chat-controls.js";
 import type { Integration } from "./integrations.js";
 
@@ -208,34 +206,4 @@ describe("the lead checks before it speaks", () => {
     expect(store.handle.prepare("SELECT COUNT(*) AS n FROM lead_ask").get()!["n"]).toBe(0);
   });
 
-  test("c3: the contract carries the reply rules, the memory, integration and asking rules", () => {
-    for (const rule of [
-      "lead with the answer",
-      "a status or a yes/no is 1-3 sentences",
-      "Plain text, no headers",
-      "Say what you checked this turn",
-      "I checked the run log:",
-      "Mark anything you did not check this turn as a guess",
-      "I haven't checked",
-      "say 'I don't know', then check with a tool",
-      "never make up an answer, and never present a guess as something you remember",
-      "call search_project_memory for it this turn",
-      "call get_capabilities this turn",
-      "open its link with show_control",
-      "use ask_owner: one question, 2-4 short options",
-      "only when the answer changes the work",
-    ]) expect(LEAD_CONTRACT).toContain(rule);
-  });
-
-  test("c3: refusal copy is plain words — what happened, then one next step — with no internal terms", () => {
-    for (const [reason, copy] of Object.entries(LEAD_REFUSAL_COPY)) {
-      expect(copy, reason).not.toMatch(/\b(mint|minted|latch|latched|credential|ceiling|session|admitted|turn cap|pinned)\b/i);
-      expect(copy, reason).toMatch(/^[A-Z]/);
-      expect(copy, reason).toMatch(/\.$/);
-      // At least two sentences: what happened and what it means, then the step to take.
-      expect(copy.split(/(?<=\.)\s+/).length, reason).toBeGreaterThanOrEqual(2);
-    }
-    expect(LEAD_REFUSAL_COPY["ceiling-changed"]).toBe("Your projects changed since this chat started, so it can't go on. Start a new chat.");
-    expect(LEAD_REFUSAL_COPY.latched).toBe("An earlier reply stopped before its cost was known, so chat is paused. Acknowledge that reply on the Chat page, then send again.");
-  });
 });

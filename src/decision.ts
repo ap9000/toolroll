@@ -16,11 +16,8 @@
  */
 
 import type { ContractIssue } from "./contracts/contract.js";
-import { readDecisionPayload, type DecisionOption, type DecisionPayload } from "./contracts/decision.js";
+import { readDecisionPayload, type DecisionPayload } from "./contracts/decision.js";
 import { TEXT_LIMITS } from "./text-limits.js";
-
-/** One option as a decision keeps it (src/contracts/decision.ts). */
-export type ParsedOption = DecisionOption;
 
 /** A decision as read: the payload's fields, its text trimmed, and the optional ones present or null. */
 export type ParsedDecision = Omit<DecisionPayload, "assignee" | "deadline"> & {

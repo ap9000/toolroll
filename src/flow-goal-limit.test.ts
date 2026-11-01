@@ -39,7 +39,7 @@ const drawing = (instructions: string) => ({ version: 1, start: "nightly-journey
 const output = `START journeys run 2026-09-30\r\n${Array.from({ length: 400 }, (_, i) => `journey ${i}: checkout ${i % 7 === 0 ? "FAILED" : "ok"}`).join("\n")}`.padEnd(19_976, ".") + "\nEND 57 passed, 3 failed";
 
 function cardInResearch(flow: number, description: string | null = null): number {
-  const card = store.addFlowCard({ flow, title: "Nightly journeys, 30 September", description, stage: "research", by: "operator" }, now);
+  const card = store.addFlowCard({ flow, title: "Nightly journeys, 30 September", description, stage: "research", by: "operator", byKind: "person" }, now);
   store.updateFlowCard(card, { outputs: { "nightly-journeys": output } }, now);
   return card;
 }
@@ -71,7 +71,7 @@ test("a 20,000-character script result is attached, not cut: the goal keeps ever
 
 test("an output kept whole on the card's discussion is given whole to the task after it, and a newer output drops it", () => {
   const flow = store.createFlow({ repo, name: "Nightly journeys", definitionJson: JSON.stringify(validateFlowDefinition(drawing(ASK))), by: "operator" }, now);
-  const card = store.addFlowCard({ flow, title: "Nightly journeys, 30 September", description: null, stage: "research", by: "operator" }, now);
+  const card = store.addFlowCard({ flow, title: "Nightly journeys, 30 September", description: null, stage: "research", by: "operator", byKind: "person" }, now);
   // As a step leaves it (flow-steps.ts settle): what the next zones read points at the discussion; the card keeps it whole.
   const pointer = `This is 20,000 characters, more than the 12,000 a step passes on, so it is kept whole on the card's discussion: /flows/${flow}?card=${card}.`;
   store.updateFlowCard(card, { outputs: { "nightly-journeys": pointer }, attached: { "nightly-journeys": output } }, now);
@@ -167,7 +167,7 @@ test("a research zone's items and full report reach the next zone, beside its su
   ] };
   const flow = store.createFlow({ repo, name: "Checkout", definitionJson: JSON.stringify(validateFlowDefinition(steps)), by: "operator" }, now);
   for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "operator", now);
-  const card = store.addFlowCard({ flow, title: "Checkout is slow", description: null, stage: "research", by: "operator" }, now);
+  const card = store.addFlowCard({ flow, title: "Checkout is slow", description: null, stage: "research", by: "operator", byKind: "person" }, now);
   expect(advanceFlows(store, repo, now).filed).toHaveLength(1);
   // The research task finishes with a scout's report: two items, one with a screenshot.
   const task = store.getFlowCard(card)!.task!;

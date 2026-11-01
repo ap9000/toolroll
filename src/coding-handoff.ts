@@ -1,5 +1,5 @@
 /** A committed native session enters the existing review flow, never another executor. */
-import { execFileSync } from 'node:child_process';
+import { checkoutGitSync, noLazyFetch, viewedGitSync } from './teardown-git.js';
 import { lstatSync, realpathSync } from 'node:fs';
 import type { DatabaseSync } from 'node:sqlite';
 import { sqliteRuntime } from './sqlite-runtime.js';
@@ -56,16 +56,23 @@ function catalog(store: Store, readOnly: boolean): DatabaseSync {
   } catch (error) { db.close(); throw error; }
 }
 
+// The coding checkout is written by an agent (its config, hooks, filters): every read goes through the hardened
+// checkout git, which the code page's GET preview also uses (docs/plans/get-side-effects.md).
 function git(repo: string, args: string[]): string {
   try {
-    return execFileSync('git', ['--no-optional-locks', '--no-replace-objects', '--no-lazy-fetch', '-c', 'core.hooksPath=/dev/null', '-C', repo, ...args], {
-      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000, maxBuffer: 1_048_576,
-    }).trimEnd();
+    return checkoutGitSync(repo, ['--no-replace-objects', ...noLazyFetch(), ...args]).trimEnd();
   } catch { throw Error('The committed coding result could not be verified in Git. Check the project and try again.'); }
 }
-function branchHead(repo: string, branch: string): string | null {
-  try { return execFileSync('git', ['--no-optional-locks', '--no-replace-objects', '-C', repo, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim(); }
-  catch (error) { if ((error as { status?: number }).status === 1) return null; throw Error('The review branch could not be inspected.'); }
+// The project's repository is shared with every build (its config, includes): read through the frozen, bounded view
+// (eval-harness review 2, finding 6), and never inside a database transaction.
+export function branchHead(repo: string, branch: string): string | null {
+  let ran: { status: number | null; stdout: string };
+  try { ran = viewedGitSync(repo, ['--no-replace-objects', ...noLazyFetch(), 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], { timeoutMs: 30_000 }); }
+  catch { throw Error('The review branch could not be inspected.'); }
+  if (ran.status === 1) return null;
+  const head = ran.stdout.trim();
+  if (ran.status !== 0 || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(head)) throw Error('The review branch could not be inspected.');
+  return head;
 }
 function actorGeneration(store: Store, actor: string, repo: string): number {
   const account = store.accountOf(actor);
@@ -164,6 +171,8 @@ export function createCodingHandoff(store: Store, input: CodingHandoffInput): Ha
     const receipt = makeReceipt({ ...shown, version: 1, identity: learningIdentity(input.repo), actor: input.actor,
       generation: actorGeneration(store, input.actor, input.repo), title: input.title.trim(), goal: input.goal.trim(), acceptance: parsed.criteria, outOfScope: EXCLUSIONS });
     const payload = JSON.stringify(receipt), sha = learningSha(payload);
+    // Git is read before the reservation's transaction, never inside it (review 2, finding 6).
+    const before = branchHead(input.repo, receipt.branch);
     db.exec('BEGIN IMMEDIATE');
     let reserved = false;
     try {
@@ -172,7 +181,7 @@ export function createCodingHandoff(store: Store, input: CodingHandoffInput): Ha
         if (JSON.stringify(parseReceipt(prior)) !== payload) throw Error('This coding handoff conflicts with its saved receipt.');
         reserved = true;
       } else {
-        if (store.lookupRef(receipt.taskId) || branchHead(input.repo, receipt.branch) !== null) throw Error('The review task or branch already exists. It has been preserved.');
+        if (store.lookupRef(receipt.taskId) || before !== null) throw Error('The review task or branch already exists. It has been preserved.');
         db.prepare('INSERT INTO coding_handoff VALUES(?,?,?,?)').run(receipt.id, payload, sha, new Date().toISOString());
       }
       db.exec('COMMIT');
@@ -193,9 +202,10 @@ export function createCodingHandoff(store: Store, input: CodingHandoffInput): Ha
     // No checked-out/leased branch is adopted, even if its HEAD happens to match.
     if (git(input.repo, ['worktree', 'list', '--porcelain']).split('\n').includes(`branch refs/heads/${receipt.branch}`)) throw Error('The review branch is already checked out. Its work has been preserved.');
 
+    // The branch, read last before filing and outside the transaction: a database transaction never holds a git ref still.
+    if (branchHead(input.repo, receipt.branch) !== receipt.base) throw Error('The review branch moved before filing. Its work has been preserved.');
     return store.transact(() => {
       if (actorGeneration(store, input.actor, input.repo) !== receipt.generation) throw Error('Your account changed. Sign in again.');
-      if (branchHead(input.repo, receipt.branch) !== receipt.base) throw Error('The review branch moved before filing. Its work has been preserved.');
       const made = fileTaskProposal(store, { id: receipt.taskId, title: receipt.title, repo: receipt.repo, goal: receipt.goal,
         outOfScope: receipt.outOfScope, acceptance: receipt.acceptance, filedVia: PREFIX + receipt.id, filedBy: { name: input.actor, kind: "person" as const }, planning: 'skip', admittedRepos: [receipt.repo] }, new Date());
       if (!made.ok) throw Error(made.message);

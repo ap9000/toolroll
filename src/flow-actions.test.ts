@@ -16,6 +16,7 @@ import { flowFromSteps, flowTerms, validateFlowDefinition, FLOW_TEMPLATES } from
 import { runFlowSteps, type StepIo } from "./flow-steps.js";
 import { readEmailSettings, saveEmailSettings, setFlowSecret, flowSecretNames } from "./flow-actions.js";
 import { addToolTo, validateToolSpec } from "./project-tools.js";
+import { NO_OS_FENCE } from "../test/inside-fence.js";
 
 const T0 = new Date("2026-09-25T09:00:00.000Z");
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
@@ -25,13 +26,15 @@ beforeEach(() => {
   repo = join(dir, "shop");
   store = openStore(join(dir, "orders.db"));
   if (!addApprover(store, "alex", T0).ok) throw new Error("bootstrap");
+  // Where no OS fence can be made (inside the plane's check, a runner without bubblewrap) an operator allows unconfined agents.
+  if (NO_OS_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
 const io = (extra: Partial<StepIo> = {}): StepIo => ({ gh: exec, git: exec, shell: exec, fetch, dir, scratch: join(dir, "scratch"), base: "main", toolHome: dir, ...extra });
 const flowOf = (steps: Parameters<typeof flowFromSteps>[0]) => store.createFlow({ repo, name: "Outreach", definitionJson: JSON.stringify(flowFromSteps(steps, null)), by: "alex" }, T0);
 const cardIn = (flow: number, stage: string, description = "Please get back to me at priya@example.com. Order 42.") =>
-  store.addFlowCard({ flow, title: "Refund for order 42?", description, stage, by: "alex" }, T0);
+  store.addFlowCard({ flow, title: "Refund for order 42?", description, stage, by: "alex", byKind: "person" }, T0);
 
 describe("the drawing", () => {
   test("a request's host is written out; an email says who, what and about what; a tool's arguments are a JSON object", () => {

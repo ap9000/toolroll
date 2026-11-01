@@ -24,6 +24,7 @@
  * This module owns the terms, digest, words and transactions; the flow engine
  * asks for coverage inside its filing transaction, and plan-auto.ts seals.
  */
+import { inReadOnlyRequest } from "./read-only-request.js";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, readFile, realpath, stat } from "node:fs/promises";
@@ -36,6 +37,7 @@ import { dollarWords as dollars, scheduleWords, UNATTENDED_RULE_WORDS, unattende
 import { MODE_MAX_DAYS } from "./modes.js";
 import { accountReachesSql } from "./project-access.js";
 import type { FlowRow, FlowTriggerRow, Store } from "./store.js";
+import { canonicalJson } from "./canonical-json.js";
 
 /** Grant history, run reservations and the last prepared script snapshots shared by UI/worker processes. Additive only. */
 export const FLOW_UNATTENDED_SCHEMA = `
@@ -104,18 +106,6 @@ export type UnattendedTerms = {
   dailyRunCap: number | null;
   absoluteExpiry: string;
 };
-
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`);
-    return `{${entries.join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
 
 export const unattendedTermsJson = (terms: UnattendedTerms): string => canonicalJson(terms);
 
@@ -265,10 +255,19 @@ export function activeUnattendedGrant(store: Store, flowId: number, now: Date): 
   const row = store.handle.prepare("SELECT * FROM flow_unattended_grant WHERE flow = ? AND revoked_at IS NULL").get(flowId);
   if (row === undefined) return null;
   if (Date.parse(String(row["absolute_expiry"])) <= now.getTime()) {
-    store.transact(() => closeGrant(store, row, "the-clock", "expired", now));
+    // A page visit only reads (docs/plans/get-side-effects.md): the background pass or the next path that acts closes it.
+    if (!inReadOnlyRequest()) store.transact(() => closeGrant(store, row, "the-clock", "expired", now));
     return null;
   }
   return readGrant(row);
+}
+
+/** Close every grant past its expiry (the console's background pass). Returns how many ended. */
+export function closeExpiredUnattendedGrants(store: Store, now: Date): number {
+  const rows = store.handle.prepare("SELECT * FROM flow_unattended_grant WHERE revoked_at IS NULL").all()
+    .filter(row => Date.parse(String(row["absolute_expiry"])) <= now.getTime());
+  for (const row of rows) store.transact(() => closeGrant(store, row, "the-clock", "expired", now));
+  return rows.length;
 }
 
 /** Why the grant can't cover this flow right now (the same checks signing makes), or null. */

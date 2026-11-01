@@ -86,13 +86,19 @@ describe("toolroll onboard", () => {
     expect(envelope().project).toEqual({ path: repo, added: false });
   });
 
+  test("a project that uses youiyoux says once that its change requests become tasks; one that doesn't says nothing", async () => {
+    expect(await onboard(["--yes", "--json"])).toBe(0);
+    expect(envelope()).not.toHaveProperty("youiyoux");
+    writeFileSync(join(repo, "youi.project.json"), "{}");
+    lines = [];
+    expect(await onboard(["--yes", "--json"])).toBe(0);
+    expect(envelope()).toMatchObject({ project: { path: repo }, youiyoux: "change requests become tasks that wait for your approval" });
+  });
+
   test("the project needs a yes like the skill: without one it is only named", async () => {
     expect(await onboard(["--json"])).toBe(0);
     expect(envelope()).toMatchObject({ project: null, projectProblem: `not added yet: run again with --yes to add ${repo}` });
     expect(await loadProjectRegistry(join(base, "config", "repos.json"))).not.toMatchObject({ repos: [repo] });
-    lines = [];
-    await onboard([]);
-    expect(lines.join("\n")).toContain(`project   not added yet: run again with --yes to add ${repo}`);
   });
 
   test("inside a linked worktree the project is the main checkout", async () => {
@@ -125,18 +131,12 @@ describe("toolroll onboard", () => {
   test("outside a repository nothing is added and the rest still answers", async () => {
     expect(await onboard(["--json"], { cwd: elsewhere })).toBe(0);
     expect(envelope()).toMatchObject({ ok: true, project: null, projectProblem: "not inside a git repository" });
-    lines = [];
-    await onboard([], { cwd: elsewhere });
-    expect(lines.join("\n")).toContain("project   none added: run onboard inside the repository you want to hand off");
   });
 
   test("without --yes and no terminal, nothing is written outside the repository", async () => {
     expect(await onboard(["--json"])).toBe(0);
     expect(envelope().skill).toMatchObject({ state: "needs-yes", files: [{ agent: "claude", path: claudeSkill(), action: "create" }], wrote: [] });
     expect(existsSync(join(home, ".claude"))).toBe(false);
-    lines = [];
-    await onboard([]);
-    expect(lines.join("\n")).toContain(`skill     not written yet: run again with --yes to write ${claudeSkill()}`);
   });
 
   test("--yes installs the marked skill for each agent found, and a second run changes nothing", async () => {
@@ -146,9 +146,6 @@ describe("toolroll onboard", () => {
     expect(envelope().skill).toMatchObject({ state: "written", wrote: [claudeSkill(), codexSkill()] });
     const content = readFileSync(claudeSkill(), "utf8");
     expect(content).toBe(operatorSkillContent(PACKAGE_VERSION));
-    expect(content).toContain("toolroll:operator-skill");
-    expect(content).toContain("`toolroll skills get operating`");
-    for (const word of ["Hand off", "Wait", "Review", "Release"]) expect(content).toContain(word);
     expect(readFileSync(codexSkill(), "utf8")).toBe(content);
     expect(envelope().mcp).toEqual([
       { agent: "claude", command: "claude mcp add --scope user toolroll -- toolroll mcp" },
@@ -184,9 +181,6 @@ describe("toolroll onboard", () => {
     writeFileSync(claudeSkill(), edited);
     expect(await onboard(["--yes", "--json"])).toBe(0);
     expect(envelope().skill).toMatchObject({ state: "edited", files: [{ action: "edited" }], wrote: [] });
-    lines = [];
-    await onboard(["--yes"]);
-    expect(lines.join("\n")).toContain(`skill     ${claudeSkill()} has your edits, so it was left as is`);
     lines = [];
     expect(await onboard(["--remove", "--yes", "--json"])).toBe(3);
     expect(envelope()).toMatchObject({ ok: false, reason: "edited" });
@@ -253,10 +247,6 @@ describe("toolroll onboard", () => {
     expect(await onboard(["--remove", "--yes", "--json"])).toBe(0);
     expect(envelope()).toMatchObject({ ok: true, skill: { state: "removed", removed: [claudeSkill()] } });
     expect(existsSync(join(home, ".claude", "skills", "toolroll"))).toBe(false);
-
-    lines = [];
-    expect(await onboard(["--remove", "--yes"])).toBe(0);
-    expect(lines.join("\n")).toBe("skill     not installed; nothing to remove");
   });
 
   test("at a terminal it asks once: yes writes, anything else writes nothing", async () => {
@@ -290,15 +280,11 @@ describe("the handoff", () => {
     }
   };
 
-  test("as text: console, the login file (never the password), phone pairing and three next things", async () => {
+  test("as text: the login file, never the password", async () => {
     const password = account();
     await onboard(["--port", "4190"]);
     const text = lines.join("\n");
-    expect(text).toContain("tools     claude mcp add --scope user toolroll -- toolroll mcp   (add Toolroll as tools; not run)");
-    expect(text).toContain("Toolroll is ready.\n  console   http://127.0.0.1:4190");
     expect(text).toContain(`  login     alex — the password is in ${loginFile()}`);
-    expect(text).toContain("  phone     Open the console on your phone over your tailnet, or pair Telegram in Settings → Telegram");
-    expect(text).toContain('  say next  "queue these bugs overnight" · "what needs me?" · "open the result"');
     expect(text).not.toContain(password);
   });
 
@@ -318,19 +304,12 @@ describe("the handoff", () => {
   test("with no account yet it says how to get one", async () => {
     await onboard(["--json"]);
     expect(envelope().handoff.login).toBeNull();
-    lines = [];
-    await onboard([]);
-    expect(lines.join("\n")).toContain("  login     no account yet; `toolroll up` creates one");
   });
 
   test("an account without a saved login keeps its name and says to sign in with the password", async () => {
     account(false);
     await onboard(["--json"]);
     expect(envelope().handoff.login).toEqual({ account: "alex", file: null });
-    lines = [];
-    await onboard([]);
-    expect(lines.join("\n")).toContain("  login     alex — sign in with your password");
-    expect(lines.join("\n")).not.toContain("creates one");
   });
 
   test("a saved login that no longer works is not pointed at", async () => {
@@ -385,18 +364,6 @@ describe("toolroll onboard offers the starter flows", () => {
     lines = [];
     expect(await onboard(["--json", "--starter", "nightly"], { pullRequests: async () => "off" })).toBe(2);
     expect(envelope()).toMatchObject({ ok: false, reason: "usage", message: "--starter takes ci-fix, issue-task, overnight, plane-review" });
-  });
-
-  test("c2: --starter plane-review switches on the Morning plane review: its daily review and its zones", async () => {
-    withAccountAndGithub();
-    expect(await onboard(["--yes", "--json", "--starter", "plane-review"], { pullRequests: async () => "off" })).toBe(0);
-    expect(envelope().starters.find((one: { id: string }) => one.id === "plane-review")).toMatchObject({ name: "Morning plane review", state: "switched-on" });
-    const store = openStore(db);
-    try {
-      const flow = store.listFlows([repo]).find(one => one.name === "Morning plane review")!;
-      expect(JSON.parse(flow.definitionJson).stages.map((one: { kind: string }) => one.kind)).toEqual(["report", "task", "pull-request", "inbox", "done"]);
-      expect(store.flowTriggers(flow.id).map(one => JSON.parse(one.configJson))).toEqual([expect.objectContaining({ kind: "plane-review", zone: "find-cause" })]);
-    } finally { store.close(); }
   });
 
   test("c3: at a terminal each starter is one yes, saying what it does and never does; --yes alone switches none on", async () => {

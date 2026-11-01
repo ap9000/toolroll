@@ -1,6 +1,6 @@
 /** One leased Socket Mode connection, hosted by the ordinary worker. */
 import { randomBytes } from "node:crypto";
-import { setTimeout as sleep } from "node:timers/promises";
+import { abortablePause, workChatQueue } from "./chat-follow.js";
 import { loadSlackCredentials, slackApi } from "./slack-api.js";
 import { ChatState } from "./chat-delivery-state.js";
 import {
@@ -21,13 +21,7 @@ export async function followSlack(
 ): Promise<void> {
   const owner = randomBytes(16).toString("hex"),
     state = new ChatState(options.store, "slack");
-  const pause = async (ms: number) => {
-    try {
-      await sleep(ms, undefined, { signal: options.signal });
-    } catch {
-      /* shutdown */
-    }
-  };
+  const pause = abortablePause(options.signal);
   while (!options.signal.aborted) {
     const credentials = loadSlackCredentials(options.dir);
     if (
@@ -141,18 +135,16 @@ export async function followSlack(
     };
     try {
       await client.start();
-      while (same()) {
-        if (!connected || state.retryAt(credentials.installation) > new Date().toISOString()) {
-          await pause(1000);
-          continue;
-        }
-        await processSlackEvent(chat);
-        if (same()) await planSlackRooms(chat);
-        if (same()) await deliverSlackPart(chat);
-        if (same() && options.notifications())
-          await planSlackNotifications(chat);
-        await pause(1000);
-      }
+      await workChatQueue({
+        same,
+        ready: () => connected && !(state.retryAt(credentials.installation) > new Date().toISOString()),
+        pause,
+        notifications: () => options.notifications(),
+        process: () => processSlackEvent(chat),
+        rooms: () => planSlackRooms(chat),
+        deliver: () => deliverSlackPart(chat),
+        notify: () => planSlackNotifications(chat),
+      });
     } catch {
       if (alive) problem("Slack connection is unavailable. Retrying shortly.");
     } finally {

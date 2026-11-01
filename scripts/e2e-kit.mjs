@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { countingProvider, scriptedProvider, turnsOf } from "./fixtures/scripted-provider.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
+import { result as checkResult } from "./check-results.mjs";
 
 // Every Toolroll an end-to-end run starts keeps tool secrets as files in its own temporary state folder, never in the
 // person's login keychain (tool-secret-store.ts): the keychain is the person's, and a run's sign-ins are throwaway.
@@ -249,6 +250,13 @@ function realSelection(only) {
   return selectJourneys(catalogue, { journeys: "real", only });
 }
 
+/** Whether this runs inside a macOS sandbox (the plane's check fence), where no new sandbox can be made. */
+export function insideFence() {
+  if (process.platform !== "darwin" || !existsSync("/usr/bin/sandbox-exec")) return false;
+  // A deny-by-default profile, as the plane's own are: an allow-by-default one still nests inside some sandboxes.
+  try { execFileSync("/usr/bin/sandbox-exec", ["-p", "(version 1)(deny default)(allow process-exec)(allow process-fork)(allow file-read*)(allow sysctl-read)(allow mach-lookup)", "/usr/bin/true"], { stdio: "ignore", timeout: 10_000 }); return false; } catch { return true; }
+}
+
 export async function world(name, { seed, env = {}, groups = null } = {}) {
   const journeys = option("--journeys", "all");
   if (!JOURNEYS.includes(journeys)) throw new Error(`--journeys is ${JOURNEYS.join(", ")}, not ${journeys}`);
@@ -271,6 +279,10 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
   // First on the PATH of everything this run starts: the CLI, the console, the worker, a demo, a fresh install.
   const provider = journeys === "scripted" ? scriptedProvider(join(root, "provider")) : countingProvider(join(root, "provider"));
   process.env.PATH = `${provider.bin}${delimiter}${process.env.PATH ?? ""}`;
+  // Everything this run starts reads the world's own config folder, never the person's (their saved central profile
+  // would send the CLI elsewhere, and inside a check's fence it can't even be looked at); gh keeps its sign-in.
+  process.env.GH_CONFIG_DIR ??= join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "gh");
+  process.env.XDG_CONFIG_HOME = join(root, "config");
 
   const cli = (argv, { ok = [0], json = true, env = {} } = {}) => {
     try {
@@ -347,6 +359,12 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
   // The first command makes the database; the rest of the setup is independent, so it runs at once (each command is a
   // node start of about half a second; SQLite's busy wait orders their writes).
   cli(["approver", "add", "alex", "--password", passwords.alex]);
+  // Inside the plane's macOS check fence nothing can create a sandbox, so this throwaway plane lets its agents run
+  // unconfined there: they stay inside the check's own sandbox. Never outside that fence.
+  if (insideFence()) {
+    cli(["config", "unconfined-agents", "allow", ...auth]);
+    say("inside the check's macOS sandbox: this world's agents run without a sandbox of their own (the check's still holds)");
+  }
   const setup = argv => new Promise((done, fail) => execFile(process.execPath, [BIN, ...argv, "--db", db, "--json"], { encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "" }, timeout: 180_000 },
     (error, stdout, stderr) => error ? fail(new Error(`standing-orders ${argv.join(" ")}: ${(stdout ?? "") + (stderr ?? "")}`.slice(0, 2000))) : done(JSON.parse(stdout))));
   const [runner] = await Promise.all([
@@ -460,6 +478,10 @@ export async function world(name, { seed, env = {}, groups = null } = {}) {
     const catalogued = groups === null ? [] : catalogueProblems(catalogue, groups);
     const report = { startedAt: new Date(started).toISOString(), minutes: Math.round((Date.now() - started) / 6000) / 10, workspace: root, journeys, models: provider.mode, modelCalls, passed, failed: bad, skipped, results, ...(unstopped === null ? {} : { unstopped }), ...(catalogued.length === 0 ? {} : { catalogue: catalogued }) };
     writeFileSync(join(out, "report.json"), JSON.stringify(report, null, 2) + "\n");
+    // The release check reads results only from its pipes (check-results.mjs), never from report.json: one line per
+    // journey, then the group's own end.
+    for (const one of results) checkResult({ kind: "journey", name: one.name, state: one.state === "passed" || one.state === "failed" ? one.state : "skipped" });
+    checkResult({ kind: "journey-end", browserCheck: results.find(one => one.name === BROWSER_CHECK)?.state ?? null, unstopped: unstopped !== null, catalogue: catalogued.length });
     writeFileSync(join(out, "report.md"), [`# ${title} — ${passed} passed, ${bad} failed, ${skipped} skipped (${report.minutes} min)`, "",
       `Models: ${provider.mode === "scripted" ? `scripted (${modelCalls.scripted} scripted model calls)` : "real"}; real model turns: ${modelCalls.real}`, "",
       ...results.map(one => `- ${one.state === "passed" ? "✅" : one.state === "failed" ? "❌" : "⏭️"} ${one.name}${one.mode === undefined ? "" : ` [${one.mode}]`}${one.seconds === undefined ? "" : ` — ${one.seconds} s`}${one.error ? `\n  - ${one.error.split("\n")[0]}` : ""}${one.state === "skipped" ? `\n  - skipped: ${one.because.join(", ")}` : ""}`),

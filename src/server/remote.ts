@@ -1,3 +1,4 @@
+import { credentialProof, freshFacts, proveAccountNow, ssoNowAvailable, type FreshFacts } from "../scope.js";
 import { handlersOf } from './handler-registry.js';
 /** tasks handlers, moved without changing their route bodies. */
 import { type IncomingMessage,type ServerResponse } from "node:http";
@@ -6,12 +7,7 @@ import { CodingWorkspace } from '../coding-workspace.js';
 import { createMcpHttp } from "../mcp-http.js";
 import { createOAuthHttp,resourceMetadataUrl } from "../mcp-oauth.js";
 import { reproveRemote,type Principal } from "../operate-remote.js";
-import {
-rowVisible
-} from "../project.js";
 import { RequestBudget,SourceAdmission,type Admission } from "../request-budget.js";
-import { authenticateAccount } from "../scope.js";
-import { createSessionRunner } from '../session-remote.js';
 import {
 type Store
 } from "../store.js";
@@ -42,14 +38,14 @@ export interface RemoteRuntime {
   managedRepos: () => string[];
   joinSourceOf: (request: IncomingMessage) => string;
   ssoSettings: () => import("../oidc.js").OidcSettings | null;
-  SSO_FRESH_MS: number;
   oauthTokenBudget: SourceAdmission;
   hookContext: RemoteHookContext;
   teamsSourceBudget: SourceAdmission;
   teamsTenantBudget: SourceAdmission;
+  freshFactsOf: (request: IncomingMessage, who: Who | null) => FreshFacts | null;
 }
 export function createRemoteHandlers(runtime: RemoteRuntime) {
-  const { identify, store, admitPasswordSource, admitBearer, allowedHost, team, teamBrowserReply, requestBudget, options, coding, codingProjects, liveCeiling, clock, evidenceRoot, consoleOrigin, managedRepos, joinSourceOf, ssoSettings, SSO_FRESH_MS, oauthTokenBudget, hookContext, teamsSourceBudget, teamsTenantBudget } = runtime;
+  const { identify, store, admitPasswordSource, admitBearer, allowedHost, team, teamBrowserReply, requestBudget, options, clock, evidenceRoot, consoleOrigin, managedRepos, joinSourceOf, ssoSettings, oauthTokenBudget, hookContext, teamsSourceBudget, teamsTenantBudget } = runtime;
 
   /**
    * The full principal a live `so_` API token stands for: its person and their generation, the token's own read/act
@@ -119,15 +115,12 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
       return who?.via === 'cookie' ? teamBrowserReply(reply, actor, who.session.csrf) : reply;
     },
   });
-  // D7: native session operations are remote commands too (`session …` over /api/cli), run by the session owner.
-  const sessionRunner = createSessionRunner({ store, workspace: coding, projects: codingProjects, projectAllowed: repo => rowVisible(liveCeiling(), repo), clock });
   // Remote CLI: one live API token names the person; the shared command boundary decides everything else.
   const cliEndpoint = (request: IncomingMessage, response: ServerResponse) => handleCliHttp(request, response, {
     admit: principal => requestBudget.admit(principal.tokenId, "api"),
     authenticate: tokenPrincipalOf,
     run: async () => options.cliRunner ?? ((await import("../operate.js")) as { runOperateAs?: RunOperateAs }).runOperateAs ?? null,
     modeOf: options.cliModeOf,
-    session: sessionRunner,
     store,
   });
 
@@ -142,8 +135,9 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
     session: request => {
       const who = identify(request, false);
       if (who === null || who.via !== "cookie") return null;
-      return { name: who.name, role: who.role, csrf: who.session.csrf,
-        sso: who.session.sso === undefined ? null : { label: ssoSettings()?.label ?? "your identity provider", fresh: Date.now() - who.session.sso.at < SSO_FRESH_MS } };
+      return { name: who.name, role: who.role, csrf: who.session.csrf, generation: who.session.generation,
+        sso: who.session.sso === undefined ? null : { label: ssoSettings()?.label ?? "your identity provider",
+          fresh: freshFacts.run(runtime.freshFactsOf(request, who), () => ssoNowAvailable(who.name)) } };
     },
     sameSite: request => {
       const origin = request.headers.origin, referer = request.headers.referer;
@@ -152,7 +146,14 @@ export function createRemoteHandlers(runtime: RemoteRuntime) {
     },
     // The step-up for a credential: the person's password, or (empty) a fresh identity-provider check. What they may
     // grant (their role, their projects) is checked beside it.
-    confirm: (session, typed) => typed === "" ? session.sso?.fresh === true : authenticateAccount(store, session.name, typed).ok,
+    // Proved on this request's live session at the moment of consent (signed in here still, same generation), through
+    // the one account step-up: a password typed now, or an explicit re-check (spent). Never a remembered password.
+    confirm: (request, session, typed) => {
+      const who = identify(request, false);
+      if (who === null || who.via !== "cookie" || who.name !== session.name || who.session.generation !== session.generation) return false;
+      // Connecting an outside app is a credential act: never a session (Passwordless) or a remembered password.
+      return freshFacts.run(runtime.freshFactsOf(request, who), () => { const proved = proveAccountNow(store, who.name, typed, { credential: true }); return proved.ok && credentialProof(proved.method); });
+    },
     projectsFor: account => store.knownRepos().filter(repo => store.accountCanAccess(account, repo)).sort(),
     admitToken: request => oauthTokenBudget.admit(joinSourceOf(request)),
   });

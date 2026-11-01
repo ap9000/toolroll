@@ -351,6 +351,9 @@ export const FLOW_ALIASES: ContractOptions = {
 // ------------------------------------------------------------------ triggers
 
 const zoneRef = { zone: z.string().max(TEXT_LIMITS.flowRef).optional() };
+/** v126: who signs a webhook's deliveries (webhook-signing.ts); `none` is the secret address alone. */
+export const WEBHOOK_SENDERS = ["none", "standard", "github-style", "sentry", "vercel"] as const;
+const webhookSender = z.enum(WEBHOOK_SENDERS);
 const delivery = z.enum(["poll", "webhook"]);
 /** A trigger's settings as they are given: the console, `toolroll flows trigger add`, a flow file, a template, the lead. */
 const TRIGGER_INPUTS = {
@@ -365,7 +368,10 @@ const TRIGGER_INPUTS = {
   }),
   linear: z.strictObject({ kind: z.literal("linear"), team: short("triggerTeam").optional(), state: short("triggerState").optional(), label: short("triggerLabel").optional(), delivery: delivery.optional(), ...zoneRef }),
   flow: z.strictObject({ kind: z.literal("flow"), flow: z.int().min(1), when: z.string().max(TEXT_LIMITS.flowRef).optional(), ...zoneRef }),
-  webhook: z.strictObject({ kind: z.literal("webhook"), title: short("triggerWebhookTitle").optional(), titleField: short("triggerWebhookField").optional(), bodyField: short("triggerWebhookField").optional(), ...zoneRef }),
+  /** v126: `sender` signs it; Sentry and Vercel read their own payloads (scoped by `project`, Vercel's also by `team`),
+   * the others pick `titleField`, `bodyField`, `idField` and `urlField` from the JSON. */
+  webhook: z.strictObject({ kind: z.literal("webhook"), title: short("triggerWebhookTitle").optional(), titleField: short("triggerWebhookField").optional(), bodyField: short("triggerWebhookField").optional(),
+    sender: webhookSender.optional(), project: short("triggerWebhookScope").optional(), team: short("triggerWebhookScope").optional(), idField: short("triggerWebhookField").optional(), urlField: short("triggerWebhookField").optional(), ...zoneRef }),
   email: z.strictObject({ kind: z.literal("email"), folder: short("triggerFolder").optional(), sender: short("triggerSender").optional(), subject: short("triggerSubject").optional(), ...zoneRef }),
   "plane-review": z.strictObject({ kind: z.literal("plane-review"), at: z.string().regex(/^\d{1,2}:\d{2}$/, { error: "must be a time like 07:30" }).optional(), timeZone: z.string().max(TEXT_LIMITS.flowTimeZone).optional(), ...zoneRef }),
 };
@@ -404,6 +410,9 @@ export const standingOrderSchema = z.strictObject({
   /** The routine it came from: that routine's earlier tasks still count toward one-at-a-time and the ceiling. */
   routine: z.int().nullable(),
   approval: z.strictObject({ digest: z.string().min(1), by: z.string().nullable(), at: z.string().min(1), profileJson: z.string().min(1), routeJson: z.string().min(1) }).nullable(),
+  /** The nightly full check on main (release-once.md, part 3): each firing files a check-only task at main's head, its
+   * approval bound to the release check grant and the fenced check access. */
+  check: z.strictObject({ kind: z.literal("main-full"), grant: z.strictObject({ id: z.int(), digest: z.string().min(1) }), access: z.literal("sandboxed") }).optional(),
 });
 export type StandingOrder = z.infer<typeof standingOrderSchema>;
 /** A trigger as it is saved (`configJson`), one schema per kind. */
@@ -414,7 +423,10 @@ export const triggerConfigSchema = z.discriminatedUnion("kind", [
   z.strictObject({ kind: z.literal("github"), repo: z.string().min(1).max(TEXT_LIMITS.triggerGithubRepo), watch: z.enum(["issues", "pulls", "checks"]), label: z.string().max(TEXT_LIMITS.triggerLabel).nullable(), branch: z.string().max(TEXT_LIMITS.triggerBranch).nullable(), from: z.enum(["team", "anyone"]), delivery, ...ZONE_OR_NULL }),
   z.strictObject({ kind: z.literal("linear"), team: z.string().max(TEXT_LIMITS.triggerTeam).nullable(), state: z.string().max(TEXT_LIMITS.triggerState).nullable(), label: z.string().max(TEXT_LIMITS.triggerLabel).nullable(), delivery, ...ZONE_OR_NULL }),
   z.strictObject({ kind: z.literal("flow"), flow: z.int().min(1), when: zoneId, ...ZONE_OR_NULL }),
-  z.strictObject({ kind: z.literal("webhook"), title: z.string().min(1).max(TEXT_LIMITS.triggerWebhookTitle), titleField: z.string().max(TEXT_LIMITS.triggerWebhookField).nullable(), bodyField: z.string().max(TEXT_LIMITS.triggerWebhookField).nullable(), ...ZONE_OR_NULL }),
+  /** v126: a webhook saved before its sender was chosen reads unsigned, with no scope and no identity or link field. */
+  z.strictObject({ kind: z.literal("webhook"), title: z.string().min(1).max(TEXT_LIMITS.triggerWebhookTitle), titleField: z.string().max(TEXT_LIMITS.triggerWebhookField).nullable(), bodyField: z.string().max(TEXT_LIMITS.triggerWebhookField).nullable(),
+    sender: webhookSender.optional(), project: z.string().max(TEXT_LIMITS.triggerWebhookScope).nullable().optional(), team: z.string().max(TEXT_LIMITS.triggerWebhookScope).nullable().optional(),
+    idField: z.string().max(TEXT_LIMITS.triggerWebhookField).nullable().optional(), urlField: z.string().max(TEXT_LIMITS.triggerWebhookField).nullable().optional(), ...ZONE_OR_NULL }),
   /** `sender`: addresses or domains, comma-separated; `subject`: words the subject must contain. */
   z.strictObject({ kind: z.literal("email"), folder: z.string().min(1).max(TEXT_LIMITS.triggerFolder), sender: z.string().max(TEXT_LIMITS.triggerSender).nullable(), subject: z.string().max(TEXT_LIMITS.triggerSubject).nullable(), ...ZONE_OR_NULL }),
   /** A channel in a chat app; `binding` is the pairing of the person who connected it (whose chat answers there). */

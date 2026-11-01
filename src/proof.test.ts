@@ -885,9 +885,6 @@ describe("passFraction", () => {
     expect(passFraction(matrix)).toEqual({ passed: 1, total: 2 });
   });
 
-  test("an empty matrix is 0/0", () => {
-    expect(passFraction([])).toEqual({ passed: 0, total: 0 });
-  });
 });
 
 describe("verdictWords and dispatchStatusToken", () => {

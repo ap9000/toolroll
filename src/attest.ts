@@ -17,6 +17,7 @@
  * without a fixable adapter change retire the adapter, typed.
  */
 
+import { ACP_AGENTS, isAcpProvider } from "./acp-agents.js";
 import { execFile } from "node:child_process";
 import { realpathSync, statSync, accessSync, constants } from "node:fs";
 import { delimiter, isAbsolute, join } from "node:path";
@@ -137,6 +138,12 @@ export async function attestProvider(
   binary: string,
   probe: VersionProbe = defaultProbe,
 ): Promise<AttestOutcome | null> {
+  // An ACP agent runs only on a passed conformance check of the exact binary here (docs/plans/acp-adapter.md
+  // § Admission). Absence is denial: there is no "tier 1, allow" for it. The check itself arrives with layer E;
+  // until then no ACP agent runs.
+  if (isAcpProvider(provider)) {
+    return { ok: false, problem: `${ACP_AGENTS[provider].name} isn't checked on this computer — run \`toolroll agents check ${provider}\``, version: null };
+  }
   const range = attestationOf(provider);
   if (range === null) return null;
 

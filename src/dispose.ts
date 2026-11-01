@@ -27,10 +27,11 @@ import { queueBuildReview } from "./build-review.js";
 import { homedir } from "node:os";
 import type { BuildResult } from "./builder.js";
 import type { Store } from "./store.js";
+import { nightlyTaskRef, releaseTaskRef } from "./store.js";
 import { type ProofVerdict, type VerifyCommandFacts } from "./proof.js";
 import { verificationEvidence, failedVerificationEvidence } from "./verification-evidence.js";
 import { classifyGateFailure, describeGateFailure, gateFailureSummary, type GateFailureClass } from "./gate-failure.js";
-import { propose, approve } from "./scope.js";
+import { propose, approve, liveReleaseOf, releaseCheckScope } from "./scope.js";
 import { headWithin } from "./names.js";
 
 /**
@@ -236,7 +237,9 @@ function disposeBuildOutcomeLocked(context: DisposeContext, result: BuildResult)
           grant.publishOn !== "complete" &&
           headSha !== null &&
           headWithin(branch, grant.headPrefix) &&
-          (grant.selector === "all" || origin === "ours")
+          (grant.selector === "all" || origin === "ours") &&
+          // A nightly check or a release's task is never published (store.createPublicationIntent refuses both).
+          !nightlyTaskRef(store, taskRef) && !releaseTaskRef(store, taskRef)
         ) {
           const intentId = store.createPublicationIntent(
             {
@@ -534,7 +537,10 @@ export function regateTask(
   store: Store,
   taskId: string,
   now: Date,
-  approval: { kind: "operator"; name: string; token: string } | { kind: "mode"; name: string; modeDigest: string },
+  approval: { kind: "operator"; name: string; token: string } | { kind: "mode"; name: string; modeDigest: string }
+    // The release's own standing approval (check-failure.ts recheckReleaseTask, after a failure the plane confirmed as
+    // infrastructure): only a prepared release candidate, whose scope and approval are kept exactly as they are.
+    | { kind: "release"; name: string },
 ): { ok: true; run: number; head: string } | { ok: false; reason: RegateRefusal; message: string } {
   const ref = store.lookupRef(taskId);
   if (ref === null) return { ok: false, reason: "no-task", message: `no task ${taskId}` };
@@ -558,7 +564,38 @@ export function regateTask(
   const scope = store.getScope(taskId);
   if (scope === null) return { ok: false, reason: "no-attempt", message: `${taskId} has no scope` };
   const head = last.headRevision;
-  const actor = approval.kind === "operator" ? approval.name : `mode ${approval.name}`;
+  const actor = approval.kind === "operator" ? approval.name : approval.kind === "release" ? approval.name : `mode ${approval.name}`;
+  // A release task: signed terms or a release check purpose (pipeline-speed.md, P0), each sealed with the approval.
+  if (approval.kind === "release" && ((scope.candidate ?? null) === null || !releaseCheckScope(scope))) {
+    return { ok: false, reason: "not-approved", message: `${taskId} isn't a release candidate; only a release reruns under its own approval` };
+  }
+  // A prepared candidate (a release gate, the nightly check) already names the approved commit, and the builder loads
+  // exactly its tree on every attempt. The rerun keeps that scope and its approval as they are: nothing is proposed or
+  // sealed again, so a regate can never swap the approved commit, its release terms or the person's yes for others
+  // (2026-10-27: a regate rewrote release-0.9.73's candidate to its own build commit and the release refused it).
+  if ((scope.candidate ?? null) !== null || releaseCheckScope(scope)) {
+    const candidate = scope.candidate ?? null;
+    if (candidate === null || scope.approvedDigest !== scope.digest || last.scopeDigest !== scope.digest) {
+      return { ok: false, reason: "not-approved", message: `${taskId}'s approved commit or scope changed since attempt #${last.id}, or its approval no longer stands; approve its scope again instead` };
+    }
+    // A release's task runs again only while its one approval still stands for it (the dispatch would refuse it anyway).
+    const release = liveReleaseOf(store, taskId, "dispatch", now);
+    if (release.applies && !release.ok) return { ok: false, reason: "not-approved", message: `${taskId} can't run again: ${release.why}` };
+    // Any other seal stands only while its authority does (an expired mode, a revoked approver): the queue would never
+    // dispatch it, so the regate says so instead of queueing a rerun that can't start.
+    if (!store.modeApprovalLive(ref.id, now)) return { ok: false, reason: "not-approved", message: `${taskId}'s approval no longer stands; approve its scope again instead` };
+    return store.transact(() => {
+      if (store.getTask(taskId)?.state !== "queued") {
+        const queued = store.requeueTask(taskId, actor, now);
+        if (!queued.ok) {
+          const why: Record<string, RegateRefusal> = { claimed: "claimed", "accepted-result": "accepted-result", published: "published" };
+          return { ok: false as const, reason: why[queued.reason] ?? "not-rejected", message: `${taskId} could not be queued again: ${queued.reason}` };
+        }
+      }
+      store.addRunNote(last.id, "Toolroll", `The check will run again on the approved commit ${candidate.slice(0, 7)}, under the same approval, as a new attempt, ${approval.kind === "operator" ? `on ${approval.name}'s say-so` : approval.kind === "release" ? "because Toolroll confirmed the failure was its own infrastructure, not the code" : "automatically once, because the failure was outside this change"}.`, now);
+      return { ok: true as const, run: last.id, head: candidate };
+    });
+  }
   return store.transact(() => {
     const proposed = propose(store, {
       taskId, goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd,
@@ -567,7 +604,7 @@ export function regateTask(
     });
     let sealed = false;
     if (approval.kind === "operator") sealed = approve(store, taskId, approval.name, now, proposed.digest, approval.token).ok;
-    else sealed = store.sealScopeApproval(taskId, actor, now, {}, { kind: "mode", modeDigest: approval.modeDigest });
+    else if (approval.kind === "mode") sealed = store.sealScopeApproval(taskId, actor, now, {}, { kind: "mode", modeDigest: approval.modeDigest });
     if (!sealed) return { ok: false as const, reason: "not-approved" as const, message: `${taskId}'s rerun scope could not be approved` };
     // A finished task returns to the queue; one already queued (a park, a
     // stop) simply dispatches with the rerun scope on its next turn.
@@ -622,7 +659,11 @@ export function maybeTriggerRepair(store: Store, repo: string, evidenceRoot: str
   // to a person. No repair draft, no third pass, on either road.
   {
     const rerunTask = store.refById(run.taskRef)?.externalId ?? "";
-    if (run.headRevision && store.getScope(rerunTask)?.candidate === run.headRevision && store.builderAttemptsAt(run.taskRef, run.headRevision) >= 2) {
+    // A prepared candidate's attempts each record their own commit of the candidate's tree, so a rerun under the same
+    // approved scope is the same commit's check even when its head isn't the candidate itself.
+    const rerunScope = store.getScope(rerunTask);
+    const sameCommit = rerunScope !== null && (rerunScope.candidate === run.headRevision || ((rerunScope.candidate ?? null) !== null && rerunScope.digest === run.scopeDigest));
+    if (run.headRevision && sameCommit && store.builderAttemptsAt(run.taskRef, run.headRevision) >= 2) {
       const contradicted = cause === "review";
       store.enqueueNotification({ source: { run: sourceRunId }, dedupeKey: `regate-failed:${sourceRunId}`, kind: "repair-evidence", pushClass: "attention",
         subject: contradicted ? "The rerun on the same commit was contradicted by its review" : "The project check failed again on the same commit",

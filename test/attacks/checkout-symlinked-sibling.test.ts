@@ -8,7 +8,7 @@ import { symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { taskBoundary, trustedWorktreeBinding } from "../../src/agent-fence.js";
-import { expectNoMarker, lines, marker, needs, ordinaryWork, plane, q, seatbelt, underSeatbelt, useScratch, write } from "./harness.js";
+import { expectNoMarker, lines, marker, needs, ordinaryWork, plane, q, seatbelt, underSandbox, useScratch, write } from "./harness.js";
 
 describe("attack: a symlinked sibling of main", () => {
   const scratch = useScratch("alias");
@@ -43,7 +43,7 @@ describe("attack: a symlinked sibling of main", () => {
     const { secret, at, projects } = setup();
     const { fence, grants } = at.launch("claude");
     const work = ordinaryWork(at);
-    const result = underSeatbelt([
+    const result = underSandbox([
       `cat ${q(join(projects, "zz-other-alias", "secret.txt"))} 2>/dev/null || echo alias-denied`,
       `cat ${q(join(projects, "other", "secret.txt"))} 2>/dev/null || echo other-denied`,
       work.script,

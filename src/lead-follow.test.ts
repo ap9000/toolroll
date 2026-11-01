@@ -7,6 +7,7 @@ import { addApprover, approve, propose } from "./scope.js";
 import { verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { fileTaskProposal } from "./proposal.js";
 import { register } from "./runner.js";
+import { acquire } from "./claim.js";
 import { configureLeadFollow, leadFollowStatus, recordLeadFollowFailure, runLeadFollowPass } from "./lead-follow.js";
 import { ASSIGNMENT_STATUS_ACTION } from "./assignment-status.js";
 import type { LeadTurnInput, LeadTurnOutcome } from "./lead.js";
@@ -61,8 +62,9 @@ describe("the built-in lead reads crew updates through the assignment inbox", ()
     store.finalizeLeadTurn(opened.id, started.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "Seen.", activity: "" } }, now);
     return { ok: true, turn: opened.id, reply: "Seen.", activity: "", proposals: 0, steps: 1, stoppedAtCap: false, settledMicrousd: 0 };
   };
-  const pass = (now: Date) => runLeadFollowPass({ store, repos: () => [repo], evidenceRoot: root, clock: () => now,
-    provider: () => ({ config: {} as ChatConfig, key: null }), runTurn });
+  // The worker keeps beating while the lead follows (a one-minute liveness window): no update is about it going quiet.
+  const pass = (now: Date) => { store.touchRunner("builder-1", now); return runLeadFollowPass({ store, repos: () => [repo], evidenceRoot: root, clock: () => now,
+    provider: () => ({ config: {} as ChatConfig, key: null }), runTurn }); };
   const followEvents = () => store.handle.prepare("SELECT task_id, json_extract(outcome, '$.assignment.state') AS state FROM action_ledger WHERE action = ? AND actor LIKE 'follow:%' ORDER BY id")
     .all(ASSIGNMENT_STATUS_ACTION).map(row => [row["task_id"], row["state"]]);
   const privateBatches = () => store.handle.prepare("SELECT COUNT(*) AS n FROM action_ledger WHERE action LIKE 'lead batch:%' OR action LIKE 'lead update:%' OR action LIKE 'lead observed:%'").get()!["n"];
@@ -198,5 +200,58 @@ describe("the built-in lead reads crew updates through the assignment inbox", ()
     // and the next clean pass, with nothing new, clears it.
     await pass(at(6));
     expect(leadFollowStatus(store, who.name).detail).toBe("The lead will respond when a result or decision is ready, or a task is cancelled.");
+  });
+
+  describe("a sweep's burst (docs/plans/lead-fan-out.md)", () => {
+    const sweepOf = (ids: string[], now: Date) => {
+      const sweep = store.createSweep({ owner: "operator", thread, repo, title: "Bug sweep", brief: "Reproduce first.", maxParallel: 3, proposal: null }, now);
+      ids.forEach((id, index) => store.addSweepTask(sweep, id, index, id));
+      return sweep;
+    };
+
+    test("is held until the window passes, then lands on ONE page, grouped by sweep", async () => {
+      follow(t0);
+      for (const id of ["a", "b", "c"]) file(id, at(1));
+      sweepOf(["a", "b", "c"], at(1));
+      // c is being built: the sweep is still working while a and b settle.
+      const claimed = acquire(store, store.refFor("built-in", "c").id, "builder-1", { token: "tok-builder-1", now: at(1), ttlMs: 60 * 60_000 });
+      if (!claimed.ok) throw Error(`claim: ${claimed.reason}`);
+      await pass(at(2));
+      store.setTaskState("a", "cancelled", at(3));
+      await pass(at(4));
+      expect(asked).toHaveLength(0);
+      store.setTaskState("b", "cancelled", at(5));
+      await pass(at(5.5));
+      expect(asked).toHaveLength(0);
+      // The window (2 minutes from the first held pass at 4) has passed: one page, both, and the sweep's line.
+      await pass(at(6.5));
+      expect(asked).toHaveLength(1);
+      expect(asked[0]!.context).toContain("ONE line per sweep");
+      expect(asked[0]!.context).toMatch(/"title":"Bug sweep".*"line":"2 of 3 settled"/);
+      const updates = JSON.parse(asked[0]!.context.split("\n")[1]!) as { task: string }[];
+      expect(updates.map(one => one.task).sort()).toEqual(["a", "b"]);
+    });
+
+    test("a non-sweep update is never held", async () => {
+      follow(t0);
+      for (const id of ["a", "b"]) file(id, at(1));
+      file("solo", at(1));
+      sweepOf(["a", "b"], at(1));
+      await pass(at(2));
+      store.setTaskState("solo", "cancelled", at(3));
+      await pass(at(4));
+      expect(asked).toHaveLength(1);
+    });
+
+    test("a sweep whose children have all settled is not held", async () => {
+      follow(t0);
+      for (const id of ["a", "b"]) file(id, at(1));
+      sweepOf(["a", "b"], at(1));
+      await pass(at(2));
+      store.setTaskState("a", "cancelled", at(3));
+      store.setTaskState("b", "cancelled", at(3));
+      await pass(at(4));
+      expect(asked).toHaveLength(1);
+    });
   });
 });

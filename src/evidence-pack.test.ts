@@ -68,7 +68,7 @@ async function approvedBuild(): Promise<{ id: string; run: number }> {
   const alex = await signIn("alex");
   const made = store.createConsoleTask({ title: "Rotate the signing key", repo: REPO, filedVia: "console", filedBy: { name: "alex", kind: "person" } }, new Date());
   if (!made.ok) throw new Error(made.reason);
-  const scoped = await post(alex, `/t/${made.id}/scope`, { csrf: csrfOf(await page(alex, "/tasks")), acceptance: "c1: the old key stops working | manual-review", sawDigest: store.getScope(made.id)?.digest ?? "", goal: "Rotate the key", not: "", touches: "infra/keys" });
+  const scoped = await post(alex, `/t/${made.id}/scope`, { csrf: csrfOf(await page(alex, "/tasks/new")), acceptance: "c1: the old key stops working | manual-review", sawDigest: store.getScope(made.id)?.digest ?? "", goal: "Rotate the key", not: "", touches: "infra/keys" });
   expect(scoped.status).toBe(303);
   const sam = await signIn("sam");
   const html = await page(sam, `/t/${made.id}`);
@@ -128,7 +128,6 @@ test("the printable page shows the same facts, with no script, and the task page
   const alex = await signIn("alex");
   const html = await page(alex, `/t/${id}/evidence`);
   expect(html).toContain(`data-evidence-pack="${id}"`);
-  expect(html).toContain("<h1>Evidence pack</h1>");
   expect(html).toContain('data-evidence-chain="ok"');
   expect(html).toContain("<dt>Approval rules</dt><dd>requester can&#39;t approve<ul");
   expect(html).toContain("alex: no rules → requester can&#39;t approve");

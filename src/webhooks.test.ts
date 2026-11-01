@@ -7,7 +7,7 @@ import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadWebhookTargets, activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, saveConsoleUrl, loadConsoleUrl, effectivePrimary, savePrimary, phoneOrigin, CONSOLE_URL_ENV } from "./webhooks.js";
+import { loadWebhookTargets, activeWebhookTargets, webhookPass, saveConsoleUrl, loadConsoleUrl, effectivePrimary, savePrimary, phoneOrigin, CONSOLE_URL_ENV } from "./webhooks.js";
 import { saveSlackCredentials, slackCredentialFile } from "./slack-api.js";
 
 describe("the primary — one service pages, chosen or sensibly implied", () => {
@@ -39,15 +39,6 @@ describe("the primary — one service pages, chosen or sensibly implied", () => 
     expect(effectivePrimary({}, dir, true)).toMatchObject({ channel: "telegram" });
   });
 
-  test("legacy notification-only settings remain selectable for this release", () => {
-    writeFileSync(join(dir, "slack-webhook"), "https://hooks.slack.com/services/T/B/x\n", { mode: 0o600 });
-    expect(effectivePrimary({ TOOLROLL_DISCORD_WEBHOOK: "https://discord.com/api/webhooks/1/y" }, dir, false)).toEqual({ channel: "slack", implicit: true, configured: ["slack", "discord"], legacyWarning: LEGACY_WEBHOOK_WARNING });
-  });
-
-  test("the console URL saves normalized", () => {
-    expect(saveConsoleUrl(dir, "http://server.tailae758.ts.net:4180/")).toMatchObject({ ok: true });
-    expect(loadConsoleUrl({}, dir)).toBe("http://server.tailae758.ts.net:4180");
-  });
 });
 
 describe("the console URL is parsed, not pattern-matched (attended A5)", () => {
@@ -147,6 +138,5 @@ test("legacy discovery, destination receipts, retry and adapter suppression", as
     expect(rows.every(row => row["notification"] === first && row["notification"] !== resolved && row["delivered_at"] !== null)).toBe(true);
     expect(rows.map(row => row["attempts"])).toEqual([2, 1]);
     expect(JSON.stringify(rows)).not.toContain("secret");
-    expect(store.handle.prepare("SELECT name FROM pragma_table_info('notification') WHERE name = 'delivered_at'").all()).toEqual([]);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
 });

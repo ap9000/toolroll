@@ -30,7 +30,11 @@ export function evidenceResultStatusOf(result: ResultFacts, publication: Publica
     stored = {
       token: "evidence-damaged",
       label: "Result saved, but some saved material is unavailable",
-      detail: `Some saved material is missing, damaged, or could not be read. The machine's verdict at completion is unchanged: ${result.verdict === "verified" ? "the approved check passed against it then" : recorded.label.toLowerCase()}.`,
+      // Never "passed" when the check itself can't be read now (task-status.ts approvedCheckOf).
+      detail: recorded.token === "check-unreadable" ? `Some saved material is missing, damaged, or could not be read. ${recorded.detail}`
+        : `Some saved material is missing, damaged, or could not be read. ${result.verdict === "verified" && result.checks !== undefined && ["ready-to-review", "pr-opened", "merge-observed", "pr-closed"].includes(recorded.token)
+          ? "The machine's verdict at completion is unchanged: the approved check passed against it then."
+          : result.verdict === "verified" ? "Open the result to see its checks." : `The machine's verdict at completion is unchanged: ${recorded.label.toLowerCase()}.`}`,
       tone: "problem",
       action: { label: "See what is missing", kind: "open-result" },
     };
@@ -209,7 +213,7 @@ export function resultFactsFromHtml(html: string): Record<string, string>[] {
 
 /** Where a result form may send its reader back: the review cockpit's
  * own deep link, the chat's result detail, the page of a task named in
- * `tasks` (the run's own), or the run page. Anything else lands on the run
+ * `tasks` (the run's own) or its Result tab at this run, or the run page. Anything else lands on the run
  * page. Matched exactly — never a bare open redirect. */
 export function resultReturnTarget(raw: string | null | undefined, runId: number, tasks: readonly string[] = []): string {
   if (raw !== null && raw !== undefined) {
@@ -219,6 +223,9 @@ export function resultReturnTarget(raw: string | null | undefined, runId: number
     if (chat !== null && Number(chat[2]) === runId) return raw;
     // The run's own task page, which offered Run checks in place; never another task's.
     if (tasks.some(task => raw === `/t/${encodeURIComponent(task)}`)) return raw;
+    // That task page's Result tab at this run (docs/plans/one-page-task-and-agent.md), its version and view kept.
+    const tab = /^\/t\/([A-Za-z0-9._~%-]{1,200})\?(?:version=[A-Za-z0-9._~%-]{1,200}&)?tab=result&run=([0-9]{1,15})(?:&section=(?:summary|changes|checks))?$/.exec(raw);
+    if (tab !== null && Number(tab[2]) === runId && tasks.some(task => tab[1] === encodeURIComponent(task))) return raw;
   }
   return `/r/${runId}`;
 }
@@ -270,9 +277,6 @@ export function revisionSourceOf(scopeDigest: string | null): string {
   return scopeDigest === null ? "none" : scopeDigest;
 }
 
-export const REVIEW_DRAFT_PREFIX = "standing-orders:review-draft:";
-export const RESULT_SCROLL_PREFIX = "standing-orders:result-scroll:";
-
 /** The in-page half of the result presentation. Everything it does is
  * presentational or a bounded draft: no fetch, no endpoint, no submit.
  *
@@ -305,6 +309,8 @@ export const RESULT_REVIEW_SCRIPT = String.raw`
   var user=panel?panel.getAttribute('data-result-user')||'':'';
   var task=panel?panel.getAttribute('data-result-task')||'':'';
   var run=panel?panel.getAttribute('data-result-run')||'':'';
+  // The address parameter that holds the result's own view: 'tab' on its page, 'section' on a task page's Result tab.
+  var viewParam=panel&&panel.getAttribute('data-result-param')==='section'?'section':'tab';
   var draftPrefix='standing-orders:review-draft:',scrollPrefix='standing-orders:result-scroll:';
   var day=86400000,storage=true,rememberPosition=null;
   function read(key){try{return JSON.parse(sessionStorage.getItem(key)||'null');}catch(e){return null;}}
@@ -327,7 +333,7 @@ export const RESULT_REVIEW_SCRIPT = String.raw`
       tab.addEventListener('click',function(ev){
         if(ev.metaKey||ev.ctrlKey||ev.shiftKey||ev.altKey||ev.button!==0)return;
         ev.preventDefault();var name=tab.getAttribute('data-result-tab');show(name);
-        try{var url=new URL(location.href);url.searchParams.set('tab',name);url.hash='';history.replaceState(history.state,'',url.toString());}catch(e){}
+        try{var url=new URL(location.href);url.searchParams.set(viewParam,name);url.hash='';history.replaceState(history.state,'',url.toString());}catch(e){}
         if(rememberPosition)rememberPosition();
       });
       tab.addEventListener('keydown',function(ev){
@@ -448,7 +454,7 @@ export const RESULT_REVIEW_SCRIPT = String.raw`
   // view the URL now names.
   var returnKey=scrollPrefix+user+':'+task+':return';
   function scrollKeyFor(){var url=null;try{url=new URL(location.href);}catch(e){}
-    return scrollPrefix+user+':'+task+':'+(url?(url.searchParams.get('result')||run)+':'+(url.searchParams.get('tab')||'summary'):run);}
+    return scrollPrefix+user+':'+task+':'+(url?(url.searchParams.get('result')||run)+':'+(url.searchParams.get(viewParam)||'summary'):run);}
   // Once a navigation has begun (pageswap / beforeunload) the document's
   // scroll is no longer the reader's — a cross-document transition can
   // move it to the top while it is captured — so remembering stops.

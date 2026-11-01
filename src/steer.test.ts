@@ -189,10 +189,3 @@ describe("delivery and receipts (finding 8)", () => {
     expect(store.attachSteerNotes(refOf("t-1"), next, later(5_000))).toEqual([]);
   });
 });
-
-describe("pending notes", () => {
-  test("pendingSteerCount counts notes not yet settled", () => {
-    store.fileSteerNote("t-1", "alex", "pending", T0);
-    expect(store.pendingSteerCount(refOf("t-1"))).toBe(1);
-  });
-});

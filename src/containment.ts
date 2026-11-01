@@ -37,9 +37,10 @@ import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmdirSync, writeFileSync } from "node:fs";
 import { captureCgroupIdentity, cgroupEmptiness, containerEmptiness } from "./container-state.js";
 import { createServer, type Server } from "node:net";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { envValue } from "./names.js";
+import { sleep } from "./sleep.js";
 
 export const CONTAINMENT_POLICIES = ["observed", "preferred", "required"] as const;
 export type ContainmentPolicy = (typeof CONTAINMENT_POLICIES)[number];
@@ -354,7 +355,6 @@ export function createContainer(effective: EffectiveContainment, label: string):
   }
 }
 
-const sleep = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
  * The cgroup2 prelude: join, confirm on fd 3, close it, exec the target
@@ -573,9 +573,4 @@ export function jobObjectContainer(capability: ContainmentCapability, label: str
       server.close();
     },
   };
-}
-
-/** Where the Windows helper lives beside this module (dist or src). */
-export function containmentModuleDir(): string {
-  return dirname(fileURLToPath(import.meta.url));
 }

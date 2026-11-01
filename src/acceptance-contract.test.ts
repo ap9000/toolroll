@@ -28,52 +28,28 @@ describe("digestOf: the rubric folds in only when non-empty (v39)", () => {
   const bare = { goal: "a guard", outOfScope: null, touches: [] as string[] };
   const GOLDEN = "a24c72e6603f78291e1eea2e162b383e"; // scope.test.ts's own golden value
 
+  const c = (statement: string, evidence: AcceptanceCriterion["evidence"], how: string | null = null): AcceptanceCriterion => ({ id: "c1", statement, how, evidence });
+  const withRubric = (acceptance?: AcceptanceCriterion[]) => digestOf(acceptance === undefined ? bare : { ...bare, acceptance });
+
   test("absent acceptance digests to the exact pre-v39 golden value", () => {
-    expect(digestOf(bare)).toBe(GOLDEN);
+    expect(withRubric()).toBe(GOLDEN);
   });
 
-  test("an explicitly empty rubric digests identically to absent", () => {
-    expect(digestOf({ ...bare, acceptance: [] })).toBe(GOLDEN);
+  test.each<[string, AcceptanceCriterion[] | undefined, AcceptanceCriterion[]]>([
+    ["an explicitly empty rubric is the same as absent", undefined, []],
+    ["criterion order is presentation", [c("first", ["check"]), { ...c("second", ["manual-review"]), id: "c2" }], [{ ...c("second", ["manual-review"]), id: "c2" }, c("first", ["check"])]],
+    ["evidence kind order within one criterion is presentation", [c("s", ["check", "screenshot"])], [c("s", ["screenshot", "check"])]],
+    ["`how` is advisory and never enters the digest", [c("s", ["check"], "check it by hand")], [c("s", ["check"])]],
+  ])("%s", (_label, a, b) => {
+    expect(withRubric(a)).toBe(withRubric(b));
   });
 
-  test("a non-empty rubric moves the digest away from the golden value", () => {
-    const acceptance: AcceptanceCriterion[] = [{ id: "c1", statement: "it guards", how: null, evidence: ["manual-review"] }];
-    expect(digestOf({ ...bare, acceptance })).not.toBe(GOLDEN);
-  });
-
-  test("criterion order is presentation, not meaning", () => {
-    const a: AcceptanceCriterion[] = [
-      { id: "c1", statement: "first", how: null, evidence: ["check"] },
-      { id: "c2", statement: "second", how: null, evidence: ["manual-review"] },
-    ];
-    const b = [...a].reverse();
-    expect(digestOf({ ...bare, acceptance: a })).toBe(digestOf({ ...bare, acceptance: b }));
-  });
-
-  test("evidence kind order within one criterion is presentation, not meaning", () => {
-    const a: AcceptanceCriterion[] = [{ id: "c1", statement: "s", how: null, evidence: ["check", "screenshot"] }];
-    const b: AcceptanceCriterion[] = [{ id: "c1", statement: "s", how: null, evidence: ["screenshot", "check"] }];
-    expect(digestOf({ ...bare, acceptance: a })).toBe(digestOf({ ...bare, acceptance: b }));
-  });
-
-  test("`how` is advisory and never enters the digest", () => {
-    const a: AcceptanceCriterion[] = [{ id: "c1", statement: "s", how: "check it by hand", evidence: ["check"] }];
-    const b: AcceptanceCriterion[] = [{ id: "c1", statement: "s", how: null, evidence: ["check"] }];
-    const c: AcceptanceCriterion[] = [{ id: "c1", statement: "s", how: "a totally different note", evidence: ["check"] }];
-    expect(digestOf({ ...bare, acceptance: a })).toBe(digestOf({ ...bare, acceptance: b }));
-    expect(digestOf({ ...bare, acceptance: a })).toBe(digestOf({ ...bare, acceptance: c }));
-  });
-
-  test("a statement edit moves the digest — voids the approval it would otherwise carry", () => {
-    const a: AcceptanceCriterion[] = [{ id: "c1", statement: "the original claim", how: null, evidence: ["check"] }];
-    const b: AcceptanceCriterion[] = [{ id: "c1", statement: "a rewritten claim", how: null, evidence: ["check"] }];
-    expect(digestOf({ ...bare, acceptance: a })).not.toBe(digestOf({ ...bare, acceptance: b }));
-  });
-
-  test("an evidence-kind edit moves the digest — it is signed, unlike how", () => {
-    const a: AcceptanceCriterion[] = [{ id: "c1", statement: "s", how: null, evidence: ["check"] }];
-    const b: AcceptanceCriterion[] = [{ id: "c1", statement: "s", how: null, evidence: ["manual-review"] }];
-    expect(digestOf({ ...bare, acceptance: a })).not.toBe(digestOf({ ...bare, acceptance: b }));
+  test.each<[string, AcceptanceCriterion[] | undefined, AcceptanceCriterion[]]>([
+    ["a non-empty rubric moves the digest away from the golden value", undefined, [c("it guards", ["manual-review"])]],
+    ["a statement edit moves the digest — voids the approval it would otherwise carry", [c("the original claim", ["check"])], [c("a rewritten claim", ["check"])]],
+    ["an evidence-kind edit moves the digest — it is signed, unlike how", [c("s", ["check"])], [c("s", ["manual-review"])]],
+  ])("%s", (_label, a, b) => {
+    expect(withRubric(a)).not.toBe(withRubric(b));
   });
 });
 
@@ -188,29 +164,16 @@ describe("parseProof: a criterion's typed evidence refs (v39) — fail closed, b
     if (result.ok) expect(result.proof.criteria[0]?.evidence).toEqual([]);
   });
 
-  test("must be an array", () => {
-    expect(problemsOf("nope")).toContain("bad-criteria[0].evidence");
-  });
-
-  test("caps at PROOF_LIMITS.evidencePerCriterion entries", () => {
-    const many = Array.from({ length: PROOF_LIMITS.evidencePerCriterion + 1 }, () => ({ kind: "check", ref: "npm test" }));
-    expect(problemsOf(many)).toContain("criteria[0].evidence-too-many");
-  });
-
-  test("kind must draw from the four signed kinds", () => {
-    expect(problemsOf([{ kind: "vibes", ref: "x" }])).toContain("bad-criteria[0].evidence[0].kind");
-  });
-
-  test("ref is required prose, capped at PROOF_LIMITS.evidenceRef bytes, control-free", () => {
-    expect(problemsOf([{ kind: "check", ref: "" }])).toContain("missing-criteria[0].evidence[0].ref");
-    expect(problemsOf([{ kind: "check", ref: "x".repeat(PROOF_LIMITS.evidenceRef + 1) }])).toContain(
-      "criteria[0].evidence[0].ref-too-long",
-    );
-    expect(problemsOf([{ kind: "check", ref: "look\x1b]0;pwned\x07" }])).toContain("criteria[0].evidence[0].ref-controls");
-  });
-
-  test("a non-object entry is refused", () => {
-    expect(problemsOf(["not-an-object"])).toContain("bad-criteria[0].evidence[0]");
+  test.each<[unknown, string]>([
+    ["nope", "bad-criteria[0].evidence"],
+    [Array.from({ length: PROOF_LIMITS.evidencePerCriterion + 1 }, () => ({ kind: "check", ref: "npm test" })), "criteria[0].evidence-too-many"],
+    [[{ kind: "vibes", ref: "x" }], "bad-criteria[0].evidence[0].kind"],
+    [[{ kind: "check", ref: "" }], "missing-criteria[0].evidence[0].ref"],
+    [[{ kind: "check", ref: "x".repeat(PROOF_LIMITS.evidenceRef + 1) }], "criteria[0].evidence[0].ref-too-long"],
+    [[{ kind: "check", ref: "look\x1b]0;pwned\x07" }], "criteria[0].evidence[0].ref-controls"],
+    [["not-an-object"], "bad-criteria[0].evidence[0]"],
+  ])("refuses malformed evidence %#: %s", (evidence, reason) => {
+    expect(problemsOf(evidence)).toContain(reason);
   });
 
   test("a sound multi-kind evidence list round-trips exactly", () => {

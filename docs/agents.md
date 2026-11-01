@@ -4,8 +4,9 @@ How a coding agent (Claude Code, Codex, or your own) drives Toolroll. People
 approve; agents file, wait, read and report. Contributors changing Toolroll
 itself want [AGENTS.md](../AGENTS.md) instead.
 
-The examples below are real output from `toolroll` 0.9.63, run against a
-throwaway data folder (`TOOLROLL_DB=/tmp/…/orders.db`). Paths are shortened.
+The examples below are real output from `toolroll`, run against a throwaway
+data folder (`TOOLROLL_DB=/tmp/…/orders.db`). Paths are shortened, and newer
+builds may add keys: ignore the ones you don't know.
 
 ## Ask the binary first
 
@@ -30,11 +31,11 @@ toolroll skills get operating       # the machine contract and your rules, as ma
 }
 ```
 
-`contract --commands --json` lists 197 commands. Each entry has
-`invocation`, `synopsis`, `audience` (`agent` or `operator`),
+`contract --commands --json` lists every command (about two hundred). Each
+entry has `invocation`, `synopsis`, `audience` (`agent` or `operator`),
 `agentMayInvoke`, `mutation` (`none`, `keyed`, `unkeyed`,
-`identity-idempotent`), `positionals`, `flags`, `remote` and
-`notableReasons`. Call only commands with `agentMayInvoke: true`. The guide is
+`identity-idempotent`), `flags` and `remote`, and where they apply
+`positionals` and `notableReasons`. Call only commands with `agentMayInvoke: true`. The guide is
 documentation, not permission, and its reason lists are curated: the runtime
 `reason` field is the truth.
 
@@ -80,7 +81,8 @@ toolroll task add "Give outbound webhooks a bounded retry policy" \
   "ok": true,
   "command": "task add",
   "task": { "id": "retries", "title": "Give outbound webhooks a bounded retry policy",
-            "state": "queued", "createdAt": "2026-10-14T16:45:33.172Z", "priority": 0 },
+            "state": "queued", "createdAt": "2026-11-01T22:01:52.571Z",
+            "updatedAt": "2026-11-01T22:01:52.571Z", "priority": 0 },
   "repo": "/…/demo-repo"
 }
 ```
@@ -134,6 +136,7 @@ A freshly scoped task needs its person's approval first:
   "ok": false, "command": "task wait", "reason": "needs-person",
   "message": "Needs a person | no run | checks unknown | next: Approve task",
   "task": "retries", "outcome": "Needs a person", "run": null,
+  "replacedRun": null, "phase": null,
   "check": { "status": "unknown", "exitCode": null, "suites": [] },
   "next": "Approve task"
 }

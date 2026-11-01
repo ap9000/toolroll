@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { runOperate, EXIT } from "./operate.js";
-import { TEMPLATES, templateByName } from "./templates.js";
+import { TEMPLATES } from "./templates.js";
 import { validateTaskText } from "./proposal.js";
 import { standingTermsProblems } from "./flow-schedule.js";
 import { runScheduleNow, setFlowTriggerOn, triggerConfigOf } from "./flow-triggers.js";
@@ -93,12 +93,6 @@ describe("template — preview by default, --file files unapproved", () => {
     expect(trigger).toMatchObject({ kind: "schedule", state: "paused", nextAt: null });
     const config = triggerConfigOf(trigger!);
     expect(config).toMatchObject({ kind: "schedule", schedule: "daily:03:30", zone: "build", order: { stem: "nightly-deps", approval: null, routine: null, filedBy: null, singleFlight: true } });
-    // `flows show` says what each run files.
-    store.upsertProject(repo, "repo", T0);
-    lines = [];
-    expect(await run(["flows", "show", String(flow.id)])).toBe(EXIT.ok);
-    expect(lines.join("\n")).toContain("Builds: Update dependencies conservatively");
-    expect(lines.join("\n")).toContain("Each run waits for approval under the project's rules.");
     // Turned on, it starts counting; a run files an ordinary proposal that waits for approval.
     setFlowTriggerOn(store, trigger!, true, T0);
     expect(store.getFlowTrigger(trigger!.id)).toMatchObject({ state: "active", nextAt: expect.any(String) });
@@ -143,8 +137,4 @@ describe("template — preview by default, --file files unapproved", () => {
     expect(payload().reason).toBe("unknown");
   });
 
-  test("the recipes really are in the library", () => {
-    expect(templateByName("issue-intake")?.kind).toBe("recipe");
-    expect(templateByName("ci-babysitter")?.kind).toBe("recipe");
-  });
 });

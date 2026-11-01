@@ -4,8 +4,9 @@
  * this launch only — its opted-in tools, a research step's read-only actions
  * — and the token stops working when the launch ends. Fresh and resumed
  * builds each get their own. (The macOS proof that a fenced shell can't read
- * the secrets by file, descriptor or process listing is in agent-fence.test.ts.)
+ * the secrets by file, descriptor or process listing is in agent-fence.slow.test.ts.)
  */
+import { allowWhereUnfenced } from "./unfenced-test-support.js";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
@@ -13,7 +14,7 @@ import type { AddressInfo } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { serverEnv, startToolBroker, type ToolBroker } from "./tool-broker.js";
+import { serverEnv, startToolBroker, workspaceBytes, type ToolBroker } from "./tool-broker.js";
 import { addToolTo, codexToolArgs, prepareRunTools, setToolSecrets, type ToolSpec } from "./project-tools.js";
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
@@ -297,7 +298,7 @@ describe("through the gateway", () => {
     worktree = join(dir, "state", "worktrees", "repo", "task");
     for (const path of [home, repo, worktree]) mkdirSync(path, { recursive: true });
     writeFileSync(join(dir, "notes.mjs"), NOTES_SERVER);
-    store = openStore(join(dir, "state", "orders.db"));
+    store = allowWhereUnfenced(openStore(join(dir, "state", "orders.db")));
     // The checkout is a recorded linked worktree of the project, as the pool hands one over: a fenced launch trusts nothing else.
     boundCheckout(store, repo, worktree);
     register(store, { name: "builder-1", host: "test", capacity: 9, repos: [repo], now: T0, newToken: () => "tok" });
@@ -433,4 +434,41 @@ describe("through the gateway", () => {
     }
     expect(readFileSync(join(dir, "notes.log"), "utf8").match(/^start /gm)).toHaveLength(2);
   });
+});
+
+describe("a tool server never runs the build's own bytes (arc 2)", () => {
+  test("a command or path inside the checkout or caches, or a relative path, is refused; an ordinary server isn't", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "so-broker-bytes-")));
+    const home = join(root, "home"), checkout = join(root, "checkout"), cache = join(root, "cache"), bin = join(checkout, "node_modules", ".bin");
+    for (const one of [home, bin, cache]) mkdirSync(one, { recursive: true });
+    writeFileSync(join(checkout, "server.js"), "");
+    writeFileSync(join(bin, "evil"), "#!/bin/sh\n", { mode: 0o755 });
+    const untrusted = [checkout, cache];
+    const check = (command: string, args: string[], path = "/usr/bin:/bin") => workspaceBytes(command, args, home, path, untrusted);
+    expect(check("node", ["./server.js"])).toMatch(/relative path/);
+    expect(check("./server.js", [])).toMatch(/relative path/);
+    expect(check("node", [join(checkout, "server.js")])).toContain(join(checkout, "server.js"));
+    expect(check(join(bin, "evil"), [])).toBe(join(bin, "evil"));
+    expect(check("evil", [], `${bin}:/usr/bin`)).toBe(join(bin, "evil"));
+    expect(check("node", [join(cache, "x.js")])).toContain(join(cache, "x.js"));
+    expect(check("node", [`--require=${join(checkout, "server.js")}`])).toMatch(/names what this build writes/);
+    expect(check("node", ["-e", `require(${JSON.stringify(join(checkout, "server.js"))})`])).toMatch(/names what this build writes/);
+    expect(check("node", ["--import=./x.mjs"])).toMatch(/relative path/);
+    if (process.platform === "darwin") expect(check("node", [join(checkout, "SERVER.JS").toUpperCase()])).not.toBeNull();
+    expect(check("sh", ["-c", "echo hi"])).toBeNull();
+    expect(check("npx", ["-y", "@modelcontextprotocol/server-everything"])).toBeNull();
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+test("a server that may not start unwrapped answers with why, and nothing starts", async () => {
+  const marker = join(realpathSync(mkdtempSync(join(tmpdir(), "so-broker-unwrapped-"))), "ran");
+  const spec = { name: "probe", transport: "stdio", command: "/bin/sh", args: ["-c", `touch ${marker}`], secrets: [] } as unknown as ToolSpec;
+  const broker = await startToolBroker([{ spec, values: {} }], { wrap: () => null, unwrapped: () => "No fence for it here." });
+  try {
+    const answer = await fetch(broker.url("probe"), { method: "POST", headers: { authorization: `Bearer ${broker.token}`, "content-type": "application/json", accept: "application/json, text/event-stream" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }) });
+    expect(await answer.text()).toContain("No fence for it here.");
+    expect(existsSync(marker)).toBe(false);
+  } finally { await broker.close(); }
 });

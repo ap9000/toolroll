@@ -23,7 +23,7 @@ export type DemoResultView = {
 const SUGGESTIONS = ["Fix the flaky refund test", "Rewrite the empty Payouts page", "Put the new invoice view behind a flag"];
 
 function hint(): Html {
-  return html`<section class="demo-hint" aria-label="Get started"><p class="demo-hint-title">Ask for something, like “fix the flaky refund test”</p>${
+  return html`<section class="demo-hint" aria-label="Get started"><h2 class="demo-hint-title">What should the crew do?</h2><p class="demo-hint-sub">Ask for something, like “fix the flaky refund test”, or start from one of these.</p>${
     postForm("/chat/demo/ask", SUGGESTIONS.map(one => html`<button type="submit" name="message" value="${one}">${one}</button>`), { attrs: { class: "demo-suggestions" } })}</section>`;
 }
 
@@ -81,13 +81,13 @@ export function demoThreadHtml(exchanges: readonly DemoExchange[], resultOf: (ex
   return html`${exchanges.map(exchange => {
     const parts: Html[] = [
       html`<div class="demo-said demo-you"><p>${exchange.asked}</p></div>`,
-      html`<div class="demo-said demo-lead"><p class="demo-who">Lead</p><p>${exchange.reply}</p></div>`,
+      html`<div class="demo-said demo-lead"><p class="demo-who"><span class="demo-avatar" aria-hidden="true">L</span>Lead</p><p>${exchange.reply}</p></div>`,
       planCard(exchange),
     ];
     if (exchange.state === "working") parts.push(buildCard(exchange));
     if (exchange.state === "ready" || exchange.state === "complete" || exchange.state === "sent-back") parts.push(resultCard(exchange, resultOf(exchange)));
     if (exchange.state === "complete") {
-      parts.push(html`<div class="demo-said demo-lead"><p class="demo-who">Lead</p><p>Done. That's the whole loop: ask, approve, Ready, Complete. Ask for something else whenever you like.</p></div>`,
+      parts.push(html`<div class="demo-said demo-lead"><p class="demo-who"><span class="demo-avatar" aria-hidden="true">L</span>Lead</p><p>Done. That's the whole loop: ask, approve, Ready, Complete. Ask for something else whenever you like.</p></div>`,
         html`<section class="card demo-handoff" data-demo-handoff aria-label="Your own project"><h2>Now try it on your own project</h2><p>In your repository's folder, run:</p><pre class="demo-command"><code>${START_COMMAND}</code></pre><p class="meta">It opens in your browser, already signed in.</p></section>`);
     }
     return html`<article class="demo-turn" id="demo-${exchange.id}">${parts}</article>`;
@@ -96,9 +96,9 @@ export function demoThreadHtml(exchanges: readonly DemoExchange[], resultOf: (ex
 
 export function demoChatHtml(input: { exchanges: readonly DemoExchange[]; version: number; problem: string | null; resultOf: (exchange: DemoExchange) => DemoResultView | null }): Html {
   const working = input.exchanges.some(one => one.state === "working");
-  return html`<div class="demo-chat">${input.problem === null ? "" : html`<p class="problem" role="alert">${input.problem}</p>`}<div id="demo-thread" class="demo-thread" aria-live="polite" data-version="${input.version}" data-working="${working ? "1" : "0"}">${
+  return html`<div class="demo-chat${input.exchanges.length === 0 ? " demo-chat--empty" : ""}">${input.problem === null ? "" : html`<p class="problem" role="alert">${input.problem}</p>`}<div id="demo-thread" class="demo-thread" aria-live="polite" data-version="${input.version}" data-working="${working ? "1" : "0"}">${
     demoThreadHtml(input.exchanges, input.resultOf)}</div>${
-    postForm("/chat/demo/ask", html`<label for="demo-message" class="so-sr-only">Message the lead</label><textarea id="demo-message" name="message" rows="2" maxlength="500" placeholder="Ask the lead for a change" required></textarea><button type="submit" class="demo-primary">Send</button>`, { attrs: { class: "demo-composer" } })}</div>`;
+    postForm("/chat/demo/ask", html`<label for="demo-message" class="so-sr-only">Message the lead</label><div class="demo-composer-card"><textarea id="demo-message" name="message" rows="1" maxlength="500" placeholder="Ask the lead for a change" required aria-describedby="demo-composer-hint"></textarea><div class="demo-composer-bar"><span id="demo-composer-hint">Enter to send · Shift + Enter for a new line</span><button type="submit" class="demo-primary demo-send" aria-label="Send"><svg aria-hidden="true" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3M3.5 7.5 8 3l4.5 4.5"/></svg></button></div></div>`, { attrs: { class: "demo-composer" } })}</div>`;
 }
 
 /**

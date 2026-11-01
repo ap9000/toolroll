@@ -1,9 +1,9 @@
-import { bearerOf, centralProfile, type TeamCliOptions } from './team-cli.js';
+import { bearerOf, centralProfile, type ConnectOptions } from './connect-cli.js';
 import { envelopeJson } from './envelope.js';
 import { healthSnapshotSchema } from './contracts/health.js';
 
 /** Read the running server, never a fresh CLI process's empty counters or the local database. */
-export async function runHealthCommand(argv: readonly string[], write: (line: string) => void, options: TeamCliOptions = {}): Promise<number> {
+export async function runHealthCommand(argv: readonly string[], write: (line: string) => void, options: ConnectOptions = {}): Promise<number> {
   const json = argv.includes('--json');
   const fail = (message: string, reason = 'unavailable', code = 1) => {
     write(json ? envelopeJson({ command: 'health', ok: false, reason, message }) : message); return code;

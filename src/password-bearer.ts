@@ -29,11 +29,6 @@ export function passwordBearerAccepted(version: string = PACKAGE_VERSION): boole
   return false;
 }
 
-/** A refusal's words for this request: unchanged, or with the replacement when it came with a password bearer. */
-export function withReplacement(authorization: string | undefined, message: string): string {
-  return !isPasswordBearer(authorization) || message.includes("toolroll tokens create") ? message : `${message} ${PASSWORD_BEARER_WARNING}`;
-}
-
 /**
  * The refusal boundary for one password-bearer request, whichever adapter answers it: the deprecation is announced in
  * headers (RFC 9745 Deprecation, and a Warning naming the replacement), and any refusal's words, plain text or a JSON

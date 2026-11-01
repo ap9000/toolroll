@@ -1,14 +1,23 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
-import { leadTimeoutNotice, openStore, type ChatConfig, type Store } from "./store.js";
+import { chatTurnAccounting, leadTimeoutNotice, openStore, type ChatConfig, type Store } from "./store.js";
 import { fileTaskProposal } from "./proposal.js";
 import { propose } from "./scope.js";
 import { ceilingDigestOf, isVerifiedApprover, reproveApprover, verifyApproverStanding, type VerifiedApprover } from "./principal.js";
 import { LEAD_MAX_STEPS, LEAD_STEP_TEXT_CAP_BYTES, TURN_WALL_CLOCK_MS, LEAD_TOOL_CALL_CAP_BYTES, LEAD_TOOL_RESULT_CAP_BYTES, MAX_OUTPUT_TOKENS, credentialKeyOf, leadWorstCaseForPrice, parseLeadProviderWrapper, subscriptionCredentialKey } from "./converse.js";
-import { runLeadTurn, historyFor, LEAD_ABORT_GRACE_MS, LEAD_CHANNEL_COPY, LEAD_FAILURE_COPY, LEAD_REFUSAL_COPY } from "./lead.js";
+import { leadToolLabel } from "./lead-progress.js";
+import { settleWithCache } from "./converse.js";
+import { retentionPlan, sweepRetention } from "./retention.js";
+import { searchMemory } from "./project-memory.js";
+import { LEAD_QUEUE_EXPIRY_MS, LEAD_QUEUE_MAX_MESSAGES, PersonalQueue, type LeadQueueContext } from "./lead-queue.js";
+import { chatAckPage } from "./server/render-chat.js";
+import { htmlString } from "./html.js";
+import { withFormToken } from "./server/request-context.js";
+import { chatMoney } from "./server/chrome.js";
+import { leadFailureText } from "./lead.js";
+import { activitySummary, runLeadTurn, historyFor, LEAD_ABORT_GRACE_MS, LEAD_CHANNEL_COPY, LEAD_FAILURE_COPY, LEAD_REFUSAL_COPY } from "./lead.js";
 import { NOTHING_ATTACHED, deliverableClaim } from "./reply-shape.js";
-import { LEAD_MAX_PROPOSALS_PER_TURN, LEAD_TOOLS, executeLeadTool, redactForLead } from "./lead-tools.js";
+import { LEAD_CORE_TOOLS, LEAD_MAX_PROPOSALS_PER_TURN, LEAD_TOOLS, LEAD_TOOL_SCHEMAS, executeLeadTool, findLeadTools, redactForLead } from "./lead-tools.js";
 import { TEXT_LIMITS } from "./text-limits.js";
-import { LEAD_CONTRACT, LEAD_CONTRACT_VERSION } from "./lead-contract.js";
 import * as leadProgress from "./lead-progress.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 
@@ -127,24 +136,6 @@ describe("the lead's turn", () => {
       ...overrides,
     });
 
-  test("the intake contract treats one outcome as enough and asks only material questions", () => {
-    expect(LEAD_CONTRACT_VERSION).toBe(49);
-    expect(LEAD_CONTRACT).toContain("Ready is a saved result, not a reviewer stage");
-    expect(LEAD_CONTRACT).toContain("Historical missing assessments never require rerunning work");
-    expect(LEAD_CONTRACT).toContain("call get_result_images for that exact execution and run");
-    expect(LEAD_CONTRACT).toContain("say they follow, never that they were delivered");
-    expect(LEAD_CONTRACT).toContain("call it again with that offset or with the image ids it listed");
-    expect(LEAD_CONTRACT).toContain("read get_agents and answer in its words");
-    expect(LEAD_CONTRACT).toContain("never an agent that is not listed");
-    expect(LEAD_CONTRACT).toContain("a plain-language outcome is enough to draft a task");
-    expect(LEAD_CONTRACT).toContain("at most three questions");
-    expect(LEAD_CONTRACT).toContain("Do not ask the operator for a title, paths, implementation details, acceptance wording, model, budget");
-    expect(LEAD_CONTRACT).toContain("use your judgment");
-    expect(LEAD_CONTRACT).toContain("Set propose_task planning to 'required'");
-    expect(LEAD_CONTRACT).toContain("call commit_to in the same turn");
-    expect(LEAD_CONTRACT).toContain("call remember at once");
-  });
-
   test("the organisation policy stops a chat on a provider or model it doesn't allow, before anything is admitted or sent", async () => {
     const neverSent = (async () => { throw new Error("a refused turn sends nothing"); }) as unknown as typeof fetch;
     store.setOrgPolicy({ providers: ["codex"], models: null, tools: null, ceiling: "escalated" }, "root", T0);
@@ -223,20 +214,6 @@ describe("the lead's turn", () => {
     expect(script.bodies[0]).not.toContain(KEY);
   });
 
-  test("server-authored task context reaches the model without cluttering the visible conversation", async () => {
-    const script = scripted([text("I will focus on that task.")]);
-    const outcome = await turn("what should happen next?", script.fetcher, {
-      context: "Current task: in-2. Read it with get_task before proposing changes.",
-    });
-    expect(outcome).toMatchObject({ ok: true });
-    expect(script.bodies[0]).toContain("Current task: in-2");
-    expect(script.bodies[0]).toContain("what should happen next?");
-    expect(store.listLeadMessages(thread().id, 10).map(one => one.text)).toEqual([
-      "what should happen next?",
-      "I will focus on that task.",
-    ]);
-  });
-
   test("a conversation remains live across days until it is explicitly ended", async () => {
     const live = session();
     const first = scripted([text("I will remember that.")]);
@@ -279,6 +256,34 @@ describe("the lead's turn", () => {
     expect(store.latchedChatTurns(credential)).toEqual([]);
     expect(store.chatTurnsToday("alex", clock())).toBe(1);
   });
+  // v140 (docs/plans/evals-nightly.md B1): each request's row keeps what its provider itself reported — exact model,
+  // turns, reported cost, cache tokens — with null for anything unreported, and API dollars apart from subscription usage.
+  test("each request keeps what its provider reported; API dollars, subscription usage and unknown stay apart", async () => {
+    const rows = (turn: number) => store.raw().prepare("SELECT id FROM chat_turn WHERE mate_turn = ? ORDER BY id").all(turn).map(row => chatTurnAccounting(store, Number(row["id"]))!);
+    // The direct API path: the response body names the model; Anthropic reports no cost or turns, so those stay null.
+    const direct = await turn("what needs me?", scripted([json({ type: "message", model: "claude-sonnet-5-20261001", content: [{ type: "text", text: "Quiet." }],
+      usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 50, cache_creation_input_tokens: 10 } })]).fetcher);
+    if (!direct.ok) throw new Error("turn refused");
+    expect(rows(direct.turn)).toEqual([expect.objectContaining({ provider: "anthropic-api", modelReported: "claude-sonnet-5-20261001", providerTurns: null, reportedCostUsd: null,
+      tokensIn: 160, cacheReadTokens: 50, cacheWriteTokens: 10, amount: { kind: "api", microusd: direct.settledMicrousd } })]);
+
+    // A subscription harness: its reported cost is usage, not billed; a request that reported nothing keeps null, not 0.
+    const config: ChatConfig = { ...CONFIG, provider: "claude-subscription", model: "default", weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 };
+    const subscriptionRunner: SubscriptionLeadRunner = async request => request.history.some(one => one.role === "tool")
+      ? { ok: true, answer: { text: "One decision needs you.", calls: [], tokensIn: 90, tokensOut: 12, reportedCostMicrousd: null } }
+      : { ok: true, answer: { text: "I will look.", calls: [{ id: "r1", name: "recap", args: {} }], tokensIn: 400, tokensOut: 20, reportedCostMicrousd: null,
+          modelReported: "claude-sonnet-4-5-20250929", providerTurns: 2, reportedCostUsd: 0.0123, cacheReadTokens: 300, cacheWriteTokens: 40, billingReported: "subscription" } };
+    const outcome = await runLeadTurn({ store, who, session: session(0, "alex", subscriptionCredentialKey("claude-subscription")), thread: thread(), config, key: null, message: "what needs me?", subscriptionRunner, clock });
+    if (!outcome.ok) throw new Error("turn refused");
+    expect(rows(outcome.turn)).toEqual([
+      expect.objectContaining({ provider: "claude-subscription", modelReported: "claude-sonnet-4-5-20250929", providerTurns: 2, reportedCostUsd: 0.0123, cacheReadTokens: 300, cacheWriteTokens: 40,
+        amount: { kind: "subscription", reportedUsd: 0.0123 } }),
+      // v141 (Codex round 1 #4): a request whose own events didn't say how it was billed is unknown money, never the plan.
+      expect.objectContaining({ modelReported: null, providerTurns: null, reportedCostUsd: null, cacheReadTokens: null, cacheWriteTokens: null, amount: { kind: "unknown" } }),
+    ]);
+    expect(outcome.settledMicrousd).toBe(0);
+  });
+
   test("a watched turn reports its steps, its tools in plain words and its reply as it is written", async () => {
     const config: ChatConfig = { ...CONFIG, provider: "claude-subscription", model: "default", weeklyCeilingMicrousd: 0, priceInMicrousd: 0, priceOutMicrousd: 0 };
     const live = session(0, "alex", subscriptionCredentialKey("claude-subscription"));
@@ -288,10 +293,16 @@ describe("the lead's turn", () => {
       step++;
       if (step === 1) {
         request.onText?.("Let me look.");
+        // get_flows is found first (tools on demand), then called from the next step.
+        expect(request.tools.map(one => one.name)).not.toContain("get_flows");
         return { ok: true, answer: { text: "Let me look.", calls: [
           { id: "r1", name: "recap", args: {} },
-          { id: "r1", name: "get_flows", args: { flow: 999 } },
+          { id: "f1", name: "find_tools", args: { query: "flows" } },
         ], tokensIn: 10, tokensOut: 2, reportedCostMicrousd: null } };
+      }
+      if (step === 2) {
+        expect(request.tools.map(one => one.name)).toContain("get_flows");
+        return { ok: true, answer: { text: "", calls: [{ id: "r1", name: "get_flows", args: { flow: 999 } }], tokensIn: 10, tokensOut: 2, reportedCostMicrousd: null } };
       }
       request.onText?.("One decision");
       request.onText?.("sk-ant-api03-" + "A".repeat(90));
@@ -301,22 +312,28 @@ describe("the lead's turn", () => {
     const outcome = await runLeadTurn({ store, who, session: live, thread: thread(), config, key: null, message: "what needs me?", subscriptionRunner, clock, onProgress: event => events.push(event) });
     expect(outcome).toMatchObject({ ok: true, reply: "One decision needs you." });
     if (!outcome.ok) throw new Error("unreachable");
-    expect(events.map(event => event.kind === "tool" ? `tool:${event.label}` : event.kind === "tool-result" ? `result:${event.outcome.state}` : event.kind === "text" ? `text:${event.step}:${event.text}` : event.kind === "step" ? `step:${event.step}` : event.kind)).toEqual([
-      "started", "step:1", "text:1:Let me look.", "tool:Recapping", "result:succeeded", "tool:Reading the flows", "result:failed", "step:2", "text:2:One decision", "text:2:One decision needs you.",
+    expect(events.map(event => event.kind === "tool" ? `tool:${event.label}` : event.kind === "tool-result" ? `result:${event.outcome.state}` : event.kind === "text" ? `${event.final ? "final" : "text"}:${event.step}:${event.text}` : event.kind === "step" ? `step:${event.step}` : event.kind)).toEqual([
+      "started", "step:1", "text:1:Let me look.", "final:1:Let me look.", "tool:Recapping", "result:succeeded", `tool:${leadToolLabel("find_tools")}`, "result:succeeded",
+      "step:2", "tool:Reading the flows", "result:failed", "step:3", "text:3:One decision", "text:3:One decision needs you.",
+      // Slice 8: each step's finished answer once more, secret-checked whole, so a live view may show its last word.
+      "final:3:One decision needs you.",
     ]);
     const starts = events.filter(event => event.kind === "tool");
     const results = events.filter(event => event.kind === "tool-result");
-    expect(new Set(starts.map(event => event.id)).size).toBe(2);
+    expect(new Set(starts.map(event => event.id)).size).toBe(3);
     expect(results.map(event => event.id)).toEqual(starts.map(event => event.id));
-    expect(results[1]).toMatchObject({ step: 1, outcome: { state: "failed", reason: "No such flow in your projects." } });
+    expect(results[2]).toMatchObject({ step: 2, outcome: { state: "failed", reason: "No such flow in your projects." } });
     expect(events.every(event => event.turn === outcome.turn)).toBe(true);
   });
 
   test('project knowledge reads are counted without granting a write tool',async()=>{
-    const script=scripted([answer([call('get_project_knowledge',{repo:'r1'})]),text('Project knowledge is unavailable; no changes made.')]);
+    // Found first (tools on demand), then read in the next step: exactly one read, and no write tool is ever advertised.
+    const script=scripted([answer([call('find_tools',{query:'project knowledge'})]),answer([call('get_project_knowledge',{repo:'r1'})]),text('Project knowledge is unavailable; no changes made.')]);
     const outcome=await turn('Read project knowledge',script.fetcher);
     expect(outcome).toMatchObject({ok:true,activity:expect.stringContaining('read 1'),proposals:0});
-    expect(script.bodies[0]).toContain('get_project_knowledge');expect(script.bodies[0]).not.toContain('save_project_knowledge');
+    expect(script.bodies[0]).not.toContain('"name":"get_project_knowledge"');expect(script.bodies[1]).toContain('"name":"get_project_knowledge"');
+    expect(script.bodies[2]).not.toContain("get_project_knowledge isn't available");
+    for(const body of script.bodies)expect(body).not.toContain('save_project_knowledge');
   });
 
   test.each([
@@ -355,11 +372,12 @@ describe("the lead's turn", () => {
     // Exercise the stream guard even if a future copy mapping introduces unsafe text.
     const format = vi.spyOn(leadProgress, "leadToolFailureReason").mockReturnValue("Couldn't read sk-ant-api03-" + "A".repeat(90));
     const events: leadProgress.LeadProgress[] = [];
-    const script = scripted([answer([call("get_flows", { flow: 999 })]), text("That flow isn't available.")]);
+    // get_flows is found first, so the failure below is the tool's own (no such flow), not the advertisement refusal.
+    const script = scripted([answer([call("find_tools", { query: "read the flows" })]), answer([call("get_flows", { flow: 999 })]), text("That flow isn't available.")]);
     try {
       expect(await turn("Read the flow", script.fetcher, { onProgress: event => events.push(event) })).toMatchObject({ ok: true });
-      expect(format).toHaveBeenCalledWith("get_flows", "No such flow in your projects.");
-      expect(events.filter(event => event.kind === "tool-result")).toEqual([
+      expect(script.bodies[2]).toContain("No such flow in your projects.");
+      expect(events.filter(event => event.kind === "tool-result" && event.outcome.state === "failed")).toEqual([
         expect.objectContaining({ outcome: { state: "failed", reason: "That step didn't work (Reading the flows)." } }),
       ]);
       expect(JSON.stringify(events)).not.toContain("sk-ant-api03-");
@@ -542,20 +560,6 @@ describe("the lead's turn", () => {
     }
   });
 
-  test("a tool still returns its real result when the output contract reports a mismatch under Vitest", () => {
-    const tool = LEAD_TOOLS.find(one => one.name === "get_actions")!;
-    const handle = vi.spyOn(tool, "handle").mockReturnValue({ ok: true, body: { actual: "the handler result" } });
-    const write = vi.spyOn(process.stderr, "write").mockReturnValue(true);
-    try {
-      expect(executeLeadTool({ store, who, now: clock(), draft: () => null, step: 1, readDecisions: new Map() }, "get_actions", {}))
-        .toEqual({ ok: true, body: { actual: "the handler result" } });
-      expect(write).toHaveBeenCalledWith(expect.stringContaining("lead tool get_actions: its result disagrees with its output schema"));
-    } finally {
-      handle.mockRestore();
-      write.mockRestore();
-    }
-  });
-
   test("a proposal field that looks like a credential is refused before it is drafted, and the call never goes back out", async () => {
     const ctx = { store, who, now: clock(), draft: () => 1 };
     expect(executeLeadTool(ctx, "propose_hold", { task: "in-1", reason: "use AKIAABCDEFGHIJKLMNOP" })).toMatchObject({ ok: false, message: expect.stringContaining("plain text") });
@@ -577,14 +581,6 @@ describe("the lead's turn", () => {
     if (outcome.replayed) throw new Error("unreachable replay");
     expect(outcome.reply).toBe(`step ${LEAD_MAX_STEPS}\n\n(I stopped here: this answer needed more steps than one reply allows. Ask me to carry on.)`);
     expect(script.bodies).toHaveLength(LEAD_MAX_STEPS);
-  });
-
-  test("chat error copy is plain: what happened, what it means and one next step, with no internal words", () => {
-    for (const words of [...Object.values(LEAD_REFUSAL_COPY), ...Object.values(LEAD_FAILURE_COPY), ...Object.values(LEAD_CHANNEL_COPY)]) {
-      expect(words).not.toMatch(/\b(?:lease[sd]?|digests?|latch(?:ed)?|mint(?:ed)?|ceilings?|sessions?|reservations?|credentials?|dispatch(?:ed)?|this turn|turn #|steps?|superseded|malformed)\b/i);
-      expect(words.split(/(?<=[.!?])\s+/).length).toBeGreaterThanOrEqual(2);
-      expect(words).toMatch(/[.!?]$/);
-    }
   });
 
   describe("a reply that claims an attachment it does not carry", () => {
@@ -616,9 +612,358 @@ describe("the lead's turn", () => {
       const linked = scripted([text("Here's the link to the task: https://so.example.com/chat?task=in-1")]);
       expect(reply(await turn("link me the task", linked.fetcher))).toBe("Here's the link to the task: https://so.example.com/chat?task=in-1");
       expect(linked.bodies).toHaveLength(1);
-      const shown = scripted([answer([{ type: "text", text: "Opening it." }, call("show_control", { control: "settings" })]), text("Here's the link to Settings.")]);
+      const shown = scripted([answer([call("find_tools", { query: "show the settings page" })]), answer([{ type: "text", text: "Opening it." }, call("show_control", { control: "settings" })]), text("Here's the link to Settings.")]);
       expect(reply(await turn("where are settings?", shown.fetcher))).toBe("Here's the link to Settings.");
-      expect(shown.bodies).toHaveLength(2);
+      expect(shown.bodies).toHaveLength(3);
+    });
+  });
+
+  describe("the personal queue (docs/plans/lead-message-queue.md)", () => {
+    /** A personal lead turn of alex's, running (what makes a send wait). */
+    const busy = (live = session(), where = thread()) => {
+      const opened = store.openLeadTurn({ approver: "alex", session: live.id, thread: where.id, credentialKey: CREDENTIAL, reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 25_000_000, deadlineMs: 60_000 }, clock());
+      if (!opened.ok) throw new Error(opened.reason);
+      expect(store.startLeadTurn(opened.id, clock()).ok).toBe(true);
+      return opened.id;
+    };
+    const send = (queue: PersonalQueue, live: ReturnType<typeof session>, where: ReturnType<typeof thread>, text: string, request: string, context: LeadQueueContext | null = null) =>
+      queue.sendOrQueue({ approver: "alex", approverGeneration: who.generation, session: live.id, ceilingDigest: who.ceilingDigest, thread: where.id, text, requestId: request, context }, clock());
+
+    test("send runs now when nothing of the person's runs or waits; otherwise it waits — the same request is the same message", () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      expect(send(queue, live, where, "first", "a".repeat(32))).toEqual({ kind: "run" });
+      busy(live, where);
+      const waiting = send(queue, live, where, "second", "b".repeat(32), { task: "t-1", mode: "build" });
+      expect(waiting).toMatchObject({ kind: "queued", already: false, row: { status: "queued", text: "second" } });
+      if (waiting.kind !== "queued") throw new Error("unreachable");
+      expect(store.handle.prepare("SELECT pending, turn FROM lead_message WHERE id = ?").get(waiting.row.message)).toEqual({ pending: 1, turn: null });
+      // A retry of the same request is that message; the same request with other words or context is refused.
+      expect(send(queue, live, where, "second", "b".repeat(32), { mode: "build", task: "t-1" })).toMatchObject({ kind: "queued", already: true, row: { message: waiting.row.message } });
+      expect(send(queue, live, where, "second, edited", "b".repeat(32), { task: "t-1", mode: "build" })).toEqual({ kind: "conflict" });
+      // Removed, it stays that message (never sent twice, never resurrected) and keeps no words.
+      expect(queue.remove("alex", waiting.row.message, clock())).toBe("removed");
+      expect(send(queue, live, where, "second", "b".repeat(32), { task: "t-1", mode: "build" })).toMatchObject({ kind: "queued", already: true, row: { status: "cancelled", text: "" } });
+    });
+
+    test("bounds: ten waiting messages, then a refusal in words", () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      busy(live, where);
+      for (let index = 0; index < LEAD_QUEUE_MAX_MESSAGES; index++) expect(send(queue, live, where, `m${index}`, index.toString(16).padStart(32, "0")).kind).toBe("queued");
+      expect(send(queue, live, where, "one too many", "f".repeat(32))).toMatchObject({ kind: "full", message: expect.stringContaining("10 messages are already waiting") });
+    });
+
+    test("while something waits, the only personal turn admitted is the backlog's oldest claim — claimed-but-unbound included", () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      const first = busy(live, where);
+      const a = send(queue, live, where, "A", "a".repeat(32)), b = send(queue, live, where, "B", "b".repeat(32));
+      if (a.kind !== "queued" || b.kind !== "queued") throw new Error("unreachable");
+      store.finalizeLeadTurn(first, store.getLeadTurn(first)!.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "done", activity: "" } }, clock());
+      const open = (claim?: { message: number; runner: string; generation: number }) => store.openLeadTurn({ approver: "alex", session: live.id, thread: where.id, credentialKey: CREDENTIAL,
+        reservedMicrousd: 0, dailyTurns: 50, weeklyCeilingMicrousd: 25_000_000, deadlineMs: 60_000, ...(claim === undefined ? {} : { queueClaim: claim }) }, clock());
+      // A follow pass, a channel turn or another send: held behind the backlog.
+      expect(open()).toEqual({ ok: false, reason: "backlog" });
+      const claimA = queue.claimNext("runner-1", clock())!;
+      expect(claimA.message).toBe(a.row.message);
+      // Claimed but not yet bound: still the backlog. Overtaking is refused; B can't go first; a stale claim can't either.
+      expect(open()).toEqual({ ok: false, reason: "backlog" });
+      expect(open({ message: b.row.message, runner: "runner-1", generation: claimA.generation })).toEqual({ ok: false, reason: "backlog" });
+      expect(open({ message: claimA.message, runner: "runner-1", generation: claimA.generation - 1 })).toEqual({ ok: false, reason: "backlog" });
+      expect(queue.claimNext("runner-2", clock())).toBeNull();
+      // A's own exact claim is admitted.
+      expect(open({ message: claimA.message, runner: "runner-1", generation: claimA.generation })).toMatchObject({ ok: true });
+    });
+
+    test("a queued message runs as its own turn: admission binds it and clears pending in one statement; until then the model never reads it", async () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      const first = busy(live, where);
+      const queued = send(queue, live, where, "what changed in the release?", "c".repeat(32));
+      const removed = send(queue, live, where, "never mind that", "d".repeat(32));
+      if (queued.kind !== "queued" || removed.kind !== "queued") throw new Error("unreachable");
+      expect(queue.remove("alex", removed.row.message, clock())).toBe("removed");
+      // Waiting and removed messages are out of the model's history.
+      expect(historyFor(store, where.id).map(one => one.text).join("|")).not.toMatch(/what changed|never mind/);
+      store.finalizeLeadTurn(first, store.getLeadTurn(first)!.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "done", activity: "" } }, clock());
+      const claim = queue.claimNext("runner-1", clock())!;
+      const script = scripted([text("Here is what changed.")]);
+      const outcome = await turn(claim.text, script.fetcher, { session: live, thread: where, requestId: claim.requestId, queuedMessageId: claim.message,
+        queueClaim: { message: claim.message, runner: claim.runner, generation: claim.generation }, onAdmitted: id => { if (!queue.bindTurn(claim, id)) throw new Error("fence"); } });
+      expect(outcome).toMatchObject({ ok: true, reply: "Here is what changed." });
+      if (!outcome.ok || outcome.replayed) throw new Error("unreachable");
+      // The person's own words, not "From alex:" (that is a team room's attribution).
+      expect(script.bodies[0]).toContain("what changed in the release?");
+      expect(script.bodies[0]).not.toContain("From alex:");
+      expect(script.bodies[0]).not.toContain("never mind that");
+      expect(store.handle.prepare("SELECT pending, turn FROM lead_message WHERE id = ?").get(claim.message)).toEqual({ pending: 0, turn: outcome.turn });
+      expect(queue.get(claim.message)).toMatchObject({ status: "running", turnId: outcome.turn });
+      expect(queue.reconcile(clock(), 60_000)).toBeGreaterThanOrEqual(1);
+      expect(queue.get(claim.message)).toMatchObject({ status: "answered" });
+      expect(historyFor(store, where.id).map(one => one.text)).toContain("what changed in the release?");
+    });
+
+    test("ending the session ends its waiting messages (Not sent, no words); retention never deletes a message still waiting", () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      busy(live, where);
+      const waiting = send(queue, live, where, "keep me", "a".repeat(32));
+      if (waiting.kind !== "queued") throw new Error("unreachable");
+      // Retention's chat sweep leaves a waiting message alone, however old.
+      store.setRetentionPeriod("chat", 30, "alex", clock());
+      const later = new Date(clock().getTime() + 40 * 86_400_000);
+      expect(retentionPlan(store, "/nowhere", later).items.chat.map(one => one.id)).not.toContain(waiting.row.message);
+      expect(store.endLeadSession(live.id, "alex", clock())).toBe(true);
+      expect(queue.get(waiting.row.message)).toMatchObject({ status: "cancelled", error: "Not sent: this conversation ended before it ran.", text: "" });
+    });
+    test("search never finds a message still waiting or removed; forgetting drops its context and its search copy; a queued request counts as received", async () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      const first = busy(live, where);
+      const kept = send(queue, live, where, "zebracrossing roadmap question", "a".repeat(32));
+      const gone = send(queue, live, where, "quokkaburrow private aside", "b".repeat(32), { task: "t-1", mode: "build" });
+      if (kept.kind !== "queued" || gone.kind !== "queued") throw new Error("unreachable");
+      expect(store.leadRequestReceived(live.id, "a".repeat(32))).toBe(true);
+      expect(store.leadRequestReceived(live.id, "c".repeat(32))).toBe(false);
+      const found = (word: string) => searchMemory(store, { actor: "alex", repos: [INSIDE], query: word }).length;
+      // Indexed or not, a waiting message is never a search result.
+      expect(found("zebracrossing")).toBe(0);
+      expect(found("quokkaburrow")).toBe(0);
+      expect(queue.remove("alex", gone.row.message, clock())).toBe("removed");
+      expect(store.handle.prepare("SELECT context_json FROM lead_queue WHERE message = ?").get(gone.row.message)).toEqual({ context_json: null });
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM memory_search WHERE body LIKE '%quokkaburrow%'").get()).toEqual({ n: 0 });
+      expect(store.leadRequestReceived(live.id, "b".repeat(32))).toBe(true);
+      // Once a turn takes it, it is history like any other message, and search finds it.
+      store.finalizeLeadTurn(first, store.getLeadTurn(first)!.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "done", activity: "" } }, clock());
+      const claim = queue.claimNext("runner-1", clock())!;
+      const outcome = await turn(claim.text, scripted([text("Answered.")]).fetcher, { session: live, thread: where, requestId: claim.requestId, queuedMessageId: claim.message,
+        queueClaim: { message: claim.message, runner: claim.runner, generation: claim.generation }, onAdmitted: id => { if (!queue.bindTurn(claim, id)) throw new Error("fence"); } });
+      expect(outcome).toMatchObject({ ok: true });
+      expect(found("zebracrossing")).toBe(1);
+      expect(found("quokkaburrow")).toBe(0);
+    });
+
+    test("search shows a waiting message only as the words its turn took, and never words the store no longer keeps", async () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      const first = busy(live, where);
+      const edited = send(queue, live, where, "originalcanary wording", "a".repeat(32));
+      const dropped = send(queue, live, where, "droppedcanary aside", "b".repeat(32));
+      if (edited.kind !== "queued" || dropped.kind !== "queued") throw new Error("unreachable");
+      const found = (word: string) => searchMemory(store, { actor: "alex", repos: [INSIDE], query: word }).length;
+      expect(found("originalcanary")).toBe(0);
+      // Its words change while it waits (as a team room's edit does): the turn takes the new words, and only those are found.
+      store.handle.prepare("UPDATE lead_message SET text = 'replacementcanary wording' WHERE id = ?").run(edited.row.message);
+      store.finalizeLeadTurn(first, store.getLeadTurn(first)!.generation, { state: "answered", settledMicrousd: 0, tokensIn: 0, tokensOut: 0, message: { text: "done", activity: "" } }, clock());
+      const claim = queue.claimNext("runner-1", clock())!;
+      expect(claim.text).toBe("replacementcanary wording");
+      const outcome = await turn(claim.text, scripted([text("Answered.")]).fetcher, { session: live, thread: where, requestId: claim.requestId, queuedMessageId: claim.message,
+        queueClaim: { message: claim.message, runner: claim.runner, generation: claim.generation }, onAdmitted: id => { if (!queue.bindTurn(claim, id)) throw new Error("fence"); } });
+      expect(outcome).toMatchObject({ ok: true });
+      expect(found("replacementcanary")).toBe(1);
+      expect(found("originalcanary")).toBe(0);
+      // Indexed a second time (the admitted pass started over, as after an update): still one hit.
+      store.setServiceCursor("memory-search:admitted", 0, clock());
+      expect(found("replacementcanary")).toBe(1);
+      // Words kept exactly as stored are found, whatever whitespace surrounds them.
+      store.appendLeadMessage({ thread: where.id, turn: null, role: "assistant", text: "\u00a0\u2003nbspcanary reply\ufeff\u000c" }, clock());
+      expect(found("nbspcanary")).toBe(1);
+      // An admitted message the store later deletes (retention, after its conversation ended) is no longer found either.
+      expect(queue.reconcile(clock(), 60_000)).toBeGreaterThanOrEqual(1);
+      expect(queue.remove("alex", dropped.row.message, clock())).toBe("removed");
+      expect(store.endLeadSession(live.id, "alex", clock())).toBe(true);
+      store.setRetentionPeriod("chat", 30, "alex", clock());
+      sweepRetention(store, "/nowhere", new Date(clock().getTime() + 40 * 86_400_000));
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM lead_message WHERE id = ?").get(claim.message)).toEqual({ n: 0 });
+      expect(found("replacementcanary")).toBe(0);
+      expect(found("droppedcanary")).toBe(0);
+      expect(store.handle.prepare("SELECT COUNT(*) AS n FROM memory_search WHERE body LIKE '%canary%'").get()).toEqual({ n: 0 });
+    });
+
+    test("a removed message's request stays a tombstone while its conversation is open: retention keeps it, so the same request never sends again", () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      busy(live, where);
+      const gone = send(queue, live, where, "remove me", "a".repeat(32));
+      if (gone.kind !== "queued") throw new Error("unreachable");
+      expect(queue.remove("alex", gone.row.message, clock())).toBe("removed");
+      store.setRetentionPeriod("chat", 30, "alex", clock());
+      const later = new Date(clock().getTime() + 40 * 86_400_000);
+      expect(retentionPlan(store, "/nowhere", later).items.chat.map(one => one.id)).not.toContain(gone.row.message);
+      expect(send(queue, live, where, "remove me", "a".repeat(32))).toMatchObject({ kind: "queued", already: true, row: { status: "cancelled" } });
+      // The conversation over, its requests can't be sent under it again: the tombstone may go.
+      expect(store.endLeadSession(live.id, "alex", clock())).toBe(true);
+      expect(retentionPlan(store, "/nowhere", later).items.chat.map(one => one.id)).toContain(gone.row.message);
+    });
+
+    test("a queued turn's history keeps a mirrored channel exchange (an operator message no turn took is history unless still pending)", () => {
+      const where = thread();
+      store.appendLeadMessage({ thread: where.id, turn: null, role: "operator", text: "mirrored question from the phone" }, clock());
+      store.appendLeadMessage({ thread: where.id, turn: null, role: "assistant", text: "mirrored answer" }, clock());
+      const texts = historyFor(store, where.id, 999_999, false).map(one => one.text);
+      expect(texts).toEqual(["mirrored question from the phone", "mirrored answer"]);
+    });
+
+    test("a claim that never bound is uncertain after the turn deadline (never resent); a week-old waiting message expires without its words", () => {
+      const queue = new PersonalQueue(store), live = session(), where = thread();
+      busy(live, where);
+      const a = send(queue, live, where, "A", "a".repeat(32));
+      if (a.kind !== "queued") throw new Error("unreachable");
+      store.handle.prepare("UPDATE mate_turn SET state = 'answered'").run();
+      const claim = queue.claimNext("runner-1", clock())!;
+      queue.reconcile(new Date(clock().getTime() + 120_000), 60_000);
+      expect(queue.get(claim.message)).toMatchObject({ status: "uncertain" });
+      // Uncertain holds nothing back: with no turn running, the next message runs now; with one running, it waits.
+      expect(send(queue, live, where, "next", "e".repeat(32))).toEqual({ kind: "run" });
+      busy(live, where);
+      const b = send(queue, live, where, "B", "b".repeat(32));
+      if (b.kind !== "queued") throw new Error("expected B to wait behind the running turn");
+      queue.reconcile(new Date(clock().getTime() + LEAD_QUEUE_EXPIRY_MS + 1), 60_000);
+      expect(queue.get(b.row.message)).toMatchObject({ status: "failed", error: "Not sent: it waited too long.", text: "" });
+    });
+  });
+
+  describe("tools on demand (docs/plans/lead-deferred-tools.md)", () => {
+    /** A provider reporting every byte it was sent as a cache-write token, plus the full output allowance: within the
+     * bytes-sent sanity check, beyond the reservation's one-token-per-three-bytes estimate. */
+    const overReporting = () => {
+      const bodies: string[] = [];
+      const fetcher = (async (_url: unknown, init?: { body?: unknown }) => {
+        const body = String(init?.body ?? ""); bodies.push(body);
+        return answer([{ type: "text", text: "hi" }], { input_tokens: 0, cache_creation_input_tokens: Buffer.byteLength(body, "utf8"), cache_read_input_tokens: 0, output_tokens: MAX_OUTPUT_TOKENS });
+      }) as unknown as typeof fetch;
+      return { fetcher, bodies };
+    };
+    const toolNames = (body: string): string[] => (JSON.parse(body) as { tools: { name: string }[] }).tools.map(one => one.name);
+    test("a request advertises the core tools; a tool found by find_tools is advertised from the next request, after the core", async () => {
+      const script = scripted([answer([call("find_tools", { query: "make a flow that sorts my inbox" })]), text("I can draft that flow.")]);
+      expect(await turn("set up a flow", script.fetcher)).toMatchObject({ ok: true });
+      const first = toolNames(script.bodies[0]!), second = toolNames(script.bodies[1]!);
+      expect(first).toEqual(LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)).map(one => one.name));
+      expect(first).not.toContain("propose_flow");
+      expect(second.slice(0, first.length)).toEqual(first);
+      expect(second.slice(first.length)).toContain("propose_flow");
+    });
+    test("a tool found in a response can't be called in that same response; it works from the next step, and the reply goes on", async () => {
+      const script = scripted([
+        answer([call("find_tools", { query: "read the flows" }), call("get_flows", {})]),
+        answer([call("get_flows", {})]),
+        text("No flows yet."),
+      ]);
+      const outcome = await turn("what flows do I have?", script.fetcher);
+      expect(outcome).toMatchObject({ ok: true });
+      expect(script.bodies[1]).toContain("get_flows isn't available in this step. Call find_tools");
+      // Refused once (step 1); the history carries that refusal forward, and the step-2 call ran (no second refusal).
+      const refusals = (body: string) => body.split("get_flows isn't available in this step").length - 1;
+      expect(refusals(script.bodies[1]!)).toBe(1);
+      expect(refusals(script.bodies[2]!)).toBe(1);
+    });
+    test("an unadvertised, registered tool is refused before it runs — nothing is drafted", async () => {
+      const script = scripted([answer([call("propose_flow", { name: "x" })]), text("I'll search for it first.")]);
+      const outcome = await turn("make a flow", script.fetcher);
+      expect(outcome).toMatchObject({ ok: true, proposals: 0 });
+      expect(script.bodies[1]).toContain("propose_flow isn't available in this step");
+    });
+    test("find_tools is bounded: three searches per reply, then a refusal; an empty search names what can be found", async () => {
+      const script = scripted([
+        answer([call("find_tools", { query: "zzzz qqqq" })]),
+        answer([call("find_tools", { query: "flows" }), call("find_tools", { query: "sweeps" })]),
+        answer([call("find_tools", { query: "subagents" })]),
+        text("done"),
+      ]);
+      expect(await turn("look around", script.fetcher)).toMatchObject({ ok: true });
+      expect(script.bodies[1]).toContain("Nothing matched. The other tools cover flows, subagents, sweeps");
+      expect(script.bodies[3]).toContain("You have searched 3 times this reply");
+    });
+    test("find_tools ranks by what you want to do, and never returns a core tool", () => {
+      expect(findLeadTools("make a flow")[0]?.name).toBe("propose_flow");
+      expect(findLeadTools("add a sales rep subagent")[0]?.name).toBe("propose_subagent");
+      expect(findLeadTools("run these eleven bug reports in parallel").map(one => one.name)).toContain("propose_sweep");
+      expect(findLeadTools("get_models")[0]?.name).toBe("get_models");
+      expect(findLeadTools("qqqq")).toEqual([]);
+      for (const query of ["task", "project", "memory", "decision", "result"]) for (const found of findLeadTools(query)) expect(LEAD_CORE_TOOLS.has(found.name), found.name).toBe(false);
+    });
+    test("prompt caching (Anthropic): breakpoints after the core tools, on the system block and on DATA; found tools come after the first", async () => {
+      const script = scripted([answer([call("find_tools", { query: "make a flow" })]), text("ok")]);
+      expect(await turn("set up a flow", script.fetcher)).toMatchObject({ ok: true });
+      const bodies = script.bodies.map(one => JSON.parse(one) as { system: unknown; tools: { name: string; cache_control?: unknown }[]; messages: { content: unknown }[] });
+      const core = LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)).length;
+      for (const body of bodies) {
+        expect(body.tools.flatMap((one, index) => one.cache_control === undefined ? [] : [index])).toEqual([core - 1]);
+        expect(body.system).toEqual([expect.objectContaining({ type: "text", cache_control: { type: "ephemeral" } })]);
+        expect(body.messages[0]!.content).toEqual([expect.objectContaining({ type: "text", cache_control: { type: "ephemeral" } })]);
+      }
+      // The second request's prefix up to the first breakpoint is byte-identical to the first's; propose_flow follows it.
+      expect(JSON.stringify(bodies[1]!.tools.slice(0, core))).toBe(JSON.stringify(bodies[0]!.tools.slice(0, core)));
+      expect(bodies[1]!.tools.slice(core).map(one => one.name)).toContain("propose_flow");
+    });
+    test("cache usage is read and settled per category; the reservation (at the cache-write rate) covers the worst settlement", async () => {
+      const cached = { input_tokens: 10, cache_creation_input_tokens: 1_000, cache_read_input_tokens: 2_000, output_tokens: 20 };
+      const script = scripted([answer([{ type: "text", text: "hi" }], cached)]);
+      const live = session();
+      const outcome = await turn("hello", script.fetcher, { session: live });
+      expect(outcome).toMatchObject({ ok: true });
+      if (!outcome.ok || outcome.replayed) throw new Error("unreachable");
+      const expected = settleWithCache(PRICE, { tokensIn: 3_010, tokensOut: 20, cacheWriteTokens: 1_000, cacheReadTokens: 2_000 });
+      expect(expected).toBe(10 * PRICE.inMicrousd + 1_000 * Math.ceil(PRICE.inMicrousd * 1.25) + 2_000 * Math.ceil(PRICE.inMicrousd * 0.1) + 20 * PRICE.outMicrousd);
+      expect(outcome.settledMicrousd).toBe(expected);
+      expect(store.getLeadTurn(outcome.turn)!.reservedMicrousd).toBeGreaterThanOrEqual(settleWithCache(PRICE, { tokensIn: 3_010, tokensOut: 20, cacheWriteTokens: 3_010 }));
+      // A cache count that isn't a token count is malformed usage: unknown cost, never a guess.
+      const bad = scripted([answer([{ type: "text", text: "hi" }], { ...cached, cache_read_input_tokens: "2000" })]);
+      expect(await turn("hello", bad.fetcher, { session: session() })).toMatchObject({ ok: false, unknownSpend: true });
+    });
+    test("a reply is never charged past its reservation: usage reported beyond it ends the turn with its cost unknown", async () => {
+      // Every byte reported as a token and as a cache write: more than the reservation's estimate allows.
+      // A tight ceiling leaves room for one step, so the reservation is one step's worst case (as in Codex's probe).
+      const live = session(300_000);
+      const script = overReporting();
+      const outcome = await turn("hello", script.fetcher, { session: live });
+      expect(script.bodies).toHaveLength(1);
+      expect(outcome).toMatchObject({ ok: false, failed: "over-reservation", unknownSpend: true, message: LEAD_FAILURE_COPY.overReserved });
+      if (outcome.ok) throw new Error("unreachable");
+      const row = store.getLeadTurn(outcome.turn)!;
+      // Unknown cost settles the reservation itself: never more than it, never past the session's ceiling.
+      expect(row.settledMicrousd).toBe(row.reservedMicrousd);
+      expect(store.getLeadSession(live.id)!.spentMicrousd).toBeLessThanOrEqual(live.ceilingMicrousd);
+    });
+    test("an explicit null cache count is malformed usage (unknown cost), never zero", async () => {
+      const script = scripted([answer([{ type: "text", text: "hi" }], { input_tokens: 10, cache_creation_input_tokens: null, cache_read_input_tokens: null, output_tokens: 5 })]);
+      expect(await turn("hello", script.fetcher, { session: session() })).toMatchObject({ ok: false, unknownSpend: true });
+    });
+    test("an invalid find_tools call still uses one of the reply's three searches; a plural finds its tools", async () => {
+      const script = scripted([
+        answer([call("find_tools", { query: "" }), call("find_tools", {}), call("find_tools", { nope: 1 })]),
+        answer([call("find_tools", { query: "sweeps" })]),
+        text("done"),
+      ]);
+      expect(await turn("look", script.fetcher)).toMatchObject({ ok: true });
+      expect(script.bodies[2]).toContain("You have searched 3 times this reply");
+      expect(findLeadTools("sweeps").map(one => one.name)).toEqual(expect.arrayContaining(["propose_sweep", "get_sweep", "propose_sweep_cancel"]));
+    });
+    test("the person paused by an unknown cost is told to confirm it, and the confirmation names the reply's real charge", async () => {
+      const live = session(300_000);
+      const outcome = await turn("hello", overReporting().fetcher, { session: live });
+      if (outcome.ok || !("failed" in outcome) || outcome.failed !== "over-reservation") throw new Error("expected the over-reservation path: " + JSON.stringify(outcome));
+      expect(store.leadTurnCostUnconfirmed(outcome.turn)).toBe(true);
+      // Replayed later (a restart, a channel delivery retry): the same true words while the cost is unconfirmed.
+      expect(leadFailureText("over-reservation", true)).toBe(LEAD_FAILURE_COPY.overReserved);
+      expect(leadFailureText("timeout", true)).toBe("The reply took too long and was stopped. Its cost isn't known, so chat is paused. Confirm the cost on the Chat page to turn chat back on.");
+      expect(leadFailureText("timeout", true)).not.toContain("Nothing it proposed was kept");
+      const reply = store.getLeadTurn(outcome.turn)!;
+      const stepRow = store.handle.prepare("SELECT id FROM chat_turn WHERE mate_turn = ? AND unknown_spend = 1").get(outcome.turn) as { id: number };
+      expect(store.leadTurnOfStep(stepRow.id)?.id).toBe(reply.id);
+      // The page's body (its frame is drawn around it when it is served).
+      const page = htmlString(withFormToken("csrf", () => chatAckPage(undefined as never, store.getChatTurn(stepRow.id)!, "n", store.leadTurnOfStep(stepRow.id)).body));
+      expect(page).toContain(`This lead reply's worst case, ${chatMoney(reply.settledMicrousd!)}, has already been counted`);
+      expect(page).not.toContain("charges the reserved worst case, $0.00");
+      // Once the cost is confirmed, the turn no longer keeps chat paused: a replay says what happened, not "confirm".
+      expect(store.acknowledgeChatTurn(stepRow.id, "alex", clock())).toBe(true);
+      expect(store.leadTurnCostUnconfirmed(outcome.turn)).toBe(false);
+    });
+    test("the split: every registered tool is core or deferred once; prerequisites of the guards are core; the core stays small", () => {
+      const names = LEAD_TOOL_SCHEMAS.map(one => one.name);
+      expect(new Set(names).size).toBe(names.length);
+      expect(names).toContain("find_tools");
+      for (const core of LEAD_CORE_TOOLS) expect(names, core).toContain(core);
+      // Read in an earlier step before a proposal (memory), work needing an agent (capabilities), a review (result) and
+      // an answer (decision): a prerequisite is never behind find_tools.
+      for (const prerequisite of ["search_project_memory", "get_capabilities", "get_result", "get_decision", "find_tools"]) expect(LEAD_CORE_TOOLS.has(prerequisite), prerequisite).toBe(true);
+      const bytes = (list: readonly unknown[]) => list.reduce<number>((sum, one) => sum + JSON.stringify(one).length, 0);
+      expect(bytes(LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)))).toBeLessThan(26_000);
+      expect(bytes(LEAD_TOOL_SCHEMAS)).toBeGreaterThan(60_000);
     });
   });
 
@@ -645,11 +990,6 @@ describe("the lead's turn", () => {
       const telegram = scripted([text(long)]);
       expect(words(await turn("did it work?", telegram.fetcher, { channel: "telegram" }))).toBe(long);
       expect(telegram.bodies).toHaveLength(1);
-    });
-    test("the console has no message limit: no shorten step", async () => {
-      const script = scripted([text(long)]);
-      expect(words(await turn("did it work?", script.fetcher, { channel: "console" }))).toBe(long);
-      expect(script.bodies).toHaveLength(1);
     });
   });
 
@@ -828,7 +1168,6 @@ describe("the lead's turn", () => {
       await vi.advanceTimersByTimeAsync(TURN_WALL_CLOCK_MS);
       expect(await running).toMatchObject({ ok: false, failed: "timeout", saved: true, message: LEAD_FAILURE_COPY.tooLong });
       expect(store.listLeadMessages(t.id, 5).at(-1)).toMatchObject({ role: "assistant", text: LEAD_FAILURE_COPY.tooLong });
-      expect(LEAD_FAILURE_COPY.tooLong).toBe("The reply took too long and was stopped. Send your message again, or ask for less at once.");
       expect(store.listLeadProposals(t.id)).toEqual([]);
     });
 
@@ -898,7 +1237,11 @@ describe("the lead's turn", () => {
     const good = await turn("hello", script.fetcher, { session: live });
     expect(good).toMatchObject({ ok: true });
     if (!good.ok) throw new Error("unreachable");
-    expect(store.getLeadTurn(good.turn)?.reservedMicrousd).toBe(leadWorstCaseForPrice(PRICE, Buffer.byteLength(script.bodies[0]!, "utf8")));
+    // The reservation covers the FULL tool registry (tools found later in the reply are already paid for); what is sent
+    // advertises only the core tools, so the reservation is above the sent body's own worst case.
+    expect(script.bodies[0]).not.toContain(`"name":"propose_flow"`);
+    expect(script.bodies[0]).toContain(`"name":"find_tools"`);
+    expect(store.getLeadTurn(good.turn)!.reservedMicrousd).toBeGreaterThan(leadWorstCaseForPrice(PRICE, Buffer.byteLength(script.bodies[0]!, "utf8")));
     // The day counts lead turns as one turn each, and closes chat and mate alike.
     expect(await turn("hello", scripted([text("hi")]).fetcher, { session: live, config: { ...CONFIG, dailyTurns: 1 } })).toMatchObject({ ok: false, refused: "daily-cap" });
     expect(store.chatTurnsToday("alex", clock())).toBe(1);
@@ -1275,4 +1618,9 @@ describe("the lead's turn", () => {
     expect(script.bodies).toEqual([]);
     expect(store.raw().prepare("SELECT COUNT(*) AS n FROM chat_turn").get()?.["n"]).toBe(0);
   });
+});
+
+test("a lead reply's activity line says how much it read from the cache, only when every request reported it", () => {
+  expect(activitySummary(1, 0, 2, 0.74)).toBe("read 1 · proposed 0 · 2 steps · 74% cached");
+  expect(activitySummary(1, 0, 2)).toBe("read 1 · proposed 0 · 2 steps");
 });

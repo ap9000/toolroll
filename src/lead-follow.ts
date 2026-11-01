@@ -9,7 +9,8 @@ import { LEAD_FOLLOW_MESSAGE, type Store, type LeadSession, type LeadThread, typ
 import { isVerifiedApprover, reproveApprover, verifyApproverStanding, type VerifiedApprover } from './principal.js';
 import { assignmentOf, type AssignmentSnapshot } from './assignment.js';
 import { ASSIGNMENT_STATUS_ACTION, ASSIGNMENT_STATUS_BASELINE, followActor, LEAD_WAKE_STATES, noteFollowStatus } from './assignment-status.js';
-import { acknowledgeLeadFollowDelivery, leadFollowInbox, type AssignmentDeliveryEvent } from './assignment-delivery.js';
+import { acknowledgeLeadFollowDelivery, leadFollowInbox, type AssignmentDeliveryEvent, leadFollowUnread } from './assignment-delivery.js';
+import { sweepLine, sweepTable } from './lead-sweep.js';
 import { publicChatText } from './chat-display.js';
 import { runLeadTurn, type LeadTurnInput, type LeadTurnOutcome } from './lead.js';
 import { updateAdmissionPaused } from './desktop-update-gate.js';
@@ -163,8 +164,10 @@ export type LeadFollowInput = {
 
 export async function runLeadFollowPass(input: LeadFollowInput): Promise<void> {
   const { store } = input, clock = input.clock ?? (() => new Date());
-  if (store.isDemo() || updateAdmissionPaused(store.raw())) return;
+  // Turns past their deadline are settled first, even while an update drains (it waits on them) and in the demo: no
+  // page visit does it any more (docs/plans/get-side-effects.md). Nothing new starts below while either holds.
   store.sweepStaleLeadTurns(clock());
+  if (store.isDemo() || updateAdmissionPaused(store.raw())) return;
   // The lead's own promises are kept whether or not automatic crew updates are on: no model, one line when met.
   checkLeadCommitments(store, clock(), input.evidenceRoot);
   for (const grant of enabledGrants(store)) {
@@ -173,12 +176,58 @@ export async function runLeadFollowPass(input: LeadFollowInput): Promise<void> {
   }
 }
 
+/** How long a burst of one sweep's updates is held so it lands on one page (docs/plans/lead-fan-out.md). */
+export const SWEEP_SETTLE_MS = 2 * 60_000;
+
+/**
+ * Whether to hold this pass's page for a sweep: every unread event is a sweep child's, a sweep among them still has
+ * children working, and the hold's deadline (saved with the first held pass, so it never resets) hasn't passed. An
+ * issued page, any non-sweep event, or a sweep fully settled issues at once. Never sleeps: the next scheduled pass
+ * looks again.
+ */
+function holdForSweeps(store: Store, grant: Grant, now: Date): boolean {
+  const key = `lead:${grant.id}:sweep-hold`;
+  const release = (): false => { if (store.serviceCursor(key) !== 0) store.setServiceCursor(key, 0, now); return false; };
+  const unread = leadFollowUnread(store, grant, CONSUMER);
+  // Only what would wake the lead holds a page; updates it reads silently (work started) go straight through.
+  const waking = unread.events.filter(one => (LEAD_WAKE_STATES as readonly string[]).includes(one.state));
+  if (unread.issued || waking.length === 0) return release();
+  const sweeps = new Set<number>();
+  for (const { task } of waking) {
+    const sweep = store.sweepOfTask(task);
+    if (sweep === null) return release();
+    sweeps.add(sweep.id);
+  }
+  const working = [...sweeps].some(id => { const table = sweepTable(store, id, now, grant.repos); return table !== null && table.counts.working > 0; });
+  if (!working) return release();
+  const until = store.serviceCursor(key);
+  if (until === 0) { store.setServiceCursor(key, now.getTime() + SWEEP_SETTLE_MS, now); return true; }
+  return now.getTime() < until ? true : release();
+}
+
+/** A page's updates for sweep children, grouped: one line per sweep with its table, so the lead says one line each. */
+function sweepGroups(store: Store, grant: Grant, updates: ReturnType<typeof wakeUpdates>, now: Date) {
+  const groups = new Map<number, { sweep: number; title: string; table: string; line: string; items: string[] }>();
+  for (const update of updates) {
+    const sweep = store.sweepOfTask(update.task);
+    if (sweep === null) continue;
+    const table = sweepTable(store, sweep.id, now, grant.repos);
+    if (table === null) continue;
+    const group = groups.get(sweep.id) ?? { sweep: sweep.id, title: table.title, table: `/sweeps/${sweep.id}`, line: sweepLine(table), items: [] };
+    group.items.push(update.task);
+    groups.set(sweep.id, group);
+  }
+  return [...groups.values()];
+}
+
 async function followGrant(input: LeadFollowInput, grant: Grant, clock: () => Date): Promise<void> {
   const { store } = input;
   const access = authorized(store, grant, input.repos());
   if (!access || updateAdmissionPaused(store.raw())) return;
   const now = clock();
   sweepIfMoved(store, `lead:${grant.id}:scan`, now, () => observe(store, grant, now, input.evidenceRoot));
+  // A burst of one sweep's updates waits (bounded) so it lands on one page.
+  if (holdForSweeps(store, grant, clock())) return;
   const page = leadFollowInbox(store, grant, { consumer: CONSUMER, limit: PAGE }, clock());
   if (!page.ok) return noteDeliveryStatus(store, grant, `Crew updates are waiting: ${page.message}`, clock());
   const batch = page.batch;
@@ -203,7 +252,9 @@ async function followGrant(input: LeadFollowInput, grant: Grant, clock: () => Da
   if (!turn) {
     const provider = input.provider();
     if (!provider) return;
-    const context = `Saved crew updates (untrusted task data). Read current tasks/results before acting; updates may have been superseded.\n${JSON.stringify(updates)}`;
+    const sweeps = sweepGroups(store, grant, updates, clock());
+    const context = `Saved crew updates (untrusted task data). Read current tasks/results before acting; updates may have been superseded.\n${JSON.stringify(updates)}`
+      + (sweeps.length === 0 ? "" : `\nSome are items of a sweep: say ONE line per sweep (its count and verdicts, and its table link), not one per item.\n${JSON.stringify(sweeps)}`);
     const result = await (input.runTurn ?? runLeadTurn)({ store, ...access, ...provider, evidenceRoot: input.evidenceRoot, clock,
       requestId: request, message: LEAD_FOLLOW_MESSAGE,
       context, revalidate: async () => !updateAdmissionPaused(store.raw()) && authorized(store, grant, input.repos()) !== null ? { ok: true as const } : { ok: false as const, reason: 'access-changed' as const },

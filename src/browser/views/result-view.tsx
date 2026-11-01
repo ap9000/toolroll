@@ -13,12 +13,12 @@ import { useState, type MouseEvent, type ReactNode } from "react";
 import type { BrowserCheckItem, BrowserResultPanel, BrowserResultView } from "../../browser-workspace.js";
 import { GuardedHtml } from "../guarded-html.js";
 import {
-  Badge, Button, Card, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, Input, cn,
+  Alert, Badge, Button, Card, DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger, Input, cn,
 } from "../components/ui/index.js";
 import { ACCEPT_NEEDS_REASON, acceptWithChecksOf, requirementsWordsOf, resultActsOf, type ResultActKind, type ResultActs } from "../../result-acts.js";
 import { toneOf } from "./tone.js";
 import { ConfirmStoppedForm, HEADLINE_DOT, RebuildForm, StatusDetails, StatusHeadline, statusWhyLines } from "./status-summary.js";
-import { RetryForm, threadWhen, whenTitle } from "./task-view.js";
+import { Html, RetryForm, threadWhen, whenTitle } from "./task-view.js";
 
 type Selected = NonNullable<BrowserResultView["selected"]>;
 
@@ -26,9 +26,6 @@ const DOT: Record<string, string> = {
   attention: "bg-attention", danger: "bg-destructive", info: "bg-info", success: "bg-success", neutral: "bg-muted-foreground", warning: "bg-warning",
 };
 
-function Html({ html, className }: { html: string; className?: string }) {
-  return <GuardedHtml html={html} immutable {...(className === undefined ? {} : { className })} />;
-}
 
 /** The one formatter (when-html.ts), in the viewer's zone. */
 const shortWhen = (iso: string): string => threadWhen(iso);
@@ -70,7 +67,7 @@ export function MismatchHeadline({ headline }: { headline: string }) {
 
 /** The status card: the headline, one sentence, the facts rows, then any caveat as one line of its own.
  * No acts here: the result's acts sit together in the decision row. */
-function StatusCard({ selected, acts, answers }: { selected: Selected; acts: ResultActs; answers: Answers }) {
+function StatusCard({ selected, acts, answers, bare = false }: { selected: Selected; acts: ResultActs; answers: Answers; bare?: boolean }) {
   const { panel, checks } = selected;
   // A fact row's action that only reopens this same page is dropped; links to its Checks tab or a section stay.
   const same = (href: string | null): boolean => {
@@ -99,7 +96,26 @@ function StatusCard({ selected, acts, answers }: { selected: Selected; acts: Res
     ...(panel?.attention ?? []),
   ])].filter(one => mismatch === null || !mismatch.said.includes(one));
   const failed = status?.headline === "Failed";
-  return <Card data-result-status={selected.status.token} data-headline={status?.headline ?? selected.status.label} aria-label="Result status">
+  // On a task page the task's header already says the status, its sentence and facts: what is the result's own —
+  // that its report doesn't match its changes, each disagreement, and every caveat — still shows, and only that.
+  if (bare) {
+    if (mismatch === null && caveats.length === 0) return null;
+    return <Card data-result-warnings aria-label="What to know about this result">
+      {mismatch?.headline != null && <MismatchHeadline headline={mismatch.headline} />}
+      {mismatch !== null && mismatch.rows.length > 0 && <Alert tone={failed ? "destructive" : "neutral"}><AlertTriangle aria-hidden="true" /><ul aria-label="What doesn't match" className="flex flex-col gap-1.5" data-mismatches={mismatch.rows.length}>
+        {mismatch.rows.map((one, index) => <li key={index} data-mismatch className="min-w-0 [overflow-wrap:anywhere]">
+          <span>
+            {one.text}{one.path !== null && one.absent && <> <code className="font-mono text-xs">{one.path}</code> <span className="text-muted-foreground" data-mismatch-absent>— not in the saved changes</span></>}
+            {one.href !== null && (one.path !== null || one.noteLabel !== null) && <> · <a href={one.href} data-mismatch-lines className={cn("font-medium text-foreground/80 underline decoration-border underline-offset-4 hover:decoration-muted-foreground", one.path !== null && "font-mono text-xs")}>{one.path !== null ? `${one.path}${one.lines === null ? "" : `, ${one.lines}`}` : one.noteLabel}</a></>}
+          </span>
+        </li>)}
+      </ul></Alert>}
+      {caveats.length > 0 && <Alert tone={failed ? "destructive" : "neutral"}><AlertTriangle aria-hidden="true" /><ul className="flex flex-col gap-1" aria-label="Caveats" data-result-attention={caveats.length}>
+        {caveats.map(one => <li key={one} data-caveat className="min-w-0 [overflow-wrap:anywhere]">{one}</li>)}
+      </ul></Alert>}
+    </Card>;
+  }
+  return <Card data-result-status={selected.status.token} data-headline={status?.headline ?? selected.status.label} aria-label="Result status" className={cn(status?.headline === "Needs you" && "border-warning")}>
     <div className="min-w-0">
       {/* The blocking fact is the headline: the report doesn't match the changes. */}
       {mismatch?.headline != null ? <MismatchHeadline headline={mismatch.headline} />
@@ -115,22 +131,18 @@ function StatusCard({ selected, acts, answers }: { selected: Selected; acts: Res
         {selected.failure.link !== null && <>{selected.failure.evidence !== null && " "}<a href={selected.failure.link.href} data-failure-log className={META_LINK}>{selected.failure.link.label}</a></>}
       </p>}
     </div>
-    {mismatch !== null && mismatch.rows.length > 0 && <ul aria-label="What doesn't match" className="flex flex-col gap-1.5 border-t border-border pt-3 text-body phone:pt-2" data-mismatches={mismatch.rows.length}>
-      {mismatch.rows.map((one, index) => <li key={index} data-mismatch className="flex gap-2">
-        <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />
-        <span className="min-w-0 [overflow-wrap:anywhere]">
+    {mismatch !== null && mismatch.rows.length > 0 && <Alert tone={failed ? "destructive" : "neutral"}><AlertTriangle aria-hidden="true" /><ul aria-label="What doesn't match" className="flex flex-col gap-1.5" data-mismatches={mismatch.rows.length}>
+      {mismatch.rows.map((one, index) => <li key={index} data-mismatch className="min-w-0 [overflow-wrap:anywhere]">
+        <span>
           {one.text}{one.path !== null && one.absent && <> <code className="font-mono text-xs">{one.path}</code> <span className="text-muted-foreground" data-mismatch-absent>— not in the saved changes</span></>}
           {one.href !== null && (one.path !== null || one.noteLabel !== null) && <> · <a href={one.href} data-mismatch-lines className={cn("font-medium text-foreground/80 underline decoration-border underline-offset-4 hover:decoration-muted-foreground phone:-my-3 phone:inline-block phone:py-3", one.path !== null && "font-mono text-xs")}>{one.path !== null ? `${one.path}${one.lines === null ? "" : `, ${one.lines}`}` : one.noteLabel}</a></>}
         </span>
       </li>)}
-    </ul>}
+    </ul></Alert>}
     {status !== null && <StatusDetails status={status} />}
-    {caveats.length > 0 && <ul className="flex flex-col gap-1 text-body" aria-label="Caveats" data-result-attention={caveats.length}>
-      {caveats.map(one => <li key={one} data-caveat className="flex gap-2">
-        <AlertTriangle className={cn("mt-0.5 size-3.5 shrink-0", failed ? "text-destructive" : "text-warning")} aria-hidden="true" />
-        <span className="min-w-0 [overflow-wrap:anywhere]">{one}</span>
-      </li>)}
-    </ul>}
+    {caveats.length > 0 && <Alert tone={failed ? "destructive" : "neutral"}><AlertTriangle aria-hidden="true" /><ul className="flex flex-col gap-1" aria-label="Caveats" data-result-attention={caveats.length}>
+      {caveats.map(one => <li key={one} data-caveat className="min-w-0 [overflow-wrap:anywhere]">{one}</li>)}
+    </ul></Alert>}
   </Card>;
 }
 
@@ -259,6 +271,7 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
           {complete !== null ? <>
             <input type="hidden" name="receipt" value={complete.receipt} />
             {complete.accept != null && <input type="hidden" name="accept" value="1" />}
+            {complete.returnTo !== undefined && <input type="hidden" name="return" value={complete.returnTo} />}
           </> : accept !== null && <input type="hidden" name="return" value={accept.returnTo} />}
           {reason !== null && <>
             <label htmlFor="accept-reason" className="text-body font-medium" data-accept-needs-reason>{ACCEPT_NEEDS_REASON}</label>
@@ -309,9 +322,9 @@ function Decision({ selected, csrf, acts, decision, firstUnanswered }: { selecte
   const hasMore = tucked !== null || line !== null || next !== null || effect !== null;
   const rest = more ? "" : "phone:hidden";
   return <Card data-result-decision={acts.primary ?? "none"} aria-label="Decision" data-dock={more ? "open" : "compact"}
-    className={cn("gap-2 phone:gap-2", shown.length > 0 && "phone:sticky phone:bottom-[-20px] phone:z-10 phone:-mx-4 phone:rounded-none phone:border-x-0 phone:px-4 phone:py-3 phone:pb-[max(12px,env(safe-area-inset-bottom))] phone:shadow-[0_-4px_16px_rgb(0_0_0/.08)]")}>
+    className={cn("gap-2 phone:gap-2", shown.length > 0 && "phone:sticky phone:bottom-[-20px] phone:z-10 phone:-mx-4 phone:rounded-none phone:border-x-0 phone:px-4 phone:py-3 phone:pb-[max(12px,var(--safe-bottom))] phone:shadow-[0_-4px_16px_rgb(0_0_0/.08)]")}>
     {line !== null && <p className={cn("flex max-w-[75ch] gap-2 text-body", rest)} data-decision-why {...(acts.line === null ? {} : { "data-cant-accept": "" })}>
-      <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" aria-hidden="true" />{line}</p>}
+      <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />{line}</p>}
     {selected.failure != null && selected.failure.retry === null && <p className="max-w-[75ch] text-body" data-failure-suggestion>
       <span className="font-semibold">What to change.</span> <span className="text-muted-foreground">{selected.failure.suggestion}</span></p>}
     {/* What comes next (notes ready, CI failing, no build): one line, whatever the acts. */}
@@ -352,6 +365,88 @@ function Panel({ panel, children }: { panel: BrowserResultPanel; children?: Reac
   </div>;
 }
 
+type Efficiency = NonNullable<Selected["efficiency"]>;
+const KIND_WORD: Record<string, string> = { edit: "edits", command: "commands", read: "reads", search: "searches", lookup: "web lookups", plan: "plans", delegate: "delegations", tool: "other tools" };
+/** "38 s", "14 min", "1 h 12 min". */
+export function durationWords(ms: number): string {
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds} s`;
+  const minutes = Math.round(seconds / 60);
+  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)} h${minutes % 60 === 0 ? "" : ` ${minutes % 60} min`}`;
+}
+/** "41k", "1.9M": token counts a person can read at a glance. */
+export function tokenWords(count: number): string {
+  return count >= 1_000_000 ? `${(count / 1_000_000).toFixed(count >= 10_000_000 ? 0 : 1)}M` : count >= 1_000 ? `${Math.round(count / 1_000)}k` : String(count);
+}
+const DASH = "—";
+/** The one line: time, turns, tokens in (and from cache), out, steps. Unknown reads as a dash, never zero. */
+type RunNetwork = NonNullable<Selected["network"]>;
+
+/** The run's network in one line: what it could reach, and what its proxy refused. */
+export function networkLine(one: RunNetwork): string {
+  if (one.mode === "open") return "Open: it could reach any host";
+  if (one.via === true) return "Through its own research proxy only";
+  const counts = one.counts;
+  if (counts === undefined) return `Approved hosts only (${one.hosts ?? 0})`;
+  const refusedHosts = counts.hosts.filter(host => host.refused > 0).map(host => host.host);
+  return `${counts.connections} connection${counts.connections === 1 ? "" : "s"} to approved hosts`
+    + (counts.refused === 0 ? "; nothing refused" : `; refused ${refusedHosts.slice(0, 3).join(", ")}${refusedHosts.length > 3 ? ` and ${refusedHosts.length - 3} more` : ""}`);
+}
+
+function NetworkBody({ one }: { one: RunNetwork }) {
+  const counts = one.counts;
+  return <div className="flex flex-col gap-2 text-body">
+    {counts !== undefined && counts.hosts.length > 0 && <dl className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1">
+      {counts.hosts.map(host => <div key={host.host} className="contents"><dt className="min-w-0 font-mono text-caption [overflow-wrap:anywhere]">{host.host}</dt>
+        <dd className="text-right tabular-nums text-muted-foreground">{host.refused > 0 ? `refused ×${host.refused}` : `${host.connections}`}</dd></div>)}
+    </dl>}
+    {counts !== undefined && counts.otherHosts > 0 && <p className="text-muted-foreground">And {counts.otherHosts} more connection{counts.otherHosts === 1 ? "" : "s"} to other hosts.</p>}
+    {counts !== undefined && counts.refused > 0 && <p className="text-muted-foreground">An approver adds a host in the project's network settings (<span className="font-mono">toolroll project network --allow</span>); new scopes get it.</p>}
+    <p className="text-caption text-muted-foreground">Counted by the build's own proxy: a connection its sandbox refused outright isn't counted.{one.loopback === "proxy-only" ? " Local services on this machine were out of reach." : ""}</p>
+  </div>;
+}
+
+export function efficiencyLine(one: Efficiency): string {
+  const time = one.time.agentMs === null ? DASH : durationWords(one.time.agentMs);
+  const tokensIn = one.usage.in === null ? `${DASH} tokens in` : `${tokenWords(one.usage.in)} tokens in${one.usage.cacheShare === null ? "" : `, ${Math.round(one.usage.cacheShare * 100)}% from cache`}`;
+  return [time, one.turns === null ? null : `${one.turns} turn${one.turns === 1 ? "" : "s"}`, tokensIn,
+    `${one.usage.out === null ? DASH : tokenWords(one.usage.out)} out`, one.steps.total === null ? null : `${one.steps.total} step${one.steps.total === 1 ? "" : "s"}`]
+    .filter((part): part is string => part !== null).join(" · ");
+}
+
+/** How it ran (docs/plans/run-efficiency.md): where the time went, what the agent did, what it repeated — only what was
+ * recorded, each block saying when its source can't say more. */
+function EfficiencyBody({ one }: { one: Efficiency }) {
+  const kinds = Object.entries(one.steps.byKind).filter(([, count]) => (count ?? 0) > 0).sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0));
+  return <div className="flex flex-col gap-3 text-body" data-run-efficiency={one.steps.state}>
+    <div>
+      <h3 className="text-caption font-medium text-muted-foreground">Time</h3>
+      <p>Waiting to start {one.time.waitMs === null ? DASH : durationWords(one.time.waitMs)} · The agent {one.time.agentMs === null ? DASH : durationWords(one.time.agentMs)}</p>
+      <p className="text-caption text-muted-foreground">Checks aren't timed separately; they're inside the agent's time.</p>
+    </div>
+    <div>
+      <h3 className="text-caption font-medium text-muted-foreground">Tokens</h3>
+      <p>{one.usage.in === null ? DASH : tokenWords(one.usage.in)} in{one.usage.cacheRead === null ? "" : ` · ${tokenWords(one.usage.cacheRead)} read from cache`}{one.usage.cacheWrite === null ? "" : ` · ${tokenWords(one.usage.cacheWrite)} written to it`} · {one.usage.out === null ? DASH : tokenWords(one.usage.out)} out</p>
+      <p className="text-caption text-muted-foreground">As {one.usage.provider}{one.usage.model === null ? "" : ` · ${one.usage.model}`} reported them{one.usage.cacheShare === null ? "; it didn't report its cache" : ""}.</p>
+    </div>
+    <div>
+      <h3 className="text-caption font-medium text-muted-foreground">Steps</h3>
+      {one.steps.total === null ? <p className="text-muted-foreground" data-run-efficiency-steps={one.steps.state}>{one.steps.reason}</p> : <>
+        <p>{one.steps.total} step{one.steps.total === 1 ? "" : "s"}{kinds.length === 0 ? "" : `: ${kinds.map(([kind, count]) => `${count} ${KIND_WORD[kind] ?? kind}`).join(", ")}`}{(one.steps.failed ?? 0) > 0 ? ` · ${one.steps.failed} failed` : ""}</p>
+        {one.steps.longest.length > 0 && <p className="text-muted-foreground">Longest: {one.steps.longest.map(step => `${KIND_WORD[step.kind]?.replace(/s$/, "") ?? step.kind} ${durationWords(step.ms)}`).join(" · ")}{(one.steps.unknownDuration ?? 0) > 0 ? ` · ${one.steps.unknownDuration} without a measured time` : ""}</p>}
+        {one.steps.reason !== null && <p className="text-caption text-muted-foreground">{one.steps.reason}</p>}
+      </>}
+    </div>
+    {one.steps.total !== null && <div>
+      <h3 className="text-caption font-medium text-muted-foreground">Repeated activity</h3>
+      {one.steps.repeats === null ? <p className="text-muted-foreground">{one.steps.repeatsReason}</p>
+        : one.steps.repeats.length === 0 ? <p className="text-muted-foreground">No step ran three times or more with the same input.</p>
+        : <ul className="flex flex-col gap-0.5" data-run-repeats={one.steps.repeats.length}>{one.steps.repeats.map((group, index) => <li key={index}>The same {KIND_WORD[group.kind]?.replace(/s$/, "") ?? group.kind} step {group.count} times</li>)}</ul>}
+      {one.steps.repeats !== null && one.steps.repeatsReason !== null && <p className="text-caption text-muted-foreground">{one.steps.repeatsReason}</p>}
+    </div>}
+  </div>;
+}
+
 /** Secondary detail, one tap away: the scope, the notes, the recorded reasons, what was shortened,
  * review history, and the raw run record (what /r/<id> used to open on its own). */
 function Details({ selected }: { selected: Selected }) {
@@ -371,6 +466,9 @@ function Details({ selected }: { selected: Selected }) {
       body: <ul className="flex flex-col gap-1 text-body text-muted-foreground">{panel.limits.map(one => <li key={one}>{one}</li>)}</ul> }]),
     ...(panel?.reviewHistory == null ? [] : [{ id: "review-history", title: "Review history", hint: null,
       body: <p className="text-body text-muted-foreground">{panel.reviewHistory}</p> }]),
+    ...(selected.efficiency == null ? [] : [{ id: "how-it-ran", title: "How it ran", hint: efficiencyLine(selected.efficiency), body: <EfficiencyBody one={selected.efficiency} /> }]),
+    ...(selected.network == null ? [] : [{ id: "network", title: "Network", hint: networkLine(selected.network), body: <NetworkBody one={selected.network} /> }]),
+    ...(selected.timing == null || selected.timing.length === 0 ? [] : [{ id: "timing", title: "Where the time went", hint: selected.timing.map(one => `${one.title} ${one.total}`).join(" · "), body: <TimingBody groups={selected.timing} /> }]),
     ...(record === null ? [] : [{ id: "run-record", title: "Run record", hint: `Build #${record.build}`,
       body: <div className="flex flex-col gap-3 text-body">
         <dl className="grid grid-cols-[6.5rem_minmax(0,1fr)] gap-x-3 gap-y-1.5">
@@ -387,7 +485,7 @@ function Details({ selected }: { selected: Selected }) {
     {rows.map(row => <details key={row.id} id={row.id} className="group scroll-mt-4" data-cockpit-section={row.id}>
       <summary className="flex cursor-pointer list-none items-center gap-2 px-5 py-3.5 hover:bg-accent/50 phone:min-h-12 phone:px-4 [&::-webkit-details-marker]:hidden">
         <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true" />
-        <h2 className="text-title leading-normal">{row.title}</h2>
+        <h2 className="shrink-0 text-title leading-normal">{row.title}</h2>
         {row.count !== undefined && <Badge>{row.count}</Badge>}
         {row.hint != null && <span className="min-w-0 truncate text-body text-muted-foreground">{row.hint}</span>}
       </summary>
@@ -409,9 +507,14 @@ function openRecord(event: MouseEvent<HTMLAnchorElement>) {
   history.replaceState(history.state, "", "#run-record");
 }
 
+/** The acts a task page's own header already offers for its current result (one mounted form each, never two). */
+const HEADER_OWNED: ReadonlySet<ResultActKind> = new Set(["retry", "rebuild", "confirm-stopped"]);
+
 /** One result: the status, the evidence, the person's own checks, then the decision. The answers to
- * "You check this one" live here, so the Requirements row and the decision follow each one at once. */
-function SelectedResult({ selected, csrf }: { selected: Selected; csrf: string }) {
+ * "You check this one" live here, so the Requirements row and the decision follow each one at once. On a task page's
+ * Result tab (`inTask`) the task's header already says the current result's status and holds its Retry, Build again and
+ * Confirm it stopped: those aren't repeated here. */
+export function SelectedResult({ selected, csrf, inTask }: { selected: Selected; csrf: string; inTask?: { current: boolean } }) {
   const [answers, setAnswers] = useState<Answers>(new Map());
   const answer = (id: string, to: Answer | null) => setAnswers(previous => { const next = new Map(previous); if (to === null) next.delete(id); else next.set(id, to); return next; });
   const items = checkItemsOf(selected.panel);
@@ -419,12 +522,14 @@ function SelectedResult({ selected, csrf }: { selected: Selected; csrf: string }
   const notRight = items.filter(item => answers.get(item.id) === "not-right");
   const words = { unanswered: unanswered.map(wordsOf), notRight: notRight.map(wordsOf) };
   const decision = selected.decision === null ? null : { ...selected.decision, ...acceptWithChecksOf(selected.decision.base ?? selected.decision, words) };
-  const acts = selected.actFacts === undefined ? selected.acts
+  const chosen = selected.actFacts === undefined ? selected.acts
     : resultActsOf({ ...selected.actFacts, ...(selected.actFacts.accept === null ? {} : { accept: { ready: decision?.ready ?? false } }), unanswered: unanswered.length, notRight: notRight.length });
+  const owned = (kind: ResultActKind | null): ResultActKind | null => inTask?.current === true && kind !== null && HEADER_OWNED.has(kind) ? null : kind;
+  const acts = inTask?.current === true ? { ...chosen, primary: owned(chosen.primary), secondary: owned(chosen.secondary) } : chosen;
   const checks = selected.panel?.youCheck != null ? <CheckItems panel={selected.panel} chatHref={selected.chatHref} answers={answers} answer={answer} /> : null;
   const decide = <Decision selected={selected} csrf={csrf} acts={acts} decision={decision} firstUnanswered={unanswered[0]?.id ?? null} />;
   return <>
-    <StatusCard selected={selected} acts={acts} answers={answers} />
+    <StatusCard selected={selected} acts={acts} answers={answers} bare={inTask?.current === true} />
     {/* The decision comes after the evidence. The phone's dock sticks only within the person's checks and the
         decision itself, so it can never rise over the status or the Summary facts above them. */}
     {selected.panel !== null ? <Panel panel={selected.panel}><div className="flex flex-col gap-4">{checks}{decide}</div></Panel> : <div className="flex flex-col gap-4">{checks}{decide}</div>}
@@ -466,5 +571,18 @@ export function ResultView({ view, csrf }: { view: BrowserResultView; csrf: stri
             </li>)}</ul>
           </Card>
       : <SelectedResult key={`${selected.taskId}:${selected.build ?? ""}`} selected={selected} csrf={csrf} />}
+  </div>;
+}
+
+/** Where the time went (latency-timeline.ts): each kept timeline's milestones, offset from its start. */
+function TimingBody({ groups }: { groups: NonNullable<Selected["timing"]> }) {
+  return <div className="flex flex-col gap-4 text-body" data-timing>
+    {groups.map((group, index) => <section key={index} className="flex flex-col gap-1.5">
+      <h3 className="text-sm font-medium">{group.title} <span className="text-muted-foreground">· {group.total}</span></h3>
+      <dl className="grid grid-cols-[4.5rem_minmax(0,1fr)] gap-x-3 gap-y-1">
+        {group.rows.map((row, at) => <div key={at} className="contents"><dt className="font-mono text-muted-foreground tabular-nums">{row.at}</dt>
+          <dd className="min-w-0 [overflow-wrap:anywhere]">{row.label}{row.detail !== null && <span className="text-muted-foreground"> · {row.detail}</span>}</dd></div>)}
+      </dl>
+    </section>)}
   </div>;
 }

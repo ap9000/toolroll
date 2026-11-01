@@ -35,14 +35,16 @@ import {
   leadWorstCaseForPrice,
   performLeadRequest,
   priceForConfig,
-  settleForPrice,
+  cacheWorstPrice,
+  settleWithCache,
   subscriptionCredentialKey,
   type LeadHistoryMessage,
+  type LeadToolSchema,
 } from "./converse.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { redactSecretAssignments } from "./builder.js";
 import { LEAD_CONTRACT } from "./lead-contract.js";
-import { LEAD_MAX_PROPOSALS_PER_TURN, LEAD_TOOL_SCHEMAS, executeLeadTool, isLeadTool, leadViewContextFor, projectLabelForLead, redactForLead, toolResultBytes } from "./lead-tools.js";
+import { LEAD_CORE_TOOLS, LEAD_MAX_PROPOSALS_PER_TURN, LEAD_TOOL_SCHEMAS, executeLeadTool, isLeadTool, leadViewContextFor, projectLabelForLead, redactForLead, toolResultBytes } from "./lead-tools.js";
 import type { ReviewSnapshot } from "./chat-review.js";
 import { composeSubscriptionLeadPrompt, performSubscriptionLeadRequest, type SubscriptionLeadRunner } from "./subscription-chat.js";
 import { LEAD_REPLY_LIMITS, leadContext, type LeadChannel } from './lead-context.js';
@@ -78,6 +80,9 @@ export type LeadTurnInput = {
   queuedMessageId?: number;
   /** Called inside turn admission. A failed queue fence rolls admission back. */
   onAdmitted?: (turn: number) => void;
+  /** A personal queue claim (lead-queue.ts) this turn runs: with `queuedMessageId`, the queued message of the person's
+   * own thread this turn binds; admission lets it through the person's backlog (store.openLeadTurn). */
+  queueClaim?: { message: number; runner: string; generation: number };
   /** Safe, server-authored context for this turn only. Kept out of the
    * visible thread so a task-scoped composer still reads like a normal
    * conversation. */
@@ -126,6 +131,7 @@ export type LeadRefusal =
   | "thread-closed"
   | "latched"
   | "concurrent"
+  | "backlog"
   | "daily-cap"
   | "session-exhausted"
   | "session-ended"
@@ -136,7 +142,7 @@ export type LeadRefusal =
   | "request-changed"
   | "channel";
 
-export type LeadFailure = "provider-error" | "timeout" | "malformed-reply" | "secret-refused" | "latched" | "revoked" | "superseded";
+export type LeadFailure = "provider-error" | "timeout" | "malformed-reply" | "secret-refused" | "latched" | "revoked" | "superseded" | "over-reservation";
 
 export type LeadTurnOutcome =
   | { ok: true; replayed?: false; turn: number; reply: string; activity: string; proposals: number; steps: number; stoppedAtCap: boolean; settledMicrousd: number }
@@ -156,6 +162,7 @@ export const LEAD_REFUSAL_COPY: Record<LeadRefusal, string> = {
   "thread-closed": "This conversation is closed. Start a new one to keep going.",
   latched: "An earlier reply stopped before its cost was known, so chat is paused. Acknowledge that reply on the Chat page, then send again.",
   concurrent: "The lead is still answering your last message. Wait for that reply, then send this one.",
+  backlog: "Your earlier messages are still waiting for the lead. This one goes after them.",
   "daily-cap": "You've reached today's limit on chat replies, so this one wasn't sent. Try again tomorrow.",
   "session-exhausted": "This chat has used its spending limit. Start a new chat to keep going.",
   "session-ended": "This chat has ended. Start a new chat to keep going.",
@@ -193,13 +200,24 @@ export const LEAD_FAILURE_COPY = {
   tooLongUnknownCost: leadTimeoutNotice(false, true),
   lostUnknownCost: "The chat provider stopped responding partway through, and the cost isn't known, so chat is paused. Nothing it proposed was kept. Confirm the cost on the Chat page to turn chat back on.",
   unreadableUnknownCost: "The chat provider sent back an answer that couldn't be read, and its cost isn't known, so chat is paused. Nothing it proposed was kept. Confirm the cost on the Chat page to turn chat back on.",
+  overReserved: "This reply reported more use than was set aside for it, so its cost is counted as unknown and chat is paused. Nothing it proposed was kept. Confirm the cost on the Chat page to turn chat back on.",
   empty: "The lead sent back an empty answer. Nothing was kept. Send your message again.",
   unusable: "The lead's answer couldn't be used, so it was thrown away. Nothing was kept. Send your message again.",
 } as const;
 
 /** A failed turn's saved reason as plain words, for a surface that reads the turn back later (a restart, a delivery retry). */
-export function leadFailureText(reason: string | null): string {
+export function leadFailureText(reason: string | null, unknownSpend = false): string {
+  // A turn whose cost is unknown paused chat: say what happened (its reason's first sentence), then that the person must
+  // confirm the cost before chat runs again — never "send it again", which would only meet the pause.
+  if (unknownSpend) {
+    if (reason === "malformed-reply") return LEAD_FAILURE_COPY.unreadableUnknownCost;
+    if (reason === "over-reservation") return LEAD_FAILURE_COPY.overReserved;
+    // Whether proposals were kept depends on how it ended (a timeout keeps what it drafted): this says nothing about them.
+    const happened = /^[^.]*\./.exec(leadFailureText(reason))?.[0] ?? "The lead's reply didn't finish.";
+    return `${happened} Its cost isn't known, so chat is paused. Confirm the cost on the Chat page to turn chat back on.`;
+  }
   switch (reason) {
+    case "over-reservation": return "This reply reported more use than was set aside for it, so it was stopped and its cost counted. Send your message again.";
     case "timeout": case "crashed": return LEAD_FAILURE_COPY.tooLong;
     case "malformed-reply": return LEAD_FAILURE_COPY.unreadable;
     case "secret-refused": return LEAD_FAILURE_COPY.secretReply;
@@ -225,18 +243,20 @@ function settleBy<T>(work: Promise<T>, ms: number): Promise<T | typeof LATE> {
 const READ_TOOLS = new Set(["get_brief", "get_project_context", "get_actions", "get_action_status", "get_skills", "get_acceptance_evidence", "recap", "list_repos", "list_tasks", "get_task", "get_result", "get_result_images", "get_controls", "get_agents", "get_project_knowledge", "get_task_conversation", "get_diff", "get_check_log", "get_project_tools", "get_flows", "get_flow_insights", "list_decisions", "get_decision", "queue"]);
 
 /** The last messages of the thread as provider-neutral history, newest kept first until the byte cap. */
-export function historyFor(store: Store, thread: number, queuedMessageId?: number): LeadHistoryMessage[] {
-  const rows = store.listLeadMessages(thread, LEAD_HISTORY_MAX_MESSAGES);
+export function historyFor(store: Store, thread: number, queuedMessageId?: number, named = queuedMessageId !== undefined): LeadHistoryMessage[] {
+  // Admitted messages only (v128): a queued message — this one, a teammate's, or one removed while waiting — never
+  // reaches the model before its own turn takes it.
+  const rows = store.listLeadHistory(thread, LEAD_HISTORY_MAX_MESSAGES);
   const kept: LeadHistoryMessage[] = [];
   let bytes = 0;
   for (let index = rows.length - 1; index >= 0; index--) {
     const row = rows[index]!;
-    // Other teammates may have already queued later messages. They do not
-    // enter model history until admitted, and the current message appears once.
-    if (queuedMessageId !== undefined && (row.id === queuedMessageId || row.role === 'operator' && row.turn === null)) continue;
+    // The current message appears once (it is added after the history). Messages still waiting — a teammate's or this
+    // person's — are already left out by listLeadHistory (pending); a mirrored channel question is history like any other.
+    if (row.id === queuedMessageId) continue;
     bytes += Buffer.byteLength(row.text, "utf8");
     if (bytes > LEAD_HISTORY_CAP_BYTES) break;
-    const author = queuedMessageId !== undefined && row.role === 'operator' && row.turn !== null ? store.getLeadTurn(row.turn)?.approver : undefined;
+    const author = named && row.role === 'operator' && row.turn !== null ? store.getLeadTurn(row.turn)?.approver : undefined;
     kept.unshift(row.role === "operator" ? { role: "operator", text: author ? `From ${author}:\n${row.text}` : row.text } : { role: "assistant", text: row.text, calls: [] });
   }
   // A history must open with the operator: a leading assistant reply without its question is dropped.
@@ -245,8 +265,9 @@ export function historyFor(store: Store, thread: number, queuedMessageId?: numbe
 }
 
 /** "read 3 · proposed 1 · 2 steps" — counts only, never results (ruling 11). */
-export function activitySummary(reads: number, proposals: number, steps: number): string {
-  return [`read ${reads}`, `proposed ${proposals}`, `${steps} step${steps === 1 ? "" : "s"}`].join(" · ");
+export function activitySummary(reads: number, proposals: number, steps: number, cacheShare: number | null = null): string {
+  // How much of what it read came from the provider's cache, when every request reported it (docs/plans/run-efficiency.md).
+  return [`read ${reads}`, `proposed ${proposals}`, `${steps} step${steps === 1 ? "" : "s"}`, ...(cacheShare === null ? [] : [`${Math.round(cacheShare * 100)}% cached`])].join(" · ");
 }
 
 /** A tool result as the model sees it, measured as embedded; over the cap it becomes a typed refusal. */
@@ -294,7 +315,12 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   const liveThread = store.getLeadThread(thread.id);
   const sharedThread = liveThread !== null && store.canUseTeamMateThread(who.name, who.generation, liveThread.id);
   if (liveSession?.approver !== who.name || (liveThread?.approver !== who.name && !sharedThread) || liveSession.credentialKey !== credentialKey) return refuse("not-yours");
-  if (input.queuedMessageId !== undefined && (!sharedThread || !Number.isSafeInteger(input.queuedMessageId) || input.onAdmitted === undefined)) return refuse('invalid-request');
+  // A queued message binds only from a shared team thread, or as the exact personal queue claim of this person's own
+  // thread (its row is this approver's, in this thread, claimed under that runner and generation).
+  const personalQueued = input.queueClaim !== undefined && input.queueClaim.message === input.queuedMessageId &&
+    store.handle.prepare("SELECT 1 FROM lead_queue WHERE message = ? AND approver = ? AND thread = ? AND status = 'running' AND runner = ? AND generation = ? AND turn_id IS NULL")
+      .get(input.queueClaim.message, who.name, thread.id, input.queueClaim.runner, input.queueClaim.generation) !== undefined;
+  if (input.queuedMessageId !== undefined && ((!sharedThread && !personalQueued) || !Number.isSafeInteger(input.queuedMessageId) || input.onAdmitted === undefined)) return refuse('invalid-request');
   if (liveSession.endedAt !== null) return refuse("session-ended");
   if (liveThread.closedAt !== null) return refuse("thread-closed");
   if (liveSession.ceilingDigest !== who.ceilingDigest || liveThread.ceilingDigest !== who.ceilingDigest) return refuse("ceiling-changed");
@@ -312,25 +338,38 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   const document = leadContext(store, who.repos, now, { owner: who.name, thread: thread.id, redact: text => redactForLead(text, view),
     projectName: (path, index) => projectLabelForLead(path, index, view.names),
     ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), ...(input.channel === undefined ? {} : { channel: input.channel }), ...(input.leadName === undefined ? {} : { leadName: input.leadName }) });
-  const authoredMessage = input.queuedMessageId === undefined ? message : `From ${who.name}:\n${message}`;
+  // A team room names who wrote each message; a person's own queued message is just theirs.
+  const authoredMessage = input.queuedMessageId === undefined || personalQueued ? message : `From ${who.name}:\n${message}`;
   const historyMessage = input.context === undefined ? authoredMessage : `${redactForLead(input.context, view)}\n\n${authoredMessage}`;
-  const history: LeadHistoryMessage[] = [...historyFor(store, thread.id, input.queuedMessageId), { role: "operator", text: historyMessage }];
-  const composeDirect = (key: string): { url: string; headers: Record<string, string>; body: string } => {
+  const history: LeadHistoryMessage[] = [...historyFor(store, thread.id, input.queuedMessageId, input.queuedMessageId !== undefined && !personalQueued), { role: "operator", text: historyMessage }];
+  // Tools on demand (docs/plans/lead-deferred-tools.md): a request advertises the core tools, then the ones find_tools
+  // found earlier in this reply, in that order (so the core prefix stays the same as tools are found).
+  const findTools = { searches: 0, found: new Set<string>() };
+  const advertisedTools = (): LeadToolSchema[] => [
+    ...LEAD_TOOL_SCHEMAS.filter(one => LEAD_CORE_TOOLS.has(one.name)),
+    ...[...findTools.found].map(name => LEAD_TOOL_SCHEMAS.find(one => one.name === name)).filter((one): one is LeadToolSchema => one !== undefined),
+  ];
+  const composeDirect = (key: string, tools: readonly LeadToolSchema[]): { url: string; headers: Record<string, string>; body: string } => {
     if (!direct) throw new Error("not a direct chat provider");
-    return composeLeadRequest({ provider: directProvider as DirectChatProviderId, model: config.model, key, system: LEAD_CONTRACT, dataDocument: document, history, tools: LEAD_TOOL_SCHEMAS });
+    // Anthropic prompt caching: the core tools (always first) end the first breakpoint (docs/plans/lead-deferred-tools.md).
+    const cache = directProvider === "anthropic-api" ? { coreTools: tools.filter(one => LEAD_CORE_TOOLS.has(one.name)).length } : undefined;
+    return composeLeadRequest({ provider: directProvider as DirectChatProviderId, model: config.model, key, system: LEAD_CONTRACT, dataDocument: document, history, tools, ...(cache === undefined ? {} : { cache }) });
   };
-  const composeSubscription = (): string =>
-    composeSubscriptionLeadPrompt({ system: LEAD_CONTRACT, dataDocument: document, history, tools: LEAD_TOOL_SCHEMAS });
-  // The exact outbound base is scanned whole. Only direct API traffic needs
-  // a worst-case dollar reservation; subscription traffic records zero.
-  const base = direct ? composeDirect("").body : composeSubscription();
+  const composeSubscription = (tools: readonly LeadToolSchema[]): string =>
+    composeSubscriptionLeadPrompt({ system: LEAD_CONTRACT, dataDocument: document, history, tools });
+  // The reservation-only base: the FULL registry, serialized as a request would be, so any tool found later in this
+  // reply is already covered by the worst case. What is sent each round is smaller (the advertised set) and is scanned
+  // whole before every dispatch. Only direct API traffic needs a dollar reservation; subscription traffic records zero.
+  const base = direct ? composeDirect("", LEAD_TOOL_SCHEMAS).body : composeSubscription(LEAD_TOOL_SCHEMAS);
   if (scanForSecrets(base).length > 0) return refuse("secret-in-context");
   // Fit the bounded tool loop to the already-authorized remaining allowance.
   // Context/history growth must not demand a larger budget for a simple reply.
   // Each chosen step retains the same worst-case call/output accounting.
   let maxSteps = LEAD_MAX_STEPS;
   const baseBytes = Buffer.byteLength(base, "utf8");
-  const reserveFor = (steps: number) => direct ? leadWorstCaseForPrice(price as NonNullable<typeof price>, baseBytes, { steps }) : 0;
+  // With prompt caching on (Anthropic), the worst case reserves every input token at the cache-write rate (the dearest).
+  const reservePrice = direct && directProvider === "anthropic-api" ? cacheWorstPrice(price as NonNullable<typeof price>) : price;
+  const reserveFor = (steps: number) => direct ? leadWorstCaseForPrice(reservePrice as NonNullable<typeof price>, baseBytes, { steps }) : 0;
   if (direct) {
     const remaining = Math.min(liveSession.ceilingMicrousd - liveSession.spentMicrousd,
       config.weeklyCeilingMicrousd - store.chatWeeklySpendMicrousd(credentialKey, now));
@@ -354,6 +393,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
         weeklyCeilingMicrousd: config.weeklyCeilingMicrousd,
         deadlineMs: TURN_WALL_CLOCK_MS + 10_000,
         provider: config.provider,
+        ...(input.queueClaim === undefined ? {} : { queueClaim: input.queueClaim }),
       },
       now,
     );
@@ -363,7 +403,8 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     if (!started.ok) throw new Error("new lead turn could not start");
     if (input.queuedMessageId === undefined) store.appendLeadMessage({ thread: thread.id, turn: turnId, role: "operator", text: message }, now);
     else {
-      const bound = store.handle.prepare("UPDATE lead_message SET turn=? WHERE id=? AND thread=? AND role='operator' AND turn IS NULL AND text=?")
+      // Binding admits it: the same statement clears pending, so it joins history exactly when its turn exists (v128).
+      const bound = store.handle.prepare("UPDATE lead_message SET turn=?, pending=0 WHERE id=? AND thread=? AND role='operator' AND turn IS NULL AND text=?")
         .run(turnId, input.queuedMessageId, thread.id, message);
       if (Number(bound.changes) !== 1) throw new Error('The queued message changed before admission.');
     }
@@ -389,6 +430,8 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   /** The turn's one question to its owner: shown with the reply only once the turn answers; a failed turn drops it. */
   const ask = (question: string, options: readonly string[]): boolean => store.recordLeadAsk({ turn: turnId, thread: thread.id, question, options }, clock());
   let tokensIn = 0;
+  // What its requests read from the provider's cache; known only while every request reported it.
+  let cacheRead = 0, cacheKnown = true;
   let tokensOut = 0;
   let settled = 0;
   const draft = (kind: LeadProposalKind, payload: Record<string, unknown>): number | null => {
@@ -465,7 +508,10 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     now = clock();
     const remainingMs = TURN_WALL_CLOCK_MS - (now.getTime() - turnStartedAt);
     if (remainingMs <= 0) return timedOut(false);
-    const request = direct ? composeDirect(input.key as string) : composeSubscription();
+    // This request's advertised tools: fixed for the request; a tool found in its reply is advertised from the next one.
+    const advertised = advertisedTools();
+    const advertisedNames = new Set(advertised.map(one => one.name));
+    const request = direct ? composeDirect(input.key as string, advertised) : composeSubscription(advertised);
     // Tool results join the outbound body: scanned again before every dispatch.
     const outbound = typeof request === "string" ? request : request.body;
     if (scanForSecrets(outbound).length > 0) {
@@ -504,7 +550,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
           system: LEAD_CONTRACT,
           dataDocument: document,
           history,
-          tools: LEAD_TOOL_SCHEMAS,
+          tools: advertised,
           timeoutMs: remainingMs,
           signal: controller.signal,
           // The reply as it is written; text that looks like a secret is
@@ -545,6 +591,10 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       return fail("malformed-reply", LEAD_FAILURE_COPY.unreadableUnknownCost, true);
     }
     const answer = result.answer;
+    // The streamed reply's finished text, once, secret-checked whole: only now may its last word show live.
+    if (!direct && input.onProgress !== undefined && !controller.signal.aborted && answer.text !== "" && scanForSecrets(answer.text).length === 0) {
+      progress({ kind: "text", turn: turnId, step: steps, text: answer.text, final: true });
+    }
     // Usage that cannot be true — more input tokens than bytes sent — is a
     // malformed reply with unknown cost, never a number to settle by.
     if (direct && answer.tokensIn > requestBytes) {
@@ -553,11 +603,24 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
     }
     // The pinned math, or the provider's own reported charge when HIGHER.
     const stepSettled = direct
-      ? Math.max(settleForPrice(price as NonNullable<typeof price>, answer.tokensIn, answer.tokensOut), answer.reportedCostMicrousd ?? 0)
+      ? Math.max(settleWithCache(price as NonNullable<typeof price>, answer), answer.reportedCostMicrousd ?? 0)
       : 0;
-    finishStep({ state: "answered", tokensIn: answer.tokensIn, tokensOut: answer.tokensOut, settledMicrousd: stepSettled, replyBytes: Buffer.byteLength(answer.text, "utf8") });
+    // The reservation is the bound: a step whose reported usage would settle past what this reply reserved (the
+    // estimate counts a token per three bytes; a provider may report more) ends the turn with its cost unknown, which
+    // settles the whole reservation and pauses chat until the cost is confirmed — never a debit past the reservation
+    // or the session's ceiling.
+    if (direct && settled + stepSettled > reserved) {
+      finishStep({ state: "failed", failureReason: "over-budget", settledMicrousd: null, unknownSpend: true });
+      return fail("over-reservation", LEAD_FAILURE_COPY.overReserved, true);
+    }
+    finishStep({ state: "answered", tokensIn: answer.tokensIn, tokensOut: answer.tokensOut, settledMicrousd: stepSettled, replyBytes: Buffer.byteLength(answer.text, "utf8"),
+      cacheReadTokens: answer.cacheReadTokens ?? null, cacheWriteTokens: answer.cacheWriteTokens ?? null,
+      // v140: what the provider itself reported for this request (absent: unreported, kept NULL).
+      modelReported: answer.modelReported ?? null, providerTurns: answer.providerTurns ?? null, reportedCostUsd: answer.reportedCostUsd ?? null,
+      billingReported: answer.billingReported ?? null });
     tokensIn += answer.tokensIn;
     tokensOut += answer.tokensOut;
+    if (answer.cacheReadTokens === undefined) cacheKnown = false; else cacheRead += answer.cacheReadTokens;
     settled += stepSettled;
     lastText = answer.text;
 
@@ -600,7 +663,11 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
       // Position within this turn is unique even if a provider reuses call ids.
       const progressId = `${turnId}:${steps}:${index}`;
       progress({ kind: "tool", turn: turnId, step: steps, id: progressId, label: leadToolLabel(call.name) });
-      const outcome = executeLeadTool({ store, who, now: clock(), draft, selectEvidence, step: steps, readDecisions, readResults, searchedMemory, checkedCapabilities, ask, ...(input.integrations === undefined ? {} : { integrations: input.integrations }), thread: thread.id, turn: turnId, ...(promiseChannelOfTurn(input.channel) === undefined ? {} : { channel: promiseChannelOfTurn(input.channel)! }), ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), ...(input.mediaDelivery === undefined ? {} : { mediaDelivery: input.mediaDelivery }) }, call.name, call.args, view);
+      // A registered tool this request did not advertise is refused before it is read or run (the only production
+      // caller of executeLeadTool): the model learns the road (find_tools, then the next step) and the reply goes on.
+      const outcome = !advertisedNames.has(call.name)
+        ? { ok: false as const, message: `${call.name} isn't available in this step. Call find_tools with what you want to do; tools it finds can be called from your next step.` }
+        : executeLeadTool({ store, who, now: clock(), draft, selectEvidence, step: steps, readDecisions, readResults, searchedMemory, checkedCapabilities, ask, findTools, ...(input.integrations === undefined ? {} : { integrations: input.integrations }), thread: thread.id, turn: turnId, ...(promiseChannelOfTurn(input.channel) === undefined ? {} : { channel: promiseChannelOfTurn(input.channel)! }), ...(input.evidenceRoot === undefined ? {} : { evidenceRoot: input.evidenceRoot }), ...(input.mediaDelivery === undefined ? {} : { mediaDelivery: input.mediaDelivery }) }, call.name, call.args, view);
       let displayOutcome: LeadToolOutcome = { state: "succeeded" };
       if (!outcome.ok) {
         const reason = leadToolFailureReason(call.name, outcome.message);
@@ -608,7 +675,8 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
           ? reason : `That step didn't work (${leadToolLabel(call.name)}).` };
       }
       progress({ kind: "tool-result", turn: turnId, step: steps, id: progressId, outcome: displayOutcome });
-      if (READ_TOOLS.has(call.name)) reads++;
+      // A call refused because this request did not advertise it read nothing.
+      if (READ_TOOLS.has(call.name) && advertisedNames.has(call.name)) reads++;
       if (call.name === "show_control" && outcome.ok) shownControl = true;
       // Opt-in, local diagnostics for end-to-end runs: what the lead asked of each tool and what came back (its start), keys
       // blanked. Each line stays whole JSON so a run can assert on what a tool returned rather than on the model's words.
@@ -630,7 +698,7 @@ export async function runLeadTurn(input: LeadTurnInput): Promise<LeadTurnOutcome
   if (scanForSecrets(reply).length > 0) return fail("secret-refused", LEAD_FAILURE_COPY.secretReply, false);
 
   now = clock();
-  const activity = activitySummary(reads, proposals, steps);
+  const activity = activitySummary(reads, proposals, steps, cacheKnown && tokensIn > 0 ? Math.min(1, cacheRead / tokensIn) : null);
   // One write (finding 12): settle, debit, promote the drafts, append the assistant text.
   const finalized = store.finalizeLeadTurn(turnId, started.generation, { state: "answered", settledMicrousd: settled, tokensIn, tokensOut, message: { text: reply, activity } }, now);
   if (!finalized) return { ok: false, turn: turnId, failed: "superseded", message: LEAD_FAILURE_COPY.stopped, unknownSpend: false };

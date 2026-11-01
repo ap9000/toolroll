@@ -63,7 +63,7 @@ export const CHAT_CONTINUITY_SCRIPT = String.raw`
     var carry=JSON.parse(sessionStorage.getItem(carryKey)||'null');sessionStorage.removeItem(carryKey);
     if(!draft&&carry&&user&&carry.owner===user&&carry.task===task&&typeof carry.text==='string'&&carry.text.length<=2000&&typeof carry.at==='number'&&carry.at>Date.now()-86400000){box.value=carry.text;draft={text:carry.text,request:request.value,submitted:false,at:Date.now()};save();}
   }catch(e){storage=false;}
-  function buttons(){document.querySelectorAll('form[action="/chat"] button[type="submit"]').forEach(function(button){button.disabled=busy||sending||stale||offline;});}
+  function buttons(){document.querySelectorAll('form[action="/chat"] button[type="submit"]').forEach(function(button){button.disabled=sending||stale||offline;});}
   function showReconnect(on){if(reconnect)reconnect.hidden=!on;}
   function lostAuthority(){stale=true;buttons();showReconnect(true);say('Sign in again to reconnect. Your draft stays in this tab.');}
   function changed(){stale=true;buttons();showReconnect(true);say('This conversation changed or ended. Your draft stays in this tab; reconnect to continue.');}
@@ -97,7 +97,8 @@ export const CHAT_CONTINUITY_SCRIPT = String.raw`
     if(!(one instanceof HTMLFormElement))return;
     var action=one.getAttribute('action')||'';
     if(action==='/chat'){
-      if(busy||sending||stale||offline){event.preventDefault();return;}
+      // A reply in progress no longer holds the composer: a message sent now waits its turn (the lead queue).
+      if(sending||stale||offline){event.preventDefault();return;}
       bind(one);
       if(one===form){
         if(!box.value.trim()){event.preventDefault();return;}
@@ -124,8 +125,10 @@ export const CHAT_CONTINUITY_SCRIPT = String.raw`
         if(got===null)return;
         var data=got.data||{};
         if(data.ok===true){
+          // A conversation shown before it existed (session 0) is started by its first send: that is this one.
+          if(session==='0'&&typeof data.session==='number'&&data.session>0)adopt(String(data.session));
           if(String(data.session)!==session){changed();return;}
-          say('Sent. Waiting for the reply…');later(300);return;
+          say(data.queued===true?'Queued. It goes to the lead after the reply in progress.':'Sent. Waiting for the reply…');later(300);return;
         }
         // Refused, so nothing was received: the draft stays, editable and
         // resendable under its own key; the words are the server's.
@@ -272,6 +275,9 @@ export const CHAT_CONTINUITY_SCRIPT = String.raw`
     }
     return true;
   }
+  // The conversation this page's first send started: its binding and its draft move to it (a reload restores from there).
+  function adopt(started){session=started;document.querySelectorAll('form[action="/chat"] [name="request-session"]').forEach(function(bound){bound.value=started;});
+    try{sessionStorage.removeItem(key);}catch(e){}key='standing-orders:chat-draft:'+session+':'+task;save();}
   function later(ms){if(stale)return;clearTimeout(timer);timer=setTimeout(check,ms);}
   async function check(){
     if(polling||stale)return;
@@ -288,6 +294,11 @@ export const CHAT_CONTINUITY_SCRIPT = String.raw`
       if(!r.ok)throw new Error('connection');
       var data=await r.json();
       if(!valid(data))throw new Error('response');
+      // Not started yet (session 0): only this send's own receipt in the started conversation proves it is the one.
+      if(session==='0'&&typeof data.session==='number'&&data.session>0&&asked&&data.received===true)adopt(String(data.session));
+      // A poll that lands while the first send is on its way decides nothing: that send's answer (or the poll it
+      // asks for afterwards, with its request) says whether the started conversation is this page's.
+      if(session==='0'&&sending&&data.session!==null&&String(data.session)!=='0'){later(1000);return;}
       if(data.session===null||String(data.session)!==session){changed();return;}
       // A late answer for another lens never lands here; the poll goes on.
       if(data.task!==task){later(5000);return;}
@@ -302,7 +313,7 @@ export const CHAT_CONTINUITY_SCRIPT = String.raw`
       }
       settleLive();
       busy=data.pending;buttons();
-      say(busy?'Reply in progress. You can draft your next message or come back later.':sent?'Message not confirmed. Check the conversation before retrying.':'');
+      say(busy?'Reply in progress. A message you send now waits its turn.':sent?'Message not confirmed. Check the conversation before retrying.':'');
       later(busy?2500:5000);
     }catch(e){say('Connection lost. Reconnecting… Your existing work is not cancelled.');later(10000);}
     finally{polling=false;}

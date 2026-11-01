@@ -41,13 +41,15 @@ function ActionCard({ card, csrf, onChanged }: { card: BrowserActionCard; csrf: 
   const confirmBlocked = primary?.kind === "confirm" && primary.irreversible && !armed;
   const finished = card.state === "confirmed" || card.state === "refused" || card.state === "dismissed" || card.state === "expired";
   return <section data-view="chat-card" data-action-card={card.id} data-card-kind={card.kind} data-card-state={card.state}
-    className={cn("mt-3 overflow-hidden rounded-lg border border-border bg-card text-card-foreground", card.state === "pending" && "border-primary/40", finished && "opacity-90")}>
-    <header className="flex items-center gap-2 border-b border-border px-4 py-2.5 text-body text-muted-foreground font-semibold">
-      <span className="min-w-0 flex-1 truncate">{card.label}</span>
+    className={cn("so-chat-card mt-3 overflow-hidden bg-card text-card-foreground", finished && "opacity-90")}>
+    <header className="flex items-center gap-2 px-4 pt-3 pb-1 font-semibold">
+      {/* A decision still waiting on the person says so first: the one black chip in the thread. */}
+      {card.state === "pending" && primary !== null && <span className="so-needs-you">Needs you</span>}
+      <span className="so-chat-card-title min-w-0 flex-1 truncate">{card.label}</span>
       {card.state === "confirmed" && <span className="inline-flex items-center gap-1 text-success"><Check className="size-3.5" aria-hidden="true" />Done</span>}
       {card.state === "refused" && <span className="inline-flex items-center gap-1 text-destructive"><X className="size-3.5" aria-hidden="true" />Not done</span>}
     </header>
-    {card.body !== "" && <div className="px-4 py-3"><GuardedHtml html={card.body} immutable className="so-card-body" /></div>}
+    {card.body !== "" && <div className="px-4 py-2"><GuardedHtml html={card.body} immutable className="so-card-body" /></div>}
     <footer className="flex flex-col gap-2 px-4 pb-3.5 pt-1">
       {card.said !== null && <p className={cn("text-body", card.state === "refused" ? "text-destructive" : "text-success")}>{sentence(card.said)}</p>}
       {card.links.length > 0 && <div className="flex flex-wrap gap-2">{card.links.map(link => <Button key={link.href} asChild variant="outline" size="sm"><a href={link.href}>{link.label}</a></Button>)}</div>}

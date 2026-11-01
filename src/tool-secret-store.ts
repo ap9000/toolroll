@@ -27,11 +27,13 @@
  * database records which key Toolroll made: a folder, key, link or lock that
  * something else put there first is refused, never used.
  */
+import { inReadOnlyRequest } from "./read-only-request.js";
 import { spawnSync } from "node:child_process";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readSync, readdirSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeSync, type Stats } from "node:fs";
 import { dirname, join } from "node:path";
 import { envValue } from "./names.js";
+import { sleep } from "./sleep.js";
 
 export type SecretStoreKind = "macos-keychain" | "secret-service" | "files";
 /** One item's address: what the store lists, never a secret (a folder's or project's hash, a tool's name). */
@@ -199,8 +201,6 @@ function currentStore(env: NodeJS.ProcessEnv): DetectedStore {
 export function secretBackend(env: NodeJS.ProcessEnv = process.env): SecretBackend | null {
   return currentStore(env).backend;
 }
-
-export const secretStoreKind = (): SecretStoreKind => secretBackend()?.kind ?? "files";
 
 /** Where secrets rest, in the words Settings and `toolroll integrations` share; `problem` when Toolroll's folder can't be used. */
 export function secretStorage(): { kind: SecretStoreKind; words: string; filesOnly: boolean; problem?: string } {
@@ -453,6 +453,9 @@ export function secretFolder(state?: string): SecretFolder {
   if (problem !== undefined) throw new SecretStoreError(problem);
   const known = folders.get(root);
   if (known !== undefined && unchanged(known)) return known;
+  // A page visit prepares nothing (docs/plans/get-side-effects.md): the console prepares its folder as it starts, and
+  // an action checks a changed one again. Until then the page says secrets can't be read right now.
+  if (inReadOnlyRequest()) throw new SecretStoreError(NOT_READY);
   // Changed since it was checked (or never seen): checked against the same record (the database's, for Toolroll's
   // own folder; this process's, for a test's), and refused if it doesn't match.
   const named = pending.get(root);
@@ -550,7 +553,7 @@ export async function withSecretLockAsync<T>(folder: SecretFolder, name: string,
   const lock = lockFile(folder, name), started = Date.now();
   while (!takeLock(lock, options.staleMs ?? 120_000)) {
     if (Date.now() - started > (options.waitMs ?? 120_000)) throw new SecretStoreError("A sign-in is being renewed elsewhere. Try again in a moment.");
-    await new Promise(resolve => setTimeout(resolve, 25));
+    await sleep(25);
   }
   try { return await work(); } finally { rmSync(lock, { force: true }); }
 }
@@ -633,6 +636,8 @@ export function readHeldSecret(state: string, name: string, file: readonly strin
   const path = pathIn(folder.root, file);
   const backend = secretBackend();
   if (backend === null) return readOwnFile(path);
+  // A page visit moves nothing and takes no lock (docs/plans/get-side-effects.md): the keychain, else the old file.
+  if (inReadOnlyRequest()) return readSealed(backend, folder, heldItem(folder, name)) ?? readOwnFile(path);
   return withSecretLock(folder, `held.${name}`, () => {
     moveHeldIn(backend, folder, name, path);
     return readSealed(backend, folder, heldItem(folder, name));
@@ -655,9 +660,4 @@ export function writeHeldSecret(state: string, name: string, file: readonly stri
     if (value === null) removeValue(backend, item);
     else writeSealed(backend, folder, item, value);
   });
-}
-
-/** Whether a held secret has a value, without reading it where that can be helped. */
-export function heldSecretSet(state: string, name: string, file: readonly string[]): boolean {
-  try { return readHeldSecret(state, name, file) !== null; } catch { return false; }
 }

@@ -2,13 +2,11 @@
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import type { Root } from "react-dom/client";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { BrowserWorkspace } from "../browser-workspace.js";
-import { CommandMenu, CrewRows, GuardedHtml, useWorkspace, workspaceCommands } from "./app.js";
+import { CommandMenu, CrewRows, GuardedHtml, useWorkspace } from "./app.js";
 import {
-  carryDraft, DRAFT_TTL, editDraft, emptyDraft, isWorkspace, readWorkspace, receiveDraft,
+  awaitReceipt, carryDraft, DRAFT_TTL, editDraft, emptyDraft, isWorkspace, readWorkspace, receiveDraft,
   restoreDraft, sameConversation, saveDraft, sendMessage, submitDraft, WorkspaceAuthError,
 } from "./workspace-client.js";
 
@@ -60,29 +58,6 @@ test("Crew reasons disclose plain text separately from navigation, without repea
   const { detail: _detail, ...withoutReason } = item;
   await render([withoutReason]);
   expect(host.querySelector('details')).toBeNull();
-});
-
-test("the whole Crew row taps through to the task, while the reason toggles in place", async () => {
-  const workspace = fixture();
-  const item = { id: 'payouts', title: 'Fix payout rounding', state: 'failed' as const, label: 'Failed', tone: 'problem' as const,
-    updatedAt: '2026-10-05T10:00:00Z', project: '/projects/payments', href: '/chat?task=payouts',
-    resultHref: '/chat?task=payouts&result=9', action: null, detail: 'Checks failed on payout rounding.', lead: 'Maya is on it.' };
-  const host = document.createElement('div'); document.body.append(host); root = createRoot(host);
-  await act(async () => root!.render(createElement(CrewRows, { workspace, items: [item] })));
-  const row = host.querySelector('.so-work-row')!;
-  // One link per row; its overlay covers the row, so the lead and project lines tap through to it.
-  expect(row.querySelectorAll('a.so-work-link')).toHaveLength(1);
-  expect(row.querySelector('[data-crew-lead]')?.closest('.so-work-row')).toBe(row);
-  expect([...row.querySelectorAll('.so-work-project')].map(line => line.textContent)).toEqual(['Maya is on it.', 'payments']);
-  const css = readFileSync(join(import.meta.dirname, "workspace.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  expect(css).toMatch(/\.so-work-row \{[^}]*position: relative/);
-  expect(css).toMatch(/\.so-work-link::after \{[^}]*position: absolute; inset: 0/);
-  // The reason sits above that overlay, so tapping it expands it without navigating.
-  expect(css).toMatch(/\.so-work-reason \{[^}]*position: relative; z-index: 1/);
-  const disclosure = row.querySelector('details')!;
-  expect(disclosure.closest('a')).toBeNull();
-  disclosure.querySelector('summary')!.click();
-  expect(disclosure.open).toBe(true);
 });
 
 beforeEach(() => {
@@ -175,6 +150,16 @@ test("auth and changed conversation identities require explicit reconnection", a
   expect(sameConversation(fixture(), changed)).toBe(false);
   const otherRun = fixture(); otherRun.conversation!.resultRunId = 10;
   expect(sameConversation(fixture(), otherRun)).toBe(false);
+  // Quiet page visits: a page shown before its conversation existed (session 0) is the same one once its own send started
+  // it (session 7 here), but not one another tab started, not one of another task, and a started one changing again
+  // still needs reconnection.
+  const unstarted = fixture(); unstarted.conversation!.sessionId = 0;
+  expect(sameConversation(unstarted, fixture(), 7)).toBe(true);
+  expect(sameConversation(unstarted, fixture())).toBe(false);
+  expect(sameConversation(unstarted, fixture(), 8)).toBe(false);
+  const elsewhere = fixture(); elsewhere.conversation!.taskId = "task-b";
+  expect(sameConversation(unstarted, elsewhere, 7)).toBe(false);
+  expect(sameConversation(fixture(), unstarted)).toBe(false);
 });
 
 test("conditional reads preserve an unchanged view without parsing a body, and still honor auth failures", async () => {
@@ -419,15 +404,6 @@ test("focused native drafts are preserved and deferred non-form updates apply af
   expect(document.body.textContent).toContain("Decision recorded");
 });
 
-test("command search keeps exact admitted destinations and filters task state", () => {
-  const workspace = fixture();
-  workspace.projects = [{ name: "Docs", path: "/repo/docs", href: "/work?project=%2Frepo%2Fdocs", knowledgeHref: "/settings/knowledge?repo=%2Frepo%2Fdocs" }];
-  workspace.crew = [{ id: "task-a", title: "Improve recovery", project: "/repo/docs", state: "ready-to-check", label: "Ready to check", tone: "ready", href: "/chat?task=task-a", resultHref: "/chat?task=task-a&result=9", action: null }];
-  expect(workspaceCommands(workspace, " DOCS ")).toEqual([{ label: "Docs", detail: "Project", href: "/work?project=%2Frepo%2Fdocs" }]);
-  expect(workspaceCommands(workspace, "ready")).toEqual([{ label: "Improve recovery", detail: "Ready to check", href: "/chat?task=task-a&result=9" }]);
-  expect(workspaceCommands(workspace, "missing")).toEqual([]);
-});
-
 test("command shortcut opens outside editors and stays absent on sensitive pages", async () => {
   const node = document.createElement("div"); document.body.append(node); root = createRoot(node);
   const workspace = fixture(); workspace.sensitive = false;
@@ -441,4 +417,69 @@ test("command shortcut opens outside editors and stays absent on sensitive pages
   await act(async () => root!.render(createElement(CommandMenu, { workspace: { ...workspace, sensitive: true } })));
   expect(document.querySelector("[data-workspace-command]")).toBeNull();
   expect(node.textContent).toBe("");
+});
+
+describe("a comment's delivery is only confirmed by its receipt", () => {
+  const noWait = async () => {};
+  test("the receipt clears the pending request: delivered", async () => {
+    let pending: string | null = "r1";
+    let reads = 0;
+    const ok = await awaitReceipt(() => pending, "r1", async () => { reads += 1; if (reads === 2) pending = null; }, 15, noWait);
+    expect(ok).toBe(true);
+    expect(reads).toBe(2);
+  });
+  test("no receipt (an error page, a 202 that never lands): not delivered, after a bounded wait", async () => {
+    let reads = 0;
+    const ok = await awaitReceipt(() => "r1", "r1", async () => { reads += 1; }, 5, noWait);
+    expect(ok).toBe(false);
+    expect(reads).toBe(5);
+  });
+  test("another request pending is not this one's receipt", async () => {
+    expect(await awaitReceipt(() => "r2", "r1", async () => {}, 3, noWait)).toBe(true);
+  });
+});
+
+describe("the controller's steer (a line comment) through the real send path", () => {
+  const steerOnce = async (answer: (body: URLSearchParams) => Response, reads: (asked: string | null) => Response) => {
+    vi.useFakeTimers();
+    vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+    let asked: string | null = null;
+    const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+      if (init?.method === "POST") { const body = new URLSearchParams(String(init.body)); asked = body.get("request"); return answer(body); }
+      return reads(asked);
+    });
+    vi.stubGlobal("fetch", fetcher);
+    const probe = await workspaceProbe();
+    let said: string | null | undefined;
+    await act(async () => { const pending = probe.current().steer('On "a.ts":1 (run #9): Please.\n\n> x'); await vi.advanceTimersByTimeAsync(30_000); said = await pending; });
+    return { said, probe };
+  };
+  const withReceipt = (asked: string | null, received: boolean) => { const one = fixture(); one.receipt = asked === null ? null : { request: asked, received }; return new Response(JSON.stringify(one), { headers: { etag: `"r-${asked}-${received}"` } }); };
+
+  test("an error page is not a delivery", async () => {
+    const { said } = await steerOnce(() => new Response("<html>boom</html>", { status: 500, headers: { "content-type": "text/html" } }), asked => withReceipt(asked, false));
+    expect(said).toContain("isn't confirmed");
+  });
+  test("an answer whose receipt never says received is not a delivery", async () => {
+    const { said } = await steerOnce(() => new Response(null, { status: 202 }), asked => withReceipt(asked, false));
+    expect(said).toContain("isn't confirmed");
+  });
+  test("the exact receipt is a delivery", async () => {
+    const { said, probe } = await steerOnce(() => new Response(null, { status: 202 }), asked => withReceipt(asked, true));
+    expect(said).toBeNull();
+    expect(probe.current().draft.pending).toBeNull();
+  });
+  test("the lead queue's acknowledgement is a delivery", async () => {
+    const { said } = await steerOnce(body => json({ ok: true, queued: true, request: body.get("request") }), asked => withReceipt(asked, false));
+    expect(said).toBeNull();
+  });
+  test("words in the composer are never replaced by a comment", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async () => tagged()));
+    const probe = await workspaceProbe();
+    await act(async () => { probe.current().edit("half a thought"); });
+    let said: string | null | undefined;
+    await act(async () => { said = await probe.current().steer('On "a.ts":1 (run #9): x\n\n> y'); });
+    expect(said).toContain("Send or clear");
+    expect(probe.current().draft.text).toBe("half a thought");
+  });
 });

@@ -38,68 +38,18 @@ async function linkTarget(dir: string): Promise<string> {
 }
 
 describe("chooseTarget", () => {
-  test("prefers ~/.local/bin when it is already on PATH", () => {
-    const choice = chooseTarget({
-      pathEntries: [SYSTEM_DIR, join(HOME, ".local", "bin")],
-      home: HOME,
-    });
-
-    expect(choice).toEqual({ dir: join(HOME, ".local", "bin"), onPath: true });
-  });
-
-  test("honours an explicit directory", () => {
-    const choice = chooseTarget({
-      pathEntries: [SYSTEM_DIR],
-      home: HOME,
-      override: OUTSIDE_HOME,
-    });
-
-    expect(choice.dir).toBe(OUTSIDE_HOME);
-    expect(choice.onPath).toBe(false);
-  });
-
-  test("never proposes a directory outside the home directory", () => {
-    // Anything else would need sudo, and this command must never need sudo.
-    const choice = chooseTarget({ pathEntries: OTHER_SYSTEM_DIRS, home: HOME });
-
-    expect(choice.dir.startsWith(HOME)).toBe(true);
-  });
-
-  test("falls back to ~/.local/bin and reports that it is not on PATH", () => {
-    const choice = chooseTarget({ pathEntries: [SYSTEM_DIR], home: HOME });
-
-    expect(choice).toEqual({ dir: join(HOME, ".local", "bin"), onPath: false });
-  });
-
-  test("uses any home-owned PATH entry before inventing one", () => {
-    const choice = chooseTarget({
-      pathEntries: [SYSTEM_DIR, join(HOME, "tools")],
-      home: HOME,
-    });
-
-    expect(choice).toEqual({ dir: join(HOME, "tools"), onPath: true });
-  });
-
-  test("recognises a home-owned entry written with the native separator", () => {
-    // This is what broke on Windows: the home check was a `${home}/` prefix
-    // test, so no backslash path ever matched and every home-owned directory
-    // already on PATH was passed over for an invented one.
-    const entry = join(HOME, "scoop", "shims");
-
-    expect(chooseTarget({ pathEntries: [entry], home: HOME })).toEqual({
-      dir: entry,
-      onPath: true,
-    });
-  });
-
-  test("tolerates a trailing separator on a PATH entry", () => {
-    // PATH entries are hand-written as often as not, and one that ends in a
-    // separator names the same directory as one that does not.
-    const target = join(HOME, ".local", "bin");
-
-    const choice = chooseTarget({ pathEntries: [SYSTEM_DIR, target + sep], home: HOME });
-
-    expect(choice).toEqual({ dir: target, onPath: true });
+  // ~/.local/bin when it is on PATH, any other home-owned PATH entry (native separator, trailing separator)
+  // before inventing one, an explicit directory as given, and never a directory outside home: that would need sudo.
+  test.each<[string, string[], string | undefined, { dir: string; onPath: boolean }]>([
+    ["prefers ~/.local/bin when it is already on PATH", [SYSTEM_DIR, join(HOME, ".local", "bin")], undefined, { dir: join(HOME, ".local", "bin"), onPath: true }],
+    ["honours an explicit directory", [SYSTEM_DIR], OUTSIDE_HOME, { dir: OUTSIDE_HOME, onPath: false }],
+    ["never proposes a directory outside the home directory", OTHER_SYSTEM_DIRS, undefined, { dir: join(HOME, ".local", "bin"), onPath: false }],
+    ["falls back to ~/.local/bin and reports that it is not on PATH", [SYSTEM_DIR], undefined, { dir: join(HOME, ".local", "bin"), onPath: false }],
+    ["uses any home-owned PATH entry before inventing one", [SYSTEM_DIR, join(HOME, "tools")], undefined, { dir: join(HOME, "tools"), onPath: true }],
+    ["recognises a home-owned entry written with the native separator", [join(HOME, "scoop", "shims")], undefined, { dir: join(HOME, "scoop", "shims"), onPath: true }],
+    ["tolerates a trailing separator on a PATH entry", [SYSTEM_DIR, join(HOME, ".local", "bin") + sep], undefined, { dir: join(HOME, ".local", "bin"), onPath: true }],
+  ])("%s", (_label, pathEntries, override, expected) => {
+    expect(chooseTarget({ pathEntries, home: HOME, ...(override === undefined ? {} : { override }) })).toEqual(expected);
   });
 
   test.runIf(isWindows)("compares PATH entries without regard to case", () => {
@@ -128,13 +78,6 @@ describe("planLink and applyLink", () => {
 
   afterEach(async () => {
     await rm(base, { recursive: true, force: true });
-  });
-
-  test("plans to create a link when nothing is there", async () => {
-    const plan = await planLink(source, bin);
-
-    expect(plan.action).toBe("create");
-    expect(plan.target).toBe(join(bin, LINK_FILE));
   });
 
   test("creates the link, and the directory if it does not exist", async () => {

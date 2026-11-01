@@ -1,5 +1,5 @@
 import { CHAT_ACTIONS, sharedActionAllowsChallenge, sharedActionPayload } from "./chat-actions.js";
-import { taskInCeiling, mirrorToTaskChat, couldNotAnswerText, channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, tooLongText, whichTaskText, replyContextFor, NO_PHONE_LINK, NO_TASK_LINK, proposalLink, confirmedLink, proposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, type PhoneLink } from "./chat-channel.js";
+import { taskInCeiling, mirrorToTaskChat, couldNotAnswerText, channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, NO_PHONE_LINK, NO_TASK_LINK, proposalLink, confirmedLink, proposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, type PhoneLink } from "./chat-channel.js";
 export { channelRepos as telegramConversationRepos, resolveChannelLead as resolveTelegramLead, tooLongText, whichTaskText, replyContextFor, NO_PHONE_LINK, NO_TASK_LINK, proposalLink, confirmedLink, proposalPreview, proposalOutcomeText, handoffCardText, confirmedCardText, CHAT_ACTION_PARITY as TELEGRAM_ACTION_PARITY, parityGaps, type PhoneLink, type ResolvedLead, type ParitySupport } from "./chat-channel.js";
 /**
  * The paired phone as one more way to use the same assistant.
@@ -23,8 +23,8 @@ export { channelRepos as telegramConversationRepos, resolveChannelLead as resolv
  * the console and CLI state), and the door re-proves everything again.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { LEAD_MESSAGE_MAX_CHARS, leadFailureText, runLeadTurn, type LeadChannelProblem } from "./lead.js";
-import { confirmLeadProposal, dismissLeadProposal, type DoorOutcome } from "./lead-doors.js";
+import { leadFailureText, runLeadTurn, type LeadChannelProblem } from "./lead.js";
+import { confirmLeadProposal, dismissLeadProposal } from "./lead-doors.js";
 import { ceilingDigestOf, verifyApproverStanding } from "./principal.js";
 import { LEAD_ASK_OTHER, type LeadAsk, type LeadProposal, type Store, type TelegramBinding, type TelegramConversation } from "./store.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
@@ -42,6 +42,11 @@ export const CONVERSATION_CLAIM_MS = 2 * 60_000;
 /** A busy engine (one turn at a time) defers a queued message this long, up to the age bound below. */
 export const CONVERSATION_RETRY_MS = 5_000;
 export const CONVERSATION_MAX_AGE_MS = 10 * 60_000;
+/** Waiting for the lead itself (it is answering, or earlier messages wait in the person's lead queue) is bounded longer:
+ * two hours from the message's arrival, never reset as it moves from waiting behind the queue to waiting on a turn. */
+export const CONVERSATION_WAIT_MAX_AGE_MS = 2 * 3_600_000;
+/** A message whose turn was admitted, waiting for the project records to deliver its answer (no age bound). */
+const ADMITTED_REGISTRY_WAIT = "registry-unavailable:admitted";
 /** A card's buttons and an armed irreversible challenge live this long. */
 export const CARD_TTL_MS = 24 * 3_600_000;
 export const CHALLENGE_TTL_MS = 10 * 60_000;
@@ -431,12 +436,18 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
   const held = (): boolean => store.renewTelegramConversation(row.id, owner, CONVERSATION_CLAIM_MS, clock());
   const ageMs = clock().getTime() - Date.parse(row.createdAt);
   const requeue = async (outcome: string): Promise<void> => {
-    if (ageMs > CONVERSATION_MAX_AGE_MS) {
+    // A turn already admitted for it waits for that turn's own outcome (bounded by the turn's deadline); waiting for the
+    // lead gets two hours from arrival; anything else, ten minutes.
+    const limit = outcome === "replayed:running" || outcome === ADMITTED_REGISTRY_WAIT ? Number.POSITIVE_INFINITY
+      : outcome === "busy" || outcome === "backlog" ? CONVERSATION_WAIT_MAX_AGE_MS : CONVERSATION_MAX_AGE_MS;
+    if (ageMs > limit) {
       await notify(couldNotAnswerText(outcome === "registry-unavailable" ? "your projects couldn't be read" : "the assistant stayed busy with another message"));
       finish({ state: "failed", outcome: `${outcome}:gave-up` });
       report.refused++;
       return;
     }
+    // Behind the person's own earlier messages: said once, then it waits quietly.
+    if (outcome === "backlog" && row.outcome !== "backlog") await notify("Queued behind your earlier messages. It goes to the lead once they're answered.");
     finish({ state: "queued", outcome, nextAttemptAt: new Date(clock().getTime() + CONVERSATION_RETRY_MS).toISOString() });
   };
 
@@ -494,7 +505,9 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
           continue;
         }
       }
-      if (now.getTime() - Date.parse(row.createdAt) > DELIVERY_MAX_AGE_MS) {
+      // A day from when this part was planned (its card's tokens were minted then), not from the message's arrival: an
+      // answer that waited out a registry outage still gets its full day to go out.
+      if (now.getTime() - Date.parse(part.createdAt) > DELIVERY_MAX_AGE_MS) {
         report.problems.push(`telegram chat reply for update ${row.updateId} was not sent within a day: ${part.lastError ?? "unsent"}`);
         await notify(couldNotAnswerText("my reply couldn't be sent for a day"));
         finish({ state: "failed", outcome: `unsent:gave-up:${part.lastError ?? "unsent"}` });
@@ -672,7 +685,7 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
     store.bindTelegramConversationTurn(row.id, owner, session, turnId);
     if (turn.state === "queued" || turn.state === "running") { await requeue("replayed:running"); return; }
     if (turn.state !== "answered") {
-      await notify(leadFailureText(turn.failureReason));
+      await notify(leadFailureText(turn.failureReason, store.leadTurnCostUnconfirmed(turn.id)));
       finish({ state: "failed", outcome: `replayed:${turn.failureReason ?? "failed"}` });
       report.refused++;
       return;
@@ -692,13 +705,31 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
   // 2. Parts already planned: the turn answered; only the sending remains.
   if (store.listTelegramConversationParts(row.id).length > 0) { await deliver(row.outcome === ANSWERED_SENDING ? "answered" : "replayed"); return; }
 
-  // 3. The ceiling, reloaded now.
+  // 3. A turn already admitted for it and still working: wait for that turn's own outcome. Nothing here needs the
+  // project records, so a registry that can't be read never fails a message whose turn is running.
+  if (row.session !== null) {
+    const admitted = store.leadRequestReceipt(row.session, row.request);
+    if (admitted !== null) {
+      store.sweepStaleLeadTurns(clock());
+      const turn = store.getLeadTurn(admitted.turn);
+      if (turn !== null && (turn.state === "queued" || turn.state === "running")) {
+        store.bindTelegramConversationTurn(row.id, owner, row.session, admitted.turn);
+        await requeue("replayed:running");
+        return;
+      }
+    }
+  }
+
+  // The ceiling, reloaded now.
   let registry: readonly string[];
   try {
     registry = await readProjects();
   } catch {
     report.problems.push("telegram chat could not read the current project records");
-    await requeue("registry-unavailable");
+    // A turn already took it (its receipt is in the bound session): its answer exists or will, and is delivered once
+    // the projects can be read again — never abandoned to the outage.
+    const admitted = row.session !== null && store.leadRequestReceipt(row.session, row.request) !== null;
+    await requeue(admitted ? ADMITTED_REGISTRY_WAIT : "registry-unavailable");
     return;
   }
   const repos = telegramConversationRepos(store, binding.approver, registry);
@@ -709,6 +740,10 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
     const receipt = store.leadRequestReceipt(row.session, row.request);
     if (receipt !== null) { await recover(row.session, receipt.turn, repos); return; }
   }
+
+  // It waited (for the lead, or behind earlier messages), was never admitted, and is past the wait from its arrival:
+  // it is never sent this late, even when the lead is free now.
+  if ((row.outcome === "busy" || row.outcome === "backlog") && ageMs > CONVERSATION_WAIT_MAX_AGE_MS) { await requeue(row.outcome); return; }
 
   // 5. The session and thread — shared with the console and the CLI.
   const resolved = resolveTelegramLead(store, binding, repos, clock());
@@ -759,7 +794,7 @@ async function runTelegramConversation(row: TelegramConversation, args: TurnArgs
   if (receipt !== null) store.bindTelegramConversationTurn(row.id, owner, session.id, receipt.turn);
 
   if (!outcome.ok && "refused" in outcome) {
-    if (outcome.refused === "concurrent") { await requeue("busy"); return; }
+    if (outcome.refused === "concurrent" || outcome.refused === "backlog") { await requeue(outcome.refused === "backlog" ? "backlog" : "busy"); return; }
     await notify(phoneText(outcome.message, 1_000));
     finish({ state: "failed", outcome: `refused:${outcome.refused}` });
     report.refused++;

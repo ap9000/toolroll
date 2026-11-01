@@ -1,7 +1,10 @@
 /** Results and runs: the review cockpit, evidence, receipts, diffs and the result panel. */
+import type { CheckAccess } from "../check-access.js";
+import type { RunNetworkRecord } from "../egress.js";
 import { assignmentPresentationOf,historicalAssessmentReason,shortenedMaterialReason } from "../assignment-presentation.js";
 import { assignmentActionHref,assignmentStatusOf,assignmentWithEvidence } from "../assignment-ui.js";
-import { type AssignmentSnapshot,owedAcceptance } from "../assignment.js";
+import { assignmentChecksForRun,type AssignmentSnapshot,owedAcceptance } from "../assignment.js";
+import { releaseCoverageOf } from "../release-coverage.js";
 import { type BrowserCheckItem,type BrowserNeedAction,type BrowserResultPanel,type BrowserResultView } from "../browser-workspace.js";
 import { CHECK_LEVEL_WORDS,liveQuickCommand } from "../check-levels.js";
 import { LIMITS } from "../decision.js";
@@ -15,18 +18,19 @@ import { qualityModeTitle } from "../quality.js";
 import { acceptWithChecksOf,type ResultActFacts,resultActsOf } from "../result-acts.js";
 import { SCREENSHOT_CAPTURE,structuredHandoffView,type StructuredHandoffView,terminalDiffView,type TerminalDiffView } from "../result-evidence-readers.js";
 import { ADD_TESTS_ACTION,type FollowUpCheck,followUpChecksOf } from "../result-follow-ups.js";
+import type { RunEfficiency } from "../run-efficiency.js";
 import { evidenceHealthOf,evidenceProblemDetailsOf,evidenceResultStatusOf,isRevisionFeedback,RESULT_REVIEW_SCRIPT,RESULT_TABS,resultFactsAttributeMap,resultLeadOf,type ResultScreenshot,type ResultTab,revisionBatchOf,revisionSourceOf,type SharedResultFacts } from "../result-review.js";
 import { type BuildReviewView,findingWords } from "../review-switch.js";
 import { type AcceptanceCriterion,type approvalOf } from "../scope.js";
 import { parseReport,type ReportItem } from "../scout-report.js";
 import { type Artifact,type DiffComment,type Publication,type RepairChainRow,type ReviewRetryState,type Run,type Store,type TaskState } from "../store.js";
 import { runCostWords } from "../summary.js";
-import { checkBackingOf,CHECKED_AT_RELEASE,demoChecksOf,type ReleaseState,type PullRequestFact,pullRequestFactOf,requirementsOf,requirementWordOf,STATUS_MORE,statusDetailsHtml,statusIconSvg,statusWhyHtml,type TaskStatus } from "../task-status.js";
+import { approvedCheckOf,approvedCheckStateOf,CHECK_COMMAND_CHANGED,CHECK_UNREADABLE,checkBackingOf,CHECKED_AT_RELEASE,checksFactOf,receiptChecksOf,type ChecksFact,demoChecksOf,type ReleaseState,type PullRequestFact,pullRequestFactOf,requirementsOf,requirementWordOf,STATUS_MORE,statusDetailsHtml,statusIconSvg,statusWhyHtml,type TaskStatus } from "../task-status.js";
 import { ACCEPT_NEEDS_REASON,acceptWordsOf,cantAcceptYetOf,type DisplayStatus,evidenceProblemOf,MISMATCH_HEADLINE,type PublicationFacts,receiptHeadingOf,receiptPublicationWords,reportMismatchesOf,RESULT_DECISION_SENTENCE,resultHeadlineOf,resultStatusOf,REVIEW_TOKENS,type ReviewFacts } from "../workspace-ui.js";
 import { createHash,randomBytes } from "node:crypto";
 import { buildsViews,type Chrome,oneLineOf,projectChip,safePrUrl,screen,type Screen,sentenceCase,strokeIcon,when,whenTime } from "./chrome.js";
 import { chatResultHref,reviewHref,taskChatHref,taskHref } from "./http.js";
-import { attributes,type Html,html,htmlString,joinHtml,postForm } from "../html.js";
+import { attributes, type Html, html, htmlString, joinHtml, postForm, reauth } from "../html.js";
 import { publicationFactsOf,statusActionHref,statusLineHtml } from "./render-tasks.js";
 
 export const RUNS_PAGE = 50;
@@ -254,10 +258,6 @@ export function withRefusal(href: string, code: keyof typeof RESULT_REFUSALS): s
  * page ceiling, admission bound before it. */
 export const REVIEW_QUEUE_CAP = 100;
 
-/** The one return road the comment endpoint honors besides its own run
- * page: the cockpit's selected-result link, exactly. */
-export const REVIEW_RETURN = /^\/review\?result=[A-Za-z0-9._~%-]{1,200}$/;
-
 /** Review priority: a deterministic, LABELED presentation aid over facts
  * the done list already carries. Band 0 goes first; the words name why.
  * It is never a verdict — the stored proof verdict stays the authority,
@@ -442,6 +442,14 @@ export type RankedReviewRow = CompletedWorkRow & { ciFailing: boolean; priority:
  * scope, plan, run, artifact, verdict, and publication records,
  * each read through the verifier the run page already uses. */
 export type ReviewCockpitView = {
+  /** How the result's run went (docs/plans/run-efficiency.md): display only, its sources and their gaps said. */
+  efficiency?: RunEfficiency | null;
+  /** What the run's network was and what its proxy saw (egress.ts): display only. */
+  network?: RunNetworkRecord | null;
+  /** Where the time went (latency-timeline.ts): its release check's parts and the task's deploys, display only. */
+  timing?: import("../latency-timeline.js").TimingView | null;
+  /** How far its checks reached (check-access.ts): shown only when wider than sandboxed. */
+  checkAccess?: CheckAccess;
   taskId: string;
   title: string;
   repo: string | null;
@@ -697,15 +705,14 @@ export function reviewCockpitPage(
   });
 }
 
-/** The selected result: intent → proof → changes → publication → acts,
- * one scan path, every fact labeled by its source. */
-export function reviewCockpitDetail(view: ReviewCockpitView, csrf: string, noted: boolean, canRetryReview = false, tab: ResultTab = "summary", user = ""): Html {
-  return reviewCockpitDetailParts(view, csrf, noted, canRetryReview, tab, user).html;
-}
-
 /** The selected result's HTML and, for the rebuilt page, the same result
  * as data: every form and panel body is the one the HTML carries. */
-export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, noted: boolean, canRetryReview: boolean, tab: ResultTab, user: string): { html: Html; selected: NonNullable<BrowserResultView["selected"]> } {
+/** Where a result is shown: its own page (/review), or the Result tab of its task's page (docs/plans/one-page-task-and-agent.md),
+ * whose address is `base` (the task page with tab=result, and its version when not the current one). The result's own
+ * view (Summary / Changes / Checks) rides `section=` there, so it never fights the task page's `tab`. */
+export type ResultHost = { kind: "review" } | { kind: "task"; base: string };
+
+export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, noted: boolean, canRetryReview: boolean, tab: ResultTab, user: string, host: ResultHost = { kind: "review" }): { html: Html; selected: NonNullable<BrowserResultView["selected"]> } {
   const parts: Html[] = [];
   const run = view.run;
   const proof = view.detail?.proof ?? null;
@@ -713,8 +720,9 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   const canAnnotate = canAnnotateDiff(view, csrf);
   const status = cockpitStatusOf(view);
 
-  // Header: what this is, its verdict word, and why it sits where it does.
-  parts.push(
+  // Header: what this is, its verdict word, and why it sits where it does. On a task page the task's own header says
+  // all of it, once.
+  if (host.kind === "review") parts.push(
     joinHtml([
       html`<header class="cockpit-head" data-review-task="${view.taskId}">`,
       html`<h1>${view.title}</h1>`,
@@ -764,13 +772,17 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
     taskHref: taskHref(view.taskId), chatHref: taskChatHref(view.taskId),
     status: { label: status.label, tone: status.tone, token: status.token },
     problem: view.detail === null ? view.historyProblem : null,
-    next: reviewNextActionOf(view, csrf), complete: null, decision: null, checks: null, intent: intentView, noRun: null, panel: null,
+    next: reviewNextActionOf(view, csrf, host.kind === "task" && run !== null ? `${host.base}&run=${run.id}` : undefined), complete: null, decision: null, checks: null, intent: intentView, noRun: null, panel: null,
     notes: view.notes.map(one => ({ author: one.author, at: one.createdAt, note: one.note })),
+    efficiency: view.efficiency ?? null,
+    network: view.network ?? null,
+    timing: view.timing ?? null,
     acts: { primary: null, secondary: null, line: null }, runChecks: null, mismatch: null,
     // The raw run record lives under Details now (2026-10-02): /r/<id> for this result redirects here.
     record: run === null ? null : { build: run.id, href: `/r/${run.id}?record=1`, facts: [
       { label: "Agent", value: [run.provider, run.model].filter(Boolean).join(" · ") },
       { label: "Worker", value: run.runner },
+      ...(view.checkAccess === undefined || view.checkAccess === "sandboxed" ? [] : [{ label: "Checks", value: view.checkAccess === "unsandboxed" ? "Checks ran without a sandbox" : "Checks ran with model and GitHub sign-ins" }]),
       ...(run.branch === null ? [] : [{ label: "Branch", value: run.branch }]),
       ...(run.finishedAt === null ? [] : [{ label: "Finished", value: when(run.finishedAt) }]),
       ...(run.ranMinutes === null ? [] : [{ label: "Ran", value: `${run.ranMinutes} min` }]),
@@ -790,9 +802,16 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   // v50 review-retry panel and the accept-with-exception form.
   const extraChecks = reviewRetryPanel(view.taskId, run.id, view.reviewRetry, { csrf, canAct: false, returnTo: null });
   const here = reviewHref(view.taskId);
+  /** This result's own address on its host, at one of its views (summary when none). */
+  const at = (section: ResultTab = "summary"): string => host.kind === "task"
+    ? `${host.base}&run=${run.id}${section === "summary" ? "" : `&section=${section}`}`
+    : `${here}&run=${run.id}${section === "summary" ? "" : `&tab=${section}`}`;
   const assignment = view.assignment === null ? null : assignmentWithEvidence(view.assignment, receiptStatusOf(view.detail.receipt), run.id);
-  const checks = assignment?.receipt?.checks;
-  if (checks !== undefined) parts.push(html`<p class="${checks.status === "failed" || checks.status === "unavailable" ? "problem" : "meta"}" data-actual-checks="${checks.status}">${checks.detail}${checks.logArtifactId === null ? "" : html` <a href="/r/${run.id}/evidence/${checks.logArtifactId}">Open check output</a>`}</p>`);
+  const saved = assignment?.receipt?.checks;
+  // The approved check as the task page reads it (task-status.ts approvedCheckOf): one answer for this whole page.
+  const checks = saved === undefined || assignment?.receipt == null ? undefined
+    : { ...saved, ...(receiptChecksOf(assignment.receipt) ?? {}), detail: saved.detail };
+  if (checks !== undefined) parts.push(html`<p class="${checks.status === "failed" || checks.status === "unavailable" ? "problem" : "meta"}" data-actual-checks="${checks.status}">${checks.status === "unavailable" && saved!.cause === "command-changed" ? CHECK_COMMAND_CHANGED : html`${checks.status === "unavailable" && saved!.status !== "unavailable" ? `${CHECK_UNREADABLE} ` : ""}${checks.detail}`}${checks.logArtifactId === null ? "" : html` <a href="/r/${run.id}/evidence/${checks.logArtifactId}">Open check output</a>`}</p>`);
   if (assignment?.completion != null) parts.push(html`<p class="meta" data-result-completed>Marked complete by ${assignment.completion.actor.replace(/^operator:/, "")}.</p>`);
   const panel = resultPanelParts(view.detail, {
     place: "review",
@@ -801,13 +820,15 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
     user,
     noted,
     requestToken: randomBytes(16).toString("hex"),
-    hrefFor: one => `${here}&run=${run.id}${one === "summary" ? "" : `&tab=${one}`}`,
-    returnTo: `${here}&run=${run.id}`,
+    hrefFor: one => at(one),
+    returnTo: at(),
     back: null,
     extraChecks,
     headStatus: false,
     action: false,
   });
+  // On a task page the result script keeps the result's own view in `section=` (the page's `tab` is the task's).
+  if (host.kind === "task") panel.panel.attributes = { ...panel.panel.attributes, "data-result-param": "section" };
   parts.push(html`<div id="verification" data-cockpit-section="result">${panel.html}</div>`);
 
   // What no acceptance resolves (a failed check, a HIGH finding): Complete is refused, so no Accept is offered and
@@ -820,7 +841,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   const owed = accepted ? null : youCheck?.accept != null ? { note: null } : panel.panel.need?.accept != null ? { note: panel.panel.need.accept.note }
     : blocked === ACCEPT_NEEDS_REASON ? { note: "Why is this safe to accept?" } : null;
   const complete = hardStop === null && assignment?.state === "ready-to-check" && assignment.receipt !== null && canRetryReview && csrf !== ""
-    ? { action: `${taskHref(view.taskId)}/complete`, receipt: assignment.receipt.digest, run: run.id, accept: owed } : null;
+    ? { action: `${taskHref(view.taskId)}/complete`, receipt: assignment.receipt.digest, run: run.id, accept: owed, ...(host.kind === "task" ? { returnTo: at() } : {}) } : null;
   if (complete !== null) parts.push(completionForm(view.taskId, run.id, complete.receipt, view.detail?.pullRequestTo ?? null, owed));
   // The one decision, after the evidence: Accept and finish only when every requirement is met and the checks passed.
   const acceptsHere = complete !== null || panel.panel.need?.accept != null || youCheck?.accept != null;
@@ -828,7 +849,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   const unanswered = accepted || youCheck == null ? [] : youCheck.items.length > 0 ? youCheck.items.map(one => one.statement === "" ? one.words : one.statement) : youCheck.lines;
   const base = !acceptsHere ? null : acceptWordsOf({
     // Checks Off that a release check already covers read as passed (release-coverage.ts).
-    checks: checks === undefined ? null : checks.running != null ? "running" : checks.level === "off" && checks.status !== "passed" ? checks.release != null ? "passed" : "off" : checks.status,
+    checks: checks === undefined ? null : ({ passed: "passed", failed: "failed", running: "running", "not-run": "not-run", off: "off", unreadable: "unavailable" } as const)[approvedCheckStateOf(checks)!],
     // Release-aware words (task-status.ts): a requirement waiting only on a release check, or covered by one, isn't unmet.
     unmet: matrix.filter(row => !["Met", "You check", CHECKED_AT_RELEASE].includes(requirementWordOf(row, null, checks === undefined ? undefined : checkBackingOf(checks)))).length,
     action: complete !== null ? "complete" : "accept",
@@ -845,13 +866,14 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
   const runChecks = canRetryReview && csrf !== "" && followUps !== null && (followUps.full || followUps.quick) && !checksRunning &&
     (checks === undefined || ((checks.status === "not-run" || checks.status === "unavailable") && checks.release == null))
     // Back on this result's Checks tab, where #follow-ups shows the run it started.
-    ? { action: `/r/${run.id}/checks`, level: followUps.full ? "full" as const : "quick" as const, returnTo: `${here}&run=${run.id}&tab=checks` } : null;
+    ? { action: `/r/${run.id}/checks`, level: followUps.full ? "full" as const : "quick" as const, returnTo: at("checks") } : null;
   const need = panel.panel.need;
   const nextKind = selected.next?.kind;
   // A failed build: what went wrong is the card, Retry the act; a link to this same page goes nowhere, so it isn't one.
   const failure = view.failure == null ? null : { line: view.failure.line, evidence: view.failure.evidence, suggestion: view.failure.suggestion, retry: view.failure.retry,
-    link: view.failure.link === null || (view.failure.link.href.startsWith(`${here}&run=${run.id}`) && !view.failure.link.href.includes("#")) ? null : view.failure.link,
-    ...(view.failure.acceptAnyway == null ? {} : { acceptAnyway: { ...view.failure.acceptAnyway, returnTo: `${here}&run=${run.id}` } }) };
+    link: view.failure.link === null || (view.failure.link.href.startsWith(`${here}&run=${run.id}`) && !view.failure.link.href.includes("#")) ? null
+      : host.kind === "task" && view.failure.link.href.startsWith(`${here}&run=${run.id}&tab=`) ? { ...view.failure.link, href: view.failure.link.href.replace(`${here}&run=${run.id}&tab=`, `${host.base}&run=${run.id}&section=`) } : view.failure.link,
+    ...(view.failure.acceptAnyway == null ? {} : { acceptAnyway: { ...view.failure.acceptAnyway, returnTo: at() } }) };
   const actFacts: ResultActFacts = failure !== null
     ? { accept: null, runChecks: runChecks !== null, checksRunning, blocked: null, canRequest: false, need: null, next: null, failed: { retry: failure.retry !== null, acceptAnyway: failure.acceptAnyway !== undefined } }
     : {
@@ -881,7 +903,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
       const lines = (added.length > 0 ? added : shown).map(line => line.newLine as number);
       return [file.path, lines.length === 0 ? null : { from: Math.min(...lines), to: Math.max(...lines) }] as const;
     }));
-    const changesHref = `${here}&run=${run.id}&tab=changes`;
+    const changesHref = at("changes");
     const found = reportMismatchesOf(proof.reasons, proof.proofProblem === null ? proof.matrix : [], changes);
     // The saved report itself can't be read: that is the evidence problem, said once.
     if (proof.proofProblem !== null) found.push({ text: `The saved report can't be read: ${proof.proofProblem}`, path: null, lines: null, inChanges: null, note: null, reason: proof.proofProblem });
@@ -892,7 +914,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
         text: one.text, path: one.path, absent: one.inChanges === false,
         lines: one.lines === null ? null : one.lines.from === one.lines.to ? `line ${one.lines.from}` : `lines ${one.lines.from}–${one.lines.to}`,
         href: one.path !== null && one.inChanges === true ? `${changesHref}#${diffFileAnchor(one.path)}${hunkStart.has(one.path) ? `-L${hunkStart.get(one.path)}` : ""}`
-          : one.note !== null && (proof.proof?.caveats.length ?? 0) >= one.note ? `${here}&run=${run.id}#report-note-${one.note}` : null,
+          : one.note !== null && (proof.proof?.caveats.length ?? 0) >= one.note ? `${at()}#report-note-${one.note}` : null,
         noteLabel: one.path === null && one.note !== null ? `The report, note ${one.note}` : null,
       })),
       said: [...new Set([...proof.reasons, ...found.map(one => one.reason)].flatMap(reason => [reason, plainReasonWords(reason)]))],
@@ -975,7 +997,7 @@ export function pullRequestCardHtml(pr: TaskPullRequest, csrf: string): Html {
   const merged = view.mergeCommit === null ? "" : html`<p class="meta">Merge commit <span class="mono">${view.mergeCommit.slice(0, 12)}</span></p>`;
   const target = pr.target === null ? "the base branch" : pr.target;
   const act = !view.canMerge || csrf === "" || view.prNumber === null ? "" :
-    postForm(`${taskHref(pr.taskId)}/merge`, html`<p class="meta">${view.mergeMethod === "squash" ? "Squash-merges" : view.mergeMethod === "rebase" ? "Rebase-merges" : "Merges"} PR #${view.prNumber} into ${target} and deletes its branch.</p><label>Password<input type="password" name="token" autocomplete="current-password" required></label>${
+    postForm(`${taskHref(pr.taskId)}/merge`, html`<p class="meta">${view.mergeMethod === "squash" ? "Squash-merges" : view.mergeMethod === "rebase" ? "Rebase-merges" : "Merges"} PR #${view.prNumber} into ${target} and deletes its branch.</p>${reauth(html`<label>Password<input type="password" name="token" autocomplete="current-password" required></label>`)}${
       view.fullCheck === null ? html`<button type="submit">Merge</button>` : html`<input type="hidden" name="anyway" value="1"><button type="submit" class="secondary">Merge anyway</button>`}`,
     { attrs: { class: "pull-request-act", "data-merge-form": true }, hidden: { run: view.runId } });
   return html`<section class="card pull-request pull-request--${tone}" id="merge" data-pull-request="${view.state}"><div class="pull-request-head"><strong>${view.label}</strong>${link}</div><p class="meta">${view.detail}${revision}</p>${merged}${act}</section>`;
@@ -991,12 +1013,12 @@ export function reviewNextAction(view: ReviewCockpitView, csrf: string, _accepte
 }
 
 /** The next action for the browser workspace's JSON: its control as markup text. */
-export function reviewNextActionOf(view: ReviewCockpitView, csrf: string): { kind: string; title: string; detail: string; control: string } | null {
-  const next = reviewNextActionParts(view, csrf);
+export function reviewNextActionOf(view: ReviewCockpitView, csrf: string, back?: string): { kind: string; title: string; detail: string; control: string } | null {
+  const next = reviewNextActionParts(view, csrf, back);
   return next === null ? null : { ...next, control: htmlString(next.control) };
 }
 
-function reviewNextActionParts(view: ReviewCockpitView, csrf: string): { kind: string; title: string; detail: string; control: Html } | null {
+function reviewNextActionParts(view: ReviewCockpitView, csrf: string, back?: string): { kind: string; title: string; detail: string; control: Html } | null {
   const run = view.run;
   const detail = view.detail;
   const card = (kind: string, title: string, detailWords: string, control: Html) => ({ kind, title, detail: detailWords, control });
@@ -1007,7 +1029,7 @@ function reviewNextActionParts(view: ReviewCockpitView, csrf: string): { kind: s
     return card("draft-repair", "CI is failing on its pull request", "Toolroll confirmed the failure. Draft one repair task, then approve it before it runs.", postForm(`/r/${run.id}/draft-repair`, html`<button type="submit">Draft a repair task</button>`));
   }
   if (detail.comments.length > 0 && csrf !== "") {
-    return card("revise", `${detail.comments.length} note${detail.comments.length === 1 ? "" : "s"} ready`, "Create one revision from these notes. You approve it before it runs.", postForm(`/r/${run.id}/revise`, html`${revisionSealFields(detail.comments, detail.sourceDigest)}<button type="submit">Revise</button>`, { returnTo: reviewHref(view.taskId) }));
+    return card("revise", `${detail.comments.length} note${detail.comments.length === 1 ? "" : "s"} ready`, "Create one revision from these notes. You approve it before it runs.", postForm(`/r/${run.id}/revise`, html`${revisionSealFields(detail.comments, detail.sourceDigest)}<button type="submit">Revise</button>`, { returnTo: back ?? reviewHref(view.taskId) }));
   }
   return null;
 }
@@ -1169,6 +1191,9 @@ export type ProofBundleView = {
   repairChain: RepairChainRow | null;
   /** v51: the policy semantic coverage is read under. */
   qualityMode: "default" | "strict";
+  /** The saved approved check read now (task-status.ts approvedCheckOf), for a finished build; absent otherwise, and
+   * then no words here claim the check passed. */
+  checks?: ChecksFact | null;
 };
 
 /** The smallest complete answer to "what did this task deliver?". It is a
@@ -1213,6 +1238,9 @@ export type CompletionReceiptView = {
   report: RunReportView | null;
   /** The facts every result surface prints identically (package 3). */
   facts: SharedResultFacts;
+  /** The saved approved check as read now (the receipt and any follow-up on the same commit), so the status words
+   * read the same answer as the Project checks row (task-status.ts approvedCheckOf). Absent on a scout's report. */
+  checks?: ChecksFact | null;
 };
 
 /** A scout run's report as this run stored it: verified and parsed, or
@@ -1354,6 +1382,7 @@ export function proofBundleView(store: Store, run: Run, artifacts: Artifact[], r
   }
 
   return {
+    ...(run.finishedAt !== null && run.role !== "scout" && run.role !== "reviewer" && run.role !== "planner" ? { checks: savedChecksOf(store, root, run, new Date()) } : {}),
     verdict: verdictRow?.verdict ?? null,
     reasons: verdictRow?.reasons ?? [],
     accepted: acceptanceRow === null ? null : { by: acceptanceRow.approver, note: acceptanceRow.note, at: acceptanceRow.acceptedAt },
@@ -1386,7 +1415,30 @@ export function proofBundleView(store: Store, run: Run, artifacts: Artifact[], r
   };
 }
 
-export function completionReceiptView(store: Store, run: Run, artifacts: Artifact[], root: string, review: ReviewFacts | null = null): CompletionReceiptView {
+/** What the verdict recorded when the build finished, said beside what holds now: a recorded pass is restated only
+ * when the check read now passed; unread, it points to the result; unreadable or failed since, it says so. */
+export function completionWords(verdict: ProofVerdict | null, reasons: readonly string[], checks: ChecksFact | null | undefined): string {
+  const recorded = verificationExplanation(verdict, reasons);
+  if (verdict !== "verified") return recorded;
+  const now = approvedCheckStateOf(approvedCheckOf(verdict, reasons, checks));
+  if (checks !== undefined && (now === "passed" || (now === "running" && checks?.status === "passed"))) return recorded;
+  if (checks === undefined) return "Open the result to see its checks.";
+  const said = now === "failed" ? `the approved check failed against it${checks?.exitCode == null ? "" : ` (exit ${checks.exitCode})`}.`
+    : checks?.cause === "command-changed" ? "the check command changed since this check." : `${CHECK_UNREADABLE.charAt(0).toLowerCase()}${CHECK_UNREADABLE.slice(1)}`;
+  return `At completion: ${recorded} Now: ${said} It doesn't count as passed.`;
+}
+
+/** A result's saved approved check as the assignment reads it (assignment.ts): the receipt, follow-ups on its commit,
+ * and with checks Off the passing release check that contains it. */
+function savedChecksOf(store: Store, root: string, run: Run, now: Date): ChecksFact {
+  const own = checksFactOf(assignmentChecksForRun(store, root, run.id, now), run.headRevision);
+  if (own.level !== "off" || own.status === "passed" || own.status === "failed") return own;
+  const repo = store.refById(run.taskRef)?.repo ?? null;
+  const release = releaseCoverageOf(store, root, repo, run.headRevision);
+  return release == null ? own : { ...own, release };
+}
+
+export function completionReceiptView(store: Store, run: Run, artifacts: Artifact[], root: string, review: ReviewFacts | null = null, now: Date = new Date()): CompletionReceiptView {
   const handoff = structuredHandoffView(artifacts, root);
   const proof = proofBundleView(store, run, artifacts, root);
   const terminal = terminalDiffView(artifacts, root);
@@ -1422,6 +1474,8 @@ export function completionReceiptView(store: Store, run: Run, artifacts: Artifac
     coverageSecondary: coverage.contextGaps.length === 0 && (coverage.satisfied === true || (coverage.satisfied === null && !coverage.required)),
     report,
     facts: sharedResultFactsOf(run, proof, terminal, handoff, report, publication),
+    // The same reading the task page's Project checks row shows (assignment.ts), never the verdict alone.
+    ...(run.role === "scout" ? {} : { checks: savedChecksOf(store, root, run, now) }),
   };
 }
 
@@ -1544,7 +1598,9 @@ export function reviewDiffHtml(
           ? html`<span class="diff-annotate-space"></span>`
           : html`<button type="button" class="diff-annotate pick-line" data-path="${one.path}" data-line="${lineNumber}" data-side="${side}" aria-label="Annotate ${one.path}, ${side} line ${lineNumber}" title="Annotate this line">${annotateIcon}</button>`;
         const marker = line.kind === "addition" ? "+" : line.kind === "deletion" ? "−" : line.kind === "context" ? " " : "·";
-        return html`<div class="diff-line diff-${line.kind}">${annotate}<span class="diff-gutter">${line.oldLine ?? ""}</span><span class="diff-gutter">${line.newLine ?? ""}</span><code><b aria-hidden="true">${marker}</b>${line.text}</code></div>`;
+        // Each real line names its file and line, so a comment (or a test) can find the exact row.
+        const named = lineNumber === null || line.kind === "meta" ? "" : html` data-diff-file="${one.path}" data-diff-line="${lineNumber}"`;
+        return html`<div class="diff-line diff-${line.kind}"${named}>${annotate}<span class="diff-gutter">${line.oldLine ?? ""}</span><span class="diff-gutter">${line.newLine ?? ""}</span><code><b aria-hidden="true">${marker}</b>${line.text}</code></div>`;
       })}</div></section>`;
     });
     const anchor = anchors.get(one.path);
@@ -1660,8 +1716,9 @@ export function evidenceBundleCard(view: ProofBundleView | null, run: Pick<Run, 
   if (view.verdict !== null) {
     // The same status line every other surface renders for this run
     // (workspace package 1), beside the verdict's own explanation.
-    const status = resultStatusOf({ runId, role: run.role, outcome: run.outcome, verdict: view.verdict, reasons: view.reasons, accepted: view.accepted !== null, review }, publication);
-    parts.push(html`<p class="row" data-proof-verdict="${dispatchStatusToken(view.verdict)}">${statusLineHtml(status)} <span class="meta">${verificationExplanation(view.verdict, view.reasons)}</span></p>`);
+    const status = resultStatusOf({ runId, role: run.role, outcome: run.outcome, verdict: view.verdict, reasons: view.reasons, accepted: view.accepted !== null, review,
+      ...(view.checks === undefined ? {} : { checks: view.checks }) }, publication);
+    parts.push(html`<p class="row" data-proof-verdict="${dispatchStatusToken(view.verdict)}">${statusLineHtml(status)} <span class="meta">${completionWords(view.verdict, view.reasons, view.checks)}</span></p>`);
   }
   if (view.accepted !== null) {
     parts.push(
@@ -1762,7 +1819,8 @@ export function receiptStatusOf(view: CompletionReceiptView, review: ReviewFacts
   // whose stored records are damaged is never called ready on the strength
   // of a verdict recorded before the damage.
   return evidenceResultStatusOf(
-    { runId: view.runId, role: view.role, outcome: view.outcome, verdict: view.verdict, reasons: view.reasons, accepted: view.accepted, recordComplete: view.recordComplete, review },
+    { runId: view.runId, role: view.role, outcome: view.outcome, verdict: view.verdict, reasons: view.reasons, accepted: view.accepted, recordComplete: view.recordComplete, review,
+      ...(view.checks === undefined ? {} : { checks: view.checks }) },
     view.publication, view.facts.evidenceHealth,
   );
 }
@@ -2000,7 +2058,11 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
   // The visible status already says verification is needed. Only omit the
   // generic repeat; failed checks, specific reasons and damaged evidence stay.
   const missingVerdictNamed = o.headStatus !== false && status.token === "verification-needed" && receipt.verdict === null && receipt.reasons.length === 0;
-  if (current == null && !humanReview && !awaitingGoalReview && (!directAssessment || physicalReasons.length > 0) && !missingVerdictNamed && stored.token !== "evidence-damaged" && (stored.tone === "problem" || stored.tone === "attention")) attention.push(verificationExplanation(receipt.verdict, physicalReasons));
+  if (current == null && !humanReview && !awaitingGoalReview && (!directAssessment || physicalReasons.length > 0) && !missingVerdictNamed && stored.token !== "evidence-damaged" && (stored.tone === "problem" || stored.tone === "attention")) {
+    // A recorded pass whose check can't be read now is said as what holds now, never as the verdict's pass.
+    // A recorded pass the check read now can't stand behind (unreadable, or failed since) is said as what holds now.
+    attention.push(stored.token === "check-unreadable" || (receipt.verdict === "verified" && stored.token === "checks-failed") ? stored.detail : verificationExplanation(receipt.verdict, physicalReasons));
+  }
   // Exact criterion assessment notes are already shown in Requirements;
   // do not repeat them as a second current attention message.
   if (presentation !== null) attention.push(...presentation.attention.map(one => one.detail).filter(detail => !assessmentReasons.has(detail)));
@@ -2197,7 +2259,12 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
     if (proof.verdict !== null && !directAssessment) {
       // The same status line the panel leads with (one status per surface,
       // workspace package 1), beside the machine verdict's own explanation.
-      checkParts.push(html`<p class="row result-verdict" data-proof-verdict="${dispatchStatusToken(proof.verdict)}"><span class="meta">At completion: ${humanReview ? "Human review required for the requirements below." : verificationExplanation(proof.verdict, proof.reasons)}</span></p>`);
+      // A recorded pass the saved check can't show now is said so here too (task-status.ts approvedCheckOf).
+      const shown = current?.receipt != null ? receiptChecksOf(current.receipt) : receipt.checks === undefined ? undefined : approvedCheckOf(proof.verdict, proof.reasons, receipt.checks);
+      const unreadNow = proof.verdict === "verified" && shown !== undefined && shown?.status !== "passed" && !humanReview;
+      // completionWords: the verdict at completion, and what holds now when they differ.
+      const words = humanReview ? "At completion: Human review required for the requirements below." : unreadNow ? completionWords(proof.verdict, proof.reasons, shown) : `At completion: ${verificationExplanation(proof.verdict, proof.reasons)}`;
+      checkParts.push(html`<p class="row result-verdict" data-proof-verdict="${dispatchStatusToken(proof.verdict)}"${unreadNow ? html` data-check-now="${approvedCheckStateOf(shown) ?? "unreadable"}"` : ""}><span class="meta">${words}</span></p>`);
     } else if (proof.verdict === null && run.outcome !== "no-change") {
       checkParts.push(html`<p class="meta" data-proof-verdict="none">No verification result is available for this build.</p>`);
     }
@@ -2433,7 +2500,7 @@ export function resultNeedAction(need: BrowserNeedAction, o: ResultPanelOptions,
     : need.confirm !== null
     ? postForm(need.confirm.action, html`${
       need.confirm.checked === true ? html`<label><input type="checkbox" name="checked" value="yes" required> Nothing from build #${need.confirm.run} is running</label>` : ""
-      }<label>Your password<input type="password" name="token" autocomplete="current-password" required></label><button type="submit" style="min-height:44px">${need.label}</button>`,
+      }${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label>`)}<button type="submit" style="min-height:44px">${need.label}</button>`,
       { attrs: { id: "confirm-stopped", class: "confirm-stopped" }, returnTo: need.confirm.returnTo, hidden: { run: need.confirm.run } })
     : html`<a class="button-link" href="${need.href ?? "#"}" data-primary-action>${need.label}</a>`;
   return html`<div class="result-action" data-result-action="need">${control}${canRequest && o.csrf !== "" ? html`<a class="result-feedback-link" href="#request-changes">Request changes</a>` : ""}</div>`;

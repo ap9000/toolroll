@@ -3,7 +3,7 @@
  * the company's tools. One form, the status of each destination beside it,
  * and how Prometheus reads `/metrics`. The signing secret is shown once.
  */
-import { html, postForm, type Html } from "./html.js";
+import { html, postForm, type Html, reauth } from "./html.js";
 import type { MonitoringStatus } from "./store.js";
 import type { MonitoringSettings } from "./monitoring-settings.js";
 import { targetOf } from "./monitoring.js";
@@ -41,7 +41,7 @@ export function monitoringHtml(view: MonitoringView, notice: { said?: string | n
     statusLine(view, "webhook", s.webhook?.url ?? null)}${
     s.webhook === null ? "" : html`<label class="choice"><input type="checkbox" name="rotate" value="1"> Make a new signing secret</label>`}<label>Folder (JSON Lines, a file per day)<input type="text" name="folder" value="${s.folder?.path ?? ""}" placeholder="/var/log/standing-orders" spellcheck="false"></label>${
     statusLine(view, "folder", s.folder?.path ?? null)}</fieldset><fieldset><legend>Traces</legend><p class="meta">Each run as an OpenTelemetry span: timings, model, tokens and cost. Never a prompt or code.</p><label>Collector (OTLP over HTTP)<input type="url" name="traces" value="${s.traces?.endpoint ?? ""}" placeholder="https://otel.example.com:4318" spellcheck="false"></label>${
-    statusLine(view, "traces", s.traces?.endpoint ?? null)}<label>Header name (optional)<input type="text" name="header-name" value="${s.traces?.header?.name ?? ""}" placeholder="x-honeycomb-team" spellcheck="false"></label><label>Header value<input type="password" name="header-value" autocomplete="off" placeholder="${s.traces?.header ? "Saved; leave blank to keep" : "API key"}"></label></fieldset><div class="step-up"><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label></div><button type="submit">Save</button>`)}<fieldset><legend>Metrics</legend><p class="meta">Prometheus reads <code>${metrics}</code> with an instance operator's API token (<a href="/settings/sessions">Sessions &amp; tokens</a>).</p><details><summary>Example</summary><pre>curl -H "Authorization: Bearer so_…" ${metrics}</pre></details></fieldset></section>`;
+    statusLine(view, "traces", s.traces?.endpoint ?? null)}<label>Header name (optional)<input type="text" name="header-name" value="${s.traces?.header?.name ?? ""}" placeholder="x-honeycomb-team" spellcheck="false"></label><label>Header value<input type="password" name="header-value" autocomplete="off" placeholder="${s.traces?.header ? "Saved; leave blank to keep" : "API key"}"></label></fieldset><div class="step-up">${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label>`)}</div><button type="submit">Save</button>`)}<fieldset><legend>Metrics</legend><p class="meta">Prometheus reads <code>${metrics}</code> with an instance operator's API token (<a href="/settings/sessions">Sessions &amp; tokens</a>).</p><details><summary>Example</summary><pre>curl -H "Authorization: Bearer so_…" ${metrics}</pre></details></fieldset></section>`;
 }
 
 /** The webhook's signing secret, once: a focused page with no script. */

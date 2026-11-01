@@ -45,6 +45,7 @@ import type { ExecResult, RunOptions } from "./exec.js";
 import { isAlive } from "./runner.js";
 import type { Store } from "./store.js";
 import { envTwins } from "./names.js";
+import { sleep as defaultSleep } from "./sleep.js";
 
 export type SupervisorRunner = (
   file: string,
@@ -84,7 +85,7 @@ async function waitForLaunchdBootout(
   run: SupervisorRunner,
   service: string,
   attempts = 50,
-  sleep: (ms: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  sleep: (ms: number) => Promise<void> = defaultSleep,
 ): Promise<boolean> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const status = await run("launchctl", ["print", service]);
@@ -696,7 +697,7 @@ export async function awaitFreshHeartbeat(
   runnerName: string,
   heartbeatBefore: string | null,
   deadlineMs = 5_000,
-  sleep: (ms: number) => Promise<void> = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  sleep: (ms: number) => Promise<void> = defaultSleep,
 ): Promise<{ ok: true; heartbeatAt: string } | { ok: false }> {
   const deadline = Date.now() + deadlineMs;
   for (;;) {

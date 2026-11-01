@@ -4,7 +4,7 @@
  * password (or a fresh identity-provider sign-in), in a browser only.
  */
 import type { ApiTokenRow, Database } from "./store.js";
-import { html, postForm, type Html } from "./html.js";
+import { html, postForm, type Html, reauth } from "./html.js";
 import { effectiveLimits, limitOverrides, PER_DAY_MAX, PER_MINUTE_MAX, REQUEST_BUDGET_DEFAULTS, type LimitOverride } from "./request-budget.js";
 
 const n = (value: number) => value.toLocaleString("en-US");
@@ -25,7 +25,7 @@ export function requestLimitsHtml(db: Database, tokens: readonly ApiTokenRow[], 
   const everyone: LimitOverride = overrides.get("*") ?? { readPerMinute: null, actPerMinute: null, perDay: null };
   const field = (name: string, label: string, value: number | null, placeholder: string, max: number) =>
     html`<label>${label}<input type="number" name="${name}" min="1" max="${max}" step="1" inputmode="numeric" value="${value === null ? "" : value}" placeholder="${placeholder}"></label>`;
-  const password = html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label>`;
+  const password = html`${reauth(html`<label>Your Toolroll password<input type="password" name="password" autocomplete="current-password"></label>`)}`;
   const buttons = html`<div class="actions"><button name="action" value="save">Save limits</button><button class="secondary" name="action" value="clear">Use defaults</button></div>`;
   const live = tokens.filter(one => one.revokedAt === null && Date.parse(one.expiresAt) > now);
   const installation = postForm("/settings/request-limits", html`\

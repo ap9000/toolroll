@@ -26,6 +26,11 @@ import { bytesWords, treeBytes } from "./storage.js";
 import type { Database, Store } from "./store.js";
 import { RETENTION_DAYS, retentionDaysSchema, retentionKindSchema, type RetentionKind, type RetentionPeriods } from "./contracts/retention.js";
 
+/** A personal lead-queue row the sweep keeps (with its message): one still waiting, running or uncertain, and any of a
+ * conversation that is still open — its request id is the tombstone that stops a removed message being sent again. */
+const KEPT_QUEUE_ROW = (message: string): string => `lead_queue lq WHERE lq.message = ${message}
+  AND (lq.status IN ('queued', 'running', 'uncertain') OR EXISTS (SELECT 1 FROM lead_session ls WHERE ls.id = lq.session AND ls.ended_at IS NULL))`;
+
 const RETENTION_TABLE = (name: string) => `
 CREATE TABLE IF NOT EXISTS ${name} (
   kind       TEXT PRIMARY KEY CHECK (kind IN ('evidence', 'checkouts', 'chat', 'notifications')),
@@ -70,7 +75,6 @@ export const PERIOD_CHOICES: Readonly<Record<RetentionKind, readonly (number | n
   evidence: [1, 7, 14, 28, null], checkouts: LONG_CHOICES, chat: LONG_CHOICES, notifications: LONG_CHOICES,
 };
 export const MIN_DAYS = RETENTION_DAYS.min;
-export const MAX_DAYS = RETENTION_DAYS.max;
 const DAY_MS = 86_400_000;
 /** A sweep is due once a day. */
 export const SWEEP_EVERY_MS = DAY_MS;
@@ -186,6 +190,7 @@ export function retentionPlan(store: Store, evidenceRoot: string, now: Date, per
     const rows = db.prepare(`SELECT m.id AS id, length(m.text) + COALESCE(length(m.activity), 0) + 64 AS bytes FROM lead_message m JOIN lead_thread th ON th.id = m.thread
       WHERE m.created_at < ?
         AND NOT EXISTS (SELECT 1 FROM team_message tm WHERE tm.message = m.id AND tm.status IN ('queued', 'running', 'uncertain'))
+        AND NOT EXISTS (SELECT 1 FROM ${KEPT_QUEUE_ROW("m.id")})
         AND NOT EXISTS (SELECT 1 FROM mate_turn turn WHERE turn.id = m.turn AND turn.state IN ('queued', 'running'))
         AND NOT (th.scope_kind = 'task' AND NOT EXISTS (SELECT 1 FROM task_ref r WHERE r.external_id = th.scope_key AND ${finishedTask("r")}))
       ORDER BY m.id LIMIT ?`).all(cutoff(now, periods.chat), SWEEP_BATCH + 1);
@@ -258,14 +263,18 @@ export function sweepRetention(store: Store, evidenceRoot: string, now: Date, ac
     }
     if (periods.chat !== null) {
       const team = db.prepare("DELETE FROM team_message WHERE message = ? AND status NOT IN ('queued', 'running', 'uncertain')");
-      const message = db.prepare("DELETE FROM lead_message WHERE id = ? AND NOT EXISTS (SELECT 1 FROM team_message WHERE message = ?)");
+      const message = db.prepare(`DELETE FROM lead_message WHERE id = ? AND NOT EXISTS (SELECT 1 FROM team_message WHERE message = ?)
+        AND NOT EXISTS (SELECT 1 FROM ${KEPT_QUEUE_ROW("lead_message.id")})`);
       const asked = db.prepare("SELECT turn FROM lead_message WHERE id = ? AND role = 'assistant' AND turn IS NOT NULL");
+      const searchCopy = db.prepare("DELETE FROM memory_search WHERE kind = 'conversation' AND ref = ?");
       // The lead's question goes with the reply that asked it; its buttons then say it expired.
       const ask = db.prepare("DELETE FROM lead_ask WHERE turn = ? AND NOT EXISTS (SELECT 1 FROM lead_message WHERE turn = ? AND role = 'assistant')");
       for (const one of plan.items.chat) {
         team.run(one.id);
         const turn = asked.get(one.id)?.["turn"];
         if (Number(message.run(one.id, one.id).changes) === 1) {
+          // Its search copy goes with it (search never shows words the store no longer keeps).
+          searchCopy.run(`message:${one.id}`);
           done.chat.count++; done.chat.bytes += one.bytes;
           if (turn !== undefined && turn !== null) ask.run(Number(turn), Number(turn));
         }

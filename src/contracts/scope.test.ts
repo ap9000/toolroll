@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { exactAcceptance } from "../scope.js";
 import { parsePlan } from "../plan.js";
@@ -142,13 +141,5 @@ describe("saved scopes, replayed read-only", () => {
     }
     const routes = baseline.task_scope.flatMap(row => [row.route, row.approvedRoute]).filter(one => one !== null);
     expect(routes.map(one => (JSON.parse(one.read!) as { version: number }).version).sort()).toEqual([...Array(5).fill(1), ...Array(15).fill(2)]);
-  });
-});
-
-describe("docs/plans/zod-revamp.md", () => {
-  it("marks wave 2 item 10 done", () => {
-    const doc = readFileSync(new URL("../../docs/plans/zod-revamp.md", import.meta.url), "utf8");
-    expect(doc).toMatch(/^\| 10 ✅ \| \*\*Scope, acceptance criteria and sealed routes\*\*/m);
-    expect(doc.slice(doc.indexOf("## Done"))).toContain("**10. Scope, acceptance criteria and sealed routes**");
   });
 });

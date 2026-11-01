@@ -28,7 +28,7 @@ import { chmodSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { closedQuestionWords, validateNote } from "./decision.js";
 import { isShotsKind, resultShotsFor, type ResultShot } from "./result-shots.js";
-import { isLifecycleNotification, isTelegramProgressNotification, RESULT_SHOTS_KIND, TELEGRAM_HOLD_REASONS, type Store, type Decision, type Notification, type TelegramBinding, type TelegramDelivery } from "./store.js";
+import { isLifecycleNotification, isTelegramProgressNotification, TELEGRAM_HOLD_REASONS, type Store, type Decision, type Notification, type TelegramBinding, type TelegramDelivery } from "./store.js";
 import { telegramProgressCard, type ProgressEntity } from "./telegram-progress.js";
 import { enqueueEveningDigests, finishedView, isTaskFact, joinsBatch, needsPerson, quietCardView, type QuietView } from "./chat-quiet.js";
 import { BATCH_MS, chatText, chatTitle, factLinkLabel, mentions, nameTelegramBot } from "./chat-voice.js";
@@ -62,6 +62,9 @@ import { askOf, parseTelegramUpdate, pickOf, readTelegramButtonData, readTelegra
 
 /** Read the enrolled project list on demand. No callback means no task data,
  * never an implicit all-database ceiling. Shared by pass and embedded follower. */
+/** A delivery its person began watching after it was claimed: held or settled at the final fence (cockpit §3). */
+const WATCHED_SINCE_CLAIM = "Held: its person is watching this agent now";
+
 export type TelegramReadProjects = () => Promise<readonly string[]>;
 
 /** The environment name — and therefore the name the builder strips from agents (both names; see names.ts). */
@@ -215,7 +218,10 @@ export type TelegramTransport = (
  * Telegram never fetches anything for us, and nothing on this machine is
  * uploaded by name.
  */
-export type TelegramUpload = { field: "document" | "photo" | `shot${number}`; fileName: string; contentType: "image/png" | "image/jpeg"; bytes: Buffer };
+export type TelegramUpload = { field: "document" | "photo" | `shot${number}`; fileName: string; contentType: "image/png" | "image/jpeg" | "text/plain"; bytes: Buffer };
+
+/** A release card's full terms (release-card.ts) as the document Telegram sends with it: text this process wrote. */
+export const termsUpload = (file: { name: string; text: string }): TelegramUpload => ({ field: "document", fileName: file.name, contentType: "text/plain", bytes: Buffer.from(file.text, "utf8") });
 
 export function createTransport(token: string, timeoutMs = 30_000): TelegramTransport {
   return async (method, params, signal, upload, more) => {
@@ -826,6 +832,8 @@ async function deliverOutboxTo(
     const blocked: { row: TelegramDelivery; error: string }[] = [];
     const preflight = (await readAccess()) ?? channelProblem();
     for (const row of group) {
+      // Watched since the claim (cockpit §3): held for later or settled quietly, never sent now, never a failure.
+      if (preflight === null && store.telegramWatchFence(row, binding, owner, clock()) !== "send") continue;
       const problem = preflight ?? store.telegramDeliveryProblem(row, binding, owner, projects, clock(), [...rows.map(one => one.id), row.id]);
       if (problem === null) rows.push(row);
       else blocked.push({ row, error: problem });
@@ -837,12 +845,29 @@ async function deliverOutboxTo(
     if (rows.length === 0) continue;
 
     const ids = rows.map(row => row.id);
-    const fence = (): string | null => {
+    // Once any part of this delivery has reached Telegram it is committed: a watch opening between its parts never
+    // releases it (that would send the parts already accepted again). Every transport call below goes through `wire`.
+    let sentAny = false;
+    const wire: TelegramTransport = async (...args) => {
+      const answer = await transport(...args);
+      if (answer.ok === true) sentAny = true;
+      return answer;
+    };
+    /** A release card's terms file (release-card.ts), sent before the card itself. */
+    const fileSender = async (file: { name: string; text: string }): Promise<boolean> => {
+      try { return (await wire("sendDocument", { chat_id: binding.chatId, caption: "Every term of this release" }, undefined, termsUpload(file))).ok === true; } catch { return false; }
+    };
+    // `beforeSend`: the fence before a transport call also asks the watch — until something of this delivery went out;
+    // the one after a confirmed send never does, so a message Telegram accepted is recorded as delivered.
+    const fence = (beforeSend = !sentAny): string | null => {
       const channel = channelProblem();
       if (channel !== null) return channel;
       for (const row of rows) {
         const problem = store.telegramDeliveryProblem(row, binding, owner, projects, clock(), ids);
         if (problem !== null) return problem;
+        // The watch, at the last moment before the network: a held row's claim is released (its finalize is then a
+        // no-op), so nothing is spent on it.
+        if (beforeSend && store.telegramWatchFence(row, binding, owner, clock()) !== "send") return WATCHED_SINCE_CLAIM;
       }
       return null;
     };
@@ -850,7 +875,7 @@ async function deliverOutboxTo(
       // Finish every await before the synchronous fence and transport call.
       const problem = (await readAccess()) ?? fence();
       if (problem !== null) return { ok: false, error: problem };
-      const sent = await send(transport, binding.chatId, text, keyboard, entities, silent);
+      const sent = await send(wire, binding.chatId, text, keyboard, entities, silent);
       if (!sent.ok) {
         if (sent.retryAfter !== undefined) store.deferTelegram(botId, new Date(clock().getTime() + sent.retryAfter * 1_000).toISOString());
         return sent;
@@ -858,7 +883,7 @@ async function deliverOutboxTo(
       if (sent.messageId === null) return { ok: false, error: "Telegram returned no confirmed message identity" };
       for (const row of messageRows) store.recordTelegramMessage(row, binding, sent.messageId, clock());
       // Keep the old message's history but never acknowledge a replaced pairing.
-      const after = (await readAccess()) ?? fence();
+      const after = (await readAccess()) ?? fence(false);
       return after === null ? sent : { ok: false, error: after };
     };
     const imageSender = async (row: TelegramDelivery): Promise<{ ok: true; receipt: string | null } | { ok: false; error: string }> => {
@@ -882,7 +907,7 @@ async function deliverOutboxTo(
       store.markResultShotsSent(row.destination, row.run, [artifact], clock());
       // No await between the access fence, file validation and upload.
       let answer: Awaited<ReturnType<TelegramTransport>>;
-      try { answer = await transport("sendDocument", { chat_id: binding.chatId, caption: `${resultTaskLabel(row.taskId)} · result #${row.run} · screenshot for acceptance` }, undefined, {
+      try { answer = await wire("sendDocument", { chat_id: binding.chatId, caption: `${resultTaskLabel(row.taskId)} · result #${row.run} · screenshot for acceptance` }, undefined, {
         field: "document", bytes: verified.bytes, contentType: verified.format === "png" ? "image/png" : "image/jpeg", fileName: resultImageFileName(row.taskId, row.run, artifact, verified.format),
       });
       } catch {
@@ -896,7 +921,7 @@ async function deliverOutboxTo(
         return { ok: false, error: answer.uncertain || (answer.ok && messageId == null) ? "Screenshot delivery is unconfirmed; retry may duplicate it" : "Telegram did not accept the screenshot" };
       }
       store.recordTelegramMessage(row, binding, String(messageId), clock());
-      const after = (await readAccess()) ?? fence();
+      const after = (await readAccess()) ?? fence(false);
       return after === null ? { ok: true, receipt: receiptFor(botId, binding.chatId, String(messageId)) } : { ok: false, error: after };
     };
     /** Screenshots with a result (result-shots.ts): photos, several as one album, re-proved before every call. Each is
@@ -922,11 +947,11 @@ async function deliverOutboxTo(
         let answer: Awaited<ReturnType<TelegramTransport>>;
         try {
           answer = batch.length > 1
-            ? await transport("sendMediaGroup", { chat_id: binding.chatId, media: batch.map((one, index) => ({ type: "photo", media: `attach://shot${index}`, ...(index === 0 || one.numbered === true ? { caption: one.caption } : {}) })) },
+            ? await wire("sendMediaGroup", { chat_id: binding.chatId, media: batch.map((one, index) => ({ type: "photo", media: `attach://shot${index}`, ...(index === 0 || one.numbered === true ? { caption: one.caption } : {}) })) },
               undefined, upload(batch[0]!, "shot0"), batch.slice(1).map((one, index) => upload(one, `shot${index + 1}`)))
             : batch[0]!.photo
-              ? await transport("sendPhoto", { chat_id: binding.chatId, caption: batch[0]!.caption }, undefined, upload(batch[0]!, "photo"))
-              : await transport("sendDocument", { chat_id: binding.chatId, caption: batch[0]!.caption }, undefined, upload(batch[0]!, "document"));
+              ? await wire("sendPhoto", { chat_id: binding.chatId, caption: batch[0]!.caption }, undefined, upload(batch[0]!, "photo"))
+              : await wire("sendDocument", { chat_id: binding.chatId, caption: batch[0]!.caption }, undefined, upload(batch[0]!, "document"));
         } catch { answer = { ok: false, uncertain: true }; }
         if (!answer.ok && answer.uncertain !== true) {
           store.unmarkResultShotsSent(row.destination, plan.run, ids);
@@ -957,7 +982,7 @@ async function deliverOutboxTo(
       try { button = phoneLinkButton(phoneOrigin?.() ?? null, card.link); } catch { /* No trusted origin. */ }
       const keyboard = button === null ? [] : [button];
       if (messageId === null) return sender(card.text, keyboard, rows, card.entities);
-      const edited = await editProgress(transport, binding.chatId, messageId, card.text, keyboard, card.entities);
+      const edited = await editProgress(wire, binding.chatId, messageId, card.text, keyboard, card.entities);
       if (!edited.ok) {
         if (edited.retryAfter !== undefined) store.deferTelegram(botId, new Date(clock().getTime() + edited.retryAfter * 1000).toISOString());
         // Only Telegram's definitive missing/uneditable response permits a
@@ -966,7 +991,7 @@ async function deliverOutboxTo(
         return edited;
       }
       if (!onlyExisting) store.recordTelegramMessage(row, binding, messageId, clock());
-      const after = (await readAccess()) ?? fence();
+      const after = (await readAccess()) ?? fence(false);
       return after === null ? edited : { ok: false, error: after };
     };
     /** Quiet mode: the task's one card (or its group's), created silently and then only ever edited. */
@@ -985,11 +1010,11 @@ async function deliverOutboxTo(
         return { ok: true, messageId: card.message };
       }
       if (card.message !== null) {
-        const edited = await editProgress(transport, binding.chatId, card.message, view.text, keyboard, view.entities);
+        const edited = await editProgress(wire, binding.chatId, card.message, view.text, keyboard, view.entities);
         if (edited.ok) {
           store.setChatCardMessage(card.id, card.message, shown);
           store.recordTelegramMessage(fact, binding, card.message, clock());
-          const after = (await readAccess()) ?? fence();
+          const after = (await readAccess()) ?? fence(false);
           return after === null ? edited : { ok: false, error: after };
         }
         if (edited.retryAfter !== undefined) store.deferTelegram(botId, new Date(clock().getTime() + edited.retryAfter * 1000).toISOString());
@@ -1014,7 +1039,7 @@ async function deliverOutboxTo(
         // A lone update that is not finished work goes out exactly as it always has; a later one edits it in place.
         const lone = batch.items.length === 1 && batch.items[0]!.notification !== null;
         if (batch.message === null && lone) {
-          const sent = await deliverOne(store, botId, binding, sender, fact, clock, phoneOrigin, evidenceRoot, projects);
+          const sent = await deliverOne(store, botId, binding, sender, fact, clock, phoneOrigin, evidenceRoot, projects, fileSender);
           const placed = store.telegramMessageOf(fact.id, fact.destination);
           if (placed !== null) store.setChatBatchMessage(batch.id, placed, "");
           return sent;
@@ -1024,7 +1049,7 @@ async function deliverOutboxTo(
         // the reader's own completion) stays quiet; any other update that needs this person still reaches them alone.
         if (view === null) {
           if (readyRun !== null) return { ok: true, receipt: receiptFor(botId, binding.chatId, card.messageId) };
-          return deliverOne(store, botId, binding, sender, fact, clock, phoneOrigin, evidenceRoot, projects);
+          return deliverOne(store, botId, binding, sender, fact, clock, phoneOrigin, evidenceRoot, projects, fileSender);
         }
         // A message about one result, plan, failure or pull request acts in place (chat-decide.ts); its buttons are
         // minted only when what it offers changed, or its own were spent (Not now), so an unchanged repaint keeps the
@@ -1036,6 +1061,9 @@ async function deliverOutboxTo(
         let keyboard = own !== null ? [own] : viewKeyboard(phoneOrigin, view);
         const shown = createHash("sha256").update(JSON.stringify(offer === null ? [view.text, keyboard] : [text, offerFingerprint(offer)])).digest("hex");
         let tokens: string[] = [];
+        // A release card's terms go as a file first, on this road as on a lone delivery: no file accepted, no buttons.
+        const termsFirst = async (): Promise<{ ok: false; error: string } | null> =>
+          offer?.file === undefined || (fileSender !== undefined && await fileSender(offer.file)) ? null : { ok: false, error: "The release's terms file wasn't accepted" };
         // Minted unplaced: they ride a message only once it shows them, and until then the old card's buttons work.
         const mintFor = (): void => {
           if (offer === null) return;
@@ -1050,15 +1078,17 @@ async function deliverOutboxTo(
           }
           const problem = (await readAccess()) ?? fence();
           if (problem !== null) return { ok: false, error: problem };
+          const terms = await termsFirst();
+          if (terms !== null) return terms;
           mintFor();
-          const edited = await editProgress(transport, binding.chatId, batch.message, text, keyboard);
+          const edited = await editProgress(wire, binding.chatId, batch.message, text, keyboard);
           if (edited.ok) {
             // The repaint landed: the old words' buttons retire and the new ones ride the message.
             retireDecideTokens(store, "telegram", binding.chatId, batch.message, clock());
             placeDecideTokens(store, tokens, batch.message);
             store.setChatBatchMessage(batch.id, batch.message, shown);
             store.recordTelegramMessage(fact, binding, batch.message, clock());
-            const after = (await readAccess()) ?? fence();
+            const after = (await readAccess()) ?? fence(false);
             return after === null ? { ok: true, receipt: receiptFor(botId, binding.chatId, batch.message) } : { ok: false, error: after };
           }
           // A failed edit: the buttons it carried never act, and the card's old ones keep working.
@@ -1068,6 +1098,7 @@ async function deliverOutboxTo(
           if (!edited.replace) return edited;
         }
         // A new message: its buttons are minted for it, never the ones a failed edit was given.
+        if (batch.message === null) { const terms = await termsFirst(); if (terms !== null) return terms; }
         mintFor();
         const sent = await sender(text, keyboard.length === 0 ? undefined : keyboard, [fact]);
         const placed = sent.ok ? sent.messageId : store.telegramMessageOf(fact.id, fact.destination);
@@ -1079,7 +1110,7 @@ async function deliverOutboxTo(
         } else dropDecideTokens(store, tokens, clock());
         return sent.ok ? { ok: true, receipt: receiptFor(botId, binding.chatId, sent.messageId) } : sent;
       }
-      return fact.kind === "acceptance-evidence" ? imageSender(fact) : deliverOne(store, botId, binding, sender, fact, clock, phoneOrigin, evidenceRoot, projects);
+      return fact.kind === "acceptance-evidence" ? imageSender(fact) : deliverOne(store, botId, binding, sender, fact, clock, phoneOrigin, evidenceRoot, projects, fileSender);
     };
     /** The lead's words (lead-voice.ts): one message; a later say within two minutes edits it in place. */
     const leadSayOutcome = async (fact: TelegramDelivery): Promise<{ ok: true; receipt: string | null } | { ok: false; error: string }> => {
@@ -1090,10 +1121,10 @@ async function deliverOutboxTo(
       if (earlier !== null) {
         const problem = (await readAccess()) ?? fence();
         if (problem !== null) return { ok: false, error: problem };
-        const edited = await editProgress(transport, binding.chatId, earlier, words, keyboard);
+        const edited = await editProgress(wire, binding.chatId, earlier, words, keyboard);
         if (edited.ok) {
           store.recordTelegramMessage(fact, binding, earlier, clock());
-          const after = (await readAccess()) ?? fence();
+          const after = (await readAccess()) ?? fence(false);
           return after === null ? { ok: true, receipt: receiptFor(botId, binding.chatId, earlier) } : { ok: false, error: after };
         }
         if (edited.retryAfter !== undefined) store.deferTelegram(botId, new Date(clock().getTime() + edited.retryAfter * 1000).toISOString());
@@ -1115,9 +1146,9 @@ async function deliverOutboxTo(
       outcome = updated !== null ? updated.ok ? { ok: true as const, receipt: receiptFor(botId, binding.chatId, updated.messageId) } : updated
         : rows[0]!.kind === "acceptance-evidence" ? await imageSender(rows[0]!) : batched
         ? await deliverDigest(botId, binding, sender, rows, digest.lastSentAt, clock, taskId => chatTitle(store, taskId))
-        : await deliverOne(store, botId, binding, sender, rows[0]!, clock, phoneOrigin, evidenceRoot, projects);
+        : await deliverOne(store, botId, binding, sender, rows[0]!, clock, phoneOrigin, evidenceRoot, projects, fileSender);
     }
-    const finalProblem = outcome.ok ? (await readAccess()) ?? fence() : null;
+    const finalProblem = outcome.ok ? (await readAccess()) ?? fence(false) : null;
     const settled = finalProblem === null ? outcome : { ok: false as const, error: finalProblem };
     // A skipped screenshot settles its row but nothing reached the phone.
     const skipped = settled.ok && settled.receipt !== null && settled.receipt.startsWith("skipped:");
@@ -1205,6 +1236,7 @@ async function deliverOne(
   phoneOrigin?: () => string | null,
   evidenceRoot?: string,
   projects: readonly string[] = [],
+  fileSender?: (file: { name: string; text: string }) => Promise<boolean>,
 ): Promise<{ ok: true; receipt: string | null } | { ok: false; error: string }> {
   const decisionId = /^decision:(\d+)$/.exec(notification.dedupeKey);
   const decision = decisionId === null ? null : store.getDecision(Number(decisionId[1]));
@@ -1278,6 +1310,13 @@ async function deliverOne(
     const questionKeys = asked === null ? null : telegramQuestionButtons(store, binding, asked, clock());
     const keys = flowKeys ?? choiceKeys ?? questionKeys;
     let last: string | null = null;
+    // A release card: every term goes as a file first, so Continue is offered only once it has arrived.
+    if (offer?.file !== undefined && decided !== null) {
+      if (fileSender === undefined || !await fileSender(offer.file)) {
+        dropDecideTokens(store, decided.tokens, clock());
+        return { ok: false, error: "The release's terms file wasn't accepted" };
+      }
+    }
     for (const [index, part] of parts.entries()) {
       const final = index === parts.length - 1;
       const decideKeys = decided === null ? [] : decideKeyboard(phoneOrigin, decided.rows);
@@ -1782,6 +1821,9 @@ function applyMessage(context: Context, update: Update, effects: Effect[]): void
  * message that carried several tasks (never guessed). Everything hostile is
  * silence, as for every other inbound shape.
  */
+/** At most this many of a chat's messages wait for the lead at once (the personal lead queue's bound). */
+export const TELEGRAM_MAX_WAITING = 10;
+
 function applyConversation(context: Context, update: Update, effects: Effect[]): void {
   const { store, botId, transport, clock, report } = context;
   const message = update.message as NonNullable<Update["message"]>;
@@ -1847,6 +1889,12 @@ function applyConversation(context: Context, update: Update, effects: Effect[]):
       taskId = focused;
       context_ = focusContextFor(focused);
     }
+  }
+  // The lead queue's bound, per chat: ten messages wait at most; the next is answered at once instead of queued.
+  if (store.telegramMessagesWaiting(binding.id) >= TELEGRAM_MAX_WAITING) {
+    say(`${TELEGRAM_MAX_WAITING} messages are already waiting for the lead. Wait for a reply, then send this again.`);
+    report.ignored++;
+    return;
   }
   store.enqueueTelegramConversation(
     {
@@ -2254,6 +2302,7 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
     const option = ask.options[askTap.option];
     if (option === undefined) { ack("That option is no longer there."); return; }
     const focused = store.chatFocus("telegram", binding.id);
+    if (store.telegramMessagesWaiting(binding.id) >= TELEGRAM_MAX_WAITING) { ack(`${TELEGRAM_MAX_WAITING} messages are already waiting. Wait for a reply.`); return; }
     store.enqueueTelegramConversation({
       binding, updateId: update.update_id, messageId: String(message.message_id), replyTo: null,
       request: telegramRequestId(botId, binding.id, update.update_id), text: option,
@@ -2273,7 +2322,24 @@ function applyCallback(context: Context, update: Update, effects: Effect[]): voi
     if (tapped === null) { report.ignored++; ack("That button doesn't do anything now."); return; }
     if (tapped.ignored === true) report.ignored++;
     ack(tapped.ack.slice(0, 190));
-    if (tapped.edit !== undefined) editText(tapped.edit.text.slice(0, 4000), decideKeyboard(context.conversation?.phoneOrigin, tapped.edit.rows));
+    // A release card's terms, as a file, before its Approve is shown (chat-management.md §0a.5): Approve appears only
+    // once Telegram has accepted this file; a refused or failed upload shows the card without it, Continue to try again.
+    if (tapped.file !== undefined && tapped.edit !== undefined && tapped.unsent !== undefined) {
+      const file = tapped.file, edit = tapped.edit, unsent = tapped.unsent;
+      effects.push(async () => {
+        let sent = false;
+        try { sent = (await transport("sendDocument", { chat_id: binding.chatId, caption: "Every term of this release, read again just now" }, undefined, termsUpload(file))).ok === true; }
+        catch { sent = false; }
+        const shown = sent ? edit : unsent;
+        dropDecideTokens(store, (sent ? unsent : edit).tokens, clock());
+        await transport("editMessageText", { chat_id: binding.chatId, message_id: message.message_id, text: shown.text.slice(0, 4000), link_preview_options: { is_disabled: true },
+          reply_markup: { inline_keyboard: decideKeyboard(context.conversation?.phoneOrigin, shown.rows) } });
+      });
+    } else if (tapped.file !== undefined) {
+      // A file without its gate never reaches here (chat-decide pairs them); fail closed: nothing that approves is shown.
+      if (tapped.edit !== undefined) dropDecideTokens(store, tapped.edit.tokens, clock());
+      editText(`${message.text ?? ""}\n\nThis release can't be approved here. Open it in Toolroll.`.trim().slice(0, 4000), []);
+    } else if (tapped.edit !== undefined) editText(tapped.edit.text.slice(0, 4000), decideKeyboard(context.conversation?.phoneOrigin, tapped.edit.rows));
     if (tapped.prompt !== undefined) {
       const prompt = tapped.prompt;
       effects.push(async () => {

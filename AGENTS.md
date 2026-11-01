@@ -29,10 +29,12 @@ Carry this check into Toolroll task acceptance criteria and review feedback for 
 - While working, run typecheck and the test files for what you changed (`npx vitest run src/foo.test.ts`, or `src/serve.*.test.ts` for `src/serve.ts`). Avoid `vitest related`: it follows imports, so a change to a core file like `src/store.ts` pulls in most of the suite. Add a small regression for each reproduced bug; reuse existing tests instead of adding overlapping suites.
 - Don't run the whole unit suite. Toolroll's quick check (typecheck plus the tests named after your changed files) runs after the build, and the release check runs everything before a release.
 - Keep tests deterministic and quick: wait for the event or inject a clock instead of a fixed time window, share fixtures through `test/` helper modules, and keep large test files split by area so related runs stay small.
+- Add only the unit tests docs/testing.md keeps: security rules, migrations, data integrity and contracts. No tests for wording, markup or CSS. A review finding adds one case to its rule's table, not a new test; a file over about ten seconds is a `*.slow.test.ts`.
 - For UI work, use one end-to-end journey at desktop and one phone viewport: open the result, inspect changes, leave feedback, and create a revision. Include affected empty, long-content, and failure states. Add other viewport checks only for a concrete risk or explicit acceptance requirement.
 - After a small copy or CSS repair, rerun the affected visual checks, not every browser script. Behavioral changes also require their focused tests.
 - Let Toolroll run the unchanged approved verification command once at the final machine gate for the candidate. Do not repeat it in the lead inspection. A failed gate or changed candidate still needs fresh verification; never delete tests, add skips, or waive execution approvals or machine checks to save time.
 - Reuse valid evidence for unchanged code and the same agent session where already supported. Do not build new orchestration just to reduce test overhead. No new agent time limits.
+- A release's later commits that change only tests, docs or the changelog carry its person's approval, and its later checks re-run only what failed at its last full check (docs/plans/release-once.md). Coverage trusts test code by Alex's explicit decision (2026-10-25): the rule below against build-writable data is set aside for that coverage decision only, never for who may release or deploy. A nightly full check of main runs at 03:00; its failures hold composed releases until a full check passes.
 - Report the checks actually run, the exact candidate they cover, and any remaining gaps. Broaden checks only for a specific uncovered risk; say why.
 - Screenshots and journey output go in the run's evidence folder, `evidence/` (ignored by Git), never anywhere else in the working tree. Never commit them: the handoff leaves images added under `evidence/` out of the commit and says so.
 
@@ -45,6 +47,19 @@ A build agent controls everything it can write: its checkout and `.git` (pointer
 - Never run `git` or a tool inside a build-controlled folder without the hardened environment (no system/global config, no includes, `core.hooksPath=/dev/null`, `core.fsmonitor=false`, `--ignore-submodules=all`, allowlisted env), and route every such call through the shared helper, not a direct spawn.
 - Check at the moment of use, not only earlier: re-verify right before acting when a file can change in between.
 - Every guard ships with a test that tries to get around it, run against the real sandbox where it applies (`sandbox-exec`, `codex sandbox`). Add each reproduced bypass to the attack suite so it stays fixed.
+
+## Safety self-review (before every commit that touches security)
+
+Run this list yourself before committing anything that touches approvals, credentials, sandboxes, grants, network policy, the release tool or the CLI's password-gated commands. Fix each finding, or say plainly in the commit message why it doesn't apply. The automated review and the arc's Codex review are a second line, not the first.
+
+- **Check and write together.** An authorization decision and the write it allows happen in one transaction. Re-read the current state there, and pass the caller's proven authority (for example, narrow-only versus widen) into the write. Never decide before a password prompt and write after it.
+- **Never widen implicitly.** Grants, network allowlists, check access and approval scope only widen through an explicit step that a person confirms, and that step is logged. Never add hosts, paths or permissions to make a case work.
+- **Grant files, not folders.** Give the exact files a tool needs, never their parent folder and never through a symlink. Write grants exclude anything a later session loads (memory, settings, hooks, config), because writing there is persistent prompt injection.
+- **Don't let input choose what's trusted.** Environment variables, the checkout's git config and remotes, caller-supplied repos, URLs and ids never decide what a grant or proof covers. Pin them to Toolroll's own records, and refuse redirects (insteadOf, includes, alternates, replace refs).
+- **Approvals mean a person's yes to exactly this.** Nothing mints, carries or extends an approval without proving the person approved this exact scope *and this kind of action*. A matching digest isn't enough if the meaning differs (an audit isn't a release). Re-check at the moment of use.
+- **Credentials go only where they belong.** A token is only ever sent to its own service, never logged, never put in URLs, and never readable by project code unless an operator granted that project exactly that.
+- **Tests never touch the person's real setup.** Tests get their own HOME, XDG_CONFIG_HOME, temp folders and short socket paths. A skip for running inside a sandbox (INSIDE_FENCE) is only for what truly needs nesting, process watching or real credentials, and says why.
+- **Prove it against the real thing.** Each guard gets a test that tries to get around it, run against the real sandbox or deployed fence where that applies.
 
 ## Keep the installed tool current
 

@@ -10,12 +10,23 @@
  *
  * Playwright MCP 0.0.82 has no per-client token for its HTTP transport; it answers only on 127.0.0.1, only for
  * that host name (its own host check), and only while this run's scout does.
+ *
+ * An explicit exception (docs/plans/sandbox-parity.md C4, owner Q-A): Toolroll can't fence this process without
+ * switching Chrome's sandbox off, so its launch is held to a contract instead, and refused when any part fails
+ * (`browserContractProblem`): the pinned Playwright MCP and its Chrome for Testing are installed in Toolroll's own
+ * helpers folder (inside the state folder every build's fence denies) and run by Toolroll's own Node; its arguments are
+ * exactly the expected ones (Chrome's sandbox on, the scout's proxy on, its image folder as its output and working
+ * folder); its environment is an allowlist. The run records which exception it ran under.
  */
 import { spawn } from "node:child_process";
 import { request as httpRequest } from "node:http";
 import { connect, createServer } from "node:net";
-import { readdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, isAbsolute } from "node:path";
+import { run } from "./exec.js";
+import { SCOUT_BROWSER_LOCK, SCOUT_BROWSER_MANIFEST } from "./scout-browser-lock.js";
+import { sleep } from "./sleep.js";
 
 export type BrowserLaunch = { command: string; args: readonly string[] };
 export type ScoutBrowserServer = { url: string; close: () => Promise<void> };
@@ -24,6 +35,9 @@ export type BrowserStarter = (launch: BrowserLaunch, options: BrowserOptions) =>
 export type BrowserOptions = {
   /** The browser tool's environment: the scout's own, its proxy settings included. */
   env: Record<string, string | undefined>;
+  /** Toolroll's helpers folder (in its state folder) the pinned browser is installed in, and the scout's proxy: the
+   * launch contract's trusted inputs, from the plane, never from the launch. */
+  contract?: { helpers: string; proxy: string };
   /** Where it saves screenshots (its `--output-dir`), also its working folder. */
   folder: string;
   /** The whole start and check, from spawn to screenshot (review 828: at most 60 seconds). */
@@ -36,9 +50,10 @@ const PREFLIGHT_TIMEOUT_MS = 60_000;
 const CLOSE_GRACE_MS = 5_000;
 const IMAGE = /\.(png|jpe?g)$/i;
 
-/** How a scout gets its browser: started for real, or, for a test's stub agent, a placeholder that starts nothing. */
+/** How a scout gets its browser: started for real under its launch contract, or, for a test's stub agent, a placeholder
+ * that starts nothing. */
 export function starterFor(agentInjected: boolean): BrowserStarter {
-  return agentInjected ? unstarted : startScoutBrowser;
+  return agentInjected ? unstarted : startContractedBrowser;
 }
 
 const unstarted: BrowserStarter = async () => ({ ok: true, server: { url: "http://127.0.0.1:9/mcp", close: async () => undefined } });
@@ -101,7 +116,7 @@ async function serveBrowser(launch: BrowserLaunch, options: BrowserOptions, dead
     signal(child.pid, "SIGKILL");
   };
   // First runs download the pinned tool; it listens once it is ready.
-  while (stopped === null && Date.now() < deadline && !(await answers(port))) await new Promise(done => setTimeout(done, 250));
+  while (stopped === null && Date.now() < deadline && !(await answers(port))) await sleep(250);
   if (stopped !== null || Date.now() >= deadline) {
     const reason = stopped ?? late;
     await close();
@@ -233,4 +248,153 @@ function lastLine(text: string): string {
 function oneLine(text: string): string {
   // eslint-disable-next-line no-control-regex
   return text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").trim().slice(0, 200);
+}
+
+// ---- the launch contract (docs/plans/sandbox-parity.md C4) ----
+
+/** The pinned browser tool, installed once into Toolroll's helpers folder. */
+export const SCOUT_BROWSER_PACKAGE = "@playwright/mcp@0.0.82";
+const HELPER_NAME = "scout-browser-0.0.82";
+/** The names of the worker's environment the browser tool gets: an allowlist, never a denylist. */
+export const SCOUT_BROWSER_ENV: readonly string[] = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR",
+  "HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"];
+/** What the run records of the exception it ran under. */
+export const SCOUT_BROWSER_CONTAINMENT = "Chrome's sandbox";
+
+/** Where the pinned browser lives under `helpers`. */
+export function scoutBrowserHelper(helpers: string): { folder: string; cli: string; browsers: string } {
+  const folder = join(helpers, HELPER_NAME);
+  return { folder, cli: join(folder, "node_modules", "@playwright", "mcp", "cli.js"), browsers: join(folder, "browsers") };
+}
+
+/** The scout's browser tool: the pinned helper, run by Toolroll's own Node, headless, on its bundled Chrome. */
+export function scoutBrowserTool(helpers: string): BrowserLaunch {
+  return { command: process.execPath, args: [scoutBrowserHelper(helpers).cli, "--headless", "--browser", "chromium"] };
+}
+
+/** A folder of Toolroll's own: a real folder (no link at it), this user's, private (0700). */
+function privateFolder(path: string): boolean {
+  try {
+    const held = lstatSync(path);
+    return held.isDirectory() && !held.isSymbolicLink() && (process.getuid === undefined || held.uid === process.getuid()) && (held.mode & 0o077) === 0;
+  } catch { return false; }
+}
+
+const within = (child: string, parent: string): boolean => { const rel = relative(parent, child); return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel); };
+
+/**
+ * Why a browser launch breaks its contract, or null when it holds. Every input it trusts is the plane's: the helpers
+ * folder and the proxy come from `options.contract`, never from the launch. The executable must be Toolroll's own
+ * Node; the script the pinned helper's, inside a private helpers folder; the arguments exactly the expected ones (no
+ * way to switch Chrome's sandbox off, point at another browser or executable, or drop the proxy); the working folder
+ * the image folder; the environment only allowlisted names.
+ */
+export function browserContractProblem(launch: BrowserLaunch, options: BrowserOptions): string | null {
+  const contract = options.contract;
+  if (contract === undefined) return "the browser has no launch contract";
+  const real = (path: string): string | null => { try { return realpathSync(path); } catch { return null; } };
+  if (real(launch.command) === null || real(launch.command) !== real(process.execPath)) return "the browser isn't run by Toolroll's own Node";
+  if (!privateFolder(contract.helpers)) return "Toolroll's helpers folder isn't a private folder of its own";
+  const helper = scoutBrowserHelper(contract.helpers);
+  const script = launch.args[0] === undefined ? null : real(launch.args[0]);
+  const helpers = real(contract.helpers);
+  if (script === null || helpers === null || !within(script, helpers) || script !== real(helper.cli)) return "the browser tool isn't the pinned one in Toolroll's helpers folder";
+  const expected = [launch.args[0], "--headless", "--browser", "chromium", "--isolated", "--output-dir", options.folder, "--proxy-server", contract.proxy, "--proxy-bypass", "<-loopback>"];
+  if (launch.args.length !== expected.length || launch.args.some((one, index) => one !== expected[index])) return "the browser's arguments aren't the contract's (Chrome's sandbox and the scout's proxy stay on)";
+  const extra = Object.keys(options.env).filter(name => options.env[name] !== undefined && !SCOUT_BROWSER_ENV.includes(name));
+  if (extra.length > 0) return `the browser's environment carries names outside its allowlist (${extra.slice(0, 5).join(", ")})`;
+  if (options.env["HTTPS_PROXY"] !== contract.proxy || options.env["HTTP_PROXY"] !== contract.proxy) return "the browser's environment doesn't point at the scout's proxy";
+  return null;
+}
+
+/** The registry the helper is installed from: pinned, whatever any npm configuration says. */
+const NPM_REGISTRY = "https://registry.npmjs.org/";
+const sha256 = (text: string): string => createHash("sha256").update(text).digest("hex");
+/** The pinned lockfile's digest, recorded when the helper is installed and checked before every use. */
+export const SCOUT_BROWSER_LOCK_DIGEST = sha256(JSON.stringify(SCOUT_BROWSER_LOCK));
+
+/** The npm of the Node running Toolroll (`lib/node_modules/npm/bin/npm-cli.js` beside it), run by that Node by path:
+ * never an `npm` found on PATH. Null where this Node has none beside it (a bundled runtime). */
+export function ownNpm(execPath: string = process.execPath): string | null {
+  const cli = join(dirname(dirname(execPath)), "lib", "node_modules", "npm", "bin", "npm-cli.js");
+  try { return realpathSync(cli); } catch { return null; }
+}
+
+/**
+ * Install the pinned browser into the helpers folder once. The worker runs this outside every fence, so nothing a build
+ * could have written may steer it: npm is Toolroll's own Node's, run by path; HOME is the staging folder and the user
+ * and global npm configurations are an empty file there (no ~/.npmrc, no global npmrc, no registry, script or Node
+ * option from either); the registry is pinned; install scripts never run; `npm ci` installs exactly the pinned lockfile
+ * (scout-browser-lock.ts) and refuses a tarball whose integrity differs; the installed versions are checked against it
+ * before ready.json is written. The npm cache and Chrome for Testing stay in the folder, never in the user's caches.
+ * Residual: Chrome for Testing comes from Playwright's own download over HTTPS, without a pinned hash.
+ */
+export async function ensureScoutBrowserHelper(helpers: string, timeoutMs = 600_000): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const helper = scoutBrowserHelper(helpers);
+  if (helperReady(helper.folder)) return { ok: true };
+  const npm = ownNpm();
+  if (npm === null) return { ok: false, reason: "Toolroll's own Node has no npm beside it, so the pinned browser can't be installed" };
+  try { mkdirSync(helpers, { recursive: true, mode: 0o700 }); } catch { /* checked next */ }
+  if (!privateFolder(helpers)) return { ok: false, reason: "Toolroll's helpers folder isn't a private folder of its own" };
+  const staging = mkdtempSync(join(helpers, ".install-"));
+  try {
+    writeFileSync(join(staging, "package.json"), JSON.stringify(SCOUT_BROWSER_MANIFEST), { mode: 0o600 });
+    writeFileSync(join(staging, "package-lock.json"), JSON.stringify(SCOUT_BROWSER_LOCK), { mode: 0o600 });
+    const { env, args } = helperNpm(staging, npm);
+    const installed = await run(process.execPath, [...args, "ci", "--ignore-scripts", "--no-audit", "--no-fund"], { cwd: staging, env, envAllowlist: [], timeoutMs });
+    if (installed.code !== 0) return { ok: false, reason: `the pinned browser couldn't be installed (npm exit ${installed.code})` };
+    const drift = lockDrift(staging);
+    if (drift !== null) return { ok: false, reason: `the installed browser isn't the pinned one (${drift})` };
+    const browsers = await run(process.execPath, [join(staging, "node_modules", "playwright", "cli.js"), "install", "chromium"], { cwd: staging, env, envAllowlist: [], timeoutMs });
+    if (browsers.code !== 0) return { ok: false, reason: `the pinned browser's Chrome couldn't be installed (exit ${browsers.code})` };
+    rmSync(join(staging, "npm-cache"), { recursive: true, force: true });
+    writeFileSync(join(staging, "ready.json"), JSON.stringify({ package: SCOUT_BROWSER_PACKAGE, lock: SCOUT_BROWSER_LOCK_DIGEST }), { mode: 0o600 });
+    try { renameSync(staging, helper.folder); } catch { if (!helperReady(helper.folder)) return { ok: false, reason: "the pinned browser couldn't be put in place" }; }
+    return { ok: true };
+  } finally {
+    rmSync(staging, { recursive: true, force: true });
+  }
+}
+
+/** How the helper's npm runs in `staging`: Toolroll's own npm by path, with its home, user and global configuration
+ * the staging folder's own empty ones, the registry and cache pinned; the environment only these names. */
+export function helperNpm(staging: string, npm: string): { env: Record<string, string>; args: string[] } {
+  // Two empty files: npm refuses to load one file as both.
+  const user = join(staging, "user.npmrc"), global = join(staging, "global.npmrc");
+  for (const file of [user, global]) writeFileSync(file, "", { mode: 0o600 });
+  const env = {
+    PATH: [dirname(process.execPath), "/usr/bin", "/bin"].join(":"), HOME: staging, PLAYWRIGHT_BROWSERS_PATH: join(staging, "browsers"),
+    NPM_CONFIG_USERCONFIG: user, NPM_CONFIG_GLOBALCONFIG: global, npm_config_userconfig: user, npm_config_globalconfig: global,
+  };
+  return { env, args: [npm, "--no-update-notifier", `--registry=${NPM_REGISTRY}`, "--userconfig", user, "--globalconfig", global, "--cache", join(staging, "npm-cache")] };
+}
+
+/** Whether a helper folder holds the pinned install: its ready note names this lockfile, and its tree still matches. */
+function helperReady(folder: string): boolean {
+  try {
+    const ready = JSON.parse(readFileSync(join(folder, "ready.json"), "utf8")) as { lock?: unknown };
+    return ready.lock === SCOUT_BROWSER_LOCK_DIGEST && lockDrift(folder) === null;
+  } catch { return false; }
+}
+
+/** What of an installed tree differs from the pinned lockfile (a package missing or at another version), or null. */
+export function lockDrift(folder: string): string | null {
+  for (const [path, entry] of Object.entries(SCOUT_BROWSER_LOCK.packages as Record<string, { version?: string }>)) {
+    if (path === "" || entry.version === undefined) continue;
+    let version: unknown;
+    try { version = (JSON.parse(readFileSync(join(folder, path, "package.json"), "utf8")) as { version?: unknown }).version; } catch { version = undefined; }
+    if (version !== entry.version) return `${path.replace(/^node_modules\//, "")} is ${typeof version === "string" ? version : "missing"}, pinned ${entry.version}`;
+  }
+  return null;
+}
+
+/** The production starter: the pinned helper in place, then the launch held to its contract, then started. */
+export async function startContractedBrowser(launch: BrowserLaunch, options: BrowserOptions): Promise<BrowserStart> {
+  if (options.contract === undefined) return { ok: false, reason: "the browser has no launch contract" };
+  const installed = await ensureScoutBrowserHelper(options.contract.helpers);
+  if (!installed.ok) return installed;
+  const env = { ...options.env, PLAYWRIGHT_BROWSERS_PATH: scoutBrowserHelper(options.contract.helpers).browsers };
+  const problem = browserContractProblem(launch, { ...options, env: options.env });
+  if (problem !== null) return { ok: false, reason: problem };
+  return startScoutBrowser(launch, { ...options, env });
 }

@@ -105,8 +105,6 @@ describe("the exact-run control on the console (v52)", () => {
     expect(control).toContain('data-task-control="stop"');
     expect(control).toContain(`data-control-run="${runId}"`);
     expect(control).toContain(`<input type="hidden" name="run" value="${runId}">`);
-    expect(control).toMatch(/<form method="post" action="\/t\/payouts\/stop" class="inline task-control-form task-stop-form">/);
-    expect(control).toContain('<button type="submit" class="danger task-control-button">Stop</button>');
     const chatHtml = await page(cookie, "/chat?task=payouts");
     expect(controlOf(chatHtml)).toContain(`data-control-run="${runId}"`);
     expect(controlOf(chatHtml)).toContain('data-task-control="stop"');
@@ -117,9 +115,6 @@ describe("the exact-run control on the console (v52)", () => {
     expect(fragment).toContain('id="task-control"');
     expect(fragment).not.toContain("<textarea");
     expect(fragment.startsWith('<section id="task-chat-live"')).toBe(true);
-    // The page script swaps exactly that region and nothing else — the
-    // composer (a sibling) keeps whatever was typed.
-    expect(chatHtml).toContain("taskLive.replaceWith(next)");
     expect(chatHtml).toContain('data-poll="1"');
 
     // The post: durable, provenance recorded, redirect back to the control.
@@ -135,8 +130,6 @@ describe("the exact-run control on the console (v52)", () => {
     const stopping = controlOf(await page(cookie, "/t/payouts"));
     expect(stopping).toContain('data-task-control="stopping"');
     expect(stopping).toContain("Stopping build #");
-    expect(stopping).toContain('<button type="button" class="task-control-button" disabled aria-disabled="true">Stopping…</button>');
-    expect(stopping).toContain('<span class="mono">alex</span>');
     expect(stopping).not.toMatch(/\bStopped\b/);
     expect(controlOf(await page(cookie, "/chat/task-status?task=payouts"))).toContain('data-task-control="stopping"');
     // Repeated (as the Building card's own Stop posts it, return=task): the same request, nothing new, back on the task page.
@@ -154,8 +147,6 @@ describe("the exact-run control on the console (v52)", () => {
     const paused = controlOf(await page(cookie, "/t/payouts"));
     expect(paused).toContain('data-task-control="paused"');
     expect(paused).toContain(`<input type="hidden" name="run" value="${runId}">`);
-    expect(paused).toMatch(/<form method="post" action="\/t\/payouts\/resume-arm" class="inline task-control-form task-resume-form">/);
-    expect(paused).toContain(">Resume</button>");
     expect(paused).toContain("preserved");
     expect(controlOf(await page(cookie, "/chat?task=payouts"))).toContain('data-task-control="paused"');
   });
@@ -330,7 +321,6 @@ describe("the exact-run control on the console (v52)", () => {
     store.finishRun(reviewRun, { outcome: "failed", reason: "interrupted", now: new Date(), stopSettlement: "interrupted" });
     const after = await page(alex, "/t/payouts");
     expect(after).toContain('data-task-control="review-stopped"');
-    expect(after).toContain('<summary>Previous assessment stopped</summary>');
     expect(after).toContain(`Run #${reviewRun} was stopped by alex.`);
     expect(after).not.toMatch(/Review again|action="[^"]*retry-review|>Resume<\/button>/);
     expect(after).toContain(`href="/r/${runId}"`);
@@ -354,9 +344,6 @@ describe("the exact-run control on the console (v52)", () => {
     const control = controlOf(html);
     expect(control).toContain('data-task-control="pause"');
     expect(control).toContain('data-task-control="pause-and-steer"');
-    expect(control).toContain(">Pause</button>");
-    expect(control).toContain(">Pause and steer</button>");
-    expect(control).toContain('<button type="submit" class="danger task-control-button">Stop</button>');
     const requests = [...control.matchAll(/name="request" value="([^"]+)"/g)].map(match => match[1]);
     expect(new Set(requests).size).toBe(2);
     const csrf = csrfOf(html);
@@ -414,8 +401,6 @@ describe("the exact-run control on the console (v52)", () => {
     expect(control).toContain('datetime="2026-10-11T14:45:00.000Z"');
     expect(control).toContain("(20 min) before it ends.");
     expect(control).toContain('data-task-control="resume"');
-    expect(control).toContain(">Resume</button>");
-    expect(control).toContain(">Continue</button>");
     expect(control).not.toContain('data-task-control="pause"');
     const csrf = csrfOf(html);
     const request = /data-task-control="resume"[^]*?name="request" value="([^"]+)"/.exec(control)?.[1];

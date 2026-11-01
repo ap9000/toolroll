@@ -1,3 +1,5 @@
+import { ACP_AGENTS, isAcpProvider } from "./acp-agents.js";
+import type { ProviderId } from "./contracts/provider.js";
 import { skillsContext } from "./project-skills.js";
 import { learningContext } from "./project-learning.js";
 import { knowledgeContext } from "./project-knowledge.js";
@@ -20,10 +22,11 @@ import { unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { run } from "./exec.js";
+import { checkoutGit } from "./teardown-git.js";
 import { auditOf, isProviderId } from "./provider.js";
 import type { Store } from "./store.js";
 import { currentClaim, heartbeat } from "./claim.js";
-import { heartbeat as runnerHeartbeat } from "./runner.js";
+import { heartbeat as runnerHeartbeat, RUNNER_HEARTBEAT_MS } from "./runner.js";
 import { parseDecision, type ParsedDecision, type Problem } from "./decision.js";
 import { parsePlan, type ParsedPlan, type PlanProblem } from "./plan.js";
 import { PLAN_MODEL_SCHEMA } from "./contracts/plan.js";
@@ -41,6 +44,7 @@ import {
 } from "./evidence.js";
 import type { Runner } from "./builder.js";
 import { MARKER as LEASE_MARKER } from "./worktree.js";
+import { liveLogContext } from "./live-detail.js";
 import { openLiveLog } from "./live.js";
 import { withRunActivity } from "./task-activity.js";
 import { proveTreeUntouched, snapshotIgnored } from "./tree-proof.js";
@@ -59,12 +63,13 @@ import {
   plannerSourceBlock,
   type PlannerSource,
 } from "./planner-source.js";
+import { canonicalJsonUndefinedAsNull } from "./canonical-json.js";
 
 const GIT = "git";
 const AGENT_ENV_DENYLIST: readonly string[] = [...TELEGRAM_TOKEN_ENVS];
 const DEFAULT_PLAN_TIMEOUT_MS = 20 * 60_000;
 const DEFAULT_PLAN_TURNS = CLAUDE_LIMITS.maxTurns;
-const DEFAULT_PULSE_MS = 60_000;
+const DEFAULT_PULSE_MS = RUNNER_HEARTBEAT_MS;
 
 export type PlanRequest = {
   /** v105: what's left of a monthly budget this API-key work counts toward (the CLI's own cap), when one does. */
@@ -84,7 +89,7 @@ export type PlanRequest = {
   clock?: () => Date;
   model?: string;
   /** The harness this planning session runs on. */
-  provider?: "claude" | "codex" | "openrouter" | "gemini";
+  provider?: ProviderId;
   maxTurns?: number;
   timeoutMs?: number;
   pulseMs?: number;
@@ -279,19 +284,6 @@ type PlannerPayload =
       authorityAnchor: string | null;
     };
 
-/** Stable JSON for equality only — it does not fill, trim, or reinterpret. */
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  if (value !== null && typeof value === "object") {
-    const body = value as Record<string, unknown>;
-    return `{${Object.keys(body)
-      .sort()
-      .map(key => `${JSON.stringify(key)}:${canonicalJson(body[key])}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
-}
-
 function decodeStructuredBytes(raw: Buffer): { ok: true; text: string } | { ok: false } {
   try {
     // Buffer#toString silently inserts U+FFFD for malformed sequences,
@@ -318,7 +310,7 @@ function planAuthorityAnchor(raw: string): string | null {
     // canonicalJson is recursive. A byte-bounded but pathologically deep
     // JSON value can still exhaust the JS stack; that means its authority
     // cannot be frozen safely, so this output is not eligible for repair.
-    return canonicalJson({
+    return canonicalJsonUndefinedAsNull({
       goal: body["goal"],
       outOfScope: body["outOfScope"],
       touches: body["touches"],
@@ -681,10 +673,17 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
     branch,
     now,
     agent,
-    git = run,
+    git: givenGit = run,
     timeoutMs = DEFAULT_PLAN_TIMEOUT_MS,
     maxTurns = DEFAULT_PLAN_TURNS,
   } = request;
+  // The plane's git on the plan's checkout (agent-written, and its repository shared with every build) runs hardened, against
+  // a frozen view of the repository's config and info (teardown-git.ts checkoutGit); an injected runner is used as given.
+  const git = givenGit === run ? checkoutGit(run, "build", { repo: store.getWorktree(worktree)?.repo ?? null }) : givenGit;
+  // An ACP agent works with full access inside the fence: it builds and repairs, and is never handed a plan (routing refuses it first).
+  if (request.provider !== undefined && isAcpProvider(request.provider)) {
+    return { ok: false, kind: "failure", reason: "provider-unsupported", message: `${ACP_AGENTS[request.provider].name} builds and repairs only — configure the planner to claude, codex or gemini` };
+  }
 
   // The same custody checks as a build: the claim is ours under exactly
   // this lease, and the directory is a worktree this pool leased to us for
@@ -778,7 +777,7 @@ export async function plan(store: Store, request: PlanRequest): Promise<PlanOutc
 
   // The live window (peek): the same transcript file the builder keeps,
   // so `toolroll peek` and the run page can watch this session too.
-  const liveLog = withRunActivity(openLiveLog(root, request.runId), store, request.runId, clock);
+  const liveLog = withRunActivity(openLiveLog(root, request.runId, liveLogContext(store, request.runId, taskRef, worktree, clock())), store, request.runId, clock);
   // The durable run row, not a caller's duplicate options, is the route
   // every correction inherits.
   const provider = logicalRun.provider;

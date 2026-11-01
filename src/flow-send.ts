@@ -19,7 +19,7 @@ import { withActor } from "./actor.js";
 import { flowCardHref, flowDefinitionOf, revisionWithNote, type FlowDecision } from "./flow-engine.js";
 import { itemPlug, itemSource } from "./flow-items.js";
 import { withStageHandoff } from "./contracts/stage-output.js";
-import { flowSendForStore, readFlowChoiceAnswer, readFlowItems, readFlowSendPayload, type FlowChoiceAnswer, type FlowSendContent, type FlowSendItem, type FlowSendLink } from "./contracts/flow-send.js";
+import { flowSendForStore, readFlowChoiceAnswer, readFlowSendPayload, type FlowChoiceAnswer, type FlowSendContent, type FlowSendItem, type FlowSendLink } from "./contracts/flow-send.js";
 import { notifyPeople } from "./flow-people.js";
 import { readVerifiedReport } from "./evidence.js";
 import { FLOW_END, replyTarget, type FlowDefinition, type FlowStage } from "./flows.js";

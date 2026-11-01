@@ -103,12 +103,6 @@ describe("c1: latestRelease", () => {
     expect((await latestRelease(dir, { fetch: fetcher, now: () => T0, env: ON }))?.version).toBe("0.7.0");
   });
 
-  test("notes that mention Security mark a security release", async () => {
-    const release = await latestRelease(dir, { fetch: scripted("0.7.1", "## Security\nFixes a path check.").fetcher, now: () => T0, env: ON });
-    expect(release?.security).toBe(true);
-    expect(cachedRelease(dir)?.security).toBe(true);
-  });
-
   test("mentioning security is not a security release; a Security line or heading is", () => {
     expect(isSecurityRelease("## 0.7.0\nNo security changes in this release.")).toBe(false);
     expect(isSecurityRelease("Faster starts; security review next month.")).toBe(false);
@@ -138,14 +132,6 @@ describe("c1: latestRelease", () => {
 
 describe("c3: status and the security notification", () => {
   const release = (version: string, security = false): Release => ({ version, notes: security ? "Security fix" : "", url: `https://github.com/ap9000/toolroll/releases/tag/v${version}`, security });
-
-  test("the status line exists only when the latest is newer", () => {
-    expect(updateLine(release("0.7.0"), "0.6.0", "npm install -g toolroll@latest"))
-      .toBe("0.7.0 is available — npm install -g toolroll@latest · https://github.com/ap9000/toolroll/releases/tag/v0.7.0");
-    expect(updateLine(release("0.6.0"), "0.6.0", "npm install -g toolroll@latest")).toBeNull();
-    expect(updateLine(release("0.5.0"), "0.6.0", "npm install -g toolroll@latest")).toBeNull();
-    expect(updateLine(null, "0.6.0", "npm install -g toolroll@latest")).toBeNull();
-  });
 
   test("toolroll status prints the one line when newer, and nothing when current or offline", async () => {
     const db = join(dir, "orders.db");

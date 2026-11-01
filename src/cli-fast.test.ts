@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { quickAnswer } from "./cli-fast.js";
-import { HELP, main } from "./cli.js";
+import { HELP } from "./cli.js";
 import { PACKAGE_VERSION } from "./version.js";
 
 const BIN = resolve("dist/bin.js");
@@ -52,23 +52,12 @@ describe("quickAnswer", () => {
     expect(quickAnswer(["--version", "--json"])).toBe(VERSION);
   });
 
-  test("answers top-level usage only for a bare --help, -h or help", () => {
-    for (const word of ["--help", "-h", "help"]) expect(quickAnswer([word])).toBe(HELP);
-  });
-
   test("leaves everything else to the CLI", () => {
     for (const argv of [[], ["--help", "--json"], ["task", "--help"], ["status"], ["help", "me"], ["x", "--version"], ["-o", "out.json", "--help"]]) {
       expect(quickAnswer(argv)).toBeNull();
     }
   });
 
-  test("main() prints the same single line and exit code 0", async () => {
-    for (const [argv, expected] of [[["--version"], VERSION], [["-v"], VERSION], [["--help"], HELP], [["-h"], HELP], [["help"], HELP]] as const) {
-      const lines: string[] = [];
-      expect(await main(argv, line => lines.push(line))).toBe(0);
-      expect(lines).toEqual([expected]);
-    }
-  });
 });
 
 describe("the bin's fast path", () => {

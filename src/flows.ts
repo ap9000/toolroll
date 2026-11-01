@@ -50,6 +50,7 @@
 import { TEXT_LIMITS } from "./text-limits.js";
 import { createHash } from "node:crypto";
 import { projectName } from "./project.js";
+import { cardReference, type SourceLike } from "./task-source.js";
 import { parseContract, readVersioned, type ContractIssue, type ContractResult } from "./contracts/contract.js";
 import { stageReferenceProblems } from "./contracts/stage-output.js";
 import {
@@ -57,6 +58,7 @@ import {
   HEADERS_MAX, legacySubagentStep, LONGEST_WAIT_MINUTES, savedFlowDefinitionSchema, SCRIPT_LANGUAGES, SCRIPT_NAME, sortKeyOf, SURE_AT_MAX, SURE_AT_MIN, ZONE_ID,
   type FlowChoice, type FlowColor, type FlowDefinition, type FlowLimit, type FlowSort, type FlowStage, type FlowStageKind, type FlowStepFields, type FlowWait, type FlowZone, type ScriptLanguage, type TriggerInput,
 } from "./contracts/flow.js";
+import { isRecord } from "./is-record.js";
 
 export { CHOICES_MAX, CHOICES_MIN, FLOW_COLORS, FLOW_END, FLOW_MERGE_METHODS, FLOW_STAGE_KINDS, LONGEST_WAIT_MINUTES, SCRIPT_LANGUAGES, SCRIPT_NAME, sortKeyOf };
 export type {
@@ -143,7 +145,6 @@ export class FlowContractError extends Error {
 
 // ------------------------------------------------------------------ reading a drawing
 
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 /** Text as every release has kept it: trimmed, and blank as none. Anything else is left for the schema to name. */
 const said = (value: unknown): unknown => value === undefined || value === null ? null : typeof value === "string" ? value.trim() === "" ? null : value.trim() : value;
 const coordinate = (value: unknown, min: number, max: number, fallback: number): number =>
@@ -447,8 +448,9 @@ export function flowDigest(definition: FlowDefinition): string {
 }
 
 /** {{stage.<id>}} is an earlier zone's output; a report zone also fills {{stage.<id>.items}} and {{stage.<id>.report}}. */
-const FILLED = /\{\{\s*(card\.title|card\.description|card\.email|note|stage\.([a-z0-9-]+(?:\.(?:items|report))?))\s*\}\}/g;
-type FlowFillCard = { title: string; description: string | null; note: string | null; outputs: Record<string, string> };
+const FILLED = /\{\{\s*(card\.title|card\.description|card\.email|card\.source|note|stage\.([a-z0-9-]+(?:\.(?:items|report))?))\s*\}\}/g;
+/** `source` (v126): where the card came from, when an outside event's delivery made it ({{card.source}}). */
+type FlowFillCard = { title: string; description: string | null; note: string | null; outputs: Record<string, string>; source?: SourceLike | null };
 
 /** Fill a zone's text from the card: title, description, the latest note and earlier zones' reports. */
 export function fillFlowText(template: string, card: FlowFillCard, encode: (value: string) => string = value => value): string {
@@ -462,12 +464,15 @@ export const flowAttachedMark = (label: string) => `[${label}: attached in full 
 
 /** A work zone's words, plus the card and any send-back note when the words leave them out. "Fix the bug on the card"
  * says nothing on its own (found in the real e2e: the builder saw only the branch name). */
-export function flowWorkTemplate(instructions: string, card: { description: string | null; note: string | null }): string {
+export function flowWorkTemplate(instructions: string, card: { description: string | null; note: string | null; source?: SourceLike | null }): string {
   const names = (key: string) => new RegExp(`\\{\\{\\s*${key.replace(".", "\\.")}\\s*\\}\\}`).test(instructions);
   const extra = [
     ...(names("card.title") || names("card.description") ? [] : [`The card: {{card.title}}${card.description ? "\n\n{{card.description}}" : ""}`]),
     ...(names("card.title") && !names("card.description") && card.description ? ["Details on the card:\n{{card.description}}"] : []),
     ...(names("note") || !card.note ? [] : ["Changes asked for: {{note}}"]),
+    // v126: an outside event's card says where it came from — a filled value like the others, so it is fitted into the
+    // goal with them (whole when it fits, attached when it doesn't), never at the cost of the zone's own words.
+    ...(names("card.source") || cardReference(card.source) === "" ? [] : ["{{card.source}}"]),
   ];
   return [instructions, ...extra].join("\n\n");
 }
@@ -480,6 +485,7 @@ export function flowValueLabel(key: string, stageTitle: (id: string) => string =
   if (key === "card.title") return "The card's title";
   if (key === "card.description") return "The card's description";
   if (key === "card.email") return "The card's email address";
+  if (key === "card.source") return "Where the card came from";
   if (key === "note") return "The note it was sent back with";
   const match = /^stage\.([a-z0-9-]+)(?:\.(items|report))?$/.exec(key);
   if (match === null) return key;
@@ -524,9 +530,10 @@ export function cardEmailOf(card: { title: string; description: string | null })
   return /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/.exec(`${card.title}\n${card.description ?? ""}`)?.[0] ?? "";
 }
 
-function fillOne(key: string, stage: string | undefined, card: { title: string; description: string | null; note: string | null; outputs: Record<string, string> }): string {
+function fillOne(key: string, stage: string | undefined, card: FlowFillCard): string {
   {
     if (key === "card.title") return card.title;
+    if (key === "card.source") return cardReference(card.source);
     if (key === "card.description") return card.description ?? "";
     if (key === "card.email") return cardEmailOf(card);
     if (key === "note") return card.note ?? "";

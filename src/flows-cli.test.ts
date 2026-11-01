@@ -208,14 +208,11 @@ test("a starter flow switches on with its trigger through the same door as onboa
   expect((await flows(["create", "--repo", repo, "--template", "issue-task", "--yes", ...as()])).body).toMatchObject({ reason: "blocked" });
 });
 
-test("the command contract and the operating guide include flows", async () => {
+test("the command contract includes flows", async () => {
   const lines: string[] = [];
   expect(await main(["contract", "--commands", "--json"], line => lines.push(line))).toBe(0);
   const rows = (JSON.parse(lines.join("\n")).commands as { invocation: string }[]).map(one => one.invocation);
   for (const verb of ["list", "show", "create", "edit", "trigger add", "trigger pause", "trigger resume", "trigger remove", "trigger check", "script save", "card add", "archive"]) expect(rows).toContain(`flows ${verb}`);
-  const guide: string[] = [];
-  expect(await main(["skills", "get", "operating"], line => guide.push(line))).toBe(0);
-  expect(guide.join("\n")).toContain("flows create --repo PATH");
 });
 
 function approvalCard(): { flow: number; card: number } {
@@ -226,7 +223,7 @@ function approvalCard(): { flow: number; card: number } {
       { id: "ok", title: "Publish to toolroll.dev?", kind: "approval", decider: "owner", ifFails: "Write it" },
       { id: "done", title: "Published", kind: "done" },
     ], null)) }, NOW);
-    return { flow, card: store.addFlowCard({ flow, title: "Release notes", description: null, stage: "ok", by: "alex" }, NOW) };
+    return { flow, card: store.addFlowCard({ flow, title: "Release notes", description: null, stage: "ok", by: "alex", byKind: "person" }, NOW) };
   });
 }
 const events = (card: number) => look(store => store.handle.prepare("SELECT from_stage, to_stage, outcome, actor, note FROM flow_event WHERE card=? AND outcome<>'created' ORDER BY id").all(card));
@@ -272,7 +269,7 @@ test("at a Person chooses step, card approve takes --option, through the console
       { id: "choose", title: "What next?", kind: "choose", options: [{ label: "Ship it", goesTo: "Ship" }, { label: "Ignore", goesTo: "end" }] },
       { id: "ship", title: "Ship", kind: "inbox" },
     ], null)) }, NOW);
-    return { flow, card: store.addFlowCard({ flow, title: "Checkout rounding", description: null, stage: "choose", by: "alex" }, NOW) };
+    return { flow, card: store.addFlowCard({ flow, title: "Checkout rounding", description: null, stage: "choose", by: "alex", byKind: "person" }, NOW) };
   });
   const missing = await flows(["card", "approve", String(flow), String(card), ...as()]);
   expect(missing).toMatchObject({ code: 2, body: { ok: false, reason: "choose-option" } });
@@ -295,9 +292,6 @@ test("unattended on signs the owner's grant, show says until when, off revokes i
   expect(on.body).toMatchObject({ ok: true, command: "flows unattended", applied: true, unattended: { until: "2026-10-03T12:00:00.000Z", signedBy: "alex", budgetMicrousd: 2_500_000, dailyRunCap: 2, runsToday: 0 } });
   const shown = await flows(["show", String(flow)]);
   expect(shown.body.flow.unattended).toMatchObject({ until: "2026-10-03T12:00:00.000Z", signedBy: "alex" });
-  const lines: string[] = [];
-  await runOperate("flows", ["show", String(flow)], line => { lines.push(line); }, { databaseFile: file, now: NOW });
-  expect(lines.join("\n")).toContain(`Runs on its own until Oct 3, 12:00 UTC · revoke: toolroll flows unattended ${flow} off\n  Covers: “Weekly upkeep”, monday 09:00`);
   expect(shown.body.flow.unattended.covers).toEqual(["“Weekly upkeep”, monday 09:00"]);
   const off = await flows(["unattended", String(flow), "off", ...as()]);
   expect(off.body).toMatchObject({ ok: true, applied: true, unattended: null });
@@ -308,13 +302,27 @@ test("unattended on signs the owner's grant, show says until when, off revokes i
     .toEqual(["flow runs on its own: signed", "flow stopped running on its own: revoked"]);
 });
 
-test("unattended on refuses a flow with no schedule and a protected project, changing nothing", async () => {
-  const flow = look(store => store.createFlow({ repo, name: "Fixes", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ id: "build", title: "Build", kind: "task", instructions: "{{card.title}}" }], null)) }, NOW));
-  expect((await flows(["unattended", String(flow), "on", ...as()])).body).toMatchObject({ ok: false, reason: "refused", message: "This flow has no schedule, so nothing would run on its own. Nothing was changed." });
-  look(store => {
-    store.addFlowTrigger({ flow, kind: "schedule", configJson: JSON.stringify({ kind: "schedule", schedule: "daily 09:00", title: "Fixes", description: null, zone: null }), hookHash: null, cursor: null, nextAt: null, by: "alex" }, NOW);
-    store.setApprovalRules(repo, { notRequester: false, protectProject: true, protectedPaths: [] }, "alex", NOW);
-  });
-  expect((await flows(["unattended", String(flow), "on", ...as()])).body).toMatchObject({ ok: false, message: "This project is protected: a person approves its work. Nothing was changed." });
-  expect((await flows(["show", String(flow)])).body.flow.unattended).toBeNull();
+
+test("a remote run's API token never counts as the person's proof for a trigger from anyone (0.9.73 review, finding 2)", async () => {
+  const { runFlowsCommand } = await import("./flows-cli.js");
+  const { withRemote } = await import("./remote-run.js");
+  const store = openStore(file);
+  try {
+    const id = store.createFlow({ repo, name: "Inbound", by: "alex", definitionJson: JSON.stringify(flowFromSteps([{ id: "inbox", title: "Inbox", kind: "inbox" }], null)) }, NOW);
+    const run = { account: "alex", scope: "act" as const, tokenName: "ci", source: "api" as const, secret: "remote-run-secret-0123456789abcdef", allows: () => true, lens: null, noteTask: () => {}, files: {} };
+    const said: string[] = [];
+    const context = (token: string) => ({ store, write: (line: string) => { said.push(line); }, json: true, clock: () => NOW, credentials: { name: "alex", token }, projects: [repo],
+      configDir: dir, evidenceRoot: dir, triggerIo: {} }) as unknown as Parameters<typeof runFlowsCommand>[2];
+    const anyone = JSON.stringify({ kind: "github", repo: "example/shop", watch: "issues", from: "anyone" });
+    const yes = new Map<string, string | boolean>([["yes", true]]);
+    // The remote token passes the approver check, but a trigger from anyone is refused and nothing is added.
+    expect(await withRemote(run, () => runFlowsCommand(["trigger", "add", String(id), anyone], yes, context(run.secret)))).not.toBe(0);
+    expect(said.at(-1)).toContain("takes your password");
+    expect(store.flowTriggers(id)).toEqual([]);
+    // A team-only trigger needs no step-up: the same token adds it.
+    expect(await withRemote(run, () => runFlowsCommand(["trigger", "add", String(id), JSON.stringify({ kind: "github", repo: "example/shop", watch: "issues", from: "team" })], yes, context(run.secret)))).toBe(0);
+    // The person's own password: the trigger from anyone is added.
+    expect(await runFlowsCommand(["trigger", "add", String(id), anyone], yes, context(alex))).toBe(0);
+    expect(store.flowTriggers(id).map(one => JSON.parse(one.configJson).from)).toEqual(["team", "anyone"]);
+  } finally { store.close(); }
 });

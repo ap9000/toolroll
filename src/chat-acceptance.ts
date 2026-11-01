@@ -6,12 +6,19 @@ import type { VerifiedApprover } from "./principal.js";
 import { readVerifiedArtifact, readVerifiedProofForRun, scanForSecrets } from "./evidence.js";
 import { verificationEvidence } from "./verification-evidence.js";
 import { manualReviewOnly, type CriterionMatrixRow } from "./proof.js";
+import { assignmentChecksForRun } from "./assignment.js";
+import { approvedCheckOf, approvedCheckStateOf, checksFactOf, type ApprovedCheckState } from "./task-status.js";
 
 export const ACCEPTANCE_PAGE_SIZE = 3;
 
-export function acceptanceStatus(proof: { verdict: string; reasons: readonly string[]; matrix: readonly CriterionMatrixRow[] } | null, accepted: boolean): string {
+/** `check`: the approved check read now (task-status.ts approvedCheckOf); undefined when this read had no saved files,
+ * and then a verified result claims nothing about its check. */
+export function acceptanceStatus(proof: { verdict: string; reasons: readonly string[]; matrix: readonly CriterionMatrixRow[] } | null, accepted: boolean, check?: ApprovedCheckState | null): string {
   if (accepted) return manualReviewOnly(proof) ? "Accepted by a person" : "Accepted with an exception";
   if (manualReviewOnly(proof)) return "You check the remaining requirements";
+  if (proof?.verdict === "verified" && check !== "passed") {
+    return check === undefined ? "Open the result to see its checks" : check === "failed" ? "Checks failed" : check === "running" ? "Checks running" : "The check result couldn't be read";
+  }
   return proof === null ? "No checks recorded" : ({ verified: "Checks passed", attested: "Checks reported by the agent", short: "Some required material is missing", refuted: "Saved result conflicts with the approved scope" }[proof.verdict] ?? "Some required material is missing");
 }
 
@@ -42,11 +49,14 @@ export function readAcceptanceEvidence(store: Store, who: VerifiedApprover, root
   if (proof === null) problems.push("No readable saved proof is available.");
   else if (!proof.ok) problems.push("The saved proof is unavailable or cannot be read.");
   const verification = root === undefined ? null : verificationEvidence(store, root, run.id);
+  // The one answer to "did the approved check pass" (task-status.ts), with follow-ups on the same commit.
+  const checkNow = root === undefined || run.role === "scout" ? undefined
+    : approvedCheckStateOf(approvedCheckOf(recorded?.verdict ?? null, recorded?.reasons ?? [], checksFactOf(assignmentChecksForRun(store, root, run.id, new Date()), run.headRevision)));
   let gate: Record<string, unknown> = { status: "No machine verification receipt available" };
   if (verification !== null && !verification.ok) { problems.push(verification.problem); gate = { status: "Verification evidence unavailable" }; }
   else if (verification?.ok && verification.bytes !== null) {
     const receipt = JSON.parse(verification.bytes);
-    gate = { status: receipt.result.ran ? (receipt.result.exitCode === 0 ? "Passed" : "Failed") : "Did not run", exitCode: receipt.result.exitCode ?? null, command: "The approved project verification command", logShortened: receipt.log.truncated };
+    gate = { status: receipt.result.ran ? (receipt.result.exitCode === 0 ? checkNow === undefined || checkNow === "passed" ? "Passed" : "Passed when it ran; not counted now" : "Failed") : "Did not run", exitCode: receipt.result.exitCode ?? null, command: "The approved project verification command", logShortened: receipt.log.truncated };
   }
   // These are summaries for conversation, not substitute approval terms.
   // Full statements, caveats and references remain on the authenticated screen.
@@ -60,7 +70,7 @@ export function readAcceptanceEvidence(store: Store, who: VerifiedApprover, root
   return { ok: true as const, body: {
     task, run: run.id, title: store.getTask(task)?.title ?? task, currentExecution: family.current.id,
     isCurrent: family.current.id === task && store.runsFor(ref.id).find(one => one.finishedAt !== null && ["builder", "repair", "scout"].includes(one.role))?.id === run.id,
-    status: acceptanceStatus(recorded, acceptance !== null), recordedVerdict: recorded?.verdict ?? null,
+    status: acceptanceStatus(recorded, acceptance !== null, checkNow), recordedVerdict: recorded?.verdict ?? null,
     accepted: acceptance !== null, acceptance: acceptance === null ? null : { at: acceptance.acceptedAt, note: brief(acceptance.note) },
     reasons: (recorded?.reasons ?? []).map(one => brief(one)), gate,
     criteriaTotal: matrix.length, nextCriterionOffset: offset + page.length < matrix.length ? offset + page.length : null,

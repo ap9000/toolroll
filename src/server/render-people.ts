@@ -36,8 +36,9 @@ export function joinDeadPage(): Html {
 /**
  * v100: for someone signed in with the identity provider, every step-up
  * password field (autocomplete="current-password"; a secret like a bot token
- * is never one) becomes that sign-in: confirmed, when the provider checked
- * them in the last ten minutes, or a link to be checked again, then back here.
+ * is never one) becomes that sign-in: confirmed, when an explicit re-check
+ * made on request awaits its one step-up (cockpit B2), or a link to be
+ * checked again, then back here. An ordinary sign-in never confirms.
  */
 export function ssoStepUps(page: Html, sso: { label: string; fresh: boolean }, returnTo: string): Html {
   const stepUp = (attributes: string) => /\btype="password"/.test(attributes) && /\bautocomplete="current-password"/.test(attributes);
@@ -104,21 +105,50 @@ ${facts.command === null ? "" : html`<p>To use this address, stop Toolroll (Ctrl
 </main></body></html>`;
 }
 
-/** The first-account page (setup review): shown only while no approver exists. */
-export function signupPage(problem: string | null, attemptsLeft: number): Html {
-  return shell("Toolroll", joinHtml([
-    html`<div class="login-viewport"><div class="login-shell">`,
-    html`<h1 class="so-wordmark login-brand">${BRAND_HTML}</h1>`,
+/** Which field a first-account refusal is about (null: the page itself, as when the tries are spent). */
+export type SignupProblem = { field: "code" | "name" | "password" | null; text: string };
+
+/** The username rule, said once for the server's check, the input's `pattern` (anchored by the browser; `\-` so the
+ * v-flag parse accepts it) and the hint. */
+export const SIGNUP_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+const SIGNUP_NAME_PATTERN = "[A-Za-z0-9][A-Za-z0-9._\\-]{0,63}";
+export const SIGNUP_PASSWORD_MIN = 8;
+
+/** The first-account page (setup review): shown only while no approver exists. Rules are stated up front and match
+ * the inputs' own constraints. On a refusal the typed username comes back; the setup code and the password never do.
+ * The message sits under the field it is about, announced (role="alert"), with that field aria-invalid, described by
+ * it and focused, so it works without script (this page has none). */
+export function signupPage(problem: SignupProblem | string | null, attemptsLeft: number, typedName = ""): Html {
+  const open = attemptsLeft > 0;
+  // Out of tries, the page always says why and what to do, also when it is simply opened again.
+  const said: SignupProblem | null = typeof problem === "string" ? { field: null, text: problem }
+    : problem ?? (open ? null : { field: null, text: "Too many wrong setup codes. Restart Toolroll to get a new code." });
+  const field = open ? said?.field ?? null : null;
+  const error = (which: SignupProblem["field"]) =>
+    field === which && said !== null ? html`<p class="problem signup-problem" id="signup-problem" role="alert">${said.text}</p>` : "";
+  const describe = (which: SignupProblem["field"], hint: string) =>
+    field === which ? html` aria-invalid="true" aria-describedby="${hint} signup-problem" autofocus` : html` aria-describedby="${hint}"`;
+  const tries = attemptsLeft === 1 ? "1 try left" : `${attemptsLeft} tries left`;
+  return shell("Create the first account · Toolroll", joinHtml([
+    // Inputs on this page reach a 44px target; the console's shared input rule stops at 36px.
+    html`<style>.signup h1{margin-bottom:1rem}.signup input{min-height:2.75rem}.signup .field-note{margin:.375rem 0 0;font-size:.75rem;line-height:1.45;color:var(--muted-foreground)}.signup .signup-problem{margin:.5rem 0 0}</style>`,
+    html`<div class="login-viewport"><div class="login-shell signup">`,
+    html`<p class="so-wordmark login-brand">${BRAND_HTML}</p>`,
+    html`<h1>Create the first account</h1>`,
     html`<div class="login-card">`,
-    html`<p><strong>Create the first account</strong></p>`,
-    html`<p class="meta">There are no accounts yet. The terminal that started Toolroll printed a setup code; enter it here with the username and password you want.</p>`,
-    problem === null ? "" : html`<div class="problem">${problem}</div>`,
-    attemptsLeft <= 0
+    !open || field === null ? (said === null ? "" : html`<div class="problem" role="alert">${said.text}</div>`) : "",
+    !open
       ? ""
       : postForm("/signup", joinHtml([
-          html`<label>Setup code<input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" autofocus></label>`,
-          html`<label>Username<input type="text" name="name" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>`,
-          html`<label>Password<input type="password" name="password" autocomplete="new-password"></label>`,
+          html`<label>Setup code<input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" required${describe("code", "signup-code-note")}${field === null ? " autofocus" : ""}></label>`,
+          html`<p class="field-note" id="signup-code-note">Printed in the terminal that started Toolroll. ${tries}.</p>`,
+          error("code"),
+          html`<label>Username<input type="text" name="name" value="${typedName}" autocomplete="username" autocapitalize="none" spellcheck="false" required maxlength="64" pattern="${SIGNUP_NAME_PATTERN}"${describe("name", "signup-name-note")}></label>`,
+          html`<p class="field-note" id="signup-name-note">Letters, digits, dots, dashes or underscores, starting with a letter or digit. Up to 64.</p>`,
+          error("name"),
+          html`<label>Password<input type="password" name="password" autocomplete="new-password" required minlength="${SIGNUP_PASSWORD_MIN}"${describe("password", "signup-password-note")}></label>`,
+          html`<p class="field-note" id="signup-password-note">At least ${SIGNUP_PASSWORD_MIN} characters.</p>`,
+          error("password"),
           html`<button type="submit">Create account and sign in</button>`,
         ], "\n"), { signedOut: true }),
     html`</div>`,

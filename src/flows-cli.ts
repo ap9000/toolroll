@@ -16,11 +16,13 @@ import { saveScript } from './flow-scripts.js';
 import { exportFlow, fetchFlowFile, FLOW_FILE_MAX_BYTES, FlowFileError, importFlow, parseFlowFile, planFlowImport, type FetchLike } from './flow-share.js';
 import { describeStandingOrder } from './flow-schedule.js';
 import { STARTER_FLOWS, starterFlowOf, starterOf, startersFor, starterTerms, switchOnStarter } from './flow-starters.js';
-import { addFlowTriggerTo, checkFlowTriggerNow, describeTrigger, removeFlowTrigger, setFlowTriggerOn, triggerConfigOf, validateTriggerConfig, type TriggerIo } from './flow-triggers.js';
+import { addFlowTriggerTo, checkFlowTriggerNow, describeTrigger, removeFlowTrigger, setFlowTriggerOn, triggerConfigOf, validateTriggerConfig, type TriggerIo, rawTakesDeliveries } from './flow-triggers.js';
 import { deciderOf, FLOW_KIND_WORDS, FLOW_TEMPLATES, flowDigest, flowFromSteps, flowTerms, stepsFor, type FlowDefinition, type FlowStage } from './flows.js';
 import { prepareUnattendedCandidates, activeUnattendedGrant, parseUnattendedAsk, revokeUnattended, signUnattended, unattendedViewOf, unattendedWords, untilWords, UNATTENDED_MAX_RUNS } from './flow-unattended.js';
 import { MODE_MAX_DAYS } from './modes.js';
 import { verifyApproverByPassword } from './principal.js';
+import { authenticateApprover, proveCredential } from './scope.js';
+import { personProof } from './person-proof.js';
 import { projectName } from './project.js';
 import type { FlowRow, Store } from './store.js';
 
@@ -166,6 +168,12 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
     store.recordAction({ at: context.clock().toISOString(), actor: who, repo: project, taskId: null, runId: null, action: command, outcome, source: 'request', detail: `command line${detail === null ? '' : ` · ${detail}`}` });
   };
   const refuse = (project: string | null, reason: string, message: string, code: number = EXIT.refused) => { record(project, 'refused', reason); return fail(reason, message, code); };
+  // A trigger from anyone widens what comes in (chat-management.md §0a.3): only the person's own proof counts, never a
+  // machine credential standing in for them (a remote run's API token, a lead's token), though both pass the check above.
+  const widening = (project: string): { widening?: 'proved' } => {
+    const proved = authenticateApprover(store, acting.name, acting.token, project);
+    return proved.ok && personProof(proved.method) ? { widening: 'proved' } : {};
+  };
   const settle = (project: string) => { try { advanceFlows(store, project, context.clock(), { evidenceRoot: context.evidenceRoot }); } catch { /* the next worker pass retries */ } };
   const preview = (project: string | null, title: string, terms: string[], extra: Record<string, unknown>) =>
     ok({ applied: false, repo: project, title, terms, ...extra }, [title, ...terms.map(one => `  ${one.replace(/\n/g, '\n     ')}`), '', 'Nothing has changed. Add --yes to make this change.']);
@@ -220,11 +228,13 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
     }
     if (!flags.has('yes')) return preview(project, `Create the ${flowName} flow in ${projectName(project)}`, terms, { definition });
     let id: number;
+    const proof = template?.trigger === undefined ? {} : widening(project);
     try {
       id = store.transact(() => {
         const made = store.createFlow({ repo: project, name: flowName, definitionJson: JSON.stringify(definition), by: who }, now);
         if (template?.trigger !== undefined) {
-          const trigger = addFlowTriggerTo(store, store.getFlow(made)!, template.trigger, who, now, context.configDir);
+          // A trigger from anyone only on the person's own proof (widening above); a machine credential's is refused.
+          const trigger = addFlowTriggerTo(store, store.getFlow(made)!, template.trigger, who, now, context.configDir, proof);
           if (!trigger.ok) throw new Error(trigger.message);
         }
         return made;
@@ -415,7 +425,12 @@ export async function runFlowsCommand(positional: readonly string[], flags: Flag
       const zone = definition.stages.find(one => one.id === (config.zone ?? definition.start))?.title ?? 'the first zone';
       return preview(flow.repo, `Add a trigger to ${flow.name}`, [words, `Cards start in ${zone}.`, 'Work a card starts still waits for your usual approvals.'], { flowId: flow.id, trigger: config });
     }
-    const made = addFlowTriggerTo(store, flow, input.value, who, now, context.configDir);
+    // A trigger that takes deliveries mints an address: a credential act, a password typed for this command (never the
+    // remembered login under Passwordless) (docs/plans/passwordless.md).
+    const ingress = rawTakesDeliveries(input.value);
+    if (ingress && !proveCredential(store, acting.name, acting.token).ok) return refuse(flow.repo, 'unauthenticated', 'Making a webhook address takes your password, typed: pass --token.');
+    // A trigger from anyone only on the person's own proof (widening above): a machine credential's is refused.
+    const made = addFlowTriggerTo(store, flow, input.value, who, now, context.configDir, ingress ? { ingress: 'proved' } : widening(flow.repo));
     if (!made.ok) return refuse(flow.repo, 'invalid-trigger', made.message);
     await prepareUnattendedCandidates(store, flow.id);
     record(flow.repo, 'accepted', `flow #${flow.id} trigger #${made.id}`);

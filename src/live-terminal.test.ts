@@ -1,0 +1,417 @@
+/**
+ * Live terminals (docs/plans/live-terminal.md): a real pty in its own worktree, scrollback replay, strict frames,
+ * the session cap, and a close that takes the whole process group.
+ */
+import { describe, test, expect, beforeAll, beforeEach, afterEach } from "vitest";
+import { execFileSync, spawn as spawnChild } from "node:child_process";
+import { existsSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { fakePid } from "../test/fake-pid.js";
+import { createRequire } from "node:module";
+import { CLOSE_GRACE_MS, loadPtySpawn, MAX_PENDING_INPUT, membersOf, parseTerminalFrame, pendingInputOf, readProcessTable, ScreenMirror, TerminalHost, type ProcessTable, type PtySpawn, type TerminalControl, type TerminalLedger } from "./live-terminal.js";
+import { INSIDE_FENCE } from "../test/inside-fence.js";
+
+const ALEX = { name: "alex", generation: 1 };
+let spawn: PtySpawn | null = null;
+beforeAll(() => { spawn = loadPtySpawn(); });
+
+describe("frames", () => {
+  test("input and resize, exactly", () => {
+    expect(parseTerminalFrame(JSON.stringify({ t: "in", d: "ls\r" }))).toEqual({ t: "in", d: "ls\r" });
+    expect(parseTerminalFrame(JSON.stringify({ t: "resize", cols: 80, rows: 24 }))).toEqual({ t: "resize", cols: 80, rows: 24 });
+  });
+  test("anything else is refused", () => {
+    for (const bad of ["", "nope", "[]", "null", '{"t":"in"}', '{"t":"in","d":1}', '{"t":"in","d":"x","x":1}', '{"t":"resize","cols":1,"rows":24}',
+      '{"t":"resize","cols":80,"rows":201}', '{"t":"resize","cols":80.5,"rows":24}', '{"t":"kill"}']) expect(parseTerminalFrame(bad)).toBeNull();
+    expect(parseTerminalFrame(JSON.stringify({ t: "in", d: "x".repeat(70_000) }))).toBeNull();
+  });
+});
+
+describe("the screen a later page gets", () => {
+  test("is the screen and its kept lines, with an escape sequence written in pieces whole", async () => {
+    const mirror = new ScreenMirror(20, 3, 10);
+    for (let n = 0; n < 30; n += 1) mirror.write(`row-${n}\r\n`);
+    mirror.write("\u001b[3");
+    mirror.write("1mred\u001b[0m");
+    const screen = await new Promise<string>(done => mirror.snapshot(done));
+    expect(screen).toContain("row-29");
+    expect(screen).not.toContain("row-5\r");
+    expect(screen).toContain("\u001b[31mred");
+    mirror.dispose();
+  });
+});
+
+/**
+ * The process table as this file would see it on a machine of its own. Other files in the run open terminals at the same
+ * time (serve.terminal, the fence attacks), and macOS gives a closed terminal's device to the next one opened anywhere:
+ * their shell on it, after ours ended, is rightly "maybe someone else's" and leaves the close uncertain. That is its own
+ * test below, not what a test asserting a clean close is about. Hidden: a process whose parents reach this run's runner
+ * (an ancestor of this worker) without passing through this worker. Kept: everything under this worker, and our own
+ * orphans (adopted by pid 1, never under the runner).
+ */
+const ownProcesses = (): ProcessTable | null => {
+  const table = readProcessTable();
+  if (table === null) return null;
+  const runners = new Set<number>();
+  for (let up = table.get(process.pid)?.ppid; up !== undefined && up > 1 && !runners.has(up); up = table.get(up)?.ppid) runners.add(up);
+  const others: number[] = [];
+  for (const pid of table.keys()) {
+    const seen = new Set<number>();
+    for (let up = table.get(pid)?.ppid; up !== undefined && up > 1 && up !== process.pid && !seen.has(up); up = table.get(up)?.ppid) {
+      if (runners.has(up)) { others.push(pid); break; }
+      seen.add(up);
+    }
+  }
+  for (const pid of others) table.delete(pid);
+  return table;
+};
+
+describe.skipIf(process.platform === "win32")("a terminal host", () => {
+  let dir: string, repo: string, host: TerminalHost;
+  const events: string[] = [];
+  beforeEach(() => {
+    dir = realpathSync(mkdtempSync(join(tmpdir(), "so-term-")));
+    repo = join(dir, "repo");
+    execFileSync("git", ["init", "-q", "-b", "main", repo]);
+    execFileSync("git", ["-C", repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"]);
+    events.length = 0;
+    host = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "live"), closeGraceMs: 300, processes: ownProcesses,
+      programs: { shell: { file: "/bin/sh", args: [] }, claude: { file: "/bin/cat", args: [] } },
+      env: () => ({ PATH: process.env["PATH"] ?? "", HOME: dir }), record: (event, one) => events.push(`${event}:${one.program}`) });
+  });
+  afterEach(async () => { await host.stop(); rmSync(dir, { recursive: true, force: true }); });
+
+  const watcher = () => {
+    const seen = { out: "", controls: [] as TerminalControl[] };
+    return { seen, viewer: { output: (data: Buffer) => { seen.out += data.toString(); }, control: (message: TerminalControl) => { seen.controls.push(message); } } };
+  };
+  const until = async (check: () => boolean, ms = 4000) => {
+    const end = Date.now() + ms;
+    while (!check()) { if (Date.now() > end) throw new Error("timed out"); await new Promise(resolve => setTimeout(resolve, 20)); }
+  };
+
+  test("runs in its own worktree on its own branch, and echoes what is typed", async () => {
+    const started = await host.start(ALEX, repo, "claude");
+    expect(started.branch).toMatch(/^toolroll\/live-[0-9a-f]{12}$/);
+    expect(existsSync(started.worktree)).toBe(true);
+    expect(execFileSync("git", ["-C", started.worktree, "branch", "--show-current"]).toString().trim()).toBe(started.branch);
+    const { seen, viewer } = watcher();
+    host.attach(started.id, viewer);
+    await until(() => seen.controls.length > 0);
+    expect(seen.controls[0]).toMatchObject({ t: "hello", program: "claude", ended: false });
+    host.input(started.id, "hello there\r");
+    await until(() => seen.out.includes("hello there"));
+    expect(events).toEqual(["start:claude"]);
+  });
+
+  test("a page that attaches later gets the screen first, then hello", async () => {
+    const started = await host.start(ALEX, repo, "shell");
+    host.input(started.id, "echo mark-$((6*7))\n");
+    const first = watcher();
+    host.attach(started.id, first.viewer);
+    await until(() => first.seen.out.includes("mark-42"));
+    const late = watcher();
+    host.attach(started.id, late.viewer);
+    await until(() => late.seen.controls.length > 0);
+    expect(late.seen.out).toContain("mark-42");
+    expect(late.seen.controls[0]?.t).toBe("hello");
+  });
+
+  test("a full-screen program comes back as its screen: alternate screen and modes, nothing cut mid-sequence", async () => {
+    const started = await host.start(ALEX, repo, "shell");
+    const first = watcher();
+    host.attach(started.id, first.viewer);
+    // Lots of history, then a full-screen program's alternate screen with bracketed paste on.
+    host.input(started.id, "i=0; while [ $i -lt 3000 ]; do echo history-line-$i; i=$((i+1)); done; printf '\\033[?1049h\\033[2J\\033[Hfull-screen-app\\033[?2004h'\n");
+    // The program's own switch to its alternate screen (the typed command's echo holds only its spelling, not the byte).
+    await until(() => first.seen.out.includes("\u001b[?1049h") && first.seen.out.includes("\u001b[?2004h"), 10_000);
+    const late = watcher();
+    host.attach(started.id, late.viewer);
+    await until(() => late.seen.controls.length > 0);
+    expect(late.seen.out).toContain("\u001b[?1049h");
+    expect(late.seen.out).toContain("full-screen-app");
+    expect(late.seen.out).toContain("\u001b[?2004h");
+    expect(late.seen.out).toContain("history-line-2999");
+  });
+
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE)("close ends the whole process group, and says so", async () => {
+    const started = await host.start(ALEX, repo, "shell");
+    const { seen, viewer } = watcher();
+    host.attach(started.id, viewer);
+    // A background child that ignores SIGHUP is still in the group: SIGKILL after the grace takes it.
+    host.input(started.id, "trap '' HUP; sleep 60 & echo child=$!\n");
+    await until(() => /child=\d+/.test(seen.out));
+    const child = Number(/child=(\d+)/.exec(seen.out)![1]);
+    await host.close(started.id);
+    await until(() => { try { process.kill(child, 0); return false; } catch { return true; } });
+    expect(seen.controls.at(-1)?.t).toBe("exit");
+    expect(host.get(started.id)).toMatchObject({ endedBy: "owner" });
+    expect(host.list("alex")).toHaveLength(1);
+    expect(host.list("someone-else")).toHaveLength(0);
+  });
+
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE)("a program that ignores SIGHUP is killed after the grace", async () => {
+    const started = await host.start(ALEX, repo, "shell");
+    const { seen, viewer } = watcher();
+    host.attach(started.id, viewer);
+    host.input(started.id, "trap '' HUP; echo armed\n");
+    await until(() => seen.out.includes("armed"));
+    const at = Date.now();
+    await host.close(started.id);
+    expect(Date.now() - at).toBeGreaterThanOrEqual(250);
+    expect(host.get(started.id)).toMatchObject({ cleanup: "clean" });
+    expect(host.get(started.id)!.exit).not.toBeNull();
+  });
+
+  test("at most four pages attach to one terminal", async () => {
+    const started = await host.start(ALEX, repo, "shell");
+    for (let n = 0; n < 4; n += 1) host.attach(started.id, watcher().viewer);
+    expect(() => host.attach(started.id, watcher().viewer)).toThrow(/open in 4 places/);
+  });
+
+  test("a project whose git config can run a command starts nothing (hardened git)", async () => {
+    execFileSync("git", ["-C", repo, "config", "core.pager", "touch /tmp/so-pwned"]);
+    await expect(host.start(ALEX, repo, "shell")).rejects.toThrow(/won't run git in this project: .*core\.pager/);
+    expect(host.list("alex")).toHaveLength(0);
+    expect(execFileSync("git", ["-C", repo, "worktree", "list"]).toString().trim().split("\n")).toHaveLength(1);
+  });
+
+  const gone = (pid: number) => { try { process.kill(pid, 0); return false; } catch { return true; } };
+
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE)("a program that ends on its own takes its jobs with it, so its worktree can go (round 2, finding 2)", async () => {
+    const started = await host.start(ALEX, repo, "shell");
+    const { seen, viewer } = watcher();
+    host.attach(started.id, viewer);
+    host.input(started.id, "(trap '' HUP; exec sleep 60) & echo child=$! ; sleep 1; exit\n");
+    await until(() => /child=\d+/.test(seen.out));
+    const child = Number(/child=(\d+)/.exec(seen.out)![1]);
+    await until(() => host.get(started.id)!.cleanup !== null);
+    expect(host.get(started.id)).toMatchObject({ cleanup: "clean", endedBy: null });
+    expect(gone(child)).toBe(true);
+    await host.remove(started.id);
+  });
+
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE)("a child started during the close is caught too (round 2, finding 3)", async () => {
+    // The product's own grace: the job's trap must get to run before the kill, on a loaded machine too.
+    const slow = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "slow"), closeGraceMs: CLOSE_GRACE_MS, processes: ownProcesses, programs: { shell: { file: "/bin/sh", args: [] } }, env: () => ({ PATH: process.env["PATH"] ?? "", HOME: dir }) });
+    try {
+      const started = await slow.start(ALEX, repo, "shell");
+      const late = join(dir, "late.txt");
+      const { seen, viewer } = watcher();
+      slow.attach(started.id, viewer);
+      // "armed-42" is printed by the job itself once its trap is set: the terminal's echo of the typed line says
+      // "armed-$((6*7))", so a close can't start before the shell has run the line (it once did, and raced it).
+      slow.input(started.id, `(trap 'sleep 61 & echo $! > ${late}' HUP; echo armed-$((6*7)); while :; do sleep 0.1; done) &\n`);
+      await until(() => seen.out.includes("armed-42"));
+      await slow.close(started.id);
+      await until(() => { try { return readFileSync(late, "utf8").trim() !== ""; } catch { return false; } });
+      expect(gone(Number(readFileSync(late, "utf8")))).toBe(true);
+      expect(slow.get(started.id)).toMatchObject({ cleanup: "clean" });
+    } finally { await slow.stop(); }
+  });
+
+  // A real process stands in for "someone else's": the injected table says what the sweep sees of it. Never signalled.
+  type Inner = { sessions: Map<string, { leader: number; tty: string | null }> };
+  const bystander = () => spawnChild("/bin/sleep", ["30"], { stdio: "ignore" });
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+
+  test.skipIf(INSIDE_FENCE)("a pid used again between the read and the signal is never signalled, and the close is uncertain", async () => {
+    const other = bystander();
+    let phase: "running" | "observed" | "reused" = "running";
+    const real = await import("./live-terminal.js");
+    const host2 = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "reused-pid"), closeGraceMs: 200, programs: { shell: { file: "/bin/sleep", args: ["30"] } }, env: () => ({ PATH: "" }),
+      processes: () => {
+        const table = real.readProcessTable();
+        if (table === null || phase === "running") return table;
+        const session = [...(host2 as unknown as Inner).sessions.values()][0]!;
+        // First read of the close: the program's child. Every read after: the same pid, started later, nobody's child.
+        table.set(other.pid!, phase === "observed" ? { ppid: session.leader, uid: process.getuid!(), tty: "??", started: "Tue Oct 20 10:00:00 2026" } : { ppid: 1, uid: process.getuid!(), tty: "??", started: "Tue Oct 20 11:00:00 2026" });
+        phase = "reused";
+        return table;
+      } });
+    try {
+      const started = await host2.start(ALEX, repo, "shell");
+      phase = "observed";
+      await host2.close(started.id);
+      expect(alive(other.pid!)).toBe(true);
+      expect(host2.get(started.id)).toMatchObject({ cleanup: "uncertain" });
+    } finally { await host2.stop(); other.kill("SIGKILL"); }
+  });
+
+  test.skipIf(INSIDE_FENCE)("a process on its terminal's device after the program ended, never noted, is never signalled; the close is uncertain", async () => {
+    const other = bystander();
+    let ended = false;
+    const real = await import("./live-terminal.js");
+    const host2 = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "reused-tty"), closeGraceMs: 200, programs: { shell: { file: "/bin/sh", args: ["-c", "exit 0"] } }, env: () => ({ PATH: "" }),
+      processes: () => {
+        const table = real.readProcessTable();
+        if (table === null || !ended) return table;
+        const session = [...(host2 as unknown as Inner).sessions.values()][0]!;
+        // The device given out again: someone else's process, on it, started just after the program ended.
+        table.set(other.pid!, { ppid: 1, uid: process.getuid!(), tty: session.tty ?? "ttys999", started: new Date().toString() });
+        return table;
+      } });
+    try {
+      const started = await host2.start(ALEX, repo, "shell");
+      const session = (host2 as unknown as Inner).sessions.get(started.id)!;
+      expect(session.tty).not.toBeNull();
+      ended = true;
+      await until(() => host2.get(started.id)?.cleanup != null, 10_000);
+      expect(alive(other.pid!)).toBe(true);
+      expect(host2.get(started.id)).toMatchObject({ cleanup: "uncertain" });
+    } finally { await host2.stop(); other.kill("SIGKILL"); }
+  });
+
+  test("an unreadable process table is uncertain, never clean: the worktree stays and stop says so (round 2, findings 4 and 6)", async () => {
+    let readable = true;
+    const blind = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "blind"), closeGraceMs: 200, programs: { shell: { file: "/bin/sh", args: [] } },
+      env: () => ({ PATH: process.env["PATH"] ?? "" }), processes: () => readable ? undefined as never : null });
+    // The table reads normally until the close, then fails.
+    const real = await import("./live-terminal.js");
+    (blind as unknown as { processes: () => unknown }).processes = () => readable ? real.readProcessTable() : null;
+    const started = await blind.start(ALEX, repo, "shell");
+    readable = false;
+    expect(await blind.stop()).toEqual({ clean: false });
+    expect(blind.get(started.id)).toMatchObject({ cleanup: "uncertain" });
+    await expect(blind.remove(started.id)).rejects.toThrow(/may still be running/);
+    expect(existsSync(started.worktree)).toBe(true);
+  });
+
+  test("typing into a program that doesn't read stops at the cap (round 2, finding 5)", async () => {
+    const deaf = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "deaf"), closeGraceMs: 200, programs: { shell: { file: "/bin/sleep", args: ["30"] } }, env: () => ({ PATH: "" }) });
+    try {
+      const started = await deaf.start(ALEX, repo, "shell");
+      const chunk = "x".repeat(60_000);
+      let refused = false;
+      for (let n = 0; n < 40 && !refused; n += 1) refused = !deaf.input(started.id, chunk);
+      expect(refused).toBe(true);
+    } finally { await deaf.stop(); }
+  });
+
+  test("the pinned pty's write queue is measurable (an upgrade that hides it fails here, and input is refused)", () => {
+    const native = (createRequire(import.meta.url)("@lydell/node-pty") as typeof import("@lydell/node-pty")).spawn("/bin/sleep", ["5"], { cols: 80, rows: 24, env: { PATH: "" } });
+    try {
+      expect(pendingInputOf(native)).toBe(0);
+      expect(pendingInputOf({})).toBe(Infinity);
+      expect(MAX_PENDING_INPUT).toBe(1024 * 1024);
+    } finally { native.kill(); }
+  });
+
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE)("a start is reserved first, refused while an update owns admission, and released after its sweep (round 2, finding 7)", async () => {
+    const calls: string[] = [];
+    let paused = true;
+    const ledger: TerminalLedger = { reserve: id => { if (paused) throw new Error("Toolroll is updating."); calls.push(`reserve:${id.length}`); }, running: () => { calls.push("running"); }, release: (_id, cleanup) => { calls.push(`release:${cleanup}`); } };
+    const led = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "led"), closeGraceMs: 200, processes: ownProcesses, programs: { shell: { file: "/bin/sh", args: [] } }, env: () => ({ PATH: process.env["PATH"] ?? "" }), ledger });
+    await expect(led.start(ALEX, repo, "shell")).rejects.toThrow(/updating/);
+    expect(execFileSync("git", ["-C", repo, "worktree", "list"]).toString().trim().split("\n")).toHaveLength(1);
+    paused = false;
+    const started = await led.start(ALEX, repo, "shell");
+    await led.close(started.id);
+    expect(calls).toEqual(["reserve:32", "running", "release:clean"]);
+  });
+
+  test("an access check that fails right before spawn starts nothing (round 2, finding 8)", async () => {
+    await expect(host.start(ALEX, repo, "shell", undefined, () => "That project is no longer available to your account.")).rejects.toThrow(/no longer available/);
+    expect(host.list("alex")).toHaveLength(0);
+    expect(execFileSync("git", ["-C", repo, "worktree", "list"]).toString().trim().split("\n")).toHaveLength(1);
+    expect(execFileSync("git", ["-C", repo, "branch", "--list", "toolroll/live-*"]).toString().trim()).toBe("");
+  });
+
+  test("membership: noted by start time, the leader only while it runs, its terminal only while it runs", () => {
+    const [P0, P1, P2, P3, P4, P5] = [0, 1, 2, 3, 4, 5].map(fakePid) as [number, number, number, number, number, number];
+    const table = new Map([
+      [P0, { ppid: 1, uid: 0, tty: "ttys009", started: "Tue Oct 20 10:00:00 2026" }],
+      [P1, { ppid: P0, uid: 0, tty: "??", started: "Tue Oct 20 10:00:01 2026" }],
+      [P2, { ppid: 1, uid: 0, tty: "??", started: "Tue Oct 20 10:00:02 2026" }],
+      [P3, { ppid: 1, uid: 0, tty: "ttys009", started: "Tue Oct 20 11:00:00 2026" }],
+      [P4, { ppid: 1, uid: 0, tty: "??", started: "Tue Oct 20 12:00:00 2026" }],
+      [P5, { ppid: 1, uid: 0, tty: "??", started: "Tue Oct 20 10:10:00 2026" }],
+    ]);
+    const ended = Date.parse("Tue Oct 20 10:30:00 2026");
+    // Running: its terminal, its leader and their descendants, and what was noted.
+    expect([...membersOf(table, { leader: P4, tty: "ttys009", known: new Map([[P2, "Tue Oct 20 10:00:02 2026"]]), exitedAt: null }).keys()].sort()).toEqual([P0, P1, P2, P3, P4]);
+    // Ended: only what was noted (by start time) and its descendants. The terminal's name proves nothing any more, even
+    // for a process that started before the end (the device may be someone else's by now): ambiguous, never a member.
+    const ambiguous = new Set<number>();
+    expect([...membersOf(table, { leader: P4, tty: "ttys009", known: new Map([[P2, "Tue Oct 20 10:00:02 2026"]]), exitedAt: ended }, ambiguous).keys()]).toEqual([P2]);
+    expect([...ambiguous].sort()).toEqual([P0, P3]);
+    // Noted under another start time: a pid used again, not a member.
+    expect([...membersOf(table, { leader: P4, tty: null, known: new Map([[P2, "a different start"]]), exitedAt: null }).keys()]).toEqual([P4]);
+  });
+
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE)("someone else working in the worktree is never signalled; it keeps the worktree until they leave (round 3)", async () => {
+    const started = await host.start(ALEX, repo, "shell");
+    const outsider = spawnChild("/bin/sleep", ["30"], { cwd: started.worktree, stdio: "ignore" });
+    try {
+      await until(() => outsider.pid !== undefined);
+      await host.close(started.id);
+      expect(gone(outsider.pid!)).toBe(false);
+      expect(host.get(started.id)).toMatchObject({ cleanup: "uncertain" });
+      await expect(host.remove(started.id)).rejects.toThrow(/may still be running/);
+      expect(existsSync(started.worktree)).toBe(true);
+    } finally { outsider.kill("SIGKILL"); }
+    await until(() => gone(outsider.pid!));
+    await host.remove(started.id);
+    expect(existsSync(started.worktree)).toBe(false);
+  });
+
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE)("a process seen in the worktree must exit, not just leave the folder, before removal (round 4)", async () => {
+    const started = await host.start(ALEX, repo, "shell");
+    // It starts in the worktree, then moves out while it keeps running. It moves when told, not on a clock: a timed
+    // move raced the close's sweep, which on a loaded machine read the folder after the mover had already left.
+    const mover = spawnChild("/bin/sh", ["-c", "read go; cd /; echo moved; exec sleep 30"], { cwd: started.worktree, stdio: ["pipe", "pipe", "ignore"] });
+    let said = "";
+    mover.stdout!.on("data", (data: Buffer) => { said += data.toString(); });
+    try {
+      await until(() => mover.pid !== undefined);
+      await host.close(started.id);
+      expect(host.get(started.id)).toMatchObject({ cleanup: "uncertain" });
+      mover.stdin!.write("go\n");
+      // "moved" is printed after the cd: from here it works outside the worktree, the same process (exec keeps the pid
+      // and its start time).
+      await until(() => said.includes("moved"));
+      await expect(host.remove(started.id)).rejects.toThrow(/may still be running/);
+    } finally { mover.kill("SIGKILL"); }
+    await until(() => gone(mover.pid!));
+    await host.remove(started.id);
+  });
+
+  test("an unreadable list of who works in the worktree is uncertain", async () => {
+    const unsure = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "unsure"), closeGraceMs: 200, programs: { shell: { file: "/bin/sh", args: [] } },
+      env: () => ({ PATH: process.env["PATH"] ?? "" }), residents: () => null });
+    const started = await unsure.start(ALEX, repo, "shell");
+    expect(await unsure.stop()).toEqual({ clean: false });
+    await expect(unsure.remove(started.id)).rejects.toThrow(/may still be running/);
+  });
+
+  // The release check runs inside the plane's macOS fence, which can't nest a sandbox or observe other processes; CI (Linux, and the tag's macOS jobs) runs these unfenced.
+  test.skipIf(INSIDE_FENCE)("remove drops an ended session and its worktree, keeps the branch", async () => {
+    const started = await host.start(ALEX, repo, "shell");
+    await expect(host.remove(started.id)).rejects.toThrow(/Close the terminal/);
+    await host.close(started.id);
+    await host.remove(started.id);
+    expect(host.get(started.id)).toBeNull();
+    expect(existsSync(started.worktree)).toBe(false);
+    expect(execFileSync("git", ["-C", repo, "branch", "--list", started.branch]).toString()).toContain(started.branch);
+  });
+
+  test("at most the cap run at once; a missing program or a non-root folder starts nothing", async () => {
+    const small = new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "small"), maxSessions: 1, closeGraceMs: 300, programs: { shell: { file: "/bin/sh", args: [] } }, env: () => ({ PATH: "" }) });
+    try {
+      await small.start(ALEX, repo, "shell");
+      await expect(small.start(ALEX, repo, "shell")).rejects.toThrow(/At most 1/);
+      await expect(new TerminalHost({ spawn: spawn!, worktreeRoot: join(dir, "x"), env: () => ({ PATH: "" }) }).start(ALEX, repo, "codex")).rejects.toThrow(/isn't installed/);
+      execFileSync("mkdir", ["-p", join(repo, "sub")]);
+      await expect(host.start(ALEX, join(repo, "sub"), "shell")).rejects.toThrow(/root of a Git project/);
+    } finally { await small.stop(); }
+  });
+});

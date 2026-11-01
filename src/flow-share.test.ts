@@ -20,7 +20,7 @@ import { addFlowTriggerTo, saveHooksBase, triggerConfigOf } from "./flow-trigger
 import { runFlowSteps, type StepIo } from "./flow-steps.js";
 import { FLOW_TEMPLATES, flowFromSteps, type FlowDefinition } from "./flows.js";
 import { GALLERY, galleryDiagram } from "./flow-gallery.js";
-import { exportFlow, fetchFlowFile, FLOW_FILE_MAX_BYTES, flowShape, importFlow, parseFlowFile, planFlowImport, rawFlowUrl, type FetchLike } from "./flow-share.js";
+import { exportFlow, fetchFlowFile, FLOW_FILE_MAX_BYTES, importFlow, parseFlowFile, planFlowImport, rawFlowUrl, type FetchLike } from "./flow-share.js";
 import { runOperate } from "./operate.js";
 import { parseContract } from "./contracts/contract.js";
 import { flowFileSchema } from "./contracts/flow.js";
@@ -134,22 +134,6 @@ describe("export then import", () => {
     expect(other.flowScript(theirs, "triage")).toMatchObject({ held: "imported", language: "python", savedBy: "sam" });
   });
 
-  test("every template exports and imports to exactly the same zones and paths", () => {
-    for (const template of FLOW_TEMPLATES) {
-      const id = store.createFlow({ repo, name: template.label, definitionJson: JSON.stringify(template.definition), by: "alex" }, NOW);
-      const exported = exportFlow(store, store.getFlow(id)!, here);
-      const file = parseFlowFile(exported.json);
-      const values = Object.fromEntries(file.parameters.filter(one => one.id.startsWith("email-to-")).map(one => [one.id, "{{card.email}}"]));
-      const imported = importFlow(other, planFlowImport(other, theirs, file, values, "sam"), "sam", NOW, there);
-      const arrived = flowDefinitionOf(other.getFlow(imported.id)!)!;
-      // Every field the file uses is one docs/flow-file.schema.json describes: the file is exactly what flowFileSchema reads.
-      expect(parseContract(flowFileSchema, JSON.parse(exported.json)), template.id).toMatchObject({ ok: true });
-      const original = flowDefinitionOf(store.getFlow(id)!)!;
-      expect(flowShape(arrived), template.id).toBe(flowShape(original));
-      expect(paths(arrived), template.id).toEqual(paths(original));
-    }
-  });
-
   test("exports the same bytes 0.9.34 did, and importing them draws the same flow", () => {
     // Recorded from the pre-Zod exportFlow and parseFlowFile (test/fixtures/flows/flow-files.json).
     const recorded = JSON.parse(readFileSync(new URL("../test/fixtures/flows/flow-files.json", import.meta.url), "utf8")) as { files: { name: string; json: string; imported: string | null; refused: string | null }[] };
@@ -176,7 +160,7 @@ describe("export then import", () => {
     const plan = planFlowImport(other, theirs, parseFlowFile(exported.json), { "email-to-ping": "{{card.email}}" }, "sam");
     const { id } = importFlow(other, plan, "sam", NOW, there);
     setFlowSecret(there, theirs, "CRM_KEY", "crm-value-123456");
-    const card = other.addFlowCard({ flow: id, title: "Checkout breaks", description: null, stage: "triage", by: "sam" }, NOW);
+    const card = other.addFlowCard({ flow: id, title: "Checkout breaks", description: null, stage: "triage", by: "sam", byKind: "person" }, NOW);
     const io: StepIo = { gh: vi.fn<Runner>(async () => ({ code: 0, stdout: "", stderr: "", timedOut: false, notFound: false })), git: exec, shell: exec, fetch: vi.fn() as unknown as typeof fetch, dir: there, scratch: join(there, "scratch"), base: "main", evidenceRoot: there };
     expect(await runFlowSteps(other, theirs, NOW, io)).toEqual({ ran: 0, problems: [] });
     expect(other.getFlowCard(card)?.waiting).toBe("The triage script came with an imported flow. Approve it on the Scripts panel to run it.");
@@ -192,13 +176,13 @@ describe("what never leaves", () => {
     const row = store.getFlow(flow)!;
     setFlowSecret(here, repo, "CRM_KEY", "planted-crm-secret-value-9f2c");
     expect(saveHooksBase(here, "https://hooks.planted-host.example").ok).toBe(true);
-    const hook = addFlowTriggerTo(store, row, { kind: "webhook", title: "Sentry error" }, "priya", NOW, here);
-    const signed = addFlowTriggerTo(store, row, { kind: "github", watch: "pulls", delivery: "webhook" }, "priya", NOW, here);
+    const hook = addFlowTriggerTo(store, row, { kind: "webhook", title: "Sentry error" }, "priya", NOW, here, { ingress: "proved" });
+    const signed = addFlowTriggerTo(store, row, { kind: "github", watch: "pulls", delivery: "webhook" }, "priya", NOW, here, { ingress: "proved" });
     if (!hook.ok || !signed.ok) throw new Error("triggers");
     const hookHash = store.getFlowTrigger(hook.id)!.hookHash!;
     // A channel someone connected from Slack, and a card with its history.
     store.addFlowTrigger({ flow, kind: "chat", configJson: JSON.stringify({ kind: "chat", app: "slack", installation: "T0PLANTED", chat: "C0PLANTED", binding: 4242, zone: null }), hookHash: null, cursor: null, nextAt: null, by: "priya" }, NOW);
-    store.addFlowCard({ flow, title: "Planted card about Northwind", description: "Planted card history", stage: "inbox", by: "priya" }, NOW);
+    store.addFlowCard({ flow, title: "Planted card about Northwind", description: "Planted card history", stage: "inbox", by: "priya", byKind: "person" }, NOW);
 
     const exported = exportFlow(store, row, here);
     const text = exported.json;

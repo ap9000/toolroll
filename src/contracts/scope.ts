@@ -19,6 +19,7 @@ import { TEXT_LIMITS } from "../text-limits.js";
 import { ACCEPTANCE_LIMITS } from "./acceptance-terms.js";
 import { contractProblemOf, parseContract, type ContractProblem } from "./contract.js";
 import { acceptanceCriterionSchema as planCriterionSchema, planSchema } from "./plan.js";
+import { isRecord } from "../is-record.js";
 
 /** A criterion as saved and as every reader returns it: the plan's criterion with `how` always present (null for none). */
 export const savedCriterionSchema = z.lazy(() => planCriterionSchema.extend({ how: planCriterionSchema.shape.how.unwrap() }));
@@ -47,8 +48,6 @@ export const scopeTermsSchema = z.lazy(() =>
 export type ScopeTerms = z.infer<typeof scopeTermsSchema>;
 
 export type AcceptanceProblem = ContractProblem;
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 
 /** A criterion as the reader takes it: only the fields it knows, a null or empty `how` as null. Anything else as is. */
 function criterionBody(entry: unknown): unknown {

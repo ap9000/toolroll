@@ -18,12 +18,12 @@ import { RESULT_SHOT_CHOICES } from "../result-shots.js";
 import { isAlive as runnerAlive } from "../runner.js";
 import { type UnattendedPermissionMode } from "../scope.js";
 import { ASSISTANTS } from "../setup-guide.js";
-import { type Capability,type ChatConfig,type PushSubscription,type ResultScreenshots,type Store } from "../store.js";
+import { type Capability, type PushSubscription, type ResultScreenshots, type Store } from "../store.js";
 import { redactToken,TOKEN_ENV,type TokenSource } from "../telegram.js";
 import { requestContext } from "./request-context.js";
 import { chatMoney,type Chrome,screen,type Screen,strokeIcon,when,whenTime } from "./chrome.js";
 import { taskHref } from "./http.js";
-import { html,joinHtml,postForm,type Html } from "../html.js";
+import { html, joinHtml, postForm, type Html, reauth } from "../html.js";
 import { permissionModeChoices,qualityModeChoices } from "./render-tasks.js";
 
 /** What the lead's settings form shows beside the saved configuration: where keys come from (never the keys), the
@@ -49,12 +49,12 @@ export function leadSettingsHtml(data: { config: import("../store.js").ChatConfi
   const summary = config === null
     ? data.signedIn !== null
       ? html`<p>The lead is off.</p>${postForm("/settings/lead/on", html`<button type="submit">Use your ${data.signedIn} sign-in</button>`, { returnTo })}`
-      : html`<p>The lead is off. Sign in an agent on this computer to turn it on:</p><p><code>${data.command}</code></p>`
+      : html`<p>The lead is off. Sign in an agent on this computer to turn it on:</p><p><code>${data.command}</code></p>${postForm("/lead/check", html`<button type="submit" class="secondary">Check again</button>`, { returnTo })}`
     : data.words !== null
       ? html`<p>The lead uses ${data.words}.</p><p class="meta">${config.model === "default" ? "Its default model" : `Model ${config.model}`} · up to ${config.dailyTurns} turns a day · no dollar spend. Every action it proposes waits for you to confirm it.</p>`
       : html`<p>The lead uses the ${config.provider === "anthropic-api" ? "Anthropic" : "OpenRouter"} API with ${config.model}.</p><p class="meta">Up to ${chatMoney(config.weeklyCeilingMicrousd)} a week · up to ${config.dailyTurns} turns a day.</p>`;
   const forget = facts.keyFacts.filter(one => one.state === "stored").map(one =>
-    postForm("/chat/config", html`<input type="password" name="token" placeholder="your password" autocomplete="current-password" aria-label="Your password"><button type="submit" class="secondary">Forget the stored ${one.provider} key</button>`,
+    postForm("/chat/config", html`${reauth(html`<input type="password" name="token" placeholder="your password" autocomplete="current-password" aria-label="Your password">`)}<button type="submit" class="secondary">Forget the stored ${one.provider} key</button>`,
       { attrs: { class: "inline" }, returnTo, hidden: { "forget-key": one.provider } }));
   return joinHtml([
     html`<p><a href="/settings">Settings</a></p><h1>Lead</h1>`,
@@ -80,7 +80,7 @@ ${postForm("/settings/lead/promise/cancel", html`<button type="submit" class="se
     }<p><a class="button-link" href="/settings/lead/subagents?add=1#add" data-add-subagent>Add subagent</a></p></section>`,
     html`<details class="lead-advanced" data-lead-advanced><summary>Advanced</summary>`,
     leadConfigForm(config, facts),
-    config === null ? "" : postForm("/chat/config", html`<input type="password" name="token" placeholder="your password" autocomplete="current-password" aria-label="Your password"><button type="submit" class="secondary">Turn the lead off</button>`,
+    config === null ? "" : postForm("/chat/config", html`${reauth(html`<input type="password" name="token" placeholder="your password" autocomplete="current-password" aria-label="Your password">`)}<button type="submit" class="secondary">Turn the lead off</button>`,
       { attrs: { class: "inline" }, returnTo, hidden: { off: "1" } }),
     forget,
     html`</details>`,
@@ -128,7 +128,7 @@ ${models.map(model => html`<option value="${model}">${labels.get(model) ?? ""}</
           .join(" · ")})</span>\
 <input type="password" name="key" placeholder="direct API only — leave empty to keep" autocomplete="off"></label>`,
       html`<label>Your password <span class="meta">(typed again to change the provider)</span>\
-<input type="password" name="token" autocomplete="current-password"></label>`,
+${reauth(html`<input type="password" name="token" autocomplete="current-password">`)}</label>`,
       html`<button type="submit">${current === null ? "turn chat on" : "save"}</button>`,
       "",
     ], "\n"), { attrs: { class: "card" }, returnTo: data.returnTo }),
@@ -230,8 +230,8 @@ export function settingsPage(
       : joinHtml([
           html`<h2>Unattended permissions</h2>`,
           permissionDefault.canManage && csrf !== ""
-            ? postForm("/settings/permission-default", html`${permissionModeChoices("permission-mode", permissionDefault.mode)}<button type="submit">Save default</button>`,
-              { attrs: { class: "card permission-policy", "data-autosave": true } })
+            ? postForm("/settings/permission-default", html`${permissionModeChoices("permission-mode", permissionDefault.mode)}${permissionDefault.mode === "bypassPermissions" ? "" : reauth(html`<label>Your password <span class="meta">(needed for Full access)</span><input type="password" name="password" autocomplete="current-password"></label>`)}<button type="submit">Save default</button>`,
+              { attrs: { class: "card permission-policy" } })
             : html`<div class="card"><p><strong>${permissionDefault.mode === "bypassPermissions" ? "Full access" : "Auto"}</strong></p><p class="meta">An approver can change this default</p></div>`,
           permissionDefault.updatedAt === null
             ? ""
@@ -331,7 +331,7 @@ ${[
               html`<details class="provider-manage"><summary>Manage</summary>`,
               postForm("/settings/provider-key", joinHtml([
                 "",
-                one.connection === undefined ? "" : html`<p class="provider-connection"><strong>${connectionWords(one.connection)}</strong> ${[one.connection.email, one.connection.plan, one.connection.method].filter(Boolean).join(" · ")} · <a href="/settings?check-connection=${encodeURIComponent(one.provider)}#providers">Check again</a></p>`,
+                one.connection === undefined ? "" : html`<p class="provider-connection"><strong>${connectionWords(one.connection)}</strong> ${[one.connection.email, one.connection.plan, one.connection.method].filter(Boolean).join(" · ")} · <button type="submit" class="secondary" formaction="/settings/connection/check" formnovalidate>Check again</button></p>`,
                 html`<p class="meta">${one.mode === "subscription" ? "Uses its own sign-in, so no API-key spend" : "Uses the API key"} · <span class="mono">${one.envName}</span> · ${
                   one.set ? `key stored${one.updatedAt === null ? "" : ` ${one.updatedAt.slice(0, 10)}`}` : one.ambient ? "key in this server's environment" : "no key stored"}</p>`,
                 one.subscriptionCapable
@@ -362,7 +362,7 @@ ${[
                 postForm("/push/subscribe", joinHtml([
                   "",
                   html`<input type="hidden" name="endpoint" value=""><input type="hidden" name="p256dh" value=""><input type="hidden" name="auth" value="">`,
-                  html`<label>Your password <input type="password" name="token" autocomplete="current-password"></label>`,
+                  html`${reauth(html`<label>Your password <input type="password" name="token" autocomplete="current-password"></label>`)}`,
                   html`<button type="submit" id="push-enable">Get alerts on this device</button>`,
                   html`<p class="meta" id="push-state"></p>`,
                   "",
@@ -459,7 +459,7 @@ ${one.retiredAt === null
           : one.set ? { tone: "ok" as const, words: "API key saved" } : one.ambient ? { tone: "ok" as const, words: "Key from this computer’s environment" } : { tone: "off" as const, words: "Not set up" };
       return {
         provider: one.provider, name, tone: status.tone, words: status.words,
-        connection: one.connection === undefined ? null : { words: connectionWords(one.connection), facts: [one.connection.email, one.connection.plan, one.connection.method].filter(Boolean).join(" · "), checkHref: `/settings?check-connection=${encodeURIComponent(one.provider)}#providers` },
+        connection: one.connection === undefined ? null : { words: connectionWords(one.connection), facts: [one.connection.email, one.connection.plan, one.connection.method].filter(Boolean).join(" · "), checkAction: "/settings/connection/check" },
         usage: `${one.mode === "subscription" ? "Uses its own sign-in, so no API-key spend" : "Uses the API key"} · ${one.set ? `key stored${one.updatedAt === null ? "" : ` ${one.updatedAt.slice(0, 10)}`}` : one.ambient ? "key in this server's environment" : "no key stored"}`,
         envName: one.envName, subscriptionCapable: one.subscriptionCapable, mode: one.mode, set: one.set,
       };
@@ -601,6 +601,7 @@ export const SETTINGS_GROUPS: [string, [string, string, Html][]][] = [
   ["Agents", [
     ["/settings/lead", "Lead", html`<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M8 9h8M8 13h5"/>`],
     ["/settings/models", "Models", html`<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/>`],
+    ["/settings/spend", "Spend", html`<circle cx="12" cy="12" r="9"/><path d="M15 9.5c-.6-.9-1.7-1.5-3-1.5-1.7 0-3 .9-3 2s1.3 1.7 3 2 3 .9 3 2-1.3 2-3 2c-1.3 0-2.4-.6-3-1.5M12 6v2M12 16v2"/>`],
     ["/settings/skills", "Skills", html`<path d="m12 3 1.9 5.8L20 10l-5 3.6L16.8 20 12 16.4 7.2 20 9 13.6 4 10l6.1-1.2z"/>`],
     ["/settings/tools", "Tools", html`<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>`],
     ["/settings/knowledge", "Knowledge", html`<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/>`],
@@ -618,6 +619,7 @@ export const SETTINGS_GROUPS: [string, [string, string, Html][]][] = [
   ]],
   ["Access and rules", [
     ["/settings/sign-in", "Sign-in", html`<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>`],
+    ["/settings/passwordless", "Passwordless", html`<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>`],
     ["/settings/sessions", "Sessions & tokens", html`<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/>`],
     ["/settings/project", "Project", html`<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>`],
     ["/settings/policy", "Policy", html`<path d="M9 12l2 2 4-4"/><rect x="4" y="3" width="16" height="18" rx="2"/>`],

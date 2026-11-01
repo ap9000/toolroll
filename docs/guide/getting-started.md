@@ -2,7 +2,7 @@
 
 ## Install
 
-On macOS or Linux, with Node.js 22.13 or newer and git:
+On macOS or Linux, with Node.js 22.13 or newer and git 2.41 or newer:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/ap9000/toolroll/main/install.sh | sh
@@ -12,9 +12,12 @@ It installs the `toolroll` command and starts it with your projects in
 `~/Projects`. `standing-orders`, the older name, still works. You can also run
 it without installing: `npx toolroll up`.
 
-The first start prints your login and saves it in
-`~/.config/toolroll/up-login.txt`, then opens the console at
-http://127.0.0.1:4180.
+The first start creates your login, saves the password in
+`~/.config/toolroll/up-login.txt` and opens the console at
+http://127.0.0.1:4180, already signed in. Every start prints where that
+file is and the command that shows the password
+(`cat ~/.config/toolroll/up-login.txt`); the password itself is never
+printed.
 
 To look around first, `npx toolroll demo` opens a throwaway sandbox
 with tasks and two flows already mid-flight. It never spends and never
@@ -36,6 +39,15 @@ hands the shebang to Node, so `bunx toolroll up` works too. Coming from
 Standing Orders? It's the same product renamed; the `standing-orders` command
 and your data keep working.
 
+Toolroll needs git 2.41 or newer: it reads agent-written checkouts with
+`git --attr-source`, which older git refuses, and `toolroll up`, `serve`,
+`watch` and `doctor` say so when the installed git is older. Ubuntu 24.04
+ships 2.43, which works; Debian 12 ships 2.39: install a newer one there. On
+git older than 2.45 (no `git --no-lazy-fetch`), a project that is a partial
+clone (`git clone --filter=…`) is refused for Toolroll's protected reads: use
+git 2.45 or newer for those, or a full clone. CI runs the git tests on 2.41
+and on 2.47.
+
 ### More about `up`
 
 Choose your projects folder the first time:
@@ -44,8 +56,9 @@ Choose your projects folder the first time:
 npx toolroll up --project-root ~/Projects
 ```
 
-`up` prints your login once (and saves it beside the database as
-`up-login.txt`), opens the app in your browser, and connects this machine as
+`up` saves your password beside the database as `up-login.txt` (every
+start prints where, and the `cat` command that shows it; never the password
+itself), opens the app in your browser, and connects this machine as
 the builder. Add an existing folder or a GitHub repository from **Projects**;
 the builder and unified chat pick it up while the app keeps running. The
 projects folder and every added repository are remembered. Later,
@@ -92,6 +105,61 @@ Codex (`codex`) or Gemini. Settings → AI providers shows which are connected.
 Open **Chat** and say what you want in plain words. The lead drafts a task
 with a goal, boundaries and checks for you to approve. Nothing is built until
 you approve it, and every result waits for you to accept it.
+
+## Change requests from youiyoux
+
+If a project uses youiyoux, the design-system tool (it has a
+`youi.project.json` or a `.youi/requests` folder), a change you ask for in the
+youiyoux hub becomes a Toolroll task by itself, within a minute, with no setup.
+The task keeps the request's goal, what it must not change, the files it
+touches (when youiyoux knew them all) and its requirements.
+
+- **It always waits for you.** No hands-off mode, flow grant or schedule
+  approves it. You approve it in Toolroll, where you see every word, or in
+  your paired chat.
+- **Approve from chat, one at a time or all at once.** Each pass that files
+  requests sends one card to your paired chat. It lists every new task with
+  every word of its terms: the goal, what it must not change, its files (or
+  "any file (no file list)"), its requirements, and what the agent may do and
+  spend. **Approve all** and each task's own **Approve** ask once more before
+  they act. A task whose terms changed since the card was sent is named and
+  left out. A task too long for one message (or one that names a folder on
+  your computer) gets only its **Open** link. This needs approving from chat
+  turned on (in Settings, or `toolroll chat-approval on`); without it the card
+  still comes, with each task's link. Teams shows the links only.
+- **Each request is filed once.** Editing or reopening it later files nothing
+  new. Comments and closed requests are left alone, and text that looks like
+  a key or password is never filed.
+- **The task says where it came from.** Its page names the request, the page
+  and component you pointed at, and the file and line that draw it.
+- **youiyoux sees how it's going.** Beside each request Toolroll writes
+  `<id>.task.json` with the task and its status: queued, needs-you,
+  building, ready, done, failed or stopped. It also links to the task and to
+  what needs you in Toolroll, using the console address you set, or else this
+  computer's own console. Beside an options request's options (below), it is
+  the only file Toolroll writes in your checkout, and never through a link.
+- **Options come back to youiyoux's canvas.** When you ask youiyoux for
+  options on a component, the request becomes a task the same way, and waits
+  for your approval the same way. Its agent may write one file,
+  `.youi/proposals/p-<id>.json`, with two to four options. Once the result is
+  ready for review, Toolroll copies that file from the result's commit into
+  your project, and youiyoux's hub shows the options on the Screens canvas.
+  It never copies a file that is a link, over 64 KB, not youiyoux's options
+  format, already decided or holding a key, and never replaces a file already
+  there (that task then waits for your review); the request's status says why
+  instead. Keep `.youi/proposals` out of
+  `.gitignore`, so the agent's file is part of its result.
+- **Pick in youiyoux, done in Toolroll.** When you pick an option or dismiss
+  them in the hub (on the options Toolroll copied, unchanged), Toolroll marks
+  the task complete without merging or
+  publishing its branch, and its history says who decided what. If the task
+  would need someone else to complete it (it changed protected files), has a
+  failing check, or has a newer result, it stays ready for review and says
+  why.
+
+Settings → Integrations shows each project's **youiyoux** row: Connected with
+how many requests are queued, Broken when a request file can't be read (a link,
+over 64 KB, or not a request), and **Turn off** to stop it for that project.
 
 ## Start from a kit
 

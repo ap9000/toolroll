@@ -4,7 +4,7 @@ import { adapterPolicy } from "./server/route-policy.js";
  * has no client-initiated socket, so inbound activities arrive over HTTPS
  * and everything else runs from the database like the other channels. */
 import { randomBytes } from "node:crypto";
-import { setTimeout as sleep } from "node:timers/promises";
+import { abortablePause, workChatQueue } from "./chat-follow.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { ChatState } from "./chat-delivery-state.js";
 import { chatObject as object } from "./chat-delivery.js";
@@ -65,7 +65,7 @@ export async function followTeams(
   options: Omit<TeamsChatOptions, "identity" | "api" | "owner" | "current"> & { dir: string; signal: AbortSignal; notifications: () => boolean; fetcher?: typeof fetch },
 ): Promise<void> {
   const owner = randomBytes(16).toString("hex"), state = new ChatState(options.store, "teams");
-  const pause = async (ms: number) => { try { await sleep(ms, undefined, { signal: options.signal }); } catch { /* shutdown */ } };
+  const pause = abortablePause(options.signal);
   while (!options.signal.aborted) {
     const credentials = loadTeamsCredentials(options.dir);
     if (!credentials || !state.lease(credentials.installation, owner, new Date())) { await pause(2000); continue; }
@@ -89,14 +89,16 @@ export async function followTeams(
         await pause(30_000);
         continue;
       }
-      while (same()) {
-        if (state.retryAt(credentials.installation) > new Date().toISOString()) { await pause(1000); continue; }
-        await processTeamsEvent(chat);
-        if (same()) await planTeamsRooms(chat);
-        if (same()) await deliverTeamsPart(chat);
-        if (same() && options.notifications()) await planTeamsNotifications(chat);
-        await pause(1000);
-      }
+      await workChatQueue({
+        same,
+        ready: () => !(state.retryAt(credentials.installation) > new Date().toISOString()),
+        pause,
+        notifications: () => options.notifications(),
+        process: () => processTeamsEvent(chat),
+        rooms: () => planTeamsRooms(chat),
+        deliver: () => deliverTeamsPart(chat),
+        notify: () => planTeamsNotifications(chat),
+      });
     } catch {
       if (alive) problem("Teams delivery is unavailable. Retrying shortly.");
     } finally {

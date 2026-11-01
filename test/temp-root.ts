@@ -1,3 +1,4 @@
+import { accessSync, constants, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname } from "node:path";
 import { makeTempRoot, removeOnExit, removeRoot } from "../scripts/suite-lifecycle.mjs";
@@ -15,7 +16,7 @@ export default function tempRoot(project?: { vitest?: { _tmpDir?: unknown } }): 
   const own = project?.vitest?._tmpDir;
   if (typeof own === "string" && dirname(own) === tmpdir() && /^[\w-]{21}$/.test(basename(own))) removeOnExit(own);
   const before = { TMPDIR: process.env.TMPDIR, TMP: process.env.TMP, TEMP: process.env.TEMP };
-  const root = makeTempRoot("so-t");
+  const root = makeTempRoot("so-t", { parent: shortTempParent() });
   process.env.TMPDIR = root;
   process.env.TMP = root;
   process.env.TEMP = root;
@@ -26,4 +27,23 @@ export default function tempRoot(project?: { vitest?: { _tmpDir?: unknown } }): 
     }
     removeRoot(root);
   };
+}
+
+/**
+ * The shortest way to name the temp folder this run inherited, so the socket paths tests make under it stay within the
+ * OS limit. On a Mac, /private/var/... is also /var/.... A check the plane runs in its macOS fence gets a temp folder
+ * one level inside its own launch folder (the tmp folder in so-cmd-…), 19 bytes deeper than a person's; that launch folder is the
+ * build's own and writable, so the run's root goes beside the temp folder there instead.
+ */
+function shortTempParent(): string {
+  let parent = tmpdir();
+  const launch = dirname(parent);
+  if (basename(parent) === "tmp" && /^so-cmd-[\w]+$/.test(basename(launch))) {
+    try { accessSync(launch, constants.W_OK); parent = launch; } catch { /* stay in the temp folder */ }
+  }
+  if (process.platform === "darwin" && parent.startsWith("/private/var/")) {
+    const alias = parent.slice("/private".length);
+    try { if (realpathSync(alias) === realpathSync(parent)) parent = alias; } catch { /* keep the real path */ }
+  }
+  return parent;
 }

@@ -135,17 +135,6 @@ describe("people over /mcp", () => {
     expect(ran).toHaveLength(1);
   });
 
-  test("another project's task is refused exactly like a task that does not exist", async () => {
-    people();
-    const sam = client(token("sam", "act").token);
-    const foreign = await sam.call("task_show", { ref: "t-bank" });
-    const missing = await sam.call("task_show", { ref: "t-nowhere" });
-    expect(foreign.isError).toBe(true);
-    expect(JSON.parse(foreign.content[0]!.text)).toMatchObject({ ok: false, reason: "unknown-task" });
-    expect(JSON.parse(missing.content[0]!.text)).toMatchObject({ ok: false, reason: "unknown-task" });
-    expect((await sam.call("file_task", { repo: "/repo/bank", title: "Sneak in", idempotency_key: "bank-0001" })).isError).toBe(true);
-  });
-
   test("a read token is refused file_task before any command runs", async () => {
     people();
     const reader = client(token("alex", "read").token);

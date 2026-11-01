@@ -47,12 +47,33 @@ import { phoneText, PHONE_HELP, phoneCommand, phoneStatus, phoneTaskView, phoneT
 import { applyRoomInbound, conversationRow, roomCardApprover, roomCommand, roomGrantAllowed, roomMessagesAfter, roomMessageText, teamDomain } from "./chat-rooms.js";
 import { isTelegramProgressNotification, proposalTaskOf, type Notification, type Store } from "./store.js";
 import { isShotsKind, resultShotsFor } from "./result-shots.js";
-import { CHAT_APP_NAMES } from "./flow-triggers.js";
 import type { SubscriptionLeadRunner } from "./subscription-chat.js";
 import { answersPrompt, applyDecideFeedback, applyDecideTap, decideFallbackLink, decideOffer, decideTargetOf, hasLiveDecideTokens, linksFor, mergedText,
   mintDecideButtons, offerFingerprint, openPromptFor, recordChatMerge, type ChatMerge, type DecideButton, type DecideOffer, type DecideSeat, type DecideTarget } from "./chat-decide.js";
 import { mergePullRequest } from "./pull-request-flow.js";
-import { watchedPing } from "./agent-board.js";
+import { attentionSubjectOf, neverHeld, watchedPing } from "./agent-board.js";
+/**
+ * The watch at a chat app's final fence (cockpit §3, R11), right before the network: a notice about an agent its
+ * person has open now waits, as a held part, until the watch ends; then it is delivered as usual. The subject is the
+ * part's own run, or its task's live build. Only a part planned with `watch` (never a security alert or the digest)
+ * can be held. True: held, so nothing is sent now.
+ */
+export function heldForWatch(state: ChatState, store: Store, part: number, event: { kind: string }, approver: string, content: ChatContent, now: Date): boolean {
+  // Fail closed: only a notice planned as holdable (a kind a watch may hold) is ever held here.
+  if (event.kind !== "notice" || content.watch !== true) return false;
+  // One part may cover several tasks (a grouped card, a batch): it waits only while every one of them is watched,
+  // until the first of those watches ends.
+  const subjects = content.subjects ?? [{ ref: content.task ? store.lookupRef(content.task)?.id ?? null : null, run: content.run ?? null }];
+  if (subjects.length === 0) return false;
+  let until: string | null = null;
+  for (const subject of subjects) {
+    const decided = watchedPing(store, { kind: "notice", run: subject.run, taskRef: subject.ref }, approver, now);
+    if (decided === "send" || decided === "skip") return false;
+    if (until === null || decided.hold < until) until = decided.hold;
+  }
+  state.holdPart(part, until!);
+  return true;
+}
 export const chatObject = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v)
     ? (v as Record<string, unknown>)
@@ -515,11 +536,12 @@ export async function processChatEvent(
       if (
         !outcome.ok &&
         "refused" in outcome &&
-        outcome.refused === "concurrent"
+        (outcome.refused === "concurrent" || outcome.refused === "backlog")
       ) {
+        // The lead is answering, or messages sent earlier wait in the person's lead queue: this one waits its turn.
         state.defer(
           event.id,
-          "Assistant is answering another message",
+          outcome.refused === "backlog" ? "Waiting behind earlier messages" : "Assistant is answering another message",
           new Date(nowOf(options).getTime() + 5000),
         );
         return true;
@@ -555,7 +577,7 @@ export async function processChatEvent(
         event.id,
         [
           {
-            text: leadFailureText(turn?.failureReason ?? null),
+            text: leadFailureText(turn?.failureReason ?? null, turn != null && store.leadTurnCostUnconfirmed(turn.id)),
           },
         ],
         nowOf(options),
@@ -893,13 +915,18 @@ export async function planRoomMessages(options: ChatDeliveryOptions): Promise<vo
 
 /** Quiet mode: the task's one card (or its group's) in this person's chat, planned once and then repainted in
  * place whenever what it says changes. */
-function planQuietCard(options: ChatDeliveryOptions, binding: ChatBinding, notification: Parameters<typeof isTaskFact>[0] & { taskRef: number | null; taskId: string | null; createdAt: string }, now: Date): void {
+function planQuietCard(options: ChatDeliveryOptions, binding: ChatBinding, notification: Parameters<typeof isTaskFact>[0] & { kind: string; taskRef: number | null; taskId: string | null; createdAt: string }, now: Date): void {
   const { state, store, identity } = options;
   if (notification.taskRef === null || notification.taskId === null) return;
   const card = store.chatCardFor(`${state.provider}:${binding.id}`, notification.taskRef, store.getTask(notification.taskId)?.createdAt ?? notification.createdAt, now);
   const view = quietCardView(store, card.tasks, now, options.evidenceRoot, binding.approver);
   if (view === null) return;
-  const content: ChatContent = { text: view.text, link: view.link, ...(card.tasks.length === 1 ? { task: notification.taskId } : {}) };
+  // A card about one task is that task's: its person's watch may hold it at the final fence (never a security kind).
+  // A card about its tasks is theirs: its person's watch may hold it at the final fence while every one of them is
+  // watched (never for a security kind).
+  const content: ChatContent = { text: view.text, link: view.link, ...(card.tasks.length === 1 ? { task: notification.taskId } : {}),
+    ...(card.tasks.length > 0 && !neverHeld(notification.kind) ? { watch: true as const } : {}),
+    ...(card.tasks.length > 1 && !neverHeld(notification.kind) ? { subjects: card.tasks.slice(0, 100).map(ref => ({ ref, run: null })) } : {}) };
   const shown = chatHash(JSON.stringify(content));
   if (card.message !== null) {
     if (card.digest === shown) return;
@@ -926,7 +953,12 @@ function planFinished(options: ChatDeliveryOptions, binding: ChatBinding, taskRe
   // A single update keeps its task and run, so a reply to it names that work.
   const single = batch.items.length === 1 ? batch.items[0]! : null;
   const task = single === null ? null : store.refById(single.taskRef)?.externalId ?? null;
-  const about = { ...(task === null ? {} : { task }), ...(single?.run == null ? {} : { run: single.run }) };
+  // Holdable when its fact is a kind a watch may hold (the batch line for a finished run, or the notification joining
+  // it); a batch of several holds only while every one of them is watched.
+  const joining = notification === null ? null : options.store.notificationById(notification);
+  const holdable = batch.items.length > 0 && (joining === null || !neverHeld(joining.kind));
+  const about = { ...(task === null ? {} : { task }), ...(single?.run == null ? {} : { run: single.run }), ...(holdable ? { watch: true as const } : {}),
+    ...(holdable && batch.items.length > 1 ? { subjects: batch.items.slice(0, 100).map(one => ({ ref: one.taskRef, run: one.run })) } : {}) };
   // A message about one result, plan, failure or pull request acts in place (chat-decide.ts), as on Telegram: its
   // buttons are minted only when what it offers changed, or its own were spent (Not now), so an unchanged repaint keeps them.
   const offer = decideOfferFor(options, binding, view.target, repos, now);
@@ -1131,6 +1163,7 @@ function offerNotice(options: ChatDeliveryOptions, notification: Notification, b
             task: notification.taskId,
             run: run.id,
             link: card.link,
+            ...(attentionSubjectOf(store, notification) !== null ? { watch: true as const } : {}),
           };
           const digest = chatHash(JSON.stringify(content));
           const prior = state
@@ -1223,6 +1256,7 @@ function offerNotice(options: ChatDeliveryOptions, notification: Notification, b
                 ), notification.taskId === null ? [] : [{ id: notification.taskId, title: chatTitle(store, notification.taskId) }]),
                 ...(notification.taskId ? { task: notification.taskId } : {}),
                 ...(run ? { run: run.id } : {}),
+                ...(attentionSubjectOf(store, notification) !== null ? { watch: true as const } : {}),
                 ...(offer !== null ? { decide: mintDecide(options, binding, target!, offer, now) }
                   : fallback !== null ? { link: fallback }
                   : notification.link

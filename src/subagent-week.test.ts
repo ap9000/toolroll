@@ -16,8 +16,9 @@ import { moveCardInFlow } from "./flow-engine.js";
 import { addToolTo, validateToolSpec } from "./project-tools.js";
 import { answerSubagentQuestion } from "./subagent-work.js";
 import { grantTool, setToolRules } from "./subagent-tools.js";
-import { requestUndo, runRequestedUndos, sendSubagentWeeklies, undoCall, undoFor, weekOf, weekWords } from "./subagent-week.js";
+import { requestUndo, runRequestedUndos, sendSubagentWeeklies, undoCall, undoFor, weekOf } from "./subagent-week.js";
 import { claudeTurnRunner, SUBAGENT_TEMPLATES, type TurnRequest, type TurnRunner } from "./subagents.js";
+import { NO_OS_FENCE } from "../test/inside-fence.js";
 
 const T0 = new Date("2026-09-23T10:00:00.000Z"); // a Wednesday
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
@@ -29,6 +30,8 @@ beforeEach(async () => {
   calls = join(dir, "calls.log");
   store = openStore(join(dir, "orders.db"));
   if (!addApprover(store, "alex", T0).ok) throw new Error("bootstrap");
+  // Where no OS fence can be made (inside the plane's check, a runner without bubblewrap) an operator allows unconfined agents.
+  if (NO_OS_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
   const server = join(dir, "desk-mcp.mjs");
   writeFileSync(server, `import { createInterface } from "node:readline";
 import { appendFileSync } from "node:fs";
@@ -51,7 +54,7 @@ createInterface({ input: process.stdin }).on("line", line => {
   ] }) }, T0);
   store.createSubagent({ repo, handle: "maya", soul: SUBAGENT_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, T0);
   mate = store.subagentByHandle(repo, "maya")!;
-  expect(await grantTool(store, mate, "desk", "alex", T0, { toolHome: dir })).toMatchObject({ ok: true });
+  expect(await grantTool(store, mate, "desk", "alex", T0, { toolHome: dir }, { widening: "proved" })).toMatchObject({ ok: true });
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
@@ -65,7 +68,7 @@ function turns(...answers: Record<string, unknown>[]): TurnRunner {
 }
 const io = (subagent: TurnRunner): StepIo => ({ gh: exec, git: exec, shell: exec, fetch, dir, scratch: join(dir, "scratch"), base: "main", toolHome: dir, subagent });
 const made = () => existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map(line => JSON.parse(line) as { name: string; arguments: Record<string, unknown> }) : [];
-const cardFor = (title: string) => store.addFlowCard({ flow, title, description: null, stage: "maya", by: "alex" }, T0);
+const cardFor = (title: string) => store.addFlowCard({ flow, title, description: null, stage: "maya", by: "alex", byKind: "person" }, T0);
 
 test("the CLI's cost and tokens are kept for each turn (cache reads count as input)", async () => {
   const cli = async (): Promise<ExecResult> => ({ code: 0, stdout: JSON.stringify({ type: "result", subtype: "success", is_error: false, total_cost_usd: 0.0123,
@@ -93,14 +96,6 @@ test("the week counts what it did, what it cost and what people overrode, and re
     "alex turned down desk → add_label · ticket T-1 · label urgent: “Not urgent, it's a toy printer.”",
   ]);
   expect(store.getFlowCard(second)?.stage).toBe("done");
-  expect(weekWords(mate, week)).toBe([
-    "Maya decided 0, handled 2, handed 0 to people and asked 0 questions.",
-    "Tool calls: 0 made, 1 turned down.",
-    "3 turns, about 2 minutes of thinking, $0.04 at API prices.",
-    "You overrode it 2 times:",
-    "• alex moved “Printer on fire” after Maya did",
-    "• alex turned down desk → add_label · ticket T-1 · label urgent: “Not urgent, it's a toy printer.”",
-  ].join("\n"));
   // Mid-week nothing goes out; Monday from 9:00 (this computer's time), once.
   const monday = new Date(2026, 8, 28, 9, 30);
   expect(sendSubagentWeeklies(store, repo, at(6))).toBe(0);
@@ -111,7 +106,7 @@ test("the week counts what it did, what it cost and what people overrode, and re
 
 test("a person undoes a call with the action its manager named: the same input, as them; a failed undo leaves the call; the lead's undo is made by the worker", async () => {
   expect(setToolRules(store, mate, "desk", { add_label: { use: "free", undo: "add_label" } }, "alex", T0)).toMatchObject({ ok: false });
-  expect(setToolRules(store, mate, "desk", { add_label: { use: "free", undo: "remove_label" }, remove_label: { use: "never" } }, "alex", T0)).toMatchObject({ ok: true });
+  expect(setToolRules(store, mate, "desk", { add_label: { use: "free", undo: "remove_label" }, remove_label: { use: "never" } }, "alex", T0, { widening: "proved" })).toMatchObject({ ok: true });
   const card = cardFor("Label the printer ticket");
   await runFlowSteps(store, repo, at(1), io(turns(
     { action: "use_tool", tool: "desk.add_label", input: '{"ticket": "T-1", "label": "urgent"}', reason: "It's urgent." },

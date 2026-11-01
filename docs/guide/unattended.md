@@ -23,7 +23,7 @@ do not loosen when you leave the room:
 | guess at a judgement call | it parks a typed decision — recap, options with reversibility, recommendation, evidence — and the other eleven tasks keep going |
 
 The whole claim is executable: one test,
-[`src/unattended.test.ts`](../../src/unattended.test.ts), queues twelve tasks,
+[`src/unattended.slow.test.ts`](../../src/unattended.slow.test.ts), queues twelve tasks,
 walks away, and comes back to pull requests.
 
 ## It survives the night, cheaply

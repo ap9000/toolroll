@@ -19,6 +19,7 @@ import type { Runner } from "./builder.js";
 import { flowFromSteps, validateFlowDefinition } from "./flows.js";
 import { saveScript } from "./flow-scripts.js";
 import { alone, flowHousekeeping, moveCards, type FlowIo } from "./flow-cadence.js";
+import { NO_OS_FENCE } from "../test/inside-fence.js";
 
 const OK: ExecResult = { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
 const AGENT_SAID = JSON.stringify({ result: "Added the guard." });
@@ -91,7 +92,7 @@ describe("the builder moves flow cards while it builds", () => {
       { id: "work", title: kind === "report" ? "Research" : "Build", kind, instructions: "Find three references.", next: "choose" },
       { id: "choose", title: "Choose", kind: "inbox" },
     ] })) }, new Date());
-    const card = store.addFlowCard({ flow, title: "Landing page ideas", description: null, stage: "work", by: "alex" }, new Date());
+    const card = store.addFlowCard({ flow, title: "Landing page ideas", description: null, stage: "work", by: "alex", byKind: "person" }, new Date());
     store.updateFlowCard(card, { task }, new Date());
     return card;
   });
@@ -153,6 +154,8 @@ describe("overlapping flow passes", () => {
   beforeEach(() => {
     store = openStore(db);
     if (!addApprover(store, "alex", new Date()).ok) throw new Error("approver");
+    // Where no OS fence can be made (inside the plane's check, a runner without bubblewrap) an operator allows unconfined agents.
+    if (NO_OS_FENCE) store.setUnfencedAgentsAllowed(true, "alex", new Date());
     for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "alex", new Date());
   });
   afterEach(() => { store.close(); });
@@ -180,7 +183,7 @@ describe("overlapping flow passes", () => {
     const flow = store.createFlow({ repo, name: "Check it", by: "alex", definitionJson: JSON.stringify(flowFromSteps([
       { title: "Journeys", kind: "check", script: "journeys" }, { title: "Research", kind: "report", instructions: "Explain the result." },
     ], null)) }, new Date());
-    const card = store.addFlowCard({ flow, title: "Nightly journeys", description: null, stage: "journeys", by: "alex" }, new Date());
+    const card = store.addFlowCard({ flow, title: "Nightly journeys", description: null, stage: "journeys", by: "alex", byKind: "person" }, new Date());
     let scripts = 0;
     // The script takes a moment, so every other pass starts while it runs.
     const shell: Runner = async (file, args, options) => { scripts++; await sleep(200); return exec(file, args, options); };

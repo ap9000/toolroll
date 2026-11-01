@@ -3,16 +3,9 @@ import { chatQuestionButtons } from "./subagent-question.js";
 import { chatAskButtons } from "./chat-ask.js";
 import { chatFlowButtons } from "./chat-flow.js";
 import { refuseResultShots, resultShotsPruned, shotWaitsUntil } from "./result-shots.js";
-import { channelInbox } from "./chat-inbox.js";
-import { roomCommand } from "./chat-rooms.js";
+import { admitChatEvent } from "./chat-admission.js";
 import {
-  ChatState,
-  ChatDeliveryError,
-  chatHash,
-  partContent,
-  type ChatIdentity,
-  type ChatContent,
-  type ChatPart,
+  ChatState, ChatDeliveryError, chatHash, partContent, type ChatIdentity, type ChatContent,
 } from "./chat-delivery-state.js";
 import { readChatPart, type ChatEventBody } from "./contracts/chat-content.js";
 import { readDiscordButtonToken, readDiscordComponentInteraction } from "./contracts/discord-callback.js";
@@ -23,6 +16,7 @@ import {
   chatObject as object,
   type ChatDeliveryOptions,
   planRoomMessages,
+  heldForWatch,
 } from "./chat-delivery.js";
 import { chatResultHref } from "./chat-controls.js";
 import { LEAD_MESSAGE_MAX_CHARS } from "./lead.js";
@@ -155,21 +149,9 @@ export function receiveDiscord(
     member === identity.bot
   )
     return false;
-  const words = "text" in payload ? payload.text ?? "" : "";
-  // v89: a channel that feeds a flow takes anyone's message (as a card, with no say over anything); "flow 12" connects one.
-  const inbox = isRoom && kind === "message" ? channelInbox(state.store, "discord", identity.installation, String(channel), words) : { watched: false, command: false };
-  const roomish = isRoom && (state.room(identity.installation, String(channel)) !== null || (kind === "message" && roomCommand(words) !== null) || inbox.watched || inbox.command);
-  if (isRoom && !roomish) return false;
-  const binding = state.bindingFor(identity.installation, member);
-  const open = inbox.watched && !inbox.command;
-  if (
-    kind === "pair"
-      ? !!binding || isRoom
-      : !open && (!binding ||
-        !state.live(binding) ||
-        (binding.channel !== channel && !roomish))
-  )
-    return false;
+  const admitted = admitChatEvent(state, "discord", identity.installation, { kind, member, channel, isRoom, payload });
+  if (admitted === null) return false;
+  const { binding } = admitted;
   return state.enqueue({
     id: chatHash(
       `${identity.installation}:${kind === "action" ? "interaction" : "message"}:${id}`,
@@ -506,6 +488,8 @@ export async function deliverDiscordPart(
           fail_if_not_exists: false,
         };
     }
+    // The watch, at the last moment before the network (cockpit §3).
+    if (heldForWatch(state, store, row.id, event, binding.approver, content, now)) return true;
     const answer = await options.api(
       target ? "PATCH" : "POST",
       `/channels/${destination}/messages${target ? `/${target}` : ""}`,

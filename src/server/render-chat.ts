@@ -1,4 +1,5 @@
 /** The conversation: chat and lead pages, proposal cards and the task chat. */
+import type { TaskOrigin } from "../task-source.js";
 import { assignmentSummaryHtml } from "../assignment-ui.js";
 import { type AssignmentSnapshot } from "../assignment.js";
 import { type BrowserActionCard } from "../browser-workspace.js";
@@ -27,14 +28,14 @@ import { assignmentStageOf,stageOfCode } from "../task-status.js";
 import { type TeamChatProviderResolver } from "../team-chat-authorization.js";
 import { type TeamSnapshot } from "../team-contract.js";
 import { buildProgressOf,type DisplayStatus } from "../workspace-ui.js";
-import { html,htmlString,isHtml,joinHtml,postForm,replaceMarkup,type Html,type HtmlValue } from "../html.js";
+import type { LeadQueueRow } from "../lead-queue.js";
+import { html, htmlString, isHtml, joinHtml, postForm, replaceMarkup, type Html, type HtmlValue, reauth } from "../html.js";
 import { requestContext,withFormToken } from "./request-context.js";
 import { createHash,randomBytes } from "node:crypto";
 import { chatMoney,type Chrome,oneLineOf,relativeAge,safePrUrl,screen,type Screen,sentenceCase,strokeIcon } from "./chrome.js";
 import { chatResultHref,projectChatHref,taskChatHref,taskHref } from "./http.js";
 import { type ProjectPeek } from "./render-pages.js";
 import { completionReceiptCard,type CompletionReceiptView } from "./render-results.js";
-import { type LeadFormFacts } from "./render-settings.js";
 import { agentsAvailabilityHtml,agentsBadgesHtml,agentsStripHtml,agentsSummaryWords,agentsWhyHtml,approvalSheetHtml,checkProgressHtml,consentClosedHtml,consentDoorOf,decisionAnswerCard,dispatchHeadline,milestoneProgressHtml,type MilestoneProgressView,type PlanContractView,planRevisionLedgerHtml,type PlanRevisionLedgerView,profileWords,type RevisionView,type RouteView,sizeConsequence,taskControlDetailsHtml,taskStatusCard,taskViewSwitch } from "./render-tasks.js";
 
 /** The installation fact that the lead was turned on by default, once (its value: the provider). */
@@ -93,6 +94,8 @@ export type TaskChatFocus = {
     deliverable: "branch" | "report";
     revision: RevisionView | null;
     coordinator: { label: string; filedAgo: string | null } | null;
+    /** v126: where the work came from (an outside event's line of context). */
+    origin?: TaskOrigin | null;
     /** The repair chain row when this task is a machine-drafted repair. */
     repairChain: RepairChainRow | null;
   } | null;
@@ -156,7 +159,9 @@ export function taskChatApproval(focus: TaskChatFocus, csrf: string): Html {
       repairChain: approval.repairChain,
       route: focus.route,
       coordinator: approval.coordinator,
+      origin: approval.origin ?? null,
       deliverable: approval.deliverable,
+      rebuild: focus.assignment?.need != null && "key" in focus.assignment.need && focus.assignment.need.key === "replan" ? focus.assignment.need.build : null,
       // Edit plan opens the task page's sheet with its fields open for editing.
       editHref: `${taskHref(focus.id)}?edit=plan#plan-editor`,
       notNowHref: "/chat",
@@ -183,12 +188,15 @@ export function taskChatLiveRegion(focus: TaskChatFocus, csrf: string, fragment 
       : fragment && focus.approval !== null && focus.plan !== "requested"
         ? html`<section class="card chat-action-card chat-refresh-action"><a class="button-link" href="${approvalHref}" data-primary-action>Approve plan</a></section>`
         : taskChatApproval(focus, csrf));
-  const approvalCard = focus.approval !== null && focus.dispatch?.action !== "approve-scope"
+  // The approval leads when dispatch waits on it or the plan was rewritten after a build (the assignment's one action).
+  const approvalLeads = focus.dispatch?.action === "approve-scope" ||
+    (focus.assignment?.primaryAction?.code === "approve-scope" && focus.assignment.primaryAction.target.taskId === focus.executionId);
+  const approvalCard = focus.approval !== null && !approvalLeads
     ? html`<details class="task-secondary-approval"><summary>Updated approval terms</summary>${approvalContent}</details>` : approvalContent;
   const polling = !inert && ((focus.approval === null || focus.plan === "requested") && focus.state !== "done" && focus.state !== "cancelled" || focus.control.kind === "stopping" || focus.control.kind === "stop");
   const status = focus.assignment !== null
-    ? html`${assignmentSummaryHtml(focus.assignment, { workStatus: focus.status, hideAction: focus.approval !== null && focus.dispatch?.action === "approve-scope", sentence: chatStatusSentence(focus), ...(receiptLeads ? { resultHref: chatResultHref(focus.id, focus.result!.runId) } : {}) })}${receiptLeads ? completionReceiptCard(focus.result!, focus.id, "chat", focus.status, focus.assignment, false) : ""}`
-    : receiptLeads ? completionReceiptCard(focus.result!, focus.id, "chat", focus.status) : taskStatusCard(focus.status, focus.id, focus.dispatch, focus.liveRun?.id ?? null, focus.approval !== null && focus.dispatch?.action === "approve-scope");
+    ? html`${assignmentSummaryHtml(focus.assignment, { workStatus: focus.status, hideAction: focus.approval !== null && approvalLeads, sentence: chatStatusSentence(focus), ...(receiptLeads ? { resultHref: chatResultHref(focus.id, focus.result!.runId) } : {}) })}${receiptLeads ? completionReceiptCard(focus.result!, focus.id, "chat", focus.status, focus.assignment, false) : ""}`
+    : receiptLeads ? completionReceiptCard(focus.result!, focus.id, "chat", focus.status) : taskStatusCard(focus.status, focus.id, focus.dispatch, focus.liveRun?.id ?? null, focus.approval !== null && approvalLeads);
   const publication = focus.publication;
   const prUrl = publication === null ? null : safePrUrl(publication.prUrl);
   return html`<section id="task-chat-live" aria-live="polite" data-task="${focus.id}" data-execution="${focus.executionId}" data-source="/chat/task-status?task=${encodeURIComponent(focus.id)}" data-poll="${polling ? "1" : "0"}" data-approval="${focus.approval?.digest ?? ""}" data-plan="${focus.plan ?? ""}">${
@@ -370,8 +378,8 @@ export function chatHeading(copy: string, projectCount: number, showProjectToggl
 
 /** A deliberately small rich-text grammar for model copy. The reply is shaped first (the lead's voice, enforced:
  * no headers, at most three bold anchors, labelled links, no internal ids unless `asked` wanted them); input is
- * escaped before tags are introduced: bullets, numbered steps, bold, inline code and labelled http(s) links are
- * presentation only—never executable HTML. */
+ * escaped before tags are introduced: bullets, numbered steps, bold, inline code, fenced code blocks and labelled
+ * http(s) links are presentation only—never executable HTML. */
 export function renderChatText(raw: string, asked?: string): Html {
   const inline = replyHtmlInline;
   const text = shapeReply(raw, { appOrigin: requestContext.getStore()?.appOrigins ?? null, ...(asked === undefined ? {} : { asked }) });
@@ -390,7 +398,22 @@ export function renderChatText(raw: string, asked?: string): Html {
     out.push(list.tag === "ul" ? html`<ul>${list.items}</ul>` : html`<ol>${list.items}</ol>`);
     list = null;
   };
+  // A fenced block (shaping leaves it exactly as written) is shown as written: escaped, never parsed.
+  let fence: { lang: string; lines: string[] } | null = null;
+  const closeFence = (): void => {
+    const open = fence as { lang: string; lines: string[] } | null;
+    if (open === null) return;
+    out.push(html`<pre class="chat-code"${open.lang === "" ? "" : html` data-lang="${open.lang}"`}><code>${open.lines.join("\n")}</code></pre>`);
+    fence = null;
+  };
   for (const line of lines) {
+    const open = fence as { lang: string; lines: string[] } | null;
+    if (open !== null) {
+      if (/^\s{0,3}```\s*$/.test(line)) closeFence(); else open.lines.push(line);
+      continue;
+    }
+    const fenceMark = /^\s{0,3}```\s*([A-Za-z0-9_+.#-]{0,24})\s*$/.exec(line);
+    if (fenceMark !== null) { flushParagraph(); closeList(); fence = { lang: fenceMark[1]!, lines: [] }; continue; }
     const bullet = /^\s*[-*]\s+(.+)$/.exec(line);
     const numbered = /^\s*(\d{1,9})[.)]\s+(.+)$/.exec(line);
     if (bullet !== null || numbered !== null) {
@@ -407,8 +430,27 @@ export function renderChatText(raw: string, asked?: string): Html {
       paragraph.push(line);
     }
   }
-  flushParagraph(); closeList();
+  // An unclosed fence still shows its lines as code: the reply may have been cut.
+  flushParagraph(); closeList(); closeFence();
   return html`<div class="chat-copy">${out}</div>`;
+}
+
+/** A line comment from the chat Workbench (src/browser/line-steer.tsx steerMessage): On "<file, as a JSON string>":<line>
+ * [ (removed line)] (run #<n>): <comment>, then a blank line and "> <the line>" (just ">" for a blank line, once the
+ * chat POST has trimmed the message), always last.
+ * The words the lead reads stay exactly as sent; the thread shows them in three parts: a small reference line, the quoted
+ * code as written, and the comment. Null for any other message, which keeps its own plain rendering. Everything is
+ * escaped by the html template. */
+export function steerCommentHtml(text: string): Html | null {
+  const steer = /^On ("(?:[^"\\\n]|\\.){1,1200}"):(\d{1,9})( \(removed line\))? \(run #(\d{1,12})\): ([\s\S]+)\n\n>(?: ([^\n]*))?$/.exec(text);
+  if (steer === null) return null;
+  // A blank line's quote ("> ") reaches the store as ">": the chat POST trims the message (src/server/chat.ts).
+  const [, quoted, line, removed, run, comment, code = ""] = steer;
+  let path: unknown;
+  try { path = JSON.parse(quoted!); } catch { return null; }
+  if (typeof path !== "string" || path === "" || /[\u0000-\u001f]/.test(path) || comment!.trim() === "") return null;
+  return html`<div class="chat-steer" data-steer-comment><p class="chat-steer-ref">${path}:${line}${removed === undefined ? "" : " · removed line"} · run #${run}</p>${
+    code === "" ? "" : html`<pre class="chat-steer-code"><code>${code}</code></pre>`}<p class="chat-steer-note" style="white-space:pre-wrap">${comment}</p></div>`;
 }
 
 export function chatActivity(activity: string | null): Html {
@@ -492,8 +534,6 @@ export function chatPage(chrome: Chrome, data: {
   /** Chat's first run is on the page: it already says what to do while there is no lead. */
   firstRunShown?: boolean;
 }): Screen {
-  const formFacts: LeadFormFacts = { keyFacts: data.keyFacts, openrouterModels: data.openrouterModels, ...(data.liveModels === undefined ? {} : { liveModels: data.liveModels }), csrf: data.csrf,
-    returnTo: data.focusTask === null ? "/chat" : taskChatHref(data.focusTask.id) };
   const parts: HtmlValue[] = [
     data.focusTask === null
       ? chatHeading("", data.projects.length, data.enabled.ok)
@@ -558,7 +598,7 @@ export function chatPage(chrome: Chrome, data: {
       html`<div class="card"><p><strong>${draft.title}</strong> <span class="badge">Draft ${draft.kind}</span></p><p class="meta">Drafted by the model from fleet context — nothing is filed; drafts do not survive a restart</p><p style="white-space:pre-wrap">${draft.goal}</p>${
         draft.outOfScope === null ? "" : html`<p class="meta">Not: ${draft.outOfScope}</p>`}${
         draft.touches.length > 0 ? html`<p class="meta">Touches: ${draft.touches.join(", ")}</p>` : ""}<p class="meta">Repo: <span class="mono">${projectName(one.repoPath)}</span></p>${
-        postForm(`/chat/file/${one.key}`, html`<input type="password" name="token" placeholder="your password" autocomplete="current-password"><button type="submit">File unapproved</button>`, { attrs: { class: "inline" } })}</div>`,
+        postForm(`/chat/file/${one.key}`, html`${reauth(html`<input type="password" name="token" placeholder="your password" autocomplete="current-password">`)}<button type="submit">File unapproved</button>`, { attrs: { class: "inline" } })}</div>`,
     );
   }
   if (!subscription && data.canManage && data.focusTask === null) {
@@ -566,7 +606,7 @@ export function chatPage(chrome: Chrome, data: {
       html`<h2>Ask</h2>`,
       postForm("/chat", joinHtml([
         html`<label>Message<textarea name="message" rows="3" maxlength="2000"></textarea></label>`,
-        html`<label>Your password <span class="meta">(every message — chat spends)</span><input type="password" name="token" autocomplete="current-password"></label>`,
+        html`${reauth(html`<label>Your password <span class="meta">(every message — chat spends)</span><input type="password" name="token" autocomplete="current-password"></label>`)}`,
         html`<button type="submit">Ask</button>`,
       ], "\n"), { attrs: { class: "card" } }),
     );
@@ -583,15 +623,20 @@ export function chatPage(chrome: Chrome, data: {
   return screen("chat", chatWorkspace(joinHtml(parts, "\n"), data.projects, true, data.focusTask, data.resultPanel ?? null), { chrome, functional: { script: CHAT_UI_SCRIPT + (data.focusTask === null ? "" : RESULT_REVIEW_SCRIPT), fetches: data.focusTask !== null } });
 }
 
-export function chatAckPage(chrome: Chrome, turn: ChatTurn, nonce: string): Screen {
+export function chatAckPage(chrome: Chrome, turn: ChatTurn, nonce: string, reply: LeadTurn | null = null): Screen {
+  // A lead reply's step reserves nothing itself: the reply set the money aside, and a reply whose cost is unknown has
+  // already counted that whole amount against its conversation. Say that amount, never the step's zero.
+  const replyCharge = reply === null ? null : reply.settledMicrousd ?? reply.reservedMicrousd;
   return screen("chat", joinHtml([
     html`<h1>Unknown spend</h1>`,
     html`<div class="card">`,
     html`<p>Turn <span class="mono">#${turn.id}</span> on <span class="mono">${turn.provider} · ${turn.model}</span> may have started before it failed (${turn.failureReason ?? "crashed"}), and its cost could not be measured.</p>`,
-    html`<p><strong>Acknowledging charges the reserved worst case, ${chatMoney(turn.reservedMicrousd)}, to the ledger and re-enables chat on this credential.</strong></p>`,
+    replyCharge === null
+      ? html`<p><strong>Acknowledging charges the reserved worst case, ${chatMoney(turn.reservedMicrousd)}, to the ledger and re-enables chat on this credential.</strong></p>`
+      : html`<p><strong>This lead reply's worst case, ${chatMoney(replyCharge)}, has already been counted against its conversation. Acknowledging adds nothing more and re-enables chat on this credential.</strong></p>`,
     html`<p class="meta">Check the provider's own usage dashboard if you want the exact figure first; the ledger keeps whichever is known.</p>`,
     postForm(`/chat/ack/${turn.id}`, joinHtml([
-      html`<label>Your password<input type="password" name="token" autocomplete="current-password"></label>`,
+      html`${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password"></label>`)}`,
       html`<button type="submit">Accept the charge — re-enable chat</button>`,
     ], "\n"), { hidden: { nonce } }),
     html`</div>`,
@@ -979,13 +1024,32 @@ export type LeadThreadRows = {
   focusTask: TaskChatFocus | null;
   /** The lead's open question to this reader, drawn as buttons under its reply. */
   ask?: LeadAsk | null;
+  /** The turn whose question the task has moved past: shown without buttons, marked out of date. */
+  staleAsk?: number | null;
   /** Every question the lead asked in these messages, by turn: answered ones show their words without buttons. */
   asks?: Map<number, LeadAsk>;
+  /** The person's lead queue rows for these messages, by message id (docs/plans/lead-message-queue.md). */
+  queue?: Map<number, LeadQueueRow>;
 };
+
+/** A queued message's state under its words: waiting (with Remove), or why it was not sent. Nothing for one that ran.
+ * A div, not a p: the Remove form can't sit inside a paragraph (the parser would close it first). */
+function queuedStateHtml(row: LeadQueueRow, back: string | null): Html {
+  if (row.status === "queued") {
+    const waiting = row.error?.startsWith("Waiting: ") === true ? row.error.slice("Waiting: ".length) : "It goes to the lead when it finishes.";
+    return html`<div class="so-queued" data-queued="${row.message}" data-queue-state="queued"><span class="so-queued-state">Queued</span> · ${waiting}${
+      postForm(`/chat/queued/${row.message}/remove`, html`<button type="submit" class="so-queued-remove quiet">Remove</button>`, { attrs: { class: "inline" }, ...(back === null ? {} : { returnTo: back }) })}</div>`;
+  }
+  if (row.status === "running" && row.turnId === null) return html`<div class="so-queued" data-queued="${row.message}" data-queue-state="starting"><span class="so-queued-state">Starting</span></div>`;
+  if (row.status === "cancelled" || row.status === "failed") return html`<div class="so-queued" data-queued="${row.message}" data-queue-state="${row.status}"><span class="so-queued-state">Not sent</span> · ${row.error ?? "It was not sent."}</div>`;
+  if (row.status === "uncertain") return html`<div class="so-queued" data-queued="${row.message}" data-queue-state="uncertain"><span class="so-queued-state">Not confirmed</span> · ${row.error ?? "Delivery could not be confirmed. Nothing was sent again."}</div>`;
+  return html``;
+}
 
 /** The lead's question as buttons: each option sends itself as the next message (the same POST as a typed one);
  * "Something else" moves to the composer. Nothing shows while a reply is running. */
-export function leadAskHtml(ask: LeadAsk, target: { task: string | null; project: string | null }, composer: string, open = true): Html {
+export function leadAskHtml(ask: LeadAsk, target: { task: string | null; project: string | null }, composer: string, open = true, stale = false): Html {
+  if (stale) return html`<div class="so-owner-ask" data-ask="${ask.turn}" data-ask-stale><p class="so-owner-ask-question"><strong>${ask.question}</strong></p><p class="so-owner-ask-stale">Out of date: the task changed after this was asked. Its status above says what it needs now.</p></div>`;
   if (!open) return html`<div class="so-owner-ask" data-ask="${ask.turn}"><p class="so-owner-ask-question"><strong>${ask.question}</strong></p></div>`;
   const hidden = target.task !== null ? { task: target.task } : target.project !== null ? { project: target.project } : {};
   return html`<div class="so-owner-ask" data-ask="${ask.turn}"><p class="so-owner-ask-question"><strong>${ask.question}</strong></p><div class="so-owner-ask-options" role="group" aria-label="Answer options">${
@@ -995,18 +1059,20 @@ export function leadAskHtml(ask: LeadAsk, target: { task: string | null; project
 /** The thread's messages as the React conversation renders them, each
  * with the proposal cards its turn produced; `back` is where a card's
  * confirm or dismiss returns. */
-export function leadBrowserMessages(rows: Pick<LeadThreadRows, "messages" | "proposals" | "decisions" | "pending" | "ask" | "asks">, back: string | null, target: { task: string | null; project: string | null } = { task: null, project: null }): import("../browser-workspace.js").BrowserMessage[] {
+export function leadBrowserMessages(rows: Pick<LeadThreadRows, "messages" | "proposals" | "decisions" | "pending" | "ask" | "staleAsk" | "asks" | "queue">, back: string | null, target: { task: string | null; project: string | null } = { task: null, project: null }): import("../browser-workspace.js").BrowserMessage[] {
   const open = rows.pending === null ? rows.ask?.turn ?? null : null;
   const asked = (turn: number | null): Html | "" => {
     const ask = turn === null ? undefined : rows.asks?.get(turn);
-    return ask === undefined ? "" : leadAskHtml(ask, target, target.task === null ? "lead-message" : "task-message", ask.turn === open);
+    return ask === undefined ? "" : leadAskHtml(ask, target, target.task === null ? "lead-message" : "task-message", ask.turn === open, ask.turn === rows.staleAsk);
   };
   // The owner's message each reply answers: when it asked for ids, the reply keeps them.
   const askedBy = new Map<number, string>();
   rows.messages.reduce<string | undefined>((last, message) => { if (message.role === 'operator') return message.text; if (last !== undefined) askedBy.set(message.id, last); return last; }, undefined);
   return rows.messages.map(message => ({
     id: message.id, role: message.role, text: message.text,
-    html: htmlString(message.role === 'operator' ? html`<p>${message.text}</p>` : html`${renderChatText(message.text, askedBy.get(message.id))}${asked(message.turn)}`),
+    html: htmlString(message.role === 'operator'
+      ? (() => { const queued = rows.queue?.get(message.id); return html`${message.text === "" ? "" : steerCommentHtml(message.text) ?? html`<p>${message.text}</p>`}${queued === undefined ? "" : queuedStateHtml(queued, back)}`; })()
+      : html`${renderChatText(message.text, askedBy.get(message.id))}${asked(message.turn)}`),
     activity: message.activity, createdAt: message.createdAt,
     ...(() => {
       // Under the lead's message only, as the server-rendered thread does: the person's message shares the turn.
@@ -1027,6 +1093,7 @@ export function leadChatVersion(rows: LeadThreadRows): string {
   const focus = rows.focusTask;
   const facts = [
     rows.messages.map(one => [one.id, one.role, one.turn]),
+    rows.queue === undefined ? null : [...rows.queue.values()].map(one => [one.message, one.status, one.revision, one.error]),
     rows.previous == null ? null : rows.previous.messages.map(one => one.id),
     rows.proposals.map(one => [one.id, one.state, one.outcome === null ? null : JSON.stringify(one.outcome)]),
     rows.coordinatorProposals.map(one => [one.id, one.state, one.outcome === null ? null : JSON.stringify(one.outcome)]),
@@ -1083,7 +1150,10 @@ export function leadThreadHtml(data: LeadThreadRows & { csrf: string; now: Date;
   for (const message of data.messages) {
     if (message.role === "operator") {
       asked = message.text;
-      thread.push(html`<div class="msg op" data-message-role="operator" data-key="m${message.id}"><p style="white-space:pre-wrap">${message.text}</p></div>`);
+      // A message that waits its turn (the lead queue) says so, with Remove while it still waits — as in the React thread.
+      const queued = data.queue?.get(message.id);
+      thread.push(html`<div class="msg op" data-message-role="operator" data-key="m${message.id}">${message.text === "" ? "" : steerCommentHtml(message.text) ?? html`<p style="white-space:pre-wrap">${message.text}</p>`}${
+        queued === undefined ? "" : queuedStateHtml(queued, returnTo)}</div>`);
       continue;
     }
     const cards = message.turn === null ? [] : (byTurn.get(message.turn) ?? []);
@@ -1114,8 +1184,15 @@ export function leadAfterComposerHtml(data: { messages: LeadMessage[]; pending: 
   return html`<div id="chat-after-composer" data-chat-region="after">${data.messages.length === 0 && data.pending === null ? leadPromptStarters(data.focusTask) : ""}</div>`;
 }
 
+/** A conversation shown before it exists (quiet page visits): its page binds sends to this session id, and the first
+ * send starts the conversation (chatSend). A visit never starts one. */
+export const NOT_STARTED_SESSION = 0;
+
 export function leadPage(chrome: Chrome, data: LeadThreadRows & {
-  session: LeadSession;
+  /** Null: no conversation yet; the first message starts one. */
+  session: LeadSession | null;
+  /** Whose conversation this is (the session's approver once it exists). */
+  approver: string;
   /** A project's own thread (v77); null for the lead conversation or a task. */
   chatProject?: string | null;
   follow?: { enabled: boolean; detail: string };
@@ -1136,16 +1213,20 @@ export function leadPage(chrome: Chrome, data: LeadThreadRows & {
   const subscription = isSubscriptionChatProvider(data.config.provider);
   const chatProject = data.focusTask === null ? data.chatProject ?? null : null;
   const returnTo = data.focusTask !== null ? taskChatHref(data.focusTask.id) : chatProject !== null ? projectChatHref(chatProject) : "/chat";
+  const sessionId = data.session?.id ?? NOT_STARTED_SESSION;
+  const approver = data.session?.approver ?? data.approver;
   const controlsHtml = joinHtml([
-    html`<details class="lead-follow"><summary>Automatic crew updates${data.follow?.enabled ? ' · On' : ''}</summary><p class="meta">${data.follow?.detail ?? 'Automatic crew updates are off.'}</p>${
+    data.session === null ? "" : html`<details class="lead-follow"><summary>Automatic crew updates${data.follow?.enabled ? ' · On' : ''}</summary><p class="meta">${data.follow?.detail ?? 'Automatic crew updates are off.'}</p>${
       postForm("/chat/mate/follow", html`${data.follow?.enabled ? '' : html`<p>The lead responds when results or decisions arrive. Uses this conversation’s ${subscription ? 'membership usage, with no dollar maximum' : 'remaining spend allowance'} and daily turn limit. Existing task approvals still apply.</p>`}<button type="submit" class="quiet">${data.follow?.enabled ? 'Pause updates' : 'Enable updates'}</button>`, { returnTo, hidden: { enabled: data.follow?.enabled ? 'no' : 'yes' } })}</details>`,
     html`<details class="chat-limits chat-session-details"><summary>Conversation details<span class="meta">${subscription ? "membership" : data.config.provider}</span></summary>\n${joinHtml([
       html`<div class="chat-budget"><span class="mono">${data.config.provider} · ${data.config.model}</span><span>${data.turnsToday} / ${data.config.dailyTurns} turns today</span>${
         subscription
           ? html`<span>membership login · no dollar ceiling</span>`
-          : html`<span>this conversation: ${chatMoney(data.session.spentMicrousd)} of ${chatMoney(data.session.ceilingMicrousd)}</span><span>this week ${chatMoney(data.weeklySpent)} of ${chatMoney(data.config.weeklyCeilingMicrousd)}</span>`}</div>`,
-      html`<p class="meta">Started ${data.session.mintedAt.slice(0, 16).replace("T", " ")}Z. It stays open until you end it; only bounded recent context is sent to the model.</p>`,
-      postForm("/chat/mate/end", html`<button type="submit" class="quiet">End the conversation and forget the thread</button>`, { attrs: { class: "inline" }, returnTo }),
+          : html`<span>this conversation: ${chatMoney(data.session?.spentMicrousd ?? 0)} of ${chatMoney(data.session?.ceilingMicrousd ?? 0)}</span><span>this week ${chatMoney(data.weeklySpent)} of ${chatMoney(data.config.weeklyCeilingMicrousd)}</span>`}</div>`,
+      data.session === null
+        ? html`<p class="meta">No conversation yet. Send a message to start one.</p>`
+        : html`<p class="meta">Started ${data.session.mintedAt.slice(0, 16).replace("T", " ")}Z. It stays open until you end it; only bounded recent context is sent to the model.</p>`,
+      data.session === null ? "" : postForm("/chat/mate/end", html`<button type="submit" class="quiet">End the conversation and forget the thread</button>`, { attrs: { class: "inline" }, returnTo }),
       data.recent.length === 0
         ? ""
         : html`<p class="meta">Recent turns: ${joinHtml(data.recent
@@ -1178,15 +1259,15 @@ export function leadPage(chrome: Chrome, data: LeadThreadRows & {
     html`<div class="chat-new-update-holder"><button type="button" class="chat-new-update" id="chat-new-update" hidden>New update ↓</button></div>`,
     postForm("/chat", joinHtml([
       html`<label>Message<textarea id="chat-message" name="message" rows="1" maxlength="${LEAD_MESSAGE_MAX_CHARS}" placeholder="${data.focusTask !== null ? "Ask about this task…" : chatProject !== null ? `Ask about ${projectName(chatProject)}…` : "Describe what you want done…"}"></textarea></label>`,
-      html`<button type="submit" aria-label="${data.pending === null ? "send message" : "wait for the current reply before sending"}"${data.pending === null ? "" : html` disabled`}>Send</button>`,
+      html`<button type="submit" aria-label="${data.pending === null ? "send message" : "send message — it waits for the current reply"}">Send</button>`,
     ], "\n"), {
-      attrs: { class: "card composer", id: latestReply === null && data.pending === null ? "latest" : "chat-composer", "aria-label": "message the lead", "data-chat-session": data.session.id, "data-chat-task": data.focusTask?.id ?? "", "data-chat-user": data.session.approver, "data-chat-busy": data.pending === null ? "0" : "1", "data-chat-version": leadChatVersion(data), "data-chat-approval": data.focusTask?.approval?.digest ?? "" },
-      hidden: { request: randomBytes(16).toString("hex"), "request-session": data.session.id, task: data.focusTask?.id, project: chatProject, result: data.resultRunId },
+      attrs: { class: "card composer", id: latestReply === null && data.pending === null ? "latest" : "chat-composer", "aria-label": "message the lead", "data-chat-session": sessionId, "data-chat-task": data.focusTask?.id ?? "", "data-chat-user": approver, "data-chat-busy": data.pending === null ? "0" : "1", "data-chat-version": leadChatVersion(data), "data-chat-approval": data.focusTask?.approval?.digest ?? "" },
+      hidden: { request: randomBytes(16).toString("hex"), "request-session": sessionId, task: data.focusTask?.id, project: chatProject, result: data.resultRunId },
     }),
     // Concise pass (2026-09-13): the status line speaks only when there is
     // a state to report — a reply in progress here, the connection from
     // the continuity script — and the composer carries no second intro.
-    html`<p class="meta composer-hint" id="chat-connection" role="status" aria-live="polite">${data.pending === null ? "" : "Reply in progress. You can draft your next message or come back later."}</p>`,
+    html`<p class="meta composer-hint" id="chat-connection" role="status" aria-live="polite">${data.pending === null ? "" : "Reply in progress. A message you send now waits its turn."}</p>`,
     // The explicit reconnection (package 2): shown only once the session
     // or sign-in changed under this page; it reloads on the reader's act.
     html`<p class="meta composer-hint" id="chat-reconnect" hidden><button type="button" class="quiet">Reconnect</button></p>`,
@@ -1200,7 +1281,7 @@ export function leadPage(chrome: Chrome, data: LeadThreadRows & {
     { chrome, functional: { script: CHAT_CONTINUITY_SCRIPT + CHAT_UI_SCRIPT + (data.focusTask === null ? "" : RESULT_REVIEW_SCRIPT), fetches: true },
       workspace: {
         conversation: {
-          sessionId: data.session.id, user: data.session.approver, version: leadChatVersion(data),
+          sessionId, user: approver, version: leadChatVersion(data),
           messages: leadBrowserMessages(data, data.focusTask === null && chatProject === null ? null : returnTo, { task: data.focusTask?.id ?? null, project: chatProject }),
           pendingTurnId: data.pending?.id ?? null, requestId: randomBytes(16).toString('hex'), maxChars: LEAD_MESSAGE_MAX_CHARS,
           taskId: data.focusTask?.id ?? null, resultRunId: data.resultRunId ?? null, project: chatProject,
@@ -1221,7 +1302,12 @@ export function leadPage(chrome: Chrome, data: LeadThreadRows & {
   /** Live replies (chat streaming): per thread, the turn being answered —
    * each step's tools in plain words and its text as it is written. Memory
    * only and display only; the saved turn stays the record. */
-  export type LiveTurn = { steps: LeadLiveStep[]; done: boolean; ok: boolean; listeners: Set<() => void>; expiry?: NodeJS.Timeout };
+  export type LiveTurn = { steps: LeadLiveStep[]; done: boolean; ok: boolean; listeners: Set<() => void>; expiry?: NodeJS.Timeout;
+    /** For the Live grid's lead tile (agents-live-lead.ts): the turn's id once it says it, when it started and ended, and
+     * when each step began (epoch ms). Never sent to the chat room. */
+    turn?: number; startedAt?: number; endedAt?: number; stepAt?: number[];
+    /** Per step: its text is the provider's finished answer, secret-checked whole (lead.ts `final`). */
+    confirmed?: boolean[] };
 
   export type ChatEnablement =
     | { ok: true; billing: "metered"; config: ChatConfig & { provider: DirectChatProviderId }; key: string; keySource: "environment" | "stored"; price: import("../converse.js").ModelPrice; credentialKey: string }

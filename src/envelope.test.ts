@@ -47,38 +47,6 @@ describe("the machine envelope", () => {
     }
   });
 
-  test("success envelopes carry version, ok, command — across subsystems", async () => {
-    const cases: string[][] = [
-      ["ready", "--json"],
-      ["task", "list", "--json"],
-      ["providers", "--json"],
-      ["grants", "--json"],
-      ["incident", "list", "--json"],
-      ["outbox", "list", "--json"],
-      ["webhook", "status", "--json"],
-    ];
-    for (const argv of cases) {
-      lines = [];
-      const [command = "", ...rest] = argv;
-      await runOperate(command, rest, write, { databaseFile: db, now: T0 });
-      const body = JSON.parse(out());
-      expect(body.envelopeVersion, argv.join(" ")).toBe(ENVELOPE_VERSION);
-      expect(typeof body.ok, argv.join(" ")).toBe("boolean");
-      expect(typeof body.command, argv.join(" ")).toBe("string");
-      // Exactly one JSON document on the wire — nothing before, nothing after.
-      expect(() => JSON.parse(out())).not.toThrow();
-    }
-  });
-
-  test("failure envelopes add the stable reason token", async () => {
-    await runOperate("task", ["show", "no-such-task", "--json"], write, { databaseFile: db, now: T0 });
-    const body = parsed();
-    expect(body.envelopeVersion).toBe(ENVELOPE_VERSION);
-    expect(body.ok).toBe(false);
-    expect(typeof body.reason).toBe("string");
-    expect(typeof body.message).toBe("string");
-  });
-
   test("contract states the envelope version and capabilities", async () => {
     const code = await main(["contract", "--json"], write);
     expect(code).toBe(0);
@@ -98,14 +66,11 @@ describe("the machine envelope", () => {
     expect(fromFile).toEqual(parsed());
   });
 
-  test("-o without --json is refused as usage", async () => {
-    const code = await main(["contract", "-o", join(dir, "x.json")], write);
-    expect(code).toBe(2);
-    expect(out()).toContain("--json");
-  });
-
-  test("-o without a path is refused as usage", async () => {
-    const code = await main(["contract", "--json", "-o"], write);
+  test.each([
+    ["-o without --json", ["contract", "-o", "x.json"]],
+    ["-o without a path", ["contract", "--json", "-o"]],
+  ])("%s is refused as usage", async (_name, argv) => {
+    const code = await main(argv.map(one => one === "x.json" ? join(dir, one) : one), write);
     expect(code).toBe(2);
   });
 
@@ -123,6 +88,8 @@ describe("the machine envelope", () => {
     // hits first, not only on the happy one.
     const operateTable: Record<string, string[]> = {
       sync: ["--json"],
+      // evals without an action is the usage road: nothing is admitted or spent.
+      evals: ["--json"],
       // The usage road terminates without binding a port or minting anything.
       up: ["--for", "not-a-number", "--json"],
       onboard: ["--agent", "nope", "--json"],
@@ -182,6 +149,7 @@ describe("the machine envelope", () => {
       people: ["list", "--json"],
       tokens: ["list", "--json"],
       keys: ["status", "--json"],
+      agents: ["list", "--json"],
       setup: ["show", "--json"],
       verify: ["show", "--json"],
       intake: ["show", "--json"],

@@ -1,0 +1,94 @@
+/* Live mode: Operations Ledger ink, one terminal full-bleed, a drawer on the phone. */
+:root {
+  --t-ground: #0C0E12; --t-surface: #14171D; --t-inset: #1B1F27; --t-line: #262B35;
+  --t-text: #E6E8EC; --t-muted: #8A93A3; --t-blue: #5B9DFF; --t-green: #3FB97F; --t-red: #F06464; --t-amber: #F5A524;
+  --t-sans: "Geist", "Geist Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --t-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  color-scheme: dark;
+}
+@font-face { font-family: "Geist"; src: url("/fonts/geist-sans-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "Geist"; src: url("/fonts/geist-sans-500.woff2") format("woff2"); font-weight: 500; font-display: swap; }
+@font-face { font-family: "Geist"; src: url("/fonts/geist-sans-600.woff2") format("woff2"); font-weight: 600; font-display: swap; }
+@font-face { font-family: "Geist Mono"; src: url("/fonts/geist-mono-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--t-ground); color: var(--t-text); font: 14px/1.45 var(--t-sans); -webkit-font-smoothing: antialiased; }
+body { overscroll-behavior: none; }
+#so-term { height: 100dvh; }
+button, select, input { font: inherit; color: inherit; }
+
+.term-app { display: grid; grid-template-columns: 264px 1fr; height: 100dvh; }
+.term-app--loading { display: grid; place-items: center; color: var(--t-muted); }
+.term-side { background: var(--t-surface); border-right: 1px solid var(--t-line); overflow-y: auto; }
+.term-scrim { display: none; }
+.term-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+.term-list { display: flex; flex-direction: column; padding: 8px; gap: 2px; }
+.term-list-head { display: flex; align-items: center; gap: 8px; padding: 6px 6px 10px; }
+.term-list-head h1 { font-size: 15px; font-weight: 600; margin: 0; flex: 1; }
+.term-back { color: var(--t-muted); text-decoration: none; padding: 2px 6px; border-radius: 6px; }
+.term-back:hover { color: var(--t-text); background: var(--t-inset); }
+.term-list-empty { padding: 4px 8px; }
+.term-item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; padding: 8px; border: 0; border-radius: 8px; background: none; cursor: pointer; }
+.term-item:hover { background: var(--t-inset); }
+.term-item--on { background: var(--t-inset); box-shadow: inset 0 0 0 1px var(--t-line); }
+.term-item-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.term-item-title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.term-item-meta { color: var(--t-muted); font: 11.5px/1.4 var(--t-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.term-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--t-line); flex: none; }
+.term-dot--live { background: var(--t-blue); box-shadow: 0 0 0 3px color-mix(in srgb, var(--t-blue) 20%, transparent); }
+
+.term-glyph { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; font: 600 11px/1 var(--t-mono); flex: none;
+  background: color-mix(in srgb, currentColor 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 30%, transparent); }
+.term-glyph--claude { color: #E8956B; }
+.term-glyph--codex { color: var(--t-blue); }
+.term-glyph--shell { color: var(--t-muted); }
+
+.term-bar { display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 12px; border-bottom: 1px solid var(--t-line); background: var(--t-ground); flex: none; }
+.term-menu { display: none; background: none; border: 0; font-size: 18px; padding: 4px 6px; cursor: pointer; }
+.term-bar-title { display: flex; align-items: center; gap: 8px; font-weight: 500; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; }
+.term-bar-branch { color: var(--t-muted); font: 12px var(--t-mono); overflow: hidden; text-overflow: ellipsis; }
+.term-link { font-size: 12px; color: var(--t-muted); white-space: nowrap; }
+.term-link--live { color: var(--t-blue); }
+.term-link--signed-out, .term-link--gone { color: var(--t-red); }
+.term-link--busy { color: var(--t-text); }
+
+.term-screen { flex: 1; min-height: 0; padding: 6px 4px 4px 8px; background: var(--t-ground); }
+.term-screen .xterm { height: 100%; }
+.term-screen .xterm-viewport { background: var(--t-ground) !important; }
+
+.term-keys { display: none; gap: 6px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom)); background: var(--t-surface); border-top: 1px solid var(--t-line); overflow-x: auto; flex: none; }
+.term-key { min-width: 40px; height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--t-line); background: var(--t-inset); font: 13px var(--t-mono); touch-action: manipulation; flex: none; }
+.term-key:active, .term-key--on { background: var(--t-line); border-color: var(--t-muted); }
+
+.term-new { max-width: 440px; margin: 40px auto; padding: 0 16px; display: flex; flex-direction: column; gap: 14px; }
+.term-new h2 { margin: 0; font-size: 18px; font-weight: 600; }
+.term-new p { margin: 0; }
+.term-muted { color: var(--t-muted); }
+.term-field { display: flex; flex-direction: column; gap: 6px; }
+.term-field span { font-size: 12px; color: var(--t-muted); }
+.term-field select, .term-field input { height: 38px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--t-line); background: var(--t-inset); }
+.term-programs { border: 0; padding: 0; margin: 0; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.term-programs legend { font-size: 12px; color: var(--t-muted); margin-bottom: 6px; }
+.term-program { display: flex; align-items: center; gap: 8px; padding: 10px; border-radius: 10px; border: 1px solid var(--t-line); background: var(--t-surface); cursor: pointer; font-size: 13px; }
+.term-program input { position: absolute; opacity: 0; pointer-events: none; }
+.term-program--on { border-color: var(--t-blue); box-shadow: inset 0 0 0 1px var(--t-blue); }
+/* The ceremony: a password form waits on you, so it carries the one accent. */
+.term-ceremony { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--t-amber) 45%, transparent); background: color-mix(in srgb, var(--t-amber) 6%, transparent); }
+.term-ceremony p { font-size: 13px; }
+.term-error { color: var(--t-red); }
+.term-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.term-button { display: inline-flex; align-items: center; height: 36px; padding: 0 14px; border-radius: 8px; border: 1px solid transparent; background: var(--t-text); color: var(--t-ground); font-weight: 500; cursor: pointer; text-decoration: none; }
+.term-button:disabled { opacity: .5; cursor: default; }
+.term-button--quiet { background: none; color: var(--t-text); border-color: var(--t-line); }
+.term-button--small { height: 28px; padding: 0 10px; font-size: 12.5px; }
+
+@media (max-width: 720px) {
+  .term-app { grid-template-columns: 1fr; }
+  .term-side { position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); z-index: 20; transform: translateX(-100%); transition: transform .2s ease; padding-top: env(safe-area-inset-top); }
+  .term-app--drawer .term-side { transform: none; }
+  .term-app--drawer .term-scrim { display: block; position: fixed; inset: 0; z-index: 10; border: 0; background: rgb(0 0 0 / .5); }
+  .term-menu { display: block; }
+  .term-bar { padding-top: env(safe-area-inset-top); height: calc(44px + env(safe-area-inset-top)); }
+  .term-keys { display: flex; }
+  .term-screen { padding: 4px 2px 2px 4px; }
+}

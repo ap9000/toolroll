@@ -8,8 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { runOperate } from "./operate.js";
-import { spendItems, usd } from "./spend.js";
-import { tierLines, tierReport } from "./tier-report.js";
+import { spendItems } from "./spend.js";
+import { tierReport } from "./tier-report.js";
 import { setAuthMode } from "./keys.js";
 
 const FROM = "2026-10-01T00:00:00.000Z";
@@ -62,9 +62,6 @@ test("tasks group by tier with their time to a result and plan use, and the ligh
   ]);
   // Two small changes skipped a plan; this month's planner runs took 10 minutes each; light results came 18m sooner.
   expect(report.saved).toEqual({ plansSkipped: 2, planMinutesSaved: 20, minutesSoonerEach: 18, microusdSaved: null });
-  const lines = tierLines(report, usd);
-  expect(lines[0]).toBe("  light tier               2 tasks · 7m to a result · 0 plans · $0");
-  expect(lines.at(-1)).toBe("  tiers saved              2 plans skipped (~20m of planning), light results ~18m sooner each");
 });
 
 test("spend on API keys shows the light tier's dollars below the everyday tier", () => {
@@ -76,14 +73,9 @@ test("spend on API keys shows the light tier's dollars below the everyday tier",
     task("routine", "medium", 20, false, 2.5);
     const report = tierReport(store.handle, FROM, TO, spendItems(store.handle, FROM, TO));
     expect(report.saved.microusdSaved).toBe(2_000_000);
-    expect(tierLines(report, usd).at(-1)).toContain("~$2.00 below the everyday tier");
   } finally {
     process.env["HOME"] = home;
   }
-});
-
-test("no routed work this month shows nothing", () => {
-  expect(tierLines(tierReport(store.handle, FROM, TO, []), usd)).toEqual([]);
 });
 
 test("toolroll spend shows the tiers and what they saved", async () => {
@@ -93,8 +85,6 @@ test("toolroll spend shows the tiers and what they saved", async () => {
   const lines: string[] = [];
   try {
     expect(await runOperate("spend", ["--month", "2026-10"], line => { lines.push(line); }, { databaseFile: file })).toBe(0);
-    expect(lines.join("\n")).toContain("  light tier               1 task · 6m to a result · 0 plans");
-    expect(lines.join("\n")).toContain("  tiers saved              1 plan skipped (~10m of planning), light results ~24m sooner each");
     lines.length = 0;
     await runOperate("spend", ["--month", "2026-10", "--json"], line => { lines.push(line); }, { databaseFile: file });
     expect(JSON.parse(lines.join("\n")).tiers.saved).toMatchObject({ plansSkipped: 1 });

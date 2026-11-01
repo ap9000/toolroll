@@ -15,7 +15,6 @@
  * a person approves them, and its instructions are shown as the untrusted
  * text they are.
  */
-import { createHash } from "node:crypto";
 import { scanForSecrets } from "./evidence.js";
 import { flowDefinitionOf } from "./flow-engine.js";
 import { readFlowSecrets } from "./flow-secrets.js";
@@ -24,7 +23,7 @@ import { addFlowTriggerTo, describeTrigger, HOOK_PATH, readHooksBase, triggerCon
 import { durationMinutes, durationWords, FlowContractError, flowTerms, inStepWords, LANGUAGE_WORDS, validateFlowDefinition, type FlowDefinition, type FlowStage } from "./flows.js";
 import { stageReferenceProblems } from "./contracts/stage-output.js";
 import { readVersioned } from "./contracts/contract.js";
-import { FLOW_ALIASES, FLOW_FILE_FORMAT, legacyFlowNeed, legacySubagentStep, FLOW_FILE_VERSION, flowFileSchema, PARAMETER_ID, type FlowFile, type FlowFileParameter, type FlowFileScript } from "./contracts/flow.js";
+import { FLOW_ALIASES, WEBHOOK_SENDERS, FLOW_FILE_FORMAT, legacyFlowNeed, legacySubagentStep, FLOW_FILE_VERSION, flowFileSchema, type FlowFile, type FlowFileParameter, type FlowFileScript } from "./contracts/flow.js";
 import { parseSchedule } from "./flow-schedule.js";
 import type { FlowRow, Store } from "./store.js";
 
@@ -99,7 +98,13 @@ function triggerOf(config: TriggerConfig, ask: (parameter: FlowFileParameter) =>
       ...(config.state === null ? {} : { state: config.state }),
       ...(config.label === null ? {} : { label: ask({ id: "linear-label", about: "The Linear label issues need", default: config.label }) }),
       delivery: config.delivery, ...zone };
-    case "webhook": return { kind: "webhook", title: config.title, ...(config.titleField === null ? {} : { titleField: config.titleField }), ...(config.bodyField === null ? {} : { bodyField: config.bodyField }), ...zone };
+    // v126: who signs it travels (never its secret or address: an imported signed webhook isn't set up until its
+    // secret is made or pasted there); the project and team it is scoped to are asked again, as another install's own.
+    case "webhook": return { kind: "webhook", title: config.title, ...(config.titleField == null ? {} : { titleField: config.titleField }), ...(config.bodyField == null ? {} : { bodyField: config.bodyField }),
+      ...((config.sender ?? "none") === "none" ? {} : { sender: config.sender }),
+      ...(config.project == null ? {} : { project: ask({ id: "webhook-project", about: "The project the signed webhook's deliveries must come from", default: config.project }) }),
+      ...(config.team == null ? {} : { team: ask({ id: "webhook-team", about: "The Vercel team the deliveries must come from", default: config.team }) }),
+      ...(config.idField == null ? {} : { idField: config.idField }), ...(config.urlField == null ? {} : { urlField: config.urlField }), ...zone };
     case "email": return { kind: "email", folder: config.folder,
       ...(config.sender === null ? {} : { sender: ask({ id: "email-sender", about: "Whose mail starts cards: addresses or domains, comma-separated (left empty: anyone's)", optional: true }) }),
       ...(config.subject === null ? {} : { subject: config.subject }), ...zone };
@@ -165,7 +170,13 @@ const STRUCTURAL = new Set(["format", "id", "kind", "goesTo", "next", "ifFails",
 function scrubDeep(value: unknown, scrub: (text: string) => string, key: string | null, inScripts: boolean): unknown {
   if (typeof value === "string") return key !== null && (STRUCTURAL.has(key) || (inScripts && key === "name")) ? value : scrub(value);
   if (Array.isArray(value)) return value.map(one => scrubDeep(one, scrub, key, inScripts));
-  if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, scrubDeep(v, scrub, k, inScripts || k === "scripts")]));
+  if (value !== null && typeof value === "object") {
+    // v126: a webhook's sender is one of a fixed few words (who signs it), never prose: kept as it is, even when an
+    // account happens to share its name. An email trigger's sender is people's addresses, and is still scrubbed.
+    const record = value as Record<string, unknown>;
+    const webhookSender = record["kind"] === "webhook" && typeof record["sender"] === "string" && (WEBHOOK_SENDERS as readonly string[]).includes(record["sender"]);
+    return Object.fromEntries(Object.entries(record).map(([k, v]) => [k, webhookSender && k === "sender" ? v : scrubDeep(v, scrub, k, inScripts || k === "scripts")]));
+  }
   return value;
 }
 
@@ -452,18 +463,13 @@ export function importFlow(store: Store, plan: FlowImportPlan, actor: string, no
     }
     const id = store.createFlow({ repo: plan.repo, name: plan.name, definitionJson: JSON.stringify(plan.definition), by: actor }, now);
     for (const trigger of plan.triggers) {
-      const made = addFlowTriggerTo(store, store.getFlow(id)!, trigger, actor, now, dir);
+      const made = addFlowTriggerTo(store, store.getFlow(id)!, trigger, actor, now, dir, { shown: false });
       if (!made.ok) throw new FlowFileError(`A ${String(trigger["kind"])} trigger: ${made.message}`);
       store.updateFlowTrigger(made.id, { state: "paused" }, now);
     }
     const held = plan.scripts.add.length, off = plan.triggers.length;
     return { id, said: `Imported ${plan.name}.${off === 0 ? "" : ` Its ${off === 1 ? "trigger is" : `${off} triggers are`} off until you turn ${off === 1 ? "it" : "them"} on.`}${held === 0 ? "" : ` Approve its ${held === 1 ? "script" : `${held} scripts`} on the Scripts panel before ${held === 1 ? "it runs" : "they run"}.`}` };
   });
-}
-
-/** What a flow's zones and paths are, without where they sit on the canvas: what a round trip keeps. */
-export function flowShape(definition: FlowDefinition): string {
-  return createHash("sha256").update(JSON.stringify({ start: definition.start, stages: definition.stages.map(one => ({ ...one, zone: null })) })).digest("hex");
 }
 
 // ------------------------------------------------------------------ fetching

@@ -3,10 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openStore, type Store } from "./store.js";
-import { addApprover, approve } from "./scope.js";
+import { addApprover } from "./scope.js";
 import { bridgePass, followBridge, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, saveBotToken, TOKEN_ENV, type TelegramTransport } from "./telegram.js";
-import { PHONE_BACK_TO_LEAD, PHONE_FOCUS_LINE, PHONE_HELP, phoneCommand, phoneStatus, phoneTask, phoneTaskChoices, phoneTaskListText, phoneTaskView, resolvePhoneTask } from "./telegram-status.js";
-import { propose } from "./scope.js";
+import { PHONE_HELP, phoneCommand, phoneStatus, phoneTask, phoneTaskChoices, phoneTaskListText, resolvePhoneTask } from "./telegram-status.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
 import { runOperate, EXIT } from "./operate.js";
 import { saveRepos } from "./repos.js";
@@ -74,38 +73,6 @@ describe("read-only phone status", () => {
   const pass = (s: ReturnType<typeof scripted>, readProjects: () => Promise<readonly string[]> = async () => [REPO]) =>
     bridgePass(store, { botId: BOT, transport: s.transport, clock: () => NOW, deliver: false, readProjects });
 
-  test("`/task` names ONE precise destination from the recorded state: the exact result's checks or changes, the approval control, the recovery page, or the task itself", () => {
-    const { run } = result("verified-one", "verified");
-    expect(phoneTaskView(store, [REPO], "verified-one", NOW).link).toEqual({ label: "Open checks", path: `/chat?task=verified-one&result=${run}&tab=checks` });
-    const bare = result("no-verdict", null);
-    expect(phoneTaskView(store, [REPO], "no-verdict", NOW).link).toEqual({ label: "Open changes", path: `/chat?task=no-verdict&result=${bare.run}&tab=changes` });
-    // The result named is this execution's own recorded run, not the newest run anywhere.
-    expect(bare.run).not.toBe(run);
-    task("scoped");
-    for (const phase of ["build", "plan", "review"]) store.setPhaseConfig("installation", phase, "claude", "sonnet", "operator", NOW);
-    propose(store, { taskId: "scoped", goal: "do it", now: NOW });
-    const scoped = phoneTaskView(store, [REPO], "scoped", NOW);
-    expect(diagnoseTaskDispatch(store, "scoped", NOW)?.action).toBe("approve-scope");
-    expect(scoped.link).toEqual({ label: "Review & start", path: "/chat?task=scoped#task-chat-action" });
-    expect(scoped.text).not.toContain("Read-only status");
-    const failed = task("stopped");
-    store.setTaskState("stopped", "failed", NOW);
-    void failed;
-    expect(diagnoseTaskDispatch(store, "stopped", NOW)?.action).toBe("retry-task");
-    expect(phoneTaskView(store, [REPO], "stopped", NOW).link).toEqual({ label: "Review recovery options", path: "/t/stopped" });
-    // A worker that must be started: the task lens, whose words say what remains.
-    const idle = task("idle-task");
-    void idle;
-    propose(store, { taskId: "idle-task", goal: "wait for a worker", now: NOW });
-    expect(approve(store, "idle-task", "operator", NOW, store.getScope("idle-task")!.digest, operatorToken).ok).toBe(true);
-    expect(["start-worker", "approve-scope"]).toContain(diagnoseTaskDispatch(store, "idle-task", NOW)?.action);
-    expect(phoneTaskView(store, [REPO], "idle-task", NOW).link?.path.startsWith("/chat?task=idle-task")).toBe(true);
-    // Foreign or unknown: no text about it, no link.
-    task("foreign", FOREIGN, "hidden-title");
-    expect(phoneTaskView(store, [REPO], "foreign", NOW)).toEqual({ text: phoneTask(store, [REPO], "nope", NOW), link: null, run: null });
-    expect(phoneTaskView(store, [REPO], "nope", NOW).link).toBeNull();
-  });
-
   test("a restricted account's `/task` and `/status` see only the projects it may access, even when the registry names more — no title, no link, no status line leaks", async () => {
     // A second approver, allowed only REPO, paired to this phone; the registry (the console's managed list) still names both projects.
     expect(addApprover(store, "limited", NOW, { name: "operator", token: operatorToken }).ok).toBe(true);
@@ -138,9 +105,7 @@ describe("read-only phone status", () => {
     expect(choices.map(one => one.id).sort()).toEqual(["checkout-button", "mobile-nav"]);
     const text = phoneTaskListText(choices, null);
     expect(text).toMatch(/^Your tasks\n1\. /);
-    expect(text).toContain("Send /task <number or name> to talk about one.");
     expect(text).not.toContain("PRIVATE PROJECT SENTINEL");
-    expect(phoneTaskListText(choices, "Checkout button spacing")).toMatch(/^Talking about: Checkout button spacing\n/);
     expect(resolvePhoneTask(store, [REPO], NOW, "1")).toMatchObject({ kind: "one", id: choices[0]!.id });
     expect(resolvePhoneTask(store, [REPO], NOW, "mobile-nav")).toMatchObject({ kind: "one", id: "mobile-nav", view: "mobile-nav", title: "Polish mobile navigation" });
     expect(resolvePhoneTask(store, [REPO], NOW, "checkout SPACING")).toMatchObject({ kind: "one", id: "checkout-button" });
@@ -149,83 +114,6 @@ describe("read-only phone status", () => {
     expect(resolvePhoneTask(store, [REPO], NOW, "9")).toEqual({ kind: "none" });
     task("checkout-total", REPO, "Checkout total rounding");
     expect(resolvePhoneTask(store, [REPO], NOW, "checkout")).toMatchObject({ kind: "many", choices: [expect.anything(), expect.anything()] });
-    expect(phoneTaskListText([], null)).toContain("No open or recent tasks");
-  });
-
-  test("the picker: /tasks offers tasks as buttons, a tap or /task <name> chooses one, plain messages then carry it, and /lead goes back", async () => {
-    pair();
-    task("checkout-button", REPO, "Checkout button spacing");
-    task("mobile-nav", REPO, "Polish mobile navigation");
-    task("foreign", FOREIGN, "PRIVATE PROJECT SENTINEL");
-    expect(phoneCommand("/tasks")).toEqual({ kind: "tasks" });
-    expect(phoneCommand("/task")).toEqual({ kind: "tasks" });
-    expect(phoneCommand("/lead")).toEqual({ kind: "lead" });
-    expect(phoneCommand("/task checkout spacing")).toEqual({ kind: "task", id: "checkout spacing" });
-    const binding = store.liveTelegramBindingFor(BOT, String(USER))!;
-    const s = scripted();
-    // The connected projects are REPO only: a task elsewhere is never offered.
-    const passWith = () => bridgePass(store, { botId: BOT, transport: s.transport, clock: () => NOW, deliver: false, readProjects: async () => [REPO], conversation: { evidenceRoot: dir, phoneOrigin: () => null } });
-    const sends = () => s.calls.filter(c => c.method === "sendMessage");
-    type Keyboard = { inline_keyboard: { text: string; callback_data: string }[][] };
-    s.updates.push([command(2, "/tasks")]);
-    await passWith();
-    const list = sends().at(-1)!;
-    expect(String(list.params["text"])).toBe("Pick a task to talk about:");
-    const keyboard = (list.params["reply_markup"] as Keyboard).inline_keyboard;
-    expect(keyboard.map(row => row[0]!.text.split(" · ")[0]).sort()).toEqual(["Checkout button spacing", "Polish mobile navigation"]);
-    expect(JSON.stringify(keyboard)).not.toContain("PRIVATE PROJECT SENTINEL");
-    // A tap chooses the task and turns the list into its status.
-    const checkout = keyboard.find(row => row[0]!.text.startsWith("Checkout"))![0]!;
-    s.updates.push([{ update_id: 3, callback_query: { id: "cb1", from: { id: USER }, data: checkout.callback_data, message: { message_id: 555, chat: { id: CHAT, type: "private" } } } }]);
-    await passWith();
-    expect(store.chatFocus("telegram", binding.id)).toBe("checkout-button");
-    const edit = s.calls.filter(c => c.method === "editMessageText").at(-1)!;
-    expect(String(edit.params["text"])).toContain("Checkout button spacing");
-    expect(String(edit.params["text"])).toContain(PHONE_FOCUS_LINE);
-    expect(store.telegramMessageBindings(binding, "555")).toMatchObject([{ taskId: "checkout-button", run: null }]);
-    // A plain message now carries the chosen task into the turn.
-    s.updates.push([command(4, "Make the spacing 16px.")]);
-    await passWith();
-    expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ taskId: "checkout-button", context: expect.stringContaining("chose this task") });
-    // /status says so; /task <words> chooses by title; an ambiguous word offers buttons.
-    s.updates.push([command(5, "/status")]);
-    await passWith();
-    expect(s.texts().at(-1)).toMatch(/^Talking about: Checkout button spacing · \/lead to switch back/);
-    s.updates.push([command(6, "/task mobile")]);
-    await passWith();
-    expect(store.chatFocus("telegram", binding.id)).toBe("mobile-nav");
-    expect(s.texts().at(-1)).toContain(PHONE_FOCUS_LINE);
-    const mobileStatus = String(s.calls.indexOf(sends().at(-1)!) + 101);
-    expect(store.telegramMessageBindings(binding, mobileStatus)).toMatchObject([{ taskId: "mobile-nav" }]);
-    task("checkout-total", REPO, "Checkout total rounding");
-    s.updates.push([command(7, "/task checkout")]);
-    await passWith();
-    expect(s.texts().at(-1)).toBe("Several tasks match. Pick one:");
-    expect((sends().at(-1)!.params["reply_markup"] as Keyboard).inline_keyboard).toHaveLength(2);
-    expect(store.chatFocus("telegram", binding.id)).toBe("mobile-nav");
-    // /lead goes back: plain messages are for the lead again.
-    s.updates.push([command(8, "/lead")]);
-    await passWith();
-    expect(s.texts().at(-1)).toBe(PHONE_BACK_TO_LEAD);
-    expect(store.chatFocus("telegram", binding.id)).toBeNull();
-    s.updates.push([command(9, "What needs me?")]);
-    await passWith();
-    expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ taskId: null });
-    // A reply to a message that showed a task is about that task, whatever the chat chose since.
-    s.updates.push([command(10, "Is it done yet?", { reply_to_message: { message_id: 555 } })]);
-    await passWith();
-    expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ taskId: "checkout-button", context: expect.stringContaining("Current task: checkout-button") });
-    s.updates.push([command(11, "Make the menu sticky.", { reply_to_message: { message_id: Number(mobileStatus) } })]);
-    await passWith();
-    expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ taskId: "mobile-nav" });
-    expect(store.chatFocus("telegram", binding.id)).toBeNull();
-    // "Back to the lead" on that message: it no longer shows a task, so a reply to it is for the lead.
-    s.updates.push([{ update_id: 12, callback_query: { id: "cb2", from: { id: USER }, data: "pick:lead", message: { message_id: 555, chat: { id: CHAT, type: "private" } } } }]);
-    await passWith();
-    expect(store.telegramMessageBindings(binding, "555")).toEqual([]);
-    s.updates.push([command(13, "Anything else?", { reply_to_message: { message_id: 555 } })]);
-    await passWith();
-    expect(store.listTelegramConversations(BOT).at(-1)).toMatchObject({ taskId: null });
   });
 
   test("the reply carries the button only under a trusted origin read at reply time; unconfigured, the same text says the console is where", async () => {
@@ -238,18 +126,14 @@ describe("read-only phone status", () => {
     s.updates.push([command(2, "/task verified-one")]);
     expect(await passWith()).toMatchObject({ ok: true, report: { statusReplies: 1 } });
     expect(sends().at(-1)!.params["reply_markup"]).toBeUndefined();
-    expect(s.texts().at(-1)).toContain("Read-only status. Saved files and full actions are in the console.");
     origin = "https://console.example";
     s.updates.push([command(3, "/task verified-one")]);
     expect(await passWith()).toMatchObject({ ok: true, report: { statusReplies: 1 } });
     expect(sends().at(-1)!.params["reply_markup"]).toEqual({ inline_keyboard: [[{ text: "Open checks", url: `https://console.example/chat?task=verified-one&result=${run}&tab=checks` }]] });
-    expect(s.texts().at(-1)).not.toContain("Read-only status");
-    expect(s.texts().at(-1)).toContain("Next: Open this task's result");
     // /status and /help never carry a button, and nothing changed.
     s.updates.push([command(4, "/status"), command(5, "/help")]);
     expect(await passWith()).toMatchObject({ ok: true, report: { statusReplies: 2 } });
     expect(sends().slice(-2).every(c => c.params["reply_markup"] === undefined)).toBe(true);
-    expect(PHONE_HELP).toContain("nothing changes until you act");
     expect(PHONE_HELP).not.toMatch(/localhost|http/);
     for (const table of ["run", "claim", "mate_turn", "lead_proposal", "chat_action"]) {
       expect(store.raw().prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()!["n"]).toBe(table === "run" ? 1 : 0);

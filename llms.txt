@@ -2,7 +2,7 @@
 
 > Toolroll is an open-source (MIT) control plane for unattended coding agents: Claude Code, Codex and Gemini run on your own machine or a team server. Every task gets a scope a person approves before work starts; the result comes back Ready with the diff, the project's check on the exact commit, and screenshots. Agents drive it through the `toolroll` CLI (JSON envelopes, stable reasons, exit codes 0/1/2/3, idempotency keys) or an MCP gateway. Approvals always belong to people.
 
-Install with `npm install -g toolroll` (Node 22.13+, git, macOS or Linux), start with `toolroll up`, try `npx toolroll demo`. The installed binary is the authoritative reference: `toolroll --help`, `toolroll contract --commands --json`, `toolroll skills get operating`.
+Install with `npm install -g toolroll` (Node 22.13+, git 2.41+, macOS or Linux), start with `toolroll up`, try `npx toolroll demo`. The installed binary is the authoritative reference: `toolroll --help`, `toolroll contract --commands --json`, `toolroll skills get operating`.
 
 ## For agents
 
@@ -21,7 +21,7 @@ Install with `npm install -g toolroll` (Node 22.13+, git, macOS or Linux), start
 - [Subagents](https://raw.githubusercontent.com/ap9000/toolroll/main/docs/guide/subagents.md): the lead's named helpers and their rules
 - [Running unattended](https://raw.githubusercontent.com/ap9000/toolroll/main/docs/guide/unattended.md): guarantees, the queue, claims and leases, `tick`, the background builder
 - [Fleets and trackers](https://raw.githubusercontent.com/ap9000/toolroll/main/docs/guide/fleet.md): scanning repositories, worker queues, operating modes, GitHub and beads
-- [Quality and agent routing](https://raw.githubusercontent.com/ap9000/toolroll/main/docs/guide/routing.md): which model plans, builds and repairs, and why
+- [Models, spend and routing](https://raw.githubusercontent.com/ap9000/toolroll/main/docs/guide/routing.md): the Models editor, the Spend page, which model plans, builds and repairs, and why
 - [Models](https://raw.githubusercontent.com/ap9000/toolroll/main/docs/MODELS.md): model lists and default agents
 - [A team server](https://raw.githubusercontent.com/ap9000/toolroll/main/docs/team-server.md): one host, HTTPS, per-person tokens, MCP over HTTP
 

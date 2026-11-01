@@ -11,25 +11,6 @@ import { readBuildFindings, type BuildFinding } from "./contracts/review-finding
  * screenshots only when this run actually has one (v40) — a grandfathered
  * run (no rubric) writes exactly what it always has, byte for byte. */
 export const REVIEW_PATCH_NAME = "REVIEW-DIFF.patch";
-export const REVIEW_RUBRIC_NAME = "REVIEW-RUBRIC.json";
-export const REVIEW_PROOF_NAME = "REVIEW-PROOF.json";
-/** Audit hardening (still evidence-review-v1, unreleased): the repository's
- * approved verification command's own captured stdout/stderr — a
- * criterion citing `check` evidence was previously judged from the proof's
- * bare claim, never the actual output. */
-export const REVIEW_CHECK_LOG_NAME = "REVIEW-CHECK-LOG.txt";
-/** v51 (inherited review context): a REVISION's sealed source-and-ancestry
- * inventory — bounded files at the exact sealed head, bound to the source
- * run, plus prior review provenance as context. Materialized only when
- * the run captured one; every other run writes exactly what it always has. */
-export const REVIEW_CONTEXT_NAME = "REVIEW-CONTEXT.json";
-
-/** One claimed screenshot's name in the scratch — stable per artifact id,
- * so a reviewer's own tool output naming it is reproducible across a
- * retried materialization within the same pass. */
-export function reviewScreenshotName(artifactId: number, kind: "png" | "jpeg"): string {
-  return `REVIEW-SCREENSHOT-${artifactId}.${kind === "png" ? "png" : "jpg"}`;
-}
 
 export const REVIEW_LIMITS = {
   ...REVIEW_OUTPUT_LIMITS,

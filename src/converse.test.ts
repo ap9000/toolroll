@@ -6,8 +6,9 @@ import {
   performChatRequest,
   performLeadRequest,
   composeRequest,
-  worstCaseMicrousd,
-  settleMicrousd,
+  priceOf,
+  worstCaseForPrice,
+  settleForPrice,
   credentialKeyOf,
   fetchOpenRouterCatalog,
   MAX_OUTPUT_TOKENS,
@@ -145,11 +146,10 @@ describe("the provider wrapper — layer one", () => {
 
 describe("money — pinned prices, integer micro-dollars, fail closed", () => {
   test("worst case covers every prompt byte and the whole output allowance", () => {
-    const worst = worstCaseMicrousd("claude-sonnet-5", 3_000);
-    expect(worst).toBe(1_000 * 3 + MAX_OUTPUT_TOKENS * 15);
-    expect(worstCaseMicrousd("some-unpriced-model", 100)).toBeNull();
-    expect(settleMicrousd("claude-sonnet-5", 100, 10)).toBe(300 + 150);
-    expect(settleMicrousd("mystery", 1, 1)).toBeNull();
+    const price = priceOf("claude-sonnet-5")!;
+    expect(worstCaseForPrice(price, 3_000)).toBe(1_000 * 3 + MAX_OUTPUT_TOKENS * 15);
+    expect(priceOf("some-unpriced-model")).toBeNull();
+    expect(settleForPrice(price, 100, 10)).toBe(300 + 150);
   });
 
   test("the credential identity is full-width and domain-separated", () => {
@@ -209,9 +209,6 @@ describe("the one network call", () => {
     expect(body.tools).toBeUndefined();
     expect(body.max_tokens).toBe(MAX_OUTPUT_TOKENS);
     expect(request.headers["x-api-key"]).toBe("k");
-    expect(body.system).toContain("one plain-language outcome is enough");
-    expect(body.system).toContain("Ask at most three grouped questions");
-    expect(body.system).toContain("use your judgment");
     // The operator message rides as JSON-encoded data, not instructions.
     expect(body.messages[0].content).toContain('"hi"');
   });

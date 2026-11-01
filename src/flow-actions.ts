@@ -18,9 +18,6 @@
  * answer: the card takes its failure path. Trouble reaching a service is
  * tried again, like every step.
  */
-import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { redactSecretAssignments } from "./builder.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { fillFlowText, type FlowStage } from "./flows.js";
@@ -29,7 +26,7 @@ import { ADDRESS, readEmailSettings, type EmailSettings } from "./email-settings
 import { readFlowSecrets, scrubSecrets } from "./flow-secrets.js";
 
 export { readEmailSettings, saveEmailSettings, type EmailSettings } from "./email-settings.js";
-import { callProjectTool, projectToolsOf, readToolSecrets, type ToolCall, type ToolSpec } from "./project-tools.js";
+import { callProjectTool, projectToolsOf, readToolSecrets, toolServerFor, type ToolCall, type ToolSpec } from "./project-tools.js";
 import { ALL_CREDENTIAL_ENV } from "./provider.js";
 import type { FlowCardRow, Store } from "./store.js";
 
@@ -183,14 +180,15 @@ export function toolWaiting(store: Store, stage: FlowStage, repo: string): strin
   return projectToolsOf(store, repo).some(one => one.name === wanted) ? null : `There's no tool called ${wanted || "(none)"} in this project. Add it on the Tools page.`;
 }
 
-export async function useTool(store: Store, stage: FlowStage, card: FlowCardRow, repo: string, io: { callTool?: ToolCaller; toolHome?: string }): Promise<ActionOutcome> {
+export async function useTool(store: Store, stage: FlowStage, card: FlowCardRow, repo: string, io: { callTool?: ToolCaller; toolHome?: string; fenceAvailable?: () => boolean }): Promise<ActionOutcome> {
   const call = stage.tool!;
   const tool = projectToolsOf(store, repo).find(one => one.name === call.server);
   if (tool === undefined) return { state: "retry", said: `There's no tool called ${call.server} in this project.` };
   const text = { title: card.title, description: card.description, note: card.note, outputs: card.outputs };
   const args = fillJson(JSON.parse(call.args), one => fillFlowText(one, text)) as Record<string, unknown>;
   const values = readToolSecrets(repo, tool.name, io.toolHome);
-  const answer = await (io.callTool ?? ((spec, secrets, name, given) => callProjectTool(spec, secrets, name, given, { timeoutMs: 120_000, omitEnv: ALL_CREDENTIAL_ENV })))(tool.spec, values, call.name, args);
+  const answer = await (io.callTool ?? ((spec, secrets, name, given) => callProjectTool(spec, secrets, name, given, { timeoutMs: 120_000, omitEnv: ALL_CREDENTIAL_ENV,
+    server: toolServerFor(store, repo, { ...(io.toolHome === undefined ? {} : { home: io.toolHome }), ...(io.fenceAvailable === undefined ? {} : { available: io.fenceAvailable }) }) })))(tool.spec, values, call.name, args);
   if (!answer.ok) return { state: "retry", said: `${call.server}: ${answer.problem}` };
   const said = blank(scrub(clip(answer.text, 64_000), values));
   const log = `${call.server} → ${call.name}\n${blank(JSON.stringify(args, null, 2)).slice(0, 4000)}\n\n${clip(said, 64_000)}`;

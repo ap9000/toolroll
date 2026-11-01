@@ -36,7 +36,7 @@ doubling backoff, three-strike stalls a person exits with `task requeue` —
 and every provider spawn is stamped before it spends, so cost is measured,
 never asserted. CI on published PRs is watched as episodes that never call
 silence green. The whole unattended stretch is one test,
-[`src/unattended.test.ts`](../../src/unattended.test.ts): queue twelve, walk
+[`src/unattended.slow.test.ts`](../../src/unattended.slow.test.ts): queue twelve, walk
 away, come back to PRs. Architecture: [`docs/DESIGN.md`](../DESIGN.md);
 the item-by-item ledger: [`docs/PROGRESS.md`](../PROGRESS.md).
 
@@ -61,5 +61,7 @@ M4 is the product. M0 is what makes anyone install it long enough to reach M4.
 [**firstmate**](https://github.com/kunchenguid/firstmate) proves the orchestrator role works as conventions plus tmux, with no UI and no schema. Its event-driven bash watcher is where the zero-token supervision rule came from. Our bet is that the same role is better with a typed decision record and a browser you can answer from.
 
 ## Credits
+
+Every sandbox Toolroll runs is [Anthropic's sandbox-runtime](https://github.com/anthropics/sandbox-runtime) (Apache-2.0), used as a dependency; see [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md).
 
 The workflow this formalizes comes from [Jason Ku's agentic engineering session](https://youtu.be/Ukju3maxbEQ) and his [`agents-md-snippets`](https://github.com/jasonku09/agents-md-snippets), plus Kun Chen's `treehouse`, `no-mistakes`, `gnhf`, `tasks-axi`, and `axi`. The design was reviewed adversarially by Codex; the appendix in `docs/DESIGN.md` lists every claim that review falsified, because the corrections are more useful than a clean spec would have been.

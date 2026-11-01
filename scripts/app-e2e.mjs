@@ -24,7 +24,7 @@ import { createServer as createHttpServer } from "node:http";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { createHash, generateKeyPairSync, randomBytes, sign as signWith } from "node:crypto";
-import { flag, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world } from "./e2e-kit.mjs";
+import { flag, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
 
 const skipBuild = flag("--skip-build");
@@ -33,13 +33,13 @@ const skipBuild = flag("--skip-build");
  * many of its scripted ones another group runs too (checked at the end of every run). Every journey that isn't
  * real-model is scripted: it tests Toolroll's own behaviour with the model scripted. */
 const GROUPS = {
-  console: { journeys: 14, about: "Sign-in and its hardening, sessions and tokens, approval rules and audit, monitoring, spend, the command line, projects, knowledge, skills, tools, models, old routine links" },
+  console: { journeys: 15, about: "Sign-in and its hardening, sessions and tokens, approval rules and audit, monitoring, spend, the command line, projects and their network, knowledge, skills, tools, models, old routine links" },
   pages: { journeys: 7, about: "Every main page on desktop and phone, settings, search, identity provider, the demo and its scripted lead, signing out" },
   task: { journeys: 4, about: "A task from an idea to an accepted result, then sent back twice" },
   builds: { journeys: 1, real: 1, about: "A build that asks a question" },
   stop: { journeys: 1, about: "A build stopped and resumed" },
   lead: { journeys: 4, real: 3, shared: 1, about: "The lead chat: questions, tasks and flows from plain words" },
-  maya: { journeys: 4, real: 1, shared: 1, about: "Subagents (Maya), which the lead then changes and asks for help" },
+  maya: { journeys: 6, real: 1, shared: 1, about: "Subagents (Maya), which the lead then changes and asks for help; messages that wait for the lead; the chat box above a phone's keyboard" },
   rosa: { journeys: 4, real: 1, shared: 1, about: "A subagent that acts with a real tool: its rules, routine, week and undo" },
   memory: { journeys: 2, shared: 1, about: "A subagent that acts with a real tool: its memory, and the looser rule it suggests" },
   mail: { journeys: 2, about: "A real mail server: the email inbox and follow-ups (needs Docker)" },
@@ -56,7 +56,7 @@ if (group !== null && !(group in GROUPS)) { console.error(`No group "${group}". 
 
 // The real mail server for the email inbox: GreenMail in Docker, over TLS on 127.0.0.1:993 with a
 // certificate made for this run (the console and worker trust it, and only it, beside the usual ones).
-const docker = !flag("--list") && (group === null || group === "mail") && (() => { try { execFileSync("docker", ["info"], { stdio: "ignore", timeout: 20_000 }); return true; } catch { return false; } })();
+const docker = !flag("--list") && (group === null || group === "mail") && (() => { try { execFileSync("docker", ["info"], { stdio: "ignore", timeout: 20_000, killSignal: "SIGKILL" }); return true; } catch { return false; } })();
 let mailCert = null;
 const certDir = join(process.env.TMPDIR ?? "/tmp", `so-e2e-mail-${randomBytes(4).toString("hex")}`);
 if (docker) {
@@ -284,10 +284,13 @@ await journey("console", SCRIPTED, "Sign-in hardening and the audit trail: five 
   const locked = await tryPassword(secret);
   if (!/Too many wrong passwords\. Try again in 15 minutes\./.test(locked) || !guest.url().includes("/login")) throw new Error(`the right password after five wrong ones: ${locked.slice(0, 200)}`);
   await context.close();
-  // A policy change, the way Settings makes it, and back.
+  // A policy change, the way Settings makes it, and back. Widening to Full access takes the password (back to Auto
+  // needs none): without it nothing changes.
   await page.goto(`${base}/settings`);
+  const unproved = await page.request.post(`${base}/settings/permission-default`, { form: { csrf: await csrfOf(page), "permission-mode": "bypassPermissions" }, headers: { origin: base }, maxRedirects: 0 });
+  if (!/Enter(%20|\+| )your(%20|\+| )Toolroll(%20|\+| )password/.test(unproved.headers()["location"] ?? "")) throw new Error(`Full access without the password: ${unproved.status()} ${unproved.headers()["location"]}`);
   for (const mode of ["bypassPermissions", "auto"]) {
-    const changed = await page.request.post(`${base}/settings/permission-default`, { form: { csrf: await csrfOf(page), "permission-mode": mode }, headers: { origin: base }, maxRedirects: 0 });
+    const changed = await page.request.post(`${base}/settings/permission-default`, { form: { csrf: await csrfOf(page), "permission-mode": mode, password: w.passwords.alex }, headers: { origin: base }, maxRedirects: 0 });
     if (changed.status() !== 303) throw new Error(`the permission default refused ${mode}: ${changed.status()}`);
   }
   await page.goto(`${base}/ledger?source=sign-in`); await page.waitForSelector("[data-ledger-id]");
@@ -346,8 +349,10 @@ await journey("console", SCRIPTED, APPROVAL_RULES, [], async () => {
     cli(["task", "hold", id, "--reason", "e2e: approval rules only", ...auth]);
     cli(["task", "scope", id, "--goal", "Rename the helper in src/math.js.", "--acceptance", "the helper is renamed|check", ...auth]);
     await page.goto(`${base}/t/${id}`);
+    // Held, the approval isn't the thing to do now: it heads the Plan tab (one page per task).
+    if (await page.locator("form#approve").isHidden() && await page.locator('[data-task-tab="plan"]').count() > 0) await page.locator('[data-task-tab="plan"]').click();
     const review = page.locator("summary", { hasText: /Approve plan|Review plan|Updated approval terms/ }).first();
-    if (await review.count() > 0) await review.click();
+    if (await review.count() > 0 && await review.isVisible()) await review.click();
     const form = page.locator("form#approve");
     await form.waitFor({ timeout: 15_000 });
     await form.locator('input[name="token"]').fill(w.passwords.alex);
@@ -443,15 +448,19 @@ await journey("console", SCRIPTED, "Monitoring: a webhook set in Settings gets t
   }
 });
 
-await journey("console", SCRIPTED, "Spend: the month's cost shows by project and person; a budget set on the Spend page is listed, and the month downloads as CSV", [], async () => {
+await journey("console", SCRIPTED, "Spend: API dollars, plan usage and unknown cost show apart; a limit set on Settings → Spend is listed on the Spend page, and the month downloads as CSV", [], async () => {
   await page.goto(`${base}/spend`);
-  await page.locator(".spend-total").waitFor({ timeout: 15_000 });
-  const add = page.locator("details", { hasText: "Add a budget" });
+  await page.locator('.spend-figure[data-amount-kind="api"]').waitFor({ timeout: 15_000 });
+  if (await page.locator(".spend-figure").count() !== 3) throw new Error("the Spend page doesn't show its three figures");
+  await page.goto(`${base}/settings`);
+  await Promise.all([page.waitForNavigation(), page.locator('nav[aria-label="Settings sections"] a[href="/settings/spend"]').click()]);
+  const add = page.locator("details", { hasText: "Add a limit" });
   if (!(await add.evaluate(one => one.open))) await add.locator("summary").click();
   await add.locator('select[name="target"]').selectOption({ label: "Everything" });
   await add.locator('input[name="usd"]').fill("500");
   await add.locator('input[name="password"]').fill(w.passwords.alex);
   await Promise.all([page.waitForNavigation(), add.locator('button[type="submit"]').click()]);
+  await page.goto(`${base}/spend`);
   const budget = page.locator(".budget").first();
   if (!/Everything|whole installation/i.test(await budget.innerText()) || !/\$500/.test(await budget.innerText())) throw new Error(`the budget: ${(await page.locator(".spend").innerText()).slice(0, 400)}`);
   if (rows("SELECT 1 FROM budget WHERE scope_kind = 'installation' AND removed_at IS NULL").length !== 1) throw new Error("the budget isn't kept");
@@ -461,7 +470,7 @@ await journey("console", SCRIPTED, "Spend: the month's cost shows by project and
   await shot("spend-phone");
   await page.setViewportSize({ width: 1440, height: 900 });
   const csv = await page.request.get(`${base}/spend?format=csv`);
-  if (csv.status() !== 200 || !(await csv.text()).includes("time_utc,kind,project,person")) throw new Error(`the CSV: ${csv.status()}`);
+  if (csv.status() !== 200 || !(await csv.text()).includes("time_utc,source,role,project,person")) throw new Error(`the CSV: ${csv.status()}`);
   // Tasks folds usage to one line on a desk; a click shows the budget as a tile, and, once Claude has run here, the plan's windows as Claude said them.
   await page.goto(`${base}/work`);
   await page.locator('[data-usage-summary]').click({ timeout: 15_000 });
@@ -520,9 +529,13 @@ async function approveOnPage(id) {
   if (approved?.approved_by !== "alex") throw new Error(`${id} wasn't approved: ${(await page.locator("body").innerText()).slice(0, 300)}`);
 }
 /** Wait for a task's build to finish with its checks passed; returns the run. */
-async function builtAndChecked(id, timeoutMs = 600_000) {
-  const run = await until(`${id} to be built`, async () => { const one = latestBuild(id); return one?.finished_at ? one : null; }, { timeoutMs, everyMs: 5000 });
-  if (run.outcome !== "built") throw new Error(`${id}'s build ended ${run.outcome}`);
+/** `after`: a build that ended before (a stopped one) is not the answer; wait for a later one. */
+async function builtAndChecked(id, timeoutMs = 600_000, after = 0) {
+  const run = await until(`${id} to be built`, async () => { const one = latestBuild(id); return one?.finished_at && one.id > after ? one : null; }, { timeoutMs, everyMs: 5000 });
+  if (run.outcome !== "built") {
+    const all = rows(`SELECT r.id, r.outcome, r.reason FROM run r JOIN task_ref t ON t.id = r.task_ref WHERE t.external_id = '${id}' AND r.role = 'builder' ORDER BY r.id`);
+    throw new Error(`${id}'s build ended ${run.outcome}: ${all.map(one => `run ${one.id} ${one.outcome ?? "running"}${one.reason ? ` (${one.reason})` : ""}`).join(", ")}`);
+  }
   await until(`${id} to be done`, async () => taskState(id) === "done", { timeoutMs: 180_000, everyMs: 3000 });
   return run;
 }
@@ -558,17 +571,25 @@ await journey("task", SCRIPTED, "File a task in the console; the planner (Claude
   return { task: firstTask, plan: planned.plan, goal: scope.goal.slice(0, 160) };
 });
 
-await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, and the result shows what changed; mark it complete", ["File a task in the console; the planner (Claude) drafts its scope; approve it with your password"], async () => {
+await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, and the result shows what changed on the task's own page; mark it complete", ["File a task in the console; the planner (Claude) drafts its scope; approve it with your password"], async () => {
   const run = await builtAndChecked(firstTask);
   const diff = execFileSync("git", ["-C", repo, "diff", "main", `refs/heads/${rows(`SELECT branch FROM run WHERE id = ${run.id}`)[0].branch}`, "--", "src/math.js"], { encoding: "utf8" });
   if (!/subtract/.test(diff)) throw new Error(`the build's branch doesn't add subtract: ${diff.slice(0, 300)}`);
-  await page.goto(`${base}/review?result=${encodeURIComponent(firstTask)}&run=${run.id}`);
-  const panel = page.locator("[data-result-panel]").first();
+  // One page per task: the status's one action opens the Result tab in place — the result never leaves the task.
+  await page.goto(`${base}/t/${encodeURIComponent(firstTask)}`);
+  const opened = page.url();
+  await page.locator("[data-task-status] a[data-primary-action]").first().click();
+  await until("the Result tab", async () => await page.locator('[data-task-tab="result"][aria-selected="true"]').count() === 1, { timeoutMs: 10_000, everyMs: 200 });
+  if (new URL(page.url()).pathname !== new URL(opened).pathname) throw new Error(`the result left the task page: ${page.url()}`);
+  const panel = page.locator("[data-task-panel=\"result\"] [data-result-panel]").first();
   await panel.waitFor({ timeout: 20_000 });
-  // What a person sees: checks passed on the result, and the decision after the evidence says what accepting does
-  // (plain Accept when every requirement is met; the planner may have left one for a person to check).
-  const status = await page.locator('[data-result-status] [data-status-detail="checks"]').first().innerText();
-  if (!/Passed/.test(status)) throw new Error(`the result's checks say: ${status.slice(0, 200)}`);
+  // How it ran: one line in the result's record — its time and tokens as recorded (docs/plans/run-efficiency.md).
+  const ran = await page.locator('[data-task-panel="result"] #how-it-ran summary').first().innerText();
+  if (!/tokens in/.test(ran) || !/ out/.test(ran)) throw new Error(`How it ran says: ${ran.slice(0, 200)}`);
+  // What a person sees: checks passed (the task's header says it once), and the decision after the evidence says what
+  // accepting does (plain Accept when every requirement is met; the planner may have left one for a person to check).
+  const status = await page.locator('[data-task-status] [data-status-detail="checks"]').first().innerText();
+  if (!/Passed/.test(status)) throw new Error(`the task's checks say: ${status.slice(0, 200)}`);
   const checks = "passed";
   // A requirement the planner left for a person: each Looks right counts at once, and Accept waits on them.
   for (const looks of await page.locator("[data-check-item] button[data-looks-right]").all()) await looks.click();
@@ -584,7 +605,9 @@ await journey("task", SCRIPTED, "Claude builds it, the project's checks pass, an
   await Promise.all([page.waitForNavigation(), page.locator(`[data-result-decision] form[action="/t/${firstTask}/complete"] button[data-accept-result]`).click()]);
   page.off("request", counted);
   if (posts.length !== 1 || posts[0] !== `/t/${firstTask}/complete`) throw new Error(`accepting took ${posts.length} requests: ${posts.join(", ")}`);
-  await until("the result to read complete", async () => (await page.locator('[data-result-status="assignment-complete"]').count()) > 0, { timeoutMs: 15_000, everyMs: 500 });
+  // Back on the task's own Result tab, which now reads complete.
+  if (!/\/t\/[^?]+\?(?:.*&)?tab=result/.test(page.url())) throw new Error(`accepting didn't come back to the task's Result tab: ${page.url()}`);
+  await until("the task to read complete", async () => (await page.locator('[data-task-status][data-work-status="assignment-complete"]').count()) > 0, { timeoutMs: 15_000, everyMs: 500 });
   const ledger = rows(`SELECT action, source FROM action_ledger WHERE task_id = '${firstTask}' AND action = 'assignment handoff checked'`);
   if (ledger.length !== 1) throw new Error(`the ledger has ${ledger.length} completion rows`);
   return { run: run.id, checks };
@@ -608,7 +631,7 @@ async function sendBack(id, note) {
 }
 const branchFile = (runId, file) => execFileSync("git", ["-C", repo, "show", `refs/heads/${rows(`SELECT branch FROM run WHERE id = ${runId}`)[0].branch}:${file}`], { encoding: "utf8" });
 
-await journey("task", SCRIPTED, "Send it back with a note: the revision is approved again and rebuilt with the fix", ["Claude builds it, the project's checks pass, and the result shows what changed; mark it complete"], async () => {
+await journey("task", SCRIPTED, "Send it back with a note: the revision is approved again and rebuilt with the fix", ["Claude builds it, the project's checks pass, and the result shows what changed on the task's own page; mark it complete"], async () => {
   script(
     { role: "planner", when: [/subtract\(2, 5\) is -3/], unless: [/Also add multiply/], answer: { plan: { goal: "Add a subtract function to src/math.js, with a test that also checks a negative result: subtract(2, 5) is -3.", amendment: "The note asks the test to check a negative result." } } },
     { role: "builder", when: [/subtract\(2, 5\) is -3/], unless: [/multiply\(a, b\)/], answer: { files: mathFiles({ negative: true }), conclusion: "The subtract test also checks subtract(2, 5) is -3." } },
@@ -659,6 +682,9 @@ await journey("task", SCRIPTED, "Send it back asking for more than the plan allo
 });
 
 await journey("builds", REAL_MODEL, "A build stops to ask a question the plan leaves open; you answer on the decision page and it carries on", [], async () => {
+  // Carrying on resumes Claude's saved session, which Claude keeps in the person's home; inside the plane's macOS check
+  // fence that home is read-only, so the first run's session is never saved. It runs everywhere else.
+  if (insideFence()) throw new Skip("inside the plane's macOS check fence Claude can't save the session a resumed build needs");
   const id = "round";
   cli(["task", "add", "Add a round2 function", "--id", id, "--repo", repo, ...auth]);
   cli(["task", "scope", id, "--goal", "Add round2(x) to src/math.js (round to 2 decimal places) with a test in test/math.test.js. Whether an exact half rounds up or to the nearest even digit is the operator's call and is not decided yet: before writing any code, stop and ask the operator with two options (half up, half to even), then build what they choose.", "--acceptance", "round2 follows the operator's answer, with a test|check", ...auth]);
@@ -697,7 +723,12 @@ await journey("stop", SCRIPTED, "Stop a build while it runs, then resume it with
   cli(["task", "scope", id, "--goal", "Add divide(a, b) to src/math.js, throwing on division by zero, with tests for both in test/math.test.js.", "--acceptance", "divide works and refuses zero|check", ...auth]);
   const digest = cli(["task", "show", id]).scope.digest;
   cli(["task", "approve", id, "--yes", "--digest", digest, ...auth]);
-  const running = await until("the build to start", async () => { const one = latestBuild(id); return one && !one.finished_at ? one : null; }, { timeoutMs: 180_000, everyMs: 1000 });
+  // Running means its agent has started (a stop before that is a different case: nothing ran yet). Every launch now
+  // checks the protected storage folders first, so the run's row comes a moment before its agent does.
+  const running = await until("the build's agent to start", async () => {
+    const one = latestBuild(id);
+    return one && !one.finished_at && rows(`SELECT provider_started_at FROM run WHERE id = ${one.id}`)[0]?.provider_started_at ? one : null;
+  }, { timeoutMs: 180_000, everyMs: 250 });
   await page.goto(`${base}/t/${id}`);
   const stop = page.locator("form.task-stop-form button");
   await stop.waitFor({ timeout: 15_000 });
@@ -714,7 +745,8 @@ await journey("stop", SCRIPTED, "Stop a build while it runs, then resume it with
   await Promise.all([page.waitForNavigation(), confirm.locator("button").first().click()]);
   const resumed = rows(`SELECT resumed_by, resumed_via FROM run_stop WHERE run = ${running.id}`)[0];
   if (resumed?.resumed_by !== "alex") throw new Error(`the resume: ${JSON.stringify(resumed)}`);
-  const built = await builtAndChecked(id);
+  // The stopped build is already finished; the answer is the resumed one, which may not have started yet.
+  const built = await builtAndChecked(id, 600_000, running.id);
   return { stopped: running.id, finished: built.id, settlement: stopped.settlement };
 });
 
@@ -797,6 +829,44 @@ await journey("console", SCRIPTED, "Projects: the project is listed and opens", 
   if (!/Open now/.test(await row.innerText())) await Promise.all([page.waitForNavigation(), row.locator('form[action="/projects/open"] button').click()]);
   await page.goto(`${base}/projects`);
   if (!/Open now/.test(await page.locator(`li[data-project="${repo}"]`).innerText())) throw new Error("the project isn't the open one");
+});
+
+await journey("console", SCRIPTED, "Network: a project's page says what its builds may reach; an approver turns local services on and adds a host with their password, and the ledger keeps it", [], async () => {
+  await page.goto(`${base}/settings/project?repo=${encodeURIComponent(repo)}`);
+  const section = page.locator("section#network");
+  await waitFor(section, "the Network section");
+  if (!/no local services/.test(await section.innerText())) throw new Error(`a new project's network isn't the narrow default: ${await section.innerText()}`);
+  await section.locator("summary").click();
+  await section.locator('input[name="local"]').check();
+  await section.locator('textarea[name="hosts"]').fill("api.stripe.com");
+  // A wrong password changes nothing.
+  await section.locator('input[name="password"]').fill("not-the-password");
+  await Promise.all([page.waitForNavigation(), section.locator('button[type="submit"]').click()]);
+  if (rows(`SELECT 1 FROM project_network WHERE repo = '${repo}'`).length !== 0) throw new Error("a wrong password saved the network");
+  await section.locator("summary").click().catch(() => undefined);
+  await section.locator('input[name="local"]').check();
+  await section.locator('textarea[name="hosts"]').fill("api.stripe.com\nnot a host");
+  await section.locator('input[name="password"]').fill(w.passwords.alex);
+  await Promise.all([page.waitForNavigation(), section.locator('button[type="submit"]').click()]);
+  if (!/no address, port or path/.test(await page.locator('[role="alert"]').first().innerText())) throw new Error("a bad host wasn't refused in words");
+  await section.locator("summary").click().catch(() => undefined);
+  await section.locator('input[name="local"]').check();
+  await section.locator('textarea[name="hosts"]').fill("api.stripe.com");
+  await section.locator('input[name="password"]').fill(w.passwords.alex);
+  await Promise.all([page.waitForNavigation(), section.locator('button[type="submit"]').click()]);
+  const saved = rows(`SELECT network_json FROM project_network WHERE repo = '${repo}'`)[0]?.network_json;
+  if (saved !== JSON.stringify({ mode: "allowlist", hosts: ["api.stripe.com"], loopback: "any" })) throw new Error(`saved network: ${saved}`);
+  const text = await page.locator("section#network").innerText();
+  if (!/api\.stripe\.com/.test(text) || !/local services/.test(text)) throw new Error(`the page doesn't say the new network: ${text}`);
+  if (rows("SELECT 1 FROM action_ledger WHERE action LIKE '%network%' AND actor = 'alex'").length !== 1) throw new Error("the change isn't in the ledger");
+  await shot("project-network");
+  // Back to the narrow default, so later journeys see a fresh project.
+  await page.locator("section#network summary").click();
+  await page.locator('section#network input[name="local"]').uncheck();
+  await page.locator('section#network textarea[name="hosts"]').fill("");
+  await page.locator('section#network input[name="password"]').fill(w.passwords.alex);
+  await Promise.all([page.waitForNavigation(), page.locator('section#network button[type="submit"]').click()]);
+  return { saved };
 });
 
 await journey("console", SCRIPTED, "Knowledge: instructions saved for a project are kept for future tasks", [], async () => {
@@ -989,13 +1059,18 @@ async function mailServer() {
   try {
     execFileSync("docker", ["run", "-d", "--name", name, "-p", "127.0.0.1:993:3993", "-p", "127.0.0.1:3025:3025", "-v", `${join(certDir, "keystore.p12")}:/keystore.p12:ro`, "-e",
       "GREENMAIL_OPTS=-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=support:mail-pass@shop.example -Dgreenmail.users.login=email -Dgreenmail.tls.keystore.file=/keystore.p12 -Dgreenmail.tls.keystore.password=e2e-keystore",
-      "greenmail/standalone:2.1.3"], { stdio: "ignore", timeout: 120_000 });
-  } catch { throw new Skip("the mail server container couldn't start (is port 993 or 3025 taken?)"); }
+      "greenmail/standalone:2.1.3"], { stdio: "ignore", timeout: 120_000, killSignal: "SIGKILL" });
+  } catch {
+    // The Docker CLI ignores SIGTERM while the daemon hangs (a leftover container holding 993 or 3025 did that for
+    // hours), so the limit kills it outright, and the container it made is removed.
+    try { execFileSync("docker", ["rm", "-f", name], { stdio: "ignore", timeout: 60_000, killSignal: "SIGKILL" }); } catch { /* never made */ }
+    throw new Skip("the mail server container couldn't start (is port 993 or 3025 taken?)");
+  }
   const nodemailer = (await import(join(w.bin, "../../node_modules/nodemailer/dist/cjs/nodemailer.js"))).default;
   const { ImapFlow } = await import(join(w.bin, "../../node_modules/imapflow/dist/cjs/imap-flow.js"));
   const { simpleParser } = await import(join(w.bin, "../../node_modules/mailparser/index.js"));
   const smtp = nodemailer.createTransport({ host: "127.0.0.1", port: 3025, secure: false, ignoreTLS: true });
-  const stop = () => { smtp.close(); execFileSync("docker", ["rm", "-f", name], { stdio: "ignore" }); };
+  const stop = () => { smtp.close(); execFileSync("docker", ["rm", "-f", name], { stdio: "ignore", timeout: 60_000, killSignal: "SIGKILL" }); };
   try { await until("the mail server", async () => { await smtp.verify(); return true; }, { timeoutMs: 60_000, everyMs: 2000 }); } catch (error) { stop(); throw error; }
   /** Everything in someone's inbox (GreenMail signs a person in with their address as the password). */
   const inbox = async user => {
@@ -1039,6 +1114,8 @@ await journey("mail", SCRIPTED, "Email inbox: a real email becomes a card, Claud
     await page.click("[data-open-triggers]");
     if (!(await page.locator("[data-add-trigger] select").first().isVisible())) await page.getByText("Add a trigger", { exact: true }).click();
     await page.locator("[data-add-trigger] select").first().selectOption("email");
+    // Mail from any sender brings in work from anyone: the trigger takes the password.
+    await page.locator('[data-add-trigger] input[type="password"]').fill(w.passwords.alex);
     await page.locator('[data-add-trigger] button:has-text("Add trigger")').click();
     await until("the email trigger", async () => (await flowView(id)).triggers.some(one => one.kind === "email"), { timeoutMs: 15_000, everyMs: 500 });
     const checkNow = () => page.locator('[data-flow-drawer] button:has-text("Check now")').first().click();
@@ -1120,7 +1197,9 @@ await journey("mail", SCRIPTED, "Follow-ups: a card emails someone and waits; th
     await page.waitForSelector('[data-flow-zone-panel="wait"]');
     await shot("wait-zone-settings");
     await page.click('button:has-text("Discard")');
-    const gave = await until("Sam's card to finish without a reply", async () => { const one = await cardOf("order 43"); return one?.state === "done" ? one : null; }, { timeoutMs: (WAIT + 3) * 60_000, everyMs: 5000 });
+    // The wait zone decides how long this takes (WAIT minutes, then the nudge), so the release's 90-second cap on
+    // scripted waits can't apply; its own limit still bounds it.
+    const gave = await until("Sam's card to finish without a reply", async () => { const one = await cardOf("order 43"); return one?.state === "done" ? one : null; }, { timeoutMs: (WAIT + 3) * 60_000, everyMs: 5000, capped: false });
     if (gave.comments.length > 0) throw new Error("the stranger's message was taken as Sam's reply");
     if (!gave.history.some(one => one.text.includes(`No reply after ${WAIT} minutes`))) throw new Error(`its history: ${gave.history.map(one => one.text).join(" | ")}`);
     const nudge = (await mail.inbox("sam@example.com")).find(one => one.subject === "Re: Question about order 43");
@@ -1182,8 +1261,25 @@ await journey("maya", SCRIPTED, "Subagents: Maya (a support rep) answers a quest
   const question = await until("Maya to answer the question card", async () => { const one = await cardOf("Where is my order"); return one?.stage === "answered" ? one : null; }, { timeoutMs: 420_000, everyMs: 3000 });
   const reply = question.outputs.find(one => one.stage === "read")?.text ?? "";
   if (reply.length < 20) throw new Error(`her reply: ${reply}`);
-  const small = await until("Maya to approve the $30 refund on her own", async () => { const one = await cardOf("Charged twice"); return one?.stage === "refunded" ? one : null; }, { timeoutMs: 420_000, everyMs: 3000 });
-  if (!small.history.some(one => /Approved by Maya \(AI\)/.test(one.text))) throw new Error(`its history: ${small.history.map(one => one.text).join(" | ")}`);
+  // A scripted Maya approves the $30 refund on her own. A real one may instead bring it to you: "hand_off" is hers to use
+  // whenever she isn't sure (a duplicate charge she can't check), so a real run takes either decision, but only hers:
+  // her approval on its history, or the decision waiting on you with her note on it, which you then approve.
+  let small = await until(w.scripted ? "Maya to approve the $30 refund on her own" : "Maya to decide the $30 refund (approve it, or bring it to you)", async () => {
+    const one = await cardOf("Charged twice");
+    return one?.stage === "refunded" || (!w.scripted && one?.canDecide && one?.handoff != null) ? one : null;
+  }, { timeoutMs: 420_000, everyMs: 3000 });
+  let smallHandedOff = null;
+  if (small.stage !== "refunded") {
+    smallHandedOff = small.handoff.note;
+    await page.reload(); await page.waitForSelector("[data-zone]");
+    await page.locator(`[data-card="${small.id}"]`).click();
+    await page.waitForSelector(`[data-flow-card-panel="${small.id}"]`);
+    if (!/^Maya · Support:/.test(await page.locator("[data-subagent-handoff]").innerText())) throw new Error("Maya's note isn't on the $30 decision");
+    await page.click('[data-flow-card-panel] button:has-text("Approve")');
+    small = await until("the $30 refund to be approved by you", async () => { const one = await cardOf("Charged twice"); return one?.stage === "refunded" ? one : null; }, { timeoutMs: 30_000, everyMs: 1000 });
+  } else if (!small.history.some(one => /Approved by Maya \(AI\)/.test(one.text))) throw new Error(`its history: ${small.history.map(one => one.text).join(" | ")}`);
+  const approvedByYou = () => rows(`SELECT COUNT(*) AS n FROM flow_event WHERE actor = 'alex' AND outcome = 'approved'`)[0]?.n ?? 0;
+  const yoursBefore = approvedByYou();
   // The $400 one is over her limit: she brings it to the flow's owner (a decision, or a question first).
   const brought = await until("Maya to bring the $400 refund to you", async () => { const one = await cardOf("Broken TV"); return one?.canDecide || one?.question?.mine ? one : null; }, { timeoutMs: 420_000, everyMs: 3000 });
   await page.reload(); await page.waitForSelector("[data-zone]");
@@ -1205,7 +1301,7 @@ await journey("maya", SCRIPTED, "Subagents: Maya (a support rep) answers a quest
   }
   const told = rows(`SELECT subject FROM notification WHERE recipient = 'alex' AND subject LIKE 'Maya · Support%'`);
   if (told.length === 0) throw new Error("you weren't told by Maya, under her name");
-  if (rows(`SELECT 1 FROM flow_event WHERE actor = 'alex' AND outcome = 'approved'`).length === 0 && rows(`SELECT 1 FROM subagent_question WHERE answered_by = 'alex'`).length === 0) throw new Error("no person decided the $400 refund");
+  if (approvedByYou() <= yoursBefore && rows(`SELECT 1 FROM subagent_question WHERE answered_by = 'alex'`).length === 0) throw new Error("no person decided the $400 refund");
   // Paused, the zones she handles wait; resumed, she picks the card up.
   await page.goto(`${base}/settings/lead/subagents/${subagentId}`);
   await Promise.all([page.waitForNavigation(), page.click('button:has-text("Pause Maya")')]);
@@ -1226,7 +1322,7 @@ await journey("maya", SCRIPTED, "Subagents: Maya (a support rep) answers a quest
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   await putPhoneDown();
   if (wide) throw new Error("the subagent page scrolls sideways on a phone");
-  return { reply: reply.slice(0, 120), summary: (await page.locator(".subagent-summary").innerText()).slice(0, 200) };
+  return { reply: reply.slice(0, 120), summary: (await page.locator(".subagent-summary").innerText()).slice(0, 200), ...(smallHandedOff === null ? {} : { smallHandedOff: smallHandedOff.slice(0, 200) }) };
 });
 
 await journey("maya", SCRIPTED, "The lead and its subagents in one place: Settings → Lead lists Maya with one Add subagent action on desktop and phone, an old teammate link lands on her page, and “ask Maya …” in chat is a card that, confirmed, puts one card on her desk and brings her answer back (D5)", ["Turn the lead chat on (first-run setup, with your password)", "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)"], async () => {
@@ -1259,6 +1355,8 @@ await journey("maya", SCRIPTED, "The lead and its subagents in one place: Settin
   // from you, she works it within her rules, and her answer comes back to you.
   script(
     { role: "lead", when: [/Ask Maya to look up order #1204/], answer: { steps: [
+      // Subagent tools are found first (lead tools on demand), then called from the next step.
+      { text: "", calls: [{ name: "find_tools", arguments: { query: "ask a subagent" } }] },
       { text: "Asking Maya.", calls: [{ name: "propose_subagent", arguments: { operation: "ask", subagent: maya, text: "Look up order #1204 and tell me when it ships." } }] },
       { text: "Maya will look it up once you confirm.", calls: [] },
     ] } },
@@ -1266,14 +1364,157 @@ await journey("maya", SCRIPTED, "The lead and its subagents in one place: Settin
   );
   const asked = await askLead("Ask Maya to look up order #1204 and tell me when it ships.");
   const pending = await pendingCard(asked.reply, "the card asking Maya", { label: "Ask Maya" });
-  if (!/Look up order #1204 and tell me when it ships\./.test(await pending.innerText())) throw new Error("the card doesn't show exactly what goes to Maya");
+  const shownAsk = (await pending.innerText()).replace(/\s+/g, " ");
+  // A scripted lead's words are known; a real lead puts the ask in its own words, which must still carry the order.
+  if (w.scripted ? !/Look up order #1204 and tell me when it ships\./.test(shownAsk) : !/1204/.test(shownAsk)) throw new Error(`the card asking Maya: ${shownAsk.slice(0, 300)}`);
+  // The card's terms, one paragraph each: the first is exactly what goes to her.
+  const shownTerms = (await pending.locator(".so-card-body p").allInnerTexts()).map(one => one.replace(/\s+/g, " ").trim());
+  // Her desk is made when the first card lands on it, so what was there before is counted across every flow.
+  const deskBefore = rows("SELECT COALESCE(MAX(id), 0) AS id FROM flow_card")[0].id;
   await confirmCard(asked.reply, "Ask Maya");
   await shot("lead-asks-maya");
+  // Confirmed, exactly one card lands on her desk, from you, and it is word for word what the card showed.
   const desk = rows(`SELECT desk_flow FROM subagent WHERE id = ${maya}`)[0]?.desk_flow;
-  const cards = desk ? rows(`SELECT title, created_by FROM flow_card WHERE flow = ${desk} AND title LIKE 'Look up order #1204%'`) : [];
-  if (cards.length !== 1 || cards[0].created_by !== "alex") throw new Error(`Maya's desk has ${JSON.stringify(cards)}`);
-  const answer = await until("Maya's answer to reach you", async () => rows("SELECT subject, body FROM notification WHERE kind = 'teammate-reply' AND recipient = 'alex' AND body LIKE '%#1204%'")[0] ?? null, { timeoutMs: 120_000, everyMs: 1500 });
+  const cards = desk ? rows(`SELECT id, title, description, created_by FROM flow_card WHERE flow = ${desk} AND id > ${deskBefore}`) : [];
+  if (cards.length !== 1 || cards[0].created_by !== "alex" || !/1204/.test(`${cards[0].title} ${cards[0].description ?? ""}`)) throw new Error(`Maya's desk has ${JSON.stringify(cards)}`);
+  const sentAsk = String(cards[0].description ?? cards[0].title).replace(/\s+/g, " ").trim();
+  if (sentAsk === "" || shownTerms[0] !== sentAsk) throw new Error(`the card showed ${JSON.stringify(shownTerms[0] ?? "").slice(0, 300)}, but Maya got ${JSON.stringify(sentAsk).slice(0, 300)}`);
+  // Her answer to that card comes back to you. A real Maya with no order tool may ask you first: you tell her to say
+  // what she can; or say she can't, which comes back to you the same way.
+  const card = cards[0].id;
+  let answeredHer = null;
+  const answer = await until("Maya's answer to reach you", async () => {
+    const reply = rows(`SELECT subject, body FROM notification WHERE kind = 'teammate-reply' AND recipient = 'alex' AND dedupe_key LIKE 'teammate-reply:${card}:%'`)[0];
+    if (reply !== undefined) return reply;
+    const question = w.scripted ? undefined : rows(`SELECT id, question FROM subagent_question WHERE card = ${card} AND asked_of = 'alex' AND state = 'open'`)[0];
+    if (question !== undefined) {
+      await page.goto(`${base}/settings/lead/subagents/${maya}`);
+      const said = await post(`/settings/lead/subagents/questions/${question.id}/answer`, { text: "Tell me what you can from here, or that you can't look it up." });
+      if (said.status >= 400) throw new Error(`answering her question: ${said.status} ${said.body.slice(0, 200)}`);
+      answeredHer = question.question;
+    }
+    return null;
+  }, { timeoutMs: w.scripted ? 120_000 : 420_000, everyMs: 1500 });
+  if (w.scripted && !/#1204/.test(answer.body)) throw new Error(`her answer: ${answer.body}`);
+  if (String(answer.body).trim() === "") throw new Error("her answer is empty");
+  if (answeredHer !== null) answer.askedFirst = answeredHer.slice(0, 200);
   return { section: section.slice(0, 160), answer };
+});
+
+await journey("maya", SCRIPTED, "The lead queue: a message sent while the lead answers is saved, shows Queued with Remove, and runs next by itself, in order", ["Turn the lead chat on (first-run setup, with your password)"], async () => {
+  script(
+    { role: "lead", when: [/Summarise the refunds, slowly/], answer: { delayMs: 5_000, steps: [{ text: "Refunds summarised.", calls: [] }] } },
+    { role: "lead", when: [/Then list the open questions/], answer: { steps: [{ text: "Open questions listed.", calls: [] }] } },
+  );
+  await page.goto(`${base}/chat`);
+  await page.waitForSelector("[data-workspace-composer] textarea");
+  const messages = page.locator("[data-workspace-chat] [data-message-id]");
+  const before = await messages.count();
+  const say = async text => { await page.fill("[data-workspace-composer] textarea", text); await page.click('[data-workspace-composer] button[type="submit"]'); };
+  await say("Summarise the refunds, slowly.");
+  await until("the first reply to be running", async () => rows("SELECT 1 FROM mate_turn WHERE state = 'running'").length === 1, { timeoutMs: 15_000 });
+  // The composer stays usable while the lead answers; the second message is saved and waits its turn.
+  await say("Then list the open questions.");
+  await waitFor(page.locator('[data-queue-state="queued"]').first(), "the second message shown Queued", { timeoutMs: 15_000 });
+  if (await page.locator('[data-queue-state="queued"] .so-queued-remove').count() !== 1) throw new Error("the queued message has no Remove");
+  await until("both replies, in order", async () => (await messages.count()) >= before + 4 && rows("SELECT 1 FROM lead_queue WHERE status = 'answered'").length === 1, { timeoutMs: w.scripted ? 60_000 : 2 * REAL_TURN_MS });
+  const order = (await messages.allInnerTexts()).slice(before).map(one => one.replace(/\s+/g, " "));
+  // The order the product guarantees, whatever a real lead says: the queued message waited for the first turn to end
+  // and got the next turn of its own; each turn's reply is recorded under its turn, and the thread shows them in order.
+  const asked = rows("SELECT id, turn FROM lead_message WHERE role = 'operator' AND text = 'Summarise the refunds, slowly.' ORDER BY id DESC LIMIT 1")[0];
+  const queued = rows("SELECT m.id AS id, m.turn AS turn, q.turn_id AS admitted, q.status AS status FROM lead_queue q JOIN lead_message m ON m.id = q.message WHERE m.text = 'Then list the open questions.'");
+  if (asked?.turn == null || queued.length !== 1 || queued[0].status !== "answered" || queued[0].turn !== queued[0].admitted || !(queued[0].turn > asked.turn))
+    throw new Error(`the queued message didn't get a turn of its own after the first: asked ${JSON.stringify(asked)}, queued ${JSON.stringify(queued)}`);
+  const [first, second] = [asked.turn, queued[0].turn];
+  const turns = rows(`SELECT id, state, created_at, finished_at FROM mate_turn WHERE id IN (${first}, ${second}) ORDER BY id`);
+  if (turns.length !== 2 || turns.some(turn => turn.state !== "answered") || !(turns[0].finished_at <= turns[1].created_at))
+    throw new Error(`the second turn didn't wait for the first to end: ${JSON.stringify(turns)}`);
+  const replyOf = turn => rows(`SELECT id FROM lead_message WHERE role = 'assistant' AND turn = ${turn} AND text <> '' ORDER BY id`).map(row => row.id);
+  const [replyOne, replyTwo] = [replyOf(first), replyOf(second)];
+  if (replyOne.length === 0 || replyTwo.length === 0 || !(replyOne.at(-1) < replyTwo[0])) throw new Error(`the replies, by turn: ${JSON.stringify({ [first]: replyOne, [second]: replyTwo })}`);
+  const shown = await messages.evaluateAll(nodes => nodes.map(node => Number(node.getAttribute("data-message-id"))));
+  const where = id => shown.indexOf(id);
+  if ([asked.id, queued[0].id, replyOne[0], replyTwo[0]].some(id => where(id) < 0) || !(where(asked.id) < where(replyOne[0]) && where(replyOne.at(-1)) < where(replyTwo[0]) && where(queued[0].id) < where(replyTwo[0])))
+    throw new Error(`out of order on the page: ${JSON.stringify({ shown, asked: asked.id, queued: queued[0].id, replyOne, replyTwo, order })}`);
+  // A scripted lead's words are known, so a scripted run checks them word for word too.
+  const at = words => order.findIndex(one => one.includes(words));
+  if (w.scripted && !(at("Summarise the refunds") < at("Refunds summarised") && at("Refunds summarised") < at("Open questions listed") && at("Then list the open questions") < at("Open questions listed")))
+    throw new Error(`out of order: ${JSON.stringify(order)}`);
+  const statuses = rows("SELECT status FROM lead_queue").map(one => one.status);
+  if (statuses.length !== 1 || statuses[0] !== "answered") throw new Error(`lead queue rows: ${JSON.stringify(statuses)}`);
+  await shot("lead-queue-answered");
+  return { order };
+});
+
+await journey("maya", SCRIPTED, "On a phone the chat box rides above the keyboard: the box and Send stay in view while typing, the newest message sits just above them, and the full screen comes back when the keyboard goes", ["The lead queue: a message sent while the lead answers is saved, shows Queued with Remove, and runs next by itself, in order"], async () => {
+  const phone = await alexPhone("light");
+  await phone.goto(`${base}/chat`);
+  const box = phone.locator("[data-workspace-composer] textarea");
+  await waitFor(box, "the chat box");
+  // A software keyboard as iOS Safari makes it: the page keeps its height and only the visible area shrinks (336px),
+  // optionally panned down by Safari to show the field. No physical keyboard or Safari is claimed.
+  const keyboard = (height, top) => phone.evaluate(([height, top]) => {
+    if (height === 0) { delete visualViewport.height; delete visualViewport.offsetTop; }
+    else { Object.defineProperty(visualViewport, "height", { configurable: true, get: () => innerHeight - height }); Object.defineProperty(visualViewport, "offsetTop", { configurable: true, get: () => top }); }
+    visualViewport.dispatchEvent(new Event("resize"));
+  }, [height, top]);
+  const measure = () => phone.evaluate(() => {
+    const form = document.activeElement.closest("form"), area = document.querySelector(".so-composer-area").getBoundingClientRect();
+    const last = [...document.querySelectorAll("#chat-thread [data-message-id]")].at(-1)?.getBoundingClientRect();
+    const shell = document.querySelector(".so-workspace").getBoundingClientRect();
+    return { visible: visualViewport.offsetTop + visualViewport.height, box: document.activeElement.getBoundingClientRect().bottom, send: form.querySelector('button[type="submit"]').getBoundingClientRect().bottom,
+      areaTop: area.top, lastBottom: last?.bottom ?? null, shellTop: shell.top, shellHeight: shell.height };
+  });
+  try {
+    await box.focus();
+    await box.fill("A first line\nand a second\nand a third");
+    await keyboard(336, 0);
+    await phone.waitForFunction(() => document.documentElement.hasAttribute("data-mobile-keyboard"));
+    // The thread scrolls to its newest message after the resize; on a busy machine that lands later than 100 ms.
+    await phone.waitForFunction(() => {
+      const last = [...document.querySelectorAll("#chat-thread [data-message-id]")].at(-1)?.getBoundingClientRect();
+      return last && last.bottom >= 0 && last.bottom <= document.querySelector(".so-composer-area").getBoundingClientRect().top + 1;
+    }, null, { timeout: 5000 }).catch(() => {});
+    const typing = await measure();
+    await phone.screenshot({ path: join(w.out, "chat-keyboard-phone.png") });
+    if (typing.box > typing.visible + 0.5 || typing.send > typing.visible + 0.5) throw new Error(`the chat box sits under the keyboard: ${JSON.stringify(typing)}`);
+    if (typing.lastBottom === null || typing.lastBottom > typing.areaTop + 1 || typing.lastBottom < 0) throw new Error(`the newest message isn't just above the box: ${JSON.stringify(typing)}`);
+    await keyboard(336, 120);
+    await phone.waitForFunction(() => getComputedStyle(document.querySelector(".so-workspace")).top === "120px");
+    const panned = await measure();
+    if (Math.round(panned.shellTop) !== 120 || panned.box > panned.visible + 0.5) throw new Error(`the screen doesn't follow Safari's pan: ${JSON.stringify(panned)}`);
+    if (await box.inputValue() !== "A first line\nand a second\nand a third") throw new Error("the draft changed while the keyboard moved");
+    // The phone's keyboard has no Shift: its Return writes a new line, and nothing is sent.
+    const sent = await phone.locator("#chat-thread [data-message-id]").count();
+    await box.press("End"); await box.press("Enter");
+    if (await box.inputValue() !== "A first line\nand a second\nand a third\n") throw new Error(`Return on the phone keyboard didn't write a new line: ${JSON.stringify(await box.inputValue())}`);
+    if (await phone.locator("#chat-thread [data-message-id]").count() !== sent) throw new Error("Return on the phone keyboard sent the message");
+    // A reader who scrolled up a little stays there when the box grows a line.
+    const thread = phone.locator(".so-conversation > div").first(); // the hook's scroller, inside its root
+    await thread.evaluate(node => { node.scrollTop = node.scrollHeight; });
+    await phone.waitForTimeout(100);
+    // A finger drag is a plain scroll (no wheel), as on a phone.
+    await thread.evaluate(node => { node.scrollTop -= 40; });
+    await phone.waitForTimeout(250);
+    const before = await thread.evaluate(node => node.scrollTop);
+    await box.fill("A first line\nand a second\nand a third\nand a fourth\nand a fifth");
+    await phone.waitForTimeout(250);
+    const after = await thread.evaluate(node => node.scrollTop);
+    if (Math.abs(after - before) > 1) throw new Error(`a reader who scrolled up was moved from ${before} to ${after}`);
+    // The keyboard closed while zoomed in, the box still focused: the screen comes back whole, not left at the keyboard's size.
+    await phone.evaluate(() => Object.defineProperty(visualViewport, "scale", { configurable: true, get: () => 2 }));
+    await keyboard(0, 0);
+    await phone.waitForFunction(() => !document.documentElement.hasAttribute("data-mobile-keyboard"));
+    await phone.waitForFunction(() => document.querySelector(".so-workspace").getBoundingClientRect().height === innerHeight, null, { timeout: 2000 }).catch(() => undefined);
+    const zoomed = await phone.evaluate(() => document.querySelector(".so-workspace").getBoundingClientRect().height);
+    await phone.evaluate(() => { delete visualViewport.scale; visualViewport.dispatchEvent(new Event("resize")); });
+    await box.fill("");
+    await box.blur();
+    await phone.waitForTimeout(100);
+    const rested = await phone.evaluate(() => document.querySelector(".so-workspace").getBoundingClientRect().height);
+    if (Math.round(zoomed) !== 844 || Math.round(rested) !== 844) throw new Error(`the screen didn't come back to full height: zoomed ${zoomed}, after ${rested}`);
+    return { typing, panned };
+  } finally { await putPhoneDown(); }
 });
 
 await journey("maya", REAL_MODEL, "The lead adds a subagent and changes one's rules from plain words, as cards you confirm (real Claude turns)", ["Turn the lead chat on (first-run setup, with your password)", "Subagents: Maya (a support rep) answers a question card, approves a small refund on its own, brings the big one to you, and stops while paused (real Claude turns)"], async () => {
@@ -1347,6 +1588,7 @@ createInterface({ input: process.stdin }).on("line", line => {
   await Promise.all([page.waitForNavigation(), page.click('form[data-new-subagent] button')]);
   const subagentId = Number(/\/settings\/lead\/subagents\/(\d+)/.exec(page.url())?.[1]);
   await page.selectOption('form.tool-add select[name="tool"]', "store");
+  await page.fill('form.tool-add input[name="password"]', w.passwords.alex);
   await Promise.all([page.waitForNavigation(), page.click('form.tool-add button')]);
   const shopRules = page.locator('[data-tool-grant="store"]');
   const ruleOf = action => shopRules.locator(`select[name="use.${action}"]`).inputValue();
@@ -1356,6 +1598,8 @@ createInterface({ input: process.stdin }).on("line", line => {
   await shopRules.locator('select[name="field.refund_order"]').selectOption("amount");
   await shopRules.locator('input[name="over.refund_order"]').fill("50");
   await shopRules.locator('select[name="use.delete_customer"]').selectOption("never");
+  // Ask first → on her own up to $50 loosens a rule: it takes the password.
+  await shopRules.locator('input[name="password"]').fill(w.passwords.alex);
   await Promise.all([page.waitForNavigation(), shopRules.locator('button:has-text("Save rules")').click()]);
   const rules = JSON.parse(rows(`SELECT rules_json FROM subagent_tool WHERE subagent = ${subagentId} AND tool = 'store'`)[0]?.rules_json ?? "{}");
   if (rules.refund_order?.limit?.over !== 50 || rules.delete_customer?.use !== "never") throw new Error(`the saved rules: ${JSON.stringify(rules)}`);
@@ -1420,7 +1664,8 @@ createInterface({ input: process.stdin }).on("line", line => {
 // In the rosa group's own world the lead chat isn't on yet: this journey turns it on the same way first.
 await journey("rosa", REAL_MODEL, "The lead changes a subagent's tool rule from plain words, as a card you confirm (real Claude turn)", [TOOL_CHECK], async () => {
   if (!leadChatOn) await turnLeadChatOn();
-  const { reply } = await askLead("Rosa can refund orders up to $100 in the store without asking me now. Just draft it.");
+  // A chat card can only tighten a rule (letting her do more takes the password on her page), so the lead tightens one.
+  const { reply } = await askLead("Rosa should ask me before any refund over $20 in the store from now on; under that she can still refund on her own. Just draft it.");
   const pending = reply.locator('[data-view="chat-card"][data-card-state="pending"]:has([data-card-confirm])');
   await waitFor(pending.first(), "a card changing Rosa's rule in the lead's reply", { seen: async () => `the reply “${(await reply.innerText()).replace(/\s+/g, " ").slice(0, 300)}”` });
   // The lead may draft her soul file's words too: confirm each card it drafted; the rule itself is what's checked.
@@ -1432,7 +1677,7 @@ await journey("rosa", REAL_MODEL, "The lead changes a subagent's tool rule from 
   }
   const rules = await until("Rosa's refund rule to change", async () => {
     const saved = JSON.parse(rows("SELECT t.rules_json FROM subagent_tool t JOIN subagent m ON m.id = t.subagent WHERE m.handle = 'rosa' AND t.tool = 'store'")[0]?.rules_json ?? "{}");
-    return saved.refund_order?.limit?.over === 100 ? saved : null;
+    return saved.refund_order?.limit?.over === 20 ? saved : null;
   }, { timeoutMs: 30_000, everyMs: 1000 });
   if (rules.refund_order.use !== "free") throw new Error(`Rosa's refund rule: ${JSON.stringify(rules.refund_order)}`);
   return { rule: rules.refund_order };
@@ -1486,6 +1731,8 @@ await journey("memory", SCRIPTED, "Subagents remember and learn: Rosa keeps a cu
   const wide = await phone.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   await putPhoneDown();
   if (wide) throw new Error("the subagent page scrolls sideways on a phone");
+  // Accepting a looser rule she suggested takes the password, on her page (a chat tap can't).
+  await offered.locator('input[name="password"]').fill(w.passwords.alex);
   await Promise.all([page.waitForNavigation(), offered.locator('button:has-text("Yes, change it")').click()]);
   const rule = JSON.parse(rows(`SELECT rules_json FROM subagent_tool WHERE subagent = ${mate} AND tool = 'store'`)[0]?.rules_json ?? "{}").refund_order;
   if (JSON.stringify(rule) !== suggestion.rule_json) throw new Error(`her refund rule is ${JSON.stringify(rule)}, not the suggested ${suggestion.rule_json}`);
@@ -1520,7 +1767,7 @@ await journey("rosa", SCRIPTED, "A subagent's routine: added on its page for wee
   const desk = rows(`SELECT desk_flow FROM subagent WHERE id = ${mate}`)[0]?.desk_flow;
   if (!desk) throw new Error("Rosa has no desk");
   await Promise.all([page.waitForNavigation(), routine.locator('button:has-text("Run now")').click()]);
-  const answer = await until("Rosa's answer to reach her manager", async () => rows("SELECT subject, body FROM notification WHERE kind = 'teammate-reply' AND recipient = 'alex'")[0] ?? null, { timeoutMs: 300_000, everyMs: 3000 });
+  const answer = await until("Rosa's answer to reach her manager", async () => rows("SELECT subject, body FROM notification WHERE kind = 'teammate-reply' AND recipient = 'alex' AND subject LIKE 'Rosa · %'")[0] ?? null, { timeoutMs: 300_000, everyMs: 3000 });
   if (!/^Rosa · Support: Look up order 2201/.test(answer.subject) || !/2201|lamp|refund/i.test(answer.body)) throw new Error(`the answer: ${answer.subject} — ${answer.body}`);
   const card = (await flowView(desk)).cards[0];
   if (card?.stage !== "done") throw new Error(`the routine's card is in ${card?.stage}`);
@@ -1655,8 +1902,9 @@ await journey("flows", SCRIPTED, "One-click connections: Connect Stripe on the k
     for (const file of [w.db, `${w.db}-wal`].filter(existsSync)) if (readFileSync(file).includes(first.OAUTH_REFRESH_TOKEN)) throw new Error(`the sign-in reached ${file}`);
     // Two minutes left on it: the worker renews it, and the tool works with the new one.
     await until("the worker to renew the sign-in", async () => stand.grants.some(one => one.grant_type === "refresh_token" && one.refresh_token === first.OAUTH_REFRESH_TOKEN) ? true : null, { timeoutMs: 90_000, everyMs: 1000 });
-    const renewed = JSON.parse(readFileSync(secrets, "utf8"));
-    if (renewed.OAUTH_ACCESS_TOKEN === first.OAUTH_ACCESS_TOKEN) throw new Error("the renewed sign-in wasn't kept");
+    // The provider answers before the worker saves what it got: wait for the save, not just the exchange.
+    await until("the renewed sign-in to be kept", async () => JSON.parse(readFileSync(secrets, "utf8")).OAUTH_ACCESS_TOKEN !== first.OAUTH_ACCESS_TOKEN ? true : null, { timeoutMs: 30_000, everyMs: 500 })
+      .catch(() => { throw new Error("the renewed sign-in wasn't kept"); });
     stand.live.delete(first.OAUTH_ACCESS_TOKEN);
     await page.goto(`${base}/settings/tools?repo=${encodeURIComponent(repo)}`);
     await Promise.all([page.waitForNavigation(), page.locator('#tool-stripe button:has-text("Test")').click()]);
@@ -1688,8 +1936,14 @@ await journey("pages", SCRIPTED, "Sign-in with an identity provider: turned on i
     await Promise.all([priya.waitForURL(url => url.port === new URL(base).port && !url.pathname.startsWith("/login"), { timeout: 30_000 }), priya.click('a:has-text("Sign in as priya")')]);
     await priya.waitForSelector("[data-workspace-shell]");
     if (rows("SELECT role FROM approver WHERE name = 'priya'")[0]?.role !== "approver") throw new Error("priya didn't get an operator account from the eng-leads group");
-    // A step-up is that sign-in: no password field, and adding a tool goes through.
+    // A step-up is that sign-in: no password field. The sign-in itself never counts as checked now (B2); one explicit
+    // re-check with the provider does, for the next step-up, and adding a tool goes through.
     await priya.goto(`${base}/settings/tools?repo=${encodeURIComponent(repo)}`);
+    await priya.evaluate(() => document.querySelectorAll("details").forEach(one => { if (one.querySelector('select[name="catalog"]')) one.open = true; }));
+    const recheck = priya.locator('form:has(select[name="catalog"]) [data-sso-step-up="confirm"]');
+    if ((await recheck.count()) !== 1 || (await priya.locator('form:has(select[name="catalog"]) input[type="password"]').count()) !== 0) throw new Error("the step-up doesn't offer priya the provider's check");
+    await Promise.all([priya.waitForURL(/127\.0\.0\.1:\d+\/authorize/), recheck.click()]);
+    await Promise.all([priya.waitForURL(url => url.port === new URL(base).port && url.pathname.startsWith("/settings/tools"), { timeout: 30_000 }), priya.click('a:has-text("Sign in as priya")')]);
     await priya.evaluate(() => document.querySelectorAll("details").forEach(one => { if (one.querySelector('select[name="catalog"]')) one.open = true; }));
     if ((await priya.locator('form:has(select[name="catalog"]) [data-sso-step-up="confirmed"]').count()) !== 1 || (await priya.locator('form:has(select[name="catalog"]) input[type="password"]').count()) !== 0) throw new Error("the step-up still asks priya for a password");
     await priya.selectOption('select[name="catalog"]', "chrome-devtools");
@@ -1906,6 +2160,9 @@ async function freshInstall(name, { claude, crewModels = false }) {
       const toolroll = (...args) => execFileSync(process.execPath, [w.bin, ...args, "--as", who, "--token", secret, "--db", join(state, "orders.db")], { stdio: "ignore", env: { ...process.env, HOME: home } });
       for (const phase of ["plan", "build", "repair", "review"]) toolroll("config", "set", phase, "--provider", "claude", "--model", "sonnet");
       toolroll("verify", "set", "--repo", realpathSync(shop), "--command", "npm test", "--timeout-seconds", "120", "--yes");
+      // Inside the plane's macOS check fence, as the world itself does (e2e-kit insideFence): this throwaway install's
+      // agents run inside the check's own sandbox.
+      if (insideFence()) toolroll("config", "unconfined-agents", "allow");
     }
     return install;
   } catch (error) {
@@ -1974,9 +2231,11 @@ await journey("onboarding", SCRIPTED, "A fresh install with Claude Code signed i
   await until("the three-line greeting", async () => /Opening it in your browser now/.test(install.terminal()), { timeoutMs: 30_000, seen: install.terminal });
   const said = install.terminal().split("\n").filter(one => one.trim() !== "");
   const [account, password] = readFileSync(join(install.state, "up-login.txt"), "utf8").trim().split(" ");
-  const greeting = said.slice(said.findIndex(one => one.startsWith("Toolroll is on ")), said.findIndex(one => one.startsWith("Toolroll is on ")) + 3);
-  if (greeting.length !== 3 || greeting[0] !== `Toolroll is on ${install.base}/` || greeting[1] !== "Opening it in your browser now, already signed in." || !greeting[2].startsWith(`If it doesn't open, go to that address and sign in as ${account}: the password is in ~/`)) throw new Error(`the greeting: ${said.join(" | ")}`);
-  if (said.length > 4) throw new Error(`more than the greeting was printed: ${said.join(" | ")}`);
+  // Four lines (#276): the password line is an exact, quoted command to read the saved file, never the password.
+  const greeting = said.slice(said.findIndex(one => one.startsWith("Toolroll is on ")), said.findIndex(one => one.startsWith("Toolroll is on ")) + 4);
+  if (greeting.length !== 4 || greeting[0] !== `Toolroll is on ${install.base}/` || greeting[1] !== "Opening it in your browser now, already signed in." || greeting[2] !== `If it doesn't open, go to that address and sign in as ${account}.`
+    || !greeting[3].startsWith("Your password: run `cat -- '/") || !greeting[3].endsWith("/up-login.txt'`")) throw new Error(`the greeting: ${said.join(" | ")}`);
+  if (said.length > 5) throw new Error(`more than the greeting was printed: ${said.join(" | ")}`);
   if (install.terminal().includes(password) || install.terminal().includes("/login/once/")) throw new Error("the terminal shows the password or the sign-in link");
   await terminalShot(said.join("\n"), "1-terminal");
   // 2. The browser opens signed in, on Chat.
@@ -2082,6 +2341,97 @@ await journey("onboarding", SCRIPTED, "The first task's timeline fills in as it 
   const phone = await on.locator("[data-phone-card]").innerText();
   if (!/Pair Telegram/.test(phone) || !/Tailscale/.test(phone)) throw new Error(`the phone card: ${phone}`);
   await bothSizes(on, "4-phone");
+  // The Workbench: the result's change beside the chat; a comment on one of its lines goes to the lead as the
+  // conversation's next message, naming the file, the line and the run.
+  const built = freshRows(install.db, `SELECT r.id AS id FROM run r JOIN task_ref t ON t.id = r.task_ref WHERE t.external_id = '${install.task.id.replace(/'/g, "''")}' AND r.role = 'builder' AND r.outcome IS NOT NULL ORDER BY r.id DESC LIMIT 1`)[0]?.id;
+  if (built === undefined) throw new Error("the first task has no finished build to comment on");
+  await on.goto(`${install.base}/chat?task=${encodeURIComponent(install.task.id)}&result=${built}&tab=changes`);
+  const linePin = on.locator("[data-workspace-result] [data-diff-line] button.pick-line").first();
+  await waitFor(linePin, "a line of the result's change", { timeoutMs: 30_000, state: "attached" });
+  await bothSizes(on, "5-workbench");
+  const path = await linePin.getAttribute("data-path"), line = await linePin.getAttribute("data-line");
+  const before = await on.locator("[data-workspace-chat] [data-message-id]").count();
+  // The lead's answer to the comment: a scripted world answers every turn it starts.
+  // It reads, drafts a follow-up as a card to confirm, and shows the test it means (a code block): the whole thread.
+  script({ role: "lead", when: [/Keep this, but name the edge case in a comment\./], answer: { delayMs: 4_000, steps: [
+    { text: "Reading the line.", calls: [{ name: "get_capabilities" }] },
+    { text: "Drafting the follow-up.", calls: [{ name: "propose_task", arguments: { repo: "r1", title: "Name the edge case in subtract", goal: "Add a comment above subtract(a, b) naming the negative-result edge case, with a test for it.",
+      acceptance: [{ id: "c1", statement: "subtract(2, 5) returns -3, with a test", evidence: ["check"] }], planning: "auto" } }] },
+    { text: "Here's the test I mean:\n\n```js\ntest('subtracts below zero', () => {\n  assert.equal(subtract(2, 5), -3);\n});\n```\n\nConfirm the card and the planner picks it up.", calls: [] },
+  ] } });
+  await linePin.click();
+  const steer = on.locator(`[data-diff-steer][data-diff-line="${line}"]`);
+  await waitFor(steer, "the comment form under that line");
+  if (await on.locator("#comment-form textarea[name=note]:focus").count() !== 0) throw new Error("the pin opened the request form instead of the comment under the line");
+  await steer.locator("textarea").fill("Keep this, but name the edge case in a comment.");
+  await settle(on);
+  await on.screenshot({ path: join(w.out, "onboarding-5-workbench-comment-1440.png") });
+  // Sent from a phone, with Return, as a person would: the sheet holds the same row, and the cursor goes back to the pin.
+  await on.setViewportSize({ width: 390, height: 844 });
+  await settle(on);
+  await steer.scrollIntoViewIfNeeded();
+  if (await on.evaluate(() => document.documentElement.scrollWidth - window.innerWidth) > 1) throw new Error("the comment row scrolls the phone sideways");
+  await on.screenshot({ path: join(w.out, "onboarding-5-workbench-comment-390.png") });
+  await steer.locator("textarea").press("Enter");
+  await waitFor(on.locator("[data-steer-sent]"), "the comment to say it went to the lead");
+  if (!await on.evaluate(() => document.activeElement?.matches("button.pick-line") ?? false)) throw new Error("after sending, the cursor didn't go back to the line's pin");
+  await on.setViewportSize({ width: 1440, height: 900 });
+  await settle(on);
+  // The thread shows it in parts: where (file, line, run), the quoted line, and the words.
+  const steered = [`${path}:${line}`, `run #${built}`, "Keep this, but name the edge case in a comment."];
+  await until("the comment in the chat as the next message", async () => {
+    const texts = await on.locator('[data-workspace-chat] .ui-message--user[data-message-id] [data-steer-comment]').allInnerTexts();
+    return (await on.locator("[data-workspace-chat] [data-message-id]").count()) > before && texts.some(text => steered.every(part => text.includes(part)));
+  }, { timeoutMs: 30_000, everyMs: 500, seen: async () => (await on.locator('[data-workspace-chat] .ui-message--user[data-message-id]').allInnerTexts()).slice(-2).join(" | ").slice(0, 400) });
+  const sentRows = freshRows(install.db, "SELECT id, text FROM lead_message WHERE role = 'operator' ORDER BY id DESC LIMIT 5");
+  const comment = sentRows.find(one => String(one.text).startsWith(`On ${JSON.stringify(path)}:${line}`) && String(one.text).includes(`(run #${built})`));
+  if (comment === undefined) throw new Error(`the lead wasn't sent the file, line and run: ${sentRows.map(one => String(one.text)).join(" | ").slice(0, 400)}`);
+  // The thread itself, while the lead works (its steps) and once it has answered (its reply and a card to confirm).
+  await on.goto(`${install.base}/chat?task=${encodeURIComponent(install.task.id)}`);
+  await waitFor(on.locator("[data-live-reply] .so-live-steps li").first(), "the lead's steps while it answers", { timeoutMs: 30_000 });
+  await bothSizes(on, "chat-thread-live");
+  // The reply is the comment's own turn, answered, recorded under that turn and shown in the thread after the comment.
+  const answered = await until("the lead's answer to the comment", async () => {
+    const turn = freshRows(install.db, `SELECT m.turn AS turn FROM lead_message m JOIN mate_turn t ON t.id = m.turn WHERE m.id = ${comment.id} AND t.state = 'answered'`)[0]?.turn;
+    return turn == null ? null : freshRows(install.db, `SELECT id FROM lead_message WHERE role = 'assistant' AND turn = ${turn} AND text <> '' ORDER BY id`).map(one => one.id);
+  }, { timeoutMs: REAL_TURN_MS, everyMs: 1000 });
+  if (answered.length === 0) throw new Error("the lead's turn for the comment ended with no reply");
+  await waitFor(on.locator(`[data-workspace-chat] [data-message-id="${answered.at(-1)}"]`), "the lead's reply in the thread", { timeoutMs: 30_000 });
+  const shown = await on.locator("[data-workspace-chat] [data-message-id]").evaluateAll(nodes => nodes.map(node => Number(node.getAttribute("data-message-id"))));
+  if (!(shown.indexOf(comment.id) >= 0 && shown.indexOf(comment.id) < shown.indexOf(answered[0]))) throw new Error(`the reply isn't shown after the comment: ${JSON.stringify({ shown, comment: comment.id, answered })}`);
+  // A scripted lead's reply carries a code block, so a scripted run sees it rendered as one (a real lead may not write one).
+  if (w.scripted) await waitFor(on.locator(answered.map(id => `[data-workspace-chat] [data-message-id="${id}"] pre.chat-code`).join(", ")).first(), "the lead's reply with its code block", { timeoutMs: 30_000 });
+  // What the lead does with the comment waits on you: a scripted lead drafts a card to confirm; a real one drafts a card
+  // (a follow-up task, or changes to the result) or asks you first, as buttons under its reply.
+  const waitsOnYou = w.scripted ? '[data-workspace-chat] [data-view="chat-card"][data-card-state="pending"] .so-needs-you'
+    : '[data-workspace-chat] [data-view="chat-card"][data-card-state="pending"] .so-needs-you, [data-workspace-chat] .so-owner-ask .so-owner-ask-options button';
+  await waitFor(on.locator(waitsOnYou).first(), w.scripted ? "the card waiting on you" : "the card or question waiting on you", { timeoutMs: 30_000, seen: async () => {
+    const turn = freshRows(install.db, `SELECT turn FROM lead_message WHERE id = ${comment.id}`)[0]?.turn;
+    const drafted = freshRows(install.db, `SELECT kind, state FROM lead_proposal WHERE turn = ${turn ?? 0}`);
+    const said = freshRows(install.db, `SELECT text FROM lead_message WHERE id IN (${answered.join(", ")})`).map(one => String(one.text)).join(" | ");
+    return `drafted ${JSON.stringify(drafted)}; said ${JSON.stringify(said.slice(0, 600))}`;
+  } });
+  await bothSizes(on, "chat-thread");
+  // On a phone the task opens as a sheet; put it away to show the thread itself.
+  await on.setViewportSize({ width: 390, height: 844 });
+  await settle(on);
+  const backToChat = on.locator(".so-supporting-panel--detail .so-phone-back").first();
+  if (await backToChat.isVisible()) await backToChat.click();
+  await settle(on);
+  if (await on.locator(".so-main-column[inert]").count() !== 0) throw new Error("the chat stays out of reach after the sheet is put away");
+  await on.screenshot({ path: join(w.out, "onboarding-chat-thread-phone-chat-390.png") });
+  await on.setViewportSize({ width: 1440, height: 900 });
+  await settle(on);
+  await on.goto(`${install.base}/chat?task=${encodeURIComponent(install.task.id)}&result=${built}&tab=changes`);
+  await waitFor(on.locator("[data-workspace-result] [data-diff-line]").first(), "the result again", { timeoutMs: 30_000, state: "attached" });
+  // On a phone the result is a sheet over the chat; the chat under it takes no taps or tab stops until it's put away.
+  await on.setViewportSize({ width: 390, height: 844 });
+  await settle(on);
+  if (await on.locator(".so-main-column[inert]").count() !== 1) throw new Error("the chat under the phone's result sheet can still be reached");
+  if (!await on.locator("[data-workspace-detail].so-supporting-panel--detail").isVisible()) throw new Error("the result sheet isn't showing on a phone");
+  await on.setViewportSize({ width: 1440, height: 900 });
+  await settle(on);
+  if (await on.locator(".so-main-column[inert]").count() !== 0) throw new Error("the chat stays out of reach on a desk");
   return { result: ended };
 });
 

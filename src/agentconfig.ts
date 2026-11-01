@@ -20,9 +20,14 @@
  * the caller snapshots it into the run row.
  */
 
+import { PROJECT_NETWORK_DEFAULT, repositoryEcosystems, resolveNetwork } from "./egress.js";
+import { WRITES_DEFAULT } from "./writes-mode.js";
+import { checkAccessHere, type CheckAccess } from "./check-access.js";
+import { PROJECT_SANDBOX_DEFAULT } from "./project-sandbox.js";
 import { isProviderId, validateSpec, type AgentSpec, type Phase, type ProviderId } from "./provider.js";
 import type { Store, TaskRef } from "./store.js";
-import { CLAUDE_LIMITS, CODEX_SHAPED_LIMITS, GEMINI_LIMITS, type ExecutionProfile, type UnattendedPermissionMode } from "./scope.js";
+import { ACP_LIMITS, CLAUDE_LIMITS, CODEX_SHAPED_LIMITS, GEMINI_LIMITS, type ExecutionProfile, type UnattendedPermissionMode } from "./scope.js";
+import { ACP_AGENTS, isAcpProvider } from "./acp-agents.js";
 import { exactModelId, legOf, PHASES, recommendRoute, routeFromJson, routeProblems, sameSpec, type CandidateTier, type ExactSpec, type PhaseRoute, type RouteCandidate, type RouteCandidates, type RouteEvidenceKind } from "./phase-routing.js";
 import type { AcceptanceCriterion } from "./scope.js";
 
@@ -43,6 +48,10 @@ export type Resolution =
  * resolved: pinned, flagged, or configured.
  */
 function reviewEligible(phase: Phase, spec: AgentSpec): string | null {
+  // An ACP agent works with full access inside the fence: it builds and repairs, and never reviews or plans.
+  if ((phase === "review" || phase === "plan") && isAcpProvider(spec.provider)) {
+    return `${ACP_AGENTS[spec.provider].name} builds and repairs only — pin ${phase === "review" ? "review" : "planning"} to claude or codex`;
+  }
   return phase === "review" && spec.provider === "gemini"
     ? "gemini has no isolation posture for the review phase yet (its own config can load hooks and MCP servers) — pin review to claude or codex"
     : null;
@@ -133,6 +142,7 @@ export function resolveScopeProfile(
   repo: string | null,
   ref: Pick<TaskRef, "agentProvider" | "agentModel"> | undefined,
   flags: PhaseFlags & { repairModel?: string | undefined; permissionMode?: UnattendedPermissionMode | undefined },
+  platform: NodeJS.Platform = process.platform,
 ): ProfileResolution {
   const build = resolvePhaseAgent(store, "build", repo, flags, ref);
   if (!build.ok) return { ok: false, reason: "unknown-provider", problem: build.problem };
@@ -202,6 +212,20 @@ export function resolveScopeProfile(
             repairTimeoutSeconds: GEMINI_LIMITS.repairTimeoutSeconds,
             repairModel,
           }
+        : isAcpProvider(provider)
+          ? {
+              provider,
+              model,
+              // Full access inside the OS fence is the only posture an ACP agent has (scope.ts AcpProfile).
+              permission: "full",
+              maxTurns: "unsupported",
+              repairMaxTurns: "unsupported",
+              timeoutSeconds: ACP_LIMITS.timeoutSeconds,
+              idleTimeoutSeconds: ACP_LIMITS.idleTimeoutSeconds,
+              repairTimeoutSeconds: ACP_LIMITS.repairTimeoutSeconds,
+              repairIdleTimeoutSeconds: ACP_LIMITS.repairIdleTimeoutSeconds,
+              repairModel,
+            }
         : {
             provider,
             model,
@@ -213,7 +237,19 @@ export function resolveScopeProfile(
             repairTimeoutSeconds: CODEX_SHAPED_LIMITS.repairTimeoutSeconds,
             repairModel,
           };
-  return { ok: true, profile, provenance: { resolvedFrom: build.source, repairFrom } };
+  // What the build may reach (egress.ts): resolved now, from the project's setting, the provider's own hosts and the
+  // registries the repository's own HEAD names, and sealed with the rest of the profile.
+  const network = resolveNetwork(provider, repo === null ? PROJECT_NETWORK_DEFAULT : store.projectNetwork(repo), repo === null ? [] : repositoryEcosystems(repo));
+  // Where the build may write (writes-mode.ts): the project's setting, sealed likewise.
+  const writes = repo === null ? WRITES_DEFAULT : store.projectWrites(repo);
+  // How far its checks reach (check-access.ts): the project's setting as checks can get it (sign-ins, off for now,
+  // seal as sandboxed: an approval never claims what its checks won't get), sealed only when wider than sandboxed.
+  const checkAccess: CheckAccess = repo === null ? "sandboxed" : checkAccessHere(store.projectCheckAccess(repo), platform);
+  // The fence policy (sandbox parity, docs/plans/sandbox-parity.md §1.5): every new scope is v2; and the project's
+  // sandbox settings (project-sandbox.ts), sealed when it lists any.
+  const sandbox = repo === null ? PROJECT_SANDBOX_DEFAULT : store.projectSandbox(repo);
+  return { ok: true, profile: { ...profile, network, writes, ...(checkAccess === "sandboxed" ? {} : { checkAccess }), fencePolicy: 2,
+    ...(sandbox.readDeny.length === 0 ? {} : { readDeny: [...sandbox.readDeny] }), ...(sandbox.machLookup.length === 0 ? {} : { machLookup: [...sandbox.machLookup] }) }, provenance: { resolvedFrom: build.source, repairFrom } };
 }
 
 // ---- route candidates (v47, phase routing) --------------------------------

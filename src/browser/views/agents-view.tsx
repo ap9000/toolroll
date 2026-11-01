@@ -5,19 +5,25 @@
  * one composer at the bottom — Reply while it asks, otherwise a note that
  * steers it. The page follows the workspace and the opened agent's own room,
  * so it updates in place; forms keep what is being typed. */
-import { ArrowLeft, ArrowUpRight, ChevronRight } from "lucide-react";
+import { ArrowLeft, ArrowUpRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { AgentGroupKey, BrowserAgentDetail, BrowserAgentRow, BrowserAgentsView } from "../../browser-workspace.js";
-import { Button, Collapsible, CollapsibleContent, CollapsibleTrigger, Textarea, cn } from "../components/ui/index.js";
+import type { AgentGroupKey, BrowserAgentDetail, BrowserAgentLane, BrowserAgentLanes, BrowserAgentRow, BrowserAgentsView, BrowserLaneSegment } from "../../browser-workspace.js";
+import { StatusGlyph, type GlyphKind } from "../components/ui/status-glyph.js";
+import { Button, Textarea, cn } from "../components/ui/index.js";
 import { GuardedHtml } from "../guarded-html.js";
+import { ConversationPane } from "./agent-conversation.js";
 import { useLiveRoom } from "../live.js";
 import { useNow, WORKSPACE_NUDGE } from "../live-task.js";
 import { Alert, PostForm } from "../ui/index.js";
+import { freshDraft, loadDraft, saveDraft, SteerControls, type SteerDraft } from "./steer-composer.js";
+import { LiveGrid } from "./agents-live-view.js";
 
 const CHIP: Record<AgentGroupKey, string> = {
+  // A list row's badge stays the ink attention badge: amber marks the thing that waits (the live tile, the task head),
+  // never every row of a list (DESIGN.md, Badges).
   "needs-you": "bg-attention-soft text-attention",
   working: "bg-info-soft text-info",
-  stuck: "bg-warning-soft text-warning",
+  stuck: "bg-warning-soft text-foreground", // ink words on the amber wash: warning text alone reads 4.21:1
   done: "bg-success-soft text-success",
   idle: "bg-neutral-soft text-neutral-ink",
 };
@@ -72,6 +78,7 @@ function AgentRow({ row, selected }: { row: BrowserAgentRow; selected: boolean }
 }
 
 function Board({ view, selected }: { view: BrowserAgentsView; selected: number | null }) {
+  if (view.groups.length === 0 && view.empty === null) return null;
   if (view.groups.length === 0) return <p className="rounded-card border border-border bg-card px-4 py-10 text-body text-muted-foreground" data-agents-empty>{view.empty}</p>;
   return <div className="flex flex-col gap-5 phone:gap-4">
     {view.groups.map(group => <section key={group.key} data-agent-group-section={group.key} aria-labelledby={`agents-${group.key}`}>
@@ -81,41 +88,6 @@ function Board({ view, selected }: { view: BrowserAgentsView; selected: number |
       <ul className="mt-1 flex flex-col gap-0.5">{group.rows.map(row => <AgentRow key={row.runId} row={row} selected={row.runId === selected} />)}</ul>
     </section>)}
   </div>;
-}
-
-type Transcript = { lines: string[]; state: "loading" | "ready" | "off" | "unavailable" };
-const KEEP_LINES = 1500;
-
-/** The live transcript, read forward from its byte offset (the run page's own JSON window), every 2 s while it runs. */
-function useTranscript(url: string | null, live: boolean): Transcript {
-  const [read, setRead] = useState<Transcript>({ lines: [], state: url === null ? "unavailable" : "loading" });
-  useEffect(() => {
-    if (url === null) return;
-    let offset = 0, lines: string[] = [], stopped = false, timer = 0;
-    const once = async (): Promise<void> => {
-      try {
-        for (let page = 0; page < 40 && !stopped; page++) {
-          const answer = await fetch(`${url}&from=${offset}`, { cache: "no-store", credentials: "same-origin", redirect: "manual" });
-          if (answer.status === 409) { offset = 0; lines = []; continue; }
-          if (!answer.ok) { setRead({ lines, state: lines.length === 0 ? "unavailable" : "ready" }); break; }
-          const data = await answer.json() as { text?: string; nextOffset?: number; final?: boolean; error?: string };
-          if (data.error === "off") { stopped = true; setRead({ lines: [], state: "off" }); return; }
-          if (typeof data.text === "string" && data.text !== "") lines = lines.concat(data.text.split("\n").filter(one => one !== "")).slice(-KEEP_LINES);
-          const moved = typeof data.nextOffset === "number" && data.nextOffset !== offset;
-          if (typeof data.nextOffset === "number") offset = data.nextOffset;
-          if (data.final === true) stopped = true;
-          if (!moved || stopped) break;
-        }
-        setRead({ lines, state: "ready" });
-      } catch {
-        setRead({ lines, state: lines.length === 0 ? "unavailable" : "ready" });
-      }
-      if (!stopped && live) timer = window.setTimeout(() => void once(), 2_000);
-    };
-    void once();
-    return () => { stopped = true; window.clearTimeout(timer); };
-  }, [url, live]);
-  return read;
 }
 
 /** The changes so far while it runs: the run page's live look at its checkout, every 10 s while open. */
@@ -137,38 +109,12 @@ function useLiveChanges(url: string | null, open: boolean): string | null {
   return fragment;
 }
 
-function TranscriptPane({ detail }: { detail: BrowserAgentDetail }) {
-  const read = useTranscript(detail.transcript, detail.live);
-  const box = useRef<HTMLPreElement>(null);
-  const pinned = useRef(true);
-  useEffect(() => {
-    const node = box.current;
-    if (node !== null && pinned.current) node.scrollTop = node.scrollHeight;
-  }, [read.lines.length]);
-  const words = read.state === "off" || read.state === "unavailable" ? "The transcript can be read on the computer that runs the agent."
-    : read.state === "loading" ? "Reading the transcript…" : detail.live ? "Nothing yet. Lines show here as the agent works." : "This agent left no transcript.";
-  return <section aria-label="Transcript" className="flex min-h-0 flex-col">
-    <h3 className="mb-1.5 text-caption font-medium text-muted-foreground">Transcript</h3>
-    {read.lines.length === 0 ? <p className="rounded-md border border-dashed border-border px-3 py-6 text-body text-muted-foreground" data-transcript-empty>{words}</p>
-      : <pre ref={box} tabIndex={0} aria-label="Agent transcript" data-agent-transcript
-        onScroll={event => { const node = event.currentTarget; pinned.current = node.scrollTop + node.clientHeight >= node.scrollHeight - 24; }}
-        className="max-h-[52vh] min-h-40 overflow-y-auto overscroll-contain rounded-md border border-border bg-card px-3 py-2.5 font-mono text-mono leading-[1.55] whitespace-pre-wrap break-words outline-none focus-visible:ring-2 focus-visible:ring-ring phone:max-h-none phone:min-h-0 phone:flex-1">
-        {read.lines.join("\n")}
-      </pre>}
-  </section>;
-}
-
-function ChangesPane({ detail }: { detail: BrowserAgentDetail }) {
-  const [open, setOpen] = useState(false);
+function ChangesPane({ detail, open }: { detail: BrowserAgentDetail; open: boolean }) {
+  // Its own tab now: the live look at the checkout is read only while the tab is in front.
   const fragment = useLiveChanges(detail.peek, open);
-  return <Collapsible open={open} onOpenChange={setOpen} data-agent-changes>
-    <CollapsibleTrigger className="group flex min-h-9 w-full items-center gap-1.5 rounded-md text-left text-caption font-medium text-muted-foreground outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring phone:min-h-11">
-      <ChevronRight aria-hidden="true" className="size-3.5 shrink-0 motion-safe:transition-transform group-data-[state=open]:rotate-90" />
-      Changes<span className="font-normal tabular-nums">{detail.diff ?? ""}</span>
-    </CollapsibleTrigger>
-    <CollapsibleContent className="pt-1.5 pl-5">
+  return <div data-agent-changes>
     {detail.live
-      ? detail.peek === null ? <p className="text-body text-muted-foreground">The changes can be read on the computer that runs the agent.</p>
+      ? detail.peek === null ? <p className="text-body text-muted-foreground">Output from other computers isn't shown yet.</p>
         : fragment === null ? <p className="text-body text-muted-foreground">Looking at the checkout…</p>
         : <GuardedHtml html={fragment} className="so-native-region text-body" />
       : detail.files.length === 0 ? <p className="text-body text-muted-foreground">No saved changes.</p>
@@ -178,26 +124,116 @@ function ChangesPane({ detail }: { detail: BrowserAgentDetail }) {
           <span className="shrink-0 tabular-nums text-danger">{file.removed === null ? "" : `−${file.removed}`}</span></li>)}
         {detail.filesMore > 0 && <li className="text-muted-foreground">{detail.filesMore} more in the result</li>}
       </ul>}
-    </CollapsibleContent>
-  </Collapsible>;
+  </div>;
+}
+
+/** This running attempt's files, on this computer (cockpit E): the words first, then the path, "Copy the command"
+ * (a cd to paste into your own terminal) and Show in Finder. Toolroll launches nothing in them. A phone shows the path. */
+export function CheckoutActions({ checkout }: { checkout: NonNullable<BrowserAgentDetail["checkout"]> }) {
+  const [copied, setCopied] = useState<"no" | "yes" | "failed">("no");
+  // A clipboard that isn't there or refuses says so: the command is shown to select by hand instead.
+  const copy = () => {
+    if (navigator.clipboard?.writeText === undefined) { setCopied("failed"); return; }
+    void navigator.clipboard.writeText(checkout.cd).then(() => setCopied("yes"), () => setCopied("failed"));
+  };
+  return <section aria-label="Its files" className="flex flex-col gap-1.5" data-agent-checkout>
+    <p className="text-caption font-medium text-muted-foreground">Its files</p>
+    <p className="text-caption text-muted-foreground">These files were written by an agent. Your shell's startup scripts and prompt tools (git status in the prompt, direnv, .envrc) can run code from them when you open a terminal there.</p>
+    <code className="block break-all rounded-md border border-border bg-muted px-2 py-1 font-mono text-mono" data-agent-checkout-path>{checkout.path}</code>
+    <div className="flex flex-wrap gap-2 phone:hidden">
+      <Button type="button" variant="outline" size="sm" onClick={copy} data-agent-copy-cd>{copied === "yes" ? "Copied" : "Copy the command"}</Button>
+      {checkout.reveal !== null && <PostForm action={checkout.reveal} data-agent-reveal><input type="hidden" name="return" value="agents" /><Button type="submit" variant="outline" size="sm">Show in Finder</Button></PostForm>}
+    </div>
+    {copied === "failed" && <div className="flex flex-col gap-1" role="status" data-agent-copy-failed>
+      <p className="text-caption text-danger">Couldn't copy. Select the command and copy it yourself:</p>
+      <code className="block select-all break-all rounded-md border border-border bg-muted px-2 py-1 font-mono text-mono">{checkout.cd}</code>
+    </div>}
+  </section>;
 }
 
 /** One composer at the bottom: Reply while the agent asks, otherwise a note that steers it. */
 function Composer({ detail }: { detail: BrowserAgentDetail }) {
   const question = detail.question;
-  const [text, setText] = useState("");
-  if (!detail.canAct || (question === null && detail.steer === null)) return null;
+  // A steering note's draft survives a refused send (live-conversation.md §6): kept for this run in this tab with its
+  // own key, so a double submit files it once. Only that draft's own successful send clears it; editing after a send
+  // makes it a new draft with a new key.
+  const [draft, setDraft] = useState<SteerDraft>(() => question !== null ? freshDraft() : loadDraft(detail.runId));
+  const text = draft.text;
+  const setText = (value: string) => setDraft(previous => {
+    const next = previous.submitted ? { ...freshDraft(), text: value } : { ...previous, text: value };
+    saveDraft(detail.runId, next);
+    return next;
+  });
+  if (!detail.canAct) return null;
+  // A running attempt that takes no notes: Controls above says why, and nothing here pretends otherwise.
+  if (question === null && detail.live && detail.controls != null && detail.controls.send === null) return null;
+  // The attempt ended with a note still unsent: it is shown, and can go to the task's next attempt instead.
+  if (question === null && detail.steer === null) {
+    if (text.trim() === "") return null;
+    const discard = () => { saveDraft(detail.runId, { ...freshDraft(), text: "" }); setDraft(freshDraft()); };
+    // Kept until the page comes back saying this very draft was sent (loadDraft): a refusal loses nothing.
+    return <PostForm action={`${detail.taskHref}/steer`} data-agent-unsent
+      className="flex flex-col gap-2 border-t border-border pt-3 desk:bg-card phone:bg-background phone:shrink-0 phone:px-4 phone:pb-[max(12px,var(--safe-bottom))]">
+      <p className="text-caption font-medium text-muted-foreground">Your note wasn't sent: this attempt ended first.</p>
+      <p className="rounded-md border border-border bg-muted px-3 py-2 text-body whitespace-pre-wrap break-words" data-agent-unsent-text>{text}</p>
+      <input type="hidden" name="note" value={text} /><input type="hidden" name="after" value={String(detail.runId)} /><input type="hidden" name="key" value={draft.key} />
+      <div className="flex flex-wrap gap-2">
+        <Button type="submit" className="h-11 w-auto">Send to the next attempt</Button>
+        <Button type="button" variant="ghost" className="h-11 w-auto" onClick={discard}>Discard</Button>
+      </div>
+    </PostForm>;
+  }
   const reply = question !== null;
+  // A live agent that is not paused: the note can also stop its turn first and go at once (one request, atomic).
+  const pauseAndSend = detail.controls?.pause != null && detail.controls.pause.state === null ? detail.controls.pause : null;
   return <PostForm action={reply ? question.action : detail.steer!.action} data-agent-composer={reply ? "reply" : "steer"}
-    className="flex items-end gap-2 border-t border-border pt-3 desk:bg-card phone:bg-background desk:sticky desk:bottom-0 desk:pb-1 phone:shrink-0 phone:px-4 phone:pb-[max(12px,env(safe-area-inset-bottom))]">
+    onSubmit={() => { if (!reply) setDraft(previous => { const sent = { ...previous, submitted: true }; saveDraft(detail.runId, sent); return sent; }); }}
+    className="flex items-end gap-2 border-t border-border pt-3 desk:bg-card phone:bg-background desk:pb-1 phone:shrink-0 phone:px-4 phone:pb-[max(12px,var(--safe-bottom))]">
     {reply ? <input type="hidden" name="question" value={String(question.id)} />
-      : <><input type="hidden" name="return" value="agents" /><input type="hidden" name="run" value={String(detail.steer!.run)} /></>}
+      : <><input type="hidden" name="return" value="agents" /><input type="hidden" name="run" value={String(detail.steer!.run)} /><input type="hidden" name="key" value={draft.key} />
+        {pauseAndSend !== null && <input type="hidden" name="request" value={`steer-${draft.key}`} />}</>}
     <label className="sr-only" htmlFor="agent-composer">{reply ? `Reply to: ${question.text}` : "A note for the agent"}</label>
-    <Textarea id="agent-composer" name={reply ? "answer" : "note"} rows={1} required maxLength={reply ? 1500 : 4000} value={text} onChange={event => setText(event.target.value)}
+    <Textarea id="agent-composer" name={reply ? "answer" : "note"} rows={1} required maxLength={reply ? 1500 : 4000} value={text} onChange={event => { if (reply) setDraft(previous => ({ ...previous, text: event.target.value })); else setText(event.target.value); }}
       placeholder={reply ? "Your answer" : "Tell the agent something"} className="min-h-11 min-w-0 flex-1 resize-none phone:min-h-11"
       onKeyDown={event => { if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) event.currentTarget.form?.requestSubmit(); }} />
+    {!reply && pauseAndSend !== null && <Button type="submit" formAction={pauseAndSend.action} variant="outline" className="h-11 w-auto shrink-0" disabled={text.trim() === ""} data-agent-pause-send>Pause and send</Button>}
     <Button type="submit" variant={reply ? "attention" : "default"} className="h-11 w-auto shrink-0" disabled={text.trim() === ""}>{reply ? "Reply" : "Send"}</Button>
   </PostForm>;
+}
+
+/** The task this agent works on, as its page heads it: where it stands, and its one action — a way to the task page,
+ * whose own form acts (docs/plans/one-page-task-and-agent.md). The same words on both pages. */
+function TaskHead({ task }: { task: NonNullable<BrowserAgentDetail["task"]> }) {
+  const attention = task.headline === "Needs you";
+  return <div className={cn("flex flex-wrap items-center gap-x-3 gap-y-2 rounded-card border px-3.5 py-3", attention ? "border-warning bg-card" : "border-border bg-card")} data-agent-task={task.headline}>
+    <div className="min-w-0 flex-1 basis-56">
+      <p className="text-caption font-medium text-muted-foreground">Task · <span className={cn(attention ? "text-needs" : task.headline === "Failed" ? "text-destructive" : "text-foreground")}>{task.headline}</span></p>
+      <p className="mt-0.5 text-body break-words">{task.sentence}</p>
+    </div>
+    <Button asChild variant={attention ? "attention" : "outline"} className="h-10 shrink-0 phone:h-11 phone:w-full"><a href={task.action.href} data-agent-task-action>{task.action.label}<ArrowUpRight /></a></Button>
+  </div>;
+}
+
+/** The agent's own tabs: Activity (its conversation, with the terminal view inside it) and its changes, both kept mounted. */
+function AgentTabs({ detail }: { detail: BrowserAgentDetail }) {
+  const [tab, setTab] = useState<"conversation" | "changes">("conversation");
+  const keys = [{ key: "conversation" as const, label: "Activity" }, { key: "changes" as const, label: detail.diff === null ? "Changes" : `Changes · ${detail.diff}` }];
+  return <div className="flex min-w-0 flex-col gap-3">
+    <div role="tablist" aria-label="Agent" className="flex gap-1 border-b border-border" data-agent-tabs>
+      {keys.map(one => <button key={one.key} type="button" role="tab" id={`agent-tab-${one.key}`} aria-controls={`agent-panel-${one.key}`} aria-selected={tab === one.key} tabIndex={tab === one.key ? 0 : -1}
+        onClick={() => setTab(one.key)} data-agent-tab={one.key}
+        onKeyDown={event => { if (event.key === "ArrowRight" || event.key === "ArrowLeft") { event.preventDefault(); const next = one.key === "conversation" ? "changes" : "conversation"; setTab(next); document.getElementById(`agent-tab-${next}`)?.focus(); } }}
+        className="-mb-px inline-flex min-h-10 items-center border-b-2 border-transparent px-3 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground aria-selected:border-primary aria-selected:text-foreground phone:min-h-11">{one.label}</button>)}
+    </div>
+    <div role="tabpanel" id="agent-panel-conversation" aria-labelledby="agent-tab-conversation" hidden={tab !== "conversation"}><ConversationPane url={detail.transcript} live={detail.live} /></div>
+    {/* The panel itself carries no layout class: `hidden` must win (a display class would show it). */}
+    <div role="tabpanel" id="agent-panel-changes" aria-labelledby="agent-tab-changes" hidden={tab !== "changes"}>
+      <div className="flex flex-col gap-4">
+        <ChangesPane detail={detail} open={tab === "changes"} />
+        {detail.checkout != null && detail.canAct && <CheckoutActions checkout={detail.checkout} />}
+      </div>
+    </div>
+  </div>;
 }
 
 function AgentDetail({ detail }: { detail: BrowserAgentDetail }) {
@@ -207,7 +243,7 @@ function AgentDetail({ detail }: { detail: BrowserAgentDetail }) {
       <div className="flex min-w-0 items-center gap-1">
         <Button asChild variant="ghost" size="icon" className="desk:hidden"><a href="/agents" aria-label="Back to all agents"><ArrowLeft /></a></Button>
         <h2 id="agent-title" className="min-w-0 flex-1 truncate text-headline font-semibold tracking-[-0.01em] phone:text-title">{detail.title}</h2>
-        <Button asChild variant="ghost" size="sm" className="shrink-0"><a href={detail.resultHref ?? detail.taskHref}>{detail.resultHref === null ? "Task" : "Result"}<ArrowUpRight /></a></Button>
+        <Button asChild variant="ghost" size="sm" className="shrink-0"><a href={detail.open?.href ?? detail.taskHref} data-agent-open={detail.open?.label ?? "Task"}>{detail.open?.label ?? "Task"}<ArrowUpRight /></a></Button>
       </div>
       <p className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-caption text-muted-foreground phone:px-2.5">
         <StateChip row={detail} />
@@ -216,26 +252,121 @@ function AgentDetail({ detail }: { detail: BrowserAgentDetail }) {
         {detail.diff && <><span aria-hidden="true">·</span><span className="tabular-nums">{detail.diff}</span></>}
       </p>
     </header>
-    <div className="flex min-w-0 flex-col gap-4 phone:min-h-0 phone:flex-1 phone:overflow-y-auto phone:overscroll-contain phone:px-4 phone:py-3">
+    <div data-agent-scroll className="flex min-w-0 flex-col gap-4 phone:min-h-0 phone:flex-1 phone:overflow-y-auto phone:overscroll-contain phone:px-4 phone:py-3">
       {detail.said && <Alert tone={detail.said.tone} data-agent-said>{detail.said.text}</Alert>}
+      {detail.task != null && <TaskHead task={detail.task} />}
       {detail.question !== null ? <div className="rounded-card border border-border bg-attention-soft px-3.5 py-3" data-agent-question={detail.question.key}>
         <p className="text-caption font-medium text-attention">The agent asks</p>
         <p className="mt-1 text-body-reading break-words text-foreground">{detail.question.text}</p>
       </div> : detail.line !== null && <p className={cn("text-body break-words", detail.group === "stuck" ? "text-warning" : "text-muted-foreground")} data-agent-line>{detail.line}</p>}
-      <TranscriptPane detail={detail} />
-      <ChangesPane detail={detail} />
+      <AgentTabs detail={detail} />
     </div>
-    <Composer key={`${detail.runId}:${detail.question?.id ?? "steer"}`} detail={detail} />
+    {/* One footer, pinned on a desk: what the agent takes and its controls, then the composer (never one over the other). */}
+    <div className="flex flex-col desk:sticky desk:bottom-0 desk:bg-card phone:shrink-0" data-agent-footer>
+      {detail.canAct && detail.controls != null && <SteerControls controls={detail.controls} back="agents" />}
+      <Composer key={`${detail.runId}:${detail.question?.id ?? "steer"}`} detail={detail} />
+    </div>
   </section>;
 }
 
+
+/** Each task's place on the timeline as the glyph the rest of the console wears for it. */
+const LANE_GLYPH: Record<BrowserAgentLane["group"], GlyphKind> = { "needs-you": "decide", stuck: "unblock", working: "building", planning: "building", done: "done", idle: "idle" };
+const LANE_STATE: Record<BrowserAgentLane["group"], string> = { "needs-you": "Needs you", stuck: "Stuck", working: "Working", planning: "Planning", done: "Done", idle: "Idle" };
+const ROLE_WORD: Record<BrowserLaneSegment["role"], string> = { planner: "Plan", builder: "Build", reviewer: "Review", scout: "Scout" };
+const FAILED = new Set(["failed", "refused"]);
+/** A run's look: the role sets the fill (plan quiet, build solid, review outlined), the outcome only tints a failure. */
+function segmentClass(one: BrowserLaneSegment): string {
+  if (one.outcome !== null && FAILED.has(one.outcome)) return "border-destructive/40 bg-destructive-soft text-destructive";
+  if (one.outcome === "parked") return "border-attention/50 bg-attention-soft text-attention";
+  if (one.role === "builder") return "border-foreground/25 bg-foreground/10 text-foreground";
+  if (one.role === "reviewer") return "border-dashed border-foreground/35 bg-transparent text-foreground";
+  return "border-border bg-neutral-soft text-muted-foreground";
+}
+/** "-1 h 30 min" for an axis tick. */
+function tickWords(ms: number): string {
+  // Round to a step that reads at a glance: whole hours past three hours, quarter hours past one, else minutes.
+  const raw = ms / 60_000;
+  const minutes = raw >= 180 ? Math.round(raw / 60) * 60 : raw >= 60 ? Math.round(raw / 15) * 15 : Math.round(raw);
+  return minutes < 60 ? `-${minutes} min` : `-${Math.floor(minutes / 60)} h${minutes % 60 === 0 ? "" : ` ${minutes % 60} min`}`;
+}
+
+/** The agent timeline (after the "Agent lanes" pattern): one row per task over the window, its plan, build and review
+ * runs as segments from start to end, a running one reaching the now edge. Twelve rows at most, needs-you first; the
+ * rest are a count. Only the now edge moves: no pulsing segments, however many run. */
+export function AgentLanes({ lanes }: { lanes: BrowserAgentLanes }) {
+  const start = Date.parse(lanes.since), end = Date.parse(lanes.now), span = Math.max(1, end - start);
+  const at = (iso: string) => Math.min(100, Math.max(0, ((Date.parse(iso) - start) / span) * 100));
+  const { running } = lanes;
+  const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const ticks = [0.2, 0.4, 0.6, 0.8].map(f => ({ left: f * 100, words: tickWords((1 - f) * span) }));
+  return <section aria-labelledby="agent-lanes-title" className="rounded-card border border-border bg-card px-4 pb-3 pt-3 phone:px-3" data-agent-lanes>
+    <div className="flex items-center gap-3">
+      <h2 id="agent-lanes-title" className="text-[14px] font-semibold">Timeline</h2>
+      <span className="text-[12.5px] text-muted-foreground tabular-nums">{running} running</span>
+      <nav aria-label="Timeline window" className="ml-auto flex rounded-md bg-raised p-0.5 text-[12px]">
+        {lanes.windows.map(one => <a key={one.key} href={one.href} aria-current={one.active ? "true" : undefined}
+          className={cn("inline-flex items-center rounded px-2 py-0.5 text-muted-foreground hover:text-foreground phone:min-h-11 phone:px-3", one.active && "bg-card text-foreground shadow-pill")}>{one.label}</a>)}
+      </nav>
+    </div>
+    <div className="mt-2 grid grid-cols-[minmax(0,210px)_minmax(0,1fr)] gap-x-3 phone:grid-cols-[minmax(0,110px)_minmax(0,1fr)] phone:gap-x-2">
+      <span />
+      <div className="relative h-5 text-[11px] text-muted-foreground tabular-nums" aria-hidden="true">
+        {ticks.map((tick, index) => <span key={tick.left} className={cn("absolute -translate-x-1/2", index % 2 === 0 && "phone:hidden")} style={{ left: `${tick.left}%` }}>{tick.words}</span>)}
+        <span className="absolute right-0 rounded bg-raised px-1 text-foreground">now</span>
+      </div>
+      {lanes.lanes.map(lane => <div key={lane.taskId} className="contents" data-lane={lane.taskId} data-lane-group={lane.group}>
+        <a href={lane.href} className="flex min-w-0 items-center gap-2 py-1.5 text-[13px] hover:underline hover:underline-offset-4 phone:min-h-11">
+          <StatusGlyph kind={LANE_GLYPH[lane.group]} /><span className="sr-only">{LANE_STATE[lane.group]}: </span>
+          <span className="truncate font-medium" title={lane.project ? `${lane.title} · ${lane.project}` : lane.title}>{lane.title}</span>
+        </a>
+        <div className="relative my-1 h-6 self-center border-b border-border/60">
+          {lane.segments.map((one, index) => {
+            // At least a sliver wide, and never past the now edge: a just-started run sits against it.
+            const width = Math.max(0.8, at(one.endedAt ?? lanes.now) - at(one.startedAt));
+            const left = Math.min(at(one.startedAt), 100 - width), right = left + width;
+            const next = lane.segments[index + 1];
+            const gapTo = next === undefined || one.endedAt === null ? null : at(next.startedAt);
+            const words = `${ROLE_WORD[one.role]} · ${one.agent} · ${elapsedWords(one.startedAt, Date.parse(one.endedAt ?? lanes.now))} from ${clock(one.startedAt)}${one.outcome === null ? " · running" : ` · ${one.outcome}`}`;
+            return <span key={one.runId} className="contents">
+              <a href={one.href} title={words} aria-label={`${lane.title}: ${words}`} data-segment={one.role}
+                className={cn("absolute top-0.5 box-border flex h-5 min-w-0 phone:after:absolute phone:after:-inset-y-3 phone:after:-inset-x-1 phone:after:content-[''] items-center whitespace-nowrap rounded-[5px] border text-[11px] font-medium", width >= 7 ? "px-1.5" : "px-0", segmentClass(one), one.endedAt === null && "border-r-2 border-r-foreground")}
+                style={{ left: `${left}%`, width: `${width}%` }}><span className="min-w-0 overflow-hidden">{width >= 7 ? ROLE_WORD[one.role] : ""}</span></a>
+              {gapTo !== null && gapTo > right && <span aria-hidden="true" className="absolute top-1/2 border-t border-dotted border-foreground/30" style={{ left: `${right}%`, width: `${gapTo - right}%` }} />}
+            </span>;
+          })}
+        </div>
+      </div>)}
+    </div>
+    {lanes.lanes.length === 0 && <p className="py-3 text-[12.5px] text-muted-foreground">Nothing ran in the last {lanes.windows.find(one => one.active)?.label ?? "window"}.</p>}
+    {lanes.more > 0 && <p className="mt-1 text-[12.5px] text-muted-foreground">{lanes.more} more {lanes.more === 1 ? "task" : "tasks"} in this window, below the twelve most recent.</p>}
+  </section>;
+}
+
+/** List | Live: the board, or every running agent's output at once. */
+function ViewSwitch({ live }: { live: boolean }) {
+  return <nav aria-label="Agents view" className="flex w-fit rounded-md bg-raised p-0.5 text-[12.5px]">
+    {([["List", "/agents", !live], ["Live", "/agents?view=live", live]] as const).map(([words, href, on]) =>
+      <a key={words} href={href} aria-current={on ? "page" : undefined} className={cn("inline-flex items-center rounded px-3 py-1 text-muted-foreground hover:text-foreground phone:min-h-11", on && "bg-card text-foreground shadow-pill")}>{words}</a>)}
+  </nav>;
+}
+
 export function AgentsView({ view }: { view: BrowserAgentsView }) {
+  if (view.live === true) return <div className="flex w-full flex-col gap-4" data-agents-board>
+    <div className="flex flex-wrap items-center gap-3"><h1 className="text-[22px] font-semibold leading-tight tracking-[-0.02em]">Agents</h1><ViewSwitch live /></div>
+    <LiveGrid />
+  </div>;
+  return <AgentsBoard view={view} />;
+}
+
+function AgentsBoard({ view }: { view: BrowserAgentsView }) {
   const selected = view.selected;
   // The opened agent's own room: a change reads the page again in place; while open, this person is watching it.
   useLiveRoom(selected?.room ?? null, event => { if (event === "change" || event === "reload") window.dispatchEvent(new Event(WORKSPACE_NUDGE)); });
   return <div className={cn("w-full", selected === null ? "max-w-[860px]" : "desk:grid desk:grid-cols-[minmax(300px,400px)_minmax(0,1fr)] desk:items-start desk:gap-6")} data-agents-board>
     <div className={cn("flex min-w-0 flex-col gap-4", selected !== null && "phone:hidden")}>
-      <h1 className="text-[22px] font-semibold leading-tight tracking-[-0.02em]">Agents</h1>
+      <div className="flex flex-wrap items-center gap-3"><h1 className="text-[22px] font-semibold leading-tight tracking-[-0.02em]">Agents</h1>{selected === null && <ViewSwitch live={false} />}</div>
+      {selected === null && view.lanes && <AgentLanes lanes={view.lanes} />}
       <Board view={view} selected={selected?.runId ?? null} />
     </div>
     {selected !== null && <AgentDetail key={selected.runId} detail={selected} />}

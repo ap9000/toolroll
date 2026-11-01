@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import * as childProcess from "node:child_process";
 import { fakePid } from "../test/fake-pid.js";
-import { observeProcessTree, sampleProcessTree, stopProcessTree, readProcessObservationFailure } from "./process-tree.js";
+import { observeProcessTree, sampleProcessTree, stopProcessTree } from "./process-tree.js";
 
 vi.mock("node:child_process", { spy: true });
 const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
@@ -88,13 +88,6 @@ test("descendant write failure stays fenced, but failed exit writes never erase 
   rows = `${root} 1 ${root}\n`; child.emit("close");
   expect(unknown).toHaveBeenCalledOnce();
   expect(diagnostic.mock.calls[1]![0]).toMatchObject({ phase: "final-exit", operation: "exit-write", identityUnknown: false });
-});
-
-test("private supervisor diagnostics validate and discard non-diagnostic fields", () => {
-  const failure = { phase: "final-exit", operation: "snapshot", code: "EPERM", rootPid: root, at: "2026-09-20T00:00:00.000Z", identityUnknown: false };
-  expect(readProcessObservationFailure({ ...failure, argv: "private" })).toEqual(failure);
-  expect(readProcessObservationFailure({ ...failure, code: "private error text" })).toBeNull();
-  expect(readProcessObservationFailure({ ...failure, rootPid: -1 })).toBeNull();
 });
 
 test("becoming a group leader records the stronger group witness too", () => {

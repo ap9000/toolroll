@@ -107,6 +107,14 @@ rsync -a ~/.config/toolroll/backups/ backup-host:toolroll/   # keep a copy off t
 
 To restore, stop the service, run `toolroll restore <backup file> --dry-run`, then without `--dry-run`, then start it.
 
+Besides the schedule, the worker keeps a **continuous copy**: every 5 minutes by default (Settings → Backups, "Copy
+continuously", with its own folder; blank means `backups/live` beside the database) it copies the database online,
+checks it with SQLite's integrity check, and keeps the newest 24 plus the newest of each of the last seven days. The
+folder must be a plain folder you own that only you can write to, reached through no link, outside every project and
+build checkout. A deploy uses the latest copy instead of making a new one only when it is no older than the schedule,
+its schema matches and its contents equal the paused database. Restoring one is the same manual
+`toolroll restore <file>` as above, with the service stopped; nothing restores automatically.
+
 ## 6. Add repositories from GitHub
 
 Give the host read access to GitHub (`gh auth login`, or a deploy key), then:

@@ -3,7 +3,7 @@ import { adapterPolicy } from "./route-policy.js";
 /** settings handlers, moved without changing their route bodies. */
 import { mintApiToken,TOKEN_DAYS } from "../api-tokens.js";
 import { CONSOLE_FORMS,readForm } from "../contracts/console-api.js";
-import { html, htmlString, joinHtml, postForm } from "../html.js";
+import { html, htmlString, joinHtml, postForm, reauth } from "../html.js";
 import { credentialsHtml,tokenShownHtml } from "../credentials-ui.js";
 import {
 projectName
@@ -13,11 +13,10 @@ import { authenticateAccount } from "../scope.js";
 import { SSO_CALLBACK } from "../sso-settings.js";
 import type { EdgeContext,HandlerContext } from './handler-context.js';
 import type { ServerRuntime } from './runtime.js';
-import { requestContext } from "./request-context.js";
 import { personChip,refuse,screen } from "./chrome.js";
-import { redirect,respond } from "./http.js";
+import { redirect,respond,sayTo } from "./http.js";
 /** people handlers, moved without changing their route bodies. */
-import { randomBytes,timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { type IncomingMessage,type ServerResponse } from "node:http";
 import { type FormFieldOf,type FormView } from "../contracts/console-api.js";
 import { listCoordinators } from "../coordinator.js";
@@ -25,12 +24,26 @@ import { logEvent } from "../log.js";
 import { accessFromGroups,accountNameFor,exchangeOidcCode,newOidcVisit,oidcAuthorizeUrl,verifyIdToken } from "../oidc.js";
 import { personAuditHtml,personHref } from "../people-audit-ui.js";
 import { cursorOf as auditCursorOf,remoteAudit } from "../remote-audit.js";
-import { hashPassword } from "../scope.js";
+import { credentialProof,hashPassword,proveAccountNow } from "../scope.js";
 import { form,HANDOFF_STYLE,loginHref,loginReturn,page,SIGN_IN_COOKIE,signInSpent,startedHere } from "./http.js";
-import { joinDeadPage,joinFormPage,loginPage,signupPage } from "./render-people.js";
+import { joinDeadPage,joinFormPage,loginPage,SIGNUP_NAME,SIGNUP_PASSWORD_MIN,signupPage } from "./render-people.js";
 import { SESSION_COOKIE,SIGN_IN_LINK_PATH,type SsoIntent } from "./session.js";
+import { setupCodeMatches,signupCookie,signupFromHere } from "./signup-gate.js";
+
+/** Clock skew allowed between the provider and this server when reading auth_time — forward only (a provider clock
+ * running ahead). auth_time is in whole seconds, so a check made in the visit's own second is floored below startedAt:
+ * the one allowance backward is that rounding, never a check made before the visit began. */
+const AUTH_TIME_SKEW_MS = 60_000;
+/** When the provider checked the person, in ms, if its auth_time is a check made for this visit: present, no earlier
+ * than the second the visit began, and not in the future beyond the skew. Null otherwise. */
+export function sameVisitCheck(authTime: number | null, startedAt: number, now: number): number | null {
+  if (authTime === null || !Number.isFinite(authTime)) return null;
+  const at = authTime * 1000;
+  if (at < Math.floor(startedAt / 1000) * 1000 || at > now + AUTH_TIME_SKEW_MS) return null;
+  return Math.min(Math.max(at, startedAt), now);
+}
 export function createPeopleHandlers(runtime: ServerRuntime) {
-  const { settingsUpdates, joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, defaultProject, cookieSecure, consoleOrigin, providerFor, joinSourceOf, signInBudget, signInActor, minutesWords } = runtime;
+  const { joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, authenticateCredential, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, cookieSecure, consoleOrigin, providerFor, providerKnown, joinSourceOf, signInBudget, signInActor, minutesWords } = runtime;
 
   // v101: Settings → Sessions & tokens: where you're signed in, and your API tokens. An instance operator can see everyone's.
   async function sessionsPage(ctx: HandlerContext): Promise<void> {
@@ -102,7 +115,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
           : joinHtml(acts.map(act => html`<p class="row meta">${act.kind} ${act.subject} \u00b7 ${act.at.slice(0, 16).replace("T", " ")}</p>`), "\n"),
         approverView && one.revokedAt === null && one.name !== who.name
           ? postForm("/people/revoke", html`\
-<label>Your password<input type="password" name="token" autocomplete="current-password"></label>\
+${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password"></label>`)}\
 <button type="submit">Remove ${one.name}'s sign-in</button>\
 <span class="meta">ends their access and everything it signed \u2014 history stays</span>`, { attrs: { class: "row" }, hidden: { name: one.name } })
           : "",
@@ -113,7 +126,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const inviteRows = invites.map(one =>
       html`<p class="row">${one.role} invite · ${one.projects === null ? "all projects" : one.projects.map(repo => projectName(repo)).join(", ")} \u00b7 from ${personChip(one.mintedBy)} \u00b7 expires ${one.expiresAt.slice(0, 16).replace("T", " ")}${one.attempts > 0 ? ` \u00b7 ${one.attempts} failed attempt${one.attempts === 1 ? "" : "s"}` : ""}\
  ${postForm("/people/invite-revoke", html`\
-<label>Password <input type="password" name="token" autocomplete="current-password" style="width:8rem"></label>\
+${reauth(html`<label>Password <input type="password" name="token" autocomplete="current-password" style="width:8rem"></label>`)}\
 <button type="submit">Cancel it</button>`, { attrs: { style: "display:inline" }, hidden: { id: one.id } })}</p>`,
     );
     const inviteCard = !approverView
@@ -167,7 +180,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const body = readForm(posted, CONSOLE_FORMS.sessions);
     if (who.via !== "cookie") return refuse(response, who, 403, "Sign in in a browser to manage sessions and tokens.", "/settings");
     const operator = store.isInstanceOperator(who.name);
-    const back = (key: "said" | "problem", words: string) => redirect(response, `/settings/sessions?${body.get("everyone") === "1" && operator ? "everyone=1&" : ""}${key}=${encodeURIComponent(words)}`);
+    const back = sayTo(response, `/settings/sessions${body.get("everyone") === "1" && operator ? "?everyone=1" : ""}`);
     const action = body.get("action") ?? "";
     if (action === "end-session") {
       const target = store.webSessions(null).find(one => one.idHash === (body.get("session") ?? ""));
@@ -198,10 +211,13 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       if (name === "" || name.length > 60) return back("problem", "Name the token, in 60 characters or fewer.");
       if (!(TOKEN_DAYS as readonly number[]).includes(days)) return back("problem", "Choose when it expires.");
       if (access === "act" && who.role !== "approver") return back("problem", "A viewer's token can only read.");
-      // A token is a credential: made with the person's password (or their identity provider's check from moments ago), counted once.
+      // A token is a credential: made with the person's password typed now (or an explicit identity-provider re-check,
+      // spent by it), counted once. Never a remembered password: this act is outside every freshness allowlist.
       const typed = body.get("password") ?? "";
-      const confirmed = who.role === "approver" ? authenticateApprover(who, typed).ok
-        : typed === "" ? requestContext.getStore()?.sso?.fresh === true : authenticateAccount(store, who.name, typed).ok;
+      // Passwordless never covers it (docs/plans/passwordless.md: a credential act).
+      const viewerProof = who.role === "approver" || who.via !== "cookie" ? null : proveAccountNow(store, who.name, typed, { credential: true });
+      const confirmed = who.role === "approver" ? authenticateCredential(who, typed).ok
+        : viewerProof !== null && viewerProof.ok && credentialProof(viewerProof.method);
       if (!confirmed) return back("problem", "Enter your Toolroll password to make a token.");
       const minted = mintApiToken();
       const expiresAt = new Date(now.getTime() + days * 86_400_000).toISOString();
@@ -215,7 +231,8 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
   async function peopleProjects(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.peopleProjects);
-    if (!authenticateApprover(who, body.get("token") ?? "", null).ok) return refuse(response, who, 403, "Saving access requires your password.", "/people");
+    // Widening access (up to instance operator) is a credential act: a password typed now, Passwordless or not.
+    if (!authenticateCredential(who, body.get("token") ?? "", null).ok) return refuse(response, who, 403, "Saving access requires your password.", "/people");
     const access = readAccessForm(body);
     if (!access.ok) return refuse(response, who, 400, access.message, "/people");
     const changed = store.setAccountProjects((body.get("name") ?? "").trim(), access.projects, who.name, now);
@@ -231,7 +248,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const token = body.get("token") ?? "";
     // RAISING authority is a password ceremony (the doctrine): adding a
     // person to the instance is exactly that.
-    if (!authenticateApprover(who, token).ok) {
+    if (!authenticateCredential(who, token).ok) {
       return refuse(response, who, 403, "making an invite takes your password, typed again", "/people");
     }
     const role = body.get("role") === "approver" ? ("approver" as const) : ("viewer" as const);
@@ -298,6 +315,10 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
   async function signInPage(ctx: EdgeContext): Promise<void> {
     const { url, response } = ctx;
     if (options.setupCode !== undefined && store.listApprovers().length === 0) {
+      // The form's same-site proof (signup-gate.ts): a post without it never reaches the setup code.
+      if (runtime.setupAttemptsLeft > 0) response.setHeader("Set-Cookie", signupCookie(cookieSecure));
+      // Its own post then carries this console's Origin (the console's default no-referrer sends `null`).
+      response.setHeader("Referrer-Policy", "same-origin");
       return page(response, 200, signupPage(null, runtime.setupAttemptsLeft));
     }
     return page(response, 200, loginPage(null, loginReturn(url.searchParams.get("return")), ssoOffer()));
@@ -323,7 +344,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     if (!passwordAllowed(held.account)) return page(response, 403, loginPage(`Sign in with ${ssoSettings()?.label ?? "your identity provider"}.`, "/chat", ssoOffer()));
     const id = randomBytes(32).toString("hex");
     sessions.set(id, { ...arrival(request), name: held.account, csrf: randomBytes(32).toString("hex"), role: account.role, generation: account.generation, createdAt: Date.now(), sawBoardAt: null, lastSeen: Date.now(),
-      project: defaultProject, projectRevision: 1 });
+      project: runtime.defaultProject, projectRevision: 1 });
     recordSignIn(held.account, "signed in", "one-time link");
     response.setHeader("Set-Cookie", `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`);
     return redirect(response, "/chat");
@@ -340,13 +361,18 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     if (intent !== "sign-in" && who?.via !== "cookie") return redirect(response, loginHref(returnTo));
     const origin = consoleOrigin(request.headers.host);
     if (origin === null) return page(response, 400, loginPage("Sign in from this computer (localhost) or from your https address.", returnTo, ssoOffer()));
-    const found = await providerFor(settings.issuer);
-    if (!found.ok) return page(response, 502, loginPage(`${settings.label} isn't answering: ${found.said}`, returnTo, ssoOffer()));
+    // Discovered as the console starts and in the background (docs/plans/get-side-effects.md): following this link
+    // fetches nothing.
+    const known = providerKnown(settings.issuer);
+    if (known === null) return page(response, 503, loginPage(`${settings.label} isn't answering yet. Try again in a moment.`, returnTo, ssoOffer()));
+    const found = { provider: known };
     const visit = newOidcVisit(), redirectUri = `${origin}${SSO_CALLBACK}`;
     for (const [key, one] of ssoVisits) if (one.expires < Date.now()) ssoVisits.delete(key);
     // Bounded: anyone may start a sign-in, so the oldest waiting ones give way.
     while (ssoVisits.size >= 1000) ssoVisits.delete(ssoVisits.keys().next().value!);
-    ssoVisits.set(visit.state, { visit, provider: found.provider, redirect: redirectUri, intent, returnTo, expires: Date.now() + 15 * 60_000 });
+    const asker = intent === "sign-in" || who?.via !== "cookie" ? null : sessions.hashOf(who.session);
+    ssoVisits.set(visit.state, { visit, provider: found.provider, redirect: redirectUri, intent, returnTo, expires: Date.now() + 15 * 60_000, startedAt: Date.now(),
+      session: asker === null || who?.via !== "cookie" ? null : { hash: asker, generation: who.session.generation } });
     response.writeHead(302, { location: oidcAuthorizeUrl(found.provider, settings, visit, redirectUri, intent === "reauth"), "cache-control": "no-store", "referrer-policy": "no-referrer",
       "set-cookie": `${SIGN_IN_COOKIE}=${visit.state}; Path=${SSO_CALLBACK}; Max-Age=900; HttpOnly; SameSite=Lax${origin.startsWith("https:") ? "; Secure" : ""}` });
     response.end();
@@ -370,16 +396,23 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const identity = { issuer: handoff.issuer, subject: claims.sub, email: claims.email, label: settings.label };
     if (handoff.intent === "link" || handoff.intent === "reauth") {
       if (who?.via !== "cookie") return redirect(response, loginHref(handoff.returnTo));
+      // Only the session that asked: same kept session, same credential generation.
+      if (handoff.session === null || sessions.hashOf(who.session) !== handoff.session.hash || who.session.generation !== handoff.session.generation) {
+        return page(response, 403, loginPage(`That ${settings.label} check was started by another sign-in. Start it again from this page.`, handoff.returnTo, ssoOffer()));
+      }
       if (handoff.intent === "link") {
         const linked = store.linkSsoIdentity(who.name, identity, clock());
         if (!linked.ok) return redirect(response, `/settings/sign-in?problem=${encodeURIComponent(`That ${settings.label} account signs in as someone else here.`)}`);
-        who.session.sso = { at: Date.now() };
+        who.session.sso = { at: handoff.checkedAt ?? 0 };
         sessions.persist(who.session);
         return redirect(response, `/settings/sign-in?said=${encodeURIComponent(`This account signs in with ${settings.label} now.`)}`);
       }
       // A step-up: the provider checked the same person again.
       if (store.ssoAccount(identity.issuer, identity.subject) !== who.name) return page(response, 403, loginPage(`That ${settings.label} account isn't the one signed in here.`, handoff.returnTo, ssoOffer()));
-      who.session.sso = { at: Date.now() };
+      who.session.sso = { at: handoff.checkedAt ?? 0 };
+      // An explicit re-check on request: the one identity-provider event that stands in for a password typed now (for ONE
+      // step-up, spent by it) and may start a freshness window (B2). Kept in memory only: a restart forgets it.
+      if (handoff.checkedAt !== null) { who.session.ssoReauthAt = handoff.checkedAt; who.session.ssoNowAt = handoff.checkedAt; }
       sessions.persist(who.session);
       recordSignIn(who.name, "confirmed", settings.label);
       return redirect(response, handoff.returnTo);
@@ -395,7 +428,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     const account = store.accountOf(signedIn.account)!;
     const id = randomBytes(32).toString("hex");
     sessions.set(id, { ...arrival(request), name: signedIn.account, csrf: randomBytes(32).toString("hex"), role: account.role, generation: account.generation, createdAt: Date.now(), sawBoardAt: null, lastSeen: Date.now(),
-      project: defaultProject, projectRevision: 1, sso: { at: Date.now() } });
+      project: runtime.defaultProject, projectRevision: 1, sso: { at: handoff.checkedAt ?? 0 } });
     recordSignIn(signedIn.account, "signed in", settings.label);
     response.setHeader("Set-Cookie", [signInSpent("/login/sso/finish"), `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
     return redirect(response, handoff.returnTo);
@@ -403,35 +436,49 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
 
   async function signupSend(ctx: EdgeContext): Promise<void> {
     const { request, response } = ctx;
+    // A re-shown form posts again: its Origin must name this console too (signup-gate.ts).
+    response.setHeader("Referrer-Policy", "same-origin");
     // Only while the table is empty, only with the printed code, only
     // five tries: the bootstrap door underneath is atomic, so two first
     // visitors serialize to one owner.
     if (options.setupCode === undefined || store.listApprovers().length > 0) {
-      return page(response, 409, loginPage("an account already exists — sign in"));
+      return page(response, 409, loginPage("An account already exists. Sign in."));
     }
     if (runtime.setupAttemptsLeft <= 0) {
-      return page(response, 403, signupPage("too many wrong codes — restart the server to get a fresh code", 0));
+      return page(response, 403, signupPage(null, 0));
+    }
+    // Another site's post (or one without this page's cookie) is refused before it can spend a try.
+    if (!signupFromHere(request, runtime.allowedHost)) {
+      request.resume();
+      response.setHeader("Set-Cookie", signupCookie(cookieSecure));
+      return page(response, 403, signupPage("This form had expired, so it was reloaded. Enter the details again.", runtime.setupAttemptsLeft));
     }
     const body = readForm(await form(request), CONSOLE_FORMS.signup);
     const code = (body.get("code") ?? "").trim();
     const name = (body.get("name") ?? "").trim();
     const password = body.get("password") ?? "";
-    const given = Buffer.from(code.padEnd(64, " "), "utf8");
-    const wanted = Buffer.from(options.setupCode.padEnd(64, " "), "utf8");
-    if (code === "" || !timingSafeEqual(given, wanted)) {
+    // Re-read after the body: concurrent posts all waited above, and only the tries still left may be compared.
+    // From here to the decrement nothing awaits, so check and spend are one step.
+    if (runtime.setupAttemptsLeft <= 0) {
+      return page(response, 403, signupPage(null, 0));
+    }
+    if (!setupCodeMatches(code, options.setupCode)) {
       runtime.setupAttemptsLeft -= 1;
-      return page(response, 403, signupPage("that is not the setup code the server printed", runtime.setupAttemptsLeft));
+      // What was typed comes back except the code and the password (never echoed); the count rides the code's note.
+      return page(response, 403, signupPage(runtime.setupAttemptsLeft > 0
+        ? { field: "code", text: "That isn't the setup code Toolroll printed. Check the terminal and try again." }
+        : "That wasn't the setup code, and that was the last try. Restart Toolroll to get a new code.", runtime.setupAttemptsLeft, name));
     }
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
-      return page(response, 400, signupPage("a username is letters, digits, dots, dashes — up to 64", runtime.setupAttemptsLeft));
+    if (!SIGNUP_NAME.test(name)) {
+      return page(response, 400, signupPage({ field: "name", text: "Use only letters, digits, dots, dashes or underscores, starting with a letter or digit." }, runtime.setupAttemptsLeft, name));
     }
-    if (password.length < 8) {
-      return page(response, 400, signupPage("a password is at least 8 characters", runtime.setupAttemptsLeft));
+    if (password.length < SIGNUP_PASSWORD_MIN) {
+      return page(response, 400, signupPage({ field: "password", text: `Use at least ${SIGNUP_PASSWORD_MIN} characters.` }, runtime.setupAttemptsLeft, name));
     }
     const made = store.bootstrapApproverIfNone(name, hashPassword(password), clock());
-    if (!made.ok) return page(response, 409, loginPage("an account already exists — sign in"));
+    if (!made.ok) return page(response, 409, loginPage("An account already exists. Sign in."));
     const authenticated = authenticateAccount(store, name, password);
-    if (authenticated === null || !authenticated.ok) return page(response, 500, loginPage("the account was created but could not sign in — try again"));
+    if (authenticated === null || !authenticated.ok) return page(response, 500, loginPage("The account was created, but signing in failed. Sign in with it now."));
     const id = randomBytes(32).toString("hex");
     sessions.set(id, {
       ...arrival(request),
@@ -442,8 +489,10 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       createdAt: Date.now(),
       sawBoardAt: null,
       lastSeen: Date.now(),
-      project: defaultProject,
+      project: runtime.defaultProject,
       projectRevision: 1,
+      // A password typed on this computer starts this session's freshness window (cockpit B2); from anywhere else, never.
+      ...(fromThisComputer(request) ? { passwordAt: Date.now() } : {}),
     });
     response.setHeader("Set-Cookie", `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`);
     return redirect(response, "/");
@@ -493,8 +542,11 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       createdAt: Date.now(),
       sawBoardAt: null,
       lastSeen: Date.now(),
-      project: defaultProject,
+      project: runtime.defaultProject,
       projectRevision: 1,
+      // A password typed to sign in on this computer starts this session's freshness window (cockpit B2); from anywhere
+      // else (a phone, a proxy) it signs in and proves nothing more.
+      ...(fromThisComputer(request) ? { passwordAt: Date.now() } : {}),
     });
     response.setHeader(
       "Set-Cookie",
@@ -580,7 +632,7 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
       createdAt: Date.now(),
       sawBoardAt: null,
       lastSeen: Date.now(),
-      project: defaultProject,
+      project: runtime.defaultProject,
       projectRevision: 1,
     });
     response.setHeader(
@@ -638,12 +690,15 @@ export function createPeopleHandlers(runtime: ServerRuntime) {
     if (!adapterPolicy({ caller: "service", capability: "none" }).ok) return page(response, 403, loginPage("This sign-in is not allowed."));
     const verified = await verifyIdToken(token.idToken, held.provider, settings, held.visit.nonce, clock(), fetcher);
     if (!verified.ok) { logEvent("warn", "sso.refused", { reason: verified.said }); return back(verified.said); }
-    // A step-up must be a check made just now, not a remembered one.
-    if (held.intent === "reauth" && verified.claims.authTime !== null && Date.now() / 1000 - verified.claims.authTime > 300) return back(`${settings.label} didn't check you again. Try once more.`);
+    // When the provider checked the person (its auth_time), proved against this visit (cockpit B2, N18): no earlier than
+    // this visit began, and not in the future beyond a minute of clock skew. A step-up must carry one that holds — a
+    // check made for this request, never a remembered one; any other sign-in without one signs in, but is never fresh.
+    const checkedAt = sameVisitCheck(verified.claims.authTime, held.startedAt, Date.now());
+    if (held.intent === "reauth" && checkedAt === null) return back(`${settings.label} didn't check you again. Try once more.`);
     const key = randomBytes(24).toString("base64url");
     for (const [one, value] of ssoHandoffs) if (value.expires < Date.now()) ssoHandoffs.delete(one);
     while (ssoHandoffs.size >= 1000) ssoHandoffs.delete(ssoHandoffs.keys().next().value!);
-    ssoHandoffs.set(key, { claims: verified.claims, issuer: held.provider.issuer, intent: held.intent, returnTo: held.returnTo, expires: Date.now() + 60_000 });
+    ssoHandoffs.set(key, { claims: verified.claims, issuer: held.provider.issuer, intent: held.intent, returnTo: held.returnTo, expires: Date.now() + 60_000, checkedAt, session: held.session });
     const to = `/login/sso/finish?h=${key}`;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff", "x-frame-options": "DENY",
       // The hand-off key is this browser's alone, like the visit's state: its cookie rides to /login/sso/finish.

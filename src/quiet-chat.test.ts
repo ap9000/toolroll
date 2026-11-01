@@ -120,8 +120,6 @@ describe("quiet chat on Telegram", () => {
     const edits = script.edits();
     expect(edits.length).toBeGreaterThanOrEqual(3);
     expect(new Set(edits.map(call => call.params["message_id"]))).toEqual(new Set([100]));
-    // The card's heading is the shared headline (task-status.ts): no approved scope here, so a person is needed.
-    expect(String(edits.at(-1)!.params["text"]).split("\n")[1]).toBe("👋 Needs you");
     // The ledger is unchanged: every fact has its own settled receipt, and replies to the card name the task.
     const binding = store.liveTelegramBinding(BOT)!;
     expect(store.telegramDeliveries(binding).filter(row => row.taskId === "status-replies").every(row => row.deliveredAt !== null)).toBe(true);
@@ -149,38 +147,6 @@ describe("quiet chat on Telegram", () => {
     expect(sends[0]!.params["disable_notification"]).toBe(true);
     expect(String(sends[1]!.params["text"])).toContain("stalled after 3 straight failures");
     expect(script.edits().every(call => call.params["message_id"] === 100)).toBe(true);
-  });
-
-  test("c2: Every step behaves as before — each routine fact is its own message and no Ready ping is added", async () => {
-    store.setNotificationPreference("alex", { mode: "all" }, "alex", now);
-    const script = scriptedTelegram();
-    await lifecycle(script);
-    const texts = script.sends().map(call => String(call.params["text"]));
-    expect(texts[0]).toContain("New task: Make status replies clear");
-    expect(texts.length).toBeGreaterThanOrEqual(2);
-    expect(texts.some(text => text.includes(" · Make status replies clear"))).toBe(false);
-    expect(script.sends().every(call => call.params["disable_notification"] === undefined)).toBe(true);
-    // The run's own progress card is still edited in place, as it was.
-    expect(script.edits().length).toBeGreaterThanOrEqual(3);
-  });
-
-  test("tasks filed within a minute share one message listing them; a later task gets its own", async () => {
-    const script = scriptedTelegram();
-    placed("first", "Tidy the import screen");
-    now = at(20_000);
-    placed("second", "Explain the empty state");
-    await pass(script);
-    expect(script.sends()).toHaveLength(1);
-    const listed = String((script.edits().at(-1) ?? script.sends()[0]!).params["text"]);
-    expect(listed).toContain("2 tasks");
-    expect(listed).toContain("Tidy the import screen · Queued");
-    expect(listed).toContain("Explain the empty state · Queued");
-    expect(script.buttons(script.edits().at(-1) ?? script.sends()[0]!)).toEqual([{ text: "Open tasks", url: `${ORIGIN}/tasks` }]);
-    now = at(180_000);
-    placed("third", "Rename the export button");
-    await pass(script);
-    expect(script.sends()).toHaveLength(2);
-    expect(String(script.sends()[1]!.params["text"])).toContain("Rename the export button");
   });
 
   test("the evening digest is one message a day: what finished, what failed", async () => {

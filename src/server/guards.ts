@@ -1,3 +1,4 @@
+import { syncProjectIdentities, type ProjectIdentities } from "../project-identity.js";
 import { OWNER_ACTIONS,sharedActionPayload } from '../chat-actions.js';
 import { CONSOLE_FORMS,readForm,type FormFieldOf,type FormView } from "../contracts/console-api.js";
 import type { TaskFamily } from "../store.js";
@@ -13,7 +14,7 @@ rowVisible
 } from "../project.js";
 import {
 authenticateAccount,
-authenticateApprover as checkApproverPassword
+authenticateApprover as checkApproverPassword, credentialProof
 } from "../scope.js";
 import { SourceBudget } from "../sign-in-guard.js";
 import {
@@ -24,12 +25,14 @@ import type { RouteDeclaration } from './route-table.js';
 import { requestContext } from "./request-context.js";
 import { refuse } from "./chrome.js";
 import { matchTaskPath } from "./http.js";
-import { PersistentSessions,SESSION_ABSOLUTE_MS,SESSION_COOKIE,SESSION_IDLE_MS,type Session,type Who } from "./session.js";
+import { PersistentSessions,SESSION_COOKIE,sessionWithinLifetime,type Session,type Who } from "./session.js";
 /** Shared browser, credential and project guards. Runtime access is lazy to preserve server initialization order. */
 export interface GuardsRuntime {
   store: Store;
-  liveCeiling: () => { repos: string[]; roots: readonly string[]; };
+  liveCeiling: () => { repos: string[]; roots: readonly string[]; canon?: (path: string) => string | null };
   codingProjects: () => string[];
+  /** Project identities read without touching folders (project-identity.ts); absent: the synchronous reads. */
+  identities?: ProjectIdentities;
   unscopedMode: boolean;
   managedRepos: () => string[];
   ceiling: import("../project.js").ProjectCeiling;
@@ -43,16 +46,22 @@ export interface GuardsRuntime {
   sessions: PersistentSessions;
 }
 export function createSharedGuards(runtime: GuardsRuntime) {
+  const syncIdentities = syncProjectIdentities();
 
   // v99: wrong passwords. One address guessing across names runs out of tries here; each name
   // locks on its own (sign-in-guard.ts), and every lock, whatever road it came by, is kept.
   /**
-   * Every step-up in the console (v100): a person the identity provider
-   * checked in the last ten minutes confirms with that (an empty password
-   * field); anyone else types their password. Standing (an approver, with
-   * access to the project) is checked either way.
+   * Every step-up in the console: a password typed now, or (an empty field) an explicit identity-provider re-check
+   * made on request and not yet spent, or — inside an allowlisted act only — a remembered password (cockpit B2,
+   * scope.ts proveAccountNow / freshnessFor, reading the request's live facts). Standing (an approver, with access to
+   * the project) is checked either way.
    */
-  // v100: the shared check honours a fresh identity-provider sign-in itself (freshIdentitySignIn, set per request below).
+  /** A credential act (docs/plans/passwordless.md): only a password typed now (or a one-use provider re-check) proves it. */
+  function authenticateCredential(who: Who, token: string, repo?: string | null): ReturnType<typeof checkApproverPassword> {
+    if (who.via !== "cookie") return { ok: false, reason: "not-an-approver" };
+    const proved = checkApproverPassword(runtime.store, who.name, token, repo, { credential: true });
+    return !proved.ok || credentialProof(proved.method) ? proved : { ok: false, reason: "not-an-approver" };
+  }
   function authenticateApprover(who: Who, token: string, repo?: string | null): ReturnType<typeof checkApproverPassword> {
     // Re-entering a password never upgrades a machine credential into a browser ceremony.
     if (who.via !== "cookie") return { ok: false, reason: "not-an-approver" };
@@ -156,8 +165,9 @@ export function createSharedGuards(runtime: GuardsRuntime) {
     const header = request.headers["x-standing-orders-project"];
     if (header === undefined) return fallback();
     if (Array.isArray(header)) return undefined;
-    const canonical = canonicalProject(header);
-    if (canonical === null || !visible(canonical)) return undefined;
+    // A request's path, never resolved on this thread (project-identity.ts): a known identity or exactly a saved one.
+    const canonical = identities().vouched(header, savedIdentities);
+    if (canonical === undefined || !visible(canonical)) return undefined;
     return canonical;
   }
 
@@ -178,7 +188,8 @@ export function createSharedGuards(runtime: GuardsRuntime) {
       case 'form-path': {
         const path = body?.get('path')?.trim() ?? '';
         // Invalid/missing paths keep the opener's existing 400 response and recoverable form.
-        return path === '' ? null : canonicalProject(path);
+        // Never resolved here: an unknown path passes on to the opener, which resolves it off the thread and checks again.
+        return path === '' ? null : identities().vouched(path, savedIdentities) ?? null;
       }
       case 'task': {
         const task = matchTaskPath(url.pathname, '(?:/[a-z-]+)?$');
@@ -330,7 +341,7 @@ export function createSharedGuards(runtime: GuardsRuntime) {
     if (found === null) { const loaded = runtime.sessions.load(candidate); if (loaded !== null) found = [candidate, loaded]; }
     for (const [id, session] of found === null ? [] : [found]) {
       const now = Date.now();
-      if (now - session.lastSeen > SESSION_IDLE_MS || now - session.createdAt > SESSION_ABSOLUTE_MS) {
+      if (!sessionWithinLifetime(session, now)) {
         runtime.sessions.delete(id);
         return null;
       }
@@ -338,7 +349,11 @@ export function createSharedGuards(runtime: GuardsRuntime) {
         runtime.sessions.delete(id);
         return null;
       }
+      // Ended in another process (or from Sessions): the cached copy is dropped, never used.
+      if (!runtime.sessions.stillSaved(id)) { Map.prototype.delete.call(runtime.sessions, id); return null; }
       if (touch) { session.lastSeen = now; runtime.sessions.persist(session, true); }
+      // A touch that found the session ended elsewhere dropped it: this request is not signed in by it.
+      if (touch && !runtime.sessions.holds(session)) return null;
       return session;
     }
     return null;
@@ -352,5 +367,10 @@ export function createSharedGuards(runtime: GuardsRuntime) {
   function runVisible(run: Run): boolean {
     return visible(taskRepoOf(run.taskRef));
   }
-  return { authenticateApprover, authorizeMutation, projectOf, resolveRouteProject, projectRequestAllowed, identify, lookupSession, restricted, visible, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible };
+  // Defined last, so the reviewed functions above keep their places (password-freshness.test.ts).
+  /** Project identities read without touching a folder (project-identity.ts); absent: the synchronous reads. */
+  function identities(): ProjectIdentities { return runtime.identities ?? syncIdentities; }
+  /** The projects `up` proved and admitted (each its own identity): what a request may name without a read. */
+  function savedIdentities(): string[] { return runtime.managedRepos(); }
+  return { authenticateApprover, authenticateCredential, authorizeMutation, projectOf, resolveRouteProject, projectRequestAllowed, identify, lookupSession, restricted, visible, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible };
 }

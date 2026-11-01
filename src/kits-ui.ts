@@ -6,7 +6,7 @@
 import type { Store } from "./store.js";
 import { kitChecklist, kitInstalled, KITS, type Kit } from "./kits.js";
 import { SUBAGENT_TEMPLATES } from "./subagents.js";
-import { html, postForm, type Html } from "./html.js";
+import { html, postForm, reauth, type Html } from "./html.js";
 
 const CHECK = html`<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`;
 const RING = html`<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/></svg>`;
@@ -47,7 +47,9 @@ export function kitPageHtml(store: Store, kit: Kit, repo: string, dir: string | 
   const rows = steps.map(step => {
     const go = step.done ? (step.href === null ? "" : html`<a class="kit-step-go" href="${step.href}">Open</a>`)
       : step.action === "sample" || step.action === "github"
-        ? (canSetUp ? postForm(`/kits/${kit.id}/${step.action}`, html`<button${step.action === "sample" ? "" : html` class="secondary"`}>${step.action === "sample" ? "Try it" : "Bring them in"}</button>`, { hidden: { repo } }) : "")
+        ? (canSetUp ? postForm(`/kits/${kit.id}/${step.action}`, step.action === "sample" ? html`<button>Try it</button>`
+          // Issues from anyone come in: it takes your password (an ordinary step-up; a session does under Passwordless).
+          : html`${reauth(html`<input type="password" name="password" autocomplete="current-password" aria-label="Your password" placeholder="Your password">`)}<button class="secondary">Bring them in</button>`, { hidden: { repo } }) : "")
         : step.href === null ? "" : html`<a class="kit-step-go" href="${step.href}">${step.action === "connect" ? "Connect" : "Set up"}</a>`;
     return html`<li data-step="${step.id}" data-done="${String(step.done)}">${step.done ? CHECK : RING}<span class="kit-step-said">${step.said}</span>${go}</li>`;
   });

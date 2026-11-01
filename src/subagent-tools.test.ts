@@ -15,9 +15,11 @@ import { run as exec } from "./exec.js";
 import { runFlowSteps, type StepIo } from "./flow-steps.js";
 import { addToolTo, validateToolSpec } from "./project-tools.js";
 import { answerSubagentQuestion } from "./subagent-work.js";
-import { grantTool, ruleFor, setToolRules } from "./subagent-tools.js";
+import { grantTool, refreshGrants, revokeTool, ruleFor, setToolRules } from "./subagent-tools.js";
 import { SUBAGENT_TEMPLATES, type TurnRequest, type TurnRunner } from "./subagents.js";
+import { NO_OS_FENCE } from "../test/inside-fence.js";
 
+const PROVED = { widening: "proved" } as const;
 const T0 = new Date("2026-09-26T09:00:00.000Z");
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
 let dir: string, repo: string, store: Store, flow: number, mate: SubagentRow, calls: string;
@@ -28,6 +30,8 @@ beforeEach(async () => {
   calls = join(dir, "calls.log");
   store = openStore(join(dir, "orders.db"));
   if (!addApprover(store, "alex", T0).ok) throw new Error("bootstrap");
+  // Where no OS fence can be made (inside the plane's check, a runner without bubblewrap) an operator allows unconfined agents.
+  if (NO_OS_FENCE) store.setUnfencedAgentsAllowed(true, "alex", T0);
   const server = join(dir, "shop-mcp.mjs");
   writeFileSync(server, `import { createInterface } from "node:readline";
 import { appendFileSync } from "node:fs";
@@ -56,7 +60,9 @@ createInterface({ input: process.stdin }).on("line", line => {
   ] }) }, T0);
   store.createSubagent({ repo, handle: "maya", soul: SUBAGENT_TEMPLATES[0]!.soul, model: null, manager: "alex", by: "alex" }, T0);
   mate = store.subagentByHandle(repo, "maya")!;
-  expect(await grantTool(store, mate, "shop", "alex", T0, { toolHome: dir })).toMatchObject({ ok: true });
+  // Without the person's proof a grant is refused; with it, made.
+  expect(await grantTool(store, mate, "shop", "alex", T0, { toolHome: dir })).toMatchObject({ ok: false, said: expect.stringContaining("takes your password") });
+  expect(await grantTool(store, mate, "shop", "alex", T0, { toolHome: dir }, PROVED)).toMatchObject({ ok: true });
 });
 afterEach(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
 
@@ -75,7 +81,7 @@ function turns(...answers: Record<string, unknown>[]): TurnRunner & { prompts: s
 }
 const io = (subagent: TurnRunner): StepIo => ({ gh: exec, git: exec, shell: exec, fetch, dir, scratch: join(dir, "scratch"), base: "main", toolHome: dir, subagent });
 const made = () => existsSync(calls) ? readFileSync(calls, "utf8").trim().split("\n").map(line => JSON.parse(line) as { name: string; arguments: Record<string, unknown> }) : [];
-const cardFor = (title: string) => store.addFlowCard({ flow, title, description: "From priya@example.com", stage: "maya", by: "alex" }, T0);
+const cardFor = (title: string) => store.addFlowCard({ flow, title, description: "From priya@example.com", stage: "maya", by: "alex", byKind: "person" }, T0);
 
 test("reading is free and the rest asks first, until its manager says otherwise; a limit holds in code", () => {
   const grant = store.subagentGrant(mate.id, "shop")!;
@@ -83,7 +89,15 @@ test("reading is free and the rest asks first, until its manager says otherwise;
   expect(setToolRules(store, mate, "shop", { refund_order: { use: "free", limit: { field: "order", over: 50 } } }, "alex", T0)).toMatchObject({ ok: false, said: "refund_order has no number called order." });
   expect(setToolRules(store, mate, "shop", { refund_order: { use: "free", limit: { field: "amount", over: -1 } } }, "alex", T0)).toMatchObject({ ok: false });
   expect(setToolRules(store, mate, "shop", { wire_money: { use: "free" } }, "alex", T0)).toMatchObject({ ok: false, said: "shop has no action called wire_money. Its actions: lookup_order, refund_order, delete_customer." });
-  expect(setToolRules(store, mate, "shop", { refund_order: { use: "free", limit: { field: "amount", over: 50 } }, delete_customer: { use: "never" } }, "alex", T0)).toMatchObject({ ok: true });
+  // Loosening (ask first → on its own up to a limit) takes the person's proof (chat-management.md §0a.3).
+  expect(setToolRules(store, mate, "shop", { refund_order: { use: "free", limit: { field: "amount", over: 50 } }, delete_customer: { use: "never" } }, "alex", T0)).toMatchObject({ ok: false, said: expect.stringContaining("takes your password") });
+  expect(setToolRules(store, mate, "shop", { refund_order: { use: "free", limit: { field: "amount", over: 50 } }, delete_customer: { use: "never" } }, "alex", T0, PROVED)).toMatchObject({ ok: true });
+  // Tightening never asks; loosening again (a higher limit, another number, on its own) does.
+  expect(setToolRules(store, mate, "shop", { refund_order: { use: "free", limit: { field: "amount", over: 20 } } }, "alex", T0)).toMatchObject({ ok: true });
+  expect(setToolRules(store, mate, "shop", { refund_order: { use: "free", limit: { field: "amount", over: 30 } } }, "alex", T0)).toMatchObject({ ok: false });
+  expect(setToolRules(store, mate, "shop", { refund_order: { use: "free" } }, "alex", T0)).toMatchObject({ ok: false });
+  expect(setToolRules(store, mate, "shop", { delete_customer: { use: "ask" } }, "alex", T0)).toMatchObject({ ok: false });
+  expect(setToolRules(store, mate, "shop", { refund_order: { use: "free", limit: { field: "amount", over: 50 } } }, "alex", T0, PROVED)).toMatchObject({ ok: true });
   const rules = store.subagentGrant(mate.id, "shop")!;
   expect(ruleFor(rules, "refund_order", { order: "1", amount: 30 }).use).toBe("free");
   expect(ruleFor(rules, "refund_order", { order: "1", amount: "$50" }).use).toBe("free");
@@ -94,7 +108,7 @@ test("reading is free and the rest asks first, until its manager says otherwise;
 });
 
 test("a subagent looks an order up and refunds it within its limit, reads both answers, then decides; secrets never reach it", async () => {
-  setToolRules(store, mate, "shop", { refund_order: { use: "free", limit: { field: "amount", over: 50 } }, delete_customer: { use: "never" } }, "alex", T0);
+  setToolRules(store, mate, "shop", { refund_order: { use: "free", limit: { field: "amount", over: 50 } }, delete_customer: { use: "never" } }, "alex", T0, PROVED);
   const card = cardFor("Refund my $30 order 1043, it arrived broken");
   const maya = turns(
     { action: "use_tool", tool: "shop.lookup_order", input: '{"order": "1043"}', reason: "Check the order." },
@@ -115,7 +129,7 @@ test("a subagent looks an order up and refunds it within its limit, reads both a
 });
 
 test("a call over its limit waits for its person; Approve makes exactly that call, and Deny with words doesn't", async () => {
-  setToolRules(store, mate, "shop", { refund_order: { use: "free", limit: { field: "amount", over: 50 } } }, "alex", T0);
+  setToolRules(store, mate, "shop", { refund_order: { use: "free", limit: { field: "amount", over: 50 } } }, "alex", T0, PROVED);
   const card = cardFor("Refund my $400 order 1044");
   const maya = turns({ action: "use_tool", tool: "shop.refund_order", input: '{"order": "1044", "amount": 400}', reason: "Damaged on arrival." });
   await runFlowSteps(store, repo, at(1), io(maya));
@@ -203,7 +217,7 @@ test("an approved call is made only if its rules still allow it when it's made",
 });
 
 test("approving the same call five times in a row, none denied, makes it suggest the rule that fits; its manager's answer is the only one that counts", () => {
-  setToolRules(store, mate, "shop", { refund_order: { use: "free", limit: { field: "amount", over: 50 } } }, "alex", T0);
+  setToolRules(store, mate, "shop", { refund_order: { use: "free", limit: { field: "amount", over: 50 } } }, "alex", T0, PROVED);
   let minute = 0;
   const decide = (amount: number, choice: "approve" | "deny" | null = "approve", text: string | null = null) => {
     minute++;
@@ -228,7 +242,9 @@ test("approving the same call five times in a row, none denied, makes it suggest
   // It never holds up a card.
   expect(store.openSubagentQuestionOn(last, 1)).toBeNull();
   expect(answerSubagentQuestion(store, question.id, { choice: "accept", text: null, by: "sam", via: "web" }, at(20))).toMatchObject({ ok: false });
-  expect(answerSubagentQuestion(store, question.id, { choice: "accept", text: null, by: "alex", via: "slack" }, at(20))).toMatchObject({ ok: true, said: "Changed. Maya makes refund_order calls on its own up to amount 75." });
+  // Accepting a looser rule takes the person's proof: a chat tap alone is refused, and nothing changes.
+  expect(answerSubagentQuestion(store, question.id, { choice: "accept", text: null, by: "alex", via: "slack" }, at(20))).toMatchObject({ ok: false, said: expect.stringContaining("takes your password") });
+  expect(answerSubagentQuestion(store, question.id, { choice: "accept", text: null, by: "alex", via: "web", widening: "proved" }, at(20))).toMatchObject({ ok: true, said: "Changed. Maya makes refund_order calls on its own up to amount 75." });
   expect(store.subagentGrant(mate.id, "shop")?.rules["refund_order"]).toEqual({ use: "free", limit: { field: "amount", over: 75 } });
   // Five more over the new limit: it suggests again; "not now" in words is remembered.
   minute = 30;
@@ -244,7 +260,34 @@ test("approving the same call five times in a row, none denied, makes it suggest
   for (const amount of [80, 81, 82, 83, 84]) decide(amount);
   const stale = open()[0]!;
   setToolRules(store, mate, "shop", { refund_order: { use: "ask" } }, "alex", at(70));
-  expect(answerSubagentQuestion(store, store.subagentQuestionForSuggestion(stale.id)!.id, { choice: "accept", text: null, by: "alex", via: "web" }, at(71))).toMatchObject({ ok: false, said: "Its rules changed since it suggested this, so nothing was changed." });
+  expect(answerSubagentQuestion(store, store.subagentQuestionForSuggestion(stale.id)!.id, { choice: "accept", text: null, by: "alex", via: "web", widening: "proved" }, at(71))).toMatchObject({ ok: false, said: "Its rules changed since it suggested this, so nothing was changed." });
   expect(store.subagentSuggestion(stale.id)?.state).toBe("stale");
   expect(store.subagentGrant(mate.id, "shop")?.rules["refund_order"]).toEqual({ use: "ask" });
+});
+
+test.each(["revoke", "tighten"] as const)("a refresh whose listing waits never undoes a %s made meanwhile (0.9.73 review round 2, finding 1)", async change => {
+  expect(store.subagentGrant(mate.id, "shop")!.rules["lookup_order"]).toEqual({ use: "free" });
+  // The listing is old by the next turn; it pauses until the change below is made.
+  let resume: () => void = () => {};
+  const paused = new Promise<void>(resolve => { resume = resolve; });
+  const actions = store.subagentGrant(mate.id, "shop")!.actions;
+  const refreshing = refreshGrants(store, mate, new Date(T0.getTime() + 7 * 60 * 60_000), { toolHome: dir, listTools: async () => { await paused; return { ok: true, actions }; } });
+  if (change === "revoke") expect(revokeTool(store, mate, "shop", "alex", T0)).toMatchObject({ ok: true });
+  else expect(setToolRules(store, mate, "shop", { lookup_order: { use: "never" } }, "alex", T0)).toMatchObject({ ok: true });
+  resume();
+  await refreshing;
+  if (change === "revoke") expect(store.subagentGrant(mate.id, "shop")).toBeNull();
+  else expect(store.subagentGrant(mate.id, "shop")!.rules["lookup_order"]).toEqual({ use: "never" });
+});
+
+test("a proved grant whose proof lapses while the tool is listed is refused (0.9.73 review round 2, finding 2)", async () => {
+  expect(revokeTool(store, mate, "shop", "alex", T0)).toMatchObject({ ok: true });
+  let standing = true, resume: () => void = () => {};
+  const paused = new Promise<void>(resolve => { resume = resolve; });
+  const granting = grantTool(store, mate, "shop", "alex", T0, { toolHome: dir, listTools: async () => { await paused; return { ok: true, actions: [{ name: "lookup_order", about: "", input: null, readOnly: true }] }; } },
+    { widening: "proved", stillProved: () => standing });
+  standing = false;
+  resume();
+  expect(await granting).toMatchObject({ ok: false, said: expect.stringContaining("takes your password") });
+  expect(store.subagentGrant(mate.id, "shop")).toBeNull();
 });

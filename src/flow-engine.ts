@@ -6,10 +6,12 @@
  * waits for people. See flows.ts for what each zone does.
  */
 import { assignmentOf } from "./assignment.js";
-import { filerFor } from "./approval-policy.js";
+import { currentActor } from "./actor.js";
+import { activeRemote } from "./remote-run.js";
 import { diagnoseTaskDispatch } from "./dispatch.js";
 import { passOn, TEXT_LIMITS } from "./text-limits.js";
 import { deciderOf, durationWords, fillFlowText, flowGoal, flowValueLabel, flowWorkTemplate, validateFlowDefinition, withinHours, type FlowDefinition, type FlowStage } from "./flows.js";
+import { readSnapshot, referenceWords, snapshotOf } from "./task-source.js";
 import { reportFillIns, reportSummaryFor } from "./report-summary.js";
 import { fileTaskProposal } from "./proposal.js";
 import { FLOW_ACCEPTANCE, unattendedCoverageFor } from "./flow-unattended.js";
@@ -248,13 +250,19 @@ function workStage(store: Store, flow: FlowRow, definition: FlowDefinition, stag
         title: (report ? `${stage.title}: ${card.title}` : card.title).slice(0, 200),
         repo,
         goal,
-        filedVia: `flow:${flow.id}`, filedBy: filerFor(card.createdBy), // who made the card asked for the work (an owner can be reassigned by anyone)
+        filedVia: `flow:${flow.id}`,
+        // Who made the card asked for the work (an owner can be reassigned by anyone). v126: an automation's card (a
+        // delivery, a poll, a schedule, a form) files as automation, by the kind kept on the card, never by its name.
+        filedBy: { name: card.createdBy, kind: card.createdKind },
         deliverable: report ? "report" : "branch",
         planning: report ? "skip" : stage.planning ?? "auto",
         acceptance: grant === null ? ACCEPTANCE[kind] : grant.terms.acceptance[kind],
         ...(grant?.terms.perAttemptBudgetMicrousd == null ? {} : { budgetMicrousd: grant.terms.perAttemptBudgetMicrousd }),
         admittedRepos: [repo],
       }, now);
+      // v126: a card an outside event's delivery made gives its task a snapshot of where it came from, in this transaction.
+      const snapshot = made.ok ? snapshotOf(fresh.source) : null;
+      if (made.ok && snapshot !== null) store.recordTaskSource(made.id, { flow: flow.id, card: fresh.id, entry: fresh.entry }, JSON.stringify(snapshot), now);
       const ranOnItsOwn = made.ok && grant !== null && sealFlowFilingUnderGrant(store, made.id, grant, fresh, now);
       if (made.ok) store.updateFlowCard(card.id, { task: made.id, ...(report || fresh.primaryTask !== null ? {} : { primaryTask: made.id }), waiting: ranOnItsOwn ? "Filed as a task, approved: this flow runs on its own" : "Filed as a task" }, now);
       return made;
@@ -323,7 +331,17 @@ function workStage(store: Store, flow: FlowRow, definition: FlowDefinition, stag
 const FLOW_ATTACHED_LIMIT = 128_000;
 
 export function flowGoalCuts(store: Store, taskId: string, goal: string): { label: string; text: string }[] {
-  try { return goalCuts(store, taskId, goal); } catch { return []; } // context, never a reason a build can't start
+  let cuts: { label: string; text: string }[] = [];
+  try { cuts = goalCuts(store, taskId, goal); } catch { cuts = []; } // context, never a reason a build can't start
+  // v126: where the work came from, from the task's own kept source (or the task it revises) — never from the card's
+  // current task link or zone, which move on. Given whole whenever the goal itself couldn't carry it.
+  try {
+    const kept = store.taskSourceOf(taskId);
+    const snapshot = kept === null ? null : readSnapshot(kept.sourceJson);
+    const words = snapshot === null ? "" : referenceWords(snapshot);
+    if (words !== "" && !goal.includes(words) && !cuts.some(one => one.text === words)) cuts.push({ label: flowValueLabel("card.source"), text: words });
+  } catch { /* context, never a reason a build can't start */ }
+  return cuts;
 }
 
 function goalCuts(store: Store, taskId: string, goal: string): { label: string; text: string }[] {
@@ -376,7 +394,7 @@ export function addCardToFlow(store: Store, flow: FlowRow, input: { title: unkno
   const text = flowCardText(input.title, input.description);
   if ("problem" in text) return { ok: false, message: text.problem };
   const stage = definition.stages.find(one => one.id === input.stage) ?? definition.stages.find(one => one.id === definition.start)!;
-  const card = store.addFlowCard({ flow: flow.id, title: text.title, description: text.description, stage: stage.id, by: actor }, now);
+  const card = store.addFlowCard({ flow: flow.id, title: text.title, description: text.description, stage: stage.id, by: actor, byKind: "person" }, now);
   // Whoever adds a card follows it; owning it is a separate, deliberate step.
   store.setFlowCardWatcher(card, actor, true, now);
   return { ok: true, said: `Card added to ${zoneWords(stage.title)}`, card };
@@ -469,7 +487,9 @@ export function decideFlowCard(store: Store, input: { card: number; decision: "a
       ledger("approved");
       return { ok: true, said: "Approved. The card is done." };
     }
-    if (!store.moveFlowCard(card.id, { to: stage.next, outcome: "approved", actor: input.actor, note: input.note, expectEntry: card.entry }, now)) return { ok: false, message: "That card has moved on since; nothing was changed." };
+    // Who decided, from trusted context (approval policy §1.7): only a person's approval lets a Pull request zone merge.
+    const authority = input.subagent !== undefined ? "subagent" as const : currentActor()?.lead === true ? "lead" as const : activeRemote() !== null ? "remote" as const : "person" as const;
+    if (!store.moveFlowCard(card.id, { to: stage.next, outcome: "approved", actor: input.actor, note: input.note, expectEntry: card.entry, authority }, now)) return { ok: false, message: "That card has moved on since; nothing was changed." };
     ledger("approved");
     const title = definition.stages.find(one => one.id === stage.next)?.title ?? stage.next;
     if (card.owner !== null) notifyPeople(store, card, [card.owner], input.actor, { key: `approved:${card.entry}`, subject: `${input.actor} approved “${card.title}”`, body: `${stage.title}: approved. It moves to ${title}.${input.note === null || input.note.trim() === "" ? "" : `\n\n${input.note.trim()}`}` }, now);

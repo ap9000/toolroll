@@ -73,8 +73,9 @@ journey suites run; upgrades use the separate comparison below. Tags come from t
 `node scripts/release-check.mjs --plan` shows the baseline and selected checks.
 Units normally run in full. Before starting, the check queries GitHub through
 `gh api` for `ci.yml` on the exact candidate SHA. Only a clean checkout and
-the latest completed successful push-event run, with every workflow job (including both
-unit matrix legs) concluded `success` on that SHA, can replace the unit suite.
+the latest completed successful push-event run, with every workflow job
+concluded `success` on that SHA, can replace the unit suite; `ci.yml` no longer
+runs on a push, so a release check runs its own units.
 Skipped, pending, missing, failed, unreadable or unknown results run it locally.
 The latest run attempt is used; an older green attempt cannot hide a failure.
 All test files mentioning macOS, Darwin, sandbox-exec or launchctl still run
@@ -105,8 +106,13 @@ or raise the requested count within that CPU bound.
 
 Scripted release journeys cap build/settle polling at 90 seconds;
 `TOOLROLL_CHECK_SCRIPTED_TIMEOUT_SECONDS` changes that limit. A timeout is a
-failure. The first hard failure in a journey, upgrade worker, build, typecheck
-or units stops the other parts and queued work. Scripted journeys never retry;
+failure. Run by hand, the first hard failure in a journey, upgrade worker, build,
+typecheck or units stops the other parts and queued work. Run by the plane, the
+check reads a handshake on stdin and keeps going instead, so every part reports
+(docs/plans/release-once.md): results come only from the fd-3 pipes of the
+harness processes it starts (`test/release-reporter.ts`, `scripts/check-results.mjs`),
+never from a file, and its last stdout line is `TOOLROLL_CHECK_REPORT <json>`
+with the plane's nonce. A failed build still starts no journeys. Scripted journeys never retry;
 real-model journeys retain their existing retry and report-validation policy,
 and a failure after that policy is exhausted stops the check.
 The failure is printed immediately; cleanup is awaited before the normal
@@ -114,6 +120,14 @@ per-part timing summary. Release journey reports are under
 `evidence/release-<pid>/<part>/`. Standalone app/flow scripts use
 `output/e2e/<name>-<time>/`; the parallel wrapper defaults to `evidence/<script>-parallel-<time>/`.
 Standalone runners retain their retry policy.
+On the second and later checks of a release, the plane may hand the check a
+targeted plan (docs/plans/release-once.md): only the unit files, journey groups
+and upgrade versions that failed at the release's last full check, every test
+changed since, and a sanity pass. Such a result is `composed` with that full
+check, or `partial` (never a pass). A nightly full check of main
+(`toolroll release nightly`) runs at 03:00; each item it finds failing stays
+open until a full check covering it passes on a commit that contains it.
+
 The target is 6–8 minutes for a passing small check and under three minutes to
 report a scripted failure; actual wall time remains visible in the summary.
 
@@ -139,14 +153,30 @@ The summary reports observed concurrency and waits.
 
 ## CI
 
-Every pull request and push to main runs `.github/workflows/ci.yml`: the full
-suite on Ubuntu with Node 22 and 24, the Linux cgroup containment job and the
-Windows Job Object containment job. macOS Node 22 and 24 run nightly in
-`macos.yml` and on release tags in `publish.yml`. The publish job uses
-`needs: macos`, so both tag legs must pass before npm publication.
-No job runs behind an `if:`, because GitHub reports a
-skipped job as passing a required check; `src/ci-workflow.test.ts` holds the
-workflows to the check names `toolroll release` waits for.
+The matrix is in `docs/plans/test-matrix.md`. Every pull request runs
+`.github/workflows/ci.yml`: the full suite on Ubuntu and macOS with Node 24
+(four shards each, joined by the required `node 24 · ubuntu-latest` and
+`node 24 · macos-latest` checks), and the area lanes: Linux cgroup
+containment, the Linux fence, Windows Job Object containment and the git
+2.41/2.47 lanes. A documentation-only pull request (only Markdown under
+`docs/`, `CHANGELOG.md` or `README.md`, added or modified; see
+`scripts/ci-scope.mjs`) skips the area lanes. Node 22, the engines floor,
+runs in `release-candidate.yml` on a pull request from a `release-*` branch
+(and in the nightly); on any other pull request its jobs are skipped. Main's
+protection reads a skipped job as passing, so ordinary pull requests merge;
+`toolroll release` never accepts a skipped check, so a release needs every
+lane executed on its exact head, and main's protection must require every
+one of `REQUIRED_PR_CHECKS`. The hosted unit shards run with
+`TOOLROLL_REQUIRE_NATIVE` (linux or darwin), so a native fence attack runs or
+fails, and the shards' verifier refuses a skip that only a native probe
+allows. A push to main (`main-push.yml`) typechecks and builds, and runs
+`ci.yml` whole only when it can't prove the merge commit is a tested pull
+request's head tree. Release tags run no tests: `publish.yml`'s release proof
+(`scripts/release-proof.mjs`) reads GitHub's record that the tagged tree
+passed every required check on its pull request before npm publication.
+`nightly.yml` runs everything on main every night. Only the jobs listed in
+`src/ci-workflow.test.ts` carry an `if:`, and that test holds the workflows
+to the check names `toolroll release` waits for.
 
 ## Releasing
 
@@ -166,7 +196,10 @@ gate the exact commit with Full checks, wait for an active approver's approval
 The service and both CLI names must record that commit; a matching version
 is insufficient. After PR checks pass, squash merge, delete the matching
 remote branch, verify the merged tree and tag. Both macOS legs gate npm and
-GitHub publication; Homebrew waits for checks to register and all pass.
+GitHub publication. The release is published once npm and the GitHub release
+are verified; Homebrew is finished apart (pending, failed or current in the
+journal): the same command later waits for the tap change's checks to register
+and all pass, then merges it, and never moves a newer formula back.
 
 Stops retain their step. Rerunning reconciles any completed merge, tag or
 publication. Interrupted deployments recover the saved staging directory
@@ -184,16 +217,46 @@ its SQLite writer before recovery runs. Lock acquisition waits at most five
 seconds, then refuses without changing the pause. `toolroll skills get release`
 has the details.
 
-## Unit tests (`npm test`)
+## Unit tests
 
-Only three kinds are kept, and only these kinds are added:
+Unit tests guard what an end-to-end run can't. A test earns its place when deleting it would let a promise break
+unnoticed; the suite is not a log of every fix.
 
-- **Migrations** (`migration-*.test.ts`): an upgrade never loses or bends
-  what is already in someone's database.
-- **Security rules**: secrets never reaching a card, a log or a page; the
-  fence around agents and scripts; approvals, pairing and who may decide;
-  sign-in and webhook signatures; proof and evidence.
-- **A bug that was fixed**: the test that would have caught it.
+- `npm test` is the fast tier, run while working, with a target under two minutes.
+- `npm run test:slow` runs the `*.slow.test.ts` files: real git repositories, processes, SQLite writers and
+  updaters, each file taking more than about ten seconds.
+- `npm run test:all` runs both, and CI and the release check run it. `npm test` skips slow files even when named,
+  so run one with `npx vitest run src/foo.slow.test.ts` (the quick check does).
 
-A new feature gets an end-to-end check, not a unit test. A test that only
-pins wording or layout doesn't belong in either.
+Keep overrides cut, and each assertion is judged on its own: one test can hold a guarantee beside disposable
+presentation checks. Only these kinds are kept, and only these kinds are added:
+
+- **Migrations** (`migration-*.test.ts`): an upgrade never loses or bends what is already in someone's database.
+- **Security rules**: secrets never reaching a card, a log or a page; the fence around agents and scripts;
+  approvals, custody, claims and leases, sealed scopes and routes, spend and budgets, pairing and who may decide;
+  sign-in, sessions and webhook signatures; protected branches and never pushing; proof and evidence. Every guard
+  keeps a test that tries to get around it, and `test/attacks/` keeps every reproduced bypass.
+- **Data integrity**: store transactions, crash recovery, idempotency and races, where losing work is the failure.
+- **Contracts other code or people depend on**: CLI JSON envelopes and exit codes, HTTP status codes, refusal
+  reason codes, the argv sent to each provider, file formats, and the `data-*` hooks scripts and journeys use.
+- **What a person sees before deciding, and what must never show**: approval and scope terms on the page that
+  signs them, escaping of untrusted text, redaction, and honest failure, evidence and warning text.
+- **Boundaries and lifecycle**: a route acting as the signed-in identity, cancellation and liveness, and counts
+  that are the safety property (nothing runs after a refusal, exactly one run per admission).
+- **A bug that was fixed**, as one case in the table test of the rule it broke. It is not a new test per finding
+  or version ("(v69)", "review finding 4", "arc 2").
+
+These are cut and not added:
+
+- **Wording**: exact sentences, labels, help text and copy, unless a keep rule above covers them.
+- **Markup and CSS**: exact HTML, class lists, CSS declarations and utility names. Presentation keeps at most one
+  render check a page: it renders, its landmarks and the `data-*` hooks code relies on are present, and nothing
+  throws. Boundary, escaping and attack cases on the same page stay.
+- **Duplicates**: a behaviour proven at the store, route and page layers keeps the lowest layer that proves it,
+  plus each layer that can fail on its own: the route's identity and authorisation, and the page showing what is
+  signed. A deletion names the retained test that still proves it.
+- **Private helpers** that the caller's tests already prove, and **implementation checks** such as mock call
+  counts and internal ordering, unless the order is the safety property.
+
+Prefer `test.each` tables to near-identical tests, and assert outcomes, not steps. A new feature gets an
+end-to-end check, not a unit test. A wording, layout or styling change gets no test.

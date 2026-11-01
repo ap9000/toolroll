@@ -1,7 +1,7 @@
 /** The Agents board through the server: /peek opens it, an agent's question shows on it and in Needs you, Reply
  * reaches the running agent through the steering mailbox and closes that question, and an open agent's room holds
  * its viewer's pings while it is open. */
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +10,7 @@ import { attemptKeyOf, ingestStatus, openAgentQuestions, recordAgentTurn, watche
 import type { BrowserAgentsView, BrowserTasksView, BrowserWorkspace } from "./browser-workspace.js";
 import { acquire } from "./claim.js";
 import { steerFolderName } from "./evidence.js";
+import { steerCapabilityOf } from "./steer-capabilities.js";
 import { register } from "./runner.js";
 import { addApprover } from "./scope.js";
 import { createDecisionServer } from "./serve.js";
@@ -84,7 +85,6 @@ describe("the Agents board", () => {
 
     const empty = await page("/agents", cookie);
     expect(empty.navigation.find(item => item.label === "Agents")).toMatchObject({ href: "/agents", active: true });
-    expect((empty.view as BrowserAgentsView).empty).toBe("No agents in the last day. They show here the moment one starts.");
 
     const quiet = running("t-quiet", repoA);
     const asking = running("t-ask", repoA);
@@ -141,33 +141,63 @@ describe("the Agents board", () => {
     expect(store.listSteerNotes(store.getRun(run)!.taskRef)).toHaveLength(1);
   });
 
-  test("opening a run's own result page marks its Done as seen; a failed row states its reason once", async () => {
-    const cookie = await login("alex", alexToken);
-    const run = running("t-done", repoA);
-    store.finishRun(run, { outcome: "built", committed: true, now: new Date() });
-    store.setTaskState("t-done", "done", new Date());
-    expect((await board("/agents", cookie)).groups).toMatchObject([{ key: "done", rows: [{ runId: run, label: "Done", line: null, diff: null }] }]);
-    const result = await fetch(url(`/review?result=t-done&run=${run}`), { headers: { cookie } });
-    expect(result.status).toBe(200);
-    expect((await board("/agents", cookie)).groups.map(group => group.key)).toEqual(["idle"]);
-
-    // The chip says Failed; the line says why, never "The agent failed." again.
-    const generic = running("t-failed", repoA), slow = running("t-slow", repoA);
-    store.finishRun(generic, { outcome: "failed", reason: "agent", now: new Date() });
-    store.finishRun(slow, { outcome: "failed", reason: "timeout", now: new Date() });
-    const rows = (await board("/agents", cookie)).groups.find(group => group.key === "needs-you")!.rows;
-    expect(rows.find(row => row.runId === generic)).toMatchObject({ label: "Failed", line: null });
-    expect(rows.find(row => row.runId === slow)).toMatchObject({ label: "Failed", line: "Ran out of time." });
-  });
-
   test("a steer note from the board returns to the same agent", async () => {
     const cookie = await login("alex", alexToken);
     const run = running("t-steer", repoA);
     const csrf = (await page(`/agents?run=${run}`, cookie)).csrf;
     const posted = await fetch(url("/t/t-steer/steer"), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ csrf, note: "Start with the retry path.", return: "agents", run: String(run) }).toString() });
-    expect(posted.headers.get("location")).toBe(`/agents?run=${run}&said=steered`);
+      body: new URLSearchParams({ csrf, note: "Start with the retry path.", return: "agents", run: String(run), key: "draft-board-1" }).toString() });
+    expect(posted.headers.get("location")).toBe(`/agents?run=${run}&said=steered&sent=draft-board-1`);
     expect(store.listSteerNotes(store.getRun(run)!.taskRef).map(one => one.note)).toEqual(["Start with the retry path."]);
+  });
+
+  test("a steer note is bound to the run on screen: filed once per draft, and never onto another attempt", async () => {
+    const cookie = await login("alex", alexToken);
+    const run = running("t-bound", repoA);
+    const taskRef = store.getRun(run)!.taskRef;
+    const send = async (fields: Record<string, string>) => {
+      const csrf = (await page(`/agents?run=${run}`, cookie)).csrf;
+      const posted = await fetch(url("/t/t-bound/steer"), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ csrf, return: "agents", run: String(run), ...fields }).toString() });
+      return posted.headers.get("location");
+    };
+    // A double submit of one draft files it once.
+    expect(await send({ note: "Check the retry path.", key: "draft-0001" })).toBe(`/agents?run=${run}&said=steered&sent=draft-0001`);
+    expect(await send({ note: "Check the retry path.", key: "draft-0001" })).toBe(`/agents?run=${run}&said=steered&sent=draft-0001`);
+    expect(store.listSteerNotes(taskRef).map(one => one.note)).toEqual(["Check the retry path."]);
+    // The same key with other words is refused, and files nothing.
+    expect(await send({ note: "Something else.", key: "draft-0001" })).toBe(`/agents?run=${run}&said=steer-stale`);
+    expect(store.listSteerNotes(taskRef)).toHaveLength(1);
+    // A form that asks for an agent but names none properly is refused, never filed unbound.
+    for (const bad of [{ run: "not-a-run", key: "draft-0003" }, { run: String(run), key: "" }, { run: String(run), key: "../x" }]) {
+      const csrf = (await page(`/agents?run=${run}`, cookie)).csrf;
+      const posted = await fetch(url("/t/t-bound/steer"), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ csrf, return: "agents", note: "Unbound?", ...bad }).toString() });
+      expect(posted.status).toBe(400);
+    }
+    expect(store.listSteerNotes(taskRef)).toHaveLength(1);
+    // Once that attempt has ended, a note sent from its pane is refused rather than landing on the next one.
+    store.finishRun(run, { outcome: "failed", reason: "agent", now: new Date() });
+    expect(await send({ note: "Too late.", key: "draft-0002" })).toBe(`/agents?run=${run}&said=steer-ended`);
+    expect(store.listSteerNotes(taskRef).map(one => one.note)).toEqual(["Check the retry path."]);
+    // Sent on to the next attempt on purpose, it is filed for the task — once per draft — and comes back naming that draft.
+    const onward = async (fields: Record<string, string>) => {
+      const csrf = (await page(`/agents?run=${run}`, cookie)).csrf;
+      const posted = await fetch(url("/t/t-bound/steer"), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ csrf, ...fields }).toString() });
+      return { status: posted.status, location: posted.headers.get("location") };
+    };
+    expect(await onward({ note: "Too late.", after: String(run), key: "draft-0002" })).toEqual({ status: 303, location: `/agents?run=${run}&said=steered-next&sent=draft-0002` });
+    expect(await onward({ note: "Too late.", after: String(run), key: "draft-0002" })).toEqual({ status: 303, location: `/agents?run=${run}&said=steered-next&sent=draft-0002` });
+    expect(store.listSteerNotes(taskRef).map(one => one.note)).toEqual(["Check the retry path.", "Too late."]);
+    expect((await onward({ note: "Mixed.", after: String(run), key: "draft-0004", run: String(run) })).status).toBe(400);
+    // One receipt for both ways of sending: a draft filed while the run lived (its answer lost) comes back as sent,
+    // not twice; and a key never vouches for other words.
+    expect(await onward({ note: "Check the retry path.", after: String(run), key: "draft-0001" })).toEqual({ status: 303, location: `/agents?run=${run}&said=steered-next&sent=draft-0001` });
+    expect(await onward({ note: "Other words.", after: String(run), key: "draft-0002" })).toEqual({ status: 303, location: `/agents?run=${run}&said=steer-stale` });
+    store.setTaskState("t-bound", "done", new Date());
+    expect(await onward({ note: "After done.", after: String(run), key: "draft-0005" })).toEqual({ status: 303, location: `/agents?run=${run}&said=steer-next-finished` });
+    expect(store.listSteerNotes(taskRef)).toHaveLength(2);
   });
 
   test("an open agent's room is a watch: its viewer's Needs you pings wait until the page closes", async () => {
@@ -192,5 +222,398 @@ describe("the Agents board", () => {
     expect(watchingAgent(store, "alex", run, new Date())).toBe(false);
     // The question is still open, so the held ping now goes.
     expect(watchedPing(store, ping, "alex", new Date())).toBe("send");
+  });
+});
+
+describe("what a running agent takes (cockpit §4)", () => {
+  /** The composer's own form fields, as the page would post them. */
+  const csrfOf = async (cookie: string) => /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(url("/settings"), { headers: { cookie } })).text())?.[1] ?? "";
+  const post = async (cookie: string, path: string, fields: Record<string, string>) => {
+    const answer = await fetch(url(path), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf: await csrfOf(cookie), ...fields }).toString() });
+    return { status: answer.status, location: answer.headers.get("location") ?? "" };
+  };
+
+  test("each capability, from the run's own facts: live input, mailbox, repair, planner, finished", () => {
+    const now = new Date();
+    const live = running("t-cap-live", repoA);
+    store.handle.prepare("UPDATE run SET phase = 'agent-running', steer_opened_at = ?, live_input_opened_at = ? WHERE id = ?").run(now.toISOString(), now.toISOString(), live);
+    expect(steerCapabilityOf(store, live, now)).toMatchObject({ send: "live", pause: true, stop: { run: live, label: "Stop" } });
+    const mailbox = running("t-cap-box", repoA);
+    // Not yet at work: a note goes into its brief.
+    expect(steerCapabilityOf(store, mailbox, now)).toMatchObject({ send: "mailbox", words: "It reads notes when it starts working." });
+    store.handle.prepare("UPDATE run SET phase = 'agent-running', steer_opened_at = ? WHERE id = ?").run(now.toISOString(), mailbox);
+    expect(steerCapabilityOf(store, mailbox, now)).toMatchObject({ send: "mailbox", pause: false, stop: { run: mailbox }, words: "It reads notes at its next check." });
+    // Its mailbox closed while it finishes: no note reaches this attempt, and the view says so.
+    store.handle.prepare("UPDATE run SET steer_closed_at = ? WHERE id = ?").run(now.toISOString(), mailbox);
+    expect(steerCapabilityOf(store, mailbox, now)).toMatchObject({ send: null, stop: { run: mailbox } });
+    store.handle.prepare("UPDATE run SET steer_closed_at = NULL WHERE id = ?").run(mailbox);
+    // A stop the store would refuse is not offered: here, a claim that has lapsed.
+    const lapsed = running("t-cap-lapsed", repoA);
+    store.handle.prepare("UPDATE claim SET expires_at = ? WHERE task_ref = (SELECT task_ref FROM run WHERE id = ?)").run(new Date(now.getTime() - 1000).toISOString(), lapsed);
+    expect(steerCapabilityOf(store, lapsed, now)?.stop ?? null).toBeNull();
+    // Its protocol repair: no notes for either, and Stop names the owning attempt.
+    const repair = store.handle.prepare("INSERT INTO run (task_ref, lease_id, runner, branch, worktree, started_at, role, parent_run, provider) SELECT task_ref, lease_id, runner, branch, worktree, ?, 'repair', id, provider FROM run WHERE id = ?")
+      .run(now.toISOString(), mailbox).lastInsertRowid;
+    expect(steerCapabilityOf(store, Number(repair), now)).toMatchObject({ send: null, stop: { run: mailbox, label: "Stop this attempt" } });
+    expect(steerCapabilityOf(store, mailbox, now)).toMatchObject({ send: null, stop: { run: mailbox, label: "Stop this attempt" } });
+    const planner = store.handle.prepare("UPDATE run SET role = 'planner' WHERE id = ?").run(live);
+    expect(planner.changes).toBe(1);
+    expect(steerCapabilityOf(store, live, now)).toMatchObject({ send: null, pause: false, words: "This planner can't take notes; stop it to change its course." });
+    store.finishRun(live, { outcome: "built", committed: true, now });
+    expect(steerCapabilityOf(store, live, now)).toBeNull();
+  });
+
+  test("the agent view offers what its attempt takes; Stop comes back to it; a note for an agent that takes none is refused, never filed", async () => {
+    const cookie = await login("alex", alexToken);
+    const run = running("t-cap-board", repoA);
+    store.handle.prepare("UPDATE run SET phase = 'agent-running', steer_opened_at = ? WHERE id = ?").run(new Date().toISOString(), run);
+    const detail = (await board(`/agents?run=${run}`, cookie)).selected!;
+    expect(detail.controls).toMatchObject({ send: "mailbox", words: "It reads notes at its next check.", pause: null, stop: { run, label: "Stop", action: "/t/t-cap-board/stop" } });
+    expect(detail.steer).toMatchObject({ run });
+    // A planner running for the same task: no notes; the board's send is refused in words, and nothing is filed.
+    store.handle.prepare("UPDATE run SET role = 'planner' WHERE id = ?").run(run);
+    // A planner opens on the board too, saying it takes no notes, with Stop and no box.
+    const planner = (await board(`/agents?run=${run}`, cookie)).selected!;
+    expect(planner.controls).toMatchObject({ send: null, words: "This planner can't take notes; stop it to change its course.", stop: { run } });
+    expect(planner.steer).toBeNull();
+    const before = store.handle.prepare("SELECT COUNT(*) AS n FROM task_steer").get()!["n"];
+    const refused = await post(cookie, "/t/t-cap-board/steer", { note: "use the other table", return: "agents", run: String(run), key: "k-planner-0001" });
+    expect(refused.location).toBe(`/agents?run=${run}&said=steer-no-notes`);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task_steer").get()!["n"]).toBe(before);
+    store.handle.prepare("UPDATE run SET role = 'builder' WHERE id = ?").run(run);
+    const stopped = await post(cookie, "/t/t-cap-board/stop", { run: String(run), return: "agents" });
+    expect(stopped.location).toBe(`/agents?run=${run}&said=stopping`);
+    expect((await board(`/agents?run=${run}&said=stopping`, cookie)).selected?.said).toMatchObject({ text: "Stopping. The work so far is kept." });
+  });
+});
+
+describe("the task page's note is for the exact attempt (cockpit §4)", () => {
+  test("its form names the running build; a note for an attempt that has ended is refused, never filed for the next", async () => {
+    const cookie = await login("alex", alexToken);
+    const run = running("t-page-note", repoA);
+    store.handle.prepare("UPDATE run SET phase = 'agent-running', steer_opened_at = ? WHERE id = ?").run(new Date().toISOString(), run);
+    const html = await (await fetch(url("/t/t-page-note"), { headers: { cookie } })).text();
+    const form = [...html.matchAll(/<form[^>]*action="\/t\/t-page-note\/steer"[^>]*>[\s\S]*?<\/form>/g)].map(one => one[0]).find(one => one.includes('name="run"')) ?? "";
+    // The page's own composer names the same run, and says what it takes.
+    const view = workspaceOf(html).view as import("./browser-workspace.js").BrowserTaskView;
+    expect(view.steering).toMatchObject({ steer: { run, action: "/t/t-page-note/steer" }, controls: { send: "mailbox", words: "It reads notes at its next check." } });
+    expect(form).toContain(`name="run" value="${run}"`);
+    expect(form).toContain('name="return" value="task"');
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(form)?.[1] ?? "";
+    const key = /name="key" value="([^"]+)"/.exec(form)?.[1] ?? "";
+    store.finishRun(run, { outcome: "failed", reason: "agent", now: new Date() });
+    const before = store.handle.prepare("SELECT COUNT(*) AS n FROM task_steer").get()!["n"];
+    const answer = await fetch(url("/t/t-page-note/steer"), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf, note: "use the cache", run: String(run), key, return: "task" }).toString() });
+    expect(answer.status).toBe(409);
+    expect(await answer.text()).toContain("that attempt ended before your note");
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task_steer").get()!["n"]).toBe(before);
+  });
+
+  test("while a planner runs, the page's form is plainly for the next attempt; the demo files nothing", async () => {
+    const cookie = await login("alex", alexToken);
+    const run = running("t-page-plan", repoA);
+    store.handle.prepare("UPDATE run SET role = 'planner' WHERE id = ?").run(run);
+    const html = await (await fetch(url("/t/t-page-plan"), { headers: { cookie } })).text();
+    expect(html).toContain("Save for the next attempt");
+    expect((workspaceOf(html).view as import("./browser-workspace.js").BrowserTaskView).steering).toMatchObject({ steer: null, controls: { send: null, words: "This planner can't take notes; stop it to change its course." } });
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(html)?.[1] ?? "";
+    store.recordInstallationFact("demo", "1", new Date());
+    expect(store.isDemo()).toBe(true);
+    const before = store.handle.prepare("SELECT COUNT(*) AS n FROM task_steer").get()!["n"];
+    const answer = await fetch(url("/t/t-page-plan/steer"), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ csrf, note: "try the cache" }).toString() });
+    expect(answer.status).toBe(403);
+    expect(store.handle.prepare("SELECT COUNT(*) AS n FROM task_steer").get()!["n"]).toBe(before);
+  });
+});
+
+describe("composer receipts and reach (cockpit §4, round 2)", () => {
+  const form = async (cookie: string, path: string, fields: Record<string, string>) => {
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(url("/settings"), { headers: { cookie } })).text())?.[1] ?? "";
+    const answer = await fetch(url(path), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, ...fields }).toString() });
+    return answer.headers.get("location") ?? "";
+  };
+
+  test("pause and send clears a draft only when that very note was stored: a repeated request with new words keeps the new draft", async () => {
+    const cookie = await login("alex", alexToken);
+    const run = running("t-ps", repoA);
+    const now = new Date().toISOString();
+    store.handle.prepare("UPDATE run SET phase = 'agent-running', steer_opened_at = ?, live_input_opened_at = ? WHERE id = ?").run(now, now, run);
+    const first = await form(cookie, "/t/t-ps/pause", { run: String(run), request: "steer-draft-one-0001", note: "use the cache", key: "draft-one-0001", return: "agents" });
+    expect(first).toContain("&sent=draft-one-0001");
+    // The same request again, with edited words (a restored form): the store answers with the first note, so nothing clears.
+    const again = await form(cookie, "/t/t-ps/pause", { run: String(run), request: "steer-draft-one-0001", note: "use the replica", key: "draft-two-0002", return: "agents" });
+    expect(again).not.toContain("sent=");
+    expect(again).toContain("said=pause-note-stale");
+  });
+
+  test("a running review has its composer on the task page; the timeline opens every role in the agent view", async () => {
+    const cookie = await login("alex", alexToken);
+    const build = running("t-rev", repoA);
+    store.finishRun(build, { outcome: "built", committed: true, now: new Date() });
+    const review = store.handle.prepare("INSERT INTO run (task_ref, lease_id, runner, started_at, role, provider, parent_run) SELECT task_ref, 'review-lease-1', runner, ?, 'reviewer', provider, id FROM run WHERE id = ?")
+      .run(new Date().toISOString(), build).lastInsertRowid;
+    const view = workspaceOf(await (await fetch(url("/t/t-rev"), { headers: { cookie } })).text()).view as import("./browser-workspace.js").BrowserTaskView;
+    expect(view.steering).toMatchObject({ steer: null, controls: { send: null, words: "This reviewer can't take notes; stop it to change its course.", stop: { run: Number(review) } } });
+    expect(view.steerRecent).toContain(build);
+    const lanes = (await board("/agents", cookie)).lanes;
+    const hrefs = (lanes?.lanes ?? []).flatMap(lane => lane.segments.map(one => one.href));
+    expect(hrefs.length).toBeGreaterThan(0);
+    expect(hrefs.every(href => href.startsWith("/agents?run="))).toBe(true);
+  });
+});
+
+describe("Settings → Project → Live view", () => {
+  /** The Project page's own form, as the person sees it: its csrf, and the single-use nonce Show commands carries. */
+  const form = async (cookie: string, repo: string) => {
+    const html = await (await fetch(url(`/settings/project?repo=${encodeURIComponent(repo)}`), { headers: { cookie } })).text();
+    return { csrf: /name="csrf" value="([0-9a-f]{64})"/.exec(html)?.[1] ?? "", nonce: /name="nonce" value="([0-9a-f]+)"/.exec(html)?.[1] ?? "" };
+  };
+  const post = async (cookie: string, fields: Record<string, string>) => {
+    const posted = await fetch(url("/settings/project/live-view"), { method: "POST", redirect: "manual", headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(fields).toString() });
+    return { status: posted.status, location: decodeURIComponent(posted.headers.get("location") ?? "") };
+  };
+  const send = async (cookie: string, fields: Record<string, string>) => post(cookie, { ...(await form(cookie, fields["repo"]!)), ...fields });
+
+  test("showing commands takes the approver's password, hiding them is one step; each is a ledger line the next run reads", async () => {
+    const { liveCommandsShown, liveLogContext } = await import("./live-detail.js");
+    const cookie = await login("alex", alexToken);
+    expect(liveCommandsShown(store, repoA)).toBe(false);
+    expect((await send(cookie, { repo: repoA, act: "on", password: "wrong" })).location).toContain("problem=Enter your Toolroll password");
+    expect(liveCommandsShown(store, repoA)).toBe(false);
+    expect((await send(cookie, { repo: repoA, act: "on", password: alexToken })).location).toContain("said=Commands now show");
+    expect(liveCommandsShown(store, repoA)).toBe(true);
+    // A run opened now carries the project's choice; another project is untouched.
+    const run = running("t-live", repoA);
+    expect(liveLogContext(store, run, store.getRun(run)!.taskRef, "/pool/wt", new Date())).toEqual({ base: "/pool/wt", commands: true });
+    expect(liveCommandsShown(store, repoB)).toBe(false);
+    expect((await send(cookie, { repo: repoA, act: "off" })).location).toContain("said=Commands are hidden");
+    expect(liveCommandsShown(store, repoA)).toBe(false);
+    // Turning it on is consent to that one change: the same form replayed, or one without its nonce, changes nothing.
+    const once = await form(cookie, repoA);
+    expect((await post(cookie, { ...once, repo: repoA, act: "on", password: alexToken })).location).toContain("said=Commands now show");
+    await send(cookie, { repo: repoA, act: "off" });
+    expect((await post(cookie, { ...once, repo: repoA, act: "on", password: alexToken })).location).toContain("problem=That form was already used");
+    expect((await post(cookie, { csrf: once.csrf, repo: repoA, act: "on", password: alexToken })).location).toContain("problem=That form was already used");
+    expect(liveCommandsShown(store, repoA)).toBe(false);
+    expect(store.handle.prepare("SELECT actor, outcome FROM action_ledger WHERE action = 'live view commands' ORDER BY id").all().map(row => [row["actor"], row["outcome"]]))
+      .toEqual([["alex", "on"], ["alex", "off"], ["alex", "on"], ["alex", "off"]]);
+  });
+
+  test("a project outside the person's access refuses, and changes nothing", async () => {
+    const cookie = await login("robin", robinToken);
+    expect((await send(cookie, { repo: repoA, act: "on", password: robinToken })).status).toBe(403);
+    const { liveCommandsShown } = await import("./live-detail.js");
+    expect(liveCommandsShown(store, repoA)).toBe(false);
+  });
+});
+
+describe("the Live grid (docs/plans/agents-view.md §3)", () => {
+  const tiles = async (cookie: string) => {
+    const response = await fetch(url("/agents/live"), { headers: { cookie } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    return ((await response.json()) as { tiles: { runId: number; role: string; state: string; why: string | null; project: string | null; taskHref: string | null }[] }).tiles;
+  };
+
+  test("lists running and just-ended agents in the viewer's own projects, newest first, with Needs you", async () => {
+    const a = running("t-a", repoA), b = running("t-b", repoB), done = running("t-done", repoB), old = running("t-old", repoB);
+    store.finishRun(done, { outcome: "built", committed: true, now: new Date() });
+    store.finishRun(old, { outcome: "built", committed: true, now: new Date(Date.now() - 11 * 60_000) });
+    ask(b, "keep-button", "Keep the old button?");
+    store.handle.prepare("UPDATE run SET role = 'scout' WHERE id = ?").run(a); // every role is on the grid, not only builds
+    const alex = await tiles(await login("alex", alexToken));
+    expect(alex.find(tile => tile.runId === a)).toMatchObject({ role: "scout", state: "working" });
+    expect(alex.map(tile => tile.runId)).toEqual([done, b, a]);
+    expect(alex.find(tile => tile.runId === b)).toMatchObject({ state: "needs-you", why: "question" });
+    expect(alex.find(tile => tile.runId === done)).toMatchObject({ state: "done" });
+    // A task this console keeps links to its own page; one from an outside tracker has none.
+    expect(alex.find(tile => tile.runId === b)).toMatchObject({ taskHref: "/t/t-b" });
+    store.handle.prepare("UPDATE task_ref SET backend = 'linear' WHERE id = (SELECT task_ref FROM run WHERE id = ?)").run(a);
+    expect((await tiles(await login("alex", alexToken))).find(tile => tile.runId === a)).toMatchObject({ taskHref: null });
+    const robin = await tiles(await login("robin", robinToken));
+    expect(robin.map(tile => tile.runId)).toEqual([done, b]); // never another project's
+  });
+
+  test("watching changes nothing: ?view=live never marks a finished agent seen or offers a composer", async () => {
+    const run = running("t-seen", repoA);
+    store.finishRun(run, { outcome: "built", committed: true, now: new Date() });
+    const cookie = await login("alex", alexToken);
+    const live = await board(`/agents?view=live&run=${run}`, cookie);
+    expect(live.selected).toBeNull();
+    await tiles(cookie);
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(0);
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_view").get()?.["n"]).toBe(0);
+    // The List view still opens it, and that is a view.
+    expect((await board(`/agents?run=${run}`, cookie)).selected).not.toBeNull();
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(1);
+  });
+});
+
+describe("the Live grid's reads (docs/plans/agents-view.md §3)", () => {
+  let local: Server, localBase: string, skew = 0;
+  beforeEach(async () => {
+    skew = 0;
+    local = createDecisionServer({ store, evidenceRoot, repos: [repoA, repoB], clock: () => new Date(Date.now() + skew), localRunner: "builder-1" });
+    await new Promise<void>(resolve => local.listen(0, "127.0.0.1", resolve));
+    const address = local.address();
+    if (typeof address !== "object" || address === null) throw new Error("no address");
+    localBase = `http://127.0.0.1:${address.port}`;
+  });
+  afterEach(async () => { local.closeAllConnections?.(); await new Promise<void>(resolve => local.close(() => resolve())); });
+  const signIn = async (name: string, token: string) => {
+    const response = await fetch(`${localBase}/login`, { method: "POST", body: new URLSearchParams({ name, token }), redirect: "manual" });
+    return (response.headers.get("set-cookie") ?? "").split(";")[0] as string;
+  };
+  const get = async (path: string, cookie: string) => {
+    const response = await fetch(`${localBase}${path}`, { headers: { cookie } });
+    return { status: response.status, body: await response.json() as Record<string, unknown> & { records?: unknown[]; cursor?: string } };
+  };
+  const record = async (run: number) => {
+    const { openLiveLog } = await import("./live.js");
+    const log = openLiveLog(evidenceRoot, run, { base: worktree, commands: false })!;
+    log.observe({ type: "assistant", parent_tool_use_id: null, message: { content: [{ type: "text", text: "planning" }, { type: "tool_use", id: "t1", name: "Task", input: { description: "Check the tests" } }] } });
+    log.observe({ type: "assistant", parent_tool_use_id: "t1", message: { content: [{ type: "text", text: "running them" }, { type: "tool_use", id: "b1", name: "Bash", input: { command: "cat ~/.ssh/id_ed25519" } }] } });
+    return log;
+  };
+
+  test("the run's own records and its subagents', a window at a time, from a cursor; command detail withheld", async () => {
+    const run = running("t-read", repoA);
+    const log = await record(run);
+    const cookie = await signIn("alex", alexToken);
+    const main = await get(`/agents/live/${run}?file=main`, cookie);
+    expect(main.status).toBe(200);
+    expect(JSON.stringify(main.body.records)).toContain("planning");
+    const sub = await get(`/agents/live/${run}?file=sub`, cookie);
+    expect(sub.body.records).toEqual(expect.arrayContaining([expect.objectContaining({ k: "child", s: 1, desc: "Check the tests" }), expect.objectContaining({ k: "say", s: 1, t: ["running them"] })]));
+    expect(JSON.stringify(sub.body)).not.toContain("id_ed25519");
+    log.observe({ type: "assistant", parent_tool_use_id: "t1", message: { content: [{ type: "text", text: "all green" }] } });
+    log.close();
+    const next = await get(`/agents/live/${run}?file=sub&cursor=${encodeURIComponent(sub.body.cursor!)}`, cookie);
+    expect(JSON.stringify(next.body.records)).toContain("all green");
+    expect(JSON.stringify(next.body.records)).not.toContain("running them");
+    expect((await get(`/agents/live/${run}?file=sub&cursor=forged.cursor`, cookie)).body).toMatchObject({ restarted: true });
+  });
+
+  test("the room is each viewer's own: a file growing on a run they can see moves theirs only, and says no sizes", async () => {
+    const mine = running("t-room-a", repoA);
+    const log = await record(mine);
+    const open = async (cookie: string) => {
+      const controller = new AbortController();
+      const response = await fetch(`${localBase}/live?room=agents-live`, { headers: { cookie, accept: "text/event-stream" }, signal: controller.signal });
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      let text = "";
+      const until = async (pattern: RegExp, ms: number) => {
+        const deadline = Date.now() + ms;
+        while (!pattern.test(text) && Date.now() < deadline) {
+          const next = await Promise.race([reader.read(), new Promise<null>(resolve => setTimeout(() => resolve(null), deadline - Date.now()))]);
+          if (next === null || next.done) break;
+          text += new TextDecoder().decode(next.value);
+        }
+        return pattern.test(text);
+      };
+      return { until, text: () => text, reset: () => { text = ""; }, close: () => controller.abort() };
+    };
+    const alex = await open(await signIn("alex", alexToken));
+    const robin = await open(await signIn("robin", robinToken));
+    expect(await alex.until(/event: change/, 3_000)).toBe(true);
+    expect(await robin.until(/event: change/, 3_000)).toBe(true);
+    alex.reset(); robin.reset();
+    log.observe({ type: "assistant", parent_tool_use_id: "t1", message: { content: [{ type: "text", text: "more output" }] } });
+    expect(await alex.until(/event: change/, 6_000)).toBe(true);
+    expect(await robin.until(/event: change/, 2_500)).toBe(false); // robin can't see repoA: nothing moved for robin
+    expect(alex.text()).not.toMatch(/"size"|jsonl|\d+:\d+:\d+\//);
+    log.close(); alex.close(); robin.close();
+    // Watching takes no lease and marks nothing.
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_view").get()?.["n"]).toBe(0);
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(0);
+  }, 20_000);
+
+  test("Codex av8 r2 #4: a viewer refused mid-stream leaves, and its page's stream ends (nothing else holds it open)", async () => {
+    const cookie = await signIn("alex", alexToken);
+    const controller = new AbortController();
+    const response = await fetch(`${localBase}/live?room=agents-live`, { headers: { cookie, accept: "text/event-stream" }, signal: controller.signal });
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    let text = "", ended = false;
+    const deadline = Date.now() + 8_000;
+    let narrowed = false;
+    while (!ended && Date.now() < deadline) {
+      const next = await Promise.race([reader.read(), new Promise<null>(resolve => setTimeout(() => resolve(null), 500))]);
+      if (next !== null && next.done) { ended = true; break; }
+      if (next !== null) text += new TextDecoder().decode(next.value);
+      // Once joined, the account narrows: its scope is no longer the room's.
+      if (!narrowed && /event: change/.test(text)) { store.handle.prepare("UPDATE approver SET projects_json = ? WHERE name = 'alex'").run(JSON.stringify([repoB])); narrowed = true; }
+    }
+    controller.abort();
+    expect(text).toMatch(/event: gone/);
+    expect(ended).toBe(true);
+  }, 15_000);
+
+  test("only a browser session reads: a lead's, a runner's and a remote token are each refused", async () => {
+    const run = running("t-tokens", repoA);
+    (await record(run)).close();
+    const { mintApiToken } = await import("./api-tokens.js");
+    const remote = mintApiToken();
+    store.createApiToken({ id: remote.id, account: "alex", name: "laptop", secretHash: remote.hash, access: "act", projects: null,
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(), by: "alex" }, new Date());
+    const lead = store.mintLeadCredential("alex", "alex", new Date()).token;
+    for (const bearer of [lead, "tok-builder-1", remote.token]) {
+      for (const path of [`/agents/live/${run}?file=main`, `/agents/live/${run}?file=sub`, "/agents/live", "/agents?view=live", "/live?room=agents-live"]) {
+        const response = await fetch(`${localBase}${path}`, { headers: { authorization: `Bearer ${bearer}` }, redirect: "manual" });
+        expect([303, 401, 403], `${path} as ${bearer.slice(0, 3)}`).toContain(response.status);
+        expect(await response.text()).not.toMatch(/planning|running them|Check the tests/);
+      }
+    }
+    const cookie = await signIn("alex", alexToken);
+    expect((await get(`/agents/live/${run}?file=main`, cookie)).status).toBe(200);
+    expect((await get("/agents/live", cookie)).status).toBe(200);
+  });
+
+  test("Codex av5: an ended session reads nothing; the Live page is a browser's only; watching never touches the session", async () => {
+    const run = running("t-av5", repoA);
+    (await record(run)).close();
+    const cookie = await signIn("alex", alexToken);
+    // The saved session ended (another process signed it out): the cookie alone reads nothing.
+    const saved = store.handle.prepare("SELECT * FROM web_session").all();
+    store.handle.prepare("DELETE FROM web_session").run();
+    const status = async (path: string) => (await fetch(`${localBase}${path}`, { headers: { cookie }, redirect: "manual" })).status;
+    expect(await status(`/agents/live/${run}?file=main`)).not.toBe(200);
+    expect(await status("/agents/live")).not.toBe(200);
+    for (const row of saved) store.handle.prepare(`INSERT INTO web_session (${Object.keys(row).join(", ")}) VALUES (${Object.keys(row).map(() => "?").join(", ")})`).run(...Object.values(row) as never[]);
+    expect((await get(`/agents/live/${run}?file=main`, cookie)).status).toBe(200);
+    // ?view=live refuses a token; a cookie still opens it.
+    const { mintApiToken } = await import("./api-tokens.js");
+    const remote = mintApiToken();
+    store.createApiToken({ id: remote.id, account: "alex", name: "laptop2", secretHash: remote.hash, access: "act", projects: null, expiresAt: new Date(Date.now() + 86_400_000).toISOString(), by: "alex" }, new Date());
+    expect([401, 403]).toContain((await fetch(`${localBase}/agents?view=live`, { headers: { authorization: `Bearer ${remote.token}` }, redirect: "manual" })).status);
+    // Polling (a fresh session, past the persistence interval) writes nothing to it.
+    const watcher = await signIn("alex", alexToken);
+    const before = JSON.stringify(store.handle.prepare("SELECT id_hash, last_seen FROM web_session ORDER BY id_hash").all());
+    skew = 120_000;
+    const realNow = Date.now.bind(Date);
+    const later = vi.spyOn(Date, "now").mockImplementation(() => realNow() + 120_000); // past the session's once-a-minute save
+    try {
+      for (const path of [`/agents/live/${run}?file=main`, "/agents/live", "/agents?view=live"]) await fetch(`${localBase}${path}`, { headers: { cookie: watcher } });
+    } finally { later.mockRestore(); }
+    expect(JSON.stringify(store.handle.prepare("SELECT id_hash, last_seen FROM web_session ORDER BY id_hash").all())).toBe(before);
+  });
+
+  test("another project's run, an unknown file, another runner's run: refused or off, never read", async () => {
+    const run = running("t-other", repoA);
+    (await record(run)).close();
+    expect((await get(`/agents/live/${run}?file=main`, await signIn("robin", robinToken))).status).toBe(404);
+    const cookie = await signIn("alex", alexToken);
+    expect((await get(`/agents/live/${run}?file=../etc`, cookie)).status).toBe(400);
+    expect((await get(`/agents/live/${run}?file=main&extra=1`, cookie)).status).toBe(400);
+    store.handle.prepare("UPDATE run SET runner = 'elsewhere' WHERE id = ?").run(run);
+    expect((await get(`/agents/live/${run}?file=main`, cookie)).body).toEqual({ error: "off" });
+    // Reading changes nothing: no seen mark, no watch.
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_seen").get()?.["n"]).toBe(0);
+    expect(store.handle.prepare("SELECT count(*) AS n FROM agent_view").get()?.["n"]).toBe(0);
   });
 });

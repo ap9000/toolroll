@@ -8,6 +8,7 @@
 import { z } from "zod";
 import { TEXT_LIMITS, type TextLimitKey } from "../text-limits.js";
 import { limited, readVersioned, toModelSchema, versioned, type ContractResult } from "./contract.js";
+import { isRecord } from "../is-record.js";
 
 export const MEMORY_EFFECTS = ["harm", "non-compliance", "irrelevant"] as const;
 export const MEMORY_DOMAINS = ["project", "orchestration"] as const;
@@ -83,8 +84,6 @@ export const savedVerdictSchema = versioned(MEMORY_VERDICT_VERSION, verdictShape
 
 export type SavedVerdict = z.infer<typeof savedVerdictSchema>;
 
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
-
 /**
  * A verdict kept before it carried `version` (through 0.9.36), as version 1. Those left a gap's `matchesGap` out when
  * there was none; that reads as null. Values are never rewritten.
@@ -107,8 +106,6 @@ export function readSavedVerdict(input: unknown): ContractResult<SavedVerdict> {
 
 /** One corroborating sighting: the session and its verbatim quote. A proposal keeps at most six. */
 export const memoryEvidenceSchema = z.array(z.strictObject({ session: z.string(), quote: z.string() })).max(6);
-
-export type MemoryEvidence = z.infer<typeof memoryEvidenceSchema>;
 
 /** A proposal as its row reads; its evidence is a JSON list (an older runtime reads it as one, so it has no envelope). */
 export const memoryProposalSchema = z.strictObject({

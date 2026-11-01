@@ -20,7 +20,7 @@
 import { closeSync, constants as fsConstants, fsyncSync, openSync, readFileSync, writeSync } from "node:fs";
 import { join } from "node:path";
 import { createCipheriv, createECDH, createPrivateKey, hkdfSync, randomBytes, createHash, sign as cryptoSign } from "node:crypto";
-import type { Notification, PushSubscription, Store } from "./store.js";
+import type { Notification, Store } from "./store.js";
 import { isCheckProgressLine } from "./check-progress.js";
 
 export const VAPID_FILE = "vapid-keys.json";
@@ -51,6 +51,11 @@ export function vapidFingerprint(publicKey: string): string {
   return createHash("sha256").update(publicKey, "utf8").digest("hex").slice(0, 16);
 }
 
+/** Load the saved pair only (null when none is saved yet): what a page reads (docs/plans/get-side-effects.md). */
+export function loadVapidKeys(dir: string): VapidKeys | null {
+  return readVapidKeys(join(dir, VAPID_FILE));
+}
+
 /**
  * Mint-or-load, atomically across processes (finding 29): exclusive
  * creation; the loser of a race re-reads the winner's file; and a loaded
@@ -59,25 +64,7 @@ export function vapidFingerprint(publicKey: string): string {
  */
 export function loadOrCreateVapidKeys(dir: string): VapidKeys {
   const path = join(dir, VAPID_FILE);
-  const read = (): VapidKeys | null => {
-    let raw: string;
-    try {
-      raw = readFileSync(path, "utf8");
-    } catch {
-      return null;
-    }
-    const parsed = JSON.parse(raw) as { publicKey?: unknown; privateKey?: unknown };
-    if (typeof parsed.publicKey !== "string" || typeof parsed.privateKey !== "string") {
-      throw new Error(`${VAPID_FILE} is not a key file`);
-    }
-    const check = createECDH("prime256v1");
-    check.setPrivateKey(fromB64url(parsed.privateKey));
-    if (b64url(check.getPublicKey()) !== parsed.publicKey) {
-      throw new Error(`${VAPID_FILE} holds a mismatched key pair — refusing to sign with it`);
-    }
-    return { publicKey: parsed.publicKey, privateKey: parsed.privateKey, fingerprint: vapidFingerprint(parsed.publicKey) };
-  };
-
+  const read = (): VapidKeys | null => readVapidKeys(path);
   const existing = read();
   if (existing !== null) return existing;
 
@@ -99,6 +86,25 @@ export function loadOrCreateVapidKeys(dir: string): VapidKeys {
     if (winner === null) throw new Error(`could not create or read ${VAPID_FILE}`);
     return winner;
   }
+}
+
+function readVapidKeys(path: string): VapidKeys | null {
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+  const parsed = JSON.parse(raw) as { publicKey?: unknown; privateKey?: unknown };
+  if (typeof parsed.publicKey !== "string" || typeof parsed.privateKey !== "string") {
+    throw new Error(`${VAPID_FILE} is not a key file`);
+  }
+  const check = createECDH("prime256v1");
+  check.setPrivateKey(fromB64url(parsed.privateKey));
+  if (b64url(check.getPublicKey()) !== parsed.publicKey) {
+    throw new Error(`${VAPID_FILE} holds a mismatched key pair — refusing to sign with it`);
+  }
+  return { publicKey: parsed.publicKey, privateKey: parsed.privateKey, fingerprint: vapidFingerprint(parsed.publicKey) };
 }
 
 // ---- RFC 8291 encryption ----------------------------------------------------
@@ -308,7 +314,7 @@ export async function pushPass(
   for (const pair of pairs) {
     // Renew and re-fence immediately before the network (finding 12).
     if (!store.renewPushClaim(pair.id, owner, pair.claimGeneration, PUSH_CLAIM_TTL_MS, clock())) continue;
-    const fenced = store.pushSendFence(pair.id, owner, pair.claimGeneration);
+    const fenced = store.pushSendFence(pair.id, owner, pair.claimGeneration, clock());
     if (fenced === null) continue; // resolved, retired, rotated, or lost — nothing to send
     const subscription = fenced.subscriptionRow;
 

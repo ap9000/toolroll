@@ -174,6 +174,7 @@ export class LiveConnection {
   private readonly proofs = new Set<() => void>();
   private readonly timer: NodeJS.Timeout;
   private closed = false;
+  private refusing = false;
   constructor(readonly response: ServerResponse, options: { limitBytes?: number; keepAliveMs?: number } = {}) {
     this.stream = new LiveStream(response, options.limitBytes, () => this.close());
     this.timer = setInterval(() => this.keepAlive(), options.keepAliveMs ?? KEEP_ALIVE_MS);
@@ -189,6 +190,14 @@ export class LiveConnection {
   get open(): boolean { return !this.closed && this.stream.open; }
   /** An event for one room: its data says which. */
   send(room: string, event: string, data: Record<string, unknown> = {}): void { this.stream.send(event, { room, ...data }); }
+  /** A room leaves because its proof failed (a sign-out, a revoked or narrowed account): if that departure ends the
+   * connection, the page is told the stream `ended` and stops, rather than reconnecting at once into a request that
+   * can't sign in. Any other close — the page going, a later shutdown, an overflow — says nothing of it. */
+  refuse(leave: () => void): void {
+    const outer = this.refusing;
+    this.refusing = true;
+    try { leave(); } finally { this.refusing = outer; }
+  }
   /** Run when the connection ends; returns the undo for a room that leaves first. */
   onClose(leave: () => void): () => void { this.leaves.add(leave); return () => { this.leaves.delete(leave); }; }
   close(): void {
@@ -198,6 +207,7 @@ export class LiveConnection {
     for (const leave of [...this.leaves]) leave();
     this.leaves.clear();
     this.proofs.clear();
+    if (this.refusing && this.stream.open) { this.response.end("event: ended\ndata: {}\n\n"); return; }
     if (!this.response.writableEnded) this.response.end();
   }
   /** Rooms joined and not yet left. */
@@ -216,12 +226,17 @@ export type LiveRooms<K, V extends LiveViewer> = {
 };
 
 /** `minIntervalMs`: a busy room says `change` at most this often — the first at once, the latest after. */
-export type LiveRoomOptions = { bus?: LiveBus | null; safetyNetMs?: number; minIntervalMs?: number };
+export type LiveRoomOptions = { bus?: LiveBus | null; safetyNetMs?: number; minIntervalMs?: number;
+  /** A room whose read is costly reads at most once per this window after a signal; every viewer is still re-proved
+   * the moment a signal arrives (and again at the read). */
+  readSettleMs?: number;
+  /** Told when a room's last viewer has left and the room is gone (state kept per room can go with it). */
+  onEmpty?: (key: unknown) => void };
 
 const PRESENCE_SETTLE_MS = 150;
 
 type Room<V> = { viewers: Map<V, () => void>; last: string | null; timer: NodeJS.Timeout; settling: NodeJS.Timeout | null; retry: NodeJS.Timeout | null;
-  saidAt: number; holding: NodeJS.Timeout | null; revision: string | null };
+  saidAt: number; holding: NodeJS.Timeout | null; revision: string | null; reading: NodeJS.Timeout | null };
 
 /**
  * Rooms of open pages that hear the bus. `presence` says who else is here, as
@@ -235,6 +250,7 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
   const bus = options.bus ?? null;
   const safetyNetMs = options.safetyNetMs ?? SAFETY_NET_MS;
   const minIntervalMs = options.minIntervalMs ?? 0;
+  const readSettleMs = options.readSettleMs ?? 0;
   const rooms = new Map<K, Room<V>>();
   let unsubscribe: (() => void) | null = null;
 
@@ -261,7 +277,9 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
     if (room.settling !== null) clearTimeout(room.settling);
     if (room.retry !== null) clearTimeout(room.retry);
     if (room.holding !== null) clearTimeout(room.holding);
+    if (room.reading !== null) clearTimeout(room.reading);
     rooms.delete(key);
+    options.onEmpty?.(key);
     if (rooms.size === 0 && unsubscribe !== null) { unsubscribe(); unsubscribe = null; }
   };
   /** The final delivery boundary, including queued frames and sends that may overflow. */
@@ -273,7 +291,7 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
     if (!valid || event === "gone") {
       // A failed proof may send only the generic departure, never the pending room data.
       try { viewer.connection.send(viewer.room, "gone"); }
-      finally { leave(key, viewer); }
+      finally { if (valid) leave(key, viewer); else viewer.connection.refuse(() => leave(key, viewer)); }
       return false;
     }
     if (event !== undefined) viewer.connection.send(viewer.room, event, data);
@@ -304,7 +322,14 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
     for (const viewer of [...room.viewers.keys()]) deliver(key, room, viewer, "change", { at: room.last, revision: room.revision });
   };
   const heard = (change: LiveChange): void => {
-    for (const [key, room] of [...rooms]) refresh(key, room, change.revision);
+    for (const [key, room] of [...rooms]) {
+      if (readSettleMs <= 0) { refresh(key, room, change.revision); continue; }
+      // Re-prove now; read once the burst settles.
+      for (const viewer of [...room.viewers.keys()]) deliver(key, room, viewer);
+      if (rooms.get(key) !== room || room.reading !== null) continue;
+      room.reading = setTimeout(() => { room.reading = null; if (rooms.get(key) === room) refresh(key, room, null); }, readSettleMs);
+      room.reading.unref();
+    }
   };
 
   return {
@@ -313,7 +338,7 @@ export function createLiveRooms<K, V extends LiveViewer>(fingerprint: (key: K) =
       if (room === undefined) {
         let last: string | null = null;
         try { last = fingerprint(key); } catch { /* the next signal or the safety net reads it */ }
-        const created: Room<V> = { viewers: new Map(), last, timer: setInterval(() => refresh(key, created, null), safetyNetMs), settling: null, retry: null, saidAt: 0, holding: null, revision: null };
+        const created: Room<V> = { viewers: new Map(), last, timer: setInterval(() => refresh(key, created, null), safetyNetMs), settling: null, retry: null, saidAt: 0, holding: null, revision: null, reading: null };
         created.timer.unref();
         room = created;
         rooms.set(key, room);
