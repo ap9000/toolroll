@@ -948,8 +948,8 @@ export function sandboxedSpawn(file: string, args: readonly string[], fence: rea
 }
 
 /**
- * What each agent's fence gives it, by permission mode: the one table README's "What an agent can reach" shows
- * (fenceSummaryMarkdown; a test holds them equal).
+ * What each agent's fence gives it, by permission mode: the one table "What an agent can reach" in
+ * docs/guide/security.md shows (fenceSummaryMarkdown; a test holds them equal).
  */
 export const FENCE_SUMMARY: readonly { agent: string; auto: string; full: string }[] = [
   {
@@ -964,7 +964,7 @@ export const FENCE_SUMMARY: readonly { agent: string; auto: string; full: string
   },
 ];
 
-/** FENCE_SUMMARY as README's markdown table. */
+/** FENCE_SUMMARY as the security guide's markdown table. */
 export function fenceSummaryMarkdown(): string {
   return ["| | Auto | Full access |", "|---|---|---|", ...FENCE_SUMMARY.map(row => `| ${row.agent} | ${row.auto} | ${row.full} |`)].join("\n");
 }

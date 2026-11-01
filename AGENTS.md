@@ -69,3 +69,7 @@ Run this list yourself before committing anything that touches approvals, creden
 - Prefer the latest verified candidate. Never bypass signing, approvals, process-exit checks or the passing native machine check to install a newer build. Report a blocked update plainly instead of claiming the installation is current.
 - Use realistic sample feedback in user-facing screenshots. Keep long-content coverage, label synthetic journeys clearly, and do not present test filler as actual agent output.
 - Before the first dispatch, verify the task branch starts at the intended verified base and required input documents are committed or supplied through a durable supported handoff. Toolroll itself moves a task branch to current main before an attempt only when it has no commits or changes of its own (fast-forward only, `git reset --keep`, recorded in `branch_base_move`); whole-task evidence then runs from the first base recorded after that move, and the task page shows the base. Never move a branch that has commits of its own by hand to shrink a review diff: its whole-task evidence stays pinned to its original base. Preserve that attempt and use an explicitly scoped corrective task with the right starting branch when needed.
+
+## Operating Toolroll
+
+This file is for changing Toolroll. To drive it as an agent (contract, skills, MCP, exit codes), see [docs/agents.md](docs/agents.md).
