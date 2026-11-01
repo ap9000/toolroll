@@ -8,6 +8,7 @@ import { configPath, loadRepos } from './repos.js';
 import { authenticateCoordinator } from './coordinator.js';
 import { canonicalProject } from './project.js';
 import { envelopeJson } from './envelope.js';
+import { projectOutcomes } from './project-outcomes.js';
 import type { Store } from './store.js';
 
 export type ProjectProfile = { version: 1; repo: string; tokenFile: string | null };
@@ -25,12 +26,25 @@ export function readProjectProfile(databaseFile: string): ProjectProfile | null 
   return { version: 1, repo: p['repo'], tokenFile: p['tokenFile'] as string | null };
 }
 
+function scopedCredentialRefusal(store: Store, tokenFile: string, repo: string): { reason: string; message: string } | null {
+  let token: string;
+  try {
+    const info = statSync(tokenFile);
+    if (!info.isFile() || info.size > 16_384) return { reason: 'unauthenticated', message: 'The scoped credential file is unavailable.' };
+    token = readFileSync(tokenFile, 'utf8').trim();
+  } catch { return { reason: 'unauthenticated', message: 'The scoped credential file is unavailable.' }; }
+  const auth = authenticateCoordinator(store, token);
+  if (!auth.ok) return { reason: 'unauthenticated', message: 'The scoped credential is invalid or revoked.' };
+  if (!auth.who.repos.includes(repo)) return { reason: 'not-found', message: 'That project is unavailable to this credential.' };
+  return null;
+}
+
 export async function runProjectCommand(positional: readonly string[], flags: Map<string, string | true>, context: {
-  store: Store; databaseFile: string; write: (line: string) => void; json: boolean; registryFile?: string;
+  store: Store; databaseFile: string; write: (line: string) => void; json: boolean; registryFile?: string; now?: Date;
 }): Promise<number> {
   const action = positional[0] ?? 'show', command = `project ${action}`;
   const fail = (reason: string, message: string) => { context.write(context.json ? envelopeJson({ ok: false, command, reason, message }) : message); return reason === 'usage' ? 2 : 3; };
-  if (!['use', 'show'].includes(action) || positional.length > (action === 'use' ? 2 : 1)) return fail('usage', 'Use project use <saved checkout path> [--token-file PATH], or project show.');
+  if (!['use', 'show', 'activity'].includes(action) || positional.length > (action === 'use' ? 2 : 1)) return fail('usage', 'Use project use <saved checkout path> [--token-file PATH], project show, or project activity [--json].');
   const allowed = new Set(['db', 'json', ...(action === 'use' ? ['token-file'] : [])]);
   for (const name of flags.keys()) if (!allowed.has(name)) return fail('usage', `--${name} is not a project ${action} option.`);
   const registry = await loadRepos(context.registryFile ?? configPath(process.env, homedir()));
@@ -46,20 +60,24 @@ export async function runProjectCommand(positional: readonly string[], flags: Ma
     const credential = flags.get('token-file');
     if (credential !== undefined && (typeof credential !== 'string' || !credential || /[\x00-\x1f]/.test(credential))) return fail('usage', '--token-file requires a path.');
     const tokenFile = typeof credential === 'string' ? resolve(credential) : null;
-    if (tokenFile !== null) {
-      let token: string;
-      try { const info = statSync(tokenFile); if (!info.isFile() || info.size > 16_384) return fail('unauthenticated', 'The scoped credential file is unavailable.'); token = readFileSync(tokenFile, 'utf8').trim(); }
-      catch { return fail('unauthenticated', 'The scoped credential file is unavailable.'); }
-      const auth = authenticateCoordinator(context.store, token);
-      if (!auth.ok) return fail('unauthenticated', 'The scoped credential is invalid or revoked.');
-      if (!auth.who.repos.includes(repo)) return fail('not-found', 'That project is unavailable to this credential.');
-    }
+    const refused = tokenFile === null ? null : scopedCredentialRefusal(context.store, tokenFile, repo);
+    if (refused) return fail(refused.reason, refused.message);
     profile = { version: 1, repo, tokenFile };
     const file = projectProfilePath(context.databaseFile), temp = `${file}.${randomBytes(6).toString('hex')}.tmp`;
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(temp, `${JSON.stringify(profile, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
     renameSync(temp, file);
   } else profile = readProjectProfile(context.databaseFile);
+  if (action === 'activity') {
+    if (profile === null || !repos.includes(profile.repo)) return fail('not-found', 'Select a saved project with project use first.');
+    const refused = profile.tokenFile === null ? null : scopedCredentialRefusal(context.store, profile.tokenFile, profile.repo);
+    if (refused) return fail(refused.reason, refused.message);
+    // Like assignment brief, an uncredentialed local database read has the
+    // local operator's access. A saved scoped credential is always re-proved.
+    const result = projectOutcomes(context.store, profile.repo, context.now ?? new Date(), { principal: 'operator', repos: [profile.repo] });
+    context.write(context.json ? envelopeJson({ ok: true, command, result }) : JSON.stringify(result, null, 2));
+    return 0;
+  }
   const result = { profile, saved: profile !== null && repos.includes(profile.repo) };
   context.write(context.json ? envelopeJson({ ok: true, command, result }) : profile === null ? 'No project selected. Use project use <saved checkout path>.' : `${profile.repo}${result.saved ? '' : ' (no longer saved)'}\n${profile.tokenFile === null ? 'Uses your existing local sign-in for operator actions.' : `Scoped credential reference: ${profile.tokenFile}`}`);
   return 0;

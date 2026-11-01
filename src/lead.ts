@@ -242,7 +242,7 @@ function settleBy<T>(work: Promise<T>, ms: number): Promise<T | typeof LATE> {
   return Promise.race([work, late]).finally(() => clearTimeout(timer));
 }
 
-const READ_TOOLS = new Set(["get_brief", "get_project_context", "get_actions", "get_action_status", "get_skills", "get_acceptance_evidence", "recap", "list_repos", "list_tasks", "get_task", "get_result", "get_result_images", "get_controls", "get_agents", "get_project_knowledge", "get_task_conversation", "get_diff", "get_check_log", "get_project_tools", "get_flows", "get_flow_insights", "list_decisions", "get_decision", "queue"]);
+const READ_TOOLS = new Set(["get_brief", "get_project_context", "get_project_activity", "get_actions", "get_action_status", "get_skills", "get_acceptance_evidence", "recap", "list_repos", "list_tasks", "get_task", "get_result", "get_result_images", "get_controls", "get_agents", "get_project_knowledge", "get_task_conversation", "get_diff", "get_check_log", "get_project_tools", "get_flows", "get_flow_insights", "list_decisions", "get_decision", "queue"]);
 
 /** The last messages of the thread as provider-neutral history, newest kept first until the byte cap. */
 export function historyFor(store: Store, thread: number, queuedMessageId?: number, named = queuedMessageId !== undefined): LeadHistoryMessage[] {
