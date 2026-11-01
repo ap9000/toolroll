@@ -2,9 +2,9 @@
  *
  * The form is signed out, so it has no session CSRF token. Instead, the page that shows it sets a signed, HttpOnly,
  * SameSite=Strict cookie scoped to /signup; a browser never sends it on a post from another site. A post must carry
- * it, and a present Sec-Fetch-Site or Origin must name this console. Opaque `Origin: null` is not refused here: the
- * console's own pages are `Referrer-Policy: no-referrer`, so their same-origin form posts send exactly that, and the
- * cookie carries the proof. A refusal here never spends a setup-code try. */
+ * it, and its provenance must name this console: same-origin Fetch Metadata, or an Origin (or Referer) on an allowed
+ * host. Neither (`Origin: null`, nothing else) fails closed; the form's page is served `Referrer-Policy: same-origin`
+ * so its own post carries the real Origin. A refusal here never spends a setup-code try. */
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 
@@ -26,6 +26,7 @@ export function signupFromHere(request: IncomingMessage, allowedHost: (host: str
   const origin = request.headers.origin, referer = request.headers.referer;
   const named = typeof origin === "string" && origin !== "null" ? origin : typeof referer === "string" ? referer : null;
   if (named !== null && !allowedHost(named.replace(/^https?:\/\//, "").split("/")[0])) return false;
+  if (site !== "same-origin" && named === null) return false;
   const held = new RegExp(`(?:^|;\\s*)${SIGNUP_COOKIE}=([^;.]*)\\.([^;]*)`).exec(request.headers.cookie ?? "");
   if (held === null || !NONCE.test(held[1]!)) return false;
   const given = Buffer.from(held[2]!, "base64url"), wanted = macOf(held[1]!);

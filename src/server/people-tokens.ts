@@ -317,6 +317,8 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
     if (options.setupCode !== undefined && store.listApprovers().length === 0) {
       // The form's same-site proof (signup-gate.ts): a post without it never reaches the setup code.
       if (runtime.setupAttemptsLeft > 0) response.setHeader("Set-Cookie", signupCookie(cookieSecure));
+      // Its own post then carries this console's Origin (the console's default no-referrer sends `null`).
+      response.setHeader("Referrer-Policy", "same-origin");
       return page(response, 200, signupPage(null, runtime.setupAttemptsLeft));
     }
     return page(response, 200, loginPage(null, loginReturn(url.searchParams.get("return")), ssoOffer()));
@@ -434,6 +436,8 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
 
   async function signupSend(ctx: EdgeContext): Promise<void> {
     const { request, response } = ctx;
+    // A re-shown form posts again: its Origin must name this console too (signup-gate.ts).
+    response.setHeader("Referrer-Policy", "same-origin");
     // Only while the table is empty, only with the printed code, only
     // five tries: the bootstrap door underneath is atomic, so two first
     // visitors serialize to one owner.
