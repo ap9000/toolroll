@@ -453,7 +453,7 @@ await journey("console", SCRIPTED, "Spend: API dollars, plan usage and unknown c
   await page.locator('.spend-figure[data-amount-kind="api"]').waitFor({ timeout: 15_000 });
   if (await page.locator(".spend-figure").count() !== 3) throw new Error("the Spend page doesn't show its three figures");
   await page.goto(`${base}/settings`);
-  await Promise.all([page.waitForNavigation(), page.locator('.settings-tiles a[href="/settings/spend"]').click()]);
+  await Promise.all([page.waitForNavigation(), page.locator('nav[aria-label="Settings sections"] a[href="/settings/spend"]').click()]);
   const add = page.locator("details", { hasText: "Add a limit" });
   if (!(await add.evaluate(one => one.open))) await add.locator("summary").click();
   await add.locator('select[name="target"]').selectOption({ label: "Everything" });
