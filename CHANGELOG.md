@@ -13,6 +13,13 @@
   password, and is logged; approved work keeps its models. "Switch to it"
   appears when a newer model ships. A fresh install now starts on Sized by
   job instead of needing a terminal command.
+- **A safer first-account page.** The setup code page now locks after five
+  wrong tries (with how to get a new code), and only accepts submissions from
+  the page itself.
+- **No more dead ends on first run.** "Connect a builder" opens the steps to
+  do it, the setup checklist knows when a builder is connected, model names
+  read plainly, and `toolroll up` prints the exact command to read your
+  sign-in details.
 - **The console answers right away.** Projects are checked in the
   background; a project only becomes visible once its folder is confirmed.
 - **CI** jobs now have time limits.
