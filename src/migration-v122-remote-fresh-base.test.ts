@@ -35,9 +35,9 @@ test.each([121, -121])("v%s: a project's recorded remote and fresh base's branch
 
   expect(updateSafeSchema(121)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(122);
-  expect(SCHEMA_VERSION).toBe(137);
+  expect(SCHEMA_VERSION).toBe(143);
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(137);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(143);
   expect(store.handle.prepare("PRAGMA table_info(project)").all().map(row => row["name"])).toContain("remote_url");
   expect(store.projectRemote("/projects/shop")).toBeNull();
   for (const table of V122_TABLES) expect(store.handle.prepare("SELECT count(*) AS n FROM " + table).get()?.["n"]).toBe(0);
@@ -58,7 +58,7 @@ test.each([121, -121])("v%s: a project's recorded remote and fresh base's branch
   } finally { after.close(); }
   // Opening again changes nothing (the file is current), and an owner's admission records the remote.
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(137);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(143);
   store.upsertProject("/projects/shop", "shop", now, { remoteUrl: "https://example.com/shop.git" });
   expect(store.projectRemote("/projects/shop")).toBe("https://example.com/shop.git");
   store.recordBranchBaseMove(ref, "toolroll/t-1", "a".repeat(40), "b".repeat(40), now);

@@ -9,20 +9,20 @@ import { type DispatchDiagnosis } from "../dispatch.js";
 import { type FirstRunStep } from "../first-run.js";
 import { type Gap } from "../gaps.js";
 import { limitsHtml } from "../limits-ui.js";
-import { type Ask,ASK_LABEL,ASKS } from "../needs-you.js";
+import { type Ask,ASK_LABEL,ASKS,START_BUILDER_COMMAND } from "../needs-you.js";
 import { type ListOutcome } from "../onboard.js";
 import { type parseBaseTreeSnapshot } from "../peek.js";
 import { projectName } from "../project.js";
 import { type CriterionMatrixRow } from "../proof.js";
 import { type QualityMode } from "../quality.js";
 import { type Runner,isAlive as runnerAlive } from "../runner.js";
+import { agentModelName,modelName } from "../model-names.js";
 import { type Scope,type UnattendedPermissionMode } from "../scope.js";
 import { type Decision,type Incident,type RepairChainRow,type Run,type Store,type Task,type TaskState,type WorktreeRow } from "../store.js";
 import { runCostWords,spendLine,tally } from "../summary.js";
 import { type WorkIndexGroup,type WorkIndexItem,type WorkIndexPage } from "../work-index.js";
 import { WORK_VIEWS,type WorkFacts,type WorkStatus,type WorkView } from "../workspace-ui.js";
 import { createHash } from "node:crypto";
-import { closeSync,constants as fsConstants,lstatSync,openSync,readSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { buildsViews,CHEVRON_ICON,type Chrome,consoleSpend,FOLDER_PATHS,GRIP_HANDLE,isOverdue,projectChip,relativeAge,safePrUrl,screen,type Screen,sentenceCase,strokeIcon,TO_FRONT_ICON,when,whenTime } from "./chrome.js";
@@ -173,11 +173,12 @@ export function inboxPage(chrome: Chrome, data: {
 
   // The first-run steps, until the first Ready result: each is done or
   // shows the one action that does it.
+  const steps = data.wizard;
   const wizard =
-    data.wizard === null
+    steps === null
       ? null
       : html`<div class="card" data-first-run><p><strong>Get to your first result</strong></p>${joinHtml(
-          data.wizard.map(
+          steps.map(
             step =>
               html`<p class="row" data-step="${step.key}"><span class="mono" aria-hidden="true">${step.done ? "✓" : "○"}</span> <strong>${step.title}</strong>${
                 step.checking ? html` <span class="meta">checking…</span>` : step.action === null ? html` <span class="meta">done</span>`
@@ -256,6 +257,23 @@ export function inboxPage(chrome: Chrome, data: {
 }
 
 /** System: the machinery — workers, background service, workspaces. */
+/** Start a builder: the one command, as text to select (/start-builder, where every "Connect a builder" leads, and
+ * /system#builder). `project`: the open project's name, when the viewer may see it; `connected`: whether a builder
+ * that may build there is checking in (null: say nothing); `managed`: whether this person can start one themselves
+ * (registering a builder takes an instance operator), else who to ask. */
+export function startBuilderHtml(data: { heading: "h1" | "h2"; project: string | null; connected: boolean | null; managed: boolean }): Html {
+  const where = data.project === null ? null : html` to <strong>${data.project}</strong>`;
+  const state = data.connected === null ? null
+    : data.connected ? html`<p>A builder is connected${where}. Approved tasks there start on their own.</p>`
+    : html`<p><strong>No builder is connected</strong>${where}. Tasks wait until one is.</p>`;
+  const title = data.heading === "h1" ? html`<h1 id="builder-heading">Start a builder</h1>` : html`<h2 id="builder-heading">Start a builder</h2>`;
+  return html`<section id="builder" aria-labelledby="builder-heading">${title}<div class="card">${state}<p>On the computer where ${data.project ?? "the project"} lives, open the project's folder in a terminal and run:</p><p><code class="start-builder-command" style="user-select:all">${START_BUILDER_COMMAND}</code></p>${
+    data.managed
+      ? html`<p class="meta">Keep it running. Approved tasks start on their own. The console alone (<code>toolroll serve</code>) doesn't build.</p>`
+      : html`<p class="meta">Starting a builder takes someone who manages this Toolroll. Ask them to run it there; your tasks start on their own once it connects.</p>`
+  }</div></section>`;
+}
+
 export function systemPage(chrome: Chrome, data: {
   agents: {
     phase: "plan" | "build" | "repair" | "review";
@@ -316,18 +334,17 @@ export function systemPage(chrome: Chrome, data: {
             ? html`set for the whole installation${one.setBy === null ? null : html` by ${one.setBy}`}`
             : html`the default — nothing configured`;
       const dollars = one.provider === "claude" ? null : html` · <span title="this provider reports tokens, not dollars — its runs land as unmeasured spend">no dollar costs</span>`;
-      return html`<p class="row"><span class="mono">${one.phase}</span> <strong>${one.provider ?? ""}</strong>${one.model === null || one.model === undefined ? html` <span class="meta">(its default model)</span>` : html` · <span class="mono">${one.model}</span>`}<span class="right meta">${who}${dollars}</span></p><p class="meta" style="margin-top:0">${PHASE_SAID[one.phase] ?? ""}</p>`;
+      return html`<p class="row"><span class="mono">${one.phase}</span> <strong>${one.provider === null || one.provider === undefined ? "" : agentModelName(one.provider, one.model ?? null)}</strong>${one.model === null || one.model === undefined ? html` <span class="meta">(its default model)</span>` : null}<span class="right meta">${who}${dollars}</span></p><p class="meta" style="margin-top:0">${PHASE_SAID[one.phase] ?? ""}</p>`;
     }), "\n");
   const agentsCard =
-    html`<h2>Agents</h2><p class="meta">Which AI provider runs each phase — changed from the terminal with your credentials (<code>toolroll config</code>), never by a browser click</p><div class="card">${agentLines}<p class="meta">Repair always stays on the provider that built — only its model can differ. A schedule's task filed under an approval moved from a routine is pinned to the agents approved then.</p></div>`;
+    html`<h2>Agents</h2><p class="meta">Which AI provider runs each phase. An instance operator changes them in <a href="/settings/models">Settings → Models</a> with their password, or with <code>toolroll config</code>.</p><div class="card">${agentLines}<p class="meta">Repair always stays on the provider that built — only its model can differ. A schedule's task filed under an approval moved from a routine is pinned to the agents approved then.</p></div>`;
 
   return screen("system", joinHtml([
     html`<h1>System</h1>`,
     html`<p class="hint">builders execute tasks in isolated temporary copies of each project</p>`,
     agentsCard,
-    cards.length === 0
-      ? html`<p class="meta">No builder is connected yet. On the machine where the project lives, open that folder and run <code>toolroll up</code>.</p>`
-      : html`<div class="cards">${cards}</div>`,
+    cards.length === 0 ? null : html`<div class="cards">${cards}</div>`,
+    startBuilderHtml({ heading: "h2", project: null, connected: data.runners.some(one => one.retiredAt === null && runnerAlive(one, data.now)) ? null : false, managed: true }),
     data.outboxPending > 0 ? html`<p class="meta">Notifications: ${data.outboxPending} pending delivery</p>` : null,
     (data.externalWork ?? []).length === 0
       ? null
@@ -541,11 +558,11 @@ export function boardBody(
       ? null
       : html`<span class="steps" role="img" aria-label="${`step ${step + 1} of ${BUILD_STEPS.length}: ${BUILD_STEPS[step]}`}">${BUILD_STEPS.map((_, index) => html`<i class="${index < step ? "on" : index === step ? "now" : ""}"></i>`)}</span>`;
     // Who, which model and which branch, as one muted line: words in Geist, the model and branch in mono.
-    const model = claim.model === null ? null : `${claim.provider !== null && claim.provider !== "claude" ? `${claim.provider} · ` : ""}${claim.model}`;
+    const model = claim.model === null ? null : claim.provider === null ? modelName(null, claim.model) : agentModelName(claim.provider, claim.model);
     const branch = claim.branch === null ? null : `${claim.branch}${workspace === null ? "" : ` · ${workspace}`}`;
     const who = joinHtml([
       html`<span>${claim.runner}</span>`,
-      model === null ? null : html`<span class="mono">${model}</span>`,
+      model === null ? null : html`<span>${model}</span>`,
       branch === null ? null : html`<span class="mono">${branch}</span>`,
     ].filter((one): one is Html => one !== null), html`<span aria-hidden="true"> · </span>`);
     return html`<a class="lane-card building" href="${card.href}" data-vt="${card.taskId}"><span class="t"><span class="dot dot-ok pulse"></span>${card.title}</span>${steps}<span class="live-line"><span class="stage">${live}</span>${tickingClock(claim.claimedAt, data.now)}</span><span class="id">${card.taskId}</span><span class="who">${who}</span>${chips([
@@ -717,7 +734,7 @@ export function homePage(chrome: Chrome, data: {
       ? null
       : html`<h2>Building now</h2><p class="hint">live builds — this page refreshes itself every 10 seconds while anything runs</p><div class="cards">${data.building.map(
           claim =>
-            html`<a class="stat-card" href="${taskHref(claim.taskId)}" style="text-decoration:none"><span class="k"><span class="dot dot-ok pulse"></span>${claim.taskId}</span><span class="v">${claim.runner} · ${Math.max(1, Math.round((data.now.getTime() - new Date(claim.claimedAt).getTime()) / 60_000))}m elapsed${claim.model === null ? null : html` · ${claim.model}`}</span></a>`,
+            html`<a class="stat-card" href="${taskHref(claim.taskId)}" style="text-decoration:none"><span class="k"><span class="dot dot-ok pulse"></span>${claim.taskId}</span><span class="v">${claim.runner} · ${Math.max(1, Math.round((data.now.getTime() - new Date(claim.claimedAt).getTime()) / 60_000))}m elapsed${claim.model === null ? null : html` · ${modelName(null, claim.model)}`}</span></a>`,
         )}</div>`;
 
   // THE FLEET: runners by heartbeat age, worktrees by lease state, the watch.
@@ -1152,7 +1169,7 @@ export function portfolioOverview(data: {
   // ---- running: current live claims, project chips on ----
   const liveRows = joinHtml(data.live.map(
     one =>
-      html`<p class="row"><a href="${taskHref(one.taskId)}">${one.taskId}</a>${projectChip(one.repo)} <span class="badge badge-running">Running</span> <span class="mono meta">${one.runner}${one.model === null ? null : html` · ${one.model}`} · <time data-elapsed-since="${one.claimedAt}"></time></span></p>`,
+      html`<p class="row"><a href="${taskHref(one.taskId)}">${one.taskId}</a>${projectChip(one.repo)} <span class="badge badge-running">Running</span> <span class="meta"><span class="mono">${one.runner}</span>${one.model === null ? null : html` · ${modelName(null, one.model)}`} · <time data-elapsed-since="${one.claimedAt}"></time></span></p>`,
   ), "\n");
 
   // ---- the ledger: terminal runs started in the window, one chip each ----
@@ -1167,7 +1184,7 @@ export function portfolioOverview(data: {
   };
   const ledgerRows = joinHtml(data.ledger.map(
     one =>
-      html`<p class="row"><a href="/r/${one.runId}">${one.title}</a>${projectChip(one.repo)} <span class="badge ${chipClass(one.outcome)}">${sentenceCase(one.outcome)}</span> ${one.role === "scout" ? html`<a class="badge" href="${taskHref(one.taskId)}#report">Report</a> ` : null}<span class="mono meta">${one.provider === null ? "" : one.provider}${one.model === null ? null : html` · ${one.model}`}${one.ranMinutes === null ? null : html` · ${one.ranMinutes}m`} · ${runCostWords({ authMode: one.authMode, costUsd: one.costUsd, tokensIn: null, tokensOut: null })}${prLink(one)}</span></p>`,
+      html`<p class="row"><a href="/r/${one.runId}">${one.title}</a>${projectChip(one.repo)} <span class="badge ${chipClass(one.outcome)}">${sentenceCase(one.outcome)}</span> ${one.role === "scout" ? html`<a class="badge" href="${taskHref(one.taskId)}#report">Report</a> ` : null}<span class="meta">${one.provider === null ? (one.model === null ? "" : modelName(null, one.model)) : agentModelName(one.provider, one.model)}${one.ranMinutes === null ? null : html` · ${one.ranMinutes}m`} · ${runCostWords({ authMode: one.authMode, costUsd: one.costUsd, tokensIn: null, tokensOut: null })}${prLink(one)}</span></p>`,
   ), "\n");
 
   return joinHtml([
@@ -1232,55 +1249,6 @@ export function githubIdentityOf(remoteUrl: string): string | null {
   return null;
 }
 
-/**
- * The `origin` remote's url from a repository's OWN .git/config. BOUNDED
- * I/O by construction (ghlist review, finding 1): the final component may
- * not be a symlink (O_NOFOLLOW + lstat), must be a REGULAR file under a
- * size cap, and at most 64 KiB are ever read — a sparse monster or a fifo
- * planted as a "config" reads as null, never as a hang. Parsed LINE BY
- * LINE with real section tracking (finding 2): a `[remote "origin"]`
- * embedded inside some other value never opens the section. null when
- * unreadable or origin-less; a worktree-style `.git` FILE (gitdir pointer)
- * reads null too, which is honest — its identity lives elsewhere. The
- * answer is ADVISORY metadata for offering a button: the /projects/open
- * road re-proves path, ceiling, and git-ness before anything mutates, and
- * a config that lies about its origin can only mislabel a repository the
- * operator was already allowed to open.
- */
-export function originUrlOf(repoPath: string): string | null {
-  const file = join(repoPath, ".git", "config");
-  let fd: number | null = null;
-  try {
-    const stat = lstatSync(file);
-    if (!stat.isFile() || stat.size > 1024 * 1024) return null;
-    fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-    const buffer = Buffer.alloc(64 * 1024);
-    const read = readSync(fd, buffer, 0, buffer.length, 0);
-    const config = buffer.toString("utf8", 0, read);
-    let inOrigin = false;
-    for (const line of config.split("\n")) {
-      if (/^\s*\[/.test(line)) {
-        inOrigin = /^\s*\[remote "origin"\]\s*$/.test(line);
-        continue;
-      }
-      if (!inOrigin) continue;
-      const url = /^\s*url\s*=\s*(.+)$/.exec(line)?.[1];
-      if (url !== undefined) return url.trim();
-    }
-    return null;
-  } catch {
-    return null;
-  } finally {
-    if (fd !== null) {
-      try {
-        closeSync(fd);
-      } catch {
-        // already closed
-      }
-    }
-  }
-}
-
 /** The GitHub listing page: the account's repositories with ONE honest
  * action each. Names, descriptions, and paths are gh/filesystem DATA —
  * escaped at the sink like everything else. */
@@ -1295,6 +1263,8 @@ export function githubReposPage(
     csrf: string;
     cloneReady: boolean;
     openProject: string | null;
+    /** A projects folder didn't answer in time: local copies weren't matched this time. */
+    localUnanswered?: boolean;
   },
 ): Screen {
   const openForm = (path: string, label: string): Html =>
@@ -1333,6 +1303,7 @@ export function githubReposPage(
   return screen("projects", joinHtml([
     html`<h1>Your GitHub repositories</h1>`,
     html`<p class="meta">Repositories available to the GitHub account signed in on this machine — open one you already have, or clone a new one after a quick preview.</p>`,
+    data.localUnanswered === true ? html`<p class="meta">Your projects folder didn't answer, so copies already on this machine aren't matched yet. Try again in a moment.</p>` : null,
     rows,
     data.listed === null ? null : list("Refresh list"),
     html`<p class="row" style="margin-top:.6rem"><a class="badge" href="/projects">← back to projects</a></p>`,
@@ -1613,7 +1584,7 @@ export function fleetBody(
           )}<p class="meta">${runnerAlive(runner, new Date()) ? "alive" : "quiet"} · ${live.length}/${runner.capacity} building</p>`;
     const buildingCards = joinHtml(live.map(
       claim =>
-        html`<div class="lane-card" data-taken="1"><p class="row"><span class="dot dot-ok pulse"></span> ${claim.taskId}</p><p class="row meta">building${chip(claim.repo ?? null)}${claim.model === null ? null : html` · ${claim.model}`} · ${Math.max(1, Math.round((Date.now() - new Date(claim.claimedAt).getTime()) / 60_000))}m</p></div>`,
+        html`<div class="lane-card" data-taken="1"><p class="row"><span class="dot dot-ok pulse"></span> ${claim.taskId}</p><p class="row meta">building${chip(claim.repo ?? null)}${claim.model === null ? null : html` · ${modelName(null, claim.model)}`} · ${Math.max(1, Math.round((Date.now() - new Date(claim.claimedAt).getTime()) / 60_000))}m</p></div>`,
     ), "\n");
     const queuedCards = joinHtml(own.map(queuedCardOf), "\n");
     const empty =

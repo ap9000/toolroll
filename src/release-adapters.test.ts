@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { installUpdateGate } from "./desktop-update-gate.js";
-import { BRANCH_GONE_LOOKS, BRANCH_GONE_PAUSE_MS, bumpFormula, cliRuntimes, deployedRuntime, gateStateOf, githubSlug, releaseAdapters, serviceRuntimes, stageGate, workflowRunsOnChange, type Exec, type ReleaseRepo, type ReleaseTools } from "./release-adapters.js";
+import { BRANCH_GONE_LOOKS, BRANCH_GONE_PAUSE_MS, bumpFormula, cliRuntimes, deployedRuntime, gateStateOf, githubSlug, releaseAdapters, releaseAdapters as quietAdapters, serviceRuntimes, stageGate, workflowRunsOnChange, type Exec, type ReleaseRepo, type ReleaseTools } from "./release-adapters.js";
 import { openStore, type Database } from "./store.js";
 import { fakePid } from "../test/fake-pid.js";
 
@@ -249,7 +249,7 @@ describe("the release adapters", () => {
     const run: Exec = async (command, args) => {
       calls.push([command, ...args]);
       const joined = args.join(" ");
-      if (joined.includes("/pulls/170/merge")) return { code: 0, stdout: JSON.stringify({ sha: "m".repeat(40), merged: true }), stderr: "" };
+      if (joined.includes("/pulls/170/merge")) return { code: 0, stdout: JSON.stringify({ sha: "b".repeat(40), merged: true }), stderr: "" };
       // Which workflow each suite is a run of (the CI reader asks): none here.
       if (joined.includes("/actions/runs")) return { code: 0, stdout: "", stderr: "" };
       if (joined.includes("check-runs")) return { code: 0, stdout: `{"id":9,"name":"x","status":"completed","conclusion":"success","app":"github-actions"}\n{"id":3,"name":"x","status":"completed","conclusion":"failure","app":null}\n`, stderr: "" };
@@ -257,7 +257,7 @@ describe("the release adapters", () => {
       return { code: 1, stdout: "", stderr: "unexpected" };
     };
     const adapters = releaseAdapters({ checkout: "/rv", run, tools: TOOLS });
-    expect(await adapters.github.merge("ap9000/toolroll", 170, SHA)).toBe("m".repeat(40));
+    expect(await adapters.github.merge("ap9000/toolroll", 170, SHA)).toBe("b".repeat(40));
     expect(calls[0]).toEqual([TOOLS.gh, "api", "-X", "PUT", "repos/ap9000/toolroll/pulls/170/merge", "-f", "merge_method=squash", "-f", `sha=${SHA}`]);
     expect((await adapters.github.checks("ap9000/toolroll", SHA)).map(one => [one.conclusion, one.app])).toEqual([["failure", null], ["success", "github-actions"]]);
     expect(await adapters.github.tag("ap9000/toolroll", "v0.9.52")).toBeNull();
@@ -356,6 +356,8 @@ describe("the release adapters", () => {
   });
 
   test("a tap whose workflows can't be listed stops; one it can't read counts as checked", async () => {
+    // A 5xx is asked again (release-net.ts) before it stops; no real pauses here.
+    const releaseAdapters = (options: Parameters<typeof quietAdapters>[0]) => quietAdapters({ ...options, sleep: async () => {} });
     const unlisted: Exec = async (_command, args) => args.includes("repos/ap9000/homebrew-toolroll") ? { code: 0, stderr: "", stdout: "main\n" } : { code: 1, stderr: "HTTP 502", stdout: "" };
     await expect(releaseAdapters({ checkout: "/rv", run: unlisted }).homebrew.checked(SHA)).rejects.toThrow(/listing .*workflows at/);
     const unreadable: Exec = async (_command, args) => {
@@ -407,3 +409,53 @@ function projectAt(stage: string): { project: string; head: string } {
   git("commit", "-q", "-m", "approved");
   return { project, head: git("rev-parse", "HEAD") };
 }
+
+describe("the tap's formula version (pipeline-speed.md, P1: an older release never overwrites a newer formula)", () => {
+  test("reads the version the formula's tarball names, and orders versions numerically", async () => {
+    const { formulaVersion, versionAfter } = await import("./release-adapters.js");
+    expect(formulaVersion('class Toolroll < Formula\n  url "https://registry.npmjs.org/toolroll/-/toolroll-0.9.78.tgz"\n  sha256 "' + "a".repeat(64) + '"\n')).toBe("0.9.78");
+    expect(formulaVersion("no url here")).toBeNull();
+    expect(versionAfter("0.9.10", "0.9.9")).toBe(true);
+    expect(versionAfter("0.9.9", "0.9.10")).toBe(false);
+    expect(versionAfter("0.9.77", "0.9.77")).toBe(false);
+    expect(versionAfter("1.0.0", "0.99.99")).toBe(true);
+  });
+});
+
+describe("security scan: only the tap's own branch is a Homebrew change", () => {
+  test("a fork's pull request of the same branch name never counts", async () => {
+    const { tapOwnHead } = await import("./release-adapters.js");
+    const own = { isCrossRepository: false, headRepository: { name: "homebrew-toolroll" }, headRepositoryOwner: { login: "ap9000" } };
+    expect(tapOwnHead(own, "ap9000/homebrew-toolroll")).toBe(true);
+    expect(tapOwnHead({ ...own, isCrossRepository: true }, "ap9000/homebrew-toolroll")).toBe(false);
+    expect(tapOwnHead({ ...own, headRepositoryOwner: { login: "mallory" } }, "ap9000/homebrew-toolroll")).toBe(false);
+    expect(tapOwnHead({ ...own, headRepository: { name: "homebrew-other" } }, "ap9000/homebrew-toolroll")).toBe(false);
+    expect(tapOwnHead({ number: 1 }, "ap9000/homebrew-toolroll")).toBe(false);
+  });
+});
+
+describe("security scan: only exactly the formula bump is ever merged into the tap", () => {
+  const base = "b".repeat(40), head = "c".repeat(40), sha256 = "d".repeat(64);
+  const formula = "Formula/toolroll.rb";
+  const expected = `url "https://registry.npmjs.org/toolroll/-/toolroll-0.9.78.tgz"\nsha256 "${sha256}"\n`;
+  const view = { number: 12, headRefOid: head, headRefName: "toolroll-0.9.78", baseRefName: "main", state: "OPEN", isCrossRepository: false, headRepository: { name: "homebrew-toolroll" }, headRepositoryOwner: { login: "ap9000" } };
+  const compare = { status: "ahead", ahead_by: 1, behind_by: 0, merge_base_commit: { sha: base }, files: [{ filename: formula, status: "modified" }] };
+  const input = { tap: "ap9000/homebrew-toolroll", pr: 12, head, version: "0.9.78", formula, defaultBranch: "main", baseHead: base, baseVersion: "0.9.77", view, compare, expected, atHead: expected, sha256 };
+
+  test.each([
+    ["exactly the bump", {}, null],
+    ["a newer version landed since the state check", { baseVersion: "0.9.79" }, /already names newer/],
+    ["an unreadable current formula version", { baseVersion: null }, /current version/],
+    ["a change that also touches another file", { compare: { ...compare, files: [...compare.files, { filename: ".github/workflows/x.yml", status: "added" }] } }, /changes more than/],
+    ["a branch with an extra commit", { compare: { ...compare, ahead_by: 2 } }, /exactly one commit/],
+    ["a branch not on the default branch's head", { compare: { ...compare, merge_base_commit: { sha: "e".repeat(40) } } }, /isn't on main's head/],
+    ["a pull request into another base", { view: { ...view, baseRefName: "release" } }, /merges into release/],
+    ["a fork's pull request", { view: { ...view, isCrossRepository: true } }, /isn't the tap's own/],
+    ["a moved head", { view: { ...view, headRefOid: "f".repeat(40) } }, /isn't the tap's own/],
+    ["a formula with another sha256", { atHead: expected.replace(sha256, "a".repeat(64)) }, /sha256/],
+  ] as const)("%s", async (_name, over, why) => {
+    const { tapChangeProblem } = await import("./release-adapters.js");
+    const problem = tapChangeProblem({ ...input, ...over } as typeof input);
+    if (why === null) expect(problem).toBeNull(); else expect(problem).toMatch(why);
+  });
+});

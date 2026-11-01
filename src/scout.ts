@@ -24,7 +24,7 @@ import { checkoutGit } from "./teardown-git.js";
 import { auditOf } from "./provider.js";
 import type { Store } from "./store.js";
 import { currentClaim, heartbeat } from "./claim.js";
-import { heartbeat as runnerHeartbeat } from "./runner.js";
+import { heartbeat as runnerHeartbeat, RUNNER_HEARTBEAT_MS } from "./runner.js";
 import { parseDecision, type ParsedDecision, type Problem } from "./decision.js";
 import { scoutHandbackSchema } from "./contracts/scout-report.js";
 import { parseReport, REPORT_IMAGE_FILE, REPORT_LIMITS, REPORT_VERSION, SCOUT_OUTPUT_JSON_SCHEMA, type ParsedReport, type ReportImage, type ReportProblem } from "./scout-report.js";
@@ -58,7 +58,7 @@ const GIT = "git";
 const AGENT_ENV_DENYLIST: readonly string[] = [...TELEGRAM_TOKEN_ENVS];
 const DEFAULT_SCOUT_TIMEOUT_MS = 20 * 60_000;
 const DEFAULT_SCOUT_TURNS = CLAUDE_LIMITS.maxTurns;
-const DEFAULT_PULSE_MS = 60_000;
+const DEFAULT_PULSE_MS = RUNNER_HEARTBEAT_MS;
 
 /** The scout's own headless browser: the pinned Playwright tool, saving its
  * screenshots straight into the run's image folder. */

@@ -38,6 +38,13 @@ export type ExecResult = {
    * returned — a transport exit alone never proves that.
    */
   containment?: ContainmentOutcome;
+  /** The signal that ended the process, when one did (its `code` then reads 1, as it always has): kept apart so a
+   * killed command is never mistaken for one that exited 1 on its own (release check 3261). Only the buffered
+   * process-group transport says. */
+  signal?: NodeJS.Signals | null;
+  /** This process (the plane) ended it with its hard stop (terminateLiveProviders: a worker shutting down), not
+   * anything the command or another process did. */
+  stoppedByPlane?: boolean;
 };
 
 export type ContainmentOutcome =
@@ -182,6 +189,8 @@ export type RunOptions = ProcessTreeObserver & {
 
 /** Live provider children, for the deterministic stop. Registered only when `processGroup` was set. */
 const liveProviders = new Set<import("node:child_process").ChildProcess>();
+/** Children this process's own hard stop ended: their results say so (`stoppedByPlane`). */
+const hardStopped = new WeakSet<import("node:child_process").ChildProcess>();
 
 /** Live children by owner tag (v52): the exact-attempt stop's handle. A
  * child is registered here beside liveProviders when its options named an
@@ -500,6 +509,7 @@ function killGroup(child: import("node:child_process").ChildProcess): void {
 export function terminateLiveProviders(): number {
   let terminated = 0;
   for (const child of liveProviders) {
+    hardStopped.add(child);
     killGroup(child);
     terminated += 1;
   }
@@ -715,7 +725,10 @@ export function run(file: string, args: readonly string[], options: RunOptions =
   return retryTransientSpawn(
     () =>
       new Promise<SpawnAttempt>(resolve => {
-        execFile(
+        // execFile's timeout sends SIGTERM and nothing more: a process that survives it (one that ignores or blocks
+        // it) never exits, and its caller would wait forever. SIGKILL follows a short grace later.
+        let hardKill: ReturnType<typeof setTimeout> | undefined;
+        const child = execFile(
           wrapped.file,
           wrapped.args,
           {
@@ -728,6 +741,7 @@ export function run(file: string, args: readonly string[], options: RunOptions =
             ...((env => env === undefined ? {} : { env }))(withSandboxEnv(childEnv, wrapped.env, (options.fence?.length ?? 0) > 0)),
           },
           (error, stdout, stderr) => {
+            if (hardKill !== undefined) clearTimeout(hardKill);
             if (error === null) {
               resolve({ result: { code: 0, stdout, stderr, timedOut: false, notFound: false }, transient: false });
               return;
@@ -738,9 +752,16 @@ export function run(file: string, args: readonly string[], options: RunOptions =
             });
           },
         );
+        if (timeoutMs > 0) {
+          hardKill = setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* gone */ } }, timeoutMs + TERM_GRACE_MS);
+          hardKill.unref?.();
+        }
       }),
   );
 }
+
+/** How long a timed-out plain command has to exit after SIGTERM before it is killed outright. */
+export const TERM_GRACE_MS = 2_000;
 
 /**
  * The buffered transport for process-group providers (claude): spawn
@@ -820,6 +841,7 @@ function runBufferedGroup(
 
     let settled = false;
     let transient = false;
+    let endSignal: NodeJS.Signals | null = null;
     const finish = (code: number | null): void => {
       if (settled) return;
       settled = true;
@@ -839,6 +861,8 @@ function runBufferedGroup(
             timedOut: timedOut && !overflowed,
             notFound,
             ...containmentOf(container, empty, attachFailure),
+            ...(endSignal === null ? {} : { signal: endSignal }),
+            ...(hardStopped.has(child) ? { stoppedByPlane: true } : {}),
           },
           transient,
         });
@@ -850,7 +874,7 @@ function runBufferedGroup(
       if (stderr === "") stderr = String(error);
       finish(null);
     });
-    child.on("close", code => finish(code));
+    child.on("close", (code, signal) => { endSignal = code === null ? signal ?? null : null; finish(code); });
     if (bag.stdin !== undefined && child.stdin !== null) {
       child.stdin.on("error", () => {
         inputFailed = true;
@@ -1970,6 +1994,11 @@ export function runClaudeStreamJsonl(
     let initLine: string | null = null;
     let initIdentityLine: string | null = null;
     let conflictingInitLine: string | null = null;
+    /** v140: the first init's model, and the first top-level init naming another (the parser reads them as a conflict:
+     * unknown, never one of them). Kept even within one session id. */
+    let initModel: string | null = null;
+    let initModelLine: string | null = null;
+    let modelConflictLine: string | null = null;
     let initSessionId: string | null = null;
     let resultLine: string | null = null;
     let resultOverflowed = false;
@@ -2064,6 +2093,11 @@ export function runClaudeStreamJsonl(
       // for themselves.
       if (type === "system" && String(event["subtype"] ?? "") === "init" && topLevelEvent(event)) {
         if (initLine === null) initLine = line;
+        const model = typeof event["model"] === "string" ? event["model"] : null;
+        if (model !== null) {
+          if (initModel === null) { initModel = model; initModelLine = line; }
+          else if (model !== initModel && modelConflictLine === null) modelConflictLine = line;
+        }
         const id = transportSessionId(event["session_id"]);
         let identityWitness = false;
         if (id !== null) {
@@ -2150,7 +2184,7 @@ export function runClaudeStreamJsonl(
       liveProviders.delete(child);
       framing.finish();
       live?.detach();
-      const lines = [initLine, initIdentityLine, conflictingInitLine, accountedResultLine(), overflowLine]
+      const lines = [initLine, initIdentityLine, conflictingInitLine, initModelLine, modelConflictLine, accountedResultLine(), overflowLine]
         .filter((one): one is string => one !== null)
         .filter((line, index, all) => all.indexOf(line) === index);
       const settlement = container === null ? Promise.resolve<boolean | null>(null) : settleContainer(container, options);

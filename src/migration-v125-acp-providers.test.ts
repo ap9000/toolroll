@@ -72,7 +72,7 @@ test.each([124, -124])("v%s: ACP agents become providers — the CHECKs widen, e
 
   expect(updateSafeSchema(124)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(125);
-  expect(SCHEMA_VERSION).toBe(137);
+  expect(SCHEMA_VERSION).toBe(143);
   openStore(file).close();
   const opened = new DatabaseSync(file);
   try {
@@ -83,7 +83,7 @@ test.each([124, -124])("v%s: ACP agents become providers — the CHECKs widen, e
 
   store = openStore(file);
   const handle = store.handle;
-  expect(handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(137);
+  expect(handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(143);
   for (const table of ["acp_attestation", "acp_billing"]) expect(handle.prepare("SELECT count(*) AS n FROM " + table).get()?.["n"]).toBe(0);
   expect(handle.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'acp_attestation_live'").get()).toBeDefined();
   for (const [table, wide] of WIDENED) {

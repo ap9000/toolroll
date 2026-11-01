@@ -265,12 +265,15 @@
   .project-card .project-name:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: .375rem; }
 
   label { display: block; font-size: 0.8125rem; font-weight: 500; margin: .75rem 0 0; color: var(--foreground); }
-  input[type=text], input[type=password], input[type=number], input[type=url], input[type=email], input[type=search], input[type=time], textarea, select {
-    width: 100%; margin: .35rem 0 0; padding: .45rem .7rem; font: 400 0.875rem/1.4 var(--font-sans);
+  :where(input[type=text], input[type=password], input[type=number], input[type=url], input[type=email], input[type=search], input[type=time], textarea, select) {
+    width: 100%; margin: .35rem 0 0; padding: .45rem .7rem;
     color: var(--foreground); background: var(--card); min-height: 2.125rem;
     border: 1px solid var(--input); border-radius: calc(var(--radius) - 3px);
     transition: border-color .15s, box-shadow .15s;
   }
+  /* The box above is in :where() so a surface's own rules (the workspace's 44px phone targets) win; the type keeps
+     its old weight, so the phone's 16px rule still loses to it as before. */
+  input[type=text], input[type=password], input[type=number], input[type=url], input[type=email], input[type=search], input[type=time], textarea, select { font: 400 0.875rem/1.4 var(--font-sans); }
   @media (hover: hover) and (pointer: fine) { input:hover, textarea:hover, select:hover { border-color: var(--muted-foreground); } }
   input[type=number] { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
   input[type=radio], input[type=checkbox] { accent-color: var(--ring); }

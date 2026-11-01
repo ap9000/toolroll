@@ -79,6 +79,9 @@ describe("run", () => {
 
     expect(result.timedOut).toBe(true);
     expect(result.notFound).toBe(false);
+    // One that survives SIGTERM is killed outright after the grace: its caller never waits forever.
+    const stubborn = await run(NODE, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"], { timeoutMs: 500 });
+    expect(stubborn.timedOut).toBe(true);
   });
 
   test("passes arguments verbatim, without shell interpretation", async () => {
@@ -153,6 +156,18 @@ describe("the provider process group (M6.12)", () => {
     const result = await pending;
     expect(result.code).not.toBe(0);
     expect(result.timedOut).toBe(false);
+  });
+
+  // Release check 3261 was stored as "exit 1": a signal had ended it and the code alone said nothing of that.
+  test("the buffered group transport keeps a signal apart from the exit, and says when its own hard stop ended it", async () => {
+    const killed = await run(process.execPath, ["-e", "console.log('before'); process.kill(process.pid, 'SIGKILL')"], { processGroup: true, timeoutMs: 10_000 });
+    expect(killed).toMatchObject({ code: 1, signal: "SIGKILL", timedOut: false });
+    expect(killed.stoppedByPlane).toBeUndefined();
+    expect((await run(process.execPath, ["-e", "process.exit(1)"], { processGroup: true, timeoutMs: 10_000 })).signal).toBeUndefined();
+    const pending = run(process.execPath, ["-e", "setInterval(()=>{},1000)"], { processGroup: true, timeoutMs: 60_000 });
+    await new Promise(resolve => setTimeout(resolve, 200));
+    expect(terminateLiveProviders()).toBeGreaterThan(0);
+    expect(await pending).toMatchObject({ stoppedByPlane: true, timedOut: false });
   });
 
   test("the buffered group transport keeps execFile's contract — output, timeout, not-found", async () => {
@@ -742,4 +757,21 @@ describe("finding the agent's own process in a listing", () => {
       expect(agentNamed({ pid: child.pid!, name: "MainThread" }, [process.execPath.split("/").pop()!])).toBe(true);
     } finally { child.kill("SIGKILL"); }
   });
+});
+
+// Evals B1/C1 Codex round 1 #7: one session whose inits name two models keeps both through the transport, so the run's
+// model reads unknown (never the pinned one); inits that agree keep their model.
+test.each([
+  ["claude-opus-4-1-20250805", null, false],
+  ["claude-sonnet-5-5", "claude-sonnet-5-5", false],
+  ["claude-opus-4-1-20250805", null, true],
+  ["claude-sonnet-5-5", "claude-sonnet-5-5", true],
+])("the Claude transport keeps a second init naming %s: the reported model is %s (earlier unnamed init: %s)", async (second, expected, unnamed) => {
+  const result = await runClaudeStreamJsonl(process.execPath, ["-e", `
+    ${unnamed ? 'console.log(JSON.stringify({type:"system",subtype:"init",session_id:"s-1"}));' : ""}
+    console.log(JSON.stringify({type:"system",subtype:"init",session_id:"s-1",model:"claude-sonnet-5-5"}));
+    console.log(JSON.stringify({type:"system",subtype:"init",session_id:"s-1",model:${JSON.stringify(second)}}));
+    console.log(JSON.stringify({type:"result",subtype:"success",is_error:false,session_id:"s-1",result:"done",total_cost_usd:0.01,num_turns:1}));
+  `], { timeoutMs: 15_000 });
+  expect(adapterFor("claude").parse(result.stdout).modelReported ?? null).toBe(expected);
 });

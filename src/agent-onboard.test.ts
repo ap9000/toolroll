@@ -86,6 +86,15 @@ describe("toolroll onboard", () => {
     expect(envelope().project).toEqual({ path: repo, added: false });
   });
 
+  test("a project that uses youiyoux says once that its change requests become tasks; one that doesn't says nothing", async () => {
+    expect(await onboard(["--yes", "--json"])).toBe(0);
+    expect(envelope()).not.toHaveProperty("youiyoux");
+    writeFileSync(join(repo, "youi.project.json"), "{}");
+    lines = [];
+    expect(await onboard(["--yes", "--json"])).toBe(0);
+    expect(envelope()).toMatchObject({ project: { path: repo }, youiyoux: "change requests become tasks that wait for your approval" });
+  });
+
   test("the project needs a yes like the skill: without one it is only named", async () => {
     expect(await onboard(["--json"])).toBe(0);
     expect(envelope()).toMatchObject({ project: null, projectProblem: `not added yet: run again with --yes to add ${repo}` });

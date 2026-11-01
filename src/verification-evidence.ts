@@ -24,7 +24,7 @@ export const isVerificationReceipt = (a: Artifact) => a.kind === "structured-out
 
 /** A release check's own facts for a version 3 receipt (release-once.md): its coverage, its sealed check artifacts, and
  * for a composed check the links its reader proves again. */
-export type ReleaseCheckFacts = { coverage: Coverage; check: { attempt: "full" | "targeted"; report: string | null; inventory: string | null; exitCode?: number | null }; composed: ComposedLinks | null };
+export type ReleaseCheckFacts = { coverage: Coverage; check: { attempt: "full" | "targeted"; report: string | null; inventory: string | null; exitCode?: number | null; retried?: string[] | null }; composed: ComposedLinks | null };
 
 /** Whether a coverage lets a check pass: only full or composed (absent: a check that isn't a release check). */
 export const coveragePasses = (coverage: unknown): boolean => coverage === undefined || coverage === "full" || coverage === "composed";
@@ -37,7 +37,9 @@ export const coveragePasses = (coverage: unknown): boolean => coverage === undef
 export function effectiveCheckFacts(raw: VerifyCommandFacts, facts: ReleaseCheckFacts | null): { result: VerifyCommandFacts; facts: ReleaseCheckFacts | null } {
   if (facts === null || coveragePasses(facts.coverage)) return { result: raw, facts };
   const exitCode = raw.configured && raw.ran ? raw.exitCode : null;
-  return { result: { configured: true, ran: false, attemptFailed: true, failure: "coverage-incomplete" }, facts: { ...facts, check: { ...facts.check, exitCode } } };
+  // A check that stopped before it could report keeps its own failure (it timed out, Toolroll stopped it): that is why.
+  if (facts.coverage === "no-result" && raw.configured && !raw.ran) return { result: raw, facts };
+  return { result: { configured: true, ran: false, attemptFailed: true, failure: facts.coverage === "no-result" ? "no-result" : "coverage-incomplete" }, facts: { ...facts, check: { ...facts.check, exitCode } } };
 }
 
 export function sealVerificationReceipt(store: Store, root: string, runId: number, head: string, command: VerifyCommand, result: VerifyCommandFacts, now: Date, reusedFrom?: { run: number; digest: string }, release?: ReleaseCheckFacts): void {
@@ -123,6 +125,13 @@ export function verificationEvidence(store: Store, root: string, runId: number):
       if (attempt === null || attempt.mode !== checked.check.attempt) return fail("The release check's sealed attempt doesn't match its receipt.");
       const sha = (capture: string) => { const found = artifacts.filter(a => a.kind === "structured-output" && a.capture === capture); return found.length === 1 ? found[0]!.sha256 : null; };
       if (sha(CHECK_REPORT_CAPTURE) !== checked.check.report || sha(CHECK_INVENTORY_CAPTURE) !== checked.check.inventory) return fail("The release check's sealed report or inventory changed.");
+      // Their bytes too, not only their records (eval-harness review 1, finding 3): a report or inventory the receipt
+      // names that is missing, cut short or changed on disk no longer verifies.
+      for (const capture of [CHECK_REPORT_CAPTURE, CHECK_INVENTORY_CAPTURE]) {
+        const one = artifacts.find(a => a.kind === "structured-output" && a.capture === capture);
+        if (one === undefined) continue;
+        if (one.truncated || one.redacted || one.captureStatus !== "ok" || !readVerifiedArtifact(root, one).ok) return fail("The release check's sealed report or inventory no longer verifies.");
+      }
       if ((checked.coverage === "composed") !== (checked.composed !== undefined)) return fail("The release check's coverage and its links disagree.");
       // A check that didn't cover what it owed can never read as a pass.
       if (!coveragePasses(checked.coverage) && checked.result.configured && checked.result.ran && checked.result.exitCode === 0) return fail("The release check reads as passed, but its coverage fell short.");

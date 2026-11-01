@@ -74,3 +74,52 @@ export function storedReleaseTerms(raw: unknown): { ok: true; terms: ReleaseTerm
   if (JSON.stringify(read.value) !== raw) return { ok: false, problem: "the release terms are not stored exactly as written" };
   return { ok: true, terms: read.value };
 }
+
+/**
+ * A release check's purpose (docs/plans/pipeline-speed.md, P0): what a person agrees to when they approve a release
+ * whose later commits can't carry (its checks run outside the sandbox, or carrying is off) — this exact candidate is a
+ * release's check. It never carries a later commit, never lets CI stand in for the check's units and never approves
+ * itself; it lets the plane hold the check to the release's strict report rules and rerun it, on this identical
+ * candidate under this same approval, after a failure the plane itself confirmed as infrastructure. Part of the scope
+ * digest when present; read strictly. A scope carries terms or this purpose, never both.
+ */
+export const releaseCheckPurposeSchema = versioned(1, {
+  purpose: z.literal("release-check"),
+  repo: z.string().min(1).max(4096),
+  packageVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
+  branch: z.string().min(1).max(255).regex(/^[A-Za-z0-9._/-]+$/),
+  pr: z.int().min(1),
+  base: z.literal("main"),
+  approvedSha: sha,
+  approvedTree: sha,
+  grant: z.strictObject({ id: z.int(), digest: z.string().min(1).max(128) }),
+  access: z.enum(["sandboxed", "sign-ins", "unsandboxed"]),
+});
+export type ReleaseCheckPurpose = z.infer<typeof releaseCheckPurposeSchema>;
+
+export function readReleaseCheckPurpose(input: unknown): ContractResult<ReleaseCheckPurpose> {
+  return readVersioned(releaseCheckPurposeSchema, input);
+}
+
+/** The digest a scope binds for its release check purpose, domain-separated from the terms' and every other input. */
+export function releaseCheckPurposeDigest(purpose: ReleaseCheckPurpose): string {
+  return createHash("sha256").update(`release-check-purpose:${JSON.stringify(purpose)}`).digest("hex");
+}
+
+/** Strict stored purpose: null column → null; anything that isn't exactly a purpose, as written → a problem. */
+export function storedReleaseCheckPurpose(raw: unknown): { ok: true; purpose: ReleaseCheckPurpose | null } | { ok: false; problem: string } {
+  if (raw === null || raw === undefined) return { ok: true, purpose: null };
+  if (typeof raw !== "string") return { ok: false, problem: "the release check purpose is not stored as text" };
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { return { ok: false, problem: "the release check purpose can't be read" }; }
+  const read = readReleaseCheckPurpose(parsed);
+  if (!read.ok) return { ok: false, problem: `the release check purpose doesn't match its contract (${read.issues[0]?.line ?? "invalid"})` };
+  if (JSON.stringify(read.value) !== raw) return { ok: false, problem: "the release check purpose is not stored exactly as written" };
+  return { ok: true, purpose: read.value };
+}
+
+export function serializeReleaseCheckPurpose(purpose: ReleaseCheckPurpose): string {
+  const read = readReleaseCheckPurpose(purpose);
+  if (!read.ok) throw new Error(`The release check purpose doesn't match its contract: ${read.issues[0]?.line ?? "invalid"}`);
+  return JSON.stringify(read.value);
+}

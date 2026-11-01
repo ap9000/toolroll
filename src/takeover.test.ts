@@ -5,11 +5,12 @@
  */
 
 import { describe, test, expect, beforeEach } from "vitest";
-import { openStore, type Store } from "./store.js";
+import { lifecycleOf, MAX_WATCH_LEASE_MS, openStore, type Store } from "./store.js";
 import {
   acquireWatchLeaseAuthed,
   authenticate,
   DEFAULT_LIVENESS_MS,
+  drainRunnerIfCurrent,
   heartbeat,
   heartbeatWatchLeaseAuthed,
   normalizeRunnerName,
@@ -67,6 +68,7 @@ describe("registerRunnerIfIdle — the atomic take-or-refuse door", () => {
     store.createTask({ id: "t-1", title: "left behind" }, T0);
     const ref = store.refFor("built-in", "t-1").id;
     store.placeTask(ref, REPO);
+    store.acquireWatchLease("w-1", REPO, "inc-a", 60_000, T0);
     acquire(store, ref, "w-1", { token: first.token, now: T0, ttlMs: 60_000, newLeaseId: () => "lease-a", incarnation: "inc-a" });
     store.setTaskState("t-1", "running", T0);
     const runId = store.startRun({
@@ -89,6 +91,7 @@ describe("registerRunnerIfIdle — the atomic take-or-refuse door", () => {
     store.createTask({ id: "t-r", title: "reaped mid-build" }, T0);
     const ref = store.refFor("built-in", "t-r").id;
     store.placeTask(ref, REPO);
+    store.acquireWatchLease("w-1", REPO, "inc-r", 60_000, T0);
     acquire(store, ref, "w-1", { token: reg.token, now: T0, ttlMs: 60_000, newLeaseId: () => "lease-r", incarnation: "inc-r" });
     store.setTaskState("t-r", "running", T0);
     const runId = store.startRun({
@@ -110,6 +113,61 @@ describe("registerRunnerIfIdle — the atomic take-or-refuse door", () => {
     expect(retired).toMatchObject({ ok: true });
     const again = registerRunnerIfIdle(store, { name: "w-1", host: "here", now: later(2_000) });
     expect(again).toMatchObject({ ok: true });
+  });
+});
+
+describe("registerRunnerIfIdle — a holder proved gone signs off (2026-10-29 deploy)", () => {
+  /** A holder `up` killed outright: fresh heartbeat, live lease, an open run. */
+  const killedHolder = () => {
+    const first = register(store, { name: "w-1", host: "here", repos: [REPO], now: T0 });
+    store.acquireWatchLease("w-1", REPO, "inc-a", 90_000, later(1_000));
+    store.createTask({ id: "t-k", title: "in flight when killed" }, T0);
+    const ref = store.refFor("built-in", "t-k").id;
+    store.placeTask(ref, REPO);
+    store.acquireWatchLease("w-1", REPO, "inc-a", 60_000, T0);
+    acquire(store, ref, "w-1", { token: first.token, now: T0, ttlMs: 60_000, newLeaseId: () => "lease-k", incarnation: "inc-a" });
+    store.setTaskState("t-k", "running", T0);
+    const runId = store.startRun({ taskRef: ref, leaseId: "lease-k", runner: "w-1", branch: "b", worktree: "/w", ...bareLegacy("build", "claude", null), now: T0 });
+    return { first, runId };
+  };
+
+  test("the holder's processes proved gone: retired, its lease lapsed and its work recovered in the same door", () => {
+    const { first, runId } = killedHolder();
+    const asked: string[] = [];
+    const taken = registerRunnerIfIdle(store, { name: "w-1", host: "here", repos: [REPO], now: later(2_000),
+      previousGone: holder => { asked.push(`${holder.runner.name}@${holder.runner.registeredAt}`); return { gone: true, detail: "w-1: process 4242 (up) proved gone" }; } });
+    expect(taken).toMatchObject({ ok: true, signedOff: "w-1: process 4242 (up) proved gone" });
+    if (!taken.ok) return;
+    expect(asked).toEqual([`w-1@${first.runner.registeredAt}`]);
+    expect(taken.recoveredRuns).toBeGreaterThan(0);
+    expect(store.getRun(runId)).toMatchObject({ outcome: "failed", reason: "interrupted" });
+    expect(heartbeat(store, "w-1", first.token, later(2_000))).toMatchObject({ ok: false, reason: "bad-token" });
+    expect(store.liveWatchLeaseOf("w-1", later(2_000))).toBeNull();
+    // The lapsed lease is taken over like any crashed one: the superseded incarnation is recovered.
+    expect(acquireWatchLeaseAuthed(store, { runner: "w-1", token: taken.token, repo: REPO, owner: "inc-b", ttlMs: 90_000 }, later(3_000)))
+      .toMatchObject({ ok: true, superseded: "inc-a" });
+    expect(store.handle.prepare("SELECT outcome, detail FROM action_ledger WHERE action = 'worker signed off'").get())
+      .toEqual({ outcome: "processes proved gone", detail: "w-1: process 4242 (up) proved gone" });
+  });
+
+  test("two live holders stay impossible: an unproved holder still refuses, and nothing changes", () => {
+    const { first } = killedHolder();
+    for (const proof of [{ gone: false as const, why: "process 4242 is still running" }]) {
+      expect(registerRunnerIfIdle(store, { name: "w-1", host: "here", now: later(2_000), previousGone: () => proof }))
+        .toMatchObject({ ok: false, reason: "runner-alive" });
+    }
+    // Without a proof function the door is exactly as before.
+    expect(registerRunnerIfIdle(store, { name: "w-1", host: "here", now: later(2_000) })).toMatchObject({ ok: false, reason: "runner-alive" });
+    expect(heartbeat(store, "w-1", first.token, later(2_000))).toMatchObject({ ok: true });
+    expect(store.liveWatchLeaseOf("w-1", later(2_000))).not.toBeNull();
+  });
+
+  test("the proof is asked only while the holder blocks the name", () => {
+    register(store, { name: "w-1", host: "here", now: T0 });
+    let asked = 0;
+    expect(registerRunnerIfIdle(store, { name: "w-1", host: "here", now: DEAD, previousGone: () => { asked++; return { gone: true, detail: "x" }; } }))
+      .toMatchObject({ ok: true, signedOff: null });
+    expect(asked).toBe(0);
   });
 });
 
@@ -137,6 +195,7 @@ describe("authenticated heartbeats and leases", () => {
     store.createTask({ id: "t-s", title: "superseded work" }, T0);
     const ref = store.refFor("built-in", "t-s").id;
     store.placeTask(ref, REPO);
+    store.acquireWatchLease("w-1", REPO, "inc-a", 60_000, T0);
     acquire(store, ref, "w-1", { token: reg.token, now: T0, ttlMs: 30 * 60_000, newLeaseId: () => "lease-s", incarnation: "inc-a" });
     store.setTaskState("t-s", "running", T0);
     const runId = store.startRun({
@@ -240,4 +299,65 @@ describe("the shared runner-name rule", () => {
     expect(normalizeRunnerName("!!!")).toBe("worker");
     expect(normalizeRunnerName("x".repeat(90)).length).toBe(RUNNER_NAME_MAX);
   });
+});
+
+describe("lifecycle: draining holds custody until sign-off or proved exit", () => {
+  test("a draining holder stays exclusive past its deadline until its exit is proved", () => {
+    const first = register(store, { name: "w-1", host: "here", repos: ["/repo"], now: T0 });
+    acquireWatchLeaseAuthed(store, { runner: "w-1", token: first.token, repo: "/repo", owner: "inc-a", ttlMs: 60_000 }, T0);
+    expect(drainRunnerIfCurrent(store, "w-1", first.token, later(1_000), later(30_000))).toBe(true);
+    expect(lifecycleOf(store, "worker:w-1")).toMatchObject({ state: "draining", drainUntil: later(30_000).toISOString() });
+    // Its heartbeat and lease are both fresh: still two live holders are impossible, and the answer says why at once.
+    const early = registerRunnerIfIdle(store, { name: "w-1", host: "here", now: later(10_000) });
+    expect(early).toMatchObject({ ok: false, reason: "runner-draining", until: later(30_000).toISOString() });
+    if (!early.ok) expect(early.detail).toContain("Toolroll is restarting (draining)");
+    // A stop timer can be delayed: the deadline alone must not retire a live holder.
+    expect(registerRunnerIfIdle(store, { name: "w-1", host: "here", now: later(31_000) })).toMatchObject({ ok: false, reason: "runner-draining" });
+    expect(authenticate(store, "w-1", first.token).ok).toBe(true);
+    const taken = registerRunnerIfIdle(store, { name: "w-1", host: "here", now: later(31_000), previousGone: () => ({ gone: true, detail: "all holders exited" }) });
+    expect(taken).toMatchObject({ ok: true, signedOff: "all holders exited" });
+    expect(store.liveWatchLeaseOf("w-1", later(31_000))).toBeNull();
+    expect(lifecycleOf(store, "worker:w-1")).toMatchObject({ state: "started" });
+  });
+
+  test("a stopped (retired) holder's live lease no longer blocks: retiring lapses it", () => {
+    const first = register(store, { name: "w-1", host: "here", repos: ["/repo"], now: T0 });
+    acquireWatchLeaseAuthed(store, { runner: "w-1", token: first.token, repo: "/repo", owner: "inc-a", ttlMs: 60_000 }, T0);
+    expect(retireRunnerIfCurrent(store, "w-1", first.token, later(1_000))).toEqual({ ok: true });
+    expect(registerRunnerIfIdle(store, { name: "w-1", host: "here", now: later(2_000) })).toMatchObject({ ok: true });
+  });
+
+  test("a draining runner admits no new claim; a stale process can't mark its successor draining", () => {
+    const first = register(store, { name: "w-1", host: "here", repos: [REPO], now: T0 });
+    store.createTask({ id: "t-d", title: "queued during a restart" }, T0);
+    const ref = store.refFor("built-in", "t-d").id;
+    store.placeTask(ref, REPO);
+    expect(drainRunnerIfCurrent(store, "w-1", first.token, later(1_000), later(60_000))).toBe(true);
+    expect(acquire(store, ref, "w-1", { token: first.token, now: later(2_000), ...bareLegacy("build") })).toMatchObject({ ok: false, reason: "draining" });
+    const successor = registerRunnerIfIdle(store, { name: "w-1", host: "here", repos: [REPO], now: later(61_000) });
+    if (!successor.ok) throw new Error("takeover failed in setup");
+    expect(drainRunnerIfCurrent(store, "w-1", first.token, later(62_000), later(90_000))).toBe(false);
+    expect(lifecycleOf(store, "worker:w-1")).toMatchObject({ state: "started" });
+    expect(acquire(store, ref, "w-1", { token: successor.token, now: later(63_000), ...bareLegacy("build") })).toMatchObject({ ok: true });
+  });
+
+  test("a watch lease is never taken or renewed for longer than a minute", () => {
+    store.acquireWatchLease("w-1", "/repo", "inc-a", 10 * 60_000, T0);
+    expect(store.liveWatchLeaseOf("w-1", later(MAX_WATCH_LEASE_MS - 1))).not.toBeNull();
+    expect(store.liveWatchLeaseOf("w-1", later(MAX_WATCH_LEASE_MS))).toBeNull();
+    store.acquireWatchLease("w-1", "/repo", "inc-b", 60_000, later(MAX_WATCH_LEASE_MS));
+    expect(store.heartbeatWatchLease("w-1", "/repo", "inc-b", 10 * 60_000, later(MAX_WATCH_LEASE_MS + 1_000))).toBe(true);
+    expect(store.liveWatchLeaseOf("w-1", later(2 * MAX_WATCH_LEASE_MS + 1_000))).toBeNull();
+  });
+});
+
+test.each(["expired", "superseded", "missing"])("a %s watch cannot acquire another task before its next heartbeat", state => {
+  const first = register(store, { name: "w-1", host: "here", repos: [REPO], now: T0 });
+  store.createTask({ id: "late", title: "late dispatch" }, T0);
+  const ref = store.refFor("built-in", "late").id;
+  store.placeTask(ref, REPO);
+  if (state !== "missing") store.acquireWatchLease("w-1", REPO, "inc-old", 60_000, T0);
+  if (state === "superseded") store.acquireWatchLease("w-1", REPO, "inc-new", 60_000, later(61_000));
+  expect(acquire(store, ref, "w-1", { token: first.token, now: later(61_001), incarnation: "inc-old" })).toMatchObject({ ok: false, reason: "watch-custody" });
+  expect(store.hasLiveClaim(ref, later(61_001))).toBe(false);
 });

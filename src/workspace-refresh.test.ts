@@ -4,6 +4,7 @@ import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openStore, type Store } from './store.js';
+import { DEFAULT_LIVENESS_MS } from './runner.js';
 import { addApprover } from './scope.js';
 import { createDecisionServer } from './serve.js';
 import * as workIndex from './work-index.js';
@@ -106,10 +107,11 @@ test('saved edits invalidate the response and exact clock expiry cannot reuse it
 });
 
 test('quiet heartbeat renewal cannot extend a previously issued liveness deadline', async () => {
+  // The runner's liveness deadline is 10 s away when the validator is issued; a later heartbeat pushes it to 20 s.
   store.raw().prepare(`INSERT INTO runner(name,host,credential_hash,capacity,registered_at,heartbeat_at)
-    VALUES ('worker','host','hash',1,?,?)`).run(NOW.toISOString(), new Date(NOW.getTime() - 170_000).toISOString());
+    VALUES ('worker','host','hash',1,?,?)`).run(NOW.toISOString(), new Date(NOW.getTime() - (DEFAULT_LIVENESS_MS - 10_000)).toISOString());
   const cookie = await login(); const initial = await fresh(cookie);
-  store.raw().prepare('UPDATE runner SET heartbeat_at=?').run(new Date(NOW.getTime() - 160_000).toISOString());
+  store.raw().prepare('UPDATE runner SET heartbeat_at=?').run(new Date(NOW.getTime() - (DEFAULT_LIVENESS_MS - 20_000)).toISOString());
   now = new Date(NOW.getTime() + 9_999);
   expect((await read(cookie, initial.etag)).status).toBe(304);
   now = new Date(NOW.getTime() + 10_000);
@@ -156,4 +158,20 @@ test('revoked credentials and changed account access are revalidated before a co
   expect(store.revokeAccount('alex', 'spare-admin', now).ok).toBe(true);
   const revoked = await read(renewedCookie, renewed.etag);
   expect(revoked.status).toBe(303); expect(revoked.headers.get('location')).toContain('/login');
+});
+
+test('another page re-read after a live change is a 304 while what it renders is exactly what the page holds', async () => {
+  const cookie = await login();
+  const first = await read(cookie, undefined, '/work?format=workspace');
+  expect(first.status).toBe(200);
+  const tag = first.headers.get('etag');
+  expect(tag).toMatch(/^"w[\w-]{43}"$/);
+  const same = await read(cookie, tag!, '/work?format=workspace');
+  expect(same.status).toBe(304); expect(await same.text()).toBe('');
+  // Another session's validator is never its own (its form token differs), and a change renders anew.
+  expect((await read(await login(), tag!, '/work?format=workspace')).status).toBe(200);
+  store.createTask({ id: 'tasks-change', title: 'Shows in Tasks' }, now);
+  store.placeTask(store.lookupRef('tasks-change')!.id, repo);
+  const changed = await read(cookie, tag!, '/work?format=workspace');
+  expect(changed.status).toBe(200); expect(changed.headers.get('etag')).not.toBe(tag);
 });

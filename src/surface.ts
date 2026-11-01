@@ -122,7 +122,9 @@ const GUIDE_ROWS: readonly GuideRow[] = [
       { name: "limit", takesValue: true, meaning: "<step>=<minutes>: one waiting step's time limit" },
       { name: "tap", takesValue: true, meaning: "the Homebrew tap, owner/name" },
       { name: "release-gate", takesValue: true, meaning: "<id>: show why an update pause left before a deployment's swap is safe to lift" },
-      { name: "yes", takesValue: false, meaning: "with --release-gate: lift that one pause once it is proved" }],
+      { name: "yes", takesValue: false, meaning: "with --release-gate: lift that one pause once it is proved; with --recover-deploy: recover" },
+      { name: "recover-deploy", takesValue: false, meaning: "put back a deployment that stopped half way: stop only its own proved leftovers, restart the previous service, lift the pause" },
+      { name: "stage", takesValue: true, meaning: "with --recover-deploy: the deployment's staging folder" }],
     notableReasons: ["usage", "ambiguous", "drift", "timeout", "check-failed", "ci-failed", "tree-mismatch", "conflict", "mixed-runtime", "gate-held", "after-swap"] },
   operator("demo", "a seeded throwaway sandbox"),
 

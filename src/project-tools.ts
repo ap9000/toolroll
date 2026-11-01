@@ -471,13 +471,16 @@ function fromCodexEntry(raw: unknown, environment: NodeJS.ProcessEnv): FoundTool
  * Codex's (from `codex mcp list --json`, passed in). The first of each
  * name wins; unusable entries are left out.
  */
-export function discoverTools(repo: string, codexServers: unknown[] | null, home: string = homedir(), environment: NodeJS.ProcessEnv = process.env): FoundTool[] {
+export function discoverTools(repo: string, codexServers: unknown[] | null, home: string = homedir(), environment: NodeJS.ProcessEnv = process.env,
+  projectConfig?: Record<string, unknown> | null): FoundTool[] {
   const found: FoundTool[] = [];
   const add = (one: FoundTool | null) => { if (one !== null && !found.some(other => other.spec.name === one.spec.name)) found.push(one); };
   const readJson = (file: string): Record<string, unknown> | null => {
     try { const parsed = JSON.parse(readFileSync(file, "utf8")) as unknown; return parsed !== null && typeof parsed === "object" ? parsed as Record<string, unknown> : null; } catch { return null; }
   };
-  const project = readJson(join(repo, ".mcp.json"));
+  // The project's own file as given (the console reads it off its thread: folder-look.ts), else as last read there
+  // (savedProjectMcp), else read here (the CLI and the worker).
+  const project = projectConfig !== undefined ? projectConfig : savedProjectMcp.has(repo) ? savedProjectMcp.get(repo) ?? null : readJson(join(repo, ".mcp.json"));
   for (const [name, raw] of Object.entries((project?.["mcpServers"] ?? {}) as Record<string, unknown>)) add(fromClaudeEntry(name, raw, "this project's .mcp.json"));
   const claude = readJson(join(home, ".claude.json"));
   const perProject = ((claude?.["projects"] ?? {}) as Record<string, Record<string, unknown>>)[repo]?.["mcpServers"] ?? {};
@@ -1057,3 +1060,7 @@ export function toolServerFor(store: ToolServerStore, repo: string, options: { h
   const untrusted = existsSync(cache) ? [realpathSync(cache)] : [];
   return { fence: fenceFor("tool-server", { databaseFile, worktree: null, home, boundary: null, binding: null, runFolders: runFolders(null), poolRoots, extra: untrusted }) };
 }
+
+/** Each project's `.mcp.json` as the console last read it off its thread (its background pass): what its pages and the
+ * lead offer, so neither reads a project folder on the console's thread. */
+export const savedProjectMcp = new Map<string, Record<string, unknown> | null>();

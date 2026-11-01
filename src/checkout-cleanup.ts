@@ -21,7 +21,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { taskBranches } from "./names.js";
 import { COMPLETION_ACTION } from "./result-completion.js";
-import { CLEANUP_CHOICES, bytesWords, diskBytes, type CheckoutCleanup } from "./storage.js";
+import { CLEANUP_CHOICES, bytesWords, diskBytes, diskBytesAsync, type CheckoutCleanup } from "./storage.js";
 import type { Store, WorktreeRow } from "./store.js";
 import { worktreePath, type WorktreePool } from "./worktree.js";
 
@@ -252,7 +252,7 @@ async function eachAtMost<T, R>(items: readonly T[], limit: number, work: (item:
 export async function checkoutPlan(store: Store, pool: WorktreePool, now: Date, options: { manual: boolean; repo?: string }): Promise<CheckoutPlan> {
   const cleanup = store.checkoutCleanup();
   const rows = store.listWorktrees().filter(row => existsSync(row.path) && (options.repo === undefined || row.repo === options.repo));
-  const sizes = diskBytes(rows.map(row => row.path));
+  const sizes = await diskBytesAsync(rows.map(row => row.path));
   const statuses = taskStatuses(store, now);
   const items = await eachAtMost(rows, INSPECT_AT_ONCE, async (row): Promise<CheckoutItem> => {
     const kept = keptFor(pool, row, statuses, now, options.manual ? "manual" : cleanup);

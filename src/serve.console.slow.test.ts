@@ -3,9 +3,13 @@
  * queue-clearing pages over real HTTP.
  */
 
-import { describe, test, expect, beforeEach, afterEach } from "vitest";
+import { projectIdentities } from "./project-identity.js";
+import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
+import { createServer as createNetServer } from "node:net";
+import type { FolderLookRunner } from "./folder-look.js";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
@@ -2449,6 +2453,127 @@ describe("the filesystem browser — confined to what opening allows", () => {
     }
   });
 
+  test("a folder that never answers leaves the console answering: the browse page says so within the bound", async () => {
+    let looks = 0;
+    await boot({ projectRoots: [root], folderLook: () => { looks++; return { answer: new Promise(() => {}), ended: new Promise(() => {}) }; }, folderLookMs: 300 });
+    const cookie = await login();
+    const at = Date.now();
+    const [browse, health] = await Promise.all([
+      fetch(url("/projects/browse"), { headers: { cookie }, redirect: "manual" }),
+      fetch(url("/healthz")),
+    ]);
+    expect([browse.status, health.status]).toEqual([503, 200]);
+    expect(await browse.text()).toContain("This folder didn&#39;t answer");
+    expect(Date.now() - at).toBeLessThan(3_000);
+    // Asked again while that look is still stuck: answered at once, and no second look piles up.
+    expect((await fetch(url("/projects/browse"), { headers: { cookie }, redirect: "manual" })).status).toBe(503);
+    expect(looks).toBe(1);
+  });
+
+  test("project folders that never answer: the console starts and every page answers from saved identities", async () => {
+    // Up's console resolves identities off its thread (project-identity.ts); here every look hangs for good.
+    const identities = projectIdentities({ runner: () => ({ answer: new Promise(() => {}), ended: new Promise(() => {}) }), deadlineMs: 200 });
+    const repo = join(root, "payments-api");
+    const at = Date.now();
+    await identities.refresh([repo, root]);
+    await boot({ repos: [repo], projectRoots: [root], identities, backgroundChecks: true, backgroundChecksMs: 100 });
+    const cookie = await login();
+    for (const path of ["/healthz", "/projects", "/work", "/chat", "/settings/project", "/settings/tools"]) {
+      expect((await fetch(url(path), { headers: { cookie }, redirect: "manual" })).status, path).toBeLessThan(500);
+    }
+    // A path a request names that no answer vouches for is refused, never resolved on the console's thread.
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(url("/projects"), { headers: { cookie } })).text())?.[1] ?? "";
+    const opened = await fetch(url("/projects/open"), { method: "POST", headers: { cookie, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, path: join(root, "notes") }), redirect: "manual" });
+    expect(opened.status).toBe(503);
+    expect(await opened.text()).toContain("didn&#39;t answer");
+    expect(Date.now() - at).toBeLessThan(10_000);
+  });
+
+  test("project folders that answer late: the console answers at once, and a project shows up once its folder answers", async () => {
+    const late = heldLooks();
+    try {
+      store.createTask({ id: "t-late", title: "work in a folder that answers late" }, T0);
+      store.placeTask(store.refFor("built-in", "t-late").id, join(root, "payments-api"));
+      // Nothing is resolved before serving (operate.ts startConsole); the background pass starts the looks.
+      await boot({ projectRoots: [root], identities: projectIdentities({ runner: late.runner, deadlineMs: 60_000 }), backgroundChecks: true, backgroundChecksMs: 100 });
+      expect((await fetch(url("/healthz"))).status).toBe(200);
+      const cookie = await login();
+      const task = async () => (await fetch(url("/t/t-late"), { headers: { cookie }, redirect: "manual" })).status;
+      await vi.waitFor(() => expect(late.started()).toBeGreaterThan(0));
+      // Unresolved fails closed: the task's project isn't authorized until its folder answers.
+      expect(await task()).toBe(404);
+      late.release();
+      await vi.waitFor(async () => expect(await task()).toBe(200), { timeout: 10_000, interval: 50 });
+    } finally { late.release(); }
+  });
+
+  test("a configured repo whose folder hasn't answered authorizes nothing: not by its spelling, not as the default, not as unscoped", async () => {
+    const late = heldLooks();
+    try {
+      const repo = join(root, "payments-api");
+      store.createTask({ id: "t-cfg", title: "work in the configured repo" }, T0);
+      store.placeTask(store.refFor("built-in", "t-cfg").id, repo);
+      await boot({ repos: [repo], identities: projectIdentities({ runner: late.runner, deadlineMs: 60_000 }), backgroundChecks: true, backgroundChecksMs: 100 });
+      const cookie = await login();
+      await vi.waitFor(() => expect(late.started()).toBeGreaterThan(0));
+      expect((await fetch(url("/t/t-cfg"), { headers: { cookie }, redirect: "manual" })).status).toBe(404);
+      // No default project to file into, and a scoped console never files unplaced work.
+      const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(url("/projects"), { headers: { cookie } })).text())?.[1] ?? "";
+      const filed = await fetch(url("/tasks/add"), { method: "POST", headers: { cookie, origin: base, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, id: "t-early", title: "filed before the folder answered" }), redirect: "manual" });
+      expect(filed.status).toBe(400);
+      expect(await filed.text()).toContain("name a repository");
+      expect(store.lookupRef("t-early")).toBeNull();
+      late.release();
+      await vi.waitFor(async () => expect((await fetch(url("/t/t-cfg"), { headers: { cookie }, redirect: "manual" })).status).toBe(200), { timeout: 10_000, interval: 50 });
+    } finally { late.release(); }
+  });
+
+  test("a project identity that changes while a filing waits files nothing", async () => {
+    const repo = join(root, "ledger");
+    mkdirSync(repo);
+    execFileSync("git", ["init", "-q"], { cwd: repo });
+    const elsewhere = realpathSync(mkdtempSync(join(tmpdir(), "so-moved-")));
+    const alias = join(elsewhere, "alias");
+    symlinkSync(join(root, "notes"), alias);
+    // The filing's own look at the repo is held until the test lets it go; every other look answers from the disk.
+    let hold: (() => void) | null = null;
+    let held = true;
+    const runner: FolderLookRunner = request => {
+      const paths = request.op === "identities" ? request.paths : [];
+      const answer = () => ({ ok: true, value: { paths: paths.map(path => ({ path, real: realpathSync(path) })) } });
+      if (!held && paths.length === 1 && paths[0] === repo) {
+        held = true;
+        const released = new Promise<void>(done => { hold = done; }).then(answer);
+        return { answer: released, ended: released.then(() => undefined) };
+      }
+      const now = Promise.resolve().then(answer);
+      return { answer: now, ended: now.then(() => undefined) };
+    };
+    try {
+      const identities = projectIdentities({ runner, deadlineMs: 60_000 });
+      // The repo is known (a request may name it); the filing still looks at it again, now, and that look is held.
+      await identities.refresh([root, alias, repo]);
+      held = false;
+      await boot({ projectRoots: [root], identities });
+      const cookie = await login();
+      const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(url("/projects"), { headers: { cookie } })).text())?.[1] ?? "";
+      const file = (id: string) => fetch(url("/tasks/add"), { method: "POST", headers: { cookie, origin: base, "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ csrf, id, title: `filed as ${id}`, repo }), redirect: "manual" });
+      const waiting = file("t-moved");
+      await vi.waitFor(() => expect(hold).not.toBeNull());
+      // While it waits, a known identity moves.
+      rmSync(alias);
+      symlinkSync(elsewhere, alias);
+      expect(await identities.resolveNow(alias)).toBe(elsewhere);
+      hold!();
+      expect((await waiting).status).toBe(409);
+      expect(store.lookupRef("t-moved")).toBeNull();
+      // Nothing moved this time: it files.
+      const steady = await file("t-steady");
+      expect([steady.status, steady.headers.get("location")]).toEqual([303, "/t/t-steady"]);
+      expect(store.lookupRef("t-steady")?.repo).toBe(repo);
+    } finally { rmSync(elsewhere, { recursive: true, force: true }); }
+  });
+
   test("an explicit repo list gets no browser — the openable set is already on the page", async () => {
     await boot({ repo: root });
     const cookie = await login();
@@ -3036,5 +3161,52 @@ describe("round 4 — liveness is proved from the current lease, never guessed f
     const keptPage = await kept.text();
     expect(keptPage).toContain("the task was created, but could not be made to wait for nope-gone");
     expect(await (await fetch(url("/t/t-kept"), { headers: { cookie } })).text()).toContain("kept anyway");
+  });
+});
+
+/** Identity looks held until released, then answered with each path's real path. */
+function heldLooks(): { runner: FolderLookRunner; started: () => number; release: () => void } {
+  let release!: () => void;
+  const gate = new Promise<void>(done => { release = done; });
+  let started = 0;
+  const runner: FolderLookRunner = request => {
+    started++;
+    const answer = gate.then(() => ({ ok: true, value: { paths: request.op === "identities" ? request.paths.map(path => ({ path, real: realpathSync(path) })) : [] } }));
+    return { answer, ended: answer.then(() => undefined) };
+  };
+  return { runner, started: () => started, release };
+}
+
+describe("`toolroll serve` answers before any project folder does (the 0.9.83 deploy)", () => {
+  test("health and the deploy's task probe answer while every identity look is still held", async () => {
+    const { runOperate } = await import("./operate.js");
+    const free = createNetServer();
+    await new Promise<void>(done => free.listen(0, "127.0.0.1", done));
+    const port = (free.address() as { port: number }).port;
+    await new Promise<void>(done => free.close(() => done()));
+    const repo = realpathSync(mkdtempSync(join(tmpdir(), "so-serve-late-")));
+    mkdirSync(join(repo, ".git"));
+    const late = heldLooks();
+    const lines: string[] = [];
+    let listening!: () => void;
+    const ready = new Promise<void>(done => { listening = done; });
+    let finished = false;
+    const running = runOperate("serve", ["--port", String(port), "--repo", repo, "--json"], line => { lines.push(line); listening(); }, { folderLook: { runner: late.runner, deadlineMs: 60_000 } })
+      .finally(() => { finished = true; listening(); });
+    try {
+      await ready;
+      expect(finished, lines.join("\n")).toBe(false);
+      expect(JSON.parse(lines[0]!)).toMatchObject({ ok: true, command: "serve", port });
+      await vi.waitFor(() => expect(late.started()).toBeGreaterThan(0));
+      const health = await fetch(`http://127.0.0.1:${port}/healthz`, { signal: AbortSignal.timeout(1_000) });
+      expect(health.status).toBe(200);
+      const probe = await fetch(`http://127.0.0.1:${port}/t/t-1`, { redirect: "manual", signal: AbortSignal.timeout(1_000) });
+      expect(probe.status).toBeLessThan(500);
+    } finally {
+      late.release();
+      if (!finished) process.emit("SIGINT");
+      expect(await running).toBe(0);
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });

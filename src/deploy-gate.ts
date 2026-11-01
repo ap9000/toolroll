@@ -9,6 +9,8 @@ import { assignmentOf } from "./assignment.js";
 import { liveReleaseOf, personApprovalOf, releaseApprovalOf } from "./scope.js";
 import { verificationEvidence } from "./verification-evidence.js";
 import type { Store } from "./store.js";
+import { releaseCiRunningOf } from "./release-ci-hold.js";
+import { nightlyDebtHold } from "./nightly-github.js";
 
 export type DeploymentGate = { ok: true; taskId: string; head: string; repo: string; approvedBy: string } | { ok: false; message: string };
 
@@ -31,6 +33,9 @@ export function deploymentGate(store: Store, input: { runId: number; evidenceRoo
     (scope?.candidate === head || ((scope?.candidate ?? null) !== null && built.scopeDigest === run.scopeDigest));
   if (run.role !== "builder" || !(run.outcome === "built" || regated)) return refuse(`Run ${input.runId} is not a built candidate at ${head.slice(0, 7)}.`);
   if (scope === null || scope.approvedDigest !== scope.digest || scope.digest !== run.scopeDigest) return refuse("The run's signed scope is no longer the approved one.");
+  // A person may approve during CI, including a release without carry terms. Every deployment road must wait
+  // for the plane's exact-head observation, not only the release coordinator's polling loop.
+  if (releaseCiRunningOf(store, ref.externalId) !== null) return refuse("This release still waits for GitHub CI. Resume it with `toolroll release`.");
   // One approval per release (release-once.md): a release's task deploys only while its authority stands for it — the
   // live predicate proves the anchor's person approval (a carried commit's own seal is never a person's). Any other task
   // needs a person's approval of its own.
@@ -38,6 +43,12 @@ export function deploymentGate(store: Store, input: { runId: number; evidenceRoo
   if (release.applies && !release.ok) return refuse(`This release can't deploy: ${release.why}.`);
   const anchorPerson = release.applies && release.ok
     ? (input.releaseFlow === true ? releaseApprovalOf(store, release.authority.anchorTask, input.now) : personApprovalOf(store, release.authority.anchorTask)) : null;
+  // GitHub's nightly lane debt (nightly-github.ts) holds every deploy of the project, a person's approval or not,
+  // unless this exact candidate re-ran that lane after the failure and passed (an exemption read at the boundary).
+  if (ref.repo !== null) {
+    const nightly = nightlyDebtHold(store, { repo: ref.repo, taskId: ref.externalId, candidate: scope?.candidate ?? head, phase: "deploy", release: release.applies, now: input.now });
+    if (nightly !== null) return refuse(nightly.why);
+  }
   const person = anchorPerson ?? personApprovalOf(store, ref.externalId);
   if (!person.ok) return refuse(`A person has to approve this candidate's scope: ${person.why}.`);
   const evidence = verificationEvidence(store, input.evidenceRoot, input.runId);

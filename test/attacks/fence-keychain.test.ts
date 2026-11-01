@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { fenceFor, runFolders, serverGrantsOf, signInGrants, srtTermsOf, taskBoundary, trustedWorktreeBinding, type FenceGrants, type FenceKind } from "../../src/agent-fence.js";
-import { SEATBELT_NO_KEYCHAIN, srtMacosCommand } from "../../src/sandbox-runtime.js";
+import { SEATBELT_NO_KEYCHAIN, SEATBELT_QUIET_MACH_DENY, srtMacosCommand } from "../../src/sandbox-runtime.js";
 import { git, needs, repository, seatbelt, underSandbox, useScratch } from "./harness.js";
 
 const scratch = useScratch("keychain");
@@ -29,8 +29,8 @@ function launches() {
   git(main, "worktree", "add", "-q", "-b", "t1", worktree);
   const home = join(root, "home");
   const binding = trustedWorktreeBinding(main, worktree, [pool]);
-  return { root, home, worktree, launch: (kind: FenceKind) => fenceFor(kind, { databaseFile: join(state, "orders.db"), worktree, home, binding, runFolders: runFolders(null), poolRoots: [pool], policy: 2,
-    boundary: taskBoundary({ worktree, provider: "command", home, binding, policy: 2 }) }) };
+  return { root, home, worktree, launch: (kind: FenceKind, machLookup?: string[]) => fenceFor(kind, { databaseFile: join(state, "orders.db"), worktree, home, binding, runFolders: runFolders(null), poolRoots: [pool], policy: 2,
+    boundary: taskBoundary({ worktree, provider: "command", home, binding, policy: 2 }), ...(machLookup === undefined ? {} : { machLookup }) }) };
 }
 
 describe("attack: the keychain from inside the fence", () => {
@@ -80,5 +80,30 @@ describe("attack: the keychain from inside the fence", () => {
       const server = underSandbox(read, build.fence, serverGrantsOf(build.fenceGrants), { cwd: root });
       expect(server.stdout).not.toContain(canary);
     } finally { security("delete-keychain", keychain); }
+  });
+  // macOS 26.5: a reported mach-lookup denial now and then never answers (npm hung in Node's DNS setup), so a lookup the
+  // profile doesn't allow is denied unreported, first after the default deny. Still denied; every allow after it wins.
+  test("policy: an unallowed mach service is denied unreported, before every allow; the keychain deny is unreported too", () => {
+    const { root, launch } = launches();
+    for (const kind of ["build", "check", "flow"] as const) {
+      const fence = launch(kind);
+      const command = srtMacosCommand("/usr/bin/true", [], srtTermsOf(fence.fence, fence.fenceGrants), root);
+      expect(command.split(SEATBELT_QUIET_MACH_DENY), kind).toHaveLength(2);
+      const quiet = command.indexOf(SEATBELT_QUIET_MACH_DENY);
+      expect(command.lastIndexOf("(deny default", quiet), kind).toBe(command.indexOf("(deny default"));
+      expect(command.indexOf("(allow "), kind).toBeGreaterThan(quiet);
+    }
+    expect(SEATBELT_NO_KEYCHAIN).toContain("(deny mach-lookup (with no-report) ");
+  });
+
+  test("native: a check still can't reach a mach service it isn't allowed (DNS configuration); a project's grant still reaches it", ctx => {
+    needs(ctx, seatbelt());
+    const { root, launch } = launches();
+    const dns = "/usr/sbin/scutil --dns; echo \"exit:$?\"";
+    const denied = underSandbox(dns, launch("check").fence, launch("check").fenceGrants, { cwd: root });
+    expect(denied.stdout, denied.stderr).toContain("No DNS configuration available");
+    const granted = launch("check", ["com.apple.SystemConfiguration.DNSConfiguration"]);
+    const allowed = underSandbox(dns, granted.fence, granted.fenceGrants, { cwd: root });
+    expect(allowed.stdout, allowed.stderr).toContain("resolver #");
   });
 });

@@ -2,6 +2,7 @@
 import { networkWords } from "../egress.js";
 import type { ReleaseView } from "../release-view.js";
 import { releaseAsksAgainWords, releaseTermsSentence } from "../scope.js";
+import { RELEASE_CI_RUNNING_WORDS } from "../release-ci-hold.js";
 import { writesWords } from "../writes-mode.js";
 import { checkAccessWords } from "../check-access.js";
 import { sandboxTermsWords } from "../project-sandbox.js";
@@ -25,13 +26,14 @@ import { taskRoad, type RoadChecks } from "../first-run.js";
 import { starterForWork } from "../flow-starters.js";
 import { type Gap } from "../gaps.js";
 import { readAuthModeStrict } from "../keys.js";
-import { failedAttemptSentence,type FailureExplanation,retryNoteOf } from "../needs-you.js";
+import { failedAttemptSentence,type FailureExplanation,retryNoteOf,START_BUILDER_COMMAND,startBuilderHref } from "../needs-you.js";
 import { chosenWords, makesNoPlan, PHASES as ROUTE_PHASES, type RouteOverride, type RouteProjection, TASK_SIZES } from "../phase-routing.js";
 import { type MilestoneState,parseExecutionPlanDocument } from "../plan.js";
 import { type ContractChange } from "../planner-source.js";
 import { projectName } from "../project.js";
 import { type CriterionMatrixRow,dispatchStatusToken,manualReviewOnly,plainReasonWords,type ProofVerdict,reviewConflict } from "../proof.js";
 import { providerName } from "../provider-auth.js";
+import { agentModelName } from "../model-names.js";
 import { type Phase } from "../provider.js";
 import { type QualityMode,qualityModeTitle } from "../quality.js";
 import { evidenceShortenedWords } from "../result-review.js";
@@ -49,7 +51,7 @@ import { reviewHref,taskChatHref,taskHref } from "./http.js";
 import { coordinatorProposalsSection } from "./render-chat.js";
 import { completionReceiptCard, type CompletionReceiptView, criterionMatrixHtml, type EvidenceLinkMap, evidenceWords, homePhaseWords, incidentWords, needsCheck, pullRequestCardHtml, reasonWords, receiptStatusOf, repairChainHtml, reportItemsHtml, reviewRetryPanel, runNoun, runOutcomeBadge, semanticCoverageHtml, type TaskPullRequest, verificationExplanation, verificationRecovered } from "./render-results.js";
 import { type Who } from "./session.js";
-import { linkWords, originNote, type TaskOrigin } from "../task-source.js";
+import { linkWords, originNote, requestName, requestWords, type TaskOrigin } from "../task-source.js";
 
 /** What the task and approval views show about a drafted plan's contract
  * (contract handoff, task 1). A problem is a named problem, never a blank. */
@@ -159,14 +161,7 @@ export function acceptanceCeremonyHtml(criteria: readonly AcceptanceCriterion[])
 }
 /** "claude" + "opus" → "Claude Opus"; "claude-opus-5-5" → "Claude Opus 5.5"; anything else keeps its exact id. */
 export function agentNameWords(provider: string, model: string | null): string {
-  const name = providerName(provider);
-  if (model === null || model === "" || model === "default") return name;
-  const bare = model.startsWith(`${provider}-`) ? model.slice(provider.length + 1) : model;
-  const title = (word: string): string => `${word[0]!.toUpperCase()}${word.slice(1)}`;
-  if (/^[a-z]+$/.test(bare)) return `${name} ${title(bare)}`;
-  const versioned = /^([a-z]+)-(\d+(?:-\d+)*)$/.exec(bare);
-  if (versioned !== null) return `${name} ${title(versioned[1]!)} ${versioned[2]!.replace(/-/g, ".")}`;
-  return `${name} ${model}`;
+  return agentModelName(provider, model);
 }
 
 /** The permission a sealed profile grants, in two or three words. */
@@ -235,7 +230,8 @@ const fragmentString = (fragment: Html | ""): string => fragment === "" ? "" : h
 function originWords(origin: TaskOrigin): string {
   const flow = origin.flow === null ? null : origin.flow === "hidden" ? "from a flow" : origin.flow === "removed" ? "from a flow (removed)" : `from flow “${origin.flow.name}”`;
   const source = origin.source === null ? null : `${origin.source.label} (${origin.source.proved})`;
-  return [flow, source].filter(one => one !== null).join(" · ");
+  const request = origin.request == null ? null : `from ${requestName(origin.request)}`;
+  return [flow, source, request].filter(one => one !== null).join(" · ");
 }
 
 /** v126: a task's origin as a fact: the flow, linked for those who may open it, and the outside event, linked to where
@@ -248,6 +244,11 @@ function originParts(origin: TaskOrigin): BrowserTaskFact["parts"] {
     // The link shows where it goes (host and path), beside what it is.
     parts.push(origin.source.label, ` (${origin.source.proved})`);
     if (origin.source.url !== null) parts.push(" · ", { label: linkWords(origin.source.url), href: origin.source.url });
+  }
+  if (origin.request != null) {
+    if (parts.length > 0) parts.push(" · ");
+    const where = requestWords(origin.request);
+    parts.push(`${requestName(origin.request)}${where === "" ? "" : `: ${where}`}`);
   }
   return parts;
 }
@@ -906,7 +907,9 @@ export function taskRecoveryHref(taskId: string, diagnosis: DispatchDiagnosis | 
   if (diagnosis?.action === null || diagnosis?.action === undefined) return null;
   const task = taskHref(taskId);
   switch (diagnosis.action) {
+    // The task page only repeats that no builder is connected: lead to the command that connects one.
     case "start-worker":
+      return startBuilderHref(taskId);
     case "repair-dependency":
       return `${task}#run-status`;
     case "retry-task":
@@ -1489,6 +1492,8 @@ export function taskBodyParts(data: {
   approvalProof?: { method: string; at: string } | null;
   /** A release task the plane approved (or is checking) itself (docs/plans/auto-approve-green.md): its candidate. */
   autoRelease?: { kind: "checking" | "approved"; candidate: string } | null;
+  /** A release task filed while its pull request's CI still runs (a person may approve now; nothing deploys before CI passes). */
+  releaseCiRunning?: boolean;
   /** One approval per release (release-once.md): the release this task belongs to, and whether this reader may stop it. */
   release?: ReleaseView | null;
   canStopRelease?: boolean;
@@ -1724,11 +1729,11 @@ export function taskBodyParts(data: {
             firstConnection
               ? html`<p>Toolroll is open, but this project has not been connected to a builder yet.</p><p>On the machine where the project lives, open that folder and run:</p>`
               : html`<p>Toolroll is open, but this project's builder stopped checking in. Reopen Toolroll on the machine where the project lives.</p><p>If you normally start it from a terminal, open the project folder and run:</p>`,
-            html`<code class="dispatch-recovery-command">toolroll up</code>`,
+            html`<code class="dispatch-recovery-command">${START_BUILDER_COMMAND}</code>`,
             firstConnection
               ? html`<p class="meta">This is the normal start command: it opens the app, connects the project, and starts its builder. Keep Toolroll running; approved tasks begin automatically.</p>`
               : html`<p class="meta">This task resumes automatically when the builder reconnects. You do not need to file or approve it again.</p>`,
-            html`<p><a href="/system">See connection status →</a></p></div></details>`,
+            html`<p><a href="${startBuilderHref(task.id)}">See connection status →</a></p></div></details>`,
           ]);
         }
         // Never a link to this page's own acts: Retry sits on the status card and below.
@@ -1929,7 +1934,7 @@ export function taskBodyParts(data: {
           scope.touches.length === 0 ? "" : html`<p class="scope-paths"><strong>Touches</strong> ${scope.touches.join(", ")}</p>`,
           html`<p><strong>Quality</strong> ${qualityModeTitle(scope.qualityMode ?? "default")}</p>`,
           acceptanceCeremonyHtml(scope.acceptance),
-          scope.releaseTerms == null ? "" : html`<p><strong>Release</strong></p><p class="recap">${releaseTermsSentence(scope.releaseTerms)}</p>${scope.releaseTerms.policy.carry ? html`<details><summary>What asks again</summary><ul>${joinHtml(releaseAsksAgainWords(scope.releaseTerms).map(line => html`<li>${line}</li>`), "")}</ul></details>` : ""}`,
+          scope.releaseTerms == null ? "" : html`<p><strong>Release</strong></p><p class="recap">${releaseTermsSentence(scope.releaseTerms)}</p>${data.releaseCiRunning === true ? html`<p class="meta">${RELEASE_CI_RUNNING_WORDS}</p>` : ""}${scope.releaseTerms.policy.carry ? html`<details><summary>What asks again</summary><ul>${joinHtml(releaseAsksAgainWords(scope.releaseTerms).map(line => html`<li>${line}</li>`), "")}</ul></details>` : ""}`,
           approval.approved && data.autoRelease != null
             ? html`<p class="meta scope-seal">${autoReleaseWords(data.autoRelease)} · <span class="seal">signs ${shortDigest(scope.digest)}</span></p>`
             : approval.approved && data.release?.kind === "carried"
@@ -3035,6 +3040,7 @@ export function releaseCardHtml(taskId: string, release: ReleaseView | null, can
     html`<details><summary>Later commits (${release.landed.length})</summary>${landed}</details>`,
     release.obligations.length === 0 ? "" : html`<details><summary>Still to pass (${release.obligations.length})</summary><ul>${joinHtml(release.obligations.map(one => html`<li>${one}</li>`), "")}</ul></details>`,
     release.nightly === null ? "" : html`<p class="meta">Nightly check of main: ${release.nightly.outcome ?? "running"} at ${release.nightly.sha.slice(0, 7)}${release.openMainFailures > 0 ? ` · ${release.openMainFailures} open failure${release.openMainFailures === 1 ? "" : "s"}` : ""}</p>`,
+    ...release.githubNightly.map(line => html`<p class="meta">${line}</p>`),
     release.carrying && canStop ? postForm(`${taskHref(taskId)}/stop-carrying`, html`<button type="submit" class="secondary">Stop carrying later commits</button>`, { attrs: { class: "inline" } }) : "",
     html`</div>`,
   ], "\n");

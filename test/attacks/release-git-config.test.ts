@@ -11,9 +11,12 @@
  * record is refused, and a clean checkout passes the check and reads its objects through the hardened runner.
  */
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { lockCheckout } from "../../src/git-views.js";
+import { teardownGit, refusal } from "../../src/teardown-git.js";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
-import { recordedReleaseRepo, releaseAdapters, releaseConfigProblem, releaseRemote } from "../../src/release-adapters.js";
+import { describe, expect, test, vi } from "vitest";
+import { exec, recordedReleaseRepo, releaseAdapters, releaseConfigProblem, releaseRemote } from "../../src/release-adapters.js";
 import { journalFile, runRelease, writeJournal, type ReleaseAdapters } from "../../src/release.js";
 import { openStore } from "../../src/store.js";
 import { git, repository, useScratch, write } from "./harness.js";
@@ -119,10 +122,75 @@ describe("the release coordinator's Git: a poisoned gate checkout runs nothing",
     const resumed = await runRelease({ branch: "release-1.2.3", checkout: at.gate, stateDir: journal }, made);
     expect(resumed.ok).toBe(false);
     if (!resumed.ok) expect(resumed.message).toMatch(/won't run Git/);
-    for (const look of [() => made.repo.remoteHead("release-1.2.3"), () => made.repo.sync("release-1.2.3"), () => made.repo.tree(at.head), () => made.repo.mainHead(), () => made.repo.deleteBranch("release-1.2.3", at.head)]) {
+    for (const look of [() => made.repo.remoteHead("release-1.2.3"), () => made.repo.sync("release-1.2.3"), () => made.repo.tree(at.head), () => made.repo.deleteBranch("release-1.2.3", at.head)]) {
       await expect(look()).rejects.toThrow(/won't run Git/);
     }
     expect(existsSync(at.ran), `the marker ran for ${key}`).toBe(false);
+  });
+
+  test.each(["after-audit", "during-backoff"])("a config planted %s cannot change a retried Git command", async when => {
+    const at = fixture();
+    let poisoned = false, looks = 0;
+    let destination: string | null = null;
+    const plant = () => {
+      if (poisoned) return;
+      poisoned = true;
+      git(at.gate, "config", "--local", "url.https://github.com/attacker/other.git.insteadOf", RECORDED);
+    };
+    const made = releaseAdapters({ checkout: at.gate, database: at.database, say: () => {}, now: () => NOW,
+      sleep: async () => { if (when === "during-backoff") plant(); },
+      run: async (command, args, options) => {
+        if (args.includes("config")) {
+          const out = await exec(command, args, options);
+          if (when === "after-audit") plant();
+          return out;
+        }
+        if (args.includes("ls-remote")) {
+          looks++;
+          if (when === "during-backoff" && looks === 1) return { code: 128, stdout: "", stderr: "Connection reset" };
+          // Real Git resolves the destination, without contacting any remote or using credentials.
+          const out = await exec(command, args.flatMap(arg => arg === "ls-remote" ? [arg, "--get-url"] : [arg]), options);
+          if (out.code !== 0) return out;
+          destination = out.stdout.trim();
+          return { code: 128, stdout: "", stderr: "offline test read ended" };
+        }
+        throw new Error(`unexpected ${args.join(" ")}`);
+      },
+    });
+    await expect(made.repo.remoteHead("release-1.2.3")).rejects.toThrow();
+    expect(poisoned).toBe(true);
+    expect(destination).toBe(when === "after-audit" ? RECORDED : null);
+    expect(looks).toBe(1);
+  });
+
+  test("the private view's config parser also uses the pinned Git executable", async () => {
+    const at = fixture();
+    const bin = join(at.root, "bin");
+    const fakeGit = write(join(bin, "git"), `#!/bin/sh\necho ran > '${at.ran}'\nexit 0\n`);
+    chmodSync(fakeGit, 0o755);
+    vi.stubEnv("PATH", bin);
+    try {
+      const made = releaseAdapters({ checkout: at.gate, database: at.database,
+        tools: { git: "/usr/bin/git", gh: "/bin/false", ssh: "/usr/bin/ssh" } });
+      expect(await made.repo.tree(at.head)).toMatch(/^[0-9a-f]{40}$/);
+      expect(existsSync(at.ran)).toBe(false);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  test("waiting for the shared Git view respects the caller's lock budget", async () => {
+    const at = fixture();
+    const unlock = await lockCheckout(homedir(), at.gate);
+    vi.useFakeTimers();
+    let spawned = false;
+    try {
+      const pending = teardownGit(async () => {
+        spawned = true;
+        return { code: 0, stdout: "", stderr: "", timedOut: false, notFound: false };
+      }, { repo: at.gate }, 1)(at.gate, ["ls-remote", RECORDED]);
+      await vi.advanceTimersByTimeAsync(25);
+      expect(refusal(await pending)).toMatch(/still running/);
+      expect(spawned).toBe(false);
+    } finally { unlock(); vi.useRealTimers(); }
   });
 
   test("the setting check is an allowlist: only local and worktree scope count, and anything else is named", () => {

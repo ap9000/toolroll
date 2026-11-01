@@ -7,6 +7,7 @@
  * second, with how sure it is. It never writes text, so nothing it returns
  * is instructions: an answer is only ever one of the zone's own options.
  */
+import { inEvalWorld } from "./eval-gate.js";
 import { redactSecretLines, scanForSecrets } from "./evidence.js";
 import { SORT_ROUTE_KEY, sortKeyOf, sortNoteKeyOf } from "./contracts/flow.js";
 import { readJevReply, type SortDecision, type SortNoteAnswer } from "./contracts/sort-answer.js";
@@ -61,6 +62,8 @@ export type JevAsked = { ok: true; body: Record<string, unknown>; ms: number } |
 
 /** Ask Jev through OpenRouter. Trouble reaching it (or a refused key, or no credit) is a reason to try again, in words. */
 export async function askJev(fetcher: typeof fetch, key: string, request: JevRequest): Promise<JevAsked> {
+  // An eval world makes no provider call it can't gate and record (eval-gate.ts), so nothing is sent.
+  if (inEvalWorld()) return { ok: false, said: "An eval world makes no Jev call." };
   const started = Date.now();
   let response: Response;
   try {

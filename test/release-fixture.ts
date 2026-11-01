@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, releaseAuthorityOfTask, type ReleaseAuthority, type Store } from "../src/store.js";
 import { addApprover, approve, propose } from "../src/scope.js";
-import { releaseTermsFor, carriedTaskId } from "../src/release-carry.js";
+import { releaseCheckPurposeFor, releaseTermsFor, carriedTaskId } from "../src/release-carry.js";
 
 export const RELEASE_NOW = new Date("2026-10-25T12:00:00.000Z");
 export const VERSION = "0.9.71";
@@ -42,13 +42,21 @@ export type ReleaseFixture = {
 export const FIXTURE_REMOTE = "https://example.invalid/r.git";
 
 /** A repository with an approved release of its head. `files` adds to the base tree. */
+/** alex's password in every release fixture: fixed, so a run never depends on what a random draw looks like. */
+export const FIXTURE_PASSWORD = "fixture-password-alex-8Kq2";
+
 export function releaseFixture(options: { files?: Record<string, string>; protectedPaths?: string[]; build?: string; beforeApproval?: (store: Store, repo: string) => void;
   /** Leave the release task filed and unapproved (an automatic approval's starting point). */
   approve?: boolean;
   /** A commit on top of the base, released as the candidate. */
   candidate?: Record<string, string | null>;
   /** A commit between the base and the candidate (a branch's earlier commit). */
-  intermediate?: Record<string, string | null> } = {}): ReleaseFixture {
+  intermediate?: Record<string, string | null>;
+  /** alex's password (default FIXTURE_PASSWORD). */
+  password?: string;
+  /** The project's checks run outside the sandbox, so the release files without terms: its scope carries a release check
+   * purpose instead (pipeline-speed.md, P0), as `task scope --release` files it. */
+  termsless?: true } = {}): ReleaseFixture {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "so-release-once-")));
   const repo = join(dir, "project");
   mkdirSync(repo);
@@ -88,7 +96,9 @@ export function releaseFixture(options: { files?: Record<string, string>; protec
   const store = openStore(databaseFile);
   // The project's recorded remote: the trusted reads of main (nightly-check.ts) are bound to it.
   store.upsertProject(repo, "project", RELEASE_NOW, { remoteUrl: FIXTURE_REMOTE });
-  const added = addApprover(store, "alex", RELEASE_NOW);
+  // A fixed password: randomness isn't what these tests are about, and a random one starts with "--" about 1 time in
+  // 4096 (0.9.76's CI: a CLI parser read such a password as a missing value).
+  const added = addApprover(store, "alex", RELEASE_NOW, undefined, () => options.password ?? FIXTURE_PASSWORD);
   if (!added.ok) throw new Error("approver");
   for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", RELEASE_NOW);
   store.setVerifyCommand({ repo, command: "node scripts/release-check.mjs --full", timeoutMs: 60_000, approvedBy: "alex" }, RELEASE_NOW);
@@ -96,9 +106,12 @@ export function releaseFixture(options: { files?: Record<string, string>; protec
   const taskId = carriedTaskId(VERSION, approved);
   store.createTask({ id: taskId, title: `Release ${VERSION}` }, RELEASE_NOW);
   store.placeTask(store.refFor("built-in", taskId).id, repo, {}, RELEASE_NOW);
+  if (options.termsless === true && store.setProjectCheckAccess(repo, "unsandboxed", "alex", RELEASE_NOW, { may: "widen" }) === null) throw new Error("check access");
   const terms = releaseTermsFor(store, { repo, version: VERSION, branch: "release-0.9.71", pr: 240, candidate: approved, now: RELEASE_NOW });
-  if (!terms.ok) throw new Error(terms.why);
-  const scope = propose(store, { taskId, goal: `Verify ${VERSION}`, candidate: approved, acceptance: [{ id: "c1", statement: "The release check passes", how: null, evidence: ["check"] }], releaseTerms: terms.terms, now: RELEASE_NOW });
+  const purpose = options.termsless === true ? releaseCheckPurposeFor(store, { repo, version: VERSION, branch: "release-0.9.71", pr: 240, candidate: approved }) : null;
+  if (options.termsless === true ? terms.ok || purpose === null || !purpose.ok : !terms.ok) throw new Error(terms.ok ? "terms were made for a termsless release" : terms.why);
+  const sealed = purpose !== null && purpose.ok ? { releaseCheck: purpose.purpose } : { releaseTerms: (terms as Extract<typeof terms, { ok: true }>).terms };
+  const scope = propose(store, { taskId, goal: `Verify ${VERSION}`, candidate: approved, acceptance: [{ id: "c1", statement: "The release check passes", how: null, evidence: ["check"] }], ...sealed, now: RELEASE_NOW });
   if (options.approve !== false) {
     const yes = approve(store, taskId, "alex", RELEASE_NOW, scope.digest, added.token);
     if (!yes.ok) throw new Error(`approve: ${yes.reason}`);
@@ -143,6 +156,7 @@ import { storeEvidence } from "../src/evidence.js";
 import { prepareCheckAttempt, sealCheckOutcome } from "../src/check-report.js";
 import { planTargetedRecheck, settleCoverage } from "../src/release-recheck.js";
 import { effectiveCheckFacts, sealVerificationReceipt, verificationEvidence } from "../src/verification-evidence.js";
+import { retriedInside } from "../src/check-failure.js";
 import { recordRunCheckLevel } from "../src/check-levels.js";
 import { CHECK_INVENTORY_CAPTURE, CHECK_REPORT_CAPTURE } from "../src/check-report.js";
 import type { CheckReport } from "../src/contracts/release-check.js";
@@ -154,8 +168,14 @@ export type UnitOutcome = { file: string; state?: "passed" | "failed" | "skipped
 /** A release check report with these units (every other part passed, no journeys or upgrades unless given). */
 export function reportOf(units: UnitOutcome[], extra: Partial<CheckReport> & { exitCode?: number } = {}): Omit<CheckReport, "nonce" | "mode" | "planDigest"> {
   const unitFailed = units.some(one => (one.failed ?? []).length > 0 || one.state === "failed");
+  // Every part runs (the plane owes the fixture's journeys and, with no release recorded, every part the tree can run):
+  // each journey run passes one group, the upgrade path one version, unless `extra` says otherwise.
   const parts = ["typecheck", "build", "unit", "flows", "app", "flows-real", "app-real", "upgrade"].map(part => ({ part: part as CheckReport["parts"][number]["part"],
-    selected: ["typecheck", "build", "unit"].includes(part), ran: ["typecheck", "build", "unit"].includes(part), code: ["typecheck", "build"].includes(part) ? 0 : part === "unit" ? (unitFailed ? 1 : 0) : null, timedOut: false }));
+    selected: true, ran: true, code: part === "unit" ? (unitFailed ? 1 : 0) : 0, timedOut: false }));
+  const run = (script: "flows" | "app", kind: "scripted" | "real") => ({ script, kind, finished: true, inventoried: true,
+    groups: [{ group: "core", state: "passed" as const, retried: false, unattributed: false, journeys: [{ name: "opens", state: "passed" as const }] }] });
+  const runs = [run("flows", "scripted"), run("app", "scripted"), run("flows", "real"), run("app", "real")];
+  const journeys = runs.map(one => extra.journeys?.find(given => given.script === one.script && given.kind === one.kind) ?? one);
   return {
     version: 1, exitCode: extra.exitCode ?? (units.some(one => (one.failed ?? []).length > 0 || one.state === "failed") ? 1 : 0),
     parts: extra.parts ?? parts,
@@ -163,8 +183,8 @@ export function reportOf(units: UnitOutcome[], extra: Partial<CheckReport> & { e
       files: units.map(one => ({ file: one.file, state: one.state ?? ((one.failed ?? []).length > 0 ? "failed" : "passed"), passed: (one.passed ?? []).length, failed: (one.failed ?? []).length, skipped: (one.skipped ?? []).length, flaky: one.flaky === true })),
       identities: units.flatMap(one => [...(one.failed ?? []).map(name => ({ file: one.file, name, state: "failed" as const, flaky: false })),
         ...(one.skipped ?? []).map(name => ({ file: one.file, name, state: "skipped" as const, flaky: false })), ...(one.passed ?? []).map(name => ({ file: one.file, name, state: "passed" as const, flaky: false }))]) },
-    journeys: extra.journeys ?? [],
-    upgrades: extra.upgrades ?? null,
+    journeys,
+    upgrades: extra.upgrades !== undefined ? extra.upgrades : { finished: true, inventoried: true, versions: [{ version: "0.9.1", state: "passed" }] },
   };
 }
 
@@ -173,7 +193,10 @@ export function reportOf(units: UnitOutcome[], extra: Partial<CheckReport> & { e
  * planTargetedRecheck allows it), the report on the check's output with the nonce, its coverage, its log and its
  * version 3 receipt. `report` gets the attempt's plan so a targeted report can answer it.
  */
-export function sealedCheck(f: ReleaseFixture, taskId: string, head: string, report: (plan: import("../src/contracts/release-check.js").TargetedPlan | null) => Omit<CheckReport, "nonce" | "mode" | "planDigest"> | null, options: { forceFull?: boolean; base?: string } = {}) {
+export function sealedCheck(f: ReleaseFixture, taskId: string, head: string, report: (plan: import("../src/contracts/release-check.js").TargetedPlan | null, units: readonly string[]) => Omit<CheckReport, "nonce" | "mode" | "planDigest"> | null, options: { forceFull?: boolean; base?: string; release?: boolean; setupReplayed?: true;
+  /** What the plane saw of the command instead of an exit (it never started, Toolroll's own shutdown stopped it, it
+   * timed out): the builder's own result, sealed in the receipt. */
+  plane?: { configured: true; ran: false; attemptFailed: true; failure: import("../src/contracts/verification-receipt.js").VerifyCommandFacts extends infer F ? F extends { failure?: infer X } ? X : never : never } } = {}) {
   const store = f.store, root = EVIDENCE(f);
   const runId = builtRun(store, taskId, head, options.base);
   recordRunCheckLevel(store, { id: runId, taskId, repo: f.repo }, "full", "project", RELEASE_NOW);
@@ -181,17 +204,17 @@ export function sealedCheck(f: ReleaseFixture, taskId: string, head: string, rep
   const decision = planTargetedRecheck(store, root, { runId, taskId, repo: f.repo, head, command, access: "sandboxed", now: RELEASE_NOW });
   const targeted = decision.mode === "targeted" && options.forceFull !== true;
   const prepared = prepareCheckAttempt(store, root, { runId, repo: f.repo, head, command, access: "sandboxed", authority: decision.authority,
-    ...(targeted && decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch }, RELEASE_NOW);
+    ...(targeted && decision.mode === "targeted" ? { plan: decision.plan, snapshot: decision.snapshot } : {}), watch: decision.watch, ...(options.release === undefined ? {} : { release: options.release }) }, RELEASE_NOW);
   if (prepared === null) throw new Error("no attempt");
-  const body = report(prepared.plan);
-  const exitCode = body?.exitCode ?? 1;
+  const body = report(prepared.plan, prepared.inventory.units);
+  const exitCode: number | null = options.plane !== undefined ? null : body?.exitCode ?? 1;
   const full = body === null ? null : { ...body, nonce: prepared.nonce, mode: prepared.mode, planDigest: prepared.plan === null ? null : createHashHex(JSON.stringify(prepared.plan)) };
-  sealCheckOutcome(store, root, prepared, { stdout: full === null ? "the report was lost\n" : `checks\nTOOLROLL_CHECK_REPORT ${JSON.stringify(full)}\n`, exitCode }, RELEASE_NOW);
+  const sealedReport = sealCheckOutcome(store, root, prepared, { stdout: full === null ? "the report was lost\n" : `checks\nTOOLROLL_CHECK_REPORT ${JSON.stringify(full)}\n`, exitCode }, RELEASE_NOW);
   const settled = settleCoverage(store, root, { runId, taskId, exitCode, now: RELEASE_NOW }, run => { const gate = verificationEvidence(store, root, run); return gate.ok ? gate.digest : null; });
   storeEvidence(store, root, runId, "check-log", "check-log.txt", Buffer.from(`exit ${exitCode}\n`), command.command, RELEASE_NOW, { captureStatus: "ok" });
   const sha = (capture: string) => { const found = store.artifactsFor(runId).filter(a => a.kind === "structured-output" && a.capture === capture); return found.length === 1 ? found[0]!.sha256 : null; };
   // As the builder does: coverage meets the outcome in one place.
-  const effective = effectiveCheckFacts({ configured: true, ran: true, exitCode }, { coverage: settled.coverage, check: { attempt: prepared.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE) }, composed: settled.composed });
+  const effective = effectiveCheckFacts(options.plane ?? { configured: true, ran: true, exitCode: exitCode ?? 1, ...(options.setupReplayed === true ? { setupReplayed: true as const, firstAttempt: { class: "launch" as const, program: "tsc", exitCode: 127 } } : {}) }, { coverage: settled.coverage, check: { attempt: prepared.mode, report: sha(CHECK_REPORT_CAPTURE), inventory: sha(CHECK_INVENTORY_CAPTURE), retried: retriedInside(sealedReport) }, composed: settled.composed });
   sealVerificationReceipt(store, root, runId, head, command, effective.result, RELEASE_NOW, undefined, effective.facts ?? undefined);
   const passed = effective.result.configured && effective.result.ran && effective.result.exitCode === 0;
   store.recordRunCheck(runId, { status: passed ? "passed" : "failed", exitCode: effective.result.configured && effective.result.ran ? effective.result.exitCode : null, suites: [] }, RELEASE_NOW);

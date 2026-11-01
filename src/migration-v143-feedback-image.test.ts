@@ -5,11 +5,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { openStore, SCHEMA_VERSION } from "./store.js";
+import { openStore, SCHEMA_VERSION, UPDATE_SAFE_MIGRATIONS } from "./store.js";
 import { historySnapshot, changedHistory } from "./toolroll-update.js";
 
-test.each([136, -136])("v%s feedback retains its file, line, text and source key with no image", version => {
-  const dir = mkdtempSync(join(tmpdir(), "toolroll-feedback-migration-"));
+test.each([142, -142])("v%s feedback retains its file, line, text and source key with no image", version => {
+  const dir = mkdtempSync(join(tmpdir(), "toolroll-v143-feedback-"));
   const file = join(dir, "state.db"), now = new Date("2026-10-28T00:00:00Z");
   try {
     const first = openStore(file);
@@ -25,6 +25,8 @@ test.each([136, -136])("v%s feedback retains its file, line, text and source key
     const before = historySnapshot(old);
     old.close();
     const migrated = openStore(file);
+    expect(SCHEMA_VERSION).toBe(143);
+    expect(UPDATE_SAFE_MIGRATIONS).toContain(143);
     expect(migrated.allDiffComments(run)[0]).toMatchObject({ path: "src/nav.ts", line: 4, note: "Keep this spacing.", sourceKey: "saved-note", image: null });
     expect(migrated.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(SCHEMA_VERSION);
     expect(changedHistory(migrated.handle, before)).toEqual([]);

@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { acquire } from "./claim.js";
 import { register } from "./runner.js";
-import { openStore, type Store } from "./store.js";
+import { MAX_WATCH_LEASE_MS, openStore, type Store } from "./store.js";
 
 const T0 = new Date("2026-10-19T12:00:00.000Z");
 const at = (minutes: number) => new Date(T0.getTime() + minutes * 60_000);
@@ -74,12 +74,14 @@ test("an expired check, or one whose watch no longer holds its lease, can't cons
   expect(store.passAcpCheckStep(id, 2, two, at(31))).toBe(false);
   expect(store.publishAcpCheck(id, attestation, at(31))).toBe(false);
   expect(store.abandonedAcpChecks(RUNNER, at(31)).map(one => one.id)).toEqual([id]);
-  // Within its time, but the watch lost its lease: the same.
-  expect(store.abandonedAcpChecks(RUNNER, at(5))).toEqual([]);
-  store.handle.prepare("UPDATE watch_lease SET expires_at = ? WHERE runner = ?").run(at(1).toISOString(), RUNNER);
-  expect(store.passAcpCheckStep(id, 2, two, at(5))).toBe(false);
-  expect(store.abandonedAcpChecks(RUNNER, at(5)).map(one => one.id)).toEqual([id]);
-  expect(store.failAcpCheck(id, "interrupted", at(5))).toBe(true);
+  // Within its time, but the watch lost its lease: the same. (A watch lease lasts at most MAX_WATCH_LEASE_MS, so
+  // "within" is inside the lease taken at T0.)
+  const within = new Date(T0.getTime() + MAX_WATCH_LEASE_MS / 2);
+  expect(store.abandonedAcpChecks(RUNNER, within)).toEqual([]);
+  store.handle.prepare("UPDATE watch_lease SET expires_at = ? WHERE runner = ?").run(new Date(T0.getTime() + MAX_WATCH_LEASE_MS / 4).toISOString(), RUNNER);
+  expect(store.passAcpCheckStep(id, 2, two, within)).toBe(false);
+  expect(store.abandonedAcpChecks(RUNNER, within).map(one => one.id)).toEqual([id]);
+  expect(store.failAcpCheck(id, "interrupted", within)).toBe(true);
   expect(store.acpCheck(id)).toMatchObject({ state: "failed", result: "interrupted" });
   expect(store.acpAttestationFor("opencode", RUNNER)).toBeNull();
 });

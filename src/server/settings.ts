@@ -9,6 +9,7 @@ import { CONNECT_CALLBACK,connectionsOf,finishConnect,localConnectOf,oneClickOf 
 import { learningView } from "../project-learning.js";
 import { skillTestResult } from "../project-skills.js";
 import { discoverTools,projectToolsOf } from "../project-tools.js";
+import { lookProjectMcp } from "../folder-look.js";
 import { publishingOf } from '../pull-request-flow.js';
 import { skillTestFeedbackHtml } from "../skills-ui.js";
 import { labelOf, nameOf } from "../subagent-admin.js";
@@ -17,7 +18,7 @@ import { learningHtml } from "../workspace-ui.js";
 import { adapterPolicy } from "./route-policy.js";
 
 import { createHash } from "node:crypto";
-import { dirname,join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { INSTALLATION_SCOPE } from "../agentconfig.js";
 import { rulesSummary } from "../approval-rules-ui.js";
 import { installMethod } from "../install-method.js";
@@ -29,7 +30,7 @@ import {
 canonicalProject,
 projectName
 } from "../project.js";
-import { ALL_CREDENTIAL_ENV,type ProviderId } from "../provider.js";
+import { ALL_CREDENTIAL_ENV,MONEY_CAPABILITIES,type ProviderId } from "../provider.js";
 import { updateChecksOff } from "../releases.js";
 import {
 authenticateAccount
@@ -42,7 +43,7 @@ import type { ServerRuntime } from './runtime.js';
 import { refuse,screen } from "./chrome.js";
 import { HANDOFF_STYLE,redirect,respond,safeReturn,sayTo,signInSpent,startedHere } from "./http.js";
 import { html, htmlString, joinHtml, postForm, type Html, reauth } from "../html.js";
-import { browserCaller } from "./session.js";
+import { browserCaller,sessionWithinLifetime } from "./session.js";
 /** settings handlers, moved without changing their route bodies. */
 import { DEFAULT_ACCENT,normalHex } from "../accent-colors.js";
 import { resolvePhaseAgent } from "../agentconfig.js";
@@ -71,6 +72,7 @@ import { startersHtml } from "../flow-starters-ui.js";
 import { starterOf,startersFor,switchOnStarter } from "../flow-starters.js";
 import { disconnectGoogle,googleConnected,googleConsent,readGoogleMail,saveGoogleClient } from "../google-mail.js";
 import { integrationsHtml } from "../integrations-ui.js";
+import { setYouiyouxIntake } from "../youiyoux-intake.js";
 import { clearProviderKey, keyStatus, plausibleKey, PROVIDER_KEY_ENV, readAuthMode, readProviderKey, saveProviderKey, setAuthMode, SUBSCRIPTION_CAPABLE, verdictWords, verifyProviderKey } from "../keys.js";
 import { decisionsHtml,framedSection,knowledgeHtml,MEMORY_INTRO,memorySearchHtml,proposalsHtml } from "../knowledge-ui.js";
 import { aboutYouOf,checkAboutYou,saveAboutYou } from "../lead-about.js";
@@ -81,6 +83,9 @@ import { startConnect } from "../mcp-connect.js";
 import { decideProposal,listProposals,memoryStatus } from "../memory-pass.js";
 import { checkModels,isNewModel,modelOptions,modelWords,RUNTIME_TOOLS,runtimeStates,seenModels,setWatch,updateRuntime,watchState,type RuntimeTool } from "../model-catalog.js";
 import { modelsHtml,modelsScript,type RoleView } from "../models-ui.js";
+import { ALL_SLOTS,applyModelChoices,browserWords,checkScope,DEFAULT_PRESET,isPresetName,newerModels,PRESETS,presetChange,presetInUse,previewModelChange,recentRuns,rowAt,slotKey,SLOTS,slotWords,stateDigest,switchChange,type ModelAuthority,type ModelChange } from "../model-choices.js";
+import { HEADROOM_FIVE_HOUR_LIMIT,HEADROOM_WEEKLY_LIMIT,exactModelId } from "../phase-routing.js";
+import { RISKY_MEANS,SIZE_MEANS,SIZING_CLAUDE_MODEL } from "../task-sizing.js";
 import { CHAT_APPROVE_ALL,MODE_MAX_DAYS,modeDigestOf,modeTermsJson,modeWords,presetTerms,type ModeName,type ModeTerms } from "../modes.js";
 import { monitoringChange,readMonitoring,saveMonitoring } from "../monitoring-settings.js";
 import { monitoringHtml,signingSecretHtml } from "../monitoring-ui.js";
@@ -116,7 +121,9 @@ import { addProjectInstructions,ASSISTANTS,detectPreparation,modelChoices,previe
 import { skillsHtml,skillsScript } from "../skills-ui.js";
 import { checkSlackCredentials,clearSlackCredentials,loadSlackCredentials,saveSlackCredentials,SLACK_MANIFEST,SlackError } from "../slack-api.js";
 import { slackSettingsHtml } from "../slack-settings.js";
-import { spendCsv,spendHtml } from "../spend-ui.js";
+import { spendHtml,spendSettingsHtml } from "../spend-ui.js";
+import { spendReport,spendReportCsv,spendRows } from "../spend-report.js";
+import { limitsHtml,limitsView } from "../limits-ui.js";
 import { budgetStates,monthNamed,spendItems,usd as spendUsd,subagentNames as subagentNamesOf } from "../spend.js";
 import { removeSsoSettings,saveSsoSettings,SSO_CALLBACK,ssoChangeWords } from "../sso-settings.js";
 import { ssoSettingsHtml } from "../sso-ui.js";
@@ -125,7 +132,9 @@ import { sweepSchedule } from "../storage-sweep-schedule.js";
 import { storageHtml } from "../storage-ui.js";
 import { landedSummary } from "../landed-cleanup.js";
 import { bytesWords,parseCleanup } from "../storage.js";
-import { isDigestTime,RESULT_SCREENSHOTS,type ResultScreenshots } from "../store.js";
+import { isDigestTime,liveBackupState,RESULT_SCREENSHOTS,setLiveBackupSettings,type ResultScreenshots } from "../store.js";
+import { defaultLiveFolder,liveFolderOf,liveFolderProblem } from "../live-backup.js";
+import { LIVE_EVERY } from "../backup-ui.js";
 import { checkTeamsCredentials,clearTeamsCredentials,loadTeamsCredentials,saveTeamsCredentials,TeamsError } from "../teams-api.js";
 import { teamsSettingsHtml } from "../teams-settings.js";
 import { telegramSettingsHtml } from "../telegram-settings.js";
@@ -141,35 +150,27 @@ import { leadSettingsHtml,notificationProjects,SETTINGS_AUTOSAVE_SCRIPT,settings
 /** The five operations of each chat app's settings (Slack, Teams, Discord). */
 type ChatAppAction = "connect" | "pair" | "unpair" | "disconnect" | "alerts";
 export function createSettingsHandlers(runtime: ServerRuntime) {
-  const { store, providerHome, managedRepos, consoleProjects, sendScreen, chromeFor, connectionCheck, connectionKnown, lastChecks, checkRelease, clock, modelCatalog, modelSeams, toolsViewOf, codexServers, projectViewOf, sessions, restricted, options, integrations, consoleOrigin, evidenceRoot, storagePool, visible, ssoSettings, checkLocalAgents, chatKeyFor, chatCatalog, chatCatalogKnown, leadWords, agentSignInCommand, settingsUpdates, phoneSetup, authenticateApprover, authenticateCredential, deletedRepos, projectOf, providerFor, admissionList, toolHome, connectVisits, mintApprovalNonce, consumeApprovalNonce, defaultProject, googleVisits } = runtime;
+  const { identities, store, providerHome, managedRepos, consoleProjects, sendScreen, chromeFor, connectionCheck, connectionKnown, lastChecks, checkRelease, clock, modelCatalog, modelSeams, toolsViewOf, codexServers, projectViewOf, sessions, restricted, options, integrations, consoleOrigin, evidenceRoot, storagePool, visible, ssoSettings, checkLocalAgents, chatKeyFor, chatCatalog, chatCatalogKnown, leadWords, agentSignInCommand, settingsUpdates, phoneSetup, authenticateApprover, authenticateCredential, deletedRepos, projectOf, providerFor, admissionList, toolHome, connectVisits, mintApprovalNonce, consumeApprovalNonce, googleVisits } = runtime;
 
-  // v105: what agent work cost, by month, and the monthly budgets. An instance operator's page.
+  // What agent work cost, by month: API dollars, plan usage and unknown cost apart (spend-report.ts). An instance
+  // operator's page. Its limits show read-only; they change on Settings → Spend.
   async function spendPage(ctx: HandlerContext): Promise<void> {
     const { url, who, response, now } = ctx;
     const current = monthOf(now);
     const asked = url.searchParams.get("month");
     const month = asked === null ? current : monthNamed(asked);
     if (month === null) return refuse(response, who, 400, "Choose a month like 2026-09.", "/spend");
-    const items = spendItems(store.handle, month.from, month.to);
-    const subagents = store.subagents([...new Set([...managedRepos(), ...store.knownRepos()])]);
+    const rows = spendRows(store.handle, month.from, month.to);
     const subagentNames = subagentNamesOf(store.handle);
     if (url.searchParams.get("format") === "csv") {
       response.writeHead(200, { "content-type": "text/csv; charset=utf-8", "content-disposition": `attachment; filename="standing-orders-spend-${month.name}.csv"`, "cache-control": "no-store", "x-content-type-options": "nosniff" });
-      return void response.end(spendCsv(items, subagentNames));
+      return void response.end(spendReportCsv(rows, subagentNames));
     }
     const shift = (by: number) => { const at = new Date(`${month.name}-01T00:00:00.000Z`); at.setUTCMonth(at.getUTCMonth() + by); return at.toISOString().slice(0, 7); };
-    const projects = consoleProjects();
-    const people = store.accountFacts().filter(one => one.revokedAt === null).map(one => one.name);
-    const view = {
-      month: month.name, previous: shift(-1), next: month.name === current.name ? null : shift(1),
-      items, budgets: budgetStates(store.budgets(), items), subagentNames, csrf: who.via === "cookie" ? who.session.csrf : "",
-      targets: [
-        { value: "installation:*", label: "Everything", group: "Everything" as const },
-        ...projects.map(repo => ({ value: `project:${repo}`, label: projectName(repo), group: "Projects" as const })),
-        ...people.map(name => ({ value: `person:${name}`, label: name, group: "People" as const })),
-        ...subagents.map(one => ({ value: `subagent:${one.id}`, label: `${subagentNames.get(one.id) ?? one.handle} (${projectName(one.repo)})`, group: "Subagents" as const })),
-      ],
-    };
+    // Limits read what the budget gate counts today (spend.ts spendItems), for the current month.
+    const budgets = month.name === current.name ? budgetStates(store.budgets(), spendItems(store.handle, current.from, current.to)) : null;
+    const windows = month.name !== current.name ? html`` : limitsHtml(limitsView(store.providerLimits(), [], { project: projectName, subagent: id => subagentNames.get(id) ?? `Subagent ${id}` }, now));
+    const view = { month: month.name, previous: shift(-1), next: month.name === current.name ? null : shift(1), report: spendReport(rows), budgets, windows, subagentNames };
     return sendScreen(response, 200, screen("Spend", spendHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }), { chrome: chromeFor(null, "spend") }));
   }
   async function modePage(ctx: HandlerContext): Promise<void> {
@@ -260,7 +261,13 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const instructions = previewProjectInstructions(project);
     // The model list as last loaded; Refresh models posts, and the background checks keep it current.
     const catalog = asked === "openrouter" ? modelCatalog.known(readProviderKey("openrouter", providerHome)) ?? { ok: false as const, problem: "The model list has not loaded yet." } : null;
-    const inputs: SetupInputs = { provider: asked, model: saved?.provider === asked ? saved.model ?? "" : models[0]?.value ?? "", command: setup?.command ?? (saved === null ? preparation?.command ?? "" : ""), seconds: String((setup?.timeoutMs ?? 300_000) / 1000) };
+    // With nothing saved, setup preselects what the installation builds routine tasks with, else "Sized by job"'s
+    // routine builder (Sonnet 5.5) for Claude: an exact id, never a floating name.
+    const installationBuild = store.phaseConfig(INSTALLATION_SCOPE, "build");
+    const routineDefault = PRESETS[DEFAULT_PRESET].rows["build"] ?? "";
+    const preselected = installationBuild?.provider === asked && installationBuild.model !== null && models.some(one => one.value === installationBuild.model) ? installationBuild.model
+      : asked === "claude" && models.some(one => one.value === routineDefault) ? routineDefault : models[0]?.value ?? "";
+    const inputs: SetupInputs = { provider: asked, model: saved?.provider === asked ? saved.model ?? "" : preselected, command: setup?.command ?? (saved === null ? preparation?.command ?? "" : ""), seconds: String((setup?.timeoutMs ?? 300_000) / 1000) };
     return sendScreen(response, 200, screen("Project setup", controlSetupHtml({ repo: project, csrf: who.via === "cookie" ? who.session.csrf : "", provider: asked, inputs, models, connection, catalog, task, preparation,
       instructions: instructions.ok ? { installed: instructions.installed } : { installed: false, message: instructions.message } }),
       { chrome: chromeFor(project, "settings"), ...(catalog === null ? {} : { functional: { script: openRouterPickerScript() } }) }));
@@ -310,7 +317,9 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const now = clock();
     // The page shows the last check and when it ran (docs/plans/get-side-effects.md): Check now, or the watch loop's
     // automatic checks, fetch the lists and may queue a notice; opening the page never does.
-    const view = modelsView(who.role === "approver", who.via === "cookie" ? who.session.csrf : "", now, url.searchParams.get("said"), url.searchParams.get("problem"));
+    // Only an instance operator changes models (docs/plans/spend-dashboard.md D4); a preset or a switch is previewed
+    // here, read-only, and applied by its own password-checked POST.
+    const view = modelsView(who.via === "cookie" && store.isInstanceOperator(who.name), who.via === "cookie" ? who.session.csrf : "", now, url.searchParams.get("said"), url.searchParams.get("problem"), url.searchParams);
     return sendScreen(response, 200, screen("Models", html`<p><a href="/settings">Settings</a></p><h1>Models</h1>${modelsHtml(view)}`, { chrome: chromeFor(project, "settings"), functional: { script: modelsScript() } }));
   }
   async function skillsPage(ctx: HandlerContext): Promise<void> {
@@ -495,7 +504,9 @@ ${connectionHtml(asked, connection, task)}${command === null ? "" : html`<p>On t
     const databaseFile = store.databaseFile();
     if (databaseFile === null) return refuse(response, who, 403, "An instance operator looks after backups.", "/settings");
     const settings = store.backupSettings();
-    const view = { settings, folder: backupFolderOf(settings, databaseFile), defaultFolder: defaultBackupFolder(databaseFile), runs: store.backupRuns(20), csrf: who.session.csrf, now };
+    const live = liveBackupState(store);
+    const view = { settings, folder: backupFolderOf(settings, databaseFile), defaultFolder: defaultBackupFolder(databaseFile), runs: store.backupRuns(20), csrf: who.session.csrf, now,
+      live: { state: live, folder: liveFolderOf(live.settings, databaseFile), defaultFolder: defaultLiveFolder(databaseFile) } };
     return sendScreen(response, 200, screen("Backups", html`<p><a href="/settings">Settings</a></p><h1>Backups</h1>${(backupHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }))}`,
       { chrome: chromeFor(project, "settings") }));
   }
@@ -794,7 +805,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
   async function spendBudget(ctx: HandlerContext): Promise<void> {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.spendBudget);
-    const back = sayTo(response, "/spend");
+    const back = sayTo(response, "/settings/spend");
     if (!authenticateApprover(who, body.get("password") ?? "").ok) return back("problem", "Enter your Toolroll password to change a budget.");
     const target = /^(installation|project|person|subagent):(.+)$/.exec(body.get("target") ?? "");
     if (target === null) return back("problem", "Choose what the budget is for.");
@@ -1167,8 +1178,22 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       const problem = checkBackupFolder(folder, [...new Set([...managedRepos(), ...store.knownRepos(), ...(options.poolRoot === undefined ? [] : [options.poolRoot])])]);
       if (problem !== null) return back("problem", problem);
     }
+    // The continuous copy (live-backup.ts): how often, and a folder that is a plain, private folder of this user's
+    // outside every project and checkout. A form without these fields leaves it as it is.
+    const liveBefore = liveBackupState(store).settings;
+    const liveEvery = body.get("live_every") ?? null;
+    const liveMinutes = Number(liveEvery);
+    if (liveEvery !== null && liveEvery !== "off" && !(LIVE_EVERY as readonly number[]).includes(liveMinutes)) return back("problem", "Choose how often to copy continuously.");
+    const liveTyped = body.get("live_folder") === null ? liveBefore.folder ?? "" : (body.get("live_folder") ?? "").trim();
+    const liveFolder = liveTyped === "" || liveTyped === defaultLiveFolder(databaseFile) ? null : liveTyped;
+    if (liveFolder !== null) {
+      const problem = liveFolderProblem(liveFolder, [...new Set([...managedRepos(), ...store.knownRepos(), ...(options.poolRoot === undefined ? [] : [options.poolRoot])])]);
+      if (problem !== null) return back("problem", problem);
+    }
     const before = store.backupSettings();
     store.setBackupSettings({ enabled: every !== "off", everyHours: every === "off" ? before.everyHours : hours, keep, folder }, who.name, now);
+    setLiveBackupSettings(store, { enabled: liveEvery === null ? liveBefore.enabled : liveEvery !== "off", everyMinutes: liveEvery === null || liveEvery === "off" ? liveBefore.everyMinutes : liveMinutes,
+      keep: liveBefore.keep, folder: liveFolder }, who.name, now);
     return back("said", every === "off" ? "Saved. Scheduled backups are off." : "Saved.");
   }
   // v105: download everything as a .zip. An instance operator, with a step-up; the ledger records it.
@@ -1198,6 +1223,19 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     if (starter === null) return back("problem", "Choose a starter flow.");
     const switched = switchOnStarter(store, starter, repo, who.name, clock(), options.configDir ?? null);
     return switched.ok ? back("said", switched.said) : back("problem", switched.said);
+  }
+  // Settings → Integrations → youiyoux → Turn off / Turn on: whether a project's change requests become tasks.
+  async function integrationsYouiyoux(ctx: HandlerContext): Promise<void> {
+    const { who, response, posted } = ctx;
+    const body = readForm(posted, CONSOLE_FORMS.integrationsYouiyoux);
+    const repo = body.get("repo") ?? "";
+    const back = sayTo(response, "/settings/integrations");
+    const known = [...new Set([...(admissionList() ?? []), ...managedRepos(), ...store.knownRepos()])];
+    if (store.isDemo()) return refuse(response, who, 403, "An approver turns youiyoux requests on or off.", "/settings/integrations");
+    if (!known.includes(repo) || !visible(repo)) return refuse(response, who, 404, "No such project.", "/settings/integrations");
+    const on = body.get("on") === "1";
+    setYouiyouxIntake(store, repo, on, who.name, clock());
+    return back("said", on ? `youiyoux requests in ${basename(repo)} become tasks again.` : `youiyoux requests in ${basename(repo)} are off.`);
   }
   // Settings → Integrations → Send test: one harmless read-only check of one integration, now.
   async function integrationsTest(ctx: HandlerContext): Promise<void> {
@@ -1342,7 +1380,14 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       if (action === "import") {
         const wanted = body.getAll("import");
         if (wanted.length === 0) return back("problem", "Choose at least one tool to add.");
-        const found = discoverTools(repo, await codexServers(repo), toolHome);
+        // The project's own .mcp.json read now, off the console's thread (folder-look.ts).
+        let projectConfig: Record<string, unknown> | null | undefined;
+        if (options.identities !== undefined) {
+          const looked = await lookProjectMcp(repo);
+          if (!looked.ok) return back("problem", "This project's folder didn't answer. It may be on a drive that's disconnected, or waiting on macOS. Try again in a moment.");
+          projectConfig = looked.value;
+        }
+        const found = discoverTools(repo, await codexServers(repo), toolHome, process.env, projectConfig);
         const added: string[] = [], problems: string[] = [];
         for (const one of wanted) {
           const match = found.find(tool => tool.spec.name === one);
@@ -1398,7 +1443,7 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       : `so-theme=${theme}; SameSite=Lax; Path=/; Max-Age=31536000`);
     return redirect(response, back);
   }
-  const modelsAct = (action: "check" | "watch" | "update" | "agent" | "other") => async (ctx: HandlerContext): Promise<void> => {
+  const modelsAct = (action: "check" | "watch" | "update" | "other") => async (ctx: HandlerContext): Promise<void> => {
     const { who, response, now, posted } = ctx;
     const body = readForm(posted, CONSOLE_FORMS.models);
     const back = (said: string, bad = false) => redirect(response, `/settings/models?${bad ? "problem" : "said"}=${encodeURIComponent(said)}`);
@@ -1416,32 +1461,6 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
       if (!(tool in RUNTIME_TOOLS)) return back("Choose Claude Code, Codex or Gemini CLI.", true);
       const updated = await updateRuntime(store, tool as RuntimeTool, who.name, now, modelSeams);
       return back(updated.message, !updated.ok);
-    }
-    if (action === "agent") {
-      const phase = body.get("phase") ?? "", agent = body.get("agent") ?? "";
-      if (!["plan", "build", "review", "repair"].includes(phase)) return back("Choose a role.", true);
-      const role = ROLE_TITLES[phase as RoleView["phase"]];
-      if (agent === "inherit") {
-        if (phase !== "repair") return back("Choose a model.", true);
-        store.clearPhaseConfig(INSTALLATION_SCOPE, "repair");
-        return back("Repairs now use the builder's agent.");
-      }
-      const split = agent.indexOf("|");
-      const provider = split < 0 ? "" : agent.slice(0, split), model = split < 0 ? "" : agent.slice(split + 1);
-      if (!isProviderId(provider) || !validModelId(model)) return back("Choose a model from the list.", true);
-      const valid = validateSpec({ provider, model });
-      if (!valid.ok) return back(valid.problem, true);
-      if (phase === "review" && provider === "gemini") return back("Gemini cannot review yet. Choose Claude or Codex.", true);
-      const build = store.phaseConfig(INSTALLATION_SCOPE, "build");
-      if (phase === "repair" && build !== null && build.provider !== provider) return back(`Repairs must use the builder's provider (${build.provider}).`, true);
-      store.setPhaseConfig(INSTALLATION_SCOPE, phase, provider, model, who.name, now);
-      const repair = store.phaseConfig(INSTALLATION_SCOPE, "repair");
-      let extra = "";
-      if (phase === "build" && repair !== null && repair.provider !== provider) {
-        store.clearPhaseConfig(INSTALLATION_SCOPE, "repair");
-        extra = " Repairs now follow the builder.";
-      }
-      return back(`${role} now uses ${modelWords(store, provider, model)} for new tasks.${extra}`);
     }
     return refuse(response, who, 404, "No such models action.", "/settings/models");
   };
@@ -1540,7 +1559,8 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const nonceKey = `project-setup:${project}`;
     if (step === "preview") {
       const nonce = mintApprovalNonce(who.name, nonceKey, preview.fingerprint);
-      return sendScreen(response, 200, screen("Approve project setup", setupPreviewHtml(inputs, { csrf, repo: project, fingerprint: preview.fingerprint, nonce }), { chrome: chromeFor(project, "settings") }));
+      const models = preview.models === null ? null : { label: PRESETS[DEFAULT_PRESET].label, rows: preview.models.rows.map(row => ({ role: slotWords(row.slot), model: row.after?.model ?? (row.slot.phase === "repair" ? "same as the builder" : "not set") })) };
+      return sendScreen(response, 200, screen("Approve project setup", setupPreviewHtml(inputs, { csrf, repo: project, fingerprint: preview.fingerprint, nonce }, models), { chrome: chromeFor(project, "settings") }));
     }
     if (who.via === "cookie" && !consumeApprovalNonce(body.get("nonce") ?? "", who.name, nonceKey, body.get("fingerprint") ?? "")) return refuse(response, who, 409, "This setup preview expired. Review it again.", "/control");
     const approved = approveSetup(store, project, inputs, body.get("fingerprint") ?? "", who.name, body.get("token") ?? "", now);
@@ -1602,7 +1622,8 @@ ${repositoryContextHtml(chosen, query, result, who.role === 'approver' ? csrf : 
     const body = readForm(posted, CONSOLE_FORMS.chatApproval);
     if ((["scope", "full-access", "cap-usd", "nonce", "digest", "token"] as const).some(key => body.getAll(key).length > 1)) return refuse(response, who, 400, "Submit one value for each field.", "/settings");
     const given = (body.get("scope") ?? "all").trim();
-    const scope = given === "all" || given === "" ? CHAT_APPROVAL_ALL : canonicalProject(given) ?? given;
+    const scope = given === "all" || given === "" ? CHAT_APPROVAL_ALL : identities.vouched(given, consoleProjects) ?? null;
+    if (scope === null) return refuse(response, who, 403, "That isn't one of your projects.", "/settings");
     if (scope !== CHAT_APPROVAL_ALL && !(visible(scope) && store.accountCanAccess(who.name, scope))) return refuse(response, who, 403, "That isn't one of your projects.", "/settings");
     const where = scope === CHAT_APPROVAL_ALL ? "all your projects" : projectName(scope);
     if (step === "off") {
@@ -1896,7 +1917,7 @@ ${postForm("/settings/chat-approval/save", html`\
       const existing = loadBotToken({}, options.telegramTokenFile);
       const hasEnv = (envValue(process.env, "TELEGRAM_TOKEN") ?? "") !== "";
       const csrf = who.via === "cookie" ? who.session.csrf : "";
-      return sendScreen(response, 400, settingsPage(chromeFor(who.via === "cookie" ? who.session.project : defaultProject, "settings"), existing, hasEnv, csrf, saved.message, options.configDir === undefined ? null : effectivePrimary(process.env, options.configDir, loadBotToken(process.env, options.telegramTokenFile) !== null), null, null, null, {
+      return sendScreen(response, 400, settingsPage(chromeFor(who.via === "cookie" ? who.session.project : runtime.defaultProject, "settings"), existing, hasEnv, csrf, saved.message, options.configDir === undefined ? null : effectivePrimary(process.env, options.configDir, loadBotToken(process.env, options.telegramTokenFile) !== null), null, null, null, {
         ...store.permissionDefault(),
         canManage: who.role === "approver",
       }));
@@ -2081,8 +2102,9 @@ ${modeWords(terms)
     return redirect(response, "/chat");
   }
 
-  /** Settings → Models, read from the saved catalog and the installation's role rows. */
-  function modelsView(canManage: boolean, csrf: string, now: Date, said: string | null, problem: string | null) {
+  /** Settings → Models, read from the saved catalog and the role rows at the scope being edited (the installation,
+   * or one project and what it inherits). */
+  function modelsView(canManage: boolean, csrf: string, now: Date, said: string | null, problem: string | null, query: URLSearchParams = new URLSearchParams()) {
     const runtimes = runtimeStates(store);
     const installed = new Set(runtimes.map(one => one.tool));
     const openrouter = (readProviderKey("openrouter", providerHome) ?? process.env["OPENROUTER_API_KEY"] ?? "") !== "";
@@ -2092,26 +2114,76 @@ ${modeWords(terms)
       { label: "Gemini", provider: "gemini", on: installed.has("gemini") },
       { label: "OpenRouter", provider: "openrouter", on: openrouter },
     ];
-    const build = store.phaseConfig(INSTALLATION_SCOPE, "build");
-    const roles: RoleView[] = (["plan", "build", "review", "repair"] as const).map(phase => {
-      const row = store.phaseConfig(INSTALLATION_SCOPE, phase);
-      const groups = makers.filter(one => one.on && !(phase === "review" && one.provider === "gemini") && !(phase === "repair" && build !== null && one.provider !== build.provider))
+    const projects = consoleProjects();
+    const asked = query.get("scope") ?? INSTALLATION_SCOPE;
+    const scope = asked !== INSTALLATION_SCOPE && projects.includes(asked) ? asked : INSTALLATION_SCOPE;
+    const repo = scope === INSTALLATION_SCOPE ? null : scope;
+    const said_ = (pair: { provider: string; model: string | null }) => `${ASSISTANTS[pair.provider as ProviderId]?.name ?? pair.provider} · ${modelWords(store, pair.provider, pair.model)}`;
+    const build = resolvePhaseAgent(store, "build", repo, {});
+    const roles: RoleView[] = SLOTS.map(slot => {
+      const own = rowAt(store, scope, slot);
+      const inherited = repo === null ? null : rowAt(store, INSTALLATION_SCOPE, slot);
+      const unset = repo !== null ? (inherited === null ? "Same as the installation (not set)" : `Same as the installation (${inherited.model ?? inherited.provider})`)
+        : slot.phase === "repair" ? "Same as the builder" : slot.phase === "review" ? "Same as the planner"
+        : slot.tier === "light" ? "Not set: small tasks use the routine builder" : slot.tier === "strong" ? "Not set: uses the routine one" : "Not set";
+      const words = own !== null ? said_(own) : inherited !== null ? `Inherits the installation's: ${said_(inherited)}`
+        : slot.phase === "repair" ? "Follows the builder" : slot.phase === "review" ? "Follows the planner" : slot.tier !== "routine" ? "Uses the routine one" : "Not set";
+      const groups = makers.filter(one => one.on && !(slot.phase === "review" && one.provider === "gemini") && !(slot.phase === "repair" && build.ok && one.provider !== build.spec.provider))
         .map(one => ({ label: one.label, provider: one.provider, options: modelOptions(store, one.provider, now, providerHome) }));
-      return {
-        phase, label: ROLE_TITLES[phase], groups, ...(phase === "repair" ? { inherit: true } : {}),
-        current: row === null ? (phase === "repair" ? "inherit" : "") : `${row.provider}|${row.model ?? ""}`,
-        words: row === null ? (phase === "repair" ? "Same as the builder" : "Not set") : `${ASSISTANTS[row.provider as ProviderId]?.name ?? row.provider} · ${modelWords(store, row.provider, row.model)}`,
-      };
+      return { key: slotKey(slot), label: slotWords(slot), current: own === null ? "" : `${own.provider}|${own.model ?? ""}`, words, unset, groups, tier: slot.tier !== "routine" };
     });
+    const inUse = presetInUse(store, scope);
+    const unchosen = repo === null && ALL_SLOTS.every(slot => rowAt(store, INSTALLATION_SCOPE, slot) === null);
+    const checked = checkScope(store, repo);
+    // A preset or a switch, previewed: the exact rows it moves, with what a change of provider brings along.
+    const pairWords = (pair: { provider: string; model: string | null } | null, slot: (typeof SLOTS)[number]) => pair === null ? (repo !== null ? "same as the installation" : slot.phase === "repair" ? "same as the builder" : slot.phase === "review" ? "same as the planner" : slot.tier === "light" ? "routine builder" : slot.tier === "strong" ? "routine one" : "not set") : (pair.model ?? `${pair.provider} default`);
+    const switchFrom = query.get("switch"), switchTo = query.get("to");
+    const presetAsked = query.get("preset");
+    // The rows, what they inherit, and both digests come from one snapshot (model-choices.ts previewModelChange).
+    const previewOf = (title: string, change: ModelChange[], hidden: Record<string, string>) => {
+      const snapshot = previewModelChange(store, scope, change);
+      const rows = snapshot.rows.map(row => {
+        const notes: string[] = [];
+        const was = row.before?.provider ?? row.inherited?.provider ?? null;
+        if (row.after !== null && was !== null && was !== row.after.provider && isProviderId(row.after.provider)) {
+          const name = ASSISTANTS[row.after.provider].name;
+          notes.push(`Billed the way ${name} is signed in on this computer.`);
+          notes.push(MONEY_CAPABILITIES[row.after.provider].nativeDollarCapFlag === null ? `${name} can't hold a per-task dollar cap.` : `${name} can hold a per-task dollar cap.`);
+          notes.push(`Builds reach ${name}'s hosts instead of ${ASSISTANTS[was as ProviderId]?.name ?? was}'s.`);
+        }
+        return { role: slotWords(row.slot), before: pairWords(row.before, row.slot), after: pairWords(row.after, row.slot), notes };
+      });
+      return { title, rows, hidden: { scope, digest: snapshot.state, change: snapshot.change, ...hidden } };
+    };
+    const preview = !canManage ? null
+      : isPresetName(presetAsked) ? previewOf(`Use ${PRESETS[presetAsked].label}`, presetChange(presetAsked), { preset: presetAsked })
+      : switchFrom !== null && switchTo !== null && exactModelId(switchFrom) && exactModelId(switchTo) ? previewOf(`Switch to ${switchTo}`, switchChange(store, scope, switchFrom, switchTo), { switch: switchFrom, to: switchTo })
+      // A new installation with nothing chosen yet opens on the default, ready to apply.
+      : unchosen ? previewOf(`Start with ${PRESETS[DEFAULT_PRESET].label}`, presetChange(DEFAULT_PRESET), { preset: DEFAULT_PRESET })
+      : null;
     const chat = store.getChatConfig();
     const chatName = chat === null ? "" : chat.provider === "claude-subscription" ? "Claude membership" : chat.provider === "codex-subscription" ? "Codex membership" : chat.provider === "anthropic-api" ? "Anthropic API" : "OpenRouter";
+    const capital = (words: string) => `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+    const alsoSet = store.listPhaseTierAlternates(INSTALLATION_SCOPE).length + (repo === null ? 0 : store.listPhaseTierAlternates(repo).length) > 0;
     return {
       runtimes, watch: watchState(store), roles, csrf, canManage, said, problem,
       chat: chat === null ? null : { words: `Leads and chat use ${chatName} · ${modelWords(store, chat.provider, chat.model)}` },
       fresh: (["claude", "codex", "gemini"] as const).flatMap(source => seenModels(store, source)).filter(model => isNewModel(model, now)).slice(0, 12),
+      scope: { value: scope, label: repo === null ? "All projects" : projectName(repo), digest: stateDigest(store, scope),
+        options: [{ value: INSTALLATION_SCOPE, label: "All projects" }, ...projects.map(one => ({ value: one, label: projectName(one) }))] },
+      inUse: unchosen ? "nothing chosen yet" : inUse === null ? null : PRESETS[inUse].label,
+      presets: (["sized", "opus"] as const).map(name => ({ name, label: PRESETS[name].label, words: PRESETS[name].words, inUse: inUse === name, recommended: name === DEFAULT_PRESET })),
+      newer: newerModels(store, scope).map(one => ({ from: one.from, to: one.to.id, name: one.to.name, roles: one.slots.map(slotWords).join(", ").toLowerCase() })),
+      preview, unresolved: checked.kind === "ok" ? null : checked.kind === "incomplete" ? `some roles have no model yet. Choose them above, or use ${PRESETS[DEFAULT_PRESET].label}.` : browserWords(checked.problem),
+      sizing: { small: capital(SIZE_MEANS.small), routine: capital(SIZE_MEANS.medium), large: SIZE_MEANS.large, risky: RISKY_MEANS,
+        classifier: readProviderKey("openrouter", providerHome) !== null ? "A quick AI check (Jev, through your OpenRouter key) reads its title and description." : `A quick AI check (${SIZING_CLAUDE_MODEL}, on this computer's Claude sign-in) reads its title and description.` },
+      routing: `When a task is filed and Claude has used over ${HEADROOM_FIVE_HOUR_LIMIT}% of its 5-hour window or ${HEADROOM_WEEKLY_LIMIT}% of its week, ${alsoSet ? "the other provider you set for that size is preferred if it has more room" : "an alternate provider with more room would be preferred, but none is set"}; with no room anywhere, the first choice is kept. This is a preference at filing time, not a limit.`,
+      recent: recentRuns(store).map(one => ({ taskId: one.taskId, runId: one.runId, role: one.role,
+        chosen: one.chosen === null ? "its default" : /^(opus|sonnet|haiku|fable)$/.test(one.chosen) ? `floating ${one.chosen}` : one.chosen,
+        ranOn: one.ranOn ?? "not reported" })),
+      waiting: canManage ? store.scopesAwaitingApproval(null, 10, admissionList()).map(one => ({ taskId: one.taskId, title: one.title })) : [],
     };
   }
-
 
   /** Google's redirect back: the code becomes a saved refresh token, and a page sends the person back to Settings. */
   async function googleCallback(ctx: EdgeContext): Promise<void> {
@@ -2185,6 +2257,7 @@ ${modeWords(terms)
   }
   const registrations = handlersOf("settings", {
     "spend": spendPage,
+    "settings.spend": spendSettingsPage,
     "mode": modePage,
     "control": controlPage("setup"),
     "control.connection": controlPage("connection"),
@@ -2254,6 +2327,7 @@ ${modeWords(terms)
     "settings.backups-send": backupsSave,
     "settings.data-send": dataExport,
     "settings.integrations-test-send": integrationsTest,
+    "settings.integrations-youiyoux": integrationsYouiyoux,
     "settings.monitoring-send": monitoringSave,
     "settings.tools-connect-send": toolsConnect,
     "settings.tools-change-send": toolsChange,
@@ -2262,7 +2336,8 @@ ${modeWords(terms)
     "settings.models-check": modelsAct("check"),
     "settings.models-watch": modelsAct("watch"),
     "settings.models-update": modelsAct("update"),
-    "settings.models-agent": modelsAct("agent"),
+    "settings.models-agent": modelsSave,
+    "settings.models-apply": modelsApply,
     "settings.models-act": modelsAct("other"),
     "settings.knowledge-refresh": knowledgeRefresh,
     "settings.knowledge-proposal": knowledgeProposal,
@@ -2404,6 +2479,96 @@ ${modeWords(terms)
     if (!authenticateCredential(who, body.get("password") ?? "", repo).ok) return back("problem", "Enter your Toolroll password to approve releases automatically.");
     const changed = setReleaseApproval(store, repo, true, who.name, now);
     return back("said", changed.changed ? "Releases approve themselves once CI and the release check pass." : "Saved.");
+  }
+  // Settings → Spend: the monthly limits editor and the models in use. An instance operator's page; changing a limit
+  // posts to /spend/budget with a step-up.
+  async function spendSettingsPage(ctx: HandlerContext): Promise<void> {
+    const { url, response, now } = ctx;
+    const current = monthOf(now);
+    const subagents = store.subagents([...new Set([...managedRepos(), ...store.knownRepos()])]);
+    const subagentNames = subagentNamesOf(store.handle);
+    const projects = consoleProjects();
+    const people = store.accountFacts().filter(one => one.revokedAt === null).map(one => one.name);
+    const models = (["plan", "build", "review"] as const).map(phase => {
+      const agent = resolvePhaseAgent(store, phase, null, {});
+      return { role: phase === "plan" ? "Planner" : phase === "build" ? "Builder" : "Reviewer", model: agent.ok ? `${agent.spec.provider} · ${agent.spec.model ?? "its default model"}` : "Not set" };
+    });
+    const view = {
+      budgets: budgetStates(store.budgets(), spendItems(store.handle, current.from, current.to)), subagentNames, models,
+      targets: [
+        { value: "installation:*", label: "Everything", group: "Everything" as const },
+        ...projects.map(repo => ({ value: `project:${repo}`, label: projectName(repo), group: "Projects" as const })),
+        ...people.map(name => ({ value: `person:${name}`, label: name, group: "People" as const })),
+        ...subagents.map(one => ({ value: `subagent:${one.id}`, label: `${subagentNames.get(one.id) ?? one.handle} (${projectName(one.repo)})`, group: "Subagents" as const })),
+      ],
+    };
+    return sendScreen(response, 200, screen("Spend settings", spendSettingsHtml(view, { said: url.searchParams.get("said"), problem: url.searchParams.get("problem") }), { chrome: chromeFor(null, "settings") }));
+  }
+  // Settings → Models (docs/plans/spend-dashboard.md, slice 3): the one editor. Both posts are an instance operator's,
+  // browser-only step-ups: the password (or a Passwordless session, or an identity-provider re-check) is proved here,
+  // and model-choices.ts re-proves the same session, credential generation and operator standing inside the one
+  // transaction that checks the form against what is stored, validates the result and writes and ledgers every row.
+  function modelsAuthority(who: Extract<HandlerContext["who"], { via: "cookie" }>, method: string): ModelAuthority {
+    const session = who.session;
+    return { actor: who.name, generation: session.generation, method, live: () => sessions.holds(session) && sessions.savedNow(session) && sessionWithinLifetime(session, Date.now()) };
+  }
+  function modelsBack(response: HandlerContext["response"], scope: string) {
+    return sayTo(response, `/settings/models${scope === INSTALLATION_SCOPE ? "" : `?scope=${encodeURIComponent(scope)}`}`);
+  }
+  function modelsSaid(result: ReturnType<typeof applyModelChoices>, what: string): { key: "said" | "problem"; words: string } {
+    if (!result.ok) return { key: "problem", words: browserWords(result.problem) };
+    const count = result.diff.length;
+    const done = count === 0 ? "Nothing changed." : `${what}: ${count} change${count === 1 ? "" : "s"} saved for tasks filed from now on.`;
+    return { key: "said", words: result.unresolved === null ? done : `${done} Some roles have no model yet, so new tasks can't be filed here.` };
+  }
+  /** One save of the whole editor: every role at the scope, sets and clears, as one change. */
+  async function modelsSave(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.modelsChange);
+    const scope = body.get("scope") ?? INSTALLATION_SCOPE;
+    const back = modelsBack(response, scope);
+    if (["scope", "password", "digest", ...SLOTS.map(slotKey)].some(field => body.sent.getAll(field).length > 1)) return back("problem", "That form was sent twice over. Nothing changed.");
+    const proved = authenticateApprover(who, body.get("password") ?? "");
+    if (!proved.ok) return back("problem", "Enter your Toolroll password to change models.");
+    const change: ModelChange[] = [];
+    for (const slot of SLOTS) {
+      const value = body.sent.get(slotKey(slot));
+      if (value === null) continue;
+      if (value === "clear") { change.push({ slot, to: null }); continue; }
+      const split = value.indexOf("|");
+      if (split < 1) return back("problem", "Choose a model from the list. Nothing changed.");
+      change.push({ slot, to: { provider: value.slice(0, split), model: value.slice(split + 1) } });
+    }
+    // Repairs resume the builder's session: a builder moved to another provider takes repair with it.
+    const builder = change.find(one => one.slot.phase === "build" && one.slot.tier === "routine")?.to ?? null;
+    const repair = change.findIndex(one => one.slot.phase === "repair");
+    let follows = false;
+    if (builder !== null && repair >= 0 && change[repair]!.to !== null && change[repair]!.to!.provider !== builder.provider) {
+      change[repair] = { slot: change[repair]!.slot, to: null };
+      follows = true;
+    }
+    const result = applyModelChoices(store, { scope, change, expected: { state: body.get("digest") ?? "" }, strict: true, knownProject: repo => consoleProjects().includes(repo) }, modelsAuthority(who, proved.method), now);
+    const said = modelsSaid(result, scope === INSTALLATION_SCOPE ? "All projects" : projectName(scope));
+    return back(said.key, follows && result.ok ? `${said.words} Repairs now follow the builder.` : said.words);
+  }
+  /** A preset or a switch, applied exactly as previewed: the change's own digest rides the form. */
+  async function modelsApply(ctx: HandlerContext): Promise<void> {
+    const { response, now, posted } = ctx;
+    const who = browserCaller(ctx.who);
+    const body = readForm(posted, CONSOLE_FORMS.modelsChange);
+    const scope = body.get("scope") ?? INSTALLATION_SCOPE;
+    const back = modelsBack(response, scope);
+    if (["scope", "password", "digest", "preset", "switch", "to", "change"].some(field => body.sent.getAll(field).length > 1)) return back("problem", "That form was sent twice over. Nothing changed.");
+    const proved = authenticateApprover(who, body.get("password") ?? "");
+    if (!proved.ok) return back("problem", "Enter your Toolroll password to change models.");
+    const preset = body.get("preset"), from = body.get("switch"), to = body.get("to");
+    const change = isPresetName(preset) ? presetChange(preset)
+      : from !== null && to !== null && exactModelId(from) && exactModelId(to) ? switchChange(store, scope, from, to) : null;
+    if (change === null) return back("problem", "Choose a preset or a newer model. Nothing changed.");
+    const result = applyModelChoices(store, { scope, change, expected: { state: body.get("digest") ?? "", change: body.get("change") ?? "" }, strict: true, knownProject: repo => consoleProjects().includes(repo) }, modelsAuthority(who, proved.method), now);
+    const said = modelsSaid(result, isPresetName(preset) ? PRESETS[preset].label : `Switched to ${to}`);
+    return back(said.key, said.words);
   }
   return { registrations, modelsView };
 }

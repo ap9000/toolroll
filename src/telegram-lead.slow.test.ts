@@ -133,6 +133,17 @@ describe("Telegram conversation: the same chat, from the phone", () => {
   let script: ReturnType<typeof scriptedTransport>;
   /** The trusted https origin the wiring reads before every card and `/task`; null is the unconfigured phone. */
   let origin: string | null;
+  /** A power cut as a chat request's result is written: its finalize write fails once. The money method itself is
+   * locked on every Store (PR #263), so the failure is injected at the database statement it prepares. */
+  const powerCutAtFinalize = () => {
+    const db = store.handle;
+    const prepare = db.prepare.bind(db);
+    let cut = false;
+    return vi.spyOn(db, "prepare").mockImplementation(((sql: string) => {
+      if (!cut && /^\s*UPDATE chat_turn SET state = \?, failure_reason = \?/.test(sql)) { cut = true; throw new Error("power cut"); }
+      return prepare(sql);
+    }) as typeof db.prepare);
+  };
 
   const runner: SubscriptionLeadRunner = async request => {
     requests.push(request);
@@ -777,7 +788,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
 
   test("a crash while the harness was answering is reported truthfully after restart, never restarted silently", async () => {
     answers.push({ text: "Still thinking." });
-    const dying = vi.spyOn(store, "finalizeChatTurn").mockImplementationOnce(() => { throw new Error("power cut"); });
+    const dying = powerCutAtFinalize();
     script.updates.push([textUpdate(2, "what needs me?")]);
     expect(await pass()).toMatchObject({ ok: true, report: { problems: [expect.stringContaining("power cut")] } });
     dying.mockRestore();
@@ -1008,7 +1019,7 @@ describe("Telegram conversation: the same chat, from the phone", () => {
 
     test("a crash while the harness was answering, with the session then replaced, is reported as an unfinished attempt — once, with no new dispatch", async () => {
       answers.push({ text: "Still thinking." });
-      const dying = vi.spyOn(store, "finalizeChatTurn").mockImplementationOnce(() => { throw new Error("power cut"); });
+      const dying = powerCutAtFinalize();
       script.updates.push([textUpdate(2, "what needs me?")]);
       expect(await pass()).toMatchObject({ ok: true, report: { problems: [expect.stringContaining("power cut")] } });
       dying.mockRestore();

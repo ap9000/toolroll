@@ -1,5 +1,6 @@
 // The rubric's vocabulary loads before anything that reaches the plan contract (see contracts/acceptance-terms.ts).
 export { ACCEPTANCE_LIMITS, EVIDENCE_KINDS, type EvidenceKind } from "./contracts/acceptance-terms.js";
+import { mintSecret } from "./secret-mint.js";
 import { passwordlessOn } from "./passwordless.js";
 import { currentPasswordSource, passwordGuardOf, provenPasswordAccount } from "./sign-in-guard.js";
 import { validateScopeText } from "./task-text.js";
@@ -49,6 +50,7 @@ import { type EvidenceKind } from "./contracts/acceptance-terms.js";
 import { parseContract } from "./contracts/contract.js";
 import { readAcceptance, readScopeTerms, storedRubricSchema, type AcceptanceCriterion, type AcceptanceProblem, type ScopeTerms } from "./contracts/scope.js";
 import type { Store, Mutation } from "./store.js";
+import { releaseCiHoldOf, releaseCiHoldWords } from "./release-ci-hold.js";
 import type { QualityMode } from "./quality.js";
 import type { AuthMode } from "./keys.js";
 import type { ProviderId } from "./provider.js";
@@ -68,7 +70,7 @@ import {
 
 /** Same shape as a runner's credential, for the same reasons. */
 function mintToken(): string {
-  return randomBytes(32).toString("base64url");
+  return mintSecret(32);
 }
 
 export function hashToken(token: string): string {
@@ -829,6 +831,9 @@ export type Scope = SavedScopeTerms & {
    * carry policy, grant, check access, expiry. Part of the digest when present; a person's seal of them opens the
    * release's authority record. */
   releaseTerms?: ReleaseTerms | null;
+  /** v138 (docs/plans/pipeline-speed.md, P0): a release check's purpose when the release can't carry (no terms) — this
+   * exact candidate is a release's check. Part of the digest when present; never present beside terms. */
+  releaseCheck?: ReleaseCheckPurpose | null;
 };
 
 /** Who wrote a scope's text, when not a person (approval-policy plan §1.4). */
@@ -879,6 +884,9 @@ export type ScopeInput = {
   /** v135: release terms (release-carry.ts releaseTermsFor), from the plane's own records. Undefined keeps any terms
    * the scope already carries; null removes them. */
   releaseTerms?: ReleaseTerms | null;
+  /** v138: a release check's purpose (release-carry.ts releaseCheckPurposeFor), from the plane's own records. Undefined
+   * keeps any purpose the scope already carries; null removes it. */
+  releaseCheck?: ReleaseCheckPurpose | null;
   now: Date;
   mutation?: Mutation;
 };
@@ -905,6 +913,8 @@ export function digestOf(
     candidate?: string | null;
     /** v135: release terms, folded in only when present. */
     releaseTerms?: ReleaseTerms | null;
+    /** v138: a release check's purpose, folded in only when present. */
+    releaseCheck?: ReleaseCheckPurpose | null;
   },
   // The execution target: a single profile (legacy v24), OR an explicit
   // fallback chain (v30). BOTH fold through the SAME outer `profileDigest`
@@ -946,6 +956,7 @@ export function digestOf(
         ...(scope.qualityMode === "strict" ? { qualityMode: "strict" } : {}),
         ...(scope.candidate ? { candidate: scope.candidate } : {}),
         ...(scope.releaseTerms == null ? {} : { releaseTerms: releaseTermsDigest(scope.releaseTerms) }),
+        ...(scope.releaseCheck == null ? {} : { releaseCheck: releaseCheckPurposeDigest(scope.releaseCheck) }),
         // The single outer key, whichever target produced its inner value:
         // absent => the golden and every profileless approval are untouched;
         // a legacy profile => its exact profileDigestOf; an explicit chain
@@ -1005,6 +1016,7 @@ function proposeLocked(store: Store, input: ScopeInput): Scope {
     ...(input.qualityMode === undefined ? {} : { qualityMode: input.qualityMode }),
     ...(posture === undefined ? {} : { posture }),
     ...(input.releaseTerms === undefined ? {} : { releaseTerms: input.releaseTerms }),
+    ...(input.releaseCheck === undefined ? {} : { releaseCheck: input.releaseCheck }),
     proposedVia,
   });
   // The store may have RECOMPUTED the digest to bind the resolved profile
@@ -1537,6 +1549,9 @@ export function approve(
     // A release scope's yes opens its authority record (release-once.md); say first why it can't.
     const releaseProblem = scope.releaseTerms == null ? null : releaseSealProblem(store, scope.releaseTerms);
     if (releaseProblem !== null) return { ok: false as const, reason: "policy" as const, message: releaseProblem };
+    // Filed while CI still ran: nobody approves it before the plane read exact-head CI passing (round 1, finding 4).
+    const ciHold = releaseCiHoldOf(store, taskId);
+    if (ciHold !== null) return { ok: false as const, reason: "policy" as const, message: releaseCiHoldWords(ciHold) };
     const gate = store.approvalGate(taskId, by, "person");
     if (gate.verdict === "refuse") return { ok: false as const, reason: gate.reason };
     // A remembered password (cockpit B2) approves only everyday work: one approver, standard permissions, terms a
@@ -1717,7 +1732,7 @@ export function scopeAuthorityOf(scope: Scope, env: ScopeAuthorityEnv = {}): Sco
   const parity = routeParityProblem(route, profile, { riskLevel: scope.riskLevel ?? "routine", qualityMode: scope.qualityMode ?? "default" });
   if (parity !== null) return { ok: false, reason: "parity", problem: parity };
   const digest = digestOf(
-    { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default", releaseTerms: scope.releaseTerms ?? null },
+    { goal: scope.goal, outOfScope: scope.outOfScope, touches: scope.touches, budgetMicrousd: scope.budgetMicrousd, acceptance: scope.acceptance, candidate: scope.candidate ?? null, qualityMode: scope.qualityMode ?? "default", releaseTerms: scope.releaseTerms ?? null, releaseCheck: scope.releaseCheck ?? null },
     profile,
     route,
   );
@@ -1781,6 +1796,7 @@ export function describeScope(scope: Scope, readiness: ReadinessLookup = NO_READ
     // Its sandbox terms (project-sandbox.ts), part of what the yes agrees to: what it reads, and any widening.
     ...(scope.profile === null || scope.profile === undefined ? [] : ((terms) => [`  reads        ${terms.reads}`, ...(terms.mach === null ? [] : [`  services     ${terms.mach}`])])(sandboxTermsWords(scope.profile))),
     ...releaseTermsWords(scope.releaseTerms ?? null),
+    ...(scope.releaseCheck == null ? [] : [`  release      ${releaseCheckSentence(scope.releaseCheck)}`]),
     `  reference    ${scope.digest}`,
     `  approved     ${describeApproval(approval)}`,
   ];
@@ -1791,6 +1807,10 @@ export function releaseTermsSentence(terms: ReleaseTerms): string {
   if (!terms.policy.carry) return `Release ${terms.packageVersion} from pull request #${terms.pr} at ${terms.approvedSha.slice(0, 7)}. Every later commit asks for your approval again.`;
   const outside = terms.access === "sandboxed" ? "" : " This project's checks don't run in the sandbox: those later test-only commits will run outside the sandbox without being shown to you first.";
   return `Release ${terms.packageVersion} from pull request #${terms.pr} at ${terms.approvedSha.slice(0, 7)}. Later commits on this pull request that only change tests, docs or the changelog ship without asking you again, until it merges or for 3 days. You'll see each one in the release summary.${outside}`;
+}
+/** The approval sheet's line for a release check purpose (pipeline-speed.md, P0): a release that can't carry. */
+export function releaseCheckSentence(purpose: ReleaseCheckPurpose): string {
+  return `Release ${purpose.packageVersion} from pull request #${purpose.pr} at ${purpose.approvedSha.slice(0, 7)}. Every later commit asks for your approval again. If Toolroll's own machine fails during the check, it reruns this same commit's check (at most twice).`;
 }
 /** What asks again, in full: the terms behind the sentence. */
 export function releaseAsksAgainWords(terms: ReleaseTerms): string[] {
@@ -1821,7 +1841,7 @@ function describeApproval(approval: Approval): string {
 
 export { personProof } from "./person-proof.js";
 import { personProof } from "./person-proof.js";
-import { releaseTermsDigest, type ReleaseTerms } from "./contracts/release-terms.js";
+import { releaseCheckPurposeDigest, releaseTermsDigest, type ReleaseCheckPurpose, type ReleaseTerms } from "./contracts/release-terms.js";
 import { CHECK_ACCESS_WIDTH, autoEvidenceOf, carriesUnsandboxed, newestReleaseGeneration, releaseAuthorityOfTask, releaseAutoApproves, releaseSealProblem, type AutoEvidence, type ReleaseAuthority, type ReleaseCarry } from "./release-authority.js";
 
 /** Whether the command running now is a machine's: the lead (its token) or a remote API run. Trusted context only. */
@@ -1986,6 +2006,17 @@ export function mainDebtProblem(store: Store, repo: string, taskId: string): str
  */
 export function deployGateScope(scope: Pick<Scope, "candidate" | "releaseTerms">): boolean {
   return (scope.candidate ?? null) !== null || (scope.releaseTerms ?? null) !== null;
+}
+
+/**
+ * Whether a scope's check is a release's check (docs/plans/pipeline-speed.md, P0): it carries signed release terms, or a
+ * release check purpose sealed with it. Read from the scope's signed fields only, independent of whether the release can
+ * carry. It makes the check stricter (a complete, valid report; CI never stands in for its units) and, through
+ * check-failure.ts recheckReleaseTask, lets the plane rerun the identical candidate after confirmed infrastructure; it
+ * never carries a later commit or approves anything.
+ */
+export function releaseCheckScope(scope: Pick<Scope, "releaseTerms" | "releaseCheck"> | null): boolean {
+  return scope !== null && ((scope.releaseTerms ?? null) !== null || (scope.releaseCheck ?? null) !== null);
 }
 
 /**

@@ -15,12 +15,14 @@ const sqlite = (): typeof import("node:sqlite") => createRequire(import.meta.url
 import { checkedEnvelopeJson } from "./contracts/cli.js";
 import { RELEASE_LIMITS, runRelease, type ReleaseAdapters, type ReleaseOutcome } from "./release.js";
 import { processes, releaseAdapters } from "./release-adapters.js";
-import { releaseGate, type GateReleaseWorld } from "./release-gate.js";
+import { journals, releaseGate, type GateReleaseWorld } from "./release-gate.js";
+import { rescueDeployment, type RescueWorld } from "./deploy-rescue.js";
 import { databasePath, openStore, revokeRelease, type Database } from "./store.js";
 import { carryRefusalWords, proveCarry, setAskEveryReleaseCommit, setUnsandboxedCarry } from "./release-carry.js";
 import { authenticateApprover, machineActing, personProof, proveCredential } from "./scope.js";
 import { allowAutoPublish, setReleaseApproval } from "./release-auto.js";
 import { createNightlyCheckFlow } from "./nightly-check.js";
+import { aliasNightlyLane, optInGithubNightly, retireNightlyLane } from "./nightly-github.js";
 import { parseSchedule } from "./flow-schedule.js";
 
 export const RELEASE_HELP = `toolroll release <branch> — release Toolroll itself, from a pushed branch with an open pull request
@@ -41,6 +43,13 @@ toolroll release --release-gate <id> [--yes] — lift the update pause a deploym
   database, service definition and running service are all still the previous build's. --yes lifts that one pause.
   Any missing or contradicting evidence refuses and leaves the pause in place.
 
+toolroll release --recover-deploy [--stage <dir>] [--yes] — put back a deployment that stopped half way
+
+  Finds the one unfinished deployment (or the stage named) and shows what its recovery will do; --yes does it. When
+  the old service isn't proved stopped, it boots the service out and stops what it left running, but only processes
+  proved, by exact runtime path and arguments, to be that deployment's own; then it starts the previous service
+  again, waits for it, and lifts the update pause. Anything it can't prove refuses. Safe to run again.
+
 toolroll release carry <release> --to <commit> [--request <id>] — carry a person's release approval to a later commit
 
   Only tests, docs and the changelog may change after the approval, within the limits, with an identical production
@@ -51,6 +60,12 @@ toolroll release revoke <release> — stop carrying later commits (before the me
 toolroll release nightly --repo <path> --as <you> --token <password> [--schedule daily:03:00@<zone>] [--start]
   — the full release check of main's head every night, approved once with your password; it never deploys,
   merges or completes, and a failure tells you and holds composed releases until a full check passes
+
+toolroll release nightly --github --repo <path> --as <you> --token <password> — read GitHub's Nightly runs on main
+  for this project (its recorded GitHub remote): a lane that fails its tests holds every deploy of the project, a
+  release's merge and its tag until a later nightly passes it, or the release's own CI re-ran it after the failure and
+  passed. --lane-alias <lane-id> <new name> says a renamed job is the same lane; --lane-retire <lane-id> retires a
+  lane no required check names any more (both with your password)
 
 toolroll release ask-every-commit on|off --repo <path> [--as <you> --token <password>] — this project's releases ask
   for every later commit (on), or carry test-only commits again (off: your password, never the lead's token)
@@ -76,7 +91,9 @@ Options
   --limit <step>=<min>   change one step's time limit (${Object.entries(RELEASE_LIMITS).map(([step, minutes]) => `${step} ${minutes}`).join(", ")})
   --tap <owner/name>     the Homebrew tap (default ap9000/homebrew-toolroll)
   --release-gate <id>    check (and with --yes, lift) one update pause left before a deployment's swap
-  --yes                  with --release-gate: lift the pause once it is proved safe
+  --yes                  with --release-gate: lift the pause once it is proved safe; with --recover-deploy: recover
+  --recover-deploy       recover the unfinished deployment (see above)
+  --stage <dir>          with --recover-deploy: the deployment's staging folder, when more than one is unfinished
   --json                 answer with one machine envelope
 
 A runner's lease is returned with \`toolroll worker release <lease>\`.`;
@@ -94,30 +111,49 @@ export type ReleaseCliDeps = {
   warn?: (line: string) => void;
   /** What --release-gate reads and changes (release-gate.ts); the installation's own by default. */
   gateWorld?: GateReleaseWorld;
+  /** What --recover-deploy reads and runs (deploy-rescue.ts); the installation's own by default. */
+  rescueWorld?: RescueWorld;
   /** The plane's database for the authority commands (default: this installation's). */
   database?: string;
   now?: () => Date;
 };
 
-const VALUE_FLAGS = new Set(["--repo", "--limit", "--tap", "--release-gate", "--to", "--request", "--as", "--token", "--schedule"]);
-const BARE_FLAGS = new Set(["--new", "--json", "--help", "--yes", "--no-carry", "--start"]);
+const VALUE_FLAGS = new Set(["--repo", "--limit", "--tap", "--release-gate", "--to", "--request", "--as", "--token", "--schedule", "--stage", "--lane-retire"]);
+const BARE_FLAGS = new Set(["--new", "--json", "--help", "--yes", "--no-carry", "--start", "--recover-deploy", "--github"]);
 
 export async function runReleaseCommand(args: readonly string[], write: (line: string) => void, deps: ReleaseCliDeps = {}): Promise<number> {
-  const json = args.includes("--json");
+  // The flag, not a secret's value that happens to read "--json".
+  // A secret is never exactly one of these names (the loop below refuses that as a missing value).
+  const bare = new Set(args.filter(one => BARE_FLAGS.has(one)));
+  const json = bare.has("--json");
   const refuse = (reason: string, message: string, code: number) => {
     write(json ? checkedEnvelopeJson({ ok: false, command: "release", reason, message }) : message);
     return code;
   };
   const positional: string[] = [];
   const limits: Record<string, number> = {};
+  let stage: string | undefined, laneRetire: string | undefined, laneAlias: [string, string] | undefined;
   let repo: string | undefined, tap: string | undefined, gate: string | undefined, to: string | undefined, request: string | undefined, as: string | undefined, token: string | undefined, scheduleFlag: string | undefined;
   for (let i = 0; i < args.length; i += 1) {
-    const arg = args[i]!;
-    if (BARE_FLAGS.has(arg)) continue;
+    const raw = args[i]!;
+    if (BARE_FLAGS.has(raw)) continue;
+    // `--lane-alias <lane-id> <new name>`: two values, neither a flag of this command.
+    if (raw === "--lane-alias") {
+      const [id, name] = [args[i + 1], args[i + 2]];
+      if (id === undefined || name === undefined || id.startsWith("--") || name.startsWith("--")) return refuse("usage", "--lane-alias takes <lane-id> <new name>.", 2);
+      laneAlias = [id, name];
+      i += 2;
+      continue;
+    }
+    // `--flag=value` for every value flag; a secret (--token) is also the next argument even when it starts with "--".
+    const equals = raw.startsWith("--") ? raw.indexOf("=") : -1;
+    const arg = equals === -1 ? raw : raw.slice(0, equals);
     if (VALUE_FLAGS.has(arg)) {
-      const value = args[i + 1];
-      if (value === undefined || value.startsWith("--")) return refuse("usage", `${arg} takes a value.`, 2);
-      i += 1;
+      const value = equals === -1 ? args[i + 1] : raw.slice(equals + 1);
+      // A secret may start with "--"; it is the value unless it is exactly one of this command's flags (never swallowed).
+      const namesFlag = value !== undefined && (BARE_FLAGS.has(value) || VALUE_FLAGS.has(value.split("=")[0]!));
+      if (value === undefined || (equals === -1 && value.startsWith("--") && (arg !== "--token" || namesFlag))) return refuse("usage", `${arg} takes a value.`, 2);
+      if (equals === -1) i += 1;
       if (arg === "--repo") repo = value;
       else if (arg === "--to") to = value;
       else if (arg === "--request") request = value;
@@ -126,6 +162,8 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
       else if (arg === "--schedule") scheduleFlag = value;
       else if (arg === "--tap") tap = value;
       else if (arg === "--release-gate") gate = value;
+      else if (arg === "--stage") stage = value;
+      else if (arg === "--lane-retire") laneRetire = value;
       else {
         const match = /^([a-z]+)=([0-9]+)$/.exec(value);
         if (match === null || !(match[1]! in RELEASE_LIMITS) || Number(match[2]) < 1) return refuse("usage", `--limit takes <step>=<minutes> for one of: ${Object.keys(RELEASE_LIMITS).join(", ")}.`, 2);
@@ -133,16 +171,26 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
       }
       continue;
     }
-    if (arg.startsWith("--")) return refuse("usage", `Unknown option ${arg}.\n${RELEASE_HELP}`, 2);
+    if (raw.startsWith("--")) return refuse("usage", `Unknown option ${arg}.\n${RELEASE_HELP}`, 2);
     positional.push(arg);
   }
-  if (args.includes("--help")) { write(RELEASE_HELP); return 0; }
+  if (bare.has("--help")) { write(RELEASE_HELP); return 0; }
   if (gate !== undefined) {
     if (positional.length > 0 || args.some(arg => ["--repo", "--limit", "--tap", "--new"].includes(arg))) return refuse("usage", "--release-gate <id> takes no branch or release options.", 2);
-    return runGateRelease(gate, args.includes("--yes"), write, json, deps.gateWorld ?? installedGateWorld());
+    return runGateRelease(gate, bare.has("--yes"), write, json, deps.gateWorld ?? installedGateWorld());
   }
-  if (args.includes("--yes")) return refuse("usage", "--yes goes with --release-gate <id>; a release needs no confirmation beyond the owner's approval.", 2);
-  if (positional[0] === "nightly" && positional.length === 1) return runNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, schedule: scheduleFlag, start: args.includes("--start") }, write, json, deps);
+  if (bare.has("--recover-deploy")) {
+    if (positional.length > 0 || args.some(arg => ["--repo", "--limit", "--tap", "--new", "--release-gate"].includes(arg.split("=")[0]!))) return refuse("usage", "--recover-deploy takes only --stage <dir>, --yes and --json.", 2);
+    return runRescue(stage, bare.has("--yes"), write, json, deps.rescueWorld ?? installedRescueWorld(deps.cwd ?? process.cwd()));
+  }
+  if (stage !== undefined) return refuse("usage", "--stage goes with --recover-deploy.", 2);
+  if (bare.has("--yes")) return refuse("usage", "--yes goes with --release-gate <id> or --recover-deploy; a release needs no confirmation beyond the owner's approval.", 2);
+  if (bare.has("--github") || laneAlias !== undefined || laneRetire !== undefined) {
+    if (positional[0] !== "nightly" || positional.length !== 1) return refuse("usage", "--github, --lane-alias and --lane-retire go with `toolroll release nightly`.", 2);
+    if ([bare.has("--github"), laneAlias !== undefined, laneRetire !== undefined].filter(Boolean).length !== 1 || scheduleFlag !== undefined || bare.has("--start")) return refuse("usage", "Use one of --github, --lane-alias or --lane-retire, without --schedule or --start.", 2);
+    return runGithubNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, alias: laneAlias, retire: laneRetire }, write, json, deps);
+  }
+  if (positional[0] === "nightly" && positional.length === 1) return runNightlyCommand({ repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo), as, token, schedule: scheduleFlag, start: bare.has("--start") }, write, json, deps);
   if (["carry", "revoke", "ask-every-commit", "unsandboxed-carry", "auto-approve", "publish-ok"].includes(positional[0] ?? "") && positional.length === 2) {
     return runAuthorityCommand(positional[0] as "carry" | "revoke" | "ask-every-commit" | "unsandboxed-carry" | "auto-approve" | "publish-ok", positional[1]!, { to, request, as, token, repo: repo === undefined ? undefined : resolve(deps.cwd ?? process.cwd(), repo) }, write, json, deps);
   }
@@ -165,7 +213,7 @@ export async function runReleaseCommand(args: readonly string[], write: (line: s
   const adapters = deps.adapters === undefined
     ? releaseAdapters({ checkout, say, ...(tap === undefined ? {} : { tap }), ...(limits["deploy"] === undefined ? {} : { deployMinutes: limits["deploy"] }) })
     : { ...deps.adapters, say };
-  const outcome = await runRelease({ branch, checkout, stateDir, limits, fresh: args.includes("--new"), noCarry: args.includes("--no-carry") }, adapters);
+  const outcome = await runRelease({ branch, checkout, stateDir, limits, fresh: bare.has("--new"), noCarry: bare.has("--no-carry") }, adapters);
   return report(outcome, write, json, lines);
 }
 
@@ -203,6 +251,42 @@ function installedGateWorld(): GateReleaseWorld {
     servicePlists: () => ["com.toolroll.browser", "com.standing-orders.browser"].map(label => join(agents, `${label}.plist`))
       .filter(path => existsSync(path)).map(path => ({ path, text: readFileSync(path, "utf8") })),
   };
+}
+
+/** The installation's deployments, its plane's records and the release's own recovery road, for --recover-deploy. */
+function installedRescueWorld(cwd: string): RescueWorld {
+  const database = databasePath(process.env, homedir());
+  const stateDir = dirname(database);
+  const adapters = releaseAdapters({ checkout: cwd, say: line => process.stderr.write(`${line}\n`) });
+  return {
+    database, stateDir,
+    journals: () => journals(stateDir),
+    runWorktree: run => {
+      if (!existsSync(database)) return null;
+      const db = new (sqlite().DatabaseSync)(database, { readOnly: true }) as unknown as Database;
+      try {
+        const row = db.prepare("SELECT worktree FROM run WHERE id = ?").get(run);
+        return typeof row?.["worktree"] === "string" && row["worktree"] !== "" ? row["worktree"] : null;
+      } catch { return null; } finally { db.close(); }
+    },
+    recover: async input => {
+      const answer = await adapters.toolroll.recoverDeploy(input);
+      return answer.ok ? { ok: true } : { ok: false, message: answer.message };
+    },
+  };
+}
+
+async function runRescue(stage: string | undefined, yes: boolean, write: (line: string) => void, json: boolean, world: RescueWorld): Promise<number> {
+  let outcome: Awaited<ReturnType<typeof rescueDeployment>>;
+  try { outcome = await rescueDeployment(stage, yes, world); }
+  catch (error) { outcome = { ok: false, reason: "failed", message: `${(error as Error).message} Run \`toolroll release --recover-deploy --yes\` again once the cause is fixed.` }; }
+  if (!outcome.ok) {
+    write(json ? checkedEnvelopeJson({ ok: false, command: "release", reason: outcome.reason, message: outcome.message }) : `✗ ${outcome.message}`);
+    return outcome.reason === "usage" ? 2 : 3;
+  }
+  if (json) { write(checkedEnvelopeJson({ ok: true, command: "release", recovery: { acted: outcome.acted, stage: outcome.stage, phase: outcome.phase, said: outcome.words } })); return 0; }
+  for (const line of outcome.words) write(outcome.acted ? `✓ ${line}` : line);
+  return 0;
 }
 
 function runGateRelease(id: string, yes: boolean, write: (line: string) => void, json: boolean, world: GateReleaseWorld): number {
@@ -342,5 +426,32 @@ async function runNightlyCommand(flags: { repo: string | undefined; as: string |
     const made = createNightlyCheckFlow(store, { repo: flags.repo, schedule, as: flags.as, token: flags.token, start: flags.start }, (deps.now ?? (() => new Date()))());
     if (!made.ok) return answer(false, { reason: "refused", message: made.message }, made.message, 1);
     return answer(true, { flow: made.flow, trigger: made.trigger, schedule }, `The nightly check of main runs ${schedule}${flags.start ? "" : " once you turn its schedule on"} (flow ${made.flow}).`, 0);
+  } finally { store.close(); }
+}
+
+/** `toolroll release nightly --github | --lane-alias | --lane-retire`: GitHub's nightly as release debt
+ * (nightly-github.ts), each a person's step proved with their password now. */
+async function runGithubNightlyCommand(flags: { repo: string | undefined; as: string | undefined; token: string | undefined; alias: [string, string] | undefined; retire: string | undefined },
+  write: (line: string) => void, json: boolean, deps: ReleaseCliDeps): Promise<number> {
+  const answer = (ok: boolean, fields: Record<string, unknown>, words: string, code: number) => { write(json ? checkedEnvelopeJson({ ok, command: "release nightly", ...fields } as never) : words); return code; };
+  if (flags.repo === undefined) return answer(false, { reason: "usage", message: "Name the project with --repo <path>." }, "Name the project with --repo <path>.", 2);
+  if (flags.as === undefined || flags.token === undefined) return answer(false, { reason: "usage", message: "This needs your password: add --as <you> --token <password>." }, "This needs your password: add --as <you> --token <password>.", 2);
+  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined || process.env["TOOLROLL_REMOTE_TOKEN"] !== undefined) return answer(false, { reason: "person-only", message: "Only a person changes how GitHub's nightly holds releases." }, "Only a person changes how GitHub's nightly holds releases.", 1);
+  const store = openStore(deps.database ?? databasePath(process.env, homedir()));
+  const now = (deps.now ?? (() => new Date()))();
+  try {
+    if (flags.alias !== undefined) {
+      const [laneId, name] = flags.alias;
+      const done = aliasNightlyLane(store, { repo: flags.repo, laneId, name, as: flags.as, token: flags.token }, now);
+      return done.ok ? answer(true, { lane: laneId, name }, `Jobs named "${name}" now count for lane ${laneId}.`, 0) : answer(false, { reason: "refused", message: done.message }, done.message, 1);
+    }
+    if (flags.retire !== undefined) {
+      const done = retireNightlyLane(store, { repo: flags.repo, laneId: flags.retire, as: flags.as, token: flags.token }, now);
+      return done.ok ? answer(true, { lane: flags.retire, closed: done.closed }, `Retired lane ${flags.retire}${done.closed > 0 ? `; ${done.closed} open failure${done.closed === 1 ? "" : "s"} closed` : ""}.`, 0)
+        : answer(false, { reason: "refused", message: done.message }, done.message, 1);
+    }
+    const made = optInGithubNightly(store, { repo: flags.repo, as: flags.as, token: flags.token }, now);
+    return made.ok ? answer(true, { github: made.slug, lanes: made.lanes }, `GitHub's nightly for ${made.slug} now holds this project's deploys, release merges and tags while a lane fails (${made.lanes} lanes).`, 0)
+      : answer(false, { reason: "refused", message: made.message }, made.message, 1);
   } finally { store.close(); }
 }

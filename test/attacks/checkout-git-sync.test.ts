@@ -9,7 +9,7 @@ import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { checkoutGitSync, PAGE_READ_FLAGS, TEARDOWN_FLAGS } from "../../src/teardown-git.js";
+import { checkoutGitSync, readFlags, TEARDOWN_FLAGS } from "../../src/teardown-git.js";
 
 let root: string, repo: string, marker: string;
 const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
@@ -47,7 +47,7 @@ describe("attack: a checkout's git config runs a program when a page reads it", 
     for (const plant of Object.values(plants)) plant();
     const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" };
     for (const args of [["status", "--porcelain=v1"], ["diff", "--no-ext-diff", "--no-textconv", "--name-only", "HEAD"], ["diff", "--no-ext-diff", "--no-textconv", "HEAD"]]) {
-      execFileSync("git", [...TEARDOWN_FLAGS, ...PAGE_READ_FLAGS, ...args], { cwd: repo, env, stdio: "pipe" });
+      execFileSync("git", [...TEARDOWN_FLAGS, ...readFlags(), ...args], { cwd: repo, env, stdio: "pipe" });
     }
     expect(existsSync(marker)).toBe(false);
   });

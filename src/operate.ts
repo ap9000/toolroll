@@ -1,3 +1,4 @@
+import { mintSecret } from "./secret-mint.js";
 import { ACP_AGENTS, ACP_PROVIDER_IDS, isAcpProvider, isKeyedProvider } from "./acp-agents.js";
 import { inspectAcpAgent } from "./acp-inspect.js";
 import { runAcpChecks } from "./acp-check.js";
@@ -43,6 +44,7 @@ import { createConnectionChecker } from "./provider-connection.js";
 import { checkIntegrations, integrationsBrokenLine, integrationsNow, renderIntegrations, type Integration, type IntegrationIo } from "./integrations.js";
 import { buildHandoff, handoffLines, loginAccount, runOnboard, type HandoffLogin, type OnboardIo } from "./agent-onboard.js";
 import { backupFiles, backupFolderOf, backupOwner, backupNow, restoreDatabase, startBackups } from "./backup.js";
+import { startLiveBackups } from "./live-backup.js";
 import { pushLimitSink } from "./provider-limits.js";
 import { heuristicSizing, installFilingSizer, ownerSizer, refineFiledSizing, settleSizings, type Sizer } from "./task-sizing.js";
 import { tierLines, tierReport } from "./tier-report.js";
@@ -53,13 +55,17 @@ import { origin, readMonitoring } from "./monitoring-settings.js";
 import { logEvent } from "./log.js";
 import type { FlowAdvance } from "./flow-engine.js";
 import { FLOW_EVERY_MS, flowHousekeeping, moveCards, moveCardsAfter, type FlowIo } from "./flow-cadence.js";
+import { NO_YOUIYOUX_PASS, youiyouxOnboardLine } from "./youiyoux-intake.js";
 import { readHooksBase, scheduleFromWords, type TriggerIo } from "./flow-triggers.js";
 import { sendSubagentSummaries } from "./subagent-admin.js";
 import { runRequestedUndos, sendSubagentWeeklies } from "./subagent-week.js";
 import { refreshConnections } from "./mcp-connect.js";
-import { releaseTermsFor } from "./release-carry.js";
+import { releaseCheckPurposeFor, releaseTermsFor } from "./release-carry.js";
 import { refreshTrustedMains, settleReleaseChecks } from "./nightly-check.js";
-import type { ReleaseTerms } from "./contracts/release-terms.js";
+import { githubNightlyRepos, readGithubNightlies, type GhRead } from "./nightly-github.js";
+import { exec as releaseExec, githubReads } from "./release-adapters.js";
+import { releaseTools } from "./release-git.js";
+import type { ReleaseCheckPurpose, ReleaseTerms } from "./contracts/release-terms.js";
 import { SECRETS_FIRST, startToolSecrets, toolSecretStorage } from "./project-tools.js";
 import type { StepIo } from "./flow-steps.js";
 import {followDiscord} from "./discord.js";
@@ -102,17 +108,17 @@ import { taskReviewBrief, renderReviewBrief } from "./task-review-brief.js";
  */
 
 import { homedir, hostname } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { releaseStalledUpdate, waitingUpdate } from "./toolroll-update.js";
 import {
-  openStore, openStoreNoMigrate, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, RESULT_SCREENSHOTS, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
+  openStore, openStoreNoMigrate, CONCURRENT_WRITER_WAIT_MS, isDatabaseBusy, databasePath, BUILT_IN, parseCapabilityKey, verifiedAuthor, isDigestTime, predecessorWatches, RESULT_SCREENSHOTS, lifecycleOf, reportLifecycle, beatLifecycle, type ResultScreenshots, type Capability, type ReviewRetryState, type Store, type TaskState,
 } from "./store.js";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import { claimInstance, clearInstance, openInstanceSocket } from "./console-instance.js";
 import { authorizePlanUnderMode } from "./plan-auto.js";
 import { ghDispatchAdapter, mirrorTaskId, syncPass, type DispatchAdapter } from "./sync.js";
 import { LIVE_FILE_BOUND, LIVE_RETAIN_MS, sweepLiveLogs } from "./live.js";
-import { addRepos, removeRepos, updateRepos, loadRepos, loadProjectRegistry, updateProjectRegistry } from "./repos.js";
+import { addRepos, removeRepos, updateRepos, loadRepos, loadProjectRegistry, updateProjectRegistry, registryRemovals } from "./repos.js";
 import { deleteProject, holdingsWords, projectHoldings, projectRunning } from "./project-delete.js";
 import { pushPass } from "./push.js";
 import { chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, writeFileSync } from "node:fs";
@@ -129,6 +135,10 @@ import { admissionRecorded, admitProject, commandLineActor } from "./project-adm
 import { leadClaim, leadSay, noteLeadWork } from "./lead-voice.js";
 import { createServer as createNetServer } from "node:net";
 import { spawn as spawnChild } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { superviseController } from "./controller-supervisor.js";
+import { buildIdentity, memoryChannel, RoleGenerations, roleMessage, type ParentToRole, type RolePort, type RoleToParent, type UpConsoleConfig, type UpRoleName, type UpRoleStart, type UpWorkerConfig } from "./up-processes.js";
 // Every envelope is checked against its command's schema (logged, never refused), then serialized unchanged.
 import { checkedEnvelopeJson as envelopeJson } from "./contracts/cli.js";
 import { auditCommand } from "./audit-cli.js";
@@ -207,6 +217,8 @@ import {
   type TelegramTransport,
 } from "./telegram.js";
 import type { TelegramConversationOptions } from "./telegram-lead.js";
+import { projectIdentities, type ProjectIdentities } from "./project-identity.js";
+import { lookIdentities, type FolderLookOptions } from "./folder-look.js";
 import { scanRepo } from "./capscan.js";
 import { computeGaps, describeCapability, type Gap } from "./gaps.js";
 import { ask as promptAsk, askHidden as promptHidden, confirm as promptConfirm, interactive as promptInteractive, underAgent } from "./prompt.js";
@@ -251,13 +263,20 @@ import {
   removeRunnerRepoAuthed,
   registerRunnerIfIdle,
   retireRunnerIfCurrent,
+  drainRunnerIfCurrent,
+  RUNNER_HEARTBEAT_MS,
+  MAX_WATCH_LEASE_MS,
   normalizeRunnerName,
   validRunnerName,
   canonicalRepos,
   RUNNER_NAME_MAX,
   RUNNER_CAPACITY_MAX,
   parseRunnerCapacity,
+  hashToken as hashRunnerToken,
+  type Runner as RunnerRow,
 } from "./runner.js";
+import { credentialDigest, recordedHolderProvedGone, processGone, processStart, readRunnerProcessRecord, runnerProcessFile, sealRunnerProcessRecord, writeRunnerProcessRecord, type RunnerProcessRecord, type RunnerProcessRole } from "./runner-process.js";
+import { stopProcessTree } from "./process-tree.js";
 import { mintCoordinator, revokeCoordinator, listCoordinators } from "./coordinator.js";
 import { serveMcp } from "./mcp.js";
 import { createInterface } from "node:readline";
@@ -277,11 +296,12 @@ import { fileTaskProposal, validateTaskText } from "./proposal.js";
 import { TEMPLATES, templateByName } from "./templates.js";
 import { isDirectChatProvider, isSubscriptionChatProvider, priceOf, PRICED_MODELS } from "./converse.js";
 import { resolvePhaseAgent, resolveScopeProfile, resolveRouteCandidates, routeOfTask, INSTALLATION_SCOPE, type TaskRoute } from "./agentconfig.js";
+import { applyModelChoices, stateDigest, type ApplyResult, type ExtraWrite, type ModelChange, type Slot, type SlotPhase } from "./model-choices.js";
 import { isTaskSize, legOf, projectRoute, routeDigestOf, routeWords, TASK_SIZES, PHASES as ROUTE_PHASES, type TaskSize, type ReadinessLookup, type ReadinessObservation, type RouteOverride, type RouteStamp } from "./phase-routing.js";
 import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runner.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
-import { activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, loadWebhookTargets, effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, saveConsoleUrl, savePrimary } from "./webhooks.js";
+import { activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, loadWebhookTargets, effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, readUpConsoleUrl, saveConsoleUrl, savePrimary, UP_CONSOLE_FILE } from "./webhooks.js";
 import { auditOf, inspectionOf, isProviderId, MONEY_CAPABILITIES, PROVIDER_IDS, validModelId, validateSpec, type ProviderAudit, type ProviderId, ALL_CREDENTIAL_ENV } from "./provider.js";
 import { attestProvider, attestationOf, versionInRange, type AttestOutcome, type AttestationRange } from "./attest.js";
 import {
@@ -295,7 +315,8 @@ import { scout as scoutTask } from "./scout.js";
 import { profileDigestOf } from "./scope.js";
 import { PROVIDER_KEY_ENV, clearProviderKey, keyStatus, readAuthMode, readAuthModeStrict, readProviderKey, saveProviderKey, setAuthMode, verifyProviderKey, verdictWords } from "./keys.js";
 import { run, terminateLiveProviders, run as execRun } from "./exec.js";
-import { hardenedGit } from "./teardown-git.js";
+import { hardenedGit, lazyFetchSafeGit, noLazyFetch, PARTIAL_CLONE_REFUSAL } from "./teardown-git.js";
+import { installedGitFloorProblem } from "./git-floor.js";
 import { noticeGitIncidents } from "./git-incident.js";
 import { containmentNotice, containmentStatus, currentContainment, describeContainment, resolveContainment, type EffectiveContainment } from "./containment.js";
 import { readPulls } from "./pulls.js";
@@ -310,6 +331,7 @@ import { installationStatus, renderInstallationStatus, renderTaskWait, repairSta
 import { latestRelease, newerRelease, notifySecurityRelease, notifyVersionLive, recordRunnerVersion, startUpdateChecks, updateLine, type ReleaseIo } from "./releases.js";
 import { installMethod } from "./install-method.js";
 import { PACKAGE_VERSION } from "./version.js";
+import { machineActing } from "./scope.js";
 
 export type Write = (line: string) => void;
 
@@ -381,9 +403,13 @@ export type OperateOptions = {
   upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void };
   /** Injected by tests: the classifier that sizes filed tasks (none by default under test). */
   filingSizer?: Sizer;
+  /** Set only by up-role-child.ts: this process is one role of a `toolroll up` (the console or the worker). */
+  upRole?: UpRoleHost;
+  /** Injected by tests: how the console looks at project folders off its thread (folder-look.ts). */
+  folderLook?: FolderLookOptions;
 };
 
-export type OnboardSeams = Partial<Pick<OnboardIo, "home" | "env" | "cwd" | "interactive" | "confirm" | "findRepo" | "checkConnection" | "pullRequests">>;
+export type OnboardSeams = Partial<Pick<OnboardIo, "home" | "env" | "cwd" | "interactive" | "confirm" | "findRepo" | "checkConnection" | "pullRequests" | "youiyoux">>;
 
 const STATES: readonly TaskState[] = ["queued", "running", "done", "failed", "cancelled"];
 
@@ -574,6 +600,8 @@ External trackers — build what a tracker nominates, under local approvals
                                         app; they start without a restart.
                                         --repo still adds an exact path;
                                         --no-open skips the browser;
+                                        the app and the builder run as two
+                                        processes (--single-process: one);
                                         --host 0.0.0.0 --allow-host name:port
                                         reaches a phone over a tailnet;
                                         --runner names the worker;
@@ -806,6 +834,9 @@ export const KEYS_ACTIONS = ["status", "set", "clear", "verify", "auth"] as cons
  * tests): every value-taking flag any verb reads, and every boolean.
  * A --flag in neither set is a typo, refused by name.
  */
+/** Flags whose value is a secret someone types or pastes: taken as the next argument even when it starts with "--". */
+export const SECRET_VALUE_FLAGS: ReadonlySet<string> = new Set(["token", "password"]);
+
 export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "key", "db", "runner", "ttl", "state", "on", "reason", "until", "id", "backend",
   "allow", "selector", "paths", "credentials", "repo", "token", "capacity",
@@ -814,6 +845,9 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "choose", "note", "max-open-decisions", "name", "days", "publication", "auto-approve", "review-auto", "port", "host", "allow-host",
   "for", "tick-every", "bridge-every", "reconcile-every", "incarnation",
   "say", "ceiling-usd", "cap-usd",
+  // evals: the cases a diagnostic campaign runs, its k, an attempt's world and what its builds may not read, and the
+  // stuck campaign a person ends (recover --abandon).
+  "case", "k", "world", "deny", "abandon",
   "token-file", "bin", "poll", "github", "remote", "head-prefix", "password",
   // v102: project rules.
   "not-requester", "protect", "protect-paths",
@@ -852,11 +886,13 @@ export const OPERATE_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "release",
 ]);
 export const OPERATE_BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
+  // evals run: a report-only campaign; keep each attempt's world for a look afterwards.
+  "diagnostic", "keep",
   // task scope --release ... --no-carry: every later commit asks again.
   "no-carry",
   "json", "yes", "all", "brief", "local", "history", "latest-watch", "dry-run", "file",
   "clear", "follow", "ready", "all-tasks", "inbound-only", "help", "undo", "anyone", "allow-dispatch", "allow-merge", "merge-delete-branch",
-  "no-open", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
+  "no-open", "single-process", "remove", "no-verify", "no-follow", "end", "report", "off", "tmux",
   "self-heal", "plan-auto", "chat-approve", "full-access", "repair-auto", "review-retry-auto", "no-local",
   "html", "csv", "alerts-only",
   // project network: what its builds may reach (--open | --allowlist).
@@ -925,11 +961,11 @@ export function parseOperateArgs(argv: readonly string[], ownValues: ReadonlySet
     const value = equals === -1 ? argv[++index] : argument.slice(equals + 1);
     // A following --flag is not a value — consuming it would swallow a real
     // flag and leave this one holding a name-shaped lie.
-    // Minted 32-byte base64url credentials may begin with two hyphens.
-    // Accept that exact token shape without swallowing a following flag.
-    // Explicit --name=value also carries arbitrary literal leading hyphens.
-    const mintedToken = name === "token" && value !== undefined && /^[A-Za-z0-9_-]{43}$/.test(value);
-    if (value === undefined || (equals === -1 && value.startsWith("--") && !mintedToken)) return { error: `--${name} needs a value` };
+    // A secret (a password, a token) is random base64url and may begin with two hyphens: it is the next argument
+    // unless that argument is exactly a flag this parser knows (a real flag is never swallowed, finding 22). Other flags
+    // never take a following --flag. Explicit --name=value carries arbitrary literal leading hyphens for every flag.
+    const namesFlag = (one: string) => { const flag = one.slice(2).split("=")[0]!; return booleans.has(flag) || wantsValue.has(flag); };
+    if (value === undefined || (equals === -1 && value.startsWith("--") && (!SECRET_VALUE_FLAGS.has(name) || namesFlag(value)))) return { error: `--${name} needs a value` };
     // `flows import --param a=1 --param b=2`: each value kept, one per line.
     flags.set(name, name === "param" && typeof flags.get(name) === "string" ? `${flags.get(name)}\n${value}` : value);
     if (name === "repo") {
@@ -1113,6 +1149,9 @@ async function dispatchOn(
       ...(options.installBin === undefined ? {} : { installBin: options.installBin }),
       ...(options.onboardSeams === undefined ? {} : { onboardSeams: options.onboardSeams }),
       ...(options.upSeams === undefined ? {} : { upSeams: options.upSeams }),
+      ...(options.upRole === undefined ? {} : { upRole: options.upRole }),
+      ...(options.folderLook === undefined ? {} : { folderLook: options.folderLook }),
+      ...(upNeedsOneProcess(options) ? { upOneProcess: true } : {}),
       ...(activeRemote() === null ? {} : { principal: activeRemote()! }),
     });
     return await enter(run);
@@ -1225,6 +1264,8 @@ function remoteFile(remote: RemoteRun, path: string): string {
 const LEAD_COMMANDS: ReadonlySet<string> = new Set(["task", "assignment", "status", "ready", "brief", "peek", "check-progress", "notifications", "lead"]);
 
 type Context = {
+  /** Injected by tests: how the console looks at project folders off its thread. */
+  folderLook?: FolderLookOptions;
   /** A remote run's person (runOperateAs): every credential check resolves to them. Absent for every local command. */
   principal?: RemoteRun;
   /** The lead token this command runs under: it signs in as its owner. */
@@ -1286,6 +1327,10 @@ type Context = {
   installBin?: string;
   onboardSeams?: OnboardSeams;
   upSeams?: { terminal?: boolean; env?: Record<string, string | undefined>; openBrowser?: (url: string) => void };
+  /** This process is one role of a `toolroll up`, started by it (never from the command line). */
+  upRole?: UpRoleHost;
+  /** In-memory seams a child process can't receive: `up` runs its console and worker in this one process. */
+  upOneProcess?: boolean;
   /** Test seam: this computer's tailnet names (production asks `tailscale status`). */
   tailnetNames?: () => Promise<readonly string[]>;
 };
@@ -1373,6 +1418,8 @@ async function dispatch(
   switch (command) {
     case "status":
       return statusCommand(positional, flags, context);
+    case "evals":
+      return evalsCommand(positional, flags, context);
     case "ready":
       return readyCommand(flags, context);
     case "task":
@@ -1536,11 +1583,11 @@ async function dispatch(
     case "sync":
       return syncCommand(flags, context);
     case "serve":
-      return serveCommand(flags, context);
+      return gitTooOld(command, context) ?? serveCommand(flags, context);
     case "watch":
-      return watchCommand(flags, context);
+      return gitTooOld(command, context) ?? watchCommand(flags, context);
     case "up":
-      return upCommand(flags, context);
+      return gitTooOld(command, context) ?? upCommand(flags, context);
     case "onboard":
       return onboardCommand(flags, context);
     case "daemon":
@@ -1762,6 +1809,8 @@ function claimCommand(
     if (result.reason === "unauthorized-repo") return fail(write, json, "claim", "unauthorized-repo", `this runner is not bound to ${result.repo} — \`runner bind\` adds it`, EXIT.refused);
     if (result.reason === "coordinator-filed") return fail(write, json, "claim", "coordinator-filed", "a coordinator filed this — nothing runs until the operator signs its scope", EXIT.refused);
     if (result.reason === "sweep-limit") return fail(write, json, "claim", "sweep-limit", `its sweep already has ${result.limit} running at once — it starts when one finishes`, EXIT.refused, { sweep: result.sweep, limit: result.limit });
+    if (result.reason === "watch-custody") return fail(write, json, "claim", "watch-custody", "This worker no longer holds the project; restart the watch", EXIT.refused);
+    if (result.reason === "draining") return fail(write, json, "claim", "draining", `Toolroll is restarting (draining): ${runner} takes no new work until it is back (by ${result.until})`, EXIT.refused, { until: result.until });
     return fail(write, json, "claim", result.reason, `held by ${result.by} until ${result.until}`, EXIT.refused, { holder: result.by, until: result.until });
   }
 
@@ -2509,6 +2558,7 @@ function flowIoOf(context: Context, pool: string, git: CommandRunner, base: stri
       dir: context.flowStepIo?.dir ?? dir, scratch: context.flowStepIo?.scratch ?? join(pool, "flow-checks"), base,
       ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }) },
     ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }),
+    youiyouxGit: gitOf(context.gitRunner),
   };
 }
 
@@ -3390,8 +3440,9 @@ async function tickCommand(
         if (exists.code !== 0 && text(flags, "base") === undefined) buildBase = source.head;
         else {
           const descendant = exists.code === 0 ? branch : base;
-          const ancestry = await git("git", ["--no-lazy-fetch", "--no-replace-objects", "merge-base", "--is-ancestor", source.head, descendant], { cwd: repo });
-          if (ancestry.code !== 0) problem = "the requested revision base does not contain its source head";
+          // On a git without --no-lazy-fetch, through a frozen read view that refuses a partial clone (lazyFetchSafeGit).
+          const ancestry = await lazyFetchSafeGit(git)("git", [...noLazyFetch(), "-c", "protocol.allow=never", "--no-replace-objects", "merge-base", "--is-ancestor", source.head, descendant], { cwd: repo });
+          if (ancestry.code !== 0) problem = ancestry.stderr.includes(PARTIAL_CLONE_REFUSAL) ? PARTIAL_CLONE_REFUSAL : "the requested revision base does not contain its source head";
         }
       }
       if (problem !== null) {
@@ -3643,8 +3694,10 @@ async function tickCommand(
 
   settleFinished();
   const replied = replyPass.taken > 0 || replyPass.problem !== null;
-  const flows = flowPass.moved + flowPass.filed.length + flowPass.problems.length + triggerPass.added + triggerPass.problems.length + stepPass.ran + stepPass.problems.length === 0 && !replied ? {} : { flows: { ...flowPass,
-    ...(triggerPass.added + triggerPass.problems.length === 0 ? {} : { triggers: triggerPass }), ...(stepPass.ran + stepPass.problems.length === 0 ? {} : { steps: stepPass }), ...(replied ? { replies: replyPass } : {}) } };
+  const requestPass = housekeeping?.youiyoux ?? NO_YOUIYOUX_PASS;
+  const requested = requestPass.filed + requestPass.copied + requestPass.decided + requestPass.problems.length > 0;
+  const flows = flowPass.moved + flowPass.filed.length + flowPass.problems.length + triggerPass.added + triggerPass.problems.length + stepPass.ran + stepPass.problems.length === 0 && !replied && !requested ? {} : { flows: { ...flowPass,
+    ...(triggerPass.added + triggerPass.problems.length === 0 ? {} : { triggers: triggerPass }), ...(requested ? { youiyoux: requestPass } : {}), ...(stepPass.ran + stepPass.problems.length === 0 ? {} : { steps: stepPass }), ...(replied ? { replies: replyPass } : {}) } };
 
   const summary = () => {
     const lines = [`Considered ${considered}, built ${built}, parked ${parked}, broke ${broke}.`];
@@ -4293,11 +4346,18 @@ async function startConsole(options: {
   upConsole?: boolean;
   editorLinks?: "vscode";
   instanceSecret?: () => string | null;
+  draining?: () => boolean;
 }): Promise<{ server: ReturnType<typeof createDecisionServer>; port: number; url: string }> {
   const { context } = options;
   // A git incident (teardown-git.ts) raises an attention notification in this console's outbox.
   noticeGitIncidents(context.store, context.clock);
+  // Every project folder this console starts with is resolved off its thread, under a deadline, after it is listening
+  // (consoleIdentitiesInBackground): the console answers at once, and a project shows up once its folder answers. Until
+  // then it is unresolved and kept restrictive; one that doesn't answer (a drive away, an iCloud folder macOS is
+  // holding) is looked at again by the background pass (project-identity.ts).
+  const identities = projectIdentities(context.folderLook);
   const server = createDecisionServer({
+    identities,
     store: context.store,
     // Sign-in, integration and model checks, and the tidy-ups no page visit does (docs/plans/get-side-effects.md).
     backgroundChecks: true,
@@ -4324,6 +4384,7 @@ async function startConsole(options: {
     ...(options.upConsole === undefined ? {} : { upConsole: options.upConsole }),
     ...(options.editorLinks === undefined ? {} : { editorLinks: options.editorLinks }),
     ...(options.instanceSecret === undefined ? {} : { instanceSecret: options.instanceSecret }),
+    ...(options.draining === undefined ? {} : { draining: options.draining }),
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -4331,6 +4392,7 @@ async function startConsole(options: {
   }).catch(error => {
     throw new Error(`could not listen on ${options.host}:${options.port} — ${describe(error)}`);
   });
+  consoleIdentitiesInBackground(identities, [...options.repos ?? [], ...options.projectRoots ?? [], ...context.store.listProjects().map(one => one.path), ...context.store.knownRepos()]);
   // v104: monitoring runs beside the console (every setup has one): one loop sends the audit stream and traces where
   // Settings → Monitoring says, and stops when the console does. A lease keeps a second process from sending too.
   const stopMonitoring = startMonitoring({
@@ -5391,6 +5453,9 @@ async function configCommand(
   if (phase === undefined || !["plan", "build", "repair", "review"].includes(phase)) return fail(write, json, `config ${action}`, "usage", "which phase? plan, build, repair, review — or chat", EXIT.usage);
 
   const acting = await askCredentials(flags, context);
+  // The credential generation the proof below is checked against, read BEFORE it: a rotation after this read makes
+  // the write refuse (model-choices.ts re-checks it inside the transaction), never borrow the new generation.
+  const provedGeneration = acting === null ? -1 : store.accountOf(acting.name)?.generation ?? -1;
   const verified = acting === null ? null : authenticateApprover(store, acting.name, acting.token);
   if (acting === null || !verified?.ok) return refuseApprover(context, `config ${action}`, verified, "changing spend routing takes `--as <you> --token <t>`", phase);
 
@@ -5405,6 +5470,19 @@ async function configCommand(
   // Clearing one left from before stays possible.
   if (tierGiven === "light" && phase !== "build" && !(action === "clear" && phase === "plan" && !flag(flags, "also"))) return fail(write, json, `config ${action}`, "usage", "--tier light is for build only — a small change makes no plan, and repairs resume the builder's session", EXIT.usage);
 
+  // Every row below — plain, tier, `--also`, and a leftover light planner's removal — is written through the one write
+  // path (model-choices.ts): one transaction, the actor re-proved as an instance operator at the credential generation
+  // proved above by a proof that still stands, the target and the resulting configuration checked, every row ledgered.
+  // A project named with --repo must be one Toolroll knows (the editor's own rule).
+  const projectKnown = repoGiven === undefined || (await knownProject(context, repoGiven, { listed: true, canonical: true })) !== undefined;
+  const proof = { actor: acting.name, generation: provedGeneration, method: verified.method };
+  const written = (slot: Slot | null, to: ModelChange["to"], extra: ExtraWrite[] = []) => writeModelRow(store, proof, scope, () => projectKnown, slot, to, clock(), extra);
+  // A configuration still missing a role's model is saved, and said (JSON: `incomplete`).
+  const said = (command: string, result: ApplyResult, payload: Record<string, unknown>, lines: () => string[]) => {
+    const incomplete = result.ok ? result.unresolved : null;
+    return succeed(write, json, command, { ...payload, ...(incomplete === null ? {} : { incomplete }) }, () => [...lines(), ...(incomplete === null ? [] : [`  ! new tasks can't be filed here yet: ${incomplete}`])]);
+  };
+
   // Another provider's candidate on the same tier (`--also`): one per provider, and at filing the one whose plan
   // has more room runs.
   if (flag(flags, "also")) {
@@ -5413,8 +5491,10 @@ async function configCommand(
     const alsoProvider = text(flags, "provider");
     if (alsoProvider !== undefined && !isProviderId(alsoProvider)) return fail(write, json, `config ${action}`, "usage", `--provider is one of ${PROVIDER_IDS.join(", ")}`, EXIT.usage);
     if (action === "clear") {
-      const removed = store.clearPhaseTierAlternates(scope, phase, tier, alsoProvider ?? null);
-      return succeed(write, json, "config clear", { scope, phase, tier, also: true, provider: alsoProvider ?? null, cleared: removed }, () => [
+      const alsoClear = written(null, null, [{ kind: "also-clear", phase, tier, provider: alsoProvider ?? null }]);
+      if (!alsoClear.ok) return fail(write, json, "config clear", alsoClear.reason, alsoClear.problem, EXIT.refused);
+      const removed = alsoClear.extra;
+      return said("config clear", alsoClear, { scope, phase, tier, also: true, provider: alsoProvider ?? null, cleared: removed }, () => [
         removed > 0 ? `Removed ${removed} other-provider ${tier} ${phase} agent${removed === 1 ? "" : "s"} at ${scope}; sealed routes are untouched.` : `No other-provider ${tier} ${phase} agent${alsoProvider === undefined ? "" : ` on ${alsoProvider}`} was configured at ${scope}.`,
       ]);
     }
@@ -5422,10 +5502,11 @@ async function configCommand(
     if (alsoProvider === undefined || alsoModel === undefined) return fail(write, json, "config set", "usage", "--also names an exact --provider and --model — approvals bind exact routing", EXIT.usage);
     const alsoValid = validateSpec({ provider: alsoProvider, model: alsoModel });
     if (!alsoValid.ok) return fail(write, json, "config set", "invalid", alsoValid.problem, EXIT.usage);
-    store.setPhaseTierAlternate(scope, phase, tier, alsoProvider, alsoModel, acting.name, clock());
+    const alsoSet = written(null, null, [{ kind: "also-set", phase, tier, provider: alsoProvider, model: alsoModel }]);
+    if (!alsoSet.ok) return fail(write, json, "config set", alsoSet.reason, alsoSet.problem, EXIT.refused);
     const resolvedNow = resolveRouteCandidates(store, scope === INSTALLATION_SCOPE ? null : scope);
     const own = !resolvedNow.ok ? null : tier === "routine" ? resolvedNow.candidates[phase].routine : tier === "light" ? resolvedNow.candidates[phase].light ?? null : resolvedNow.candidates[phase].strong;
-    return succeed(write, json, "config set", { scope, phase, tier, also: true, provider: alsoProvider, model: alsoModel }, () => [
+    return said("config set", alsoSet, { scope, phase, tier, also: true, provider: alsoProvider, model: alsoModel }, () => [
       `${tier} ${phase} at ${scope === INSTALLATION_SCOPE ? "the installation" : scope} can also run ${alsoProvider} · ${alsoModel}, set by ${acting.name}.`,
       own !== null && own.provider === alsoProvider && !own.source.includes("also")
         ? `  ! the ${tier} ${phase} agent already runs ${alsoProvider} (${own.model}) — this one is not used while it does.`
@@ -5434,20 +5515,35 @@ async function configCommand(
   }
 
   if (action === "clear") {
+    if (tierGiven === "light" && phase === "build") {
+      const lightWrite = written({ phase, tier: "light" }, null);
+      if (!lightWrite.ok) return fail(write, json, "config clear", lightWrite.reason, lightWrite.problem, EXIT.refused);
+      const clearedLight = lightWrite.diff.length > 0;
+      return said("config clear", lightWrite, { scope, phase, tier: "light", cleared: clearedLight }, () => [
+        clearedLight ? `Cleared the light ${phase} agent at ${scope} — small changes keep the default and say so; sealed routes are untouched.` : `No light ${phase} agent was configured at ${scope}.`,
+      ]);
+    }
     if (tierGiven === "light") {
-      const clearedLight = store.clearPhaseTierConfig(scope, phase, "light");
-      return succeed(write, json, "config clear", { scope, phase, tier: "light", cleared: clearedLight }, () => [
+      // A light planner from before light became build-only: removed here, never written.
+      const legacyClear = written(null, null, [{ kind: "legacy-light-clear", phase: phase as SlotPhase }]);
+      if (!legacyClear.ok) return fail(write, json, "config clear", legacyClear.reason, legacyClear.problem, EXIT.refused);
+      const clearedLight = legacyClear.extra > 0;
+      return said("config clear", legacyClear, { scope, phase, tier: "light", cleared: clearedLight }, () => [
         clearedLight ? `Cleared the light ${phase} agent at ${scope} — small changes keep the default and say so; sealed routes are untouched.` : `No light ${phase} agent was configured at ${scope}.`,
       ]);
     }
     if (tierGiven === "strong") {
-      const clearedStrong = store.clearPhaseTierConfig(scope, phase, "strong");
-      return succeed(write, json, "config clear", { scope, phase, tier: "strong", cleared: clearedStrong }, () => [
+      const strongWrite = written({ phase: phase as SlotPhase, tier: "strong" }, null);
+      if (!strongWrite.ok) return fail(write, json, "config clear", strongWrite.reason, strongWrite.problem, EXIT.refused);
+      const clearedStrong = strongWrite.diff.length > 0;
+      return said("config clear", strongWrite, { scope, phase, tier: "strong", cleared: clearedStrong }, () => [
         clearedStrong ? `Cleared the strong ${phase} agent at ${scope} — demanding routes keep the default and say so; sealed routes are untouched.` : `No strong ${phase} agent was configured at ${scope}.`,
       ]);
     }
-    const cleared = store.clearPhaseConfig(scope, phase);
-    return succeed(write, json, "config clear", { scope, phase, cleared }, () => [
+    const routineWrite = written({ phase: phase as SlotPhase, tier: "routine" }, null);
+    if (!routineWrite.ok) return fail(write, json, "config clear", routineWrite.reason, routineWrite.problem, EXIT.refused);
+    const cleared = routineWrite.diff.length > 0;
+    return said("config clear", routineWrite, { scope, phase, cleared }, () => [
       cleared ? `Cleared ${phase} at ${scope} — it resolves one layer down now.` : `Nothing was configured for ${phase} at ${scope}.`,
     ]);
   }
@@ -5459,8 +5555,9 @@ async function configCommand(
   if (!valid.ok) return fail(write, json, "config set", "invalid", valid.problem, EXIT.usage);
   if (tierGiven === "light") {
     if (modelGiven === null) return fail(write, json, "config set", "usage", `a light ${phase} agent names an exact --model — approvals bind exact routing`, EXIT.usage);
-    store.setPhaseTierConfig(scope, phase, "light", providerGiven, modelGiven, acting.name, clock());
-    return succeed(write, json, "config set", { scope, phase, tier: "light", provider: providerGiven, model: modelGiven }, () => [
+    const lightSet = written({ phase: phase as SlotPhase, tier: "light" }, { provider: providerGiven, model: modelGiven });
+    if (!lightSet.ok) return fail(write, json, "config set", lightSet.reason, lightSet.problem, EXIT.refused);
+    return said("config set", lightSet, { scope, phase, tier: "light", provider: providerGiven, model: modelGiven }, () => [
       `light ${phase} at ${scope === INSTALLATION_SCOPE ? "the installation" : scope} is ${providerGiven} · ${modelGiven}, set by ${acting.name}.`,
       "  small changes filed from now on build on it with no plan; sealed routes are untouched.",
     ]);
@@ -5468,14 +5565,17 @@ async function configCommand(
   if (tierGiven === "strong") {
     if (phase === "review" && providerGiven === "gemini") return fail(write, json, "config set", "invalid", "gemini has no isolation posture for the review phase yet — name claude or codex as the strong reviewer", EXIT.usage);
     if (modelGiven === null) return fail(write, json, "config set", "usage", `a strong ${phase} agent names an exact --model — approvals bind exact routing`, EXIT.usage);
-    store.setPhaseTierConfig(scope, phase, "strong", providerGiven, modelGiven, acting.name, clock());
-    return succeed(write, json, "config set", { scope, phase, tier: "strong", provider: providerGiven, model: modelGiven }, () => [
+    const strongSet = written({ phase: phase as SlotPhase, tier: "strong" }, { provider: providerGiven, model: modelGiven });
+    if (!strongSet.ok) return fail(write, json, "config set", strongSet.reason, strongSet.problem, EXIT.refused);
+    return said("config set", strongSet, { scope, phase, tier: "strong", provider: providerGiven, model: modelGiven }, () => [
       `strong ${phase} at ${scope === INSTALLATION_SCOPE ? "the installation" : scope} is ${providerGiven}${modelGiven === null ? "" : ` · ${modelGiven}`}, set by ${acting.name}.`,
       "  large or risky, strict, screenshot-proof, and automerge routes filed from now on reach for it; sealed routes are untouched.",
       ...(phase === "repair" ? ["  a strong repair agent applies only when its provider is the build's — cross-provider repair does not exist."] : []),
     ]);
   }
-  store.setPhaseConfig(scope, phase, providerGiven, modelGiven, acting.name, clock());
+  // A routine row may still name no model on the command line (said below); the editor never writes one.
+  const routineSet = written({ phase: phase as SlotPhase, tier: "routine" }, { provider: providerGiven, model: modelGiven });
+  if (!routineSet.ok) return fail(write, json, "config set", routineSet.reason, routineSet.problem, EXIT.refused);
   const warnings: string[] = [];
   if (modelGiven === null) {
     warnings.push(`no --model named: approvals bind exact routing, so scopes cannot file until ${phase} has an exact model — \`config set ${phase} --provider ${providerGiven} --model <model>\``);
@@ -5486,7 +5586,7 @@ async function configCommand(
   if (providerGiven !== "claude") {
     warnings.push(`${providerGiven} does not report dollar cost: its runs land as UNMEASURED, and any schedule with a weekly limit fails closed on them by design.`);
   }
-  return succeed(write, json, "config set", { scope, phase, provider: providerGiven, model: modelGiven, warnings }, () => [
+  return said("config set", routineSet, { scope, phase, provider: providerGiven, model: modelGiven, warnings }, () => [
     `${phase} at ${scope === INSTALLATION_SCOPE ? "the installation" : scope} now runs ${providerGiven}${modelGiven === null ? "" : ` · ${modelGiven}`}, set by ${acting.name}.`,
     ...warnings.map(one => `  ! ${one}`),
   ]);
@@ -6411,8 +6511,10 @@ async function daemonCommand(
 
 // ---- the watch loop --------------------------------------------------------
 
-const WATCH_LEASE_MS = 90_000;
-const WATCH_HEARTBEAT_MS = 30_000;
+// A watch lease lasts at most a minute and is renewed every 15 s (docs/plans/actors-lessons.md): a crashed worker's
+// projects are free within a minute, and a clean stop hands them back at once (retireRunnerIfCurrent).
+const WATCH_LEASE_MS = MAX_WATCH_LEASE_MS;
+const WATCH_HEARTBEAT_MS = RUNNER_HEARTBEAT_MS;
 
 /**
  * `toolroll watch` — the loop (§5, §6): the cron chain as one
@@ -6535,6 +6637,10 @@ async function runWatchLoop(args: {
   passes?: ProjectPasses;
   /** The service sends and receives Telegram itself; this loop never touches the bot. */
   serviceBridge?: boolean;
+  /** A restarted worker waits this long for its crashed predecessor's lease to lapse, then takes it over with recovery. */
+  leaseWaitMs?: number;
+  /** What ends that wait early, when not isStopping: a removed project's drain still waits to recover its predecessor. */
+  leaseWaitStopping?: () => boolean;
 }): Promise<WatchLoopResult> {
   const { context, flags, runner, token, repo, progress } = args;
   const { store } = context;
@@ -6551,11 +6657,22 @@ async function runWatchLoop(args: {
 
   // The owner carries lifetime without changing the lease schema. Bounded watches cannot host automatic sweeps.
   const incarnation = `${runFor === null ? "toolroll-service:" : ""}${randomUUID()}`;
-  const lease = acquireWatchLeaseAuthed(
+  let lease = acquireWatchLeaseAuthed(
     store,
     { runner, token, repo, owner: incarnation, ttlMs: WATCH_LEASE_MS },
     new Date(),
   );
+  // Only expiry hands the lease over (store.acquireWatchLease): a predecessor still renewing keeps it, and the takeover
+  // recovers its incarnation in the same transaction, exactly as a fresh `up` after a crash would.
+  const waitUntil = Date.now() + (args.leaseWaitMs ?? 0);
+  let saidWaiting = false;
+  const waitStopping = args.leaseWaitStopping ?? args.isStopping;
+  while (!lease.ok && lease.reason === "watch-busy" && Date.now() < waitUntil && !waitStopping()) {
+    if (!saidWaiting) progress(`watch: ${repo} is still held by the previous worker until ${lease.until ?? "its lease lapses"}; taking it over then`);
+    saidWaiting = true;
+    await new Promise(resolve => setTimeout(resolve, 1_000));
+    lease = acquireWatchLeaseAuthed(store, { runner, token, repo, owner: incarnation, ttlMs: WATCH_LEASE_MS }, new Date());
+  }
   if (!lease.ok) {
     return {
       ok: false,
@@ -6741,6 +6858,9 @@ async function runWatchLoop(args: {
       await refreshTrustedMains(store, context.evidenceRoot, context.clock(), context.gitRunner);
       const settledChecks = settleReleaseChecks(store, context.evidenceRoot, context.clock());
       if (settledChecks > 0) progress(`watch: settled ${settledChecks} release check(s)`);
+      // GitHub's nightly as release debt (nightly-github.ts): each opted-in project at most every 30 minutes, 60 s in
+      // all. A test's injected agent runner means a test: no real gh.
+      if (context.agentRunner === undefined) await refreshGithubNightlies(store, context.clock);
       // A finished check may send a build's card down its failure path: now, not on the next beat.
       if (ran + batched > 0) moveCards(store, repo, context.clock(), context.evidenceRoot);
     },
@@ -6782,8 +6902,8 @@ async function runWatchLoop(args: {
         base = head.stdout.trim();
       }
       const pass = await flowHousekeeping(store, repo, context.clock, flowIoOf(context, flowPool, flowGit, base), admissionStopped);
-      flowsDid(pass.flows.moved + pass.triggers.added + pass.steps.ran + pass.replies.taken, pass.flows.filed.length,
-        `flow pass — ${pass.triggers.added} card(s) added, ${pass.replies.taken} reply(ies) taken, ${pass.steps.ran} step(s) run, ${pass.flows.moved} moved`);
+      flowsDid(pass.flows.moved + pass.triggers.added + pass.steps.ran + pass.replies.taken, pass.flows.filed.length + pass.youiyoux.filed,
+        `flow pass — ${pass.triggers.added} card(s) added, ${pass.youiyoux.filed} youiyoux request(s) filed, ${pass.replies.taken} reply(ies) taken, ${pass.steps.ran} step(s) run, ${pass.flows.moved} moved`);
     },
   });
 
@@ -7158,8 +7278,9 @@ async function watchCommand(
  *
  * COMPOSITION ONLY: identities mint through the atomic doors (a first
  * approver only while none exists; a runner only while its name is idle),
- * then the extracted console and one watch loop per repository run in this
- * one process, under one supervisor, over one shared store. Nothing here
+ * then the console and the worker (one watch loop per repository) run as two
+ * supervised processes over one shared store (isolated-checks.md, stage 1;
+ * up-processes.ts says what each holds). Nothing here
  * loosens a ceremony: approval, budgets, publication, and every fence work
  * exactly as they do for the long-hand verbs.
  */
@@ -7240,7 +7361,7 @@ async function resolveUpApprover(
       // the insert (finding 27). A refused insert unlinks only when an
       // UNRELATED approver won (finding 32).
       const name = asFlag ?? process.env["USER"] ?? process.env["USERNAME"] ?? "operator";
-      const password = randomBytes(12).toString("base64url");
+      const password = mintSecret(12);
       try {
         writeLoginFileDurably(loginFile, name, password);
       } catch (error) {
@@ -7342,8 +7463,6 @@ export function openBrowser(url: string): void {
   }
 }
 
-/** Where `up` last served its console, kept beside the database so `onboard` names the same address. */
-const UP_CONSOLE_FILE = "up-console.json";
 
 function recordUpConsoleUrl(dir: string, url: string, now: Date): void {
   try {
@@ -7352,15 +7471,6 @@ function recordUpConsoleUrl(dir: string, url: string, now: Date): void {
     renameSync(temporary, file);
   } catch {
     // A display fact: a failed write only leaves onboard on the default port.
-  }
-}
-
-export function readUpConsoleUrl(dir: string): string | null {
-  try {
-    const parsed = JSON.parse(readFileSync(join(dir, UP_CONSOLE_FILE), "utf8")) as { url?: unknown };
-    return typeof parsed.url === "string" && /^https?:\/\/[^\s]+$/.test(parsed.url) ? parsed.url.replace(/\/+$/, "") : null;
-  } catch {
-    return null;
   }
 }
 
@@ -7441,6 +7551,8 @@ async function onboardCommand(flags: Map<string, string | true>, context: Contex
       if (!checked.ok) return `off: ${checked.message}`;
       return `off: turn on with toolroll publish setup --repo ${repo} --yes (asks your password), or in Settings → Projects`;
     }),
+    // A project that uses youiyoux has its change requests filed as tasks with no step of its own (youiyoux-intake.ts).
+    youiyoux: seams.youiyoux ?? (async repo => youiyouxOnboardLine(store, repo)),
     starterFlag: text(flags, "starter"),
     // Starter flows belong to a person: the flow's decisions ask them. With no account yet, none can be switched on.
     starters: {
@@ -7469,6 +7581,8 @@ async function upCommand(
   context: Context,
 ): Promise<number> {
   const { store, write, json, clock } = context;
+  // A role of an `up` that is already running (up-role-child.ts): no validation, identity or port of its own.
+  if (context.upRole !== undefined) return upRoleCommand(context, context.upRole);
   const demoFence = refuseDemo(context, "up");
   if (demoFence !== null) return demoFence;
 
@@ -7504,6 +7618,8 @@ async function upCommand(
   // folders they may be added from are installation state, not arguments a
   // person must repeat on every start.
   const registryPath = registryPathOf(context);
+  // Read before the list itself: a line removed after this (even if saved again) counts differently from now on.
+  const removalsAtStart = registryRemovals(registryPath);
   const loadedRegistry = await loadProjectRegistry(registryPath);
   if ("error" in loadedRegistry) return fail(write, json, "up", "registry", loadedRegistry.error, EXIT.refused);
   const gitRun = context.gitRunner ?? ((file: string, args: readonly string[], opts?: { cwd?: string }) => run(file, [...args], { ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }), timeoutMs: 10_000 }));
@@ -7526,20 +7642,26 @@ async function upCommand(
   // soon as a projects folder or saved repository exists.
   const repos: string[] = [];
   const proveRepo = async (input: string): Promise<string | null> => {
-    const top = await gitRun("git", ["rev-parse", "--show-toplevel"], { cwd: resolve(input) });
-    if (top.code !== 0) return null;
-    try {
-      return realpathSync(top.stdout.trim());
-    } catch {
-      return null;
-    }
+    // The checkout's real path is read off the thread, under a deadline (folder-look.ts): a folder that doesn't answer
+    // is unavailable, never a wait.
+    return (await upProveSaved(gitRun, input))?.root ?? null;
   };
+  // A saved project that doesn't answer now (a drive not connected, a folder macOS is holding) is looked at again
+  // while this start runs, and connects once it answers (upDeferredRetry).
+  const deferredRepos: string[] = [];
+  const deferredGenerations: Record<string, number> = {};
+  // The saved line(s) each project was proved from, so its removal is judged by its own line alone.
+  const repoLines: Record<string, string[]> = {};
   for (const input of loadedRegistry.repos) {
     const root = await proveRepo(input);
     if (root === null) {
-      progress(`saved project unavailable — skipped ${input}`);
-    } else if (!repos.includes(root)) {
-      repos.push(root);
+      progress(`saved project unavailable — skipped ${input}; it connects when it's back`);
+      deferredRepos.push(input);
+      // An unreadable removal record leaves no count that could match later: the authority can't be used.
+      deferredGenerations[input] = removalsAtStart === null ? -1 : removalsAtStart[input] ?? 0;
+    } else {
+      if (!repos.includes(root)) repos.push(root);
+      (repoLines[root] ??= []).push(input);
     }
   }
   const explicitRepos = context.repoList ?? [];
@@ -7558,7 +7680,9 @@ async function upCommand(
     if (cwdRepo !== null && !repos.includes(cwdRepo)) repos.push(cwdRepo);
     if (cwdRepo !== null) pinnedRepos.add(cwdRepo);
   }
-  if (repos.length === 0 && projectRoots.length === 0) return fail(write, json, "up", "no-projects", "choose where your projects live once: `toolroll up --project-root <dir>`", EXIT.refused);
+  // Saved projects that are only away for now still start the service: it serves an empty, restrictive set until they
+  // answer (never the unscoped mode), and connects each as it comes back.
+  if (repos.length === 0 && projectRoots.length === 0 && deferredRepos.length === 0) return fail(write, json, "up", "no-projects", "choose where your projects live once: `toolroll up --project-root <dir>`", EXIT.refused);
   // A person at a terminal reads three lines (onboarding); the folders are for --verbose, a service log, or an agent.
   const quietStart = !json && !flags.has("verbose") && (context.upSeams?.terminal ?? process.stdout.isTTY === true) && !underAgent(context.upSeams?.env ?? process.env);
   if (!quietStart) {
@@ -7573,7 +7697,12 @@ async function upCommand(
     probe.once("error", () => resolveProbe(false));
     probe.listen(port, "127.0.0.1", () => resolveProbe(true));
   });
-  if (!reserved) return fail(write, json, "up", "port-busy", `port ${port} is taken — another \`up\` or \`serve\` may already be running; stop it, or pick a different --port`, EXIT.refused);
+  if (!reserved) {
+    // The console that holds it said it is stopping: a restart is under way, so say that instead of "another one runs".
+    const holder = lifecycleOf(store, `console:${port}`);
+    if (holder?.state === "draining") return fail(write, json, "up", "port-busy", `Toolroll is restarting (draining): the console on port ${port} is stopping — try again in a few seconds`, EXIT.refused);
+    return fail(write, json, "up", "port-busy", `port ${port} is taken — another \`up\` or \`serve\` may already be running; stop it, or pick a different --port`, EXIT.refused);
+  }
 
   // Under a coding agent nothing is asked and no secret is printed, even in a real terminal: what is shown lands in
   // its transcript.
@@ -7605,19 +7734,41 @@ async function upCommand(
       // The runner's authority is BOUND to the canonical roots this up
       // serves (MCP spec v6): the claim gate enforces membership, so an
       // unbound registration would deny-all its own dispatches.
-      const answer = registerRunnerIfIdle(store, { name, host: hostname(), repos, now: clock() });
+      // A holder whose every process is proved gone (its record beside the database) no longer blocks the name: an
+      // `up` killed outright can't leave a fresh heartbeat in the way of the next start (the 2026-10-29 deploy).
+      const tryRegister = () => registerRunnerIfIdle(store, { name, host: hostname(), repos, now: clock(),
+        previousGone: holder => recordedHolderProvedGone(runnerProcessFile(context.databaseFile, name), holder, hostname()) });
+      let answer = tryRegister();
+      // Wait for a draining holder to sign off or be proved gone, never just for its deadline to elapse.
+      const drainWaitUntil = Date.now() + 2 * 60_000;
+      let saidDraining = false;
+      while (!answer.ok && answer.reason === "runner-draining" && Date.now() < drainWaitUntil) {
+        if (!saidDraining) progress(`${answer.detail}; waiting for it to stop`);
+        saidDraining = true;
+        await new Promise(resolveWait => setTimeout(resolveWait, 1_000));
+        answer = tryRegister();
+      }
       if (answer.ok) {
         runnerName = name;
         runnerToken = answer.token;
+        if (answer.signedOff !== null) progress(`signed off the previous ${name}: its processes had already exited`);
         if (answer.recoveredRuns > 0) progress(`recovered ${answer.recoveredRuns} interrupted attempt(s) left by the previous ${name}`);
+        // Every process given this credential is recorded (pid and start time) before it gets it: this one now, each
+        // role child as it is spawned. A later start proves them gone by this record.
+        if (!recordRunnerProcess(context.databaseFile, { runner: answer.runner, credentialHash: hashRunnerToken(answer.token) }, "up", process.pid)) {
+          retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
+          return fail(write, json, "up", "runner-alive", "The worker process record could not be saved; nothing started", EXIT.refused);
+        }
         doorAnswer = answer;
         break;
       }
       doorAnswer = answer;
       if (runnerFlag !== undefined) break; // an explicit name is never suffixed around
+      if (answer.reason === "runner-draining") break; // a restart under way keeps its name
     }
     if (runnerName === "") {
       const detail = doorAnswer !== null && !doorAnswer.ok ? doorAnswer.detail : "no worker name could be taken";
+      if (doorAnswer !== null && !doorAnswer.ok && doorAnswer.reason === "runner-draining") return fail(write, json, "up", "runner-alive", `${detail}, and it hasn't yet — try again shortly`, EXIT.refused);
       return fail(write, json, "up", "runner-alive", `${detail} — that worker looks alive; stop the other \`up\` or watch, or name a different worker with --runner`, EXIT.refused);
     }
 
@@ -7647,312 +7798,185 @@ async function upCommand(
     await new Promise<void>(done => probe.close(() => done()));
   }
 
-  // 7. The console, on the just-released port. The tiny window between the
-  // probe closing and this bind can lose a race; that failure tears down
-  // cleanly below instead of leaving identities half-claimed silently.
+  // 7–8. The console and the worker (docs/plans/isolated-checks.md, stage 1): two processes, each started and
+  // restarted by controller-supervisor, so a long check in the worker never holds a console response. With seams
+  // that can't cross a process (tests, the desktop host) or --single-process, the same two roles run in this one.
   const pool = join(dirname(context.databaseFile), "worktrees");
-  // Mutated only by the registry supervisor below. The console reads this
-  // proved set on each request, so its project rail and unified chat move
-  // with the live builder instead of freezing at process start.
-  const activeRepos = new Set<string>(repos);
-  // Cockpit B1: this start's instance secret, minted once it is listening; the console answers its challenges with it.
-  let instanceSecret: string | null = null;
-  let console_: Awaited<ReturnType<typeof startConsole>>;
-  try {
-    console_ = await startConsole({
-      instanceSecret: () => instanceSecret,
-      context,
-      host: hostFlag,
-      port,
-      ...(allowFlag === undefined ? {} : { allowedHosts: allowFlag.split(",").map(one => one.trim()).filter(one => one !== "") }),
-      ...(publicUrlFlag === undefined ? {} : { publicUrl: publicUrlFlag }),
-      localRunner: runnerName,
-      poolRoot: pool,
-      repos,
-      currentRepos: () => [...activeRepos],
-      admittedRepos: () => [...activeRepos],
-      upConsole: true,
-      registryPath,
-      projectRoots,
-      ...(text(flags, "public-url") === undefined ? {} : { publicUrl: text(flags, "public-url") as string }),
-      ...(text(flags, "editor") === undefined ? {} : { editorLinks: "vscode" as const }),
-    });
-  } catch (error) {
-    retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
-    return fail(write, json, "up", "port-busy", `${describe(error)} — the port was taken while starting; try again`, EXIT.refused);
-  }
-
-  // 8. The project supervisor: one watch loop per proved repository, plus a
-  // tiny registry poll that can add more while this process stays up. The
-  // poll is deliberately plain filesystem I/O (portable across macOS,
-  // Linux, and Windows) and never invokes an agent while nothing changed.
+  const split = !flags.has("single-process") && context.upOneProcess !== true;
+  const build = upBuildIdentity();
+  const containmentFlag = text(flags, "containment") ?? null;
+  const stopGraceMs = Number(text(flags, "stop-grace") ?? 30_000);
   let stopping = false;
   let fatal: string | null = null;
-  let graceTimer: ReturnType<typeof setTimeout> | undefined;
   let runTimer: ReturnType<typeof setTimeout> | undefined;
-  const followControllers: AbortController[] = [];
   let resolveStopped: () => void = () => {};
   const stopped = new Promise<void>(resolveStop => (resolveStopped = resolveStop));
-  const stopGraceMs = Number(text(flags, "stop-grace") ?? 30_000);
-  const hardStop = () => {
-    const terminated = terminateLiveProviders();
-    if (terminated > 0) progress(`Stopped ${terminated} running build(s). Their work is saved, and each resumes when the builder starts again.`);
-  };
-  const stop = () => {
+  // What the worker serves now: relayed to the console (its project rail and chat), and a restarted worker's start.
+  let currentRepos: string[] = [...repos];
+  let consoleRole: UpRoleHandle | null = null;
+  let workerRole: UpRoleHandle | null = null;
+  // A stop that can't finish (a role that ignores its stop, a drain that hangs) still signs off: past the worker's own
+  // drain bound and a margin, both roles' process trees are stopped outright, the runner is retired, and `up` ends. A
+  // service's launchd window (ExitTimeOut 60 s, controller-service's 55 s) is longer than this at the default grace.
+  let resolveForced: () => void = () => {};
+  const forced = new Promise<void>(resolveForce => (resolveForced = resolveForce));
+  let forceTimer: ReturnType<typeof setTimeout> | undefined;
+  const stopDeadlineMs = Math.max(1, stopGraceMs) + 20_000;
+  const stop = (): void => {
     if (stopping) {
-      hardStop();
+      workerRole?.hardStop();
       return;
     }
     stopping = true;
     resolveStopped();
-    for (const controller of followControllers) controller.abort();
-    // The coding owner record is released first, whatever else is still
-    // finishing: launchd kills a service that outlasts its exit window, and a
-    // killed process cannot release it. Its outcome is read again at close.
-    console_.server.closeCoding().catch(() => {});
-    const building = store.liveClaimCount(runnerName, clock());
-    if (building > 0) {
-      progress(`Stopping: ${building} build(s) running. Waiting up to ${Math.round(stopGraceMs / 1000)}s for them to finish; any still running then is saved and resumes when the builder starts again.`);
-    }
-    graceTimer = setTimeout(hardStop, stopGraceMs);
-    graceTimer.unref?.();
+    // Draining, durably: no new work is admitted for this runner from now, and a restart waits for this drain's end
+    // (now + the forced-stop bound) instead of a heartbeat window.
+    try { if (runnerName !== "") drainRunnerIfCurrent(store, runnerName, runnerToken, clock(), new Date(clock().getTime() + stopDeadlineMs)); } catch { /* the heartbeat bound still holds */ }
+    forceTimer = setTimeout(() => {
+      fatal ??= `stopping took longer than ${Math.round(stopDeadlineMs / 1000)} s; its console and worker were stopped outright`;
+      workerRole?.kill();
+      consoleRole?.kill();
+      resolveForced();
+    }, stopDeadlineMs);
+    forceTimer.unref?.();
+    // The coding owner record is released first, whatever else is still finishing: launchd kills a service that
+    // outlasts its exit window, and a killed process cannot release it. The console keeps serving until the end.
+    consoleRole?.send({ type: "stopping" });
+    workerRole?.stop();
   };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
-  if (forGiven !== undefined) {
-    runTimer = setTimeout(stop, Number(forGiven));
-    runTimer.unref?.();
+  // The process that started `up` gone (its service supervisor killed, or the IPC parent that ran it): nobody is left to
+  // forward a stop, so `up` stops itself — it drains, retires its runner and ends instead of running on as an orphan.
+  let parentGone = false;
+  const parentAtStart = process.ppid;
+  const parentWatch = context.upSeams === undefined && parentAtStart > 1 ? setInterval(() => {
+    if (process.ppid === parentAtStart || parentGone) return;
+    parentGone = true;
+    progress("the process that started Toolroll is gone; stopping");
+    stop();
+  }, 1_000) : undefined;
+  parentWatch?.unref?.();
+  const onDisconnect = (): void => { if (!parentGone) { parentGone = true; progress("the process that started Toolroll closed its channel; stopping"); stop(); } };
+  if (context.upSeams === undefined && process.channel !== undefined && process.channel !== null) process.once("disconnect", onDisconnect);
+  // A log (a service, an agent, --json or --verbose) says whose each line is; a person at a terminal reads plain lines.
+  const labelled = split && (json || flags.has("verbose") || !(context.upSeams?.terminal ?? process.stdout.isTTY === true));
+  const roleLine = (role: UpRoleName) => (line: string): void => progress(labelled ? `[${role}] ${line}` : line);
+  const dropSignals = (): void => {
+    process.removeListener("SIGINT", stop);
+    process.removeListener("SIGTERM", stop);
+    process.removeListener("disconnect", onDisconnect);
+    if (parentWatch !== undefined) clearInterval(parentWatch);
+  };
+
+  const consoleConfig: UpConsoleConfig = {
+    host: hostFlag, port, allowedHosts: allowFlag === undefined ? null : allowFlag.split(",").map(one => one.trim()).filter(one => one !== ""),
+    publicUrl: publicUrlFlag ?? null, localRunner: runnerName, poolRoot: pool, repos: [...repos], projectRoots, registryPath, editor: editorGiven !== undefined,
+  };
+  const pendingLinks = new Map<number, (link: string | null) => void>();
+  let linkRequests = 0;
+  const roleSpawned = (role: RunnerProcessRole, pid: number): boolean => {
+    const held = store.getRunner(runnerName);
+    return held !== null && held.credentialHash === hashRunnerToken(runnerToken) && recordRunnerProcess(context.databaseFile, held, role, pid);
+  };
+  consoleRole = startUpRole({
+    role: "console", split, context, build, shutdownMs: 15_000, onSpawned: pid => roleSpawned("console", pid),
+    start: () => ({ type: "start", role: "console", databaseFile: context.databaseFile, containment: containmentFlag, build, config: { ...consoleConfig, repos: [...currentRepos] } }),
+    onMessage: message => {
+      if (message.type === "log") roleLine("console")(message.line);
+      else if (message.type === "sign-in-link") { pendingLinks.get(message.id)?.(message.link); pendingLinks.delete(message.id); }
+    },
+    // A restarted console is told what the worker serves now.
+    onReady: (_, again) => { if (again) { roleLine("console")("started again"); consoleRole?.send({ type: "repos", repos: [...currentRepos] }); } },
+    onEnded: (detail, restarting) => {
+      if (restarting) roleLine("console")(`${detail}; starting it again`);
+      else if (!stopping) { fatal = detail; stop(); }
+    },
+  });
+  const consoleReady = await consoleRole.ready;
+  if (!consoleReady.ok) {
+    dropSignals();
+    retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
+    if (consoleReady.reason === "port-busy") return fail(write, json, "up", "port-busy", `${consoleReady.detail} — the port was taken while starting; try again`, EXIT.refused);
+    return fail(write, json, "up", "failed", `the console could not start (${consoleReady.detail}) — nothing was left running`, EXIT.failed);
   }
+  const url = consoleReady.url;
 
-  const loopFlagsFor = (repo: string): Map<string, string | true> => {
-    const copy = new Map<string, string | true>();
-    // A bounded `up` must not advertise its child watches as an unbounded sweep service either.
-    if (forGiven !== undefined) copy.set("for", forGiven);
-    copy.set("runner", runnerName);
-    copy.set("token", runnerToken);
-    copy.set("repo", repo);
-    copy.set("pool", pool);
-    // The co-hosted console's stated origin rides into each loop's follower:
-    // a phone link must name THIS console, or not exist.
-    const publicUrl = text(flags, "public-url");
-    if (publicUrl !== undefined) copy.set("public-url", publicUrl);
-    return copy;
-  };
-  const prefix = (repo: string): string => (activeRepos.size > 1 ? `[${projectName(repo)}] ` : "");
-  // Containment at start: one plain sentence, once, for a person at a
-  // terminal; the exact status line with --verbose, in a service log (no
-  // terminal), and always when a required policy will refuse spawns.
-  const containmentDetail = flags.has("verbose") || !(context.upSeams?.terminal ?? process.stdout.isTTY === true);
-  let containmentSaid = false;
-  const containmentLines = (effective: EffectiveContainment): string[] => {
-    const notice = containmentNotice(effective);
-    if (notice !== null && !containmentSaid) progress(notice);
-    containmentSaid = true;
-    return containmentDetail || effective.refusal !== null ? [`watch: ${describeContainment(effective)}`] : [];
-  };
-  const loopResults = new Map<string, Promise<{ repo: string; result: WatchLoopResult }>>();
-  // One record of project passes for the whole service: fair scheduling
-  // across its projects (project-concurrency.ts).
-  const projectPasses = new ProjectPasses();
-  // Projects removed while running: each one's watch stops admitting work, finishes what it holds, then lets go.
-  const releasedRepos = new Set<string>();
-
-  const launchRepo = async (repo: string, bind: boolean): Promise<void> => {
-    if (loopResults.has(repo) || stopping) return;
-    if (bind) {
-      const bound = addRunnerReposAuthed(store, { name: runnerName, token: runnerToken, repos: [repo] }, clock());
-      if (!bound.ok) {
-        fatal = `the builder identity changed while adding ${repo} (${bound.reason})`;
-        stop();
-        return;
-      }
-      activeRepos.add(repo);
-      if (!store.listProjects().some(one => one.path === repo)) {
-        store.upsertProject(repo, projectName(repo), clock());
-      }
-    }
-    let markReady: () => void = () => {};
-    const ready = new Promise<void>(resolveReady => (markReady = resolveReady));
-    const loop = runWatchLoop({
-      flags: loopFlagsFor(repo),
-      context,
-      runner: runnerName,
-      token: runnerToken,
-      repo,
-      progress: line => progress(`${prefix(repo)}${line}`),
-      isStopping: () => stopping || releasedRepos.has(repo),
-      onFollowController: controller => followControllers.push(controller),
-      containmentLines,
-      passes: projectPasses,
-      serviceBridge: true,
-      onReady: () => {
-        markReady();
-        if (bind) progress(`${prefix(repo)}builder connected — queued work can start`);
+  if (!stopping) {
+    workerRole = startUpRole({
+      role: "worker", split, context, build, onSpawned: pid => roleSpawned("worker", pid),
+      // The worker drains its builds for the stop grace, then stops them; past that it is stopped outright.
+      shutdownMs: Math.max(1, stopGraceMs) + 15_000,
+      start: generation => ({
+        type: "start", role: "worker", databaseFile: context.databaseFile, containment: containmentFlag, build,
+        config: {
+          runner: runnerName, token: runnerToken, repos: generation === 1 ? [...repos] : [...currentRepos], pinnedRepos: [...pinnedRepos], projectRoots, registryPath, pool,
+          // What this start still holds for its saved projects that were away: a restarted worker never gets back an
+          // authority an earlier one gave up (connected, or removed from the saved list).
+          deferredRepos: [...deferredRepos], deferredGenerations: { ...deferredGenerations }, repoLines,
+          forMs: forGiven === undefined ? null : Number(forGiven), publicUrl: publicUrlFlag ?? null, stopGraceMs, verbose: flags.has("verbose"),
+          terminal: context.upSeams?.terminal ?? process.stdout.isTTY === true,
+          // A restart waits out a crashed predecessor's lease (at most a minute), then recovers it: as a fresh `up` after a crash.
+          leaseWaitMs: split ? WATCH_LEASE_MS + 15_000 : 0,
+        },
+      }),
+      onMessage: message => {
+        if (message.type === "log") roleLine("worker")(message.line);
+        else if (message.type === "deferred") {
+          // Only ever narrows: a worker's word can't give back an authority this start no longer holds.
+          const narrowed = upNarrowDeferred(deferredRepos, message.repos);
+          deferredRepos.length = 0;
+          deferredRepos.push(...narrowed);
+        }
+        else if (message.type === "repos") {
+          // The console's admitted projects widen only to what the builder is bound to in the store (the worker binds
+          // through the authenticated door before it reports): a worker's word alone admits nothing.
+          const bound = new Set(store.getRunner(runnerName)?.runner.repos ?? []);
+          currentRepos = message.repos.filter(repo => bound.has(repo));
+          consoleRole?.send({ type: "repos", repos: [...currentRepos] });
+        }
       },
-    }).then(
-      result => ({ repo, result }),
-      error => ({ repo, result: { ok: false as const, reason: "loop-failed" as const, detail: describe(error), ticks: 0, built: 0, broke: 0 } }),
-    );
-    loopResults.set(repo, loop);
-    void loop.then(({ repo: endedRepo, result }) => {
-      if (releasedRepos.has(endedRepo) && !stopping) {
-        // A removed project's watch has stopped: only now does the builder let go of it.
-        const unbound = removeRunnerRepoAuthed(store, { name: runnerName, token: runnerToken, repo: endedRepo }, clock());
-        if (!unbound.ok) {
-          fatal = `the builder identity changed while removing ${endedRepo} (${unbound.reason})`;
+      onReady: (_, again) => { if (again) roleLine("worker")("started again: its builds and checks continue"); },
+      onEnded: (detail, restarting) => {
+        // A builder whose credential no longer proves can't come back by restarting: the whole `up` stops, and the
+        // service's next start registers it again, as before the split.
+        if (restarting && authenticate(store, runnerName, runnerToken).ok) {
+          roleLine("worker")(`${detail}; starting it again — its interrupted builds are recovered first`);
+          return;
+        }
+        if (!stopping) {
+          fatal = restarting ? `the builder identity changed (${detail})` : detail;
           stop();
         }
-        loopResults.delete(endedRepo);
-        releasedRepos.delete(endedRepo);
-        progress(`project removed — ${projectName(endedRepo)} is no longer built here`);
-        markReady();
-        return;
-      }
-      // A loop that dies while its siblings live must not leave a partial
-      // cockpit standing silently (finding 5).
-      if (!result.ok && !stopping) {
-        fatal = `${prefix(endedRepo)}${result.detail}`;
-        stop();
-      }
-      markReady(); // acquisition failures must not strand startup readiness
+      },
     });
-    await ready;
-  };
-
-  await Promise.all(repos.map(repo => launchRepo(repo, false)));
-
-  // Telegram: one follower for the whole service, never one per project
-  // loop. Replies and notifications go out from it, over the same transport
-  // in the same cycle (Oct 2: a reply sent by a project loop's own follower
-  // failed "fetch failed" while notifications went out). A token saved
-  // while the service runs connects within seconds; a follower that dies
-  // is started again.
-  const telegramController = new AbortController();
-  followControllers.push(telegramController);
-  const telegramSupervisor = (async (): Promise<void> => {
-    const pause = (ms: number) => new Promise<void>(resolvePause => {
-      const timer = setTimeout(done, ms);
-      function done(): void { clearTimeout(timer); telegramController.signal.removeEventListener("abort", done); resolvePause(); }
-      // An aborted signal never fires again: without this a stop waited the whole pause.
-      if (telegramController.signal.aborted) done();
-      else telegramController.signal.addEventListener("abort", done, { once: true });
-    });
-    while (!stopping && !telegramController.signal.aborted) {
-      const follower = startTelegramFollower({
-        context, publicUrl: text(flags, "public-url"), signal: telegramController.signal, progress, label: "telegram:",
-        died: { prefix: "", then: "starting it again" }, owner: `service-${randomUUID()}`,
-      });
-      if (follower !== null) await follower;
-      // Without a token (or on a fenced network) look again shortly; the fence line is said once.
-      if (follower === null && loadBotToken(process.env, context.telegramTokenFile) !== null) break;
-      await pause(follower === null ? 2_000 : 5_000);
+    const workerReady = await workerRole.ready;
+    if (!workerReady.ok && fatal === null) {
+      fatal = workerReady.detail;
+      stop();
     }
-  })();
+  }
 
-  const dynamicCeiling = resolveCeiling(repos, projectRoots).ceiling;
-  const rejected = new Set<string>();
-  const registrySupervisor = (async (): Promise<void> => {
-    const sleep = (ms: number) => new Promise(resolveSleep => setTimeout(resolveSleep, ms));
-    while (!stopping) {
-      const loaded = await loadProjectRegistry(registryPath);
-      if ("error" in loaded) {
-        fatal = loaded.error;
-        stop();
-        break;
-      }
-      // Removed from the saved list: stop building it and take it out of the console. A pinned start keeps its own.
-      const saved = new Set(loaded.repos.map(one => canonicalProject(one) ?? one));
-      for (const repo of [...activeRepos]) {
-        if (stopping || pinnedRepos.has(repo) || saved.has(repo)) continue;
-        activeRepos.delete(repo);
-        releasedRepos.add(repo);
-        if (!loopResults.has(repo)) releasedRepos.delete(repo);
-      }
-      for (const candidate of loaded.repos) {
-        if (stopping) break;
-        const canonical = canonicalProject(candidate);
-        // Still letting go of an earlier removal: it rejoins on the next pass after its watch has stopped.
-        if (canonical !== null && (activeRepos.has(canonical) || releasedRepos.has(canonical))) continue;
-        const approvedAdditions = context.additionalProjectRepos?.() ?? [];
-        const admittedCeiling = resolveCeiling([...dynamicCeiling.repos, ...approvedAdditions], dynamicCeiling.roots).ceiling;
-        // A project added after this start (`repos add`, the lead, the console) carries its recorded admission; a
-        // registry line alone is not authority. Either way the folder is proved to be that Git checkout again.
-        const allowed = canonical !== null &&
-          ((await authorizedProject(admittedCeiling, canonical)) || admissionRecorded(store, canonical)) &&
-          (await proveRepo(canonical)) === canonical;
-        if (!allowed) {
-          if (!rejected.has(candidate)) {
-            rejected.add(candidate);
-            progress(`project not connected — ${candidate} isn't a Git repository added with \`toolroll repos add\` or the console`);
-          }
-          continue;
-        }
-        rejected.delete(candidate);
-        await launchRepo(canonical, true);
-      }
-      if (!stopping) await sleep(500);
-    }
-  })().catch(error => {
-    fatal = `the project registry stopped (${describe(error)})`;
-    stop();
-  });
-
-  // A runner with no projects still stays visibly alive while the UI waits
-  // for the first addition. Watch loops heartbeat during their passes; this
-  // machine-level pulse also covers the intentionally empty state.
-  // Provider readiness (v47): this machine's non-spending observations,
-  // recorded under its own runner name ONCE at start — so every route
-  // projection can say ready / unavailable / unknown per provider, and
-  // the dispatch gate can halt a leg this machine cannot run. There is no
-  // periodic readiness daemon: startup, an explicit `providers --report`,
-  // and the narrow pre-dispatch observation are the roads. Production
-  // only: a test's injected agent runner is a fake, and its readiness
-  // would be a fiction.
-  const observeReadiness = (): void => {
-    if (context.agentRunner !== undefined) return;
-    void observeProviderReadiness((file, args, options) => run(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }), process.env, PROVIDER_IDS, provider => store.acpAttestationFor(provider, runnerName))
-      .then(observed => {
-        if (!stopping) reportProviderReadinessAuthed(store, { name: runnerName, token: runnerToken, observations: observed }, clock());
-      })
-      .catch(() => {
-        // A probe that cannot run leaves readiness unknown — never a fiction.
-      });
-  };
-  observeReadiness();
-  try { notifyVersionLive(context.store, dirname(context.databaseFile), PACKAGE_VERSION, clock()); } catch { /* A display fact; never blocks the worker. */ }
-  recordRunnerVersion(dirname(context.databaseFile), runnerName, PACKAGE_VERSION, clock());
+  // A runner with no projects still stays visibly alive while the UI waits for the first addition; the worker's
+  // loops also renew it with their leases. Across a worker restart this keeps the name held.
   const runnerHeartbeat = setInterval(() => {
     const beat = heartbeatRunner(store, runnerName, runnerToken, clock());
     if (!beat.ok && !stopping) {
       fatal = `the builder identity changed (${beat.reason})`;
       stop();
     }
-  }, 60_000);
+  }, RUNNER_HEARTBEAT_MS);
   runnerHeartbeat.unref?.();
 
   // 9. Readiness, then the ONE startup envelope / greeting (finding 11/20).
   const approverPlan2 = approver as UpApprover;
-  const url = console_.url;
   const terminal = !agentRunning && (context.upSeams?.terminal ?? process.stdout.isTTY === true);
   const upHandoff = buildHandoff({
     url,
     login: { account: approverPlan2.passwordFile === null ? approverPlan2.approver : loginAccount(approverPlan2.passwordFile) ?? approverPlan2.approver, file: approverPlan2.passwordFile },
   });
   recordUpConsoleUrl(dirname(context.databaseFile), url, clock());
-  // Cockpit B1: who this console is, for bare `toolroll` to prove before it attaches: a fresh secret in the database
-  // (behind the agent fence), and a discovery-only socket beside it. A socket that can't open only means attaching
-  // isn't offered; the console runs either way.
-  // The socket is taken FIRST: only the console that owns it publishes a record. A second console on the same database
-  // (another port) never replaces the first one's record; it runs, but isn't attached to.
-  let mintedSecret: string | null = null;
-  const instanceSocket = await openInstanceSocket(context.databaseFile,
-    { pid: process.pid, build: packageVersion(), database: context.databaseFile, port: console_.port }, () => mintedSecret);
-  if (instanceSocket.ok) {
-    mintedSecret = await claimInstance(store, context.databaseFile, { pid: process.pid, port: console_.port, build: packageVersion(), socket: instanceSocket.name }, clock());
-    instanceSecret = mintedSecret;
-    if (mintedSecret === null) progress("attach: another console is running on this database — `toolroll` in a repository opens that one");
-  } else progress(`attach: ${instanceSocket.problem} — \`toolroll\` in a repository won't find this console`);
-  if (fatal === null) {
+  if (fatal === null && !stopping) {
     if (json) {
       write(
         envelopeJson({
@@ -7979,12 +8003,21 @@ async function upCommand(
       // one-time sign-in link (single use, ten minutes, this computer only); it is never printed. The password stays
       // saved beside the database, for later and for other devices, and is never printed either.
       const account = approverPlan2.approver;
-      const link = account === null || flags.has("no-open") ? null : console_.server.mintSignInLink(account);
-      const home = homedir();
-      const file = approverPlan2.passwordFile === null ? null : approverPlan2.passwordFile.startsWith(`${home}/`) ? `~${approverPlan2.passwordFile.slice(home.length)}` : approverPlan2.passwordFile;
+      // The console mints it (its sign-in secrets stay there); it comes back only to be opened, never printed.
+      const link = account === null || flags.has("no-open") ? null : await new Promise<string | null>(resolveLink => {
+        const id = ++linkRequests;
+        const timer = setTimeout(() => { pendingLinks.delete(id); resolveLink(null); }, 10_000);
+        pendingLinks.set(id, value => { clearTimeout(timer); resolveLink(value); });
+        consoleRole?.send({ type: "sign-in-link", id, account });
+      });
+      // Every start says where the saved password is and the exact command that shows it, browser or not (Settings
+      // revamp S4, D2). Only the path is printed, never what the file holds: absolute (a relative --db names this
+      // directory), single-quoted (no ~ or $ expands), after `--` (a leading dash is never an option).
+      const saved = approverPlan2.passwordFile === null ? null : resolve(approverPlan2.passwordFile);
+      const showCommand = saved === null ? null : `cat -- '${saved.replaceAll("'", "'\\''")}'`;
       const signInWords = account === null
         ? `sign in as one of ${approverPlan2.approvers.join(", ")}`
-        : file === null ? `sign in as ${account} with your password` : `sign in as ${account}: the password is in ${file}`;
+        : showCommand === null ? `sign in as ${account} with your password` : `sign in as ${account}`;
       write("");
       write(`Toolroll is on ${url}`);
       if (link !== null) {
@@ -7993,35 +8026,32 @@ async function upCommand(
         (context.upSeams?.openBrowser ?? openBrowser)(new URL(link, url).toString());
       } else {
         write(`${signInWords.charAt(0).toUpperCase()}${signInWords.slice(1)}.`);
-        write("Ctrl-C stops it.");
       }
+      if (showCommand !== null) write(`Your password: run \`${showCommand}\``);
+      if (link === null) write("Ctrl-C stops it.");
     }
   }
+  // A bounded run (--for) counts from readiness, so a slow start never eats the window it asked for.
+  if (forGiven !== undefined && !stopping) {
+    runTimer = setTimeout(stop, Number(forGiven));
+    runTimer.unref?.();
+  }
 
-  // 10. Supervise to the end.
+  // 10. Supervise to the end: the worker drains first (its builds finish or are saved), the builder retires, and
+  // only then does the console stop serving.
   await stopped;
-  await registrySupervisor;
-  await Promise.all([...loopResults.values()]);
-  // The follower was aborted with the stop. A send or a chat turn it is still
-  // finishing keeps its own durable record; the service does not wait past
-  // this for it.
-  await new Promise<void>(done => {
-    const timer = setTimeout(done, TELEGRAM_STOP_WAIT_MS);
-    const finish = (): void => { clearTimeout(timer); done(); };
-    void telegramSupervisor.then(finish, finish);
-  });
+  if (workerRole !== null) await Promise.race([workerRole.done, forced]);
   clearInterval(runnerHeartbeat);
   if (runTimer !== undefined) clearTimeout(runTimer);
-  if (graceTimer !== undefined) clearTimeout(graceTimer);
-  process.removeListener("SIGINT", stop);
-  process.removeListener("SIGTERM", stop);
+  dropSignals();
   retireRunnerIfCurrent(store, runnerName, runnerToken, clock());
-  if (instanceSocket.ok) instanceSocket.close();
-  if (mintedSecret !== null) clearInstance(store, mintedSecret);
-  let closeProblem: Error | null = null;
-  await new Promise<void>(done => console_.server.close(error => { closeProblem = error ?? null; done(); }));
+  consoleRole.stop();
+  const closed = await Promise.race([consoleRole.done, forced.then(() => ({ problem: null }))]);
+  if (forceTimer !== undefined) clearTimeout(forceTimer);
+  // With nobody left to wait for it, `up` ends once it has signed off, whatever handle lingers.
+  if (parentGone) setTimeout(() => process.exit(fatal === null ? EXIT.ok : EXIT.failed), 1_000).unref?.();
   // A live terminal that couldn't be proved stopped (or any other close failure) is said, never "stopped".
-  if (closeProblem !== null && fatal === null) fatal = (closeProblem as Error).message;
+  if (closed.problem !== null && fatal === null) fatal = closed.problem;
 
   if (fatal !== null) {
     // The startup envelope (when json) already went out; the exit code is
@@ -10330,6 +10360,7 @@ async function scopeTask(
   // sandbox, say) file the scope without them: every later commit then asks again, as before.
   const releaseGiven = text(flags, "release");
   let releaseTerms: ReleaseTerms | undefined;
+  let releaseCheck: ReleaseCheckPurpose | undefined;
   let releaseNote: string | null = null;
   if (releaseGiven !== undefined) {
     const spec = /^(\d+\.\d+\.\d+):([1-9][0-9]*):([A-Za-z0-9._/-]+)$/.exec(releaseGiven);
@@ -10338,7 +10369,14 @@ async function scopeTask(
     if (repo === null) return fail(write, json, "task scope", "usage", "a release scope's task has to be placed in its project first", EXIT.usage);
     const made = releaseTermsFor(store, { repo, version: spec[1]!, pr: Number(spec[2]), branch: spec[3]!, candidate: candidateGiven, now, noCarry: flags.get("no-carry") === true });
     if (made.ok) releaseTerms = made.terms;
-    else releaseNote = `Later commits on this release will each ask for approval: ${made.why}.`;
+    else {
+      releaseNote = `Later commits on this release will each ask for approval: ${made.why}.`;
+      // Without terms the candidate is still a release's check (pipeline-speed.md, P0): its purpose is sealed with the
+      // scope, from the plane's own records, so the check runs under the release's rules and the plane may rerun it on
+      // this same candidate after confirmed infrastructure. It never carries a later commit.
+      const purpose = releaseCheckPurposeFor(store, { repo, version: spec[1]!, pr: Number(spec[2]), branch: spec[3]!, candidate: candidateGiven });
+      if (purpose.ok) releaseCheck = purpose.purpose;
+    }
   }
   if (acceptanceParse.criteria.length === 0) return fail(write, json, "task scope", "acceptance-required", "--acceptance named no valid criteria", EXIT.usage);
 
@@ -10415,7 +10453,8 @@ async function scopeTask(
         : null;
     const proposed = propose(store, {
       ...(candidateGiven === undefined ? {} : { candidate: candidateGiven }),
-      ...(releaseTerms === undefined ? {} : { releaseTerms }),
+      ...(releaseTerms === undefined ? {} : { releaseTerms, releaseCheck: null }),
+      ...(releaseCheck === undefined ? {} : { releaseCheck, releaseTerms: null }),
       taskId: id,
       goal,
       outOfScope: text(flags, "not") ?? null,
@@ -12230,4 +12269,924 @@ async function projectSandboxCommand(positional: readonly string[], flags: Map<s
     ...words(changed.after),
     "Scopes written from now on use this; scopes already approved keep what they were approved with.",
   ]);
+}
+
+/** Starting the console or the worker on a git older than Toolroll's floor (git-floor.ts): refused, with one message
+ * naming the installed and the required version. Other commands aren't held. */
+function gitTooOld(command: string, context: Context): number | null {
+  const problem = installedGitFloorProblem();
+  return problem === null ? null : fail(context.write, context.json, command, "git-too-old", problem, EXIT.refused);
+}
+
+// ---- `up` as two processes: the console and the worker (isolated-checks.md, stage 1) ----
+
+/** What up-role-child.ts hands runOperate: the role's start, and its channel to the `up` that started it. */
+export type UpRoleHost = { start: UpRoleStart; port: RolePort };
+
+/** This build's identity, as each role reports it: the version and the code of this module. */
+function upBuildIdentity(): string {
+  return buildIdentity(PACKAGE_VERSION, fileURLToPath(import.meta.url));
+}
+
+/** Seams that live in this process's memory (a test's fake runner, a store wrapper, the desktop host's proof key): a
+ * child process can't receive them, so `up` keeps both of its roles in this process rather than drop them. */
+function upNeedsOneProcess(options: OperateOptions): boolean {
+  return options.openDatabase !== undefined || options.desktopIdentity !== undefined || options.additionalProjectRepos !== undefined ||
+    options.agentRunner !== undefined || options.gitRunner !== undefined || options.telegramTransport !== undefined || options.telegramEnv !== undefined ||
+    options.publishExec !== undefined || options.dispatchAdapter !== undefined || options.flowTriggerIo !== undefined || options.flowStepIo !== undefined ||
+    options.flowEveryMs !== undefined || options.platform !== undefined || options.fenceAvailable !== undefined || options.flowFetch !== undefined ||
+    options.integrationIo !== undefined || options.shouldStop !== undefined || options.leadSeams !== undefined || options.waitSleep !== undefined ||
+    options.releaseIo !== undefined || options.installBin !== undefined || options.tempRoots !== undefined || options.filingSizer !== undefined ||
+    options.now !== undefined || options.folderLook !== undefined;
+}
+
+/** The entry a role child runs: the built sibling when installed, the TypeScript source through tsx in a checkout. */
+/**
+ * Add one process to the record of who holds this runner's credential (runner-process.ts), replacing that role's
+ * earlier processes once they are gone. A complete authenticated record is required before delivering credentials.
+ */
+function recordRunnerProcess(databaseFile: string, holder: { runner: RunnerRow; credentialHash: string }, role: RunnerProcessRole, pid: number): boolean {
+  try {
+    const started = processStart(pid);
+    if (started === null) return false;
+    const file = runnerProcessFile(databaseFile, holder.runner.name);
+    const credential = credentialDigest(holder.credentialHash);
+    const current = readRunnerProcessRecord(file);
+    const same = current !== null && current.runner === holder.runner.name && current.registeredAt === holder.runner.registeredAt && current.credential === credential;
+    // Never bless a tampered or incomplete earlier list while appending a credential holder.
+    if (role !== "up" && (!same || current.signature !== sealRunnerProcessRecord(current, holder.credentialHash).signature)) return false;
+    // Keep every possibly live generation; truncating this list would erase custody.
+    const kept = same ? current.processes.filter(one => one.role !== role || !processGone(one)) : [];
+    const record: RunnerProcessRecord = { v: 1, runner: holder.runner.name, host: holder.runner.host, registeredAt: holder.runner.registeredAt, credential,
+      processes: [...kept.filter(one => one.pid !== pid), { pid, role, started }] };
+    if (record.processes.length > 64) return false;
+    writeRunnerProcessRecord(file, sealRunnerProcessRecord(record, holder.credentialHash));
+    return true;
+  } catch { return false; }
+}
+
+function upRoleChildCommand(role: UpRoleName): { file: string; argv: string[] } {
+  const source = import.meta.url.endsWith(".ts");
+  const entry = fileURLToPath(new URL(source ? "./up-role-child.ts" : "./up-role-child.js", import.meta.url));
+  // tsx by its resolved address: the child keeps this process's working directory, which may hold no node_modules.
+  // The role's name is the one argument: a process listing tells the two apart, and carries nothing secret.
+  return { file: process.execPath, argv: [...(source ? ["--import", import.meta.resolve("tsx")] : []), entry, role] };
+}
+
+type UpRoleReady = { ok: true; url: string; port: number | null; pid: number } | { ok: false; reason: "port-busy" | "start"; detail: string };
+type UpRoleHandle = {
+  /** The first readiness, or why the role ended before it. */
+  ready: Promise<UpRoleReady>;
+  send: (message: ParentToRole) => void;
+  /** Drain and end; nothing restarts it after. */
+  stop: () => void;
+  /** The second signal: stop its builds now. */
+  hardStop: () => void;
+  /** A stop that ran past its deadline: the role's whole process tree is stopped now, and nothing restarts it. */
+  kill: () => void;
+  /** The role ended for good: its own close problem, if it reported one. */
+  done: Promise<{ problem: string | null }>;
+  /** The live process's id (this process's when in-process). */
+  pid: () => number | null;
+};
+
+/**
+ * One role of `up`: a supervised child process (split), or the same role function in this process. Either way its
+ * messages pass the same checks (up-processes.ts), and its build must be this one's.
+ * - onReady fires on every readiness; `again` after a restart.
+ * - onEnded: the role ended while not stopping. `restarting` (split only) when the supervisor will start it again.
+ */
+function startUpRole(args: {
+  role: UpRoleName;
+  split: boolean;
+  context: Context;
+  build: string;
+  shutdownMs: number;
+  start: (generation: number) => UpRoleStart;
+  onMessage: (message: RoleToParent) => void;
+  onReady: (message: Extract<RoleToParent, { type: "ready" }>, again: boolean) => void;
+  onEnded: (detail: string, restarting: boolean) => void;
+  /** A role child was spawned with this pid, before its start (and any credential) is sent to it. */
+  onSpawned?: (pid: number) => boolean;
+}): UpRoleHandle {
+  const { role } = args;
+  let resolveReady: (value: UpRoleReady) => void = () => {};
+  const ready = new Promise<UpRoleReady>(resolve => (resolveReady = resolve));
+  // Readiness per generation (Codex review round 1, finding 5): a replacement's refusal is never hidden by an earlier
+  // generation having been ready.
+  const generations = new RoleGenerations();
+  let stopping = false;
+  // Reported once: the role ended for good (onEnded with restarting false), whichever path saw it first.
+  let endedForGood = false;
+  const endForGood = (detail: string): void => {
+    if (stopping || endedForGood) return;
+    endedForGood = true;
+    args.onEnded(detail, false);
+  };
+  let failed: { reason: "port-busy" | "start"; detail: string } | null = null;
+  let fatal: string | null = null;
+  let closedProblem: string | null = null;
+  let livePid: number | null = null;
+  // Shared by both transports: every message is checked against this role before anything acts on it.
+  const receive = (raw: unknown, abort: () => void): void => {
+    const message = roleMessage(raw, role);
+    if (message === null) return;
+    if (message.type === "ready") {
+      if (message.build !== args.build) {
+        // Never a console and a worker from different builds: stop rather than run a mixed pair.
+        fatal = `the ${role} is a different build (${message.build}) from this one (${args.build}) — restart Toolroll`;
+        failed = { reason: "start", detail: fatal };
+        generations.refused(fatal);
+        abort();
+        return;
+      }
+      livePid = message.pid;
+      const again = !generations.ready();
+      if (!again) resolveReady({ ok: true, url: message.url ?? "", port: message.port, pid: message.pid });
+      args.onReady(message, again);
+      return;
+    }
+    if (message.type === "failed") { failed = { reason: message.reason, detail: message.detail }; generations.refused(message.detail); return; }
+    if (message.type === "fatal") { fatal = message.detail; return; }
+    if (message.type === "closed") { closedProblem = message.problem; return; }
+    args.onMessage(message);
+  };
+
+  if (!args.split) {
+    const channel = memoryChannel(role);
+    channel.parent.onMessage(message => receive(message, () => channel.parent.stop(false)));
+    const running = upRoleCommand(args.context, { start: args.start(1), port: channel.port }).catch(error => {
+      fatal = describe(error);
+      return EXIT.failed as number;
+    });
+    const done = running.then(code => {
+      livePid = null;
+      if (!generations.wasReady()) resolveReady({ ok: false, ...(failed ?? { reason: "start" as const, detail: fatal ?? `the ${role} stopped while starting (exit ${code})` }) });
+      else endForGood(fatal ?? `the ${role} stopped (exit ${code})`);
+      return { problem: closedProblem };
+    });
+    return {
+      ready, done,
+      send: message => channel.parent.send(message),
+      stop: () => { stopping = true; channel.parent.stop(false); },
+      hardStop: () => { channel.parent.stop(true); },
+      kill: () => { stopping = true; channel.parent.stop(true); },
+      pid: () => livePid,
+    };
+  }
+
+  const controller = new AbortController();
+  let child: ChildProcess | null = null;
+  const command = upRoleChildCommand(role);
+  const supervised = superviseController({
+    file: command.file, argv: command.argv, signal: controller.signal, ipc: true, shutdownMs: args.shutdownMs,
+    // Each role's own output carries its name; a JSON log stays one JSON object a line.
+    label: envValue(process.env, "LOG_FORMAT") === "json" ? "" : `[${role}]`,
+    onSpawn: (owned, generation) => {
+      child = owned;
+      fatal = null;
+      failed = null;
+      generations.spawned();
+      owned.on("message", raw => receive(raw, () => controller.abort()));
+      owned.on("error", () => {});
+      let recorded = false;
+      try { recorded = owned.pid !== undefined && (args.onSpawned?.(owned.pid) ?? true); } catch { /* refuse credential delivery */ }
+      if (!recorded) {
+        fatal = "The worker process record could not be saved";
+        failed = { reason: "start", detail: fatal };
+        generations.refused(fatal);
+        owned.kill("SIGKILL");
+        controller.abort();
+        resolveReady({ ok: false, ...failed });
+        return;
+      }
+      // The start, including the runner token for the worker, goes over the private channel only.
+      owned.send(args.start(generation), error => { if (error !== null && error !== undefined) owned.kill("SIGTERM"); });
+    },
+    onState: state => {
+      if (state.phase !== "backoff") return;
+      child = null;
+      livePid = null;
+      const exit = state.exit?.signal ?? state.exit?.code ?? "unknown";
+      if (stopping && generations.wasReady()) return;
+      const verdict = generations.ended();
+      if (verdict === "fail-start") {
+        // A role that never became ready is not retried: the start fails as one, as before the split.
+        controller.abort();
+        resolveReady({ ok: false, ...(failed ?? { reason: "start" as const, detail: fatal ?? `the ${role} stopped while starting (exit ${exit})` }) });
+        return;
+      }
+      if (verdict === "end") {
+        // A replacement that refused its start (another build or database), or kept ending before it was ready: a
+        // restart can't fix that, so the whole `up` stops instead of looping with the other role still running.
+        controller.abort();
+        endForGood(generations.refusedWith() ?? fatal ?? `the ${role} kept stopping before it was ready (exit ${exit})`);
+        return;
+      }
+      // A build mismatch already aborted: that is the end, not a restart.
+      if (controller.signal.aborted) { endForGood(fatal ?? `the ${role} stopped (exit ${exit})`); return; }
+      args.onEnded(`${fatal === null ? "" : `${fatal} — `}the ${role} stopped unexpectedly (exit ${exit})`, true);
+    },
+  }).catch(error => { if (!generations.wasReady()) resolveReady({ ok: false, reason: "start", detail: describe(error) }); });
+  const done = supervised.then(() => {
+    if (!generations.wasReady()) resolveReady({ ok: false, ...(failed ?? { reason: "start" as const, detail: fatal ?? `the ${role} did not start` }) });
+    // The supervisor ended without `up` stopping it (an abort on a refusal emits no backoff): `up` hears it either way.
+    else endForGood(generations.refusedWith() ?? fatal ?? `the ${role} stopped`);
+    return { problem: closedProblem };
+  });
+  return {
+    ready, done,
+    send: message => {
+      const owned = child as ChildProcess | null;
+      if (owned !== null && owned.connected) { try { owned.send(message, () => {}); } catch { /* it is ending; the supervisor sees it */ } }
+    },
+    // The supervisor's stop is SIGTERM, which a role takes as "drain"; past shutdownMs its whole tree is stopped.
+    stop: () => { stopping = true; controller.abort(); },
+    hardStop: () => {
+      const owned = child as ChildProcess | null;
+      if (owned !== null && owned.connected) { try { owned.send({ type: "hard-stop" } satisfies ParentToRole, () => {}); } catch { /* ending */ } }
+    },
+    kill: () => {
+      stopping = true;
+      controller.abort();
+      const owned = child as ChildProcess | null;
+      // Only the still-owned ChildProcess is signalled, never a recorded pid.
+      if (owned !== null && owned.exitCode === null && owned.signalCode === null && !stopProcessTree(owned)) owned.kill("SIGKILL");
+    },
+    pid: () => livePid,
+  };
+}
+
+/** A role child's whole run (up-role-child.ts): the ordinary command prelude (containment, secrets, limits), then the
+ * role itself. Only a process started by `up` gets here; no command line selects a role. */
+export async function runUpRole(start: UpRoleStart, port: RolePort): Promise<number> {
+  return runOperate("up", ["--db", start.databaseFile, ...(start.containment === null ? [] : ["--containment", start.containment])],
+    line => port.send({ type: "log", line }), { upRole: { start, port } });
+}
+
+async function upRoleCommand(context: Context, host: UpRoleHost): Promise<number> {
+  const { start, port } = host;
+  // A role runs exactly this build, on exactly this database: anything else ends it before it touches either.
+  if (start.build !== upBuildIdentity()) {
+    port.send({ type: "failed", reason: "start", detail: `this ${start.role} is a different build (${upBuildIdentity()}) from the \`up\` that started it (${start.build})` });
+    return EXIT.refused;
+  }
+  if (resolve(start.databaseFile) !== resolve(context.databaseFile)) {
+    port.send({ type: "failed", reason: "start", detail: `the ${start.role} opened a different database` });
+    return EXIT.refused;
+  }
+  return start.role === "console" ? runUpConsoleRole(context, start.config, port, start.build) : runUpWorkerRole(context, start.config, port, start.build);
+}
+
+/** The console role: HTTP only — serving, reading, and the person's ceremonies. It never holds the runner token. */
+async function runUpConsoleRole(context: Context, config: UpConsoleConfig, port: RolePort, build: string): Promise<number> {
+  const { store, clock } = context;
+  const progress = (line: string): void => port.send({ type: "log", line });
+  // Mutated only by the worker's word (relayed by `up`): the console's project rail and unified chat follow the live
+  // builder instead of freezing at process start.
+  const activeRepos = new Set<string>(config.repos);
+  // Cockpit B1: this start's instance secret, minted once it is listening; the console answers its challenges with it.
+  let instanceSecret: string | null = null;
+  // v137: this console's lifecycle (service_lifecycle "console:<port>"): started, a short heartbeat, draining once
+  // its `up` stops, stopped at the end. While draining, /healthz and every page say Toolroll is restarting.
+  let draining = false;
+  let console_: Awaited<ReturnType<typeof startConsole>>;
+  try {
+    console_ = await startConsole({
+      instanceSecret: () => instanceSecret,
+      draining: () => draining,
+      context,
+      host: config.host,
+      port: config.port,
+      ...(config.allowedHosts === null ? {} : { allowedHosts: config.allowedHosts }),
+      ...(config.publicUrl === null ? {} : { publicUrl: config.publicUrl }),
+      localRunner: config.localRunner,
+      poolRoot: config.poolRoot,
+      repos: config.repos,
+      currentRepos: () => [...activeRepos],
+      admittedRepos: () => [...activeRepos],
+      upConsole: true,
+      registryPath: config.registryPath,
+      projectRoots: config.projectRoots,
+      ...(config.editor ? { editorLinks: "vscode" as const } : {}),
+    });
+  } catch (error) {
+    port.send({ type: "failed", reason: "port-busy", detail: describe(error) });
+    return EXIT.refused;
+  }
+  let codingClosed = false;
+  const closeCoding = (): void => {
+    if (codingClosed) return;
+    codingClosed = true;
+    console_.server.closeCoding().catch(() => {});
+  };
+  let resolveStopped: () => void = () => {};
+  const stopped = new Promise<void>(resolveStop => (resolveStopped = resolveStop));
+  port.onStop(() => resolveStopped());
+  const lifecycleComponent = `console:${console_.port}`;
+  const lifecycleHolder = `${process.pid}:${randomUUID().slice(0, 8)}`;
+  try { reportLifecycle(store, lifecycleComponent, "started", lifecycleHolder, clock(), { pid: process.pid }); } catch { /* reporting never stops the console */ }
+  const lifecycleBeat = setInterval(() => { try { beatLifecycle(store, lifecycleComponent, lifecycleHolder, clock()); } catch { /* the next beat tries again */ } }, RUNNER_HEARTBEAT_MS);
+  lifecycleBeat.unref?.();
+  port.onMessage(message => {
+    if (message.type === "repos") {
+      activeRepos.clear();
+      for (const repo of message.repos) activeRepos.add(repo);
+    } else if (message.type === "stopping") {
+      draining = true;
+      try { reportLifecycle(store, lifecycleComponent, "draining", lifecycleHolder, clock(), { drainUntil: new Date(clock().getTime() + 60_000) }); } catch { /* the flag above still answers */ }
+      closeCoding();
+    }
+    else if (message.type === "sign-in-link") {
+      let link: string | null = null;
+      try { link = console_.server.mintSignInLink(message.account); } catch { link = null; }
+      port.send({ type: "sign-in-link", id: message.id, link });
+    }
+  });
+
+  // Cockpit B1: who this console is, for bare `toolroll` to prove before it attaches: a fresh secret in the database
+  // (behind the agent fence), and a discovery-only socket beside it. A socket that can't open only means attaching
+  // isn't offered; the console runs either way. The socket is taken FIRST: only the console that owns it publishes a
+  // record. A second console on the same database (another port) never replaces the first one's record.
+  let mintedSecret: string | null = null;
+  const instanceSocket = await openInstanceSocket(context.databaseFile,
+    { pid: process.pid, build: packageVersion(), database: context.databaseFile, port: console_.port }, () => mintedSecret);
+  if (instanceSocket.ok) {
+    mintedSecret = await claimInstance(store, context.databaseFile, { pid: process.pid, port: console_.port, build: packageVersion(), socket: instanceSocket.name }, clock());
+    instanceSecret = mintedSecret;
+    if (mintedSecret === null) progress("attach: another console is running on this database — `toolroll` in a repository opens that one");
+  } else progress(`attach: ${instanceSocket.problem} — \`toolroll\` in a repository won't find this console`);
+
+  port.send({ type: "ready", role: "console", build, pid: process.pid, url: console_.url, port: console_.port });
+  await stopped;
+  draining = true;
+  closeCoding();
+  clearInterval(lifecycleBeat);
+  if (instanceSocket.ok) instanceSocket.close();
+  if (mintedSecret !== null) clearInstance(store, mintedSecret);
+  let closeProblem: string | null = null;
+  await new Promise<void>(done => console_.server.close(error => { closeProblem = error === undefined || error === null ? null : (error as Error).message; done(); }));
+  try { reportLifecycle(store, lifecycleComponent, "stopped", lifecycleHolder, clock()); } catch { /* a stale row lapses with its heartbeat */ }
+  port.send({ type: "closed", problem: closeProblem });
+  return closeProblem === null ? EXIT.ok : EXIT.failed;
+}
+
+/** The worker role: one watch loop per proved repository (builds, checks, batch checks, follow-ups, reconcilers, the
+ * storage sweep and checkout sizing), the project registry, and the service's one Telegram follower. It opens no
+ * port and mints no console secret. */
+async function runUpWorkerRole(context: Context, config: UpWorkerConfig, port: RolePort, build: string): Promise<number> {
+  const { store, clock } = context;
+  const progress = (line: string): void => port.send({ type: "log", line });
+  const runnerName = config.runner;
+  const runnerToken = config.token;
+  const pool = config.pool;
+  const registryPath = config.registryPath;
+  const pinnedRepos = new Set(config.pinnedRepos);
+  const gitRun = context.gitRunner ?? ((file: string, args: readonly string[], opts?: { cwd?: string }) => run(file, [...args], { ...(opts?.cwd === undefined ? {} : { cwd: opts.cwd }), timeoutMs: 10_000 }));
+  const proveRepo = async (input: string): Promise<string | null> => {
+    // The checkout's real path is read off the thread, under a deadline (folder-look.ts): a folder that doesn't answer
+    // is unavailable, never a wait.
+    return (await upProveSaved(gitRun, input))?.root ?? null;
+  };
+  // The proved set this worker builds; `up` relays each change to the console.
+  const activeRepos = new Set<string>(config.repos);
+  const reportRepos = (): void => port.send({ type: "repos", repos: [...activeRepos] });
+
+  // The historical signal shell: the first stop ends admission and starts the grace clock; the second — or the
+  // clock — stops every live provider group (M6.12).
+  let stopping = false;
+  let fatal: string | null = null;
+  let graceTimer: ReturnType<typeof setTimeout> | undefined;
+  const followControllers: AbortController[] = [];
+  let resolveStopped: () => void = () => {};
+  const stopped = new Promise<void>(resolveStop => (resolveStopped = resolveStop));
+  const hardStop = (): void => {
+    const terminated = terminateLiveProviders();
+    if (terminated > 0) progress(`Stopped ${terminated} running build(s). Their work is saved, and each resumes when the builder starts again.`);
+  };
+  const stop = (): void => {
+    if (stopping) {
+      hardStop();
+      return;
+    }
+    stopping = true;
+    resolveStopped();
+    for (const controller of followControllers) controller.abort();
+    const building = store.liveClaimCount(runnerName, clock());
+    if (building > 0) {
+      progress(`Stopping: ${building} build(s) running. Waiting up to ${Math.round(config.stopGraceMs / 1000)}s for them to finish; any still running then is saved and resumes when the builder starts again.`);
+    }
+    graceTimer = setTimeout(hardStop, config.stopGraceMs);
+    graceTimer.unref?.();
+  };
+  port.onStop(hard => {
+    if (!stopping) stop();
+    if (hard) hardStop();
+  });
+
+  const loopFlagsFor = (repo: string): Map<string, string | true> => {
+    const copy = new Map<string, string | true>();
+    // A bounded `up` must not advertise its child watches as an unbounded sweep service either.
+    if (config.forMs !== null) copy.set("for", String(config.forMs));
+    copy.set("runner", runnerName);
+    copy.set("token", runnerToken);
+    copy.set("repo", repo);
+    copy.set("pool", pool);
+    // The co-hosted console's stated origin rides into each loop's follower: a phone link must name THIS console, or not exist.
+    if (config.publicUrl !== null) copy.set("public-url", config.publicUrl);
+    return copy;
+  };
+  const prefix = (repo: string): string => (activeRepos.size > 1 ? `[${projectName(repo)}] ` : "");
+  // Containment at start: one plain sentence, once, for a person at a terminal; the exact status line with --verbose,
+  // in a service log (no terminal), and always when a required policy will refuse spawns.
+  const containmentDetail = config.verbose || !config.terminal;
+  let containmentSaid = false;
+  const containmentLines = (effective: EffectiveContainment): string[] => {
+    const notice = containmentNotice(effective);
+    if (notice !== null && !containmentSaid) progress(notice);
+    containmentSaid = true;
+    return containmentDetail || effective.refusal !== null ? [`watch: ${describeContainment(effective)}`] : [];
+  };
+  const loopResults = new Map<string, Promise<{ repo: string; result: WatchLoopResult }>>();
+  // One record of project passes for the whole service: fair scheduling across its projects (project-concurrency.ts).
+  const projectPasses = new ProjectPasses();
+  // Projects removed while running: each one's watch stops admitting work, finishes what it holds, then lets go.
+  const releasedRepos = new Set<string>();
+
+  const launchRepo = async (repo: string, bind: boolean, drain = false): Promise<void> => {
+    if (loopResults.has(repo) || stopping) return;
+    // A predecessor's watch on a project this start doesn't name (it was being removed): take it over, recovering what
+    // the predecessor held, and let it go (round 1, finding 2).
+    if (drain) releasedRepos.add(repo);
+    if (bind) {
+      const bound = addRunnerReposAuthed(store, { name: runnerName, token: runnerToken, repos: [repo] }, clock());
+      if (!bound.ok) {
+        fatal = `the builder identity changed while adding ${repo} (${bound.reason})`;
+        stop();
+        return;
+      }
+      activeRepos.add(repo);
+      reportRepos();
+      if (!store.listProjects().some(one => one.path === repo)) {
+        store.upsertProject(repo, projectName(repo), clock());
+      }
+    }
+    let markReady: () => void = () => {};
+    const ready = new Promise<void>(resolveReady => (markReady = resolveReady));
+    const loop = runWatchLoop({
+      flags: loopFlagsFor(repo),
+      context,
+      runner: runnerName,
+      token: runnerToken,
+      repo,
+      progress: line => progress(`${prefix(repo)}${line}`),
+      isStopping: () => stopping || releasedRepos.has(repo),
+      onFollowController: controller => followControllers.push(controller),
+      containmentLines,
+      passes: projectPasses,
+      serviceBridge: true,
+      leaseWaitMs: config.leaseWaitMs,
+      ...(drain ? { leaseWaitStopping: () => stopping } : {}),
+      onReady: () => {
+        markReady();
+        if (bind) progress(`${prefix(repo)}builder connected — queued work can start`);
+      },
+    }).then(
+      result => ({ repo, result }),
+      error => ({ repo, result: { ok: false as const, reason: "loop-failed" as const, detail: describe(error), ticks: 0, built: 0, broke: 0 } }),
+    );
+    loopResults.set(repo, loop);
+    void loop.then(({ repo: endedRepo, result }) => {
+      if (releasedRepos.has(endedRepo) && !stopping && !result.ok) {
+        // A removed project's watch that never held its lease (or lost it) has recovered nothing: keep the project
+        // bound so the next worker recovers it, and stop rather than strand its work (round 1, finding 2).
+        fatal = `${prefix(endedRepo)}${result.detail}`;
+        stop();
+        markReady();
+        return;
+      }
+      if (releasedRepos.has(endedRepo) && !stopping) {
+        // A removed project's watch has stopped: only now does the builder let go of it.
+        const unbound = removeRunnerRepoAuthed(store, { name: runnerName, token: runnerToken, repo: endedRepo }, clock());
+        if (!unbound.ok) {
+          fatal = `the builder identity changed while removing ${endedRepo} (${unbound.reason})`;
+          stop();
+        }
+        loopResults.delete(endedRepo);
+        releasedRepos.delete(endedRepo);
+        progress(`project removed — ${projectName(endedRepo)} is no longer built here`);
+        markReady();
+        return;
+      }
+      // A loop that dies while its siblings live must not leave a partial cockpit standing silently (finding 5).
+      if (!result.ok && !stopping) {
+        fatal = `${prefix(endedRepo)}${result.detail}`;
+        stop();
+      }
+      markReady(); // acquisition failures must not strand startup readiness
+    });
+    await ready;
+  };
+
+  // Before any new work: every watch a predecessor left needing recovery on a project this start doesn't name — one
+  // being removed when it died — is taken over (its incarnation recovered in that step) and let go. Only projects the
+  // store still binds to this runner; the start's own projects recover in their own loops below (round 1, finding 2).
+  const named = new Set(config.repos);
+  const boundNow = new Set(store.getRunner(runnerName)?.runner.repos ?? []);
+  const draining = [...new Set(predecessorWatches(store, runnerName, clock()).map(one => one.repo))].filter(repo => !named.has(repo) && boundNow.has(repo));
+  for (const repo of draining) progress(`${projectName(repo)} was being removed when the previous worker stopped: recovering its work first`);
+  await Promise.all(draining.map(repo => launchRepo(repo, false, true)));
+  await Promise.all(config.repos.map(repo => launchRepo(repo, false)));
+
+  // Telegram: one follower for the whole service, never one per project loop. Replies and notifications go out from
+  // it, over the same transport in the same cycle. A token saved while the service runs connects within seconds; a
+  // follower that dies is started again.
+  const telegramController = new AbortController();
+  followControllers.push(telegramController);
+  if (stopping) telegramController.abort();
+  const telegramSupervisor = (async (): Promise<void> => {
+    const pause = (ms: number) => new Promise<void>(resolvePause => {
+      const timer = setTimeout(done, ms);
+      function done(): void { clearTimeout(timer); telegramController.signal.removeEventListener("abort", done); resolvePause(); }
+      // An aborted signal never fires again: without this a stop waited the whole pause.
+      if (telegramController.signal.aborted) done();
+      else telegramController.signal.addEventListener("abort", done, { once: true });
+    });
+    while (!stopping && !telegramController.signal.aborted) {
+      const follower = startTelegramFollower({
+        context, publicUrl: config.publicUrl ?? undefined, signal: telegramController.signal, progress, label: "telegram:",
+        died: { prefix: "", then: "starting it again" }, owner: `service-${randomUUID()}`,
+      });
+      if (follower !== null) await follower;
+      // Without a token (or on a fenced network) look again shortly; the fence line is said once.
+      if (follower === null && loadBotToken(process.env, context.telegramTokenFile) !== null) break;
+      await pause(follower === null ? 2_000 : 5_000);
+    }
+  })();
+
+  // The start's own projects and folders were resolved by `up`: taken as they are, never read again on this thread.
+  const dynamicCeiling = resolveCeiling(config.repos, config.projectRoots, path => resolve(path)).ceiling;
+  const rejected = new Set<string>();
+  // Saved lines' identities, resolved off the thread under a deadline (project-identity.ts): a line whose folder
+  // doesn't answer is skipped this pass, and never holds up the others.
+  const lineIdentities = projectIdentities();
+  /** The saved line(s) each active project came from: `up`'s proof for the start's own, the line admitted for later ones. */
+  const admittedLines = new Map<string, string[]>(Object.entries(config.repoLines ?? {}));
+  const deferred = upDeferredRetry(config.deferredRepos ?? [], input => upProveSaved(gitRun, input));
+  const deferredGenerations = config.deferredGenerations ?? {};
+  const reportDeferred = (): void => port.send({ type: "deferred", repos: deferred.list() });
+  const registrySupervisor = (async (): Promise<void> => {
+    const sleep = (ms: number) => new Promise(resolveSleep => setTimeout(resolveSleep, ms));
+    while (!stopping) {
+      const loaded = await loadProjectRegistry(registryPath);
+      if ("error" in loaded) {
+        fatal = loaded.error;
+        stop();
+        break;
+      }
+      // A saved line removed while this start runs takes the start's authority for it with it, for good.
+      if (deferred.keepOnly(loaded.repos)) reportDeferred();
+      const plain = loaded.repos.filter(one => !deferred.has(one));
+      await lineIdentities.refresh(plain);
+      // Removed from the saved list: stop building it and take it out of the console. A pinned start keeps its own.
+      // Each project is judged by its own saved line (the one it was proved or admitted from, or itself), never by
+      // whether some other folder answered: an unrelated folder that is away never keeps a removed project building.
+      const saved = new Set(loaded.repos);
+      let removed = false;
+      for (const repo of [...activeRepos]) {
+        const lines = admittedLines.get(repo) ?? [repo];
+        if (stopping || pinnedRepos.has(repo) || saved.has(repo) || lines.some(line => saved.has(line))) continue;
+        activeRepos.delete(repo);
+        removed = true;
+        releasedRepos.add(repo);
+        if (!loopResults.has(repo)) releasedRepos.delete(repo);
+      }
+      if (removed) reportRepos();
+      for (const candidate of loaded.repos) {
+        if (stopping) break;
+        // Skipped at start because it didn't answer: connected on the start's own authority once it does.
+        if (deferred.has(candidate)) {
+          await connectDeferred(candidate);
+          continue;
+        }
+        const canonical = lineIdentities.known(candidate);
+        // Not answered yet: looked at again on the next pass.
+        if (canonical === undefined) continue;
+        // Still letting go of an earlier removal: it rejoins on the next pass after its watch has stopped.
+        if (canonical !== null && (activeRepos.has(canonical) || releasedRepos.has(canonical))) continue;
+        const approvedAdditions = context.additionalProjectRepos?.() ?? [];
+        // A start serving nothing yet (its saved projects all away) is an empty ceiling, never the unscoped mode: a
+        // name that matches no path stands in, so a line saved later still needs its recorded admission.
+        const admittedRepos = [...dynamicCeiling.repos, ...approvedAdditions];
+        const admittedCeiling = { repos: admittedRepos.length === 0 && dynamicCeiling.roots.length === 0 ? ["/\0nothing-admitted"] : admittedRepos, roots: dynamicCeiling.roots, canon: (path: string) => lineIdentities.known(path) ?? null };
+        // A project added after this start (`repos add`, the lead, the console) carries its recorded admission; a
+        // registry line alone is not authority. Either way the folder is proved to be that Git checkout again.
+        const allowed = canonical !== null &&
+          ((await authorizedProject(admittedCeiling, canonical)) || admissionRecorded(store, canonical)) &&
+          (await proveRepo(canonical)) === canonical;
+        if (!allowed) {
+          if (!rejected.has(candidate)) {
+            rejected.add(candidate);
+            progress(`project not connected — ${candidate} isn't a Git repository added with \`toolroll repos add\` or the console`);
+          }
+          continue;
+        }
+        rejected.delete(candidate);
+        admittedLines.set(canonical, [...new Set([...admittedLines.get(canonical) ?? [], candidate])]);
+        await launchRepo(canonical, true);
+      }
+      if (!stopping) await sleep(500);
+    }
+  })().catch(error => {
+    fatal = `the project registry stopped (${describe(error)})`;
+    stop();
+  });
+  /**
+   * A saved project the start couldn't reach, back now: connected only as the very folder that was saved (a parent
+   * checkout found because the saved one lost its .git is another project, needing its own admission), and only while
+   * the line is still saved, checked under the saved list's lock with the binding made inside it, so a removal racing
+   * the proof always wins.
+   */
+  async function connectDeferred(candidate: string): Promise<void> {
+    const proved = await deferred.retry(candidate);
+    if (proved === null || stopping) return;
+    // Only the very folder that was saved: the saved line must still resolve to itself, and git's checkout must be that
+    // folder. A parent checkout, or the saved path now leading somewhere else, is another project needing admission.
+    if (proved.line !== candidate || proved.root !== candidate) {
+      deferred.revoke(candidate);
+      reportDeferred();
+      progress(proved.root !== proved.line
+        ? `saved project not connected — ${candidate} came back as part of ${proved.root}; add it again to connect it`
+        : `saved project not connected — ${candidate} now leads to ${proved.line}; add it again to connect it`);
+      return;
+    }
+    const root = candidate;
+    if (activeRepos.has(root) || releasedRepos.has(root)) { deferred.revoke(candidate); reportDeferred(); return; }
+    // Bound under the saved list's lock: the line is still saved AND has not been removed since this start read it
+    // (its removal count unchanged, so a removal and a save again during the proof still counts as removed).
+    let launching: Promise<void> | null = null;
+    let removedSince = false;
+    await updateProjectRegistry(registryPath, current => {
+      if (stopping || !deferred.has(candidate)) return current;
+      const count = registryRemovals(registryPath)?.[candidate] ?? (registryRemovals(registryPath) === null ? -2 : 0);
+      if (!current.repos.includes(candidate) || count !== deferredGenerations[candidate]) {
+        deferred.revoke(candidate);
+        removedSince = true;
+        return current;
+      }
+      deferred.revoke(candidate);
+      admittedLines.set(root, [candidate]);
+      launching = launchRepo(root, true);
+      return current;
+    });
+    if (removedSince) {
+      reportDeferred();
+      progress(`saved project not connected — ${candidate} was removed while it was away; add it again to connect it`);
+      return;
+    }
+    if (launching === null) return;
+    reportDeferred();
+    progress(`saved project is back — connecting ${root}`);
+    await launching;
+  }
+
+  // Provider readiness (v47): this machine's non-spending observations, recorded under its own runner name ONCE at
+  // start — so every route projection can say ready / unavailable / unknown per provider, and the dispatch gate can
+  // halt a leg this machine cannot run. Production only: a test's injected agent runner is a fake, and its readiness
+  // would be a fiction.
+  if (context.agentRunner === undefined) {
+    void observeProviderReadiness((file, args, options) => run(file, args, { timeoutMs: options?.timeoutMs ?? 5_000, ...(options?.omitEnv === undefined ? {} : { omitEnv: options.omitEnv }) }), process.env, PROVIDER_IDS, provider => store.acpAttestationFor(provider, runnerName))
+      .then(observed => {
+        if (!stopping) reportProviderReadinessAuthed(store, { name: runnerName, token: runnerToken, observations: observed }, clock());
+      })
+      .catch(() => {
+        // A probe that cannot run leaves readiness unknown — never a fiction.
+      });
+  }
+  try { notifyVersionLive(context.store, dirname(context.databaseFile), PACKAGE_VERSION, clock()); } catch { /* A display fact; never blocks the worker. */ }
+  recordRunnerVersion(dirname(context.databaseFile), runnerName, PACKAGE_VERSION, clock());
+  // v137: the continuous database copy, off the hot path (live-backup.ts: a worker thread copies, checks and hashes).
+  // Never inside a project or a build checkout. A test's injected agent runner means a test: no background copies.
+  const stopLiveBackups = context.agentRunner === undefined
+    ? startLiveBackups(store, context.databaseFile, () => [...new Set([...activeRepos, ...store.knownRepos(), pool])])
+    : null;
+
+  // Ready once every project's loop holds its lease; a loop that failed to start ends this worker instead.
+  if (fatal === null && !stopping) port.send({ type: "ready", role: "worker", build, pid: process.pid, url: null, port: null });
+
+  await stopped;
+  await registrySupervisor;
+  await Promise.all([...loopResults.values()]);
+  await stopLiveBackups?.();
+  // The follower was aborted with the stop. A send or a chat turn it is still finishing keeps its own durable record;
+  // the service does not wait past this for it.
+  await new Promise<void>(done => {
+    const timer = setTimeout(done, TELEGRAM_STOP_WAIT_MS);
+    const finish = (): void => { clearTimeout(timer); done(); };
+    void telegramSupervisor.then(finish, finish);
+  });
+  if (graceTimer !== undefined) clearTimeout(graceTimer);
+  if (fatal !== null) {
+    port.send({ type: "fatal", detail: fatal });
+    return EXIT.failed;
+  }
+  return EXIT.ok;
+}
+
+/** GitHub's nightly as release debt (docs/plans/evals-nightly.md, part A): the watch loop's background read of each
+ * opted-in project's nightly runs, at most every 30 minutes, within a 60 s overall deadline, through the plane's own gh
+ * (release-adapters.ts githubReads). Nothing is read for a project that never opted in. */
+export async function refreshGithubNightlies(store: Store, now: () => Date, reads?: GhRead): Promise<number> {
+  if (githubNightlyRepos(store).length === 0) return 0;
+  return readGithubNightlies(store, { gh: reads ?? githubReads(releaseExec, releaseTools().gh, { retry: true }), now });
+}
+
+/**
+ * `toolroll evals run | attempt | cases | recover` (docs/plans/evals-nightly.md, part C).
+ *
+ * - `run [--diagnostic] [--case a,b] [--k n] --as <you> --token <password>`: admit a campaign (a person's proof, the
+ *   no release busy) and run it to its end from this installed plane. With no flags it is canonical,
+ *   refused while any case is a draft. Each attempt is a child process: `evals attempt`.
+ * - `attempt <campaign> <case> <n> --world <dir> --db <world db>`: one attempt's world (eval-world.ts). Only under its
+ *   runner's dispatch gate, and only on the world's own database.
+ * - `cases`: each installed case, its version, its pin, and whether a person has validated it yet.
+ * - `recover [--abandon <campaign>]`: settle campaigns whose runner stopped; with --abandon, a person ends a stuck one.
+ */
+export async function evalsCommand(positional: readonly string[], flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { write, json } = context;
+  // Loaded when an eval command runs, so no other command (nor the console's bundle) pays for the eval runner.
+  const { admitEvalCampaign, campaignSpending, EVALS_ROOT, installedBuildDigest, loadEvalSet, planCampaign, recoverEvalCampaigns, runEvalCampaign } = await import("./evals.js");
+  const { inEvalWorld } = await import("./eval-gate.js");
+  const { evalCliEntry, runEvalWorld } = await import("./eval-world.js");
+  const action = positional[0];
+  const command = `evals${action === undefined ? "" : ` ${action}`}`;
+  const usage = "Use: toolroll evals run [--diagnostic] [--case <ids>] [--k <n>] --as <you> --token <password> | toolroll evals cases | toolroll evals recover [--abandon <campaign> --as <you> --token <password>]";
+  if (action === "recover" && flags.has("abandon")) return evalsAbandonCommand(flags, context);
+  if (action === "recover") {
+    // A campaign whose runner stopped: its unfinished attempts recorded as interrupted, then it ends incomplete.
+    const recovered = recoverEvalCampaigns(context.store, context.clock());
+    return succeed(write, json, command, { campaigns: recovered }, () => recovered.length === 0 ? ["No campaign is running."] : recovered.map(one => `${one.id}: ${one.recovered ? "recovered" : "left running"} (${one.why})`));
+  }
+  if (action === "cases") {
+    const set = loadEvalSet();
+    if (!set.ok) return fail(write, json, command, "unreadable", set.problem, EXIT.failed);
+    const cases = set.cases.map(one => ({ id: one.id, kind: one.kind, version: one.version, pin: one.pin, validatedBy: one.validatedBy, draft: one.validatedBy === null }));
+    return succeed(write, json, command, { manifestDigest: set.manifestDigest, cases }, () => cases.map(one => `${one.id} (${one.kind}) ${one.version.slice(0, 12)} on ${one.pin.model}: ${one.draft ? "draft, awaiting a person's validation" : `validated by ${one.validatedBy}`}`));
+  }
+  if (action === "attempt") {
+    // Only its campaign's runner starts an attempt: under the runner's dispatch gate, on the world's own database.
+    if (!inEvalWorld()) return fail(write, json, command, "refused", "An eval attempt runs only from its campaign's runner.", EXIT.refused);
+    const [, campaign, caseId, n] = positional;
+    const world = text(flags, "world");
+    if (campaign === undefined || caseId === undefined || n === undefined || !/^[1-9][0-9]?$/.test(n) || world === undefined) return fail(write, json, command, "usage", "Use: toolroll evals attempt <campaign> <case> <n> --world <dir> --db <world>/toolroll/orders.db", EXIT.usage);
+    let worldDir: string;
+    try { worldDir = realpathSync(world); } catch { return fail(write, json, command, "refused", "The world's folder can't be read.", EXIT.refused); }
+    if (resolve(context.databaseFile) !== join(worldDir, "toolroll", "orders.db")) return fail(write, json, command, "refused", "An eval attempt runs only on its world's own database.", EXIT.refused);
+    const set = loadEvalSet();
+    const one = set.ok ? set.cases.find(item => item.id === caseId) : undefined;
+    if (one === undefined) return fail(write, json, command, "refused", set.ok ? `No case is named ${caseId}.` : set.problem, EXIT.refused);
+    const deny = (text(flags, "deny") ?? "").split(",").filter(path => path !== "" && isAbsolute(path));
+    const report = await runEvalWorld(one, { worldDir, databaseFile: context.databaseFile, deny, timeoutMs: one.timeoutMinutes * 60_000 });
+    return succeed(write, json, command, { ...report }, () => [JSON.stringify(report)]);
+  }
+  if (action !== "run" || positional.length !== 1) return fail(write, json, command, "usage", usage, EXIT.usage);
+  if (inEvalWorld()) return fail(write, json, command, "refused", "An eval world doesn't start campaigns of its own.", EXIT.refused);
+  if (machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined) return fail(write, json, command, "person-only", "Only a person starts an eval campaign: it spends money.", EXIT.refused);
+  const k = text(flags, "k");
+  const cases = text(flags, "case");
+  const set = loadEvalSet();
+  if (!set.ok) return fail(write, json, command, "unreadable", set.problem, EXIT.failed);
+  const planned = planCampaign(set, { ...(cases === undefined ? {} : { cases: cases.split(",").filter(Boolean) }), ...(k === undefined ? {} : { k: Number(k) }), diagnostic: flag(flags, "diagnostic") });
+  if (!planned.ok) return fail(write, json, command, "refused", planned.problem, EXIT.refused);
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, command, "usage", "An eval campaign is started with your password: add --as <you> --token <password>.", EXIT.usage);
+  const { plan } = planned;
+  const buildDigest = (): string => installedBuildDigest(PACKAGE_VERSION);
+  const sealed = { cases: plan.cases.map(one => ({ id: one.id, version: one.version, pin: one.pin, maxDispatches: one.maxDispatches })), k: plan.k, baseline: null, evals: EVALS_ROOT };
+  // A campaign whose runner stopped no longer holds its place.
+  recoverEvalCampaigns(context.store, context.clock());
+  const admitted = admitEvalCampaign(context.store, { kind: "eval", canonical: plan.canonical, manifestDigest: set.manifestDigest, buildDigest: buildDigest(), version: PACKAGE_VERSION, k: plan.k,
+    sealed, as: acting.name, token: acting.token, now: context.clock() });
+  if (!admitted.ok) return fail(write, json, command, admitted.reason, admitted.message, EXIT.refused);
+  const stateDir = dirname(context.databaseFile);
+  const entry = evalCliEntry();
+  const keep = ["PATH", "HOME", "USER", "LOGNAME", "LANG", "SHELL", "TMPDIR"];
+  const ended = await runEvalCampaign(context.store, admitted.id, plan.cases, {
+    // Beside the plane's state folder, never inside it: a world's builds read-deny the plane's state.
+    workRoot: join(dirname(stateDir), "toolroll-eval-worlds", admitted.id),
+    buildDigest,
+    keepWorlds: flag(flags, "keep"),
+    now: context.clock,
+    command: input => ({ file: entry.file, args: [...entry.args, "evals", "attempt", input.campaign, input.caseId, String(input.n), "--world", input.worldDir, "--deny", stateDir, "--db", input.databaseFile, "--json"],
+      env: { ...Object.fromEntries(keep.flatMap(name => process.env[name] === undefined ? [] : [[name, process.env[name]!]])), XDG_CONFIG_HOME: join(input.worldDir, "config") } }),
+  });
+  const rows = context.store.handle.prepare("SELECT case_id, n, replaces, outcome, error_why, api_microusd, subscription_microusd, usage_unknown FROM eval_attempt WHERE campaign = ? ORDER BY case_id, n, replaces").all(admitted.id);
+  const nullable = (value: unknown): number | null => value === null || value === undefined ? null : Number(value);
+  const attempts = rows.map(row => ({ case: String(row["case_id"]), n: Number(row["n"]), replaces: Number(row["replaces"]), outcome: row["outcome"] === null ? null : String(row["outcome"]),
+    why: row["error_why"] === null ? null : String(row["error_why"]), apiMicrousd: nullable(row["api_microusd"]), subscriptionMicrousd: nullable(row["subscription_microusd"]), usageUnknown: Number(row["usage_unknown"]) === 1 }));
+  // What was actually spent, as recorded: API dollars and subscription usage apart, unknown never shown as measured.
+  const spent = campaignSpending(context.store, admitted.id);
+  const dollars = (micro: number | null, unknown: number): string => micro === null ? `unknown (${unknown} attempt${unknown === 1 ? "" : "s"} with unknown spending)` : `$${(micro / 1_000_000).toFixed(2)}`;
+  return succeed(write, json, command, { campaign: admitted.id, canonical: plan.canonical, state: ended.state, why: ended.why, attempts, spending: spent }, () => [
+    `Campaign ${admitted.id} (${plan.canonical ? "canonical" : "diagnostic"}) is ${ended.state}${ended.why === null ? "" : `: ${ended.why}`}.`,
+    ...attempts.map(one => `${one.case} #${one.n}${one.replaces === 0 ? "" : " (replacement)"}: ${one.outcome ?? "not finished"}${one.why === null ? "" : ` — ${one.why}`}`),
+    `API dollars: ${dollars(spent.apiMicrousd, spent.unknownAttempts)}. Subscription usage, not billed: ${dollars(spent.subscriptionMicrousd, spent.unknownAttempts)}.`,
+  ]);
+}
+
+/**
+ * `toolroll evals recover --abandon <campaign> --as <you> --token <password>` (PR #263 review): a person ends a campaign
+ * recovery can't settle (its runner or a world's processes can't be proven gone). Its unfinished attempts are recorded
+ * as errors and its spending as unknown, and it ends incomplete; nothing is signalled and no world is removed. A lead
+ * token, a machine or an eval world is refused; the password is checked inside the write (evals.ts abandonEvalCampaign).
+ */
+async function evalsAbandonCommand(flags: Map<string, string | true>, context: Context): Promise<number> {
+  const { write, json } = context;
+  const command = "evals recover";
+  const { abandonEvalCampaign } = await import("./evals.js");
+  const { inEvalWorld } = await import("./eval-gate.js");
+  const id = text(flags, "abandon");
+  if (id === undefined || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(id)) return fail(write, json, command, "usage", "Use: toolroll evals recover --abandon <campaign> --as <you> --token <password>", EXIT.usage);
+  if (inEvalWorld() || machineActing() || process.env["TOOLROLL_LEAD_TOKEN"] !== undefined) return fail(write, json, command, "person-only", "Only a person abandons an eval campaign.", EXIT.refused);
+  const acting = await askCredentials(flags, context);
+  if (acting === null) return fail(write, json, command, "usage", "A campaign is abandoned with your password: add --as <you> --token <password>.", EXIT.usage);
+  const ended = abandonEvalCampaign(context.store, { id, as: acting.name, token: acting.token, now: context.clock() });
+  if (!ended.ok) return fail(write, json, command, ended.reason, ended.message, EXIT.refused);
+  return succeed(write, json, command, { campaign: id, state: "incomplete", attempts: ended.attempts, spending: "unknown" },
+    () => [`Campaign ${id} ended incomplete. ${ended.attempts} unfinished attempt${ended.attempts === 1 ? "" : "s"} recorded as errors; what it spent is unknown. Nothing was stopped: check for its processes yourself.`]);
+}
+
+/**
+ * The saved projects an `up` start couldn't reach (upCommand): each is proved again every `everyMs` while the worker
+ * runs, by `prove` (upProveSaved), so a folder that answers again connects without a restart. Only what the start itself
+ * read from the saved list is here, and the set only shrinks: a line connected, removed from the saved list
+ * (`keepOnly`) or come back as some other checkout (`revoke`) is gone for good, so a line saved again later needs its
+ * recorded admission like any other addition. `retry` answers the proof when one is due and answered, else null.
+ */
+export function upDeferredRetry<T>(inputs: readonly string[], prove: (input: string) => Promise<T | null>, everyMs = 5_000, now: () => number = Date.now): {
+  has: (input: string) => boolean;
+  list: () => string[];
+  retry: (input: string) => Promise<T | null>;
+  revoke: (input: string) => void;
+  keepOnly: (saved: readonly string[]) => boolean;
+} {
+  // Wall time, not the store's clock (a test's may stand still): this is only how often a folder is asked.
+  const nextAt = new Map<string, number>(inputs.map(input => [input, now() + everyMs]));
+  return {
+    has: input => nextAt.has(input),
+    list: () => [...nextAt.keys()],
+    retry: async input => {
+      const due = nextAt.get(input);
+      if (due === undefined || now() < due) return null;
+      nextAt.set(input, now() + everyMs);
+      return prove(input);
+    },
+    revoke: input => { nextAt.delete(input); },
+    keepOnly: saved => {
+      const keep = new Set(saved);
+      let changed = false;
+      for (const input of [...nextAt.keys()]) if (!keep.has(input)) { nextAt.delete(input); changed = true; }
+      return changed;
+    },
+  };
+}
+
+/**
+ * Whether a saved project's folder is a Git checkout now, read without blocking this thread: `git rev-parse
+ * --show-toplevel` (bounded, its own process), then the real paths of the saved line and of the checkout, resolved off
+ * the thread under a deadline (folder-look.ts). Null when it isn't one, or didn't answer.
+ */
+export async function upProveSaved(gitRun: (file: string, args: readonly string[], opts?: { cwd?: string }) => Promise<{ code: number | null; stdout: string }>,
+  input: string, look: FolderLookOptions = {}): Promise<{ line: string; root: string } | null> {
+  const top = await gitRun("git", ["rev-parse", "--show-toplevel"], { cwd: resolve(input) });
+  if (top.code !== 0) return null;
+  const answered = await lookIdentities([resolve(input), top.stdout.trim()], look);
+  if (!answered.ok) return null;
+  const line = answered.value.get(resolve(input)) ?? null, root = answered.value.get(top.stdout.trim()) ?? null;
+  return line === null || root === null ? null : { line, root };
+}
+
+/** What `up` hands its next worker after the worker reports which saved projects it still holds start authority for:
+ * only what both still hold. A worker's report can give up an authority, never add or give back one. */
+export function upNarrowDeferred(held: readonly string[], reported: readonly string[]): string[] {
+  const kept = new Set(reported);
+  return held.filter(one => kept.has(one));
+}
+
+/** Resolve the console's project identities after it is listening, never before: the deploy's health check and every
+ * page answer at once, and each project shows up as its folder answers (project-identity.ts `refresh`, its looks a
+ * few at a time under their deadline). Nothing waits on it; a pass that fails leaves those paths unresolved, which
+ * fails closed, for the background pass to try again. */
+export function consoleIdentitiesInBackground(identities: ProjectIdentities, paths: readonly string[]): void {
+  void identities.refresh(paths).catch(() => false);
+}
+
+/** `config set` and `config clear` on the command line, through Settings → Models' one write path (model-choices.ts,
+ * docs/plans/spend-dashboard.md slice 3), under the same target and resulting-configuration checks as the editor: the
+ * person proved themselves with their own password or login at `proved.generation`; a machine credential (a remote
+ * token, the lead's token) never changes which models run. The write re-proves them inside its transaction: still an
+ * unrestricted instance operator, at that very generation, by a proof that still stands. */
+export function writeModelRow(store: Store, proved: { actor: string; generation: number; method: string }, scope: string, knownProject: (repo: string) => boolean, slot: Slot | null, to: ModelChange["to"], now: Date, extra: readonly ExtraWrite[] = []): ApplyResult {
+  return applyModelChoices(store, { scope, change: slot === null ? [] : [{ slot, to }], expected: null, strict: false, knownProject, extra },
+    { ...proved, live: () => true }, now);
 }

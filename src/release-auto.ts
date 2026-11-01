@@ -13,17 +13,22 @@
  * adapter. Any refusal unseals `auto-check`, so the task asks a person, its passing check kept.
  */
 import { assignmentOf } from "./assignment.js";
-import { projectGitDir } from "./check-report.js";
+import { fullCheckProblem, projectGitDir } from "./check-report.js";
+import { sealedRun } from "./release-recheck.js";
 import { runCheckLevel } from "./check-levels.js";
 import { readVerifiedCommit, verifiedBlobs, verifiedTreeDiff, verifiedTreeEntries } from "./commit-extract.js";
+import { EVAL_HOOK_FILES, evalHookProblem, storeRewriteProblem } from "./eval-hooks.js";
 import { mightName, testInfrastructure, type TestInfrastructure } from "./test-infra.js";
 import { chatControlHref } from "./chat-controls.js";
-import { AUTO_FLAKE_CAP, REQUIRED_PR_CHECKS, prChecksVerdict, type CheckFailure } from "./release.js";
+import { INFRA_RERUNS_PER_CANDIDATE, REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW, prChecksVerdict, type CheckFailure } from "./release.js";
+import { releaseCheckStanding } from "./check-failure.js";
 import { CARRY_RULES, rulePath } from "./release-carry.js";
 import { AUTO_EVIDENCE_ACTION, AUTO_WITHDRAWN_ACTION, LIVE_RELEASE_STATES, RELEASE_APPROVAL_ACTION, releaseAuthorityOfTask, releaseAutoApproves, type ReleaseApprovalSetting, releaseApprovalSetting } from "./release-authority.js";
 import { autoReleaseApprovalOf, personApprovalOf } from "./scope.js";
 import { releaseOperations, revokeRelease, type Store } from "./store.js";
+import { RELEASE_CI_HELD_ACTION, RELEASE_CI_PASSED_ACTION, RELEASE_CI_RUNNING_WORDS, releaseCiHoldOf, releaseCiRunningOf } from "./release-ci-hold.js";
 import { verificationEvidence } from "./verification-evidence.js";
+import { nightlyDebtHold } from "./nightly-github.js";
 
 export { RELEASE_APPROVAL_ACTION, releaseApprovalSetting, releaseAutoApproves, type ReleaseApprovalSetting };
 
@@ -33,7 +38,11 @@ export const RELEASE_APPROVAL_WORDS = { ask: "Ask me", auto: "Approve automatica
 export const CI_OBSERVATION_MS = 5 * 60_000;
 
 /** One check run on the candidate as the plane's own `gh` reported it (oldest first). */
-export type ObservedCheckRun = { id: number | null; name: string; status: string; conclusion: string | null; app: string | null; suite?: number | null; head?: string | null; workflow?: number | null };
+export type ObservedCheckRun = { id: number | null; name: string; status: string; conclusion: string | null; app: string | null; suite?: number | null; head?: string | null; workflow?: number | null;
+  /** The workflow's file (GitHub's workflow-run `path`): a required check counts only from its own (REQUIRED_PR_CHECKS_WORKFLOW). */
+  workflowPath?: string | null;
+  /** GitHub's job record shows this unsuccessful attempt ended before any workflow step ran (release-adapters.ts). */
+  beforeTests?: boolean | null };
 /** The plane's own look at GitHub CI for one commit (release-adapters.ts makes it, right before the seal). */
 export type CiObservation = { head: string; observedAt: string; runs: readonly ObservedCheckRun[];
   /** Whether the history is whole (fewer check suites than GitHub's check-runs ceiling): false or absent refuses. */
@@ -176,6 +185,12 @@ const SRC_TEST_INFRA = /^src\/(fixtures\/|(.*\/)?(test-[^/]*|[^/]*-test-support[
 /** A test file (normalized path): `*.test.ts`, never inside a fixtures folder. */
 const TEST_FILE = /^(?!.*(^|\/)fixtures?\/)[^]*\.test\.ts$/;
 
+/** The eval set's and GitHub nightly's policy code (docs/plans/evals-nightly.md, part C, finding 10): the cases and
+ * oracles, the evaluator, its gate, hooks and world, reviewer scoring, nightly ingestion, their contracts, and the
+ * accounting readings evals trust (reported-usage.ts, run-efficiency.ts). Where they are called from, and the store's
+ * accounting reads, are held by eval-hooks.ts instead (evalHookProblem). */
+const EVAL_POLICY = /^(evals\/|src\/evals[^/]*\.ts$|src\/eval-[^/]*\.ts$|src\/reviewer-evals\.ts$|src\/nightly-github\.ts$|src\/contracts\/evals[^/]*\.ts$|src\/reported-usage\.ts$|src\/run-efficiency\.ts$)/;
+
 /** Build or type configuration anywhere: a person approves it. */
 const BUILD_CONFIG = /(^|\/)(tsconfig[^/]*\.json|[^/]*\.config\.[cm]?[jt]s|\.npmrc|\.nvmrc|\.node-version)$/;
 
@@ -199,6 +214,7 @@ export function autoPathProblem(path: string): string | null {
   }
   // Test files under test/ carry the same trust as src's (Alex: test authors are trusted) — only the `.test.ts` files
   // themselves, never a helper, fixture, setup or config file beside them, nor one inside a fixtures folder.
+  if (EVAL_POLICY.test(normal)) return "it's eval or nightly policy code";
   if (testUnderTest) return null;
   if (BUILD_CONFIG.test(normal)) return "it configures the build or the checks";
   if (normal === "package.json" || normal === "package-lock.json") return null;
@@ -208,17 +224,16 @@ export function autoPathProblem(path: string): string | null {
   return "it's outside what a release approves itself for (product code, tests, docs, the changelog and a version bump)";
 }
 
-/** Flakes: how many failed attempts one CI job, and how many unsuccessful release-check runs, may have before a person
- * decides. The head and digest are pinned, so between attempts only nondeterminism differs. */
-export const MAX_FAILED_ATTEMPTS = AUTO_FLAKE_CAP;
-
-/** One CI attempt that failed before its job's latest attempt passed, as the evidence records it. */
+/** One CI attempt that failed before its job's latest attempt passed (GitHub showed its runner failing before the
+ * tests ran), as the evidence records it. */
 export type CiFailure = CheckFailure;
 
 /**
  * GitHub CI on the exact head, as the plane read it (every attempt): fresh, every run GitHub Actions, and the same
  * verdict every later release boundary uses (release.ts prChecksVerdict: exact head, each job by its latest attempt,
- * every required check present), with the flake cap. The tolerated failures are returned for the evidence.
+ * every required check present), where an earlier failure stands only as confirmed infrastructure (GitHub's job record
+ * shows it ended before any workflow step ran), at most INFRA_RERUNS_PER_CANDIDATE of them. The tolerated failures are
+ * returned for the evidence.
  */
 export function ciVerdict(observation: CiObservation, candidate: string, now: Date): { ok: true; failures: CiFailure[] } | { ok: false; problem: string } {
   const no = (problem: string) => ({ ok: false as const, problem });
@@ -228,7 +243,7 @@ export function ciVerdict(observation: CiObservation, candidate: string, now: Da
   if (observation.complete !== true) return no("GitHub's check history of this commit can't be read whole");
   const other = observation.runs.find(run => run.app !== "github-actions");
   if (other !== undefined) return no(`${other.name} was reported by ${other.app ?? "an unknown app"}, not GitHub Actions`);
-  const verdict = prChecksVerdict(observation.runs, candidate, REQUIRED_PR_CHECKS, { cap: MAX_FAILED_ATTEMPTS });
+  const verdict = prChecksVerdict(observation.runs, candidate, REQUIRED_PR_CHECKS, { auto: true, workflow: REQUIRED_PR_CHECKS_WORKFLOW });
   if (verdict.state === "failed") return no(verdict.failed.join(", "));
   if (verdict.state === "pending") return no(`not finished: ${verdict.waiting.join(", ")}`);
   return { ok: true, failures: verdict.failures };
@@ -289,11 +304,34 @@ function changeProblem(repo: string, base: string | null, candidate: string): st
     scans.push(found);
   }
   const infra = new Set(scans.flatMap(one => [...one.infra]));
+  // The eval and nightly enforcement calls the base holds must all still be in place at the candidate (eval-hooks.ts).
+  // One verified read of every listed file per tree (an unreadable tree reads as every file missing: a person decides).
+  const blobAt = (tree: string) => { const blobs = verifiedBlobs(gitDir, tree, EVAL_HOOK_FILES); return (file: string): Buffer | null => blobs.ok ? blobs.value.get(file)?.bytes ?? null : null; };
+  const hooks = evalHookProblem(blobAt(after.value.tree), blobAt(before.value.tree));
+  if (hooks !== null) return `${hooks}: a person decides`;
+  // No changed file may write over a pinned Store method from outside store.ts (eval-hooks.ts storeRewriteProblem).
+  const changed = diff.value.filter(change => change.after !== null).map(change => change.path);
+  // A failed read is no reader at all (a person decides), never files that read as absent.
+  const changedAt = (tree: string) => { const blobs = verifiedBlobs(gitDir, tree, changed); return blobs.ok ? (file: string): Buffer | null => blobs.value.get(file)?.bytes ?? null : null; };
+  const rewrites = storeRewriteProblem(changed, changedAt(after.value.tree), changedAt(before.value.tree));
+  if (rewrites !== null) return `${rewrites}: a person decides`;
   for (const change of diff.value) {
     const modes = [change.before?.mode, change.after?.mode].filter((one): one is string => one !== undefined);
     if (modes.includes("120000") || modes.includes("160000")) return `${change.path} is a symlink or submodule`;
     // Taking a test away is never automatic, wherever it lives.
     if (change.kind === "deleted" && TEST_FILE.test(rulePath(change.path))) return `${change.path} was deleted (removing a test needs a person)`;
+    if (change.before !== null && TEST_FILE.test(rulePath(change.path))) {
+      // Counts cannot prove that an assertion survived: replacing it, commenting it out, or skipping its case can
+      // leave the counts unchanged. Only append-only additions preserve the existing code without interpretation.
+      // Both copies come from verified trees; no report or candidate-provided file list decides this permission.
+      const was = verifiedBlobs(gitDir, before.value.tree, [change.path]);
+      const now = verifiedBlobs(gitDir, after.value.tree, [change.path]);
+      if (!was.ok || !now.ok) return `${change.path}'s existing test code couldn't be read (a person decides)`;
+      const original = was.value.get(change.path)?.bytes, revised = now.value.get(change.path)?.bytes;
+      if (original === undefined || revised === undefined || !revised.subarray(0, original.length).equals(original)) {
+        return `${change.path} changes existing test code (removing or rewriting tests needs a person)`;
+      }
+    }
     const why = autoPathProblem(change.path);
     if (why !== null) return `${change.path} changed (${why})`;
     if (infra.has(change.path)) return `${change.path} changed (tests import it and the product doesn't: it's test infrastructure)`;
@@ -319,10 +357,17 @@ function changeProblem(repo: string, base: string | null, candidate: string): st
  */
 export function sealAutoGreen(store: Store, input: {
   taskId: string; digest: string; candidate: string; run: number; receipt: string; ci: CiObservation; evidenceRoot: string; now: Date;
+  /** Whether main's protection holds for the account that merges (release-adapters.ts readMainProtection), as the plane's gh read it just now (null: unreadable). */
+  mainUpToDate: boolean | null;
 }): { ok: true; by: string; at: string; ci: { id: number; name: string }[] } | Refusal {
   const answer = inTransaction(store, (): { ok: true; by: string; at: string; ci: { id: number; name: string }[] } | Refusal => {
     const facts = releaseTaskFacts(store, input);
     if (!facts.ok) return facts;
+    // Head-only CI is the merged tree only when GitHub itself refuses a branch behind main (eval-harness review 1,
+    // finding 4): without that setting nothing approves itself.
+    if (input.mainUpToDate !== true) return refuse(input.mainUpToDate === null
+      ? "GitHub's branch protection for main couldn't be read, so whether it refuses a branch behind main is unknown"
+      : "main's branch protection doesn't hold for the account that merges: it must require branches to be up to date, require the release's checks, and allow no bypass (\"Do not allow bypassing the above settings\")");
     const checking = autoReleaseApprovalOf(store, input.taskId, "auto-check");
     if (!checking.ok) return refuse(`its check wasn't authorized automatically: ${checking.why}`);
     // The release check: this task's build on this digest, its native receipt, a Full level and no failed check before.
@@ -332,14 +377,21 @@ export function sealAutoGreen(store: Store, input: {
     const head = run.headRevision;
     if (head === null) return refuse(`run ${input.run} recorded no commit`);
     if (runCheckLevel(store, run.id) !== "full") return refuse("the release check wasn't Full");
-    // A flake: earlier builds of this task may have failed — every one that didn't finish built with a passed check
-    // counts (a failed check, a check that never ran, a build that failed or was interrupted) — but only re-runs of the
-    // same signed scope (the regate road keeps the candidate and digest), and at most MAX_FAILED_ATTEMPTS of them.
+    // Earlier builds of this task that didn't finish built with a passed check (a failed check, a check that never ran,
+    // a build that failed or was interrupted) stand only as confirmed infrastructure the release itself reran on the
+    // same signed scope, at most INFRA_RERUNS_PER_CANDIDATE (check-failure.ts): a failing test, an unexplained failure
+    // or a real-model journey before the pass means a person decides. So does anything that passed only on a retry.
     const failedRuns = store.handle.prepare(`SELECT r.id, r.scope_digest FROM run r LEFT JOIN run_check c ON c.run = r.id
         WHERE r.task_ref = ? AND r.role = 'builder' AND r.id <> ?
           AND NOT (COALESCE(r.outcome, '') IN ('built', 'no-change') AND COALESCE(c.status, '') = 'passed') ORDER BY r.id`).all(facts.taskRef, run.id);
     if (failedRuns.some(one => one["scope_digest"] !== input.digest)) return refuse("an earlier check of this release ran on different scope text, so a person decides");
-    if (failedRuns.length > MAX_FAILED_ATTEMPTS) return refuse(`the release check failed ${failedRuns.length} times before it passed, so a person decides`);
+    if (failedRuns.some(one => Number(one["id"]) > run.id)) return refuse(`run ${input.run} isn't this task's newest build`);
+    const standing = releaseCheckStanding(store, input.evidenceRoot, { taskId: input.taskId, run: run.id });
+    if (!standing.ok) return refuse(standing.why);
+    // Unknown is never "no retries" (eval-harness review 1, finding 3).
+    if (standing.retried === null) return refuse("the release check's retry record can't be read (its report or receipt is missing or damaged), so whether anything passed only on a retry is unknown and a person decides");
+    if (standing.retried.length > 0) return refuse(`the release check passed only on a retry (${standing.retried.slice(0, 3).join(", ")}${standing.retried.length > 3 ? ", …" : ""}), so a person decides`);
+    if (failedRuns.length > INFRA_RERUNS_PER_CANDIDATE) return refuse(`the release check failed ${failedRuns.length} times before it passed, so a person decides`);
     const checkFailures = failedRuns.map(one => Number(one["id"]));
     const newest = store.runsFor(facts.taskRef).find(one => one.role === "builder");
     if (newest?.id !== run.id) return refuse(`run ${input.run} isn't this task's newest build`);
@@ -351,6 +403,19 @@ export function sealAutoGreen(store: Store, input: {
     const result = gate["result"] as { ran?: unknown; exitCode?: unknown } | undefined;
     const command = gate["command"] as { command?: unknown } | undefined;
     if (gate["coverage"] !== undefined && gate["coverage"] !== "full") return refuse(`the release check didn't cover everything (${String(gate["coverage"])})`);
+    // A readable, valid report and inventory of a Full attempt, the receipt's own, every obligation accounted for, and
+    // the retry summary sealed in the receipt: an automatic approval never stands on evidence it can't read.
+    const check = gate["check"] as { attempt?: unknown; report?: unknown; inventory?: unknown; retried?: unknown } | undefined;
+    const sealed = sealedRun(store, input.evidenceRoot, run.id);
+    if (check === undefined || sealed === null || sealed.attempt.mode !== "full" || check.attempt !== "full" || sealed.report === null || sealed.inventory === null || sealed.reportDigest !== check.report) {
+      return refuse("the release check's sealed report or inventory can't be read, so what it ran and retried is unknown");
+    }
+    const incomplete = fullCheckProblem({ report: sealed.report, inventory: sealed.inventory, exitCode: typeof result?.exitCode === "number" ? result.exitCode : null });
+    if (incomplete !== null) return refuse(`the release check has no complete result: ${incomplete}`);
+    if (!Array.isArray(check.retried)) return refuse("the release check's receipt has no sealed retry record, so a person decides");
+    // Belt to the retry record (finding 6): a check that passed only on a rerun after the recovery setup never approves
+    // itself — its first failure isn't confirmed infrastructure.
+    if ((result as { setupReplayed?: unknown } | undefined)?.setupReplayed === true) return refuse("the release check passed only when it was run again after the approved setup, so a person decides");
     if (gate["run"] !== run.id || gate["head"] !== head || gate["scopeDigest"] !== input.digest || result?.ran !== true || result.exitCode !== 0 || live === null || command?.command !== live.command) {
       return refuse("the release check didn't pass this candidate under the approved command");
     }
@@ -370,6 +435,9 @@ export function sealAutoGreen(store: Store, input: {
     const changed = changeProblem(facts.repo, base, input.candidate);
     if (changed !== null) return refuse(changed);
     // GitHub CI, as the plane's own gh saw it moments ago, on exactly this commit.
+    // GitHub's nightly lane debt (evals-nightly.md, part A2): dormant while automatic approval is refused, held here too.
+    const nightly = nightlyDebtHold(store, { repo: facts.repo, taskId: input.taskId, candidate: input.candidate, phase: "auto", release: true, now: input.now });
+    if (nightly !== null) return refuse(nightly.why);
     const ci = ciVerdict(input.ci, input.candidate, input.now);
     if (!ci.ok) return refuse(`CI: ${ci.problem}`);
     const observed = input.ci.runs.map(one => ({ id: one.id!, name: one.name, suite: one.suite ?? null }));
@@ -397,22 +465,33 @@ export function giveUpAutoApproval(store: Store, input: { taskId: string; why: s
     unseal(store, input.taskId, input.now);
     const scope = store.getScope(input.taskId);
     const version = scope?.releaseTerms?.packageVersion ?? null;
+    // Still waiting for CI (round 1, finding 4): nobody is asked to approve yet; `liftCiHold` asks once CI passed.
+    const ciHold = releaseCiHoldOf(store, input.taskId);
+    if (ciHold !== null) {
+      store.enqueueNotification({ dedupeKey: `release-auto-stopped:${input.taskId}:${input.why.slice(0, 120)}`, kind: "release-auto",
+        subject: `Release${version === null ? "" : ` ${version}`} won't approve itself`,
+        body: `Not approved automatically: ${input.why}. GitHub CI is still running on ${ciHold.candidate?.slice(0, 7) ?? "its commit"}; you're asked to approve it once CI passes.`,
+        link: chatControlHref("task", input.taskId), source: { taskRef: ref.id } }, input.now);
+      return;
+    }
+    // Filed while CI runs (Alex, 2026-10-29): a person may approve now; nothing deploys until CI passes.
+    const running = releaseCiRunningOf(store, input.taskId) === null ? "" : ` ${RELEASE_CI_RUNNING_WORDS}`;
     store.enqueueNotification({ dedupeKey: `release-auto-stopped:${input.taskId}:${input.why.slice(0, 120)}`, kind: "release-auto", pushClass: "attention",
       subject: `Release${version === null ? "" : ` ${version}`} needs you`,
-      body: `Not approved automatically: ${input.why}. Approve it yourself, or fix the branch and release the new commit.`,
+      body: `Not approved automatically: ${input.why}. Approve it yourself, or fix the branch and release the new commit.${running}`,
       link: chatControlHref("task", input.taskId), source: { taskRef: ref.id } }, input.now);
   });
 }
 
-/** A release check failed while checking automatically: tell the owner. The `auto-check` stays, so a regate of the same
- * commit and digest (a flake) may still approve itself, within MAX_FAILED_ATTEMPTS failed runs. */
+/** A release check failed while checking automatically: tell the owner. The `auto-check` stays: a rerun the release
+ * itself made after confirmed infrastructure may still approve itself; any other failure means a person decides. */
 export function noteAutoCheckFailed(store: Store, input: { taskId: string; why: string; now: Date }): void {
   const ref = store.lookupRef(input.taskId);
   if (ref === null) return;
   const version = store.getScope(input.taskId)?.releaseTerms?.packageVersion ?? null;
   store.enqueueNotification({ dedupeKey: `release-auto-check-failed:${input.taskId}:${input.why.slice(0, 120)}`, kind: "release-auto", pushClass: "attention",
     subject: `Release${version === null ? "" : ` ${version}`} check failed`,
-    body: `${input.why}. Rerun it on the same commit (a flake still approves itself, up to ${MAX_FAILED_ATTEMPTS} failed checks), or fix the branch and release the new commit.`,
+    body: `${input.why}. Only a failure Toolroll confirmed as its own infrastructure is checked again automatically; for anything else, approve it yourself or fix the branch and release the new commit.`,
     link: chatControlHref("task", input.taskId), source: { taskRef: ref.id } }, input.now);
 }
 
@@ -452,4 +531,53 @@ export function allowAutoPublish(store: Store, input: { taskId: string; by: stri
   store.recordAction({ at: input.now.toISOString(), actor: input.by, repo: store.lookupRef(input.taskId)?.repo ?? null, taskId: input.taskId, runId: null,
     action: PUBLISH_ALLOWED_ACTION, outcome: "allowed", source: "request", detail: `${input.by} lets the release's tag, publication and Homebrew go on` });
   return { ok: true };
+}
+
+/**
+ * A release filed while its pull request's CI still ran (pipeline-speed.md D2): hold every approval but the automatic
+ * road's until the plane reads exact-head CI passing (Codex review round 1, finding 4). Recorded before the task is
+ * filed, so no moment exists where the filed task is approvable with CI pending. Idempotent.
+ */
+export function holdApprovalForCi(store: Store, input: { taskId: string; candidate: string; now: Date }): void {
+  if (!/^[0-9a-f]{40}$/.test(input.candidate)) throw new Error("a CI hold needs the exact candidate commit");
+  const held = releaseCiHoldOf(store, input.taskId);
+  if (held !== null && held.candidate === input.candidate) return;
+  store.recordAction({ at: input.now.toISOString(), actor: "toolroll", repo: store.lookupRef(input.taskId)?.repo ?? null, taskId: input.taskId, runId: null,
+    action: RELEASE_CI_HELD_ACTION, outcome: "held", source: "work", detail: input.candidate });
+}
+
+/**
+ * Lift a release's CI hold (an older coordinator's) or end its "CI still running" note on the plane's own reading of
+ * GitHub CI (never the coordinator's word): fresh, whole, every run GitHub Actions, on exactly the held candidate, and
+ * every required check passed (release.ts prChecksVerdict, as a person's road judges it: a person decides about earlier
+ * attempts). With `ask`, the owner of a held release is told it needs them now. Nothing held or noted is a pass.
+ */
+export function liftCiHold(store: Store, input: { taskId: string; candidate: string; ci: CiObservation; ask: boolean; now: Date }): { ok: true } | Refusal {
+  return store.transact(() => {
+    const held = releaseCiHoldOf(store, input.taskId);
+    const waiting = held ?? releaseCiRunningOf(store, input.taskId);
+    if (waiting === null) return { ok: true as const };
+    if (waiting.candidate !== input.candidate) return refuse(`the release waits for CI on ${waiting.candidate?.slice(0, 7) ?? "an unreadable commit"}, not ${input.candidate.slice(0, 7)}`);
+    const ci = input.ci;
+    if (ci.head !== input.candidate) return refuse(`CI was read for ${ci.head.slice(0, 7)}, not ${input.candidate.slice(0, 7)}`);
+    const at = Date.parse(ci.observedAt);
+    if (!Number.isFinite(at) || at > input.now.getTime() + 60_000 || input.now.getTime() - at > CI_OBSERVATION_MS) return refuse("the CI reading isn't fresh");
+    if (ci.complete !== true) return refuse("GitHub's check history of this commit can't be read whole");
+    const other = ci.runs.find(run => run.app !== "github-actions");
+    if (other !== undefined) return refuse(`${other.name} was reported by ${other.app ?? "an unknown app"}, not GitHub Actions`);
+    const verdict = prChecksVerdict(ci.runs, input.candidate, REQUIRED_PR_CHECKS, { workflow: REQUIRED_PR_CHECKS_WORKFLOW });
+    if (verdict.state === "failed") return refuse(`CI failed: ${verdict.failed.join(", ")}`);
+    if (verdict.state === "pending") return refuse(`CI hasn't finished: ${verdict.waiting.join(", ")}`);
+    const ref = store.lookupRef(input.taskId);
+    store.recordAction({ at: input.now.toISOString(), actor: "toolroll", repo: ref?.repo ?? null, taskId: input.taskId, runId: null,
+      action: RELEASE_CI_PASSED_ACTION, outcome: "passed", source: "work", detail: input.candidate });
+    if (input.ask && held !== null && ref !== null) {
+      const version = store.getScope(input.taskId)?.releaseTerms?.packageVersion ?? null;
+      store.enqueueNotification({ dedupeKey: `release-ci-passed:${input.taskId}:${input.candidate}`, kind: "release-auto", pushClass: "attention",
+        subject: `Release${version === null ? "" : ` ${version}`} needs you`,
+        body: `GitHub CI passed on ${input.candidate.slice(0, 7)}. Approve it yourself, or fix the branch and release the new commit.`,
+        link: chatControlHref("task", input.taskId), source: { taskRef: ref.id } }, input.now);
+    }
+    return { ok: true as const };
+  });
 }

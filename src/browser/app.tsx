@@ -31,6 +31,7 @@ import { shortAge } from "../when-html.js";
 import { useLiveRoom } from "./live.js";
 import { chimeOn, createChime, setChime } from "./chime.js";
 import { ActivityLine, WORKSPACE_NUDGE } from "./live-task.js";
+import { isSettingsFrame } from "../settings-kit-script.js";
 import "./workspace.css";
 
 export { GuardedHtml, regionIsEditing };
@@ -584,11 +585,9 @@ export function ProjectStates({ states, current }: { states: BrowserProjectState
   </nav>;
 }
 
-function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
+export function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
   const projectId = useId();
-  const currentProject = workspace.projects.find(project => new URL(workspace.path, window.location.origin).searchParams.get("project") === project.path
-    || new URL(workspace.path, window.location.origin).searchParams.get("repo") === project.path
-    || workspace.crew.find(task => task.id === workspace.focus?.id)?.project === project.path);
+  const currentProject = currentProjectOf(workspace);
   const states = useProjectStates(workspace);
   return <div className="so-navigation-content">
     <a href="/chat" className="so-wordmark"><span className="so-brand-mark" aria-hidden="true"><i /><i /><i /></span>Toolroll</a>
@@ -605,7 +604,8 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
       return <a key={item.href} href={item.href} aria-current={item.active ? "page" : undefined}><Icon name={["chat", "tasks", "agents", "flows", "projects", "knowledge", "settings"].includes(name) ? name : "tools"} /><span>{item.label}</span>
         {item.count !== undefined && item.count > 0 && <span className="so-nav-count" aria-label={item.countLabel ?? `${item.count} ${item.count === 1 ? "needs" : "need"} you`} title={item.countLabel}>{item.count}</span>}</a>;
     })}</nav>
-    {states !== null && states.length > 0 && <ProjectStates states={states} current={currentProject?.path ?? null} />}
+    {workspace.sensitive ? <InertProjectStates workspace={workspace} current={currentProject?.path ?? null} />
+      : states !== null && states.length > 0 && <div data-live data-sidebar-slot="projects"><ProjectStates states={states} current={currentProject?.path ?? null} /></div>}
     {currentProject && <div className="so-project-links">
       <a className="so-project-knowledge" href={`/chat?project=${encodeURIComponent(currentProject.path)}`}>Project chat</a>
       <a className="so-project-knowledge" href={currentProject.knowledgeHref}>Project knowledge</a>
@@ -616,6 +616,7 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
         <span className="so-recent-chat-kind" aria-hidden="true">{chat.kind === "task" ? "Task" : "Project"}</span><span className="so-recent-chat-title">{chat.title}</span>
       </a>)}
     </nav>}
+    <div className="so-sidebar-live" data-live data-sidebar-slot="chips">
     {workspace.usage && !workspace.sensitive && <a className="so-usage-chip" href={workspace.usage.href} title={workspace.usage.title}
       data-usage-chip={workspace.usage.tone} data-usage-stale={workspace.usage.stale ? "" : undefined}>{workspace.usage.text}</a>}
     {workspace.fresh && !workspace.sensitive && <PostForm action={workspace.fresh.forget} className="so-fresh-chip" data-fresh-chip>
@@ -623,10 +624,29 @@ function Navigation({ workspace }: { workspace: BrowserWorkspace }) {
       <span>Password remembered · {workspace.fresh.minutes} min</span><button type="submit">Forget</button>
     </PostForm>}
     {!workspace.sensitive && workspace.projectStates !== undefined && <ChimeSwitch />}
+    </div>
     <FleetStatus workspace={workspace} />
     <div className="so-navigation-bottom"><a href="/menu" aria-current={workspace.navigation.find(item => item.href === "/menu")?.active ? "page" : undefined}><Icon name="tools" />Workspace tools</a>
       <div className="so-account"><span title={workspace.user}>{workspace.user}</span><PostForm action="/logout"><ViewButton variant="ghost" size="sm" type="submit" className="-ml-2.5 max-[901px]:h-11 max-[901px]:min-h-11">Sign out</ViewButton></PostForm></div>
     </div>
+  </div>;
+}
+
+/** The project a page is about: the one its address names (?project, ?repo), its focused task's, else the session's
+ * open project — so the picker always names what is open. */
+export function currentProjectOf(workspace: BrowserWorkspace): BrowserWorkspace["projects"][number] | undefined {
+  const query = new URL(workspace.path, window.location.origin).searchParams;
+  const named = query.get("project") ?? query.get("repo") ?? workspace.crew.find(task => task.id === workspace.focus?.id)?.project ?? workspace.openProject ?? null;
+  return named === null ? undefined : workspace.projects.find(project => project.path === named);
+}
+
+/** On a sensitive page the live parts of the sidebar keep their place as static text: the project names without
+ * states, no forms, no summary room (docs/plans/settings-revamp.md S2). */
+export function InertProjectStates({ workspace, current }: { workspace: BrowserWorkspace; current: string | null }) {
+  if (workspace.projects.length === 0) return null;
+  return <div className="so-project-states so-project-states--inert" data-live data-sidebar-slot="projects">
+    {workspace.projects.map(project => <p key={project.path} className="so-project-state" aria-current={project.path === current ? "true" : undefined}>
+      <span className="so-project-state-name">{project.name}</span></p>)}
   </div>;
 }
 
@@ -970,7 +990,10 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
   // A flow's canvas needs the whole width.
   // Pages that are themselves a list of work, or need the width (the board's columns, a coding session), go without the side panel.
   const pathname = new URL(workspace.path, window.location.origin).pathname;
-  const hidePanel = pageOnly && !docked && !hasWork && (FULL_WIDTH_PAGES.has(pathname) || pathname.startsWith("/code/") || workspace.view?.kind === "flow");
+  // The settings frame (docs/plans/settings-revamp.md §4): one column, no Crew sheet, the breadcrumb in the header.
+  const settingsFrame = !workspace.team && !workspace.conversation && isSettingsFrame(pathname);
+  const hidePanel = settingsFrame || (pageOnly && !docked && !hasWork && (FULL_WIDTH_PAGES.has(pathname) || pathname.startsWith("/code/") || workspace.view?.kind === "flow"));
+  const crumbs = settingsFrame ? (workspace.crumbs ?? []).filter(one => one.href === null || (one.href.startsWith("/") && !one.href.startsWith("//"))) : [];
   const [dismissedUpdate, setDismissedUpdate] = useState<string | null>(null);
   const update = workspace.update !== undefined && workspace.update.version !== dismissedUpdate ? workspace.update : null;
   // The demo notice scrolls away with a page; a chat keeps it above.
@@ -996,11 +1019,14 @@ export function WorkspaceApp({ initial }: { initial: BrowserWorkspace }) {
     phone.addEventListener("change", sync);
     return () => { phone.removeEventListener("change", sync); column.removeAttribute("inert"); };
   }, [sheet]);
-  return <FormToken.Provider value={workspace.csrf}><Passwordless.Provider value={workspace.passwordless === true}><Toaster /><AttentionMarks workspace={workspace} /><div className={`so-workspace${hidePanel ? " so-workspace--single" : ""}${docked || taskView !== null ? " so-workspace--docked" : ""}${taskView !== null ? " so-workspace--details" : ""}`} data-workspace-shell data-workspace-phone-view={phoneView} data-workspace-has-result={workspace.result !== null}>
+  return <FormToken.Provider value={workspace.csrf}><Passwordless.Provider value={workspace.passwordless === true}><Toaster /><AttentionMarks workspace={workspace} /><div className={`so-workspace${hidePanel ? " so-workspace--single" : ""}${settingsFrame ? " so-workspace--settings" : ""}${docked || taskView !== null ? " so-workspace--docked" : ""}${taskView !== null ? " so-workspace--details" : ""}`} data-workspace-shell data-workspace-phone-view={phoneView} data-workspace-has-result={workspace.result !== null}>
     <a href="#workspace-main" className="so-skip-link">Skip to content</a>
     <aside className="so-sidebar"><Navigation workspace={workspace} /></aside>
     <div ref={mainColumn} className={`so-main-column${isChat ? " so-main-column--chat" : ""}`}>
-      <header className="so-workspace-header"><PhoneNavigation workspace={workspace} />{pageOnly
+      <header className="so-workspace-header"><PhoneNavigation workspace={workspace} />{crumbs.length > 0
+        ? <nav className="kit-crumbs so-header-title" aria-label="Breadcrumb"><ol>{crumbs.map((one, at) => one.href === null
+          ? <li key={at} aria-current="page">{one.label}</li> : <li key={at}><a href={one.href}>{one.label}</a></li>)}</ol></nav>
+        : pageOnly || settingsFrame
         ? <p className="so-header-title">{section}</p>
         : <h1>{isChat ? workspace.leadName ?? "Lead" : section}</h1>}
         {workspace.focus && isChat && <span className="so-focus-label" title={workspace.focus.title}>{workspace.focus.title}</span>}

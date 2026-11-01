@@ -1,0 +1,15 @@
+{
+  "v": 1,
+  "cases": [
+    "paginate",
+    "dedupe",
+    "catalog",
+    "endpoint",
+    "csv-quoting",
+    "merge-config",
+    "math-subtract",
+    "math-divide",
+    "math-multiply",
+    "round2-asks"
+  ]
+}

@@ -77,7 +77,8 @@ export const DOCUMENTED_REASONS: readonly string[] = [
   "drift", //             the branch, pull request or result moved from the gated commit
   "check-failed", //      the release check failed; it stays visible and nothing reruns it
   "ci-failed", //         a required pull-request check failed or is missing — nothing merged
-  "base-moved", //        main gained a commit the release branch lacks — nothing merged
+  "git-too-old", //       the installed git is older than Toolroll's floor (git-floor.ts) — serve, watch and up don't start
+  "base-moved", //        the release branch lacks main's head — nothing filed (gate) or merged
   "tree-mismatch", //     main's merge commit has a different tree than the gated commit — nothing tagged
   "conflict", //          a task or tag exists for a different commit
   "mixed-runtime", //     the console, worker and CLI names don't run one build

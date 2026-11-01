@@ -31,7 +31,7 @@ import { nightlyTaskRef, releaseTaskRef } from "./store.js";
 import { type ProofVerdict, type VerifyCommandFacts } from "./proof.js";
 import { verificationEvidence, failedVerificationEvidence } from "./verification-evidence.js";
 import { classifyGateFailure, describeGateFailure, gateFailureSummary, type GateFailureClass } from "./gate-failure.js";
-import { propose, approve, liveReleaseOf } from "./scope.js";
+import { propose, approve, liveReleaseOf, releaseCheckScope } from "./scope.js";
 import { headWithin } from "./names.js";
 
 /**
@@ -537,7 +537,10 @@ export function regateTask(
   store: Store,
   taskId: string,
   now: Date,
-  approval: { kind: "operator"; name: string; token: string } | { kind: "mode"; name: string; modeDigest: string },
+  approval: { kind: "operator"; name: string; token: string } | { kind: "mode"; name: string; modeDigest: string }
+    // The release's own standing approval (check-failure.ts recheckReleaseTask, after a failure the plane confirmed as
+    // infrastructure): only a prepared release candidate, whose scope and approval are kept exactly as they are.
+    | { kind: "release"; name: string },
 ): { ok: true; run: number; head: string } | { ok: false; reason: RegateRefusal; message: string } {
   const ref = store.lookupRef(taskId);
   if (ref === null) return { ok: false, reason: "no-task", message: `no task ${taskId}` };
@@ -561,12 +564,16 @@ export function regateTask(
   const scope = store.getScope(taskId);
   if (scope === null) return { ok: false, reason: "no-attempt", message: `${taskId} has no scope` };
   const head = last.headRevision;
-  const actor = approval.kind === "operator" ? approval.name : `mode ${approval.name}`;
+  const actor = approval.kind === "operator" ? approval.name : approval.kind === "release" ? approval.name : `mode ${approval.name}`;
+  // A release task: signed terms or a release check purpose (pipeline-speed.md, P0), each sealed with the approval.
+  if (approval.kind === "release" && ((scope.candidate ?? null) === null || !releaseCheckScope(scope))) {
+    return { ok: false, reason: "not-approved", message: `${taskId} isn't a release candidate; only a release reruns under its own approval` };
+  }
   // A prepared candidate (a release gate, the nightly check) already names the approved commit, and the builder loads
   // exactly its tree on every attempt. The rerun keeps that scope and its approval as they are: nothing is proposed or
   // sealed again, so a regate can never swap the approved commit, its release terms or the person's yes for others
   // (2026-10-27: a regate rewrote release-0.9.73's candidate to its own build commit and the release refused it).
-  if ((scope.candidate ?? null) !== null || (scope.releaseTerms ?? null) !== null) {
+  if ((scope.candidate ?? null) !== null || releaseCheckScope(scope)) {
     const candidate = scope.candidate ?? null;
     if (candidate === null || scope.approvedDigest !== scope.digest || last.scopeDigest !== scope.digest) {
       return { ok: false, reason: "not-approved", message: `${taskId}'s approved commit or scope changed since attempt #${last.id}, or its approval no longer stands; approve its scope again instead` };
@@ -585,7 +592,7 @@ export function regateTask(
           return { ok: false as const, reason: why[queued.reason] ?? "not-rejected", message: `${taskId} could not be queued again: ${queued.reason}` };
         }
       }
-      store.addRunNote(last.id, "Toolroll", `The check will run again on the approved commit ${candidate.slice(0, 7)}, under the same approval, as a new attempt, ${approval.kind === "operator" ? `on ${approval.name}'s say-so` : "automatically once, because the failure was outside this change"}.`, now);
+      store.addRunNote(last.id, "Toolroll", `The check will run again on the approved commit ${candidate.slice(0, 7)}, under the same approval, as a new attempt, ${approval.kind === "operator" ? `on ${approval.name}'s say-so` : approval.kind === "release" ? "because Toolroll confirmed the failure was its own infrastructure, not the code" : "automatically once, because the failure was outside this change"}.`, now);
       return { ok: true as const, run: last.id, head: candidate };
     });
   }
@@ -597,7 +604,7 @@ export function regateTask(
     });
     let sealed = false;
     if (approval.kind === "operator") sealed = approve(store, taskId, approval.name, now, proposed.digest, approval.token).ok;
-    else sealed = store.sealScopeApproval(taskId, actor, now, {}, { kind: "mode", modeDigest: approval.modeDigest });
+    else if (approval.kind === "mode") sealed = store.sealScopeApproval(taskId, actor, now, {}, { kind: "mode", modeDigest: approval.modeDigest });
     if (!sealed) return { ok: false as const, reason: "not-approved" as const, message: `${taskId}'s rerun scope could not be approved` };
     // A finished task returns to the queue; one already queued (a park, a
     // stop) simply dispatches with the rerun scope on its next turn.

@@ -20,6 +20,15 @@ export type NeedActionCode =
   | "place-task" | "write-scope" | "select-agent" | "repair-dependency" | "repair-capability" | "start-worker" | "reconcile-run"
   | "open-result" | "retry-task" | "inspect-task";
 export type NeedAction = { code: NeedActionCode; label: string };
+/** Where "Connect a builder" and "Start the builder" lead (code `start-worker`): the Start a builder page, which shows
+ * the one command to run and the open project's builder state. Every signed-in person can open it, a project-limited
+ * one included (System is instance-only). Never the task's own page, which only repeats that nothing is connected. */
+export const START_BUILDER_HREF = "/start-builder";
+/** Start a builder for one task: the page reports that task's own project, whatever project is open. */
+export const startBuilderHref = (taskId: string | null): string =>
+  taskId === null ? START_BUILDER_HREF : `${START_BUILDER_HREF}?task=${encodeURIComponent(taskId)}`;
+/** What starts a builder: run on the machine where the project lives, in the project's folder. */
+export const START_BUILDER_COMMAND = "toolroll up";
 /** `build`: the run a sentence names; `provider`: the agent that signed out. */
 export type NeedContext = { build?: number | null; provider?: string | null };
 

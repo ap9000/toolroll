@@ -58,7 +58,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { limiter } from "./provider-gate.mjs";
-import { runSuite, removeOnExit } from "./suite-lifecycle.mjs";
+import { runSuite, removeOnExit, writeNow } from "./suite-lifecycle.mjs";
 import { result } from "./check-results.mjs";
 
 const SELF = fileURLToPath(import.meta.url);
@@ -609,6 +609,13 @@ async function onePath(version, { candidate, candidateDist, candidateVersion, ta
   return steps;
 }
 
+/** A failed version's own log for stderr: its header, then its last `max` bytes (the end says what failed). */
+export function versionLog(version, why, text, max = 16 * 1024) {
+  const bytes = Buffer.from(String(text), "utf8");
+  const kept = bytes.length <= max ? bytes.toString("utf8") : `… (the last ${max} bytes of ${bytes.length})\n${bytes.subarray(bytes.length - max).toString("utf8")}`;
+  return `== upgrade ${version} failed (${why}); its own log:\n${kept.trimEnd()}`;
+}
+
 function readJournalDetail(stateDir) {
   try { const j = JSON.parse(readFileSync(join(stateDir, "toolroll-update.json"), "utf8")); return `${j.phase}: ${j.detail}`; } catch { return ""; }
 }
@@ -637,13 +644,25 @@ async function main() {
     const slot = limiter(lanes), abort = new AbortController();
     await Promise.all(versions.map(version => slot(async () => {
       if (abort.signal.aborted) return;
+      // Each version's output as it comes, every line tagged with its version, and kept whole: a failing version's own
+      // log goes out (synchronously, on stderr) the moment it fails, before stopping the others can discard it.
+      const own = [];
+      let pending = "";
+      const show = lines => { if (lines.length > 0) process.stdout.write(lines.map(line => `[${version}] ${line}\n`).join("")); };
       const one = await runSuite({ command: process.execPath,
         args: [SELF, "--path", JSON.stringify({ version, candidate, candidateDist, candidateVersion, tarball, work })],
         signal: abort.signal,
-        onExit: code => { if (code !== 0 && !abort.signal.aborted) { console.error(`TOOLROLL_CHECK_FAILURE upgrade ${version}: exit ${code}`); if (!keepGoing) abort.abort(); } },
+        onData: chunk => { own.push(chunk); const lines = (pending + String(chunk)).split("\n"); pending = lines.pop(); show(lines); },
+        onExit: (code, facts) => {
+          if (code === 0 || facts?.stopped === true) return;
+          const why = facts?.signal ? `exit ${code}, ended by ${facts.signal}` : facts?.timedOut ? `exit ${code}, timed out` : `exit ${code}`;
+          writeNow(2, `${versionLog(version, why, Buffer.concat(own).toString("utf8"))}\n`);
+          console.error(`TOOLROLL_CHECK_FAILURE upgrade ${version}: ${why}`);
+          if (!keepGoing) abort.abort();
+        },
       });
-      console.log(one.output.toString());
-      if (one.code !== 0) { failed++; console.log(`✗ ${version} → ${candidateVersion}: exit ${one.code}; ${Math.round(one.ms / 1000)} s`); }
+      if (pending !== "") show([pending]);
+      if (one.code !== 0) { failed++; console.log(`✗ ${version} → ${candidateVersion}: ${one.stopped ? "stopped (another version failed)" : `exit ${one.code}${one.signal ? `, ended by ${one.signal}` : ""}`}; ${Math.round(one.ms / 1000)} s`); }
       if (!one.cancelled) { finished.add(version); result({ kind: "upgrade-version", version, state: one.code === 0 ? "passed" : "failed" }); }
     })));
   } finally {

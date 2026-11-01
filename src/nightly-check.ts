@@ -43,6 +43,8 @@ export const NIGHTLY_NOT = "Changing anything: this is a check only.";
 export const NIGHTLY_ACCEPTANCE = Object.freeze([{ id: "c1", statement: "The full release check passes on main", how: null, evidence: ["check" as const] }]);
 /** The ledger act that records a person's approval of a nightly check, keyed by its trigger. */
 export const NIGHTLY_APPROVED = "nightly check approved";
+/** The ledger act that records a person turning GitHub's nightly into release debt for a project (nightly-github.ts). */
+export const GITHUB_NIGHTLY_ON = "github nightly debt on";
 
 /** The digest a person's approval of the nightly signs: the trigger, the project, the schedule, the check-only terms
  * and the fixed words each firing files. */
@@ -92,14 +94,15 @@ export function trustedMainOf(store: Store, repo: string, now: Date, maxAgeMs: n
   return sha;
 }
 
-/** The watch loop's read of each project's recorded remote main that the nightly check or main's debt needs, at most
+/** The watch loop's read of each project's recorded remote main that the nightly check, GitHub's nightly (its runs count
+ * only at commits on main's history) or main's debt needs, at most
  * every 30 minutes. Each read is a fresh fetch into a private directory. A failed read forgets the last one. A good
  * one hands its verified objects to the project's Git store (hardened git, content-addressed: git checks every object
  * against its hash, and filing verifies the commit again), so the nightly can check a merge the checkout never pulled. */
 export async function refreshTrustedMains(store: Store, root: string, now: Date, runner: Runner = run): Promise<number> {
   const repos = new Set<string>([
     ...store.handle.prepare("SELECT DISTINCT repo FROM main_check_failure WHERE cleared_at IS NULL").all().map(row => String(row["repo"])),
-    ...store.handle.prepare("SELECT DISTINCT repo FROM action_ledger WHERE action = ?").all(NIGHTLY_APPROVED).map(row => String(row["repo"])),
+    ...store.handle.prepare("SELECT DISTINCT repo FROM action_ledger WHERE action IN (?, ?) AND repo IS NOT NULL").all(NIGHTLY_APPROVED, GITHUB_NIGHTLY_ON).map(row => String(row["repo"])),
   ]);
   let read = 0;
   const remotes = new RemoteMains(store, runner, root);

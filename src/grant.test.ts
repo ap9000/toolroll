@@ -1,4 +1,9 @@
 import { describe, test, expect } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { run } from "./exec.js";
 import {
   permits,
   proposeGrant,
@@ -138,16 +143,20 @@ describe("proposeGrant", () => {
     expect(proposed.observedByGit).toBe(true);
   });
 
-  test("reports writes as local when git ignores them", async () => {
-    const proposed = await proposeGrant({
-      repo: "/code/thing",
-      backend: "beads",
-      paths: [".beads"],
-      now: T0,
-      runner: runner(0),
-    });
+  /** A real project whose .gitignore says `.beads/` (git's check-ignore runs through a frozen read view of it). */
+  const ignoring = (): string => {
+    const repo = realpathSync(mkdtempSync(join(tmpdir(), "so-grant-")));
+    execFileSync("git", ["init", "-q", repo], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+    writeFileSync(join(repo, ".gitignore"), ".beads/\n");
+    return repo;
+  };
 
-    expect(proposed.observedByGit).toBe(false);
+  test("reports writes as local when git ignores them", async () => {
+    const repo = ignoring();
+    try {
+      const proposed = await proposeGrant({ repo, backend: "beads", paths: [".beads"], now: T0, runner: run });
+      expect(proposed.observedByGit).toBe(false);
+    } finally { rmSync(repo, { recursive: true, force: true }); }
   });
 
   test("sees a directory-only ignore rule for a directory that does not exist yet", async () => {
@@ -155,22 +164,27 @@ describe("proposeGrant", () => {
     // run, so nothing is there. Asked about the bare path git says "not
     // ignored", because it cannot tell an absent path is a directory — and
     // the grant would then promise commits that are never going to happen.
-    const asked: string[] = [];
-    const proposed = await proposeGrant({
-      repo: "/code/thing",
-      backend: "beads",
-      paths: [".beads"],
-      now: T0,
-      runner: async (_file, args) => {
-        const candidate = String(args[args.length - 1]);
-        asked.push(candidate);
-        return { ...OK, code: candidate.endsWith("/") ? 0 : 1 };
-      },
-    });
-
-    expect(asked).toContain(".beads/");
-    expect(proposed.observedByGit).toBe(false);
+    const repo = ignoring();
+    try {
+      const asked: string[] = [];
+      const proposed = await proposeGrant({ repo, backend: "beads", paths: [".beads"], now: T0,
+        runner: async (file, args, options) => { if (args.includes("check-ignore")) asked.push(String(args[args.length - 1])); return run(file, args, options); } });
+      expect(asked).toContain(".beads/");
+      expect(proposed.observedByGit).toBe(false);
+    } finally { rmSync(repo, { recursive: true, force: true }); }
   });
+
+  test("eval review 1 #7: an include naming a FIFO is refused, never read: the check ends, and errs toward visible", async () => {
+    if (process.platform === "win32") return;
+    const repo = ignoring();
+    try {
+      const fifo = join(repo, "hang.fifo");
+      execFileSync("mkfifo", [fifo]);
+      execFileSync("git", ["-C", repo, "config", "include.path", fifo], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } });
+      const proposed = await proposeGrant({ repo, backend: "beads", paths: [".beads"], now: T0, runner: run });
+      expect(proposed.observedByGit).toBe(true);
+    } finally { rmSync(repo, { recursive: true, force: true }); }
+  }, 20_000);
 
   test("errs toward visible when it could not find out", async () => {
     // Claiming writes are invisible when nobody established it is the wrong

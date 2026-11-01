@@ -1,7 +1,9 @@
 import { Worker } from 'node:worker_threads';
 import { availableParallelism } from 'node:os';
 import type { Store } from './store.js';
-import { WorkIndexCursorError, type WorkIndexOptions, type WorkIndexPage } from './work-index.js';
+import { WorkIndexCursorError, type WorkIndexOptions, type WorkIndexPage, type WorkProjectCounts } from './work-index.js';
+import type { BrowserProjectState } from './browser-workspace.js';
+import type { SidebarProject } from './console-chrome.js';
 import type { WorkSummaryAccess } from './work-summary.js';
 
 /**
@@ -12,7 +14,10 @@ import type { WorkSummaryAccess } from './work-summary.js';
  * retries. Without a file-backed database (tests, the demo) nothing is attached and callers keep
  * running the same builder in-process.
  */
-export type ReadJob = { kind: 'work-index-page'; now: string; access: WorkSummaryAccess; options: WorkIndexOptions };
+export type ReadJob =
+  | { kind: 'work-index-page'; now: string; access: WorkSummaryAccess; options: WorkIndexOptions }
+  | { kind: 'work-counts'; now: string; access: WorkSummaryAccess }
+  | { kind: 'project-summary'; now: string; access: WorkSummaryAccess; actor: string; projects: SidebarProject[]; evidenceRoot: string | null };
 export type ReadReply = { id: number; ok: true; value: unknown } | { id: number; ok: false; error: { name: string; message: string } };
 
 /** More queued reads than this fail at once instead of growing without bound. */
@@ -48,6 +53,16 @@ export class ReadExecutor {
       if (error instanceof Error && error.name === 'WorkIndexCursorError') throw new WorkIndexCursorError();
       throw error;
     }
+  }
+
+  /** workCountsByProject(store, now, access) on a worker: the console's Tasks count and live beat. */
+  async workCounts(now: Date, access: WorkSummaryAccess): Promise<WorkProjectCounts[]> {
+    return await this.#run({ kind: 'work-counts', now: now.toISOString(), access }) as WorkProjectCounts[];
+  }
+
+  /** projectSummaryOf (console-chrome.ts) on a worker: the sidebar's project states for one already-admitted reader. */
+  async projectSummary(now: Date, access: WorkSummaryAccess, actor: string, projects: readonly SidebarProject[], evidenceRoot: string | undefined): Promise<BrowserProjectState[]> {
+    return await this.#run({ kind: 'project-summary', now: now.toISOString(), access, actor, projects: projects.map(one => ({ path: one.path, name: one.name })), evidenceRoot: evidenceRoot ?? null }) as BrowserProjectState[];
   }
 
   #run(job: ReadJob): Promise<unknown> {

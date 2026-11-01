@@ -30,9 +30,9 @@ test.each([135, -135])("v%s: each run's own live-view answer is added; saved run
 
   expect(updateSafeSchema(135)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(136);
-  expect(SCHEMA_VERSION).toBe(137);
+  expect(SCHEMA_VERSION).toBe(143);
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(137);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(143);
   expect(store.handle.prepare("SELECT count(*) AS n FROM run_live_detail").get()?.["n"]).toBe(0);
   expect(store.handle.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   expect(store.ledgerChain({ full: true })).toMatchObject({ ok: true, through: chain.through, head: chain.head });
@@ -43,5 +43,5 @@ test.each([135, -135])("v%s: each run's own live-view answer is added; saved run
     expect(changedHistory(after, before)).toEqual([]);
   } finally { after.close(); }
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(137);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(143);
 });

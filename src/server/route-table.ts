@@ -215,12 +215,15 @@ get("pages", "workbench", "/workbench", free);
 get("tasks", "board", "/board", { limited: "collection" });
 get("tasks", "review", "/review", { limited: "collection" });
 get("settings", "spend", "/spend", { ...free, ...anyOperator("An instance operator sees spend.", "/") });
+get("settings", "settings.spend", "/settings/spend", { ...free, ...anyOperator("An instance operator sets spending limits.", "/settings") });
 get("pages", "ledger", "/ledger", { limited: "unscoped", ...free });
 get("pages", "activity", "/activity");
 get("tasks", "done", "/done", { limited: "collection" });
 get("settings", "mode", "/mode");
 get("people", "people.page", "/people", { limited: "unscoped", ...free });
 get("pages", "system", "/system");
+// Where every "Connect a builder" leads: read-only, open to a project-limited person (the handler shows only a visible project).
+get("pages", "start-builder", "/start-builder", { limited: "unscoped", ...free });
 get("tasks", "tasks", "/tasks", { limited: "collection", ...free }); // a redirect to /work now: never sent to the project opener first
 get("tasks", "queue", "/queue");
 get("pages", "peek", "/peek", free);
@@ -407,8 +410,12 @@ for (const one of ["policy", "approval", "request-limits", "sessions", "sign-in"
   post(one === "sessions" ? "people" : "settings", `settings.${one.replaceAll("/", "-")}-send`, `/settings/${one}`, { ...(["policy", "approval", "request-limits", "sessions", "sign-in", "updates", "updates/seen", "updates/cancel", "retention", "storage", "storage/clean", "storage/discard", "pull-requests", "checks", "backups", "data", "monitoring", "tools/connect", "tools/change"].includes(one) ? { scope: "step-up" as const } : {}), ...SETTINGS_ACT_ROLES[one] });
 }
 post("settings", "settings.flows-on", "/settings/flows/on", { limited: "collection", ...approver("An approver switches starter flows on.", "/settings/flows") });
+post("settings", "settings.integrations-youiyoux", "/settings/integrations/youiyoux", { limited: "collection", ...approver("An approver turns youiyoux requests on or off.", "/settings/integrations") });
 const MODELS = approver("Sign in as an approver to change models.", "/settings/models");
-for (const one of ["check", "watch", "update", "agent"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, MODELS);
+for (const one of ["check", "watch", "update"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, MODELS);
+// Changing which model a role uses: an instance operator's browser step-up (the handler proves the password, or the
+// Passwordless session; model-choices.ts re-proves the session and standing inside its one transaction).
+for (const one of ["agent", "apply"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, { scope: "step-up", ...operator("An instance operator changes models.", "/settings/models") });
 // Any other models action answers the models area's own refusal.
 post("settings", "settings.models-act", "^\\/settings\\/models\\/.*$", { sample: "/settings/models/unknown", ...MODELS });
 post("settings", "settings.knowledge-refresh", "/settings/knowledge/refresh", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to refresh project context.", "/settings/knowledge") });

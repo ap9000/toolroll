@@ -4,7 +4,7 @@
  * existing records and Git; nothing is written back, so no proof, receipt,
  * scope digest or schema changes. Fails closed: a receipt that can't be read,
  * a missing commit or any Git error leaves the result uncovered. */
-import { execFileSync } from "node:child_process";
+import { viewedGitSync } from "./teardown-git.js";
 import type { Store } from "./store.js";
 import { verificationEvidence } from "./verification-evidence.js";
 import { runCheckLevel } from "./check-levels.js";
@@ -30,7 +30,9 @@ export const gitIsAncestor: IsAncestor = (repo, ancestor, descendant) => {
   if (known !== undefined) return known;
   let answer: boolean | null;
   try {
-    execFileSync("git", ["-C", repo, "--no-lazy-fetch", "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor", ancestor, descendant], { stdio: "ignore", timeout: 5_000 });
+    // Every git version through a frozen read view, bounded (eval-harness review 1, finding 7).
+    const status = viewedGitSync(repo, ["merge-base", "--is-ancestor", ancestor, descendant], { timeoutMs: 5_000 }).status;
+    if (status !== 0) throw Object.assign(new Error("git merge-base"), { status });
     answer = true;
   } catch (error) {
     // Exit 1 is Git's "no"; anything else (a missing object, no repository, a timeout) is no answer.

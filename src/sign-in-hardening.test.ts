@@ -17,14 +17,15 @@ import { formatLogLine } from "./log.js";
 import { scanForSecrets } from "./evidence.js";
 
 const T0 = new Date("2026-09-27T18:00:00.000Z");
-let dir: string, store: Store, server: Server, base: string, password: string;
+let dir: string, store: Store, server: Server, base: string, password: string, draining = false;
 beforeEach(async () => {
+  draining = false;
   dir = mkdtempSync(join(tmpdir(), "so-hardening-"));
   store = openStore(join(dir, "orders.db"));
   const added = addApprover(store, "alex", T0);
   if (!added.ok) throw new Error("bootstrap");
   password = added.token;
-  server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo: "/repo/main" });
+  server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo: "/repo/main", draining: () => draining });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
   if (address === null || typeof address !== "object") throw new Error("listen");
@@ -93,6 +94,11 @@ test("/healthz answers a probe from any address with nothing but its status", as
   expect(answer.status).toBe(200);
   expect(await answer.json()).toEqual({ status: "ok" });
   expect((await fetch(`${base}/healthz`, { method: "HEAD" })).status).toBe(200);
+  // A console whose `up` is stopping says so at once (v137 lifecycle), so a probe moves on instead of hanging on it.
+  draining = true;
+  const stopping = await fetch(`${base}/healthz`);
+  expect(stopping.status).toBe(503);
+  expect(await stopping.json()).toEqual({ status: "draining", message: "Toolroll is restarting (draining)" });
 });
 
 test("policy changes are ledger events with what changed, and a person's coordinators end with their standing", () => {
