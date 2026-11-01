@@ -2231,9 +2231,11 @@ await journey("onboarding", SCRIPTED, "A fresh install with Claude Code signed i
   await until("the three-line greeting", async () => /Opening it in your browser now/.test(install.terminal()), { timeoutMs: 30_000, seen: install.terminal });
   const said = install.terminal().split("\n").filter(one => one.trim() !== "");
   const [account, password] = readFileSync(join(install.state, "up-login.txt"), "utf8").trim().split(" ");
-  const greeting = said.slice(said.findIndex(one => one.startsWith("Toolroll is on ")), said.findIndex(one => one.startsWith("Toolroll is on ")) + 3);
-  if (greeting.length !== 3 || greeting[0] !== `Toolroll is on ${install.base}/` || greeting[1] !== "Opening it in your browser now, already signed in." || !greeting[2].startsWith(`If it doesn't open, go to that address and sign in as ${account}: the password is in ~/`)) throw new Error(`the greeting: ${said.join(" | ")}`);
-  if (said.length > 4) throw new Error(`more than the greeting was printed: ${said.join(" | ")}`);
+  // Four lines (#276): the password line is an exact, quoted command to read the saved file, never the password.
+  const greeting = said.slice(said.findIndex(one => one.startsWith("Toolroll is on ")), said.findIndex(one => one.startsWith("Toolroll is on ")) + 4);
+  if (greeting.length !== 4 || greeting[0] !== `Toolroll is on ${install.base}/` || greeting[1] !== "Opening it in your browser now, already signed in." || greeting[2] !== `If it doesn't open, go to that address and sign in as ${account}.`
+    || !greeting[3].startsWith("Your password: run `cat -- '/") || !greeting[3].endsWith("/up-login.txt'`")) throw new Error(`the greeting: ${said.join(" | ")}`);
+  if (said.length > 5) throw new Error(`more than the greeting was printed: ${said.join(" | ")}`);
   if (install.terminal().includes(password) || install.terminal().includes("/login/once/")) throw new Error("the terminal shows the password or the sign-in link");
   await terminalShot(said.join("\n"), "1-terminal");
   // 2. The browser opens signed in, on Chat.
