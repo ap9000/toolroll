@@ -141,6 +141,29 @@ replaces the grant the same way. The flow page shows **Runs on its own until
 <date>** with **Revoke** (one click, any approver; or `toolroll flows
 unattended <flow> off`), and `toolroll flows show` says the same.
 
+### Webhooks through a reverse proxy
+
+Flow triggers can take webhooks from GitHub, Linear or any service at a
+secret address under `/hooks/`. Keep the console itself private (on your
+tailnet or localhost) and expose only that path. With Caddy:
+
+```caddy
+hooks.example.com {
+	handle /hooks/* {
+		reverse_proxy 127.0.0.1:4180 {
+			header_up Host {upstream_hostport}
+		}
+	}
+	respond 404
+}
+```
+
+Then save `https://hooks.example.com` as the public webhook address on a
+flow's Triggers panel. GitHub deliveries are proved with the secret the
+panel shows once; Linear deliveries with Linear's own signing secret, pasted
+on the panel behind your password. Addresses are never stored readable: a
+lost one is replaced with **New address**, which retires the old.
+
 ## People
 
 Every flow has an **owner**: whoever made it, until changed in **Edit flow**.

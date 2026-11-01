@@ -93,6 +93,8 @@ const pr = (paths: string[], branch = "toolroll/some-change"): Event => ({ kind:
 const AREA = ["linux native containment · delegated cgroup v2", "linux fence · sandbox-runtime", "Windows Job Object containment", "git 2.41 · debian trixie", "git 2.47 · debian trixie"];
 const SCOPE = "area lanes · scope";
 const REPEAT = "Windows Job Object containment · c2 repeat";
+/** Checks a pull request also runs that never fail it and that no release waits for (youiyoux.yml). */
+const ADVISORY = ["youiyoux · UI drift"];
 const runsOf = (job: Job) => (job.steps ?? []).map(step => step.run ?? "");
 
 describe("the CI workflows", () => {
@@ -139,14 +141,14 @@ describe("the CI workflows", () => {
   test("every pull request reports every required check; Node 24 on Linux and macOS and the area lanes run, Node 22 only on a release-* branch", () => {
     expect(workflow("ci.yml").on["pull_request"]).toBeNull();
     expect(workflow("release-candidate.yml").on["pull_request"]).toBeNull();
-    const all = [...REQUIRED_PR_CHECKS, ...shardNames("24"), ...shardNames("22"), SCOPE].sort();
+    const all = [...REQUIRED_PR_CHECKS, ...shardNames("24"), ...shardNames("22"), SCOPE, ...ADVISORY].sort();
     const change = pr(["src/release.ts"]);
     // Skipped, Node 22's shards report once each, unexpanded (GitHub skips a matrix job before expanding it); the
     // required names are written out, so they report exactly.
     const skippedShards = ["node 22 · shard ${{ matrix.shard }}/4", "node 22 · macos shard ${{ matrix.shard }}/4"];
     expect(names(change)).toEqual([...all.filter(name => !shardNames("22").includes(name)), ...skippedShards].sort());
     // An ordinary pull request: Node 22 reports skipped (main's protection reads that as passing a merge; a release never).
-    expect(executed(change)).toEqual([...REQUIRED_PR_CHECKS.filter(name => !name.startsWith("node 22")), ...shardNames("24"), SCOPE].sort());
+    expect(executed(change)).toEqual([...REQUIRED_PR_CHECKS.filter(name => !name.startsWith("node 22")), ...shardNames("24"), SCOPE, ...ADVISORY].sort());
     // A release candidate's pull request runs everything.
     expect(executed(pr(["package.json", "CHANGELOG.md"], "release-0.9.80"))).toEqual(all);
     // The macOS suite runs on the candidate before it merges, sharded; its joins run on Linux.
@@ -159,10 +161,18 @@ describe("the CI workflows", () => {
     expect(names(pr(["src/containment.ts"])).filter(name => !all.includes(name) && !skippedShards.includes(name))).toEqual([REPEAT]);
   });
 
+  test("the youiyoux UI notes are advisory: never a required check, and never strict, so they cannot fail a pull request", () => {
+    expect(ADVISORY.filter(name => (REQUIRED_PR_CHECKS as readonly string[]).includes(name))).toEqual([]);
+    const ui = workflow("youiyoux.yml").jobs["ui"]!;
+    expect(ui.if).toBeUndefined();
+    const notes = runsOf(ui).filter(run => /\bcheck --diff\b/.test(run));
+    expect(notes.map(run => /--strict\b/.test(run))).toEqual([false]);
+  });
+
   test("test-matrix: a documentation-only pull request skips the area lanes and nothing else; anything more runs them", () => {
     const docs = pr(["docs/plans/test-matrix.md", "CHANGELOG.md", "README.md"]);
     expect(names(docs)).toEqual(names(pr(["src/release.ts"])));
-    expect(executed(docs)).toEqual([...shardNames("24"), "node 24 · ubuntu-latest", "node 24 · macos-latest", SCOPE].sort());
+    expect(executed(docs)).toEqual([...shardNames("24"), "node 24 · ubuntu-latest", "node 24 · macos-latest", SCOPE, ...ADVISORY].sort());
     // One file beyond documentation, or a release branch, runs every lane.
     for (const event of [pr(["docs/a.md", "src/x.ts"]), pr(["docs/a.md"], "release-0.9.80"), pr(["docs/a.json"]), pr(["test/attacks/a.test.ts"])]) {
       expect(executed(event).filter(name => AREA.includes(name)).sort(), JSON.stringify(event)).toEqual([...AREA].sort());

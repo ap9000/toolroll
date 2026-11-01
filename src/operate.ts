@@ -428,6 +428,7 @@ export const OPERATE_HELP = `toolroll — operating the queue
                                         wait for this attempt to finish or need a person
   toolroll project use <path>        remember a saved project (optional --token-file)
   toolroll project show              show the current project and credential reference
+  toolroll project activity --json   read the current project supervision report
   toolroll project rules --repo <p>  a project's approval rules; an instance operator changes them with
                                         --not-requester on|off, --protect none|project, --protect-paths "a/**,b/**"
   toolroll project network --repo <p> [--allow h,…] [--remove h,…] [--open|--allowlist] [--local any|none]

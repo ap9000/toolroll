@@ -1,3 +1,4 @@
+import { projectOutcomes } from '../project-outcomes.js';
 import { steerControlsFor } from "../steer-controls.js";
 import { canReveal, cdCommandOf, localCheckoutOf } from "../checkout-proof.js";
 import { instanceHttpAnswer } from "../console-instance.js";
@@ -990,11 +991,16 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const peeks: Record<string, { waiting: number; queued: number; running: number; doneRecently: number } | null> = {};
     for (const one of recent) peeks[one.path] = peekOf(one.path);
     for (const path of candidates) peeks[path] = peekOf(path);
+    let activity: import('../browser-workspace.js').BrowserProjectsView['activity'];
+    if (open !== null && !returnTo.startsWith("/tasks/new") && visible(open) && store.accountCanAccess(who.name, open)) {
+      try { activity = { project: projectName(open), report: projectOutcomes(store, open, now, { principal: 'operator', repos: [open] }) }; }
+      catch { activity = { project: projectName(open), report: null }; }
+    }
     return sendScreen(
       response,
       status,
       projectsPage(chromeFor(open, "projects"), recent, [...candidates], open, problem, !restricted() && unscopedMode, !restricted() && (ceiling.roots.length > 0 || unscopedMode), onboardState, peeks, returnTo, who.via === "cookie" ? (path: string) => publishingOf(store, path).on : undefined,
-        who.via === "cookie" ? (path: string) => projectCheckLevel(store, path).level : undefined),
+        who.via === "cookie" ? (path: string) => projectCheckLevel(store, path).level : undefined, activity),
     );
   }
   async function instanceEdge(ctx: EdgeContext): Promise<void> {

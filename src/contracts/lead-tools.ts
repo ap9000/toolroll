@@ -58,6 +58,7 @@ const ACTION_OPERATIONS = Object.keys(CHAT_ACTIONS).filter(one => !one.startsWit
 
 export const LEAD_TOOL_INPUTS = {
   get_brief: z.strictObject({ repo: repoId.optional() }),
+  get_project_activity: z.strictObject({ repo: repoId, offset: offset.optional() }),
   get_project_context: z.strictObject({ repo: repoId, query: text("contextQuery").min(1), mode: z.enum(["search", "impact"]).optional() }),
   get_action_status: z.strictObject({ proposal: id }),
   get_actions: z.strictObject({}),
@@ -213,6 +214,7 @@ export const queueColumnsOutput = { columns: rows({ column: str, tasks: list }) 
 
 export const LEAD_TOOL_OUTPUTS = {
   get_brief: catchUpOutput,
+  get_project_activity: z.looseObject({ asOf: str, since: str, days: int, limit: int, truncated: z.boolean(), ready: z.object({ count: int, oldestFinishedAgeMs: nullable(int), dated: int }), completed: z.looseObject({ count: int }), families: list, familiesTotal: int, familiesOffset: int, nextOffset: nullable(int), incompleteHistory: int }),
   get_project_context: repositoryContextOutput,
   get_action_status: z.looseObject({ proposal: int, operation: str, state: str, outcome: z.unknown(), finishedAt: nullable(str) }),
   get_actions: z.looseObject({ actions: rows({ operation: str, label: str, secureReview: z.boolean(), inputs: z.array(str) }), notice: str }),
