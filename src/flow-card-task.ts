@@ -20,9 +20,11 @@ function cardReason(text: string | null, fallback: string, secrets: readonly str
 }
 
 /** A task's status as its page reads it, from the store alone (no evidence files); null when it can't be read. */
-export function storedTaskStatus(store: Store, taskId: string, repo: string, now: Date): { status: TaskStatus; activeTaskId: string; live: ReturnType<Store["getRun"]> } | null {
+/** `root`: where results' saved evidence is. Without it the receipt is read without its saved checks, so a completion
+ * (bound to the receipt read with them) doesn't read as one: a status that must say Complete passes it. */
+export function storedTaskStatus(store: Store, taskId: string, repo: string, now: Date, root?: string): { status: TaskStatus; activeTaskId: string; live: ReturnType<Store["getRun"]> } | null {
   const access = { principal: "operator" as const, repos: [repo], dependencyRepos: [repo] };
-  const assignment = assignmentOf(store, taskId, now, access);
+  const assignment = assignmentOf(store, taskId, now, access, root);
   if (assignment === null) return null;
   const work = taskWorkSummaryOf(store, assignment.activeTaskId, now, access);
   if (work === null) return null;

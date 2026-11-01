@@ -55,7 +55,7 @@ import { origin, readMonitoring } from "./monitoring-settings.js";
 import { logEvent } from "./log.js";
 import type { FlowAdvance } from "./flow-engine.js";
 import { FLOW_EVERY_MS, flowHousekeeping, moveCards, moveCardsAfter, type FlowIo } from "./flow-cadence.js";
-import { youiyouxOnboardLine } from "./youiyoux-intake.js";
+import { NO_YOUIYOUX_PASS, youiyouxOnboardLine } from "./youiyoux-intake.js";
 import { readHooksBase, scheduleFromWords, type TriggerIo } from "./flow-triggers.js";
 import { sendSubagentSummaries } from "./subagent-admin.js";
 import { runRequestedUndos, sendSubagentWeeklies } from "./subagent-week.js";
@@ -2558,6 +2558,7 @@ function flowIoOf(context: Context, pool: string, git: CommandRunner, base: stri
       dir: context.flowStepIo?.dir ?? dir, scratch: context.flowStepIo?.scratch ?? join(pool, "flow-checks"), base,
       ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }) },
     ...(context.evidenceRoot === undefined ? {} : { evidenceRoot: context.evidenceRoot }),
+    youiyouxGit: gitOf(context.gitRunner),
   };
 }
 
@@ -3693,8 +3694,8 @@ async function tickCommand(
 
   settleFinished();
   const replied = replyPass.taken > 0 || replyPass.problem !== null;
-  const requestPass = housekeeping?.youiyoux ?? { filed: 0, skipped: 0, invalid: 0, updated: 0, problems: [] };
-  const requested = requestPass.filed + requestPass.problems.length > 0;
+  const requestPass = housekeeping?.youiyoux ?? NO_YOUIYOUX_PASS;
+  const requested = requestPass.filed + requestPass.copied + requestPass.decided + requestPass.problems.length > 0;
   const flows = flowPass.moved + flowPass.filed.length + flowPass.problems.length + triggerPass.added + triggerPass.problems.length + stepPass.ran + stepPass.problems.length === 0 && !replied && !requested ? {} : { flows: { ...flowPass,
     ...(triggerPass.added + triggerPass.problems.length === 0 ? {} : { triggers: triggerPass }), ...(requested ? { youiyoux: requestPass } : {}), ...(stepPass.ran + stepPass.problems.length === 0 ? {} : { steps: stepPass }), ...(replied ? { replies: replyPass } : {}) } };
 

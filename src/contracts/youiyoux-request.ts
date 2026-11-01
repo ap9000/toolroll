@@ -1,7 +1,8 @@
 /**
- * A youiyoux change or options request as Toolroll reads it (youiyoux-intake.ts): the published `youi.request/v1`
- * schema (youiyoux's schema/youi.request.schema.json), held to its own limits. Unknown keys are allowed, as the
- * published schema allows them; everything Toolroll reads is checked here, and every string is outside text all the same.
+ * A youiyoux request as Toolroll reads it (youiyoux-intake.ts): the published `youi.request/v1` schema (youiyoux's
+ * schema/youi.request.schema.json), held to its own limits, and the `youi.proposal/v1` options file an options request's
+ * agent writes (schema/youi.proposal.schema.json). Unknown keys are allowed, as the published schemas allow them;
+ * everything Toolroll reads is checked here, and every string is outside text all the same.
  */
 
 import { z } from "zod";
@@ -91,6 +92,48 @@ export function optionsProblem(request: YouiyouxRequest): string | null {
   if (offer.file !== proposalFileOf(proposal)) return `its offer's file isn't ${proposalFileOf(proposal)}`;
   if (!request.task.touchesKnown || request.task.touches.length !== 1 || request.task.touches[0] !== offer.file) return "its task may touch more than its options file";
   return null;
+}
+
+/** `youi.proposal/v1`: the options an agent puts on youiyoux's Screens canvas (youiyoux's packages/core/src/proposals.ts,
+ * mirrored). Toolroll checks only the shape and what it reads; youiyoux checks each option against the component's
+ * contract when it reads the file. */
+const OPTION_IDS = ["a", "b", "c", "d"] as const;
+export const PROPOSAL_STATUSES = ["open", "chosen", "dismissed"] as const;
+export const youiyouxProposalSchema = z.object({
+  $schema: z.string().max(500).optional(),
+  schema: z.literal("youi.proposal/v1"),
+  id: z.string().regex(PROPOSAL_ID),
+  project: text(200),
+  route: text(300),
+  target: z.object({
+    name: text(200), element: text(200).optional(), file: text(500).optional(),
+    line: z.int().positive().max(Number.MAX_SAFE_INTEGER).optional(), column: z.int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    box: z.object({ x: z.number().finite(), y: z.number().finite(), width: z.number().finite().nonnegative(), height: z.number().finite().nonnegative() }),
+    page: z.object({ width: z.number().finite().positive(), height: z.number().finite().positive() }).optional(),
+  }),
+  ask: text(1000),
+  author: who,
+  createdAt: when,
+  updatedAt: when,
+  options: z.array(z.object({
+    id: z.enum(OPTION_IDS),
+    label: text(60),
+    why: text(500),
+    set: z.array(z.object({ prop: z.string().regex(PROP), value })).max(20),
+    text: text(2000).nullable(),
+  }).refine(option => option.set.length > 0 || option.text !== null, "an option changes a prop or the text")).min(2).max(4),
+  status: z.enum(PROPOSAL_STATUSES),
+  choice: z.enum(OPTION_IDS).optional(),
+  decidedBy: who.optional(),
+  decidedAt: when.optional(),
+  request: z.string().regex(REQUEST_ID).optional(),
+  for: z.string().regex(REQUEST_ID),
+}).refine(doc => new Set(doc.options.map(option => option.id)).size === doc.options.length, "each option has its own letter")
+  .refine(doc => doc.choice === undefined || doc.options.some(option => option.id === doc.choice), "the choice is one of its options");
+export type YouiyouxProposal = z.infer<typeof youiyouxProposalSchema>;
+
+export function readYouiyouxProposal(raw: unknown): ContractResult<YouiyouxProposal> {
+  return parseContract(youiyouxProposalSchema, raw);
 }
 
 /** What Toolroll writes beside a request (`youi.request-task/v1`): the task it became, how that task stands, and, when

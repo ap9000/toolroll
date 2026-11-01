@@ -25,9 +25,10 @@
  * Beside each request it writes `<id>.task.json` (`youi.request-task/v1`): the task and its status, and, when the
  * console has an address (the one the installation names, else this machine's own console where `up` serves it, on
  * loopback), the task's link and `home`, where a person approves all waiting work. It is written when filed, whenever
- * the status changes, and once more when that address changes. That is the only file it writes in the checkout: written whole (a temporary
- * file in the same folder, then renamed over), refused when the folder or the target is a link, never the request
- * itself. The status is also kept in the store; nothing Toolroll decides reads the file back.
+ * the status changes, and once more when that address changes. Beside an options request's options file (below), it is
+ * the only file it writes in the checkout: written whole (a temporary file in the same folder, then renamed over),
+ * refused when the folder or the target is a link, never the request itself. The status is also kept in the store;
+ * nothing Toolroll decides reads the file back.
  *
  * Status words (task-status.ts headline → youiyoux): Queued → queued; Planning, Building and Waiting (work going on
  * by itself) → building; Needs you → needs-you; Ready for review → ready; Complete → done; Failed → failed;
@@ -37,11 +38,27 @@
  * on its Screens canvas. It is filed the same way, once, waiting for a person, and only as youiyoux's contract has it:
  * its offer names `p-<its own hex>`, that proposal's file `.youi/proposals/p-<hex>.json`, and the task may touch that
  * one file (anything else is counted as a file that couldn't be read, and never filed). The proposal it names is kept
- * when filed; the request is never read for it again.
+ * when filed; the request is never read for it again. Then (runYouiyoux, the worker's pass):
+ *
+ * - When the task is Ready for review (or Complete), its result is read: the file at the result's commit, the commit
+ *   Toolroll recorded for the build (never the checkout the agent had, which it controls and the pool hands on), read
+ *   with the hardened git (teardown-git.ts). It must be a plain file in that commit (never a link), at most 64 KB, a
+ *   `youi.proposal/v1` file whose id is the proposal, which answers this request, still open (an agent proposes; only a
+ *   person decides), by an agent, with no key-like text. Then it is copied, byte for byte, into the project's main
+ *   checkout as `.youi/proposals/<id>.json` the way the status file is written (folders real, never through a link;
+ *   a temporary file, then linked into place, which never replaces a file already there: a person may have decided on
+ *   it). A file missing from the result, or one that isn't safe, is said in the status file and never copied; a newer
+ *   result is read again.
+ * - When the copy in the main checkout says a person chose an option or dismissed them all (youiyoux's hub writes
+ *   that), the task is marked complete by Toolroll, as landed work is (result-completion.ts LANDED_ACTOR), without
+ *   merging or publishing its branch: its deliverable was the options, and youiyoux has used them. Only the exact
+ *   result whose file was copied, and only through every guard a person's completion passes (landed-cleanup.ts
+ *   completionProblem): otherwise it stays Ready for review and the ledger says why. The ledger keeps who decided
+ *   what, as youiyoux wrote it (outside text, cleaned). A decision never approves, publishes or merges anything.
  */
 
 import { randomBytes } from "node:crypto";
-import { closeSync, constants, fstatSync, fsyncSync, lstatSync, openSync, readdirSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, type Stats } from "node:fs";
+import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { Store } from "./store.js";
 import { fileTaskProposal } from "./proposal.js";
@@ -51,7 +68,11 @@ import { hasDisguisedText } from "./decision.js";
 import { storedTaskStatus } from "./flow-card-task.js";
 import { loadConsoleUrl, localConsoleUrl } from "./webhooks.js";
 import type { Headline } from "./task-status.js";
-import { optionsProblem, proposalIdOf, readYouiyouxRequest, readYouiyouxRequestTask, YOUIYOUX_CARD_KIND, YOUIYOUX_FILED_VIA, YOUIYOUX_HOME_PATH,
+import { assignmentOf } from "./assignment.js";
+import { noteAssignmentStatus } from "./assignment-status.js";
+import { completionProblem, type Git } from "./landed-cleanup.js";
+import { COMPLETION_ACTION, LANDED_ACTOR } from "./result-completion.js";
+import { optionsProblem, PROPOSAL_ID, proposalFileOf, proposalIdOf, readYouiyouxProposal, readYouiyouxRequest, readYouiyouxRequestTask, YOUIYOUX_CARD_KIND, YOUIYOUX_FILED_VIA, YOUIYOUX_HOME_PATH,
   type YouiyouxRequest, type YouiyouxRequestTask, type YouiyouxTaskStatus } from "./contracts/youiyoux-request.js";
 
 export { YOUIYOUX_FILED_VIA };
@@ -61,6 +82,11 @@ export const REQUEST_BYTES = 64 * 1024;
 export const REQUESTS_PER_PASS = 200;
 export const FILED_PER_PASS = 10;
 const STATUS_PER_PASS = 50;
+/** Options requests whose result is read, or whose copy in the hub is read for a decision, in one pass (each). */
+const OPTIONS_PER_PASS = 20;
+/** The ledger's word for a decision youiyoux's hub made on a task's options. */
+export const OPTIONS_DECIDED_ACTION = "youiyoux options decided";
+export const OPTIONS_COPIED_ACTION = "youiyoux options copied";
 /** The flow pass runs every 15 seconds; the folder is read at most this often. */
 export const INTAKE_EVERY_MS = 30_000;
 const REQUEST_FILE = /^(r-[0-9a-f]{10})\.json$/;
@@ -84,22 +110,29 @@ export function usesYouiyoux(repo: string): boolean {
 
 type Folder = { ok: true; dir: string } | { ok: false; problem: string } | null;
 
-/** The requests folder of a recorded project, checked now: null when there is none. Links are refused, never followed. */
-function requestsFolder(repo: string): Folder {
+/** `.youi/<part>` of a recorded project, checked now: null when there is none. Links are refused, never followed.
+ * `create`: a missing `<part>` (never `.youi` itself) is made, as a real folder, and checked again. */
+function youiFolder(repo: string, part: "requests" | "proposals", create = false): Folder {
+  const what = part === "requests" ? "its requests aren't read" : "nothing is written in it";
   let root: string;
   try { root = realpathSync(repo); } catch { return { ok: false, problem: "The project folder can't be read." }; }
-  if (root !== repo) return { ok: false, problem: "The project folder moved or is a link, so its requests aren't read." };
+  if (root !== repo) return { ok: false, problem: `The project folder moved or is a link, so ${what}.` };
   let dir = root;
-  for (const part of [".youi", "requests"]) {
-    dir = join(dir, part);
+  for (const name of [".youi", part]) {
+    dir = join(dir, name);
     let stats: Stats;
-    try { stats = lstatSync(dir); } catch (error) { return isMissing(error) ? null : { ok: false, problem: `${part} can't be read.` }; }
-    if (stats.isSymbolicLink()) return { ok: false, problem: `${dir.slice(root.length + 1)} is a link, so its requests aren't read. Make it a real folder.` };
+    try { stats = lstatSync(dir); } catch (error) {
+      if (!isMissing(error)) return { ok: false, problem: `${name} can't be read.` };
+      if (!create || name === ".youi") return null;
+      try { mkdirSync(dir, 0o755); stats = lstatSync(dir); } catch { return { ok: false, problem: `.youi/${part} couldn't be made.` }; }
+    }
+    if (stats.isSymbolicLink()) return { ok: false, problem: `${dir.slice(root.length + 1)} is a link, so ${what}. Make it a real folder.` };
     if (!stats.isDirectory()) return { ok: false, problem: `${dir.slice(root.length + 1)} isn't a folder.` };
   }
-  try { if (realpathSync(dir) !== dir) return { ok: false, problem: ".youi/requests resolves outside the project." }; } catch { return { ok: false, problem: ".youi/requests can't be read." }; }
+  try { if (realpathSync(dir) !== dir) return { ok: false, problem: `.youi/${part} resolves outside the project.` }; } catch { return { ok: false, problem: `.youi/${part} can't be read.` }; }
   return { ok: true, dir };
 }
+const requestsFolder = (repo: string): Folder => youiFolder(repo, "requests");
 
 const NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 const NONBLOCK = constants.O_NONBLOCK ?? 0;
@@ -326,17 +359,83 @@ export function writeStatusFile(repo: string, body: YouiyouxRequestTask): { ok: 
   }
 }
 
-function statusOf(store: Store, taskId: string, repo: string, now: Date): { status: YouiyouxTaskStatus; detail: string } | null {
-  const read = storedTaskStatus(store, taskId, repo, now);
+/**
+ * Put an options file into the project's main checkout as `.youi/proposals/<id>.json`, whole, and never over a file
+ * already there (a person may have decided on it). The folders are checked as the status file's are (`.youi/proposals`
+ * is made, as a real folder, when missing), the content goes to a fresh temporary file in the same folder (created
+ * exclusively, never through a link), the folders are checked again, and the temporary file is linked into place, which
+ * fails rather than replace anything at that name, a link included. `same`: that exact content was already there.
+ */
+export function writeProposalFile(repo: string, id: string, text: string): { ok: true; made: "written" | "same" | "kept" } | { ok: false; problem: string } {
+  if (!PROPOSAL_ID.test(id)) return { ok: false, problem: "The options file's name isn't youiyoux's." };
+  const folder = youiFolder(repo, "proposals", true);
+  if (folder === null) return { ok: false, problem: "The project has no .youi folder." };
+  if (!folder.ok) return folder;
+  const name = `${id}.json`;
+  const target = join(folder.dir, name);
+  const already = (): { ok: true; made: "same" | "kept" } | { ok: false; problem: string } => {
+    const there = readRequestFile(folder.dir, name);
+    if (!there.ok) return { ok: false, problem: `.youi/proposals/${name} is already there and ${there.why}, so it was left alone.` };
+    return { ok: true, made: there.text === text ? "same" : "kept" };
+  };
+  try { lstatSync(target); return already(); } catch (error) { if (!isMissing(error)) return { ok: false, problem: `.youi/proposals/${name} can't be read.` }; }
+  const temporary = join(folder.dir, `.${name}.${randomBytes(6).toString("hex")}.tmp`);
+  let fd: number | null = null;
+  try {
+    fd = openSync(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | NOFOLLOW, 0o644);
+    writeSync(fd, text);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    // At the moment of use: the folder is still what was checked.
+    const again = youiFolder(repo, "proposals");
+    if (again === null || !again.ok || again.dir !== folder.dir) throw new Error("The proposals folder changed while the options were written.");
+    try { linkSync(temporary, target); } catch (error) {
+      if ((error as NodeJS.ErrnoException | null)?.code === "EEXIST") return already();
+      throw error;
+    }
+    return { ok: true, made: "written" };
+  } catch (error) {
+    return { ok: false, problem: error instanceof Error && error.message.startsWith("The proposals folder") ? error.message : "The options couldn't be written into .youi/proposals." };
+  } finally {
+    if (fd !== null) try { closeSync(fd); } catch { /* already closed */ }
+    try { unlinkSync(temporary); } catch { /* never made */ }
+  }
+}
+
+function statusOf(store: Store, taskId: string, repo: string, now: Date, root: string | null): { status: YouiyouxTaskStatus; detail: string } | null {
+  // With the saved evidence, so a completed task reads Complete (its completion is bound to the receipt read with it).
+  const read = storedTaskStatus(store, taskId, repo, now, root ?? undefined);
   return read === null ? null : { status: STATUS_OF_HEADLINE[read.status.headline], detail: read.status.headline };
+}
+
+const clip = (text: string): string => text.length > 200 ? `${text.slice(0, 199).trimEnd()}…` : text;
+
+/** The status file's words for an options request, where its options stand (else the headline): what a person decided
+ * in the hub, and while the result is Ready (or Complete), whether its options went to the hub, and why not. */
+function optionsDetail(row: Record<string, unknown> | undefined, status: YouiyouxTaskStatus, headline: string): string {
+  if (row?.["kind"] !== "options") return headline;
+  if (row["decided"] != null && typeof row["decided_note"] === "string") return clip(row["decided_note"]);
+  if (status !== "ready" && status !== "done") return headline;
+  const note = typeof row["proposal_note"] === "string" ? row["proposal_note"] : "";
+  switch (row["proposal_state"]) {
+    case "copied": return "Options are ready in the hub.";
+    case "kept": return "An options file was already in the hub, so Toolroll left it as it was.";
+    case "missing": return "The agent didn't write the options file, so nothing went to the hub.";
+    case "unsafe": return clip(`The options file wasn't copied to the hub: ${note}.`);
+    case "retry": return clip(`The options aren't in the hub yet: ${note}.`);
+    default: return headline;
+  }
 }
 
 /** Write a filed task's status where it changed, where its last write failed, or where the console its links name
  * changed since (`written_base`: '' for none), so a file written before a console address existed gets its links. */
 function writeStatus(store: Store, repo: string, request: string, taskId: string, now: Date, io: YouiyouxIo, force: boolean): boolean {
-  const known = store.handle.prepare("SELECT status, written_at, written_base FROM youiyoux_request WHERE repo = ? AND request = ?").get(repo, request);
-  const status = statusOf(store, taskId, repo, now);
-  if (status === null) return false;
+  const known = store.handle.prepare(`SELECT status, detail, written_at, written_base, kind, proposal_state, proposal_note, decided, decided_note
+    FROM youiyoux_request WHERE repo = ? AND request = ?`).get(repo, request);
+  const read = statusOf(store, taskId, repo, now, io.evidenceRoot ?? null);
+  if (read === null) return false;
+  const status = { status: read.status, detail: optionsDetail(known, read.status, read.detail) };
   const base = consoleBase(io.env, io.dir);
   if (!force && known?.["status"] === status.status && known?.["written_at"] !== null && known?.["written_base"] === (base ?? "")) return false;
   const body: YouiyouxRequestTask = { schema: "youi.request-task/v1", request, runner: "Toolroll", task: { id: taskId, url: base === null ? null : `${base}/t/${encodeURIComponent(taskId)}` },
@@ -350,9 +449,13 @@ function writeStatus(store: Store, repo: string, request: string, taskId: string
 
 // ------------------------------------------------------------ the pass
 
-export type YouiyouxIo = { dir: string | null; env: Record<string, string | undefined> };
-export type YouiyouxPass = { filed: number; skipped: number; invalid: number; updated: number; problems: string[] };
-const NOTHING = (): YouiyouxPass => ({ filed: 0, skipped: 0, invalid: 0, updated: 0, problems: [] });
+/** `git`: the hardened git an options request's result is read with (landed-cleanup.ts gitOf), and `evidenceRoot`, where
+ * results' saved evidence is (a completion is bound to the receipt read with it). Without either, options wait. */
+export type YouiyouxIo = { dir: string | null; env: Record<string, string | undefined>; git?: Git; evidenceRoot?: string | null };
+/** `copied`: options files that went to the hub; `decided`: decisions in the hub Toolroll acted on. */
+export type YouiyouxPass = { filed: number; skipped: number; invalid: number; updated: number; copied: number; decided: number; problems: string[] };
+export const NO_YOUIYOUX_PASS: Readonly<YouiyouxPass> = Object.freeze({ filed: 0, skipped: 0, invalid: 0, updated: 0, copied: 0, decided: 0, problems: [] });
+const NOTHING = (): YouiyouxPass => ({ ...NO_YOUIYOUX_PASS, problems: [] });
 
 /** File one request's task, exactly once: the claim and the filing are one transaction (two passes, in two processes
  * or one, make one task). */
@@ -412,28 +515,42 @@ export function requestPassOf(store: Store, taskId: string): string[] {
 }
 
 /**
- * One project's pass: read new change requests and file them, then write each filed task's status where it changed.
- * The folder read is the project in Toolroll's records that `given` resolves to; anything else is left alone.
+ * One project's pass: read new requests and file them, then write each filed task's status where it changed (no
+ * options moved: runYouiyoux does that too). The folder read is the project in Toolroll's records that `given`
+ * resolves to; anything else is left alone.
  */
 export function runYouiyouxIntake(store: Store, given: string, now: Date, io: YouiyouxIo, options: { force?: boolean } = {}): YouiyouxPass {
+  return intake(store, given, now, io, options).pass;
+}
+
+/** The worker's pass for one project (flow-cadence.ts): the intake, then each options request's options, both ways. */
+export async function runYouiyoux(store: Store, given: string, now: Date, io: YouiyouxIo, options: { force?: boolean } = {}): Promise<YouiyouxPass> {
+  const { pass, repo } = intake(store, given, now, io, options);
+  if (repo !== null) await optionsPass(store, repo, now, io, pass);
+  return pass;
+}
+
+/** The intake's pass; `repo` is the project when its requests folder was read whole (and options may move). */
+function intake(store: Store, given: string, now: Date, io: YouiyouxIo, options: { force?: boolean }): { pass: YouiyouxPass; repo: string | null } {
   const pass = NOTHING();
+  const none = { pass, repo: null };
   // The project as Toolroll recorded it, resolved: a folder that isn't one of its projects is never read.
   const repo = canonicalProject(given);
-  if (repo === null || !store.listProjects().some(one => one.path === repo)) return pass;
+  if (repo === null || !store.listProjects().some(one => one.path === repo)) return none;
   const row = intakeRow(store, repo);
-  if (row.enabled === false) return pass;
-  if (options.force !== true && row.checkedAt !== null && now.getTime() - Date.parse(row.checkedAt) < INTAKE_EVERY_MS) return pass;
-  if (!usesYouiyoux(repo)) { if (row.uses) recordPass(store, repo, now, false, 0, null); return pass; }
+  if (row.enabled === false) return none;
+  if (options.force !== true && row.checkedAt !== null && now.getTime() - Date.parse(row.checkedAt) < INTAKE_EVERY_MS) return none;
+  if (!usesYouiyoux(repo)) { if (row.uses) recordPass(store, repo, now, false, 0, null); return none; }
   const folder = requestsFolder(repo);
-  if (folder === null) { recordPass(store, repo, now, true, 0, null); return pass; }
-  if (!folder.ok) { recordPass(store, repo, now, true, 0, folder.problem); pass.problems.push(`youiyoux: ${folder.problem}`); return pass; }
+  if (folder === null) { recordPass(store, repo, now, true, 0, null); return none; }
+  if (!folder.ok) { recordPass(store, repo, now, true, 0, folder.problem); pass.problems.push(`youiyoux: ${folder.problem}`); return none; }
 
   const taken = new Set(store.handle.prepare("SELECT request FROM youiyoux_request WHERE repo = ?").all(repo).map(one => String(one["request"])));
   let read: Read;
   try { read = readRequests(folder.dir, taken); } catch {
     recordPass(store, repo, now, true, 0, ".youi/requests can't be read.");
     pass.problems.push("youiyoux: .youi/requests can't be read.");
-    return pass;
+    return none;
   }
   pass.invalid = read.invalid.length;
   const filedNow: string[] = [];
@@ -456,5 +573,177 @@ export function runYouiyouxIntake(store: Store, given: string, now: Date, io: Yo
   const problem = read.invalid.length === 0 ? null
     : `${plural(read.invalid.length, "request file")} couldn't be read: ${read.invalid[0]}${read.invalid.length > 1 ? ", and others" : ""}.`;
   recordPass(store, repo, now, true, read.invalid.length, problem);
-  return pass;
+  return { pass, repo };
+}
+
+// ------------------------------------------------------------ options, both ways
+
+export type OptionsRow = { request: string; taskId: string; proposal: string; state: string | null; run: number | null };
+const optionsRow = (row: Record<string, unknown>): OptionsRow => ({ request: String(row["request"]), taskId: String(row["task_id"]), proposal: String(row["proposal"]),
+  state: row["proposal_state"] == null ? null : String(row["proposal_state"]), run: row["proposal_run"] == null ? null : Number(row["proposal_run"]) });
+const SHA = /^[0-9a-f]{40}$/;
+
+/** The task's current result, as its assignment reads it (with the saved evidence where the worker has it): the run and
+ * the commit Toolroll recorded for it. Null without a finished result. */
+function resultOf(store: Store, taskId: string, repo: string, now: Date, root: string | null) {
+  const assignment = assignmentOf(store, taskId, now, { principal: "operator", repos: [repo] }, root ?? undefined);
+  const receipt = assignment?.receipt ?? null;
+  if (assignment === null || receipt === null || receipt.completionKind === null || receipt.completionKind === "research-report" || receipt.head === null || !SHA.test(receipt.head)) return null;
+  return { assignment, receipt, head: receipt.head };
+}
+
+type Brought = { state: "copied" | "kept" | "missing" | "unsafe" | "retry"; note: string | null };
+
+/** Why an agent's options file can't go to the hub as it stands, or null. Toolroll checks what makes it safe to copy
+ * and this request's; youiyoux checks each option against the component's contract when it reads it. */
+export function proposalProblem(text: string, proposal: string, request: string): string | null {
+  let raw: unknown;
+  try { raw = JSON.parse(text); } catch { return "it isn't JSON"; }
+  const parsed = readYouiyouxProposal(raw);
+  if (!parsed.ok) { const issue = parsed.issues[0]; return `it isn't a youi.proposal/v1 file (${issue === undefined ? "unreadable" : `${issue.path}: ${issue.kind}`})`; }
+  const doc = parsed.value;
+  if (doc.id !== proposal) return `its id isn't ${proposal}`;
+  if (doc.for !== request) return `it doesn't answer ${request}`;
+  // An agent proposes; only a person decides, in the hub. A file that arrives decided would decide for them.
+  if (doc.status !== "open" || doc.choice !== undefined || doc.decidedBy !== undefined || doc.decidedAt !== undefined || doc.request !== undefined) return "it arrived already decided, and only a person decides";
+  if (doc.author.kind !== "agent") return "its author isn't an agent";
+  if (scanForSecrets(text).length > 0) return "it looked like it held a key or password";
+  return null;
+}
+
+/** Read the options file from the result's commit (never the agent's checkout) and copy it to the hub. */
+async function bringProposal(git: Git, repo: string, request: string, proposal: string, head: string): Promise<Brought> {
+  const file = proposalFileOf(proposal);
+  const listed = await git(repo, ["ls-tree", "-z", "--full-tree", head, "--", file]);
+  if (listed.code !== 0) return { state: "retry", note: "git couldn't read the result" };
+  const entries = listed.stdout.split("\0").filter(one => one !== "");
+  if (entries.length === 0) return { state: "missing", note: null };
+  const entry = /^(\d{6}) (\w+) ([0-9a-f]{40})\t(.*)$/s.exec(entries[0]!);
+  if (entries.length !== 1 || entry === null || entry[4] !== file) return { state: "unsafe", note: "it isn't a plain file" };
+  if (entry[1] === "120000") return { state: "unsafe", note: "it is a link" };
+  if (entry[2] !== "blob" || (entry[1] !== "100644" && entry[1] !== "100755")) return { state: "unsafe", note: "it isn't a plain file" };
+  const sized = await git(repo, ["cat-file", "-s", entry[3]!]);
+  const size = Number(sized.stdout.trim());
+  if (sized.code !== 0 || !Number.isSafeInteger(size)) return { state: "retry", note: "git couldn't read the result" };
+  if (size > REQUEST_BYTES) return { state: "unsafe", note: "it is over 64 KB" };
+  const blob = await git(repo, ["cat-file", "blob", entry[3]!]);
+  if (blob.code !== 0) return { state: "retry", note: "git couldn't read the result" };
+  if (Buffer.byteLength(blob.stdout, "utf8") !== size) return { state: "unsafe", note: "it isn't UTF-8 text" };
+  const problem = proposalProblem(blob.stdout, proposal, request);
+  if (problem !== null) return { state: "unsafe", note: problem };
+  const wrote = writeProposalFile(repo, proposal, blob.stdout);
+  if (!wrote.ok) return { state: "retry", note: wrote.problem.replace(/\.$/, "") };
+  return { state: wrote.made === "kept" ? "kept" : "copied", note: null };
+}
+
+export type Decision = { status: "chosen" | "dismissed"; choice: string | null; label: string | null; by: string | null; at: string | null };
+
+/** What a person decided on the options in the hub, read from the copy in the main checkout; null while they are open or
+ * the file can't be read as this request's. Who and the option's label are youiyoux's words: cleaned, and left out
+ * when they look like a key. */
+function decisionOf(repo: string, proposal: string, request: string): Decision | null {
+  const folder = youiFolder(repo, "proposals");
+  if (folder === null || !folder.ok) return null;
+  const file = readRequestFile(folder.dir, `${proposal}.json`);
+  if (!file.ok) return null;
+  let raw: unknown;
+  try { raw = JSON.parse(file.text); } catch { return null; }
+  const parsed = readYouiyouxProposal(raw);
+  if (!parsed.ok || parsed.value.id !== proposal || parsed.value.for !== request) return null;
+  const doc = parsed.value;
+  if (doc.status === "open" || (doc.status === "chosen" && doc.choice === undefined)) return null;
+  const said = (text: string | undefined, max: number): string | null => {
+    if (text === undefined) return null;
+    const clean = line(text, max);
+    return clean === "" || scanForSecrets(text).length > 0 || scanForSecrets(clean).length > 0 || hasDisguisedText(clean) ? null : clean;
+  };
+  return { status: doc.status as Decision["status"], choice: doc.choice ?? null, label: said(doc.options.find(one => one.id === doc.choice)?.label, 60),
+    by: said(doc.decidedBy?.name, 100), at: doc.decidedAt ?? null };
+}
+
+/**
+ * A person decided in the hub: mark the task complete as landed work is, bound to the exact result whose options were
+ * copied, through every guard a person's completion passes, or leave it Ready for review and say why. Once per request,
+ * in one transaction with the read. Waits (false) while the task isn't Ready, Complete or cancelled.
+ */
+export function actOnDecision(store: Store, repo: string, row: OptionsRow, decision: Decision, now: Date, root: string): boolean {
+  return store.transact(() => {
+    const current = store.handle.prepare("SELECT decided, proposal_run FROM youiyoux_request WHERE repo = ? AND request = ?").get(repo, row.request);
+    if (current === undefined || current["decided"] !== null) return false;
+    const assignment = assignmentOf(store, row.taskId, now, { principal: "operator", repos: [repo] }, root);
+    if (assignment === null) return false;
+    const receipt = assignment.receipt;
+    const who = decision.by ?? "a person";
+    const what = decision.status === "chosen" ? `option ${decision.choice}${decision.label === null ? "" : ` (“${decision.label}”)`}` : null;
+    const words = what === null ? `${who} dismissed the options in youiyoux's hub` : `${who} picked ${what} in youiyoux's hub`;
+    const picked = what === null ? "The options were dismissed in the hub" : `Option ${decision.choice} was picked in the hub`;
+    let done: string, note: string, completes = false;
+    if (assignment.state === "complete" || assignment.state === "cancelled") {
+      done = `the task was already ${assignment.state}`;
+      note = `${picked}.`;
+    } else if (assignment.state !== "ready-to-check" || receipt === null) {
+      return false;
+    } else {
+      const why = receipt.runId !== Number(current["proposal_run"]) ? "its newest result isn't the one whose options went to the hub" : completionProblem(store, assignment, root);
+      if (why === null) {
+        completes = true;
+        done = "Toolroll marked the task complete without merging or publishing its branch";
+        note = `${picked}, so the task is complete.`;
+      } else {
+        done = `the task stays ready for review in Toolroll: ${why}`;
+        note = `${picked}; the task waits for review in Toolroll.`;
+      }
+    }
+    const at = now.toISOString();
+    if (completes) {
+      store.recordAction({ at, actor: LANDED_ACTOR, repo, taskId: assignment.rootId, runId: receipt!.runId, action: COMPLETION_ACTION, outcome: receipt!.digest, source: "work",
+        detail: `its options went to youiyoux, where ${words}` });
+      const ref = store.lookupRef(assignment.rootId);
+      if (ref !== null) store.noteTaskAct(ref.id, "completed", now, undefined, { account: LANDED_ACTOR, lead: false });
+      store.bumpWake();
+    }
+    store.recordAction({ at, actor: YOUIYOUX_ACTOR, repo, taskId: assignment.rootId, runId: receipt?.runId ?? null, action: OPTIONS_DECIDED_ACTION, outcome: decision.status, source: "work",
+      detail: `${words}${decision.at === null ? "" : ` (${decision.at})`}; ${done}` });
+    store.handle.prepare("UPDATE youiyoux_request SET decided = ?, decided_at = ?, decided_note = ? WHERE repo = ? AND request = ?").run(decision.status, at, note, repo, row.request);
+    if (completes) noteAssignmentStatus(store, assignmentOf(store, assignment.rootId, now, { principal: "operator", repos: [repo] }, root)!, now);
+    return true;
+  });
+}
+
+/** Each options request's options, both ways: a Ready result's file to the hub, and a decision in the hub back. */
+async function optionsPass(store: Store, repo: string, now: Date, io: YouiyouxIo, pass: YouiyouxPass): Promise<void> {
+  const root = io.evidenceRoot ?? null;
+  if (io.git === undefined || root === null) return;
+  const bring = store.handle.prepare(`SELECT request, task_id, proposal, proposal_state, proposal_run FROM youiyoux_request WHERE repo = ? AND kind = 'options' AND task_id IS NOT NULL
+    AND (proposal_state IS NULL OR proposal_state NOT IN ('copied','kept')) AND status IN ('ready','done') ORDER BY status_at LIMIT ?`).all(repo, OPTIONS_PER_PASS).map(optionsRow);
+  for (const row of bring) {
+    try {
+      const result = resultOf(store, row.taskId, repo, now, root);
+      if (result === null) continue;
+      // Said once for each result: a newer one (a revision, a build again) is read again.
+      if ((row.state === "missing" || row.state === "unsafe") && row.run === result.receipt.runId) continue;
+      const brought = await bringProposal(io.git, repo, row.request, row.proposal, result.head);
+      const at = now.toISOString();
+      store.transact(() => {
+        store.handle.prepare("UPDATE youiyoux_request SET proposal_state = ?, proposal_run = ?, proposal_note = ?, proposal_at = ? WHERE repo = ? AND request = ?")
+          .run(brought.state, result.receipt.runId, brought.note, at, repo, row.request);
+        if (brought.state !== "retry") store.recordAction({ at, actor: YOUIYOUX_ACTOR, repo, taskId: result.assignment.rootId, runId: result.receipt.runId, action: OPTIONS_COPIED_ACTION,
+          outcome: brought.state === "copied" || brought.state === "kept" ? brought.state : "not copied", source: "work",
+          detail: `${proposalFileOf(row.proposal)}${brought.state === "missing" ? ": not in the result" : brought.note === null ? "" : `: ${brought.note}`}` });
+      });
+      if (brought.state === "copied") pass.copied++;
+      if (brought.state === "retry") pass.problems.push(`youiyoux ${row.request}: ${brought.note}`);
+      if (writeStatus(store, repo, row.request, row.taskId, now, io, true)) pass.updated++;
+    } catch (error) { pass.problems.push(`youiyoux ${row.request}: ${error instanceof Error ? error.message : "options unreadable"}`); }
+  }
+  const watch = store.handle.prepare(`SELECT request, task_id, proposal, proposal_state, proposal_run FROM youiyoux_request WHERE repo = ? AND kind = 'options' AND task_id IS NOT NULL
+    AND proposal_state IN ('copied','kept') AND decided IS NULL ORDER BY proposal_at LIMIT ?`).all(repo, OPTIONS_PER_PASS).map(optionsRow);
+  for (const row of watch) {
+    try {
+      const decision = decisionOf(repo, row.proposal, row.request);
+      if (decision === null || !actOnDecision(store, repo, row, decision, now, root)) continue;
+      pass.decided++;
+      if (writeStatus(store, repo, row.request, row.taskId, now, io, true)) pass.updated++;
+    } catch (error) { pass.problems.push(`youiyoux ${row.request}: ${error instanceof Error ? error.message : "decision unreadable"}`); }
+  }
 }

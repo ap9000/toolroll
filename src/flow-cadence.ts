@@ -13,7 +13,8 @@ import { runFlowTriggers, type TriggerIo, type TriggerPass } from "./flow-trigge
 import { watchFlowReplies, type ReplyWatch, type ReplyWatchIo } from "./flow-replies.js";
 import { runFlowSteps, type StepIo, type StepPass } from "./flow-steps.js";
 import type { Store } from "./store.js";
-import { runYouiyouxIntake, type YouiyouxPass } from "./youiyoux-intake.js";
+import { gitOf, type Git } from "./landed-cleanup.js";
+import { NO_YOUIYOUX_PASS, runYouiyoux, type YouiyouxPass } from "./youiyoux-intake.js";
 
 /** How often the worker moves cards, checks triggers, reads replies and runs steps, builds or not. */
 export const FLOW_EVERY_MS = 15_000;
@@ -30,20 +31,21 @@ export async function alone<T>(kind: string, project: string, idle: T, run: () =
   try { return await run(); } finally { running.delete(key); }
 }
 
-export type FlowIo = { triggers: TriggerIo; replies: ReplyWatchIo; steps: StepIo; evidenceRoot?: string };
+/** `youiyouxGit`: the hardened git an options request's result is read with (the plane's own runner; gitOf by default). */
+export type FlowIo = { triggers: TriggerIo; replies: ReplyWatchIo; steps: StepIo; evidenceRoot?: string; youiyouxGit?: Git };
 export type FlowHousekeeping = { triggers: TriggerPass; youiyoux: YouiyouxPass; replies: ReplyWatch; steps: StepPass; flows: FlowAdvance };
 
-const NO_REQUESTS: YouiyouxPass = { filed: 0, skipped: 0, invalid: 0, updated: 0, problems: [] };
+const NO_REQUESTS: YouiyouxPass = NO_YOUIYOUX_PASS;
 
-/** One project's flow pass: triggers (which may start cards), youiyoux change requests (which file tasks that wait for
- * a person), replies (which move waiting cards), steps, then moves. `halted` (a stop or paused admission) skips
+/** One project's flow pass: triggers (which may start cards), youiyoux requests (which file tasks that wait for a
+ * person, and move an options request's options to youiyoux's hub and a decision there back), replies (which move waiting cards), steps, then moves. `halted` (a stop or paused admission) skips
  * everything that reaches outside; moves still run. */
 export async function flowHousekeeping(store: Store, repo: string, clock: () => Date, io: FlowIo, halted: () => boolean): Promise<FlowHousekeeping> {
   const triggers = halted() ? { added: 0, checked: 0, problems: [] }
     : await alone<TriggerPass>("triggers", repo, { added: 0, checked: 0, problems: [] }, () => runFlowTriggers(store, repo, clock(), io.triggers));
   const youiyoux = halted() ? NO_REQUESTS
     : await alone<YouiyouxPass>("youiyoux", repo, NO_REQUESTS, async () => {
-      try { return runYouiyouxIntake(store, repo, clock(), { dir: io.triggers.dir, env: process.env }); }
+      try { return await runYouiyoux(store, repo, clock(), { dir: io.triggers.dir, env: process.env, git: io.youiyouxGit ?? gitOf(), evidenceRoot: io.evidenceRoot ?? null }); }
       catch (error) { return { ...NO_REQUESTS, problems: [`youiyoux: ${error instanceof Error ? error.message : "could not read requests"}`] }; }
     });
   // One mailbox serves every project, so its reads are one at a time across them all.
