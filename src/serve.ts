@@ -173,7 +173,7 @@ import { createChatHandlers } from './server/chat.js';
 import { createLiveHandlers } from './server/live.js';
 import { createTerminalHandlers, terminalHostFor } from './server/terminals.js';
 import { passwordlessOn } from './passwordless.js';
-import { settingsCrumbs } from './settings-kit.js';
+import { keepTypedFields, openProjectFor, settingsCrumbs } from './settings-kit.js';
 import { createSweepHandlers } from './server/sweeps.js';
 import { createFlowsHandlers } from './server/flows.js';
 import type { HandlerContext } from './server/handler-context.js';
@@ -1451,7 +1451,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const ssoFacts = requestContext.getStore()?.sso;
     if (ssoFacts !== undefined) {
       const back = requestContext.getStore()?.returnTo ?? "/";
-      s = { ...s, body: ssoStepUps(s.body, ssoFacts, back), ...(s.workspace?.pageHtml == null ? {} : { workspace: { ...s.workspace, pageHtml: ssoStepUps(s.workspace.pageHtml, ssoFacts, back) } }) };
+      // A typed-only proof (settings-kit.ts) stays a password field: its handler takes nothing else.
+      s = { ...s, body: keepTypedFields(s.body, ssoStepUps, ssoFacts, back), ...(s.workspace?.pageHtml == null ? {} : { workspace: { ...s.workspace, pageHtml: keepTypedFields(s.workspace.pageHtml, ssoStepUps, ssoFacts, back) } }) };
       if (s.workspace?.view?.kind === "flow") s = { ...s, workspace: { ...s.workspace, view: { ...s.workspace.view, stepUp: { label: ssoFacts.label, fresh: ssoFacts.fresh, confirmHref: `/login/sso?reauth=1&return=${encodeURIComponent(back)}` } } } };
     }
     // D5: team chat (the central team service) is deprecated; /chat?team=1 still opens this release, but nothing links to it.
@@ -1524,7 +1525,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const workspace: BrowserWorkspace = {
         version: 1, path: currentPath, title: s.title, user: requestFacts.actor ?? '', csrf: requestFacts.csrf, sensitive,
         // The project picker names the open project; the settings frame carries its breadcrumb.
-        openProject: requestFacts.openProject ?? null,
+        // Only a project this person may see now: never the raw saved path (settings-kit.ts openProjectFor).
+        openProject: openProjectFor(requestFacts.openProject ?? null, s.chrome.project, s.chrome.projects ?? []),
         ...(s.chrome.crumbs === undefined ? {} : { crumbs: s.chrome.crumbs }),
         ...(requestFacts.passwordless === true ? { passwordless: true } : {}),
         ...(requestFacts.actor ? { leadName: leadNameOf(store, requestFacts.actor) } : {}),

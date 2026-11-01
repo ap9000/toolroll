@@ -8,7 +8,8 @@
  * - over HTTP, one row of each kind: Passwordless stands in for a step-up only, never for a credential or typed act.
  */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Server } from "node:http";
@@ -20,7 +21,7 @@ import { createDecisionServer } from "./serve.js";
 import { ssoStepUps } from "./server/render-people.js";
 import { requestContext } from "./server/request-context.js";
 import { matchRoute, ROUTES } from "./server/route-table.js";
-import { choiceGroup, crumbsHtml, headingText, isSettingsFrame, secretInput, settingsCrumbs, stepUpForm, textField } from "./settings-kit.js";
+import { choiceGroup, crumbsHtml, headingText, isSettingsFrame, keepTypedFields, openProjectFor, secretInput, settingsCrumbs, stepUpForm, textField } from "./settings-kit.js";
 import { SETTINGS_KIT_SCRIPT } from "./settings-kit-script.js";
 import { PROOF_INVENTORY, proofRow } from "./settings-proofs.js";
 import { openStore, type Store } from "./store.js";
@@ -28,7 +29,8 @@ import { T0 } from "../test/serve-kit.js";
 
 /** Render as a browser request would: a form token, and Passwordless as given. */
 const render = <T>(passwordless: boolean, run: () => T): T => requestContext.run({ csrf: "c-1", returnTo: "/settings", passwordless }, run);
-const formOf = (id: string, route: string, passwordless = false) => render(passwordless, () => htmlString(stepUpForm({ proof: id, action: route, id: `f-${id}`, body: "" })));
+const selectOf = (id: string) => { const row = proofRow(id); return row.select === undefined ? {} : { [row.select.field]: row.select.value }; };
+const formOf = (id: string, route: string, passwordless = false) => render(passwordless, () => htmlString(stepUpForm({ proof: id, action: route, id: `f-${id}`, body: "", hidden: selectOf(id) })));
 const GUARD = CONSOLE_FORMS.mutationGuard.fields;
 
 describe("the proof inventory agrees with the handlers' contracts", () => {
@@ -51,9 +53,16 @@ describe("the proof inventory agrees with the handlers' contracts", () => {
     }
   });
 
-  test("every route has one row, and every settings step-up route has a row", () => {
-    const routes = PROOF_INVENTORY.flatMap(row => row.routes);
-    expect(new Set(routes).size).toBe(routes.length);
+  test("rows that share a route are exact variants; every settings step-up route has a row", () => {
+    const routes = [...new Set(PROOF_INVENTORY.flatMap(row => row.routes))];
+    for (const route of routes) {
+      const variants = PROOF_INVENTORY.filter(row => row.routes.includes(route));
+      // At most one default; the rest are picked by a hidden value (distinct) or named explicitly.
+      expect(variants.filter(row => row.select === undefined && row.explicit === undefined).length, route).toBeLessThanOrEqual(1);
+      const selects = variants.flatMap(row => row.select === undefined ? [] : [`${row.select.field}=${row.select.value}`]);
+      expect(new Set(selects).size, route).toBe(selects.length);
+      for (const row of variants) if (row.select !== undefined) expect(row.terms, row.id).toContain(row.select.field);
+    }
     // Step-up routes the kit doesn't draw: they post no proof field a settings form renders.
     const elsewhere = new Set(["/settings/telegram/retry", "/mode/confirm", "/settings/project/concurrency"]);
     const stepUps = ROUTES.filter(one => one.method === "POST" && one.stage === "console" && one.scope === "step-up"
@@ -62,13 +71,49 @@ describe("the proof inventory agrees with the handlers' contracts", () => {
     const missing = stepUps.filter(path => !routes.includes(path) && !elsewhere.has(path));
     expect(missing).toEqual([]);
   });
+
+  // Each variant's proof and required terms, pinned at the line its handler decides them (as passwordless-credentials
+  // does for the credential acts): an edit that changes what a handler needs fails here and the inventory follows.
+  const HANDLER_PINS: Record<string, { file: string; pins: RegExp[] }> = {
+    "mode-sign": { file: "server/settings.ts", pins: [/if \(!\(body\.get\("chat-approve"\) === "1" \? authenticateCredential\(who, token\) : authenticateApprover\(who, token\)\)\.ok\)/, /const fixedExpiry = body\.get\("expiry"\)/, /consumeApprovalNonce\(nonce, who\.name, "mode-sign", `\$\{project\}:\$\{body\.get\("digest"\) \?\? ""\}`\)/] },
+    "project-check-access-widen": { file: "server/settings.ts", pins: [/if \(widening && \(proved\.method !== "password-now" \|\| !store\.isInstanceOperator\(who\.name\)\)\)/] },
+    "storage-clean": { file: "server/settings.ts", pins: [/if \(body\.get\("preview"\) !== previewDigest\(plan\)\)/] },
+    "pull-requests-on": { file: "server/settings.ts", pins: [/if \(checked\.plan\.githubRepo !== body\.get\("github"\) \|\| checked\.plan\.base !== body\.get\("base"\)\)/] },
+    "project-setup": { file: "server/settings.ts", pins: [/consumeApprovalNonce\(body\.get\("nonce"\) \?\? "", who\.name, nonceKey, body\.get\("fingerprint"\) \?\? ""\)\) return refuse\(response, who, 409, "This setup preview expired/, /provider: body\.get\("provider"\) \?\? "", model: body\.get\("model"\) \?\? "", command: body\.get\("command"\) \?\? "", seconds: body\.get\("seconds"\)/] },
+    "chat-approval-save": { file: "server/settings.ts", pins: [/consumeApprovalNonce\(body\.get\("nonce"\) \?\? "", who\.name, "chat-approval", body\.get\("digest"\) \?\? ""\)/, /const proved = authenticateAccount\(store, who\.name, body\.get\("token"\) \?\? ""\);/] },
+    "telegram-pair": { file: "server/settings.ts", pins: [/const pairingIdentity = authenticateAccount\(store, who\.name, body\.get\("password"\) \?\? ""\);/] },
+    "push-subscribe": { file: "server/chat.ts", pins: [/const password = body\.get\("token"\) \?\? "";\n\s*if \(password === "" \|\| !authenticateApprover\(who, password\)\.ok\)/] },
+    "lead-config": { file: "server/chat.ts", pins: [/const password = body\.get\("token"\) \?\? "";\n\s*if \(password === "" \|\| !authenticateApprover\(who, password\)\.ok\)/] },
+    "models-apply": { file: "server/settings.ts", pins: [/expected: \{ state: body\.get\("digest"\) \?\? "", change: body\.get\("change"\) \?\? "" \}/] },
+    "tools-connect": { file: "server/settings.ts", pins: [/const shown = body\.get\("shown"\) \?\? "";\n\s*if \(shown !== repo\)/] },
+    "project-live-view": { file: "server/settings.ts", pins: [/consumeApprovalNonce\(body\.get\("nonce"\) \?\? "", who\.name, LIVE_VIEW_CONSENT/] },
+  };
+  test.each(Object.entries(HANDLER_PINS))("%s: its handler decides what the row says", (id, { file, pins }) => {
+    const source = readFileSync(new URL(`./${file}`, import.meta.url), "utf8");
+    for (const pin of pins) expect(source).toMatch(pin);
+    expect(proofRow(id).id).toBe(id);
+  });
+
+  test("every term a settings handler checks a post against is required by some row", () => {
+    // Fields compared with what a page showed or consumed with a nonce: a form built from the inventory must carry them.
+    const source = ["server/settings.ts", "server/people-tokens.ts"].map(file => readFileSync(new URL(`./${file}`, import.meta.url), "utf8")).join("\n");
+    const checked = new Set([...source.matchAll(/consumeApprovalNonce\(body\.get\("([a-z-]+)"\)[^\n]*?body\.get\("([a-z-]+)"\)|!== body\.get\("([a-z-]+)"\)|body\.get\("([a-z-]+)"\)(?: \?\? "")?\)? !==/g)]
+      .flatMap(m => [m[1], m[2], m[3], m[4]]).filter((one): one is string => one !== undefined));
+    // Choices the person makes on the page, not terms carried back.
+    for (const choice of ["confirm-open", "pings", "repo"]) checked.delete(choice);
+    const required = new Set(PROOF_INVENTORY.flatMap(row => row.terms));
+    expect([...checked].filter(field => !required.has(field))).toEqual([]);
+    expect(checked).toContain("preview");
+    expect(checked).toContain("github");
+  });
 });
 
 describe("the kit renders each action's own proof", () => {
   test.each(PROOF_INVENTORY.map(row => [row.id, row] as const))("%s", (_id, row) => {
     const route = row.routes[0]!;
     const page = formOf(row.id, route);
-    const proofs = [...page.matchAll(/<input type="password" name="([^"]+)" autocomplete="current-password"/g)].map(m => m[1]);
+    const typed = row.proof === "typed-password" || row.proof === "typed-now-operator";
+    const proofs = [...page.matchAll(/<input type="password" name="([^"]+)"(?: data-so-typed)? autocomplete="current-password"/g)].map(m => m[1]);
     if (row.field === null) {
       // CSRF only: no proof field, no dialog.
       expect(proofs).toEqual([]);
@@ -77,14 +122,16 @@ describe("the kit renders each action's own proof", () => {
       expect(proofs).toEqual([row.field]);
       expect(page).toMatch(/<dialog class="kit-dialog"[^>]*data-kit-dialog>/);
       // The proof sits in the form's own HTML (inline without JavaScript), never with a value.
-      expect(page).toMatch(new RegExp(`<div class="kit-proof" data-kit-proof><label>[^<]+<input type="password" name="${row.field}" autocomplete="current-password" required></label></div>`));
+      expect(page).toMatch(new RegExp(`<div class="kit-proof" data-kit-proof><label>[^<]+<input type="password" name="${row.field}"${typed ? " data-so-typed" : ""} autocomplete="current-password" required></label></div>`));
       // Passwordless leaves out only a step-up field; a credential or typed act still asks.
       const passwordless = formOf(row.id, route, true);
       expect(passwordless.includes(`name="${row.field}"`)).toBe(row.proof !== "step-up");
       expect(passwordless.includes("<dialog")).toBe(row.proof !== "step-up");
-      // Signed in with an identity provider: the field becomes its one-use re-check, inside the same proof slot.
-      const sso = htmlString(ssoStepUps(stepUpFormHtml(row.id, route), { label: "Okta", fresh: false }, "/settings"));
-      expect(sso).toMatch(new RegExp(`data-kit-proof><input type="hidden" name="${row.field}" value=""><a class="sso-step-up"`));
+      // Signed in with an identity provider (as sendScreen swaps): a field the re-check stands in for becomes it; a
+      // typed-only field stays a real password field, since its handler takes nothing else.
+      const sso = htmlString(keepTypedFields(stepUpFormHtml(row.id, route), held => ssoStepUps(held, { label: "Okta", fresh: false }, "/settings")));
+      if (typed) expect(sso).toBe(page);
+      else expect(sso).toMatch(new RegExp(`data-kit-proof><input type="hidden" name="${row.field}" value=""><a class="sso-step-up"`));
     }
     expect(page).toContain('<input type="hidden" name="csrf" value="c-1">');
     expect(page).not.toMatch(/type="password"[^>]*\svalue=/);
@@ -110,6 +157,14 @@ describe("the kit renders each action's own proof", () => {
     expect(() => render(false, () => stepUpForm({ proof: "lead-config", action: "/chat/config", id: "x", body: "", hidden: { key: "k" } }))).toThrow();
     expect(() => render(false, () => stepUpForm({ proof: "spend-budget", action: "/settings/retention", id: "x", body: "" }))).toThrow();
     expect(() => proofRow("no-such-row")).toThrow();
+    // The exact variant: a mode that lets chat approve can't be drawn as the ordinary one, nor the other way round.
+    expect(() => render(true, () => stepUpForm({ proof: "mode-sign", action: "/mode/sign", id: "x", body: "", hidden: { "chat-approve": "1" } }))).toThrow(/mode-sign-chat-approve/);
+    expect(() => render(true, () => stepUpForm({ proof: "mode-sign-chat-approve", action: "/mode/sign", id: "x", body: "" }))).toThrow();
+    expect(() => render(false, () => stepUpForm({ proof: "pull-requests", action: "/settings/pull-requests", id: "x", body: "", hidden: { act: "on" } }))).toThrow(/pull-requests-on/);
+    // Under Passwordless the ordinary mode asks nothing; the chat-approve one and check-access widening still ask.
+    expect(htmlString(render(true, () => stepUpForm({ proof: "mode-sign", action: "/mode/sign", id: "x", body: "" })))).not.toContain('name="token"');
+    expect(htmlString(render(true, () => stepUpForm({ proof: "mode-sign-chat-approve", action: "/mode/sign", id: "x", body: "", hidden: { "chat-approve": "1" } })))).toContain('name="token" autocomplete="current-password" required');
+    expect(htmlString(render(true, () => stepUpForm({ proof: "project-check-access-widen", action: "/settings/project/check-access", id: "x", body: "" })))).toContain('name="password" data-so-typed');
   });
 
   test("secret inputs are masked, value-free and kept out of password managers; field errors are tied to their field", () => {
@@ -136,12 +191,19 @@ describe("the frame", () => {
     expect(settingsCrumbs("/people", "people", '<h1 class="x">People &amp; access</h1>')).toEqual([{ label: "Settings", href: "/settings" }, { label: "People & access", href: null }]);
     expect(settingsCrumbs("/mode", "mode", "<p>no heading</p>")).toEqual([{ label: "Settings", href: "/settings" }, { label: "Mode", href: null }]);
     expect(headingText("<h1><span>Pair</span> Telegram</h1>")).toBe("Pair Telegram");
+    // The picker's project: only one this person may see now; a selection that outlived the ceiling is never sent.
+    const visible = [{ path: "/r/b" }];
+    expect(openProjectFor("/r/a", "/r/b", visible)).toBe("/r/b");
+    expect(openProjectFor("/r/a", null, visible)).toBeNull();
+    expect(openProjectFor("/r/a", undefined, [])).toBeNull();
+    expect(openProjectFor("/r/b", "/r/x", visible)).toBe("/r/b");
+    expect(openProjectFor(null, null, visible)).toBeNull();
     expect(htmlString(crumbsHtml([{ label: "Settings", href: "/settings" }, { label: "<b>", href: null }]))).toContain('<li aria-current="page">&lt;b&gt;</li>');
   });
 });
 
 function stepUpFormHtml(id: string, route: string) {
-  return render(false, () => stepUpForm({ proof: id, action: route, id: `f-${id}`, body: "" }));
+  return render(false, () => stepUpForm({ proof: id, action: route, id: `f-${id}`, body: "", hidden: selectOf(id) }));
 }
 
 describe("over HTTP: Passwordless stands in for a step-up only", () => {
@@ -186,5 +248,68 @@ describe("over HTTP: Passwordless stands in for a step-up only", () => {
     expect((await post(cookie, "/chat/config", { csrf, token: "", off: "1" })).location).toMatch(/takes your password, typed again/);
     // typed password (this device's alerts): refused the same way.
     expect((await post(cookie, "/push/subscribe", { csrf, token: "" })).location).toMatch(/takes your password, typed again/);
+  });
+});
+
+describe("over HTTP: the stronger variants are what their handlers need", () => {
+  let dir: string, repo: string, store: Store, server: Server, base: string, password: string, cookie: string, csrf: string;
+  beforeEach(async () => {
+    dir = realpathSync(mkdtempSync(join(tmpdir(), "so-settings-kit-variants-")));
+    repo = join(dir, "shop");
+    mkdirSync(repo);
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repo });
+    store = openStore(join(dir, "orders.db"));
+    const added = addApprover(store, "alex", T0);
+    if (!added.ok) throw new Error("bootstrap failed");
+    password = added.token;
+    server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo, platform: "darwin", fenceAvailable: () => true } as Parameters<typeof createDecisionServer>[0]);
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (typeof address !== "object" || address === null) throw new Error("no address");
+    base = `http://127.0.0.1:${address.port}`;
+    const login = await fetch(`${base}/login`, { method: "POST", body: new URLSearchParams({ name: "alex", token: password }), redirect: "manual" });
+    cookie = login.headers.getSetCookie().map(one => one.split(";")[0]!).find(one => one.startsWith("standing-orders_session="))!;
+    csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(await (await fetch(`${base}/settings/passwordless`, { headers: { cookie } })).text())![1]!;
+    const on = await fetch(`${base}/settings/passwordless`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, action: "on", password }), redirect: "manual" });
+    expect(on.status).toBe(303);
+    expect(passwordlessOn(store)).toBe(true);
+  });
+  afterEach(async () => {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const post = async (path: string, fields: Record<string, string>) => {
+    const answer = await fetch(`${base}${path}`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, ...fields }), redirect: "manual" });
+    return { status: answer.status, location: decodeURIComponent(answer.headers.get("location") ?? ""), text: await answer.text() };
+  };
+  /** The terms /mode/confirm hands the sign form, as hidden fields. */
+  const confirmed = async (fields: Record<string, string>) => {
+    const page = (await post("/mode/confirm", { name: "standard", days: "1", ...fields })).text;
+    const form = page.slice(page.indexOf('action="/mode/sign"'));
+    return Object.fromEntries([...form.slice(0, form.indexOf("</form>")).matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)].map(m => [m[1]!, m[2]!.replace(/&amp;/g, "&")]).filter(([name]) => name !== "csrf"));
+  };
+
+  test("an ordinary mode signs with the session; one that lets chat approve refuses an empty password", async () => {
+    const plain = await confirmed({});
+    expect(plain["nonce"]).toBeTruthy();
+    expect(proofRow("mode-sign").passwordless).toBe("accepted");
+    expect((await post("/mode/sign", { ...plain, token: "" })).status).toBe(303);
+    expect(store.activeMode(repo, new Date())).not.toBeNull();
+    expect(store.revokeMode(repo, "alex", "test", new Date())).toBe(true);
+    const chat = await confirmed({ "chat-approve": "1" });
+    expect(chat["chat-approve"]).toBe("1");
+    expect(proofRow("mode-sign-chat-approve").passwordless).toBe("refused");
+    const refused = await post("/mode/sign", { ...chat, token: "" });
+    expect(refused.status).toBe(403);
+    expect(refused.text).toMatch(/signing a mode takes your password, typed again/);
+  });
+
+  test("widening check access refuses the Passwordless session; a password typed now by an operator widens", async () => {
+    expect(proofRow("project-check-access-widen").passwordless).toBe("refused");
+    expect((await post("/settings/project/check-access", { repo, level: "unsandboxed", password: "" })).location).toMatch(/Enter your Toolroll password/);
+    expect(store.projectCheckAccess(repo)).toBe("sandboxed");
+    expect((await post("/settings/project/check-access", { repo, level: "unsandboxed", password })).location).toMatch(/Saved/);
+    expect(store.projectCheckAccess(repo)).toBe("unsandboxed");
   });
 });

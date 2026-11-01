@@ -8,6 +8,7 @@ import { expect, test } from "vitest";
 import { NO_COUNTS } from "../agent-state-words.js";
 import type { BrowserWorkspace } from "../browser-workspace.js";
 import { currentProjectOf, Navigation } from "./app.js";
+import { SETTINGS_KIT_SCRIPT } from "../settings-kit-script.js";
 
 const shop = { name: "shop", path: "/r/shop", href: "/work?project=%2Fr%2Fshop", knowledgeHref: "/settings/knowledge?repo=%2Fr%2Fshop" };
 const ops = { name: "ops", path: "/r/ops", href: "/work?project=%2Fr%2Fops", knowledgeHref: "/settings/knowledge?repo=%2Fr%2Fops" };
@@ -51,4 +52,78 @@ test("the picker names the open project; a page about another project names that
   expect(currentProjectOf(workspace({ openProject: null }))).toBeUndefined();
   expect(currentProjectOf(workspace({ openProject: "/r/gone" }))).toBeUndefined();
   expect(renderToStaticMarkup(createElement(Navigation, { workspace: sensitive }))).toMatch(/<option value="\/work\?project=%2Fr%2Fshop" selected="">shop<\/option>/);
+});
+
+/** The kit's script on a kit form (settings-kit.ts as rendered, minus the server's form token), with posting
+ * recorded instead of navigating. */
+async function kitForm(): Promise<{ form: HTMLFormElement; posts: { submitter: string | null }[] }> {
+  document.documentElement.className = "";
+  document.body.innerHTML = `<form method="post" action="/spend/budget" id="limit" class="kit-form" data-kit-form="spend-budget" data-kit-step-up="">
+<input type="hidden" name="nonce" value="n-1"><input name="usd" value="40">
+<div class="kit-proof" data-kit-proof><label>Your Toolroll password<input type="password" name="password" autocomplete="current-password" required></label></div>
+<div class="kit-save-bar" data-kit-save-bar><span data-kit-state data-idle="No changes"></span><button type="submit" class="kit-save" name="action" value="set">Save</button></div>
+<dialog class="kit-dialog" data-kit-dialog><div data-kit-slot></div><button type="button" data-kit-cancel>Cancel</button><button type="button" data-kit-confirm>Save</button></dialog></form>`;
+  const form = document.querySelector("form")!;
+  const posts: { submitter: string | null }[] = [];
+  // Whatever submit reaches the page's own listeners un-cancelled is a post (a dispatched event never navigates).
+  form.addEventListener("submit", event => { if (!event.defaultPrevented) posts.push({ submitter: (event.submitter as HTMLButtonElement | null)?.value ?? null }); });
+  new Function(SETTINGS_KIT_SCRIPT)();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  return { form, posts };
+}
+const submitWith = (form: HTMLFormElement, submitter: HTMLElement | null) =>
+  form.dispatchEvent(new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter }));
+const tick = () => new Promise(resolve => setTimeout(resolve, 5));
+
+test("kit script: Enter inside the open dialog posts once, after its own submit event, with the original button", async () => {
+  const { form, posts } = await kitForm();
+  const save = form.querySelector<HTMLButtonElement>(".kit-save")!;
+  const sent: (HTMLElement | null | undefined)[] = [];
+  form.requestSubmit = (by?: HTMLElement | null) => { sent.push(by); submitWith(form, by ?? null); };
+  submitWith(form, save);
+  expect(posts).toEqual([]);
+  expect(form.querySelector("dialog")!.open).toBe(true);
+  form.querySelector<HTMLInputElement>("input[name=password]")!.value = "pw";
+  // Implicit submission from the field: the default button is the submitter; the dialog is open.
+  const enter = new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: save });
+  form.dispatchEvent(enter);
+  expect(enter.defaultPrevented).toBe(true);
+  expect(sent).toEqual([]); // not re-entered while its own submit event runs
+  await tick();
+  expect(sent).toEqual([save]);
+  expect(posts).toEqual([{ submitter: "set" }]);
+});
+
+test("kit script: a posted form is pending, so another submit posts nothing; showing the page again releases it", async () => {
+  const { form, posts } = await kitForm();
+  const save = form.querySelector<HTMLButtonElement>(".kit-save")!;
+  form.requestSubmit = (by?: HTMLElement | null) => { submitWith(form, by ?? null); };
+  submitWith(form, save);
+  form.querySelector<HTMLInputElement>("input[name=password]")!.value = "pw";
+  form.querySelector<HTMLButtonElement>("[data-kit-confirm]")!.click();
+  await tick();
+  expect(posts).toHaveLength(1);
+  expect(save.disabled).toBe(true);
+  // A second Save (or confirm) while the first post is on its way: dropped.
+  const again = new SubmitEvent("submit", { bubbles: true, cancelable: true, submitter: save });
+  form.dispatchEvent(again);
+  expect(again.defaultPrevented).toBe(true);
+  expect(posts).toHaveLength(1);
+  expect(form.querySelector("dialog")!.open).toBe(false);
+  window.dispatchEvent(new Event("pageshow"));
+  expect(save.disabled).toBe(false);
+});
+
+test("kit script: Cancel closes the dialog and posts nothing; an empty password posts nothing", async () => {
+  const { form, posts } = await kitForm();
+  const save = form.querySelector<HTMLButtonElement>(".kit-save")!;
+  form.requestSubmit = (by?: HTMLElement | null) => { submitWith(form, by ?? null); };
+  submitWith(form, save);
+  form.querySelector<HTMLButtonElement>("[data-kit-cancel]")!.click();
+  expect(form.querySelector("dialog")!.open).toBe(false);
+  submitWith(form, save);
+  form.querySelector<HTMLButtonElement>("[data-kit-confirm]")!.click();
+  await tick();
+  expect(posts).toEqual([]);
+  expect(save.disabled).toBe(false);
 });

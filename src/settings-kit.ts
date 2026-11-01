@@ -13,9 +13,9 @@
  * - nothing here ever sets `value` on a proof or secret field;
  * - handlers never read any of this: it only draws.
  */
-import { attributes, html, htmlString, joinHtml, postForm, reauth, type Html, type HtmlValue } from "./html.js";
+import { attributes, html, htmlString, joinHtml, postForm, reauth, replaceMarkup, type Html, type HtmlValue } from "./html.js";
 import { isSettingsFrame } from "./settings-kit-script.js";
-import { contractReads, proofRow, type ProofRow } from "./settings-proofs.js";
+import { contractReads, PROOF_INVENTORY, proofRow, type ProofRow } from "./settings-proofs.js";
 
 export { isSettingsFrame };
 
@@ -38,6 +38,13 @@ export function settingsCrumbs(pathname: string, title: string, page: string): C
   if (!isSettingsFrame(pathname) || pathname === "/settings") return undefined;
   const name = headingText(page) ?? (title.charAt(0).toUpperCase() + title.slice(1));
   return [{ label: "Settings", href: "/settings" }, { label: name, href: null }];
+}
+
+/** The project the sidebar's picker names: the session's saved selection while this person may still see it, else
+ * the page's own effective project, else none — checked against the visible project list, so a selection that
+ * outlived the ceiling is never sent to the page. */
+export function openProjectFor(saved: string | null, effective: string | null | undefined, visible: readonly { path: string }[]): string | null {
+  return [saved, effective ?? null].find((path): path is string => path !== null && visible.some(one => one.path === path)) ?? null;
 }
 
 /** The breadcrumb as server HTML (the page before scripts, and without them). */
@@ -102,14 +109,35 @@ ${group.options.map((one, at) => {
 
 // ---- proof ---------------------------------------------------------------------------------------------------------
 
+/** Proofs that only a password typed now satisfies: no Passwordless session and no identity-provider re-check. */
+export const typedOnly = (row: ProofRow): boolean => row.proof === "typed-password" || row.proof === "typed-now-operator";
+
 /** The proof field a row's handler reads, as today's forms write it; empty for a CSRF-only row. A step-up field goes
- * through `reauth` (Passwordless leaves it out); a credential or typed-password field always shows. Never a value. */
+ * through `reauth` (Passwordless leaves it out); a credential or typed field always shows. A typed-only field carries
+ * `data-so-typed`, so the identity-provider swap leaves it a real password field (keepTypedFields). Never a value. */
 export function proofField(row: ProofRow, options: { label?: string } = {}): Html {
   if (row.field === null || row.proof === "none") return html``;
   if (!contractReads(row, row.field)) throw new Error(`${row.id}: its form doesn't read ${row.field}`);
-  const field = html`<label>${options.label ?? "Your Toolroll password"}<input type="password" name="${row.field}" autocomplete="current-password" required></label>`;
+  const label = options.label ?? "Your Toolroll password";
+  if (typedOnly(row)) return html`<label>${label}<input type="password" name="${row.field}" data-so-typed autocomplete="current-password" required></label>`;
+  const field = html`<label>${label}<input type="password" name="${row.field}" autocomplete="current-password" required></label>`;
   return row.proof === "step-up" ? reauth(field) : field;
 }
+
+const TYPED_FIELD = /<input type="password" name="([a-z-]+)" data-so-typed autocomplete="current-password" required>/g;
+const HELD_FIELD = /<input type="password" name="([a-z-]+)" data-so-typed data-so-typed-held required>/g;
+/**
+ * The identity-provider swap (render-people.ts ssoStepUps) with typed-only proof fields kept: those handlers take only
+ * a password typed now, so the field must stay a real password input. The field is held out of the swap by its
+ * marker and put back as it was. Every other step-up field is swapped exactly as before.
+ */
+export function keepTypedFields<A extends unknown[]>(page: Html, swap: (page: Html, ...rest: A) => Html, ...rest: A): Html {
+  const held = replaceMarkup(page, TYPED_FIELD, (_whole, name) => html`<input type="password" name="${name}" data-so-typed data-so-typed-held required>`);
+  return replaceMarkup(swap(held, ...rest), HELD_FIELD, (_whole, name) => html`<input type="password" name="${name}" data-so-typed autocomplete="current-password" required>`);
+}
+
+/** The rows that share this row's route: one handler's variants. */
+const variantsOf = (row: ProofRow): ProofRow[] => PROOF_INVENTORY.filter(one => one !== row && one.routes.some(route => row.routes.includes(route)));
 
 /** How the dialog explains a proof that Passwordless doesn't cover, in words; null where nothing needs saying. */
 export function proofNote(row: ProofRow): string | null {
@@ -145,7 +173,11 @@ export type StepUpForm = {
 export function stepUpForm(form: StepUpForm): Html {
   const row = proofRow(form.proof);
   if (!row.routes.includes(form.action)) throw new Error(`${row.id} doesn't post to ${form.action}`);
-  for (const name of Object.keys(form.hidden ?? {})) if (row.field === name || row.secrets.includes(name)) throw new Error(`${row.id}: ${name} is never a hidden value`);
+  const hidden = form.hidden ?? {};
+  for (const name of Object.keys(hidden)) if (row.field === name || row.secrets.includes(name)) throw new Error(`${row.id}: ${name} is never a hidden value`);
+  // The exact variant: its own selector must be in the hidden terms, and no other variant's may be.
+  if (row.select !== undefined && String(hidden[row.select.field] ?? "") !== row.select.value) throw new Error(`${row.id} posts ${row.select.field}=${row.select.value}`);
+  for (const other of variantsOf(row)) if (other.select !== undefined && String(hidden[other.select.field] ?? "") === other.select.value) throw new Error(`${form.action} with ${other.select.field}=${other.select.value} is ${other.id}, not ${row.id}`);
   const proof = proofField(row);
   const asks = htmlString(proof) !== "";
   const note = proofNote(row);
@@ -160,7 +192,7 @@ ${note === null ? "" : html`<p class="kit-hint">${note}</p>`}<div class="kit-dia
     asks ? html`<div class="kit-proof" data-kit-proof>${proof}</div>` : "",
     html`<div class="kit-save-bar" data-kit-save-bar><span class="kit-save-state" aria-live="polite" data-kit-state data-idle="${save.idle ?? "No changes"}"></span>${submit}</div>`,
     dialog,
-  ]), { hidden: form.hidden ?? {}, attrs: { id: form.id, class: "kit-form", "data-kit-form": row.id, "data-kit-step-up": asks ? "" : null } });
+  ]), { hidden, attrs: { id: form.id, class: "kit-form", "data-kit-form": row.id, "data-kit-step-up": asks ? "" : null } });
 }
 
 /** A section: a heading, a one-line state, a problem the handler sent back (role=alert), then its form. */

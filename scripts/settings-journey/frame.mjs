@@ -92,14 +92,30 @@ export const actions = [
       await page.click("button.kit-save");
       await page.click("[data-kit-confirm]");
       if (posted.length > 0) out.push({ probe: "kit-dialog", detail: "Confirm with an empty password posted" });
-      // Typed: one post with the pressed button, the hidden terms, the form token and the password.
+      // Typed, then Enter in the field: one post with the pressed button, the hidden terms, the form token and the
+      // password (the dialog's own submit event finishes first, then the form posts with the original button).
       await page.fill("dialog[data-kit-dialog] input[name=password]", "correct-horse-1");
-      await Promise.all([page.waitForLoadState("load"), page.click("[data-kit-confirm]")]);
+      await page.press("dialog[data-kit-dialog] input[name=password]", "Enter");
+      await page.waitForURL(url => url.pathname === POST_PATH, { timeout: 5_000 }).catch(() => {});
       await page.waitForTimeout(200);
       if (posted.length !== 1) return [...out, ...fail("kit-dialog", `Confirm posted ${posted.length} time(s)`)];
       const sent = new URLSearchParams(posted[0]);
       for (const [name, value] of [["action", "set"], ["target", "installation:*"], ["nonce", "n-123"], ["csrf", "journey-csrf"], ["password", "correct-horse-1"], ["usd", "40"]])
         if (sent.get(name) !== value) out.push({ probe: "kit-dialog", detail: `the post sent ${name}=${sent.get(name)}, not ${value}` });
+      // While a post is on its way (slowed here), another Confirm or Save posts nothing more.
+      await page.route(fixture.base + POST_PATH, async route => { await new Promise(resolve => setTimeout(resolve, 800)); posted.push(route.request().postData() ?? ""); return route.fulfill({ status: 200, contentType: "text/html", body: "<!doctype html><title>Posted</title><h1>Posted</h1>" }); });
+      await page.goto(fixture.base + KIT_PATH, { waitUntil: "load" });
+      await page.fill("#limit-usd", "41");
+      await page.click("button.kit-save");
+      await page.fill("dialog[data-kit-dialog] input[name=password]", "correct-horse-1");
+      await page.evaluate(() => {
+        const form = document.querySelector("form.kit-form"), save = form.querySelector("button.kit-save");
+        form.querySelector("[data-kit-confirm]").click();
+        setTimeout(() => { form.querySelector("[data-kit-confirm]").click(); form.requestSubmit(save); }, 100);
+      });
+      await page.waitForURL(url => url.pathname === POST_PATH, { timeout: 5_000 }).catch(() => {});
+      await page.waitForTimeout(300);
+      if (posted.length !== 2) out.push({ probe: "kit-dialog", detail: `a second submit while the first was on its way posted (${posted.length - 1} posts)` });
       return out;
     },
   },

@@ -151,6 +151,24 @@ describe("the sidebar's project states", () => {
     expect(statesOf(agents.projectStates)[repoA]).toBeDefined();
   });
 
+  test("settings frame: a saved project no longer admitted is never sent to the page", async () => {
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repoA });
+    const alex = await login("alex", alexToken);
+    const csrf = (await page("/projects", alex)).csrf;
+    expect((await fetch(url("/projects/open"), { method: "POST", headers: { cookie: alex, origin: base }, body: new URLSearchParams({ csrf, path: repoA }), redirect: "manual" })).status).toBe(303);
+    expect((await page("/settings/retention", alex)).openProject).toBe(repoA);
+    // Project A leaves the console while this session still holds it.
+    const removed = await fetch(url("/projects/remove"), { method: "POST", headers: { cookie: alex, origin: base }, body: new URLSearchParams({ csrf, repo: repoA }), redirect: "manual" });
+    expect(removed.status).toBe(303);
+    for (const path of ["/settings/retention", "/agents"]) {
+      const raw = await (await fetch(url(path), { headers: { cookie: alex } })).text();
+      const seen = workspaceOf(raw);
+      expect(seen.projects.map(one => one.path), path).not.toContain(repoA);
+      expect(seen.openProject ?? null, path).not.toBe(repoA);
+      expect(raw, path).not.toContain(JSON.stringify(repoA).slice(1, -1));
+    }
+  });
+
   test("a password page carries no rail states", async () => {
     // An unscoped console with a default project, where a scope to approve makes /next a password page.
     const single = createDecisionServer({ store, evidenceRoot, clock: () => new Date(), repo: repoA });
