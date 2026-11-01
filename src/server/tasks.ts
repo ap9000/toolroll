@@ -21,13 +21,15 @@ import { withActor } from "../actor.js";
 import { gateWords } from "../approval-policy.js";
 import { acceptAndCompleteAsOperator,assignmentOf,checkAssignmentAsOperator } from '../assignment.js';
 import { attentionCardForUnverifiedDone,classify } from "../board.js";
+import { nightlyNeedsYou } from "../nightly-github.js";
 import { codingHandoffPreview,createCodingHandoff } from '../coding-handoff.js';
 import { codingShippingHtml } from '../coding-shipping-ui.js';
 import { codingWorkspaceHtml,codingWorkspaceScript } from '../coding-ui.js';
 import { CodingActionError } from '../coding-workspace.js';
 import { checkResponse, CONSOLE_FORMS, readForm } from "../contracts/console-api.js";
 import { hasForbiddenControls,validateNote } from "../decision.js";
-import { diagnoseTaskDispatch } from "../dispatch.js";
+import { builderReadyFor,diagnoseTaskDispatch,firstRunBuilderRepo } from "../dispatch.js";
+import { withBuilderStep } from "../first-run.js";
 import { evidencePack,evidencePackHtml } from "../evidence-pack.js";
 import { readVerifiedArtifact,readVerifiedReport,writeEvidenceFile } from "../evidence.js";
 import { computeGaps } from "../gaps.js";
@@ -94,11 +96,12 @@ import { boardTickScript,oneLineOf,QUEUE_VIEW,refuse,regionScript,screen,transcr
 import { chatReturnWithSaid,matchTaskPath,redirect,respond,reviewHref,safeChatReturn,safeReturn,SAFETY,taskChatHref,taskHref } from "./http.js";
 import { type TaskComposerPrefill,boardBody,boardWorkers,donePage,inboxFingerprints,inboxPage,newTaskPage,nextPage,parseInboxTab,QUEUE_FRONT,queueBody,queueScript,TASK_STATES,workPage,type InboxTab,type PeekAdmission } from "./render-pages.js";
 import { runEfficiencyOf } from "../run-efficiency.js";
+import { timingFor } from "../latency-timeline.js";
 import { ACCEPT_ANYWAY_NEEDS_REASON,editorFileHref,proofBundleView,rankReviewQueue,RESULT_REFUSALS,REVIEW_QUEUE_CAP,reviewCockpitDetailParts,reviewCockpitPage,reviewPriorityOf,runFactsFragment,runOutcomeBadge,runPage,RUNS_PAGE,runsPage,withRefusal,type CompletedWorkRow,type RankedReviewRow,type ReviewCockpitView } from "./render-results.js";
 import { approvalFormDigest,approveRefusalWords,checkProgressHtml,consentDoorOf,decisionPage,nonceHashOf,PermissionsWouldChange,requirementsFromEditor,resumeDigestOf,taskOf } from "./render-tasks.js";
 import { type Who } from "./session.js";
 export function createTasksHandlers(runtime: ServerRuntime) {
-  const { store, peekSay, peekCache, PEEK_CACHE_TTL_MS, peekInFlight, PEEK_GLOBAL_INFLIGHT, peekBySession, PEEK_SESSION_INFLIGHT, clock, peekName, PEEK_FRAGMENT_BYTES, peekEvict, evidenceRoot, sendScreen, chromeFor, visible, consumeApprovalNonce, authenticateApprover, options, mintApprovalNonce, taskScreen, unscopedMode, admissionList, planViewOf, revisionViewOf, runIsTaskResult, leadPrincipal, familyOf, armTaskResume, runIsLive, revisionLedgerOf, resultDetailOf, reviewFactsFor, taskRepoOf, runVisible, restricted, codingActorAllowed, codingProjectAllowed, managedRepos, routeViewOf, workAccess, firstRunStepsNow, revisionDocOf, failureOf, dockedConversation, planContractViewOf, familiesInView, explainAttempt, taskChatFocus, familyTasksInView, liveCeiling, projectOf, ceiling, bustBadge, revisionDestination } = runtime;
+  const { identities, store, peekSay, peekCache, PEEK_CACHE_TTL_MS, peekInFlight, PEEK_GLOBAL_INFLIGHT, peekBySession, PEEK_SESSION_INFLIGHT, clock, peekName, PEEK_FRAGMENT_BYTES, peekEvict, evidenceRoot, sendScreen, chromeFor, visible, consumeApprovalNonce, authenticateApprover, options, mintApprovalNonce, taskScreen, unscopedMode, admissionList, planViewOf, revisionViewOf, runIsTaskResult, leadPrincipal, familyOf, armTaskResume, runIsLive, revisionLedgerOf, resultDetailOf, reviewFactsFor, taskRepoOf, runVisible, restricted, codingActorAllowed, codingProjectAllowed, managedRepos, routeViewOf, workAccess, firstRunStepsNow, revisionDocOf, failureOf, dockedConversation, planContractViewOf, familiesInView, explainAttempt, taskChatFocus, familyTasksInView, liveCeiling, projectOf, ceiling, bustBadge, revisionDestination } = runtime;
 
   /** A row admitted the address but its path parameter does not parse: the console's unknown page. */
   function noPage(who: Who, response: ServerResponse): void {
@@ -194,7 +197,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
           })),
         cancelledBlockers: cancelled,
         gaps: project === null ? [] : computeGaps(store, project, now).filter(gap => gap.unblocks.length > 0).slice(0, 10),
-        wizard: firstRunStepsNow(now),
+        // The builder step speaks for the same project as Chat's (firstRunBuilderRepo), as dispatch decides.
+        wizard: withBuilderStep(firstRunStepsNow(now), builderReadyFor(store, firstRunBuilderRepo(store, project, visible, managedRepos()), now)),
         worker: (() => {
           // The one fact the inbox must never hide (install review): with
           // no worker answering, nothing here will ever build, and every
@@ -440,7 +444,13 @@ export function createTasksHandlers(runtime: ServerRuntime) {
         repairChain,
       });
     });
-    const laneCards = [...cards, ...unverifiedCards];
+    // Project-level Needs you (evals-nightly.md, part A3): GitHub's nightly lane failures and the plane's own nightly
+    // check of main, for the projects this board shows.
+    const nightlyCards = nightlyNeedsYou(store, repo => visible(repo) && (all || project === null || repo === project)).map(need => ({
+      lane: "attention" as const, taskId: need.key, title: need.title, repo: need.repo, reason: need.reason, href: need.href, claim: null,
+      stalledSince: need.since, attempt: null, overdue: false, priority: 0, assignedRunner: null,
+    }));
+    const laneCards = [...cards, ...unverifiedCards, ...nightlyCards];
     // The worker strip: the workers this board's work can go to — bound to
     // this project, or (rolled up) to any project the ceiling admits.
     const workers = boardWorkers(store.listRunners(), { all, project, visible });
@@ -1062,10 +1072,15 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     }
     let repo = effective;
     let admitted: string[] | null = unscopedMode ? null : admissionList() ?? [];
+    // What this filing is decided on: re-checked inside the write below, after every await (project-identity.ts).
+    const decidedOn = identities.generation();
     const rootMode = !unscopedMode && ceiling.roots.length > 0;
     if (rootMode && effective !== "") {
-      const canonical = (await authorizedProject(liveCeiling(), effective)) ? canonicalProject(effective) : null;
-      if (canonical === null || canonical === undefined) {
+      // Resolved off the console's thread (project-identity.ts), then proved against the ceiling as that identity.
+      const resolved = await identities.resolveNow(effective);
+      if (resolved === "no-answer") return newTaskScreen(ctx, 503, `${effective} didn't answer — its folder may be on a drive that's disconnected, or waiting on macOS; try again in a moment`, draft);
+      const canonical = resolved !== null && (await authorizedProject(liveCeiling(), resolved)) ? resolved : null;
+      if (canonical === null) {
         return newTaskScreen(ctx, 403, `${effective} is outside what this server was configured to show`, draft);
       }
       repo = canonical;
@@ -1090,6 +1105,9 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const after = (body.get("after") ?? "").trim();
     let chainProblem: string | null = null;
     const made = store.transact(() => {
+      // A project folder's identity changed while this request waited (a root or link now leads elsewhere): what was
+      // proved above may no longer hold, so nothing is filed on it.
+      if (identities.generation() !== decidedOn || (rootMode && repo !== "" && !visible(repo))) return null;
       const filed = fileTaskProposal(
         store,
         {
@@ -1124,6 +1142,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       if (filed.ok && chainProblem === null && who.via === "cookie") applyModeToNewFiling(store, filed.id, who.name, now);
       return filed;
     });
+    if (made === null) return newTaskScreen(ctx, 409, "a project folder changed while this was being filed — check the project and send it again", draft);
     if (!made.ok) {
       return newTaskScreen(ctx, made.reason === "backlog-full" ? 429 : 400, made.message, { title, goal, not: notThis, touches: body.get("touches") ?? "", acceptance: body.get("acceptance") ?? "", values: body.sent });
     }
@@ -2838,7 +2857,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       ...(store.isDemo() ? { demo: true } : {}),
     };
     if (run === null) {
-      return { ...base, run: null, detail: null, reviewRetry: null, review: null, notes: [] };
+      return { ...base, run: null, detail: null, reviewRetry: null, review: null, notes: [], timing: timingFor(store, null, row.taskId) };
     }
     const detail = resultDetailOf(run, who, now);
     return {
@@ -2862,6 +2881,8 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       efficiency: (() => { try { return runEfficiencyOf(store, evidenceRoot, run.id, now); } catch { return null; } })(),
       // What its network was and what its proxy saw (egress.ts), display only.
       network: store.runNetwork(run.id),
+      // Where the time went: its release check's parts and the task's deploys (latency-timeline.ts), display only.
+      timing: timingFor(store, run.id, row.taskId),
       // How far its checks reached (check-access.ts), display only.
       checkAccess: store.runCheckAccess(run.id),
       reviewRetry: store.reviewRetryStateOf(run.id),

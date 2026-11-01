@@ -34,7 +34,7 @@ npx toolroll up
 ```
 
 That starts the app and a builder for your projects, then opens the console
-at http://127.0.0.1:4180. Runs on macOS or Linux with Node.js 22.13+ and git.
+at http://127.0.0.1:4180. Runs on macOS or Linux with Node.js 22.13+ and git 2.41+.
 Try the sandbox first with `npx toolroll demo`: ask its scripted lead for a
 change in Chat, approve the plan, and watch it land Ready. It never calls a
 model, spends or reaches outside.
@@ -276,13 +276,21 @@ npx toolroll up --project-root ~/Projects    # or: bunx toolroll up
 
 That is the install and the setup. It needs Node 22.13 or newer on the
 machine (Bun's runtime has no `node:sqlite`; `bunx` hands the shebang to
-Node, so it works too). `npm install -g toolroll` gives you the
-bare `toolroll` command for later (`standing-orders`, the older name, still
-works).
+Node, so it works too), and git 2.41 or newer: Toolroll reads agent-written
+checkouts with `git --attr-source`, which older git refuses, and `toolroll
+up`, `serve`, `watch` and `doctor` say so when the installed git is older.
+Ubuntu 24.04 ships 2.43, which works; Debian 12 ships 2.39: install a newer
+one there. On git older than 2.45 (no `git --no-lazy-fetch`), a project that
+is a partial clone (`git clone --filter=…`) is refused for Toolroll's
+protected reads: use git 2.45 or newer for those, or a full clone. CI runs
+the git tests on 2.41 and on 2.47.
+`npm install -g toolroll` gives you the bare `toolroll` command for later
+(`standing-orders`, the older name, still works).
 
-`up` prints your login once (and saves it beside the database as
-`up-login.txt`), opens the app in your browser, and connects this machine as
-the builder. Add an existing folder or a GitHub repository from **Projects**;
+`up` saves your password beside the database as `up-login.txt` (every
+start prints where, and the `cat` command that shows it; never the password
+itself), opens the app in your browser, and connects this machine as the
+builder. Add an existing folder or a GitHub repository from **Projects**;
 the builder and unified chat pick it up while the app keeps running. The
 projects folder and every added repository are remembered. Later,
 `toolroll up` can be run from any directory and reconnects all of them.

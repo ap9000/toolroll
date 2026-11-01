@@ -446,6 +446,8 @@ export type ReviewCockpitView = {
   efficiency?: RunEfficiency | null;
   /** What the run's network was and what its proxy saw (egress.ts): display only. */
   network?: RunNetworkRecord | null;
+  /** Where the time went (latency-timeline.ts): its release check's parts and the task's deploys, display only. */
+  timing?: import("../latency-timeline.js").TimingView | null;
   /** How far its checks reached (check-access.ts): shown only when wider than sandboxed. */
   checkAccess?: CheckAccess;
   taskId: string;
@@ -774,6 +776,7 @@ export function reviewCockpitDetailParts(view: ReviewCockpitView, csrf: string, 
     notes: view.notes.map(one => ({ author: one.author, at: one.createdAt, note: one.note })),
     efficiency: view.efficiency ?? null,
     network: view.network ?? null,
+    timing: view.timing ?? null,
     acts: { primary: null, secondary: null, line: null }, runChecks: null, mismatch: null,
     // The raw run record lives under Details now (2026-10-02): /r/<id> for this result redirects here.
     record: run === null ? null : { build: run.id, href: `/r/${run.id}?record=1`, facts: [

@@ -11,12 +11,12 @@
  * nothing is removed.
  */
 import { spawnSync } from "node:child_process";
-import { closeSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
+import { accessSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync, writeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { ensureGitViewsRoot, withCheckoutLock } from "./git-views.js";
 import { gitIncident, type GitIncident } from "./git-incident.js";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { run, type ExecResult } from "./exec.js";
 import { ENV, ENV_ALLOWLIST } from "./remote-main.js";
 import { WORKTREE_TIMEOUT_MS, type Runner } from "./worktree.js";
@@ -200,7 +200,7 @@ function nestedRepository(path: string): boolean {
  * repository (boundDirs; `binding.repo` when the caller has the project's), is refused; so is a command whose
  * repository changed under it while git ran.
  */
-async function inView(cwd: string, binding: GitBinding, work: (view: GitView, restore: (result: ExecResult, args: readonly string[]) => ExecResult) => Promise<ExecResult>, after = true): Promise<ExecResult> {
+async function inView(cwd: string, binding: GitBinding, work: (view: GitView, restore: (result: ExecResult, args: readonly string[]) => ExecResult) => Promise<ExecResult>, after = true, lockTimeoutMs?: number, gitFile = "git"): Promise<ExecResult> {
   const root = checkoutRootOf(cwd);
   if (root === null) return NOT_A_REPOSITORY;
   // One plane git command at a time on a checkout (git-views.ts withCheckoutLock: re-entrant along one call chain).
@@ -209,14 +209,14 @@ async function inView(cwd: string, binding: GitBinding, work: (view: GitView, re
   try {
     return await withCheckoutLock(realpathSync(homedir()), key, async () => {
       let view: GitView;
-      try { view = gitView(root, "write", binding); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
+      try { view = gitView(root, "write", binding, gitFile); } catch (error) { return refused(error instanceof Error ? error.message : "the checkout couldn't be read"); }
       try {
         const result = await work(view, (result, args) => ({ ...result, stdout: view.restore(result.stdout, args), stderr: view.restore(result.stderr, args) }));
         if (!after) return result;
         const why = view.settle();
         return why === null ? result : refused(why);
       } finally { view.dispose(); }
-    });
+    }, lockTimeoutMs);
   } catch (error) { return refused(error instanceof Error ? error.message : "the checkout is busy"); }
 }
 
@@ -227,11 +227,11 @@ async function inView(cwd: string, binding: GitBinding, work: (view: GitView, re
  * target is bound to the same repository as the folder it is removed from. A removal without --force runs under the
  * target's own view (its own config.worktree folded in), so git's last check of whether it is clean reads it as the
  * target itself would. `binding.repo`: the project's main checkout, from the plane's records, when the caller has it. */
-export function teardownGit(runner: Runner = run, binding: GitBinding = {}): Git {
+export function teardownGit(runner: Runner = run, binding: GitBinding = {}, lockTimeoutMs?: number, gitFile = "git"): Git {
   const options = (cwd: string, env: Record<string, string>) => ({ cwd, envAllowlist: ENV_ALLOWLIST, env: { ...ENV, ...env }, timeoutMs: WORKTREE_TIMEOUT_MS, maxBuffer: 512 * 1024 * 1024 });
   const configProblem = async (cwd: string, env: Record<string, string>): Promise<ExecResult | null> => {
     // git-lfs's own filters may stand only beside a .lfsconfig that names no extension (commandSetting's lfsChecked).
-    if (lfsExtensionIn(env["GIT_WORK_TREE"] ?? cwd)) return refused("the checkout's .lfsconfig sets a git-lfs key that can run a command");
+    if (lfsExtensionIn(env["GIT_WORK_TREE"] ?? cwd, gitFile)) return refused("the checkout's .lfsconfig sets a git-lfs key that can run a command");
     const config = await runner("git", ["--no-optional-locks", "config", "--list", "--no-includes", "--show-scope", "-z"], options(cwd, env));
     if (config.code !== 0) return refused("its config couldn't be read");
     const key = commandSetting(config.stdout, { lfsChecked: true });
@@ -269,8 +269,8 @@ export function teardownGit(runner: Runner = run, binding: GitBinding = {}): Git
       // the target's view, inspected above, so it judges the target by the target's own settings.
       return ran(removal && !forced ? { ...view.env, GIT_COMMON_DIR: targetView.env["GIT_COMMON_DIR"]! } : view.env);
       // A removed target has no git directory left to prove: the folder it was removed from is proven instead.
-    }, !removal);
-  });
+    }, !removal, lockTimeoutMs, gitFile);
+  }, true, lockTimeoutMs, gitFile);
 }
 
 /**
@@ -287,23 +287,34 @@ export function teardownGit(runner: Runner = run, binding: GitBinding = {}): Git
  * git at any file, a pipe that never ends among them. Each file is read only as the regular file it is, bounded; one
  * that can't be read so counts as including.
  */
-export function checkoutIncludes(checkout: string): boolean {
+/** What is left of a caller's deadline, in ms (viewedGitSync's `deadline`): absent, no deadline. */
+type Limit = () => number;
+/** A setup call's time limit: its own five seconds, or less when a caller's deadline leaves less (never below 1 ms;
+ * a caller checks the deadline itself before calling). */
+const setupTimeout = (limit?: Limit): number => limit === undefined ? 5_000 : Math.max(1, Math.min(5_000, limit()));
+
+export function checkoutIncludes(checkout: string, gitFile = "git", limit?: Limit): boolean {
   const dirs = gitDirsOf(checkout);
   if (dirs === null) return true;
   for (const path of [join(dirs.common, "config"), join(dirs.gitdir, "config.worktree")]) {
     if (!existsSync(path) && path.endsWith("config.worktree")) continue;
-    if (configIncludes(path)) return true;
+    if (limit !== undefined && limit() <= 0) return true;
+    if (includeIn(path, gitFile, limit) !== null) return true;
   }
   return false;
 }
 
 /** One config file, read only as the regular file it is (bounded), or null. */
 function regularFile(path: string): string | null {
+  // Opened without following a link and without blocking, then judged by what was opened: a FIFO swapped in after a
+  // look never hangs the read (eval-harness review 1, finding 7).
+  let fd: number | null = null;
   try {
-    const held = lstatSync(path);
+    fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    const held = fstatSync(fd);
     if (!held.isFile() || held.size > 1024 * 1024) return null;
-    return readFileSync(path, "utf8");
-  } catch { return null; }
+    return readFileSync(fd, "utf8");
+  } catch { return null; } finally { if (fd !== null) closeSync(fd); }
 }
 
 /** A checkout's git directory and common directory, as git finds them from its `.git` (a folder, or a one-line
@@ -324,19 +335,23 @@ function gitDirsOf(checkout: string): { gitdir: string; common: string } | null 
   return { gitdir, common: named === undefined || named === "" ? gitdir : resolve(gitdir, named) };
 }
 
-/** Whether one config file includes another (or can't be read as a plain file): by a plain reading, and as git itself
- * parses it, includes not followed (only this one regular file, from a neutral folder, with no other config read). */
-function configIncludes(path: string): boolean {
-  return includeIn(path) !== null;
-}
+
+/** What includeIn answers when Git didn't finish parsing the file in time: still a refusal, named as what it is. */
+export const INCLUDE_PARSE_TIMED_OUT = "Git didn't finish reading it in time";
+/** The include parse's own limit: a loaded machine (a CI runner's parallel test files) can take seconds to start git, and
+ * a refusal that names a slow machine an "unreadable file" sent two releases chasing a config that was fine. */
+const INCLUDE_PARSE_MS = 15_000;
 
 /** The include key one config file sets (lowercased, as git names it), "include" when only a plain reading finds one,
- * or "an unreadable file" when it can't be read as a plain file or parsed; null when it includes nothing. */
-function includeIn(path: string): string | null {
+ * "an unreadable file" when it can't be read as a plain file or parsed, or INCLUDE_PARSE_TIMED_OUT when the caller's
+ * deadline or the parse's own limit ran out first; null when it includes nothing. Every non-null answer refuses. */
+function includeIn(path: string, gitFile = "git", limit?: Limit): string | null {
   const text = regularFile(path);
   if (text === null) return "an unreadable file";
-  const parsed = spawnSync("git", ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
-    { cwd: "/", encoding: "utf8", timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
+  if (limit !== undefined && limit() <= 0) return INCLUDE_PARSE_TIMED_OUT;
+  const parsed = spawnSync(gitFile, ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
+    { cwd: "/", encoding: "utf8", timeout: limit === undefined ? INCLUDE_PARSE_MS : Math.max(1, Math.min(INCLUDE_PARSE_MS, limit())), killSignal: "SIGKILL", env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
+  if (parsed.status === null && (parsed.signal === "SIGKILL" || (parsed.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT")) return INCLUDE_PARSE_TIMED_OUT;
   if (parsed.status !== 0) return "an unreadable file";
   const named = parsed.stdout.split("\0").find(name => /^(include\.path|includeif\..*\.path)$/i.test(name));
   if (named !== undefined) return named.toLowerCase();
@@ -435,7 +450,7 @@ type GitView = { env: Record<string, string>; restore: (output: string, args: re
 const ADMIN_LINKED = ["index", "logs", "refs", "reftable"];
 /** What git keeps in a common directory (its path.c common_list, and reftable), linked whether or not it exists yet. */
 const COMMON_NAMES = ["branches", "gc.pid", "logs", "lost-found", "modules", "objects", "packed-refs", "reftable", "refs", "remotes", "rr-cache", "shallow", "svn", "worktrees"];
-function gitView(checkout: string, kind: "read" | "write", binding: GitBinding = {}): GitView {
+function gitView(checkout: string, kind: "read" | "write", binding: GitBinding = {}, gitFile = "git", limit?: Limit): GitView {
   const dirs = boundDirs(checkout, binding);
   const root = ensureGitViewsRoot(realpathSync(homedir()));
   const view = realpathSync(mkdtempSync(join(root, `${kind}-`)));
@@ -448,9 +463,14 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
     if (config === null) throw new Error("the checkout's git config couldn't be read as a plain file");
     const configPath = join(view, "config");
     writeFileSync(configPath, config, { mode: 0o600 });
-    const plain = { cwd: "/", encoding: "utf8" as const, timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } };
+    const base = { cwd: "/", encoding: "utf8" as const, killSignal: "SIGKILL" as const, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } };
+    // Each call's limit is worked out as it starts, from what is left of a caller's deadline.
+    const plainNow = () => {
+      if (limit !== undefined && limit() <= 0) throw new Error("the read's deadline passed");
+      return { ...base, timeout: setupTimeout(limit) };
+    };
     if (/worktreeconfig/i.test(config)) {
-      const flag = spawnSync("git", ["config", "--file", configPath, "--no-includes", "--type=bool", "--get", "extensions.worktreeConfig"], plain);
+      const flag = spawnSync(gitFile, ["config", "--file", configPath, "--no-includes", "--type=bool", "--get", "extensions.worktreeConfig"], plainNow());
       if (flag.status !== 0 && flag.status !== 1) throw new Error("the checkout's git config couldn't be read");
       if (flag.stdout.trim() === "true") {
         // Git would also read the worktree's config.worktree, which the agent can still change: folded in as it is now.
@@ -460,10 +480,11 @@ function gitView(checkout: string, kind: "read" | "write", binding: GitBinding =
         config = `${config}\n${own}`;
         writeFileSync(configPath, config, { mode: 0o600 });
       }
-      const unset = spawnSync("git", ["config", "--file", configPath, "--unset-all", "extensions.worktreeConfig"], plain);
+      const unset = spawnSync(gitFile, ["config", "--file", configPath, "--unset-all", "extensions.worktreeConfig"], plainNow());
       if (unset.status !== 0 && unset.status !== 5) throw new Error("the checkout's git config couldn't be read");
     }
-    const include = includeIn(configPath);
+    const include = includeIn(configPath, gitFile, limit);
+    if (include === INCLUDE_PARSE_TIMED_OUT) throw new Error(`the checkout's git config couldn't be checked: ${INCLUDE_PARSE_TIMED_OUT}; try again`);
     if (include !== null) throw new Error(`the checkout's git config includes another file (${include})`);
     mkdirSync(join(view, "info"));
     // A main checkout's sparse-checkout patterns are in its own (common) info folder; a linked one's in its admin's.
@@ -788,11 +809,12 @@ export const WRITE_VIEW_FLAGS: readonly string[] = ["-c", "worktree.useRelativeP
 /** Whether the checkout's .lfsconfig (read as git parses it, that file only) sets any git-lfs key that could name a
  * program (anything but INERT_LFS). A file that
  * isn't a plain one, or doesn't parse, counts as naming one. */
-export function lfsExtensionIn(checkout: string): boolean {
+export function lfsExtensionIn(checkout: string, gitFile = "git", limit?: Limit): boolean {
   const path = join(checkout, ".lfsconfig");
   try { if (!lstatSync(path).isFile()) return true; } catch { return false; }
-  const parsed = spawnSync("git", ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
-    { cwd: "/", encoding: "utf8", timeout: 5_000, env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
+  if (limit !== undefined && limit() <= 0) return true;
+  const parsed = spawnSync(gitFile, ["config", "--file", path, "--no-includes", "--name-only", "--list", "-z"],
+    { cwd: "/", encoding: "utf8", timeout: setupTimeout(limit), killSignal: "SIGKILL", env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
   return parsed.status !== 0 || parsed.stdout.split("\0").filter(Boolean).some(name => lfsCommand(name) || ["include", "includeif"].includes(keyParts(name).section));
 }
 
@@ -818,12 +840,14 @@ export function checkoutGit(inner: Runner = run, mode: "build" | "read" = "build
       if (own.code !== 0) return refused("its config couldn't be read");
       const key = commandSetting(own.stdout, { lfsChecked: true });
       if (key !== null) return refused(`the checkout's git config sets ${key}, which can run a command`);
+      // A git without --no-lazy-fetch: a repository that could fetch lazily is refused, from the view's frozen config.
+      if (!lazyFetchSupported() && lazyFetchSetting(own.stdout) !== null) return refused(PARTIAL_CLONE_REFUSAL);
       // The operator's own config contributes values only (carriedSettings); git then reads no global or system config.
       // A read carries no filter: it reads attributes from the empty tree anyway.
       const carried = mode === "read" ? withoutFilters(carriedSettings(own.stdout)) : carriedSettings(own.stdout);
       const env = { ...viewed.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" };
       // Never into a submodule or nested repository, whose own config this never read: status and diff skip them.
-      const safeArgs = [...args];
+      const safeArgs = withoutUnsupportedFlags(args);
       const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
       if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
       const flags = mode === "read" ? readFlags() : WRITE_VIEW_FLAGS;
@@ -858,8 +882,8 @@ export const PAGE_READ_FLAGS: readonly string[] = [
  * its config as it starts, so the flags alone don't stop a filter planted in both after the inspection: every read
  * also runs against a view of the checkout's repository (gitView; checkoutGitSync, checkoutGit "read"), whose config and info are the plane's. The cost is cosmetic: a checkout's line-ending or encoding rules are not applied, so
  * a file they would normalize can read as changed (fail closed: shipping then asks for a clean commit). */
-export function readFlags(): readonly string[] {
-  return PAGE_READ_FLAGS;
+export function readFlags(gitFile = "git"): readonly string[] {
+  return lazyFetchSupported(gitFile) ? PAGE_READ_FLAGS : PAGE_READ_FLAGS.filter(flag => flag !== "--no-lazy-fetch");
 }
 
 /**
@@ -869,29 +893,63 @@ export function readFlags(): readonly string[] {
  * or info/attributes change after they were read), submodules skipped, bounded. A refusal throws.
  */
 export function checkoutGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; maxBuffer?: number; binding?: GitBinding } = {}): string {
-  if (checkoutIncludes(cwd)) throw new Error("the checkout's git config includes another file, or couldn't be read as a plain file");
-  if (lfsExtensionIn(cwd)) throw new Error("the checkout's .lfsconfig sets a git-lfs key that can run a command");
+  const ran = viewedGitSync(cwd, args, options);
+  if (ran.status !== 0) throw new Error(`git ${args[0] ?? ""} failed`);
+  return ran.stdout;
+}
+
+/**
+ * checkoutGitSync's run, answering git's exit status instead of throwing on a non-zero one (a refusal, or a repository
+ * that changed while git ran, still throws): for reads whose "no" is an exit code (`merge-base --is-ancestor`), and,
+ * with `buffer`, for blobs read as bytes (their output is never rewritten).
+ */
+export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; deadline?: number; maxBuffer?: number; binding?: GitBinding }): { status: number | null; stdout: string };
+export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; deadline?: number; maxBuffer?: number; binding?: GitBinding; buffer: true; input?: Buffer; git?: string }): { status: number | null; stdout: Buffer };
+export function viewedGitSync(cwd: string, args: readonly string[], options: { timeoutMs?: number; deadline?: number; maxBuffer?: number; binding?: GitBinding; buffer?: true; input?: Buffer; git?: string } = {}): { status: number | null; stdout: string | Buffer } {
+  const gitFile = options.git ?? "git";
+  // `deadline` (absolute, wall-clock ms): every subprocess here, setup included, gets only what is left of it, and an
+  // expired deadline throws before the next one starts or after the last one ran.
+  const deadline = options.deadline;
+  const limit: Limit | undefined = deadline === undefined ? undefined : () => deadline - Date.now();
+  const expire = () => { if (limit !== undefined && limit() <= 0) throw new Error("the read's deadline passed"); };
+  expire();
+  if (checkoutIncludes(cwd, gitFile, limit)) throw new Error("the checkout's git config includes another file, or couldn't be read as a plain file");
+  expire();
+  if (lfsExtensionIn(cwd, gitFile, limit)) throw new Error("the checkout's .lfsconfig sets a git-lfs key that can run a command");
+  expire();
   // Its config and info/attributes as read once, in a folder of the plane's own: neither can change before git runs.
-  const view = gitView(cwd, "read", options.binding);
+  const view = gitView(cwd, "read", options.binding, gitFile, limit);
   try {
     const env: NodeJS.ProcessEnv = { PATH: process.env["PATH"] ?? "", HOME: process.env["HOME"] ?? "", LANG: "C", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_TERMINAL_PROMPT: "0", ...view.env };
-    const bounded = { cwd, env, encoding: "utf8" as const, timeout: options.timeoutMs ?? 60_000, maxBuffer: options.maxBuffer ?? 1_048_576, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
-    const own = spawnSync("git", ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], bounded);
+    const timeoutNow = () => { expire(); return limit === undefined ? options.timeoutMs ?? 60_000 : Math.max(1, Math.min(options.timeoutMs ?? 60_000, limit())); };
+    const fixed = { cwd, env, encoding: "utf8" as const, killSignal: "SIGKILL" as const, maxBuffer: options.maxBuffer ?? 1_048_576, stdio: ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"] };
+    const own = spawnSync(gitFile, ["--no-optional-locks", "config", "--list", "--show-scope", "-z"], { ...fixed, timeout: timeoutNow() });
     if (own.status !== 0) throw new Error("its config couldn't be read");
     const key = commandSetting(own.stdout, { lfsChecked: true });
     if (key !== null) throw new Error(`the checkout's git config sets ${key}, which can run a command`);
-    const safeArgs = [...args];
+    // A git without --no-lazy-fetch: a repository that could fetch lazily is refused, from the view's frozen config.
+    if (!lazyFetchSupported(gitFile) && lazyFetchSetting(own.stdout) !== null) throw new Error(PARTIAL_CLONE_REFUSAL);
+    const safeArgs = withoutUnsupportedFlags(args, gitFile);
     const command = safeArgs.findIndex(arg => arg === "status" || arg === "diff");
     if (command >= 0 && !safeArgs.includes("--ignore-submodules=all")) safeArgs.splice(command + 1, 0, "--ignore-submodules=all");
     // An external diff program is named by config, which may change after it was read: never used here.
     if (command >= 0 && safeArgs[command] === "diff") safeArgs.splice(command + 1, 0, "--no-ext-diff", "--no-textconv");
     // The operator's own values, but no filter: PAGE_READ_FLAGS reads attributes from the empty tree anyway.
     const carried = withoutFilters(carriedSettings(own.stdout));
-    const ran = spawnSync("git", [...TEARDOWN_FLAGS, ...readFlags(), "-c", "diff.ignoreSubmodules=all", ...carried, ...safeArgs], bounded);
-    if (ran.status !== 0) throw new Error(`git ${args[0] ?? ""} failed`);
+    const argv = [...TEARDOWN_FLAGS, ...readFlags(gitFile), "-c", "diff.ignoreSubmodules=all", ...carried, ...safeArgs];
+    if (options.buffer === true) {
+      // stdin is the caller's own bytes when given (cat-file --batch), else closed.
+      const ran = spawnSync(gitFile, argv, { ...fixed, timeout: timeoutNow(), encoding: "buffer", ...(options.input === undefined ? {} : { input: options.input, stdio: ["pipe", "pipe", "pipe"] as ["pipe", "pipe", "pipe"] }) });
+      const why = view.settle();
+      if (why !== null) throw new Error(why);
+      expire();
+      return { status: ran.error === undefined ? ran.status : null, stdout: ran.stdout };
+    }
+    const ran = spawnSync(gitFile, argv, { ...fixed, timeout: timeoutNow() });
     const why = view.settle();
     if (why !== null) throw new Error(why);
-    return view.restore(ran.stdout, args);
+    expire();
+    return { status: ran.error === undefined ? ran.status : null, stdout: view.restore(ran.stdout ?? "", args) };
   } finally { view.dispose(); }
 }
 
@@ -910,4 +968,85 @@ export function hardenedGit(inner: Runner = run, mode: "build" | "read" = "build
     while (rest[0] === "-C" && rest.length > 1) { cwd = resolve(cwd ?? process.cwd(), rest[1]!); rest = rest.slice(2); }
     return hardened("git", rest, { ...options, ...(cwd === undefined ? {} : { cwd }) });
   };
+}
+
+/**
+ * Git older than 2.45 has no `--no-lazy-fetch` (and no GIT_NO_LAZY_FETCH): there, every hardened read leaves the flag
+ * out and instead refuses a repository whose config makes lazy fetching possible (lazyFetchSetting), while
+ * `protocol.allow=never` stays on every read and write, so a lazy fetch that slipped past would still find no
+ * transport. Asked once per process, as the plane's other plain git probes run: no system or global config.
+ */
+const lazyFetchByGit = new Map<string, boolean>();
+let lazyFetchOverride: boolean | undefined;
+/** The git executable `file` names, as the real path it runs (a bare name looked up on PATH), or `file` itself. */
+function gitExecutablePath(file: string): string {
+  const candidates = file.includes("/") ? [file] : (process.env["PATH"] ?? "").split(delimiter).filter(dir => isAbsolute(dir)).map(dir => join(dir, file));
+  for (const candidate of candidates) { try { accessSync(candidate, fsConstants.X_OK); return realpathSync(candidate); } catch { /* next */ } }
+  return file;
+}
+/** Asked once per git executable (eval-harness review 2, follow-up): a fixed git given to viewedGitSync is probed
+ * itself, never answered for by the one PATH names. */
+export function lazyFetchSupported(gitFile = "git"): boolean {
+  if (lazyFetchOverride !== undefined) return lazyFetchOverride;
+  const executable = gitExecutablePath(gitFile);
+  let known = lazyFetchByGit.get(executable);
+  if (known === undefined) {
+    const probe = spawnSync(executable, ["--no-lazy-fetch", "version"], { cwd: "/", encoding: "utf8", timeout: 5_000, killSignal: "SIGKILL", stdio: ["ignore", "pipe", "pipe"],
+      env: { PATH: process.env["PATH"] ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", HOME: "/nonexistent" } });
+    known = probe.status === 0;
+    lazyFetchByGit.set(executable, known);
+  }
+  return known;
+}
+/** For tests: forget the probes' answers, or set one for every executable (null forgets). */
+export function setLazyFetchSupportedForTest(value: boolean | null): void { lazyFetchOverride = value ?? undefined; lazyFetchByGit.clear(); }
+
+/** The words for a partial clone refused on a git without `--no-lazy-fetch`. */
+export const PARTIAL_CLONE_REFUSAL = "this project is a partial clone; protected reads need git 2.45 or newer";
+
+/** `--no-lazy-fetch` where the installed git has it, else nothing (and lazyFetchSetting refuses partial clones). */
+export function noLazyFetch(): readonly string[] { return lazyFetchSupported() ? ["--no-lazy-fetch"] : []; }
+
+/** A caller's own arguments with `--no-lazy-fetch` taken out when the installed git doesn't know it. */
+function withoutUnsupportedFlags(args: readonly string[], gitFile = "git"): string[] {
+  return lazyFetchSupported(gitFile) ? [...args] : args.filter(arg => arg !== "--no-lazy-fetch");
+}
+
+/**
+ * The repository setting (local or worktree scope of a `git config --list --show-scope -z` listing) that makes lazy
+ * fetching possible, or null: `extensions.partialClone` set at all, any `remote.<name>.promisor` not plainly false, or
+ * any `remote.<name>.partialCloneFilter` set (git makes that remote a promisor). Fails closed: a listing that can't be
+ * read names a setting. `remote.<name>.vcs` (a foreign-VCS helper) is named too, though the classifier already refuses
+ * it (commandSetting: not in the remote allowlist), as it does every `protocol.*` key and every include.
+ */
+export function lazyFetchSetting(listing: string): string | null {
+  try {
+    const fields = listing.split("\0");
+    for (let at = 0; at + 1 < fields.length; at += 2) {
+      const scope = fields[at]!;
+      if (scope !== "local" && scope !== "worktree") continue;
+      const entry = fields[at + 1]!;
+      const newline = entry.indexOf("\n");
+      const key = newline < 0 ? entry : entry.slice(0, newline);
+      const value = newline < 0 ? null : entry.slice(newline + 1);
+      const { section, subsection, variable } = keyParts(key);
+      if (section === "extensions" && variable === "partialclone") return key.toLowerCase();
+      if (section === "remote" && subsection !== null && (variable === "partialclonefilter" || variable === "vcs")) return key.toLowerCase();
+      if (section === "remote" && subsection !== null && variable === "promisor" && !/^(false|no|off|0)$/i.test((value ?? "true").trim())) return key.toLowerCase();
+    }
+    return null;
+  } catch { return "a setting that couldn't be read"; }
+}
+
+/**
+ * For the reads that run git directly on a repository rather than through a view: with `--no-lazy-fetch` they run as
+ * they always have (the flag stops any fetch). Without it, they must not check a repository's config and then run git
+ * on it (the config could change in between, or an include could set what the check never saw): `inner`, wrapped so
+ * every git command runs through a frozen read view (checkoutGit "read"), whose own config listing (includes refused,
+ * command and protocol settings refused, a partial clone refused) is the config git then runs with.
+ */
+export function lazyFetchSafeGit(inner: Runner = run): Runner {
+  // On every git version (eval-harness review 1, finding 7): with --no-lazy-fetch the direct read still took the
+  // repository's config and its includes as git found them, and an include naming a FIFO could hang the plane.
+  return checkoutGit(inner, "read");
 }

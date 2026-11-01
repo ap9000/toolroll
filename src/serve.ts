@@ -1,5 +1,7 @@
 import { secretFolder } from "./tool-secret-store.js";
 import { acceptedIdentities, recoverLearning } from "./project-learning.js";
+import { syncProjectIdentities, type ProjectIdentities } from "./project-identity.js";
+import { firstTasksOffThread, recoverLearningOffThread } from "./learning-look.js";
 import { loadOrCreateVapidKeys } from "./push.js";
 import { checkoutPlan } from "./checkout-cleanup.js";
 import { latestReleaseFor } from "./server/render-settings.js";
@@ -15,19 +17,15 @@ import { LIVE_VIEW_CONSENT, liveCommandsShown, liveViewConsentDigest } from "./l
 import { html, htmlString, jsonScript, textHtml, type Html } from "./html.js";
 import type { RunActivity } from "./activity-line.js";
 import { browserAssetsAvailable,browserWorkspaceDocument } from './browser-shell.js';
-import { NO_COUNTS, projectStates, STATE_WORDS, type ProjectState } from './agent-state.js';
+import { accessKey, countsKey, indexKey, projectSummaryOf, RevisionCache, summaryKey } from './console-chrome.js';
 import { usageChipOf } from './limits-ui.js';
-/** Tasks the rail lists under a project; the rest are a count that links to the project's tasks. */
-const RAIL_TASKS = 6;
 /** Any header a proxy adds: a request carrying one is never "from this computer" (password freshness, one-time links). */
 const PROXY_HEADER = /^(forwarded|via|x-forwarded-.+|x-real-ip|x-client-ip|x-original-.+|x-cluster-client-ip|true-client-ip|cf-connecting-ip|fastly-client-ip|x-proxyuser-ip)$/i;
-/** Asks a project names for the chime (its count is complete beyond them). */
-const ASKS_PER_PROJECT = 100;
 /** How often the background checks look at what is due (docs/plans/get-side-effects.md), and how often this
  * computer's agent sign-ins are asked again. */
 const BACKGROUND_CHECKS_MS = 30_000;
 const LOCAL_AGENTS_EVERY_MS = 2 * 60_000;
-import { boundProjectSummary,browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserAsk,type BrowserProjectState,type BrowserRailTask,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
+import { browserCrewFromIndex,browserCrewOf,browserNavigationOf,browserProjectsOf,needsYouLabelOf,type BrowserChatLink,type BrowserPhoneCard,type BrowserProjectState,type BrowserUpdates,type BrowserWorkspace } from './browser-workspace.js';
 import { sharedActionPayload } from './chat-actions.js';
 import { prepareCodingContext } from './coding-context.js';
 import { CodingWorkspace } from './coding-workspace.js';
@@ -44,7 +42,8 @@ import { asReadOnlyRequest } from './read-only-request.js';
 import { connectionsOf,localConnectOf,oneClickOf,type ConnectVisit } from "./mcp-connect.js";
 import { MOBILE_VIEWPORT_SCRIPT } from "./mobile-viewport.js";
 import { projectAuthority } from "./project-access.js";
-import { discoverTools,projectToolsOf,secretsSetFor,TOOL_CATALOG,toolSecretStorage,toolStanding } from "./project-tools.js";
+import { discoverTools,projectToolsOf,savedProjectMcp,secretsSetFor,TOOL_CATALOG,toolSecretStorage,toolStanding } from "./project-tools.js";
+import { lookProjectMcp } from "./folder-look.js";
 import { toolRefusal } from "./policy.js";
 import { isEdgeAddress,refuseEdge } from "./server/edge-refusal.js";
 import { announcePasswordBearer, isPasswordBearer, PASSWORD_BEARER_REFUSED, passwordBearerAccepted } from "./password-bearer.js";
@@ -63,7 +62,8 @@ import { createTeamRuntime } from './team-runtime.js';
 import { createPersonalQueueRuntime } from './lead-queue-runtime.js';
 import type { LeadQueueRow } from './lead-queue.js';
 import { type ToolsView } from "./tools-ui.js";
-import { WORK_INDEX_MAX_LIMIT, workCountsByProject, workIndexPage } from "./work-index.js";
+import { WORK_INDEX_MAX_LIMIT, workCountsByProject, workIndexPage, type WorkIndexOptions, type WorkIndexPage } from "./work-index.js";
+import type { WorkSummaryAccess } from "./work-summary.js";
 import { WORKSPACE_MOTION_SCRIPT } from "./workspace-motion.js";
 import { prepareWorkspaceRevision,WorkspaceValidatorCache } from "./workspace-revision.js";
 /**
@@ -110,6 +110,7 @@ import { prepareWorkspaceRevision,WorkspaceValidatorCache } from "./workspace-re
  */
 
 import { createHash,randomBytes } from "node:crypto";
+import { keepSlowRequest, Timeline } from "./latency-timeline.js";
 import { readFileSync } from "node:fs";
 import { createServer,type IncomingMessage,type Server,type ServerResponse } from "node:http";
 import { homedir,hostname } from "node:os";
@@ -172,6 +173,7 @@ import { createChatHandlers } from './server/chat.js';
 import { createLiveHandlers } from './server/live.js';
 import { createTerminalHandlers, terminalHostFor } from './server/terminals.js';
 import { passwordlessOn } from './passwordless.js';
+import { keepTypedFields, openProjectFor, settingsCrumbs } from './settings-kit.js';
 import { createSweepHandlers } from './server/sweeps.js';
 import { createFlowsHandlers } from './server/flows.js';
 import type { HandlerContext } from './server/handler-context.js';
@@ -206,6 +208,9 @@ type ReviewFacts
 } from "./workspace-ui.js";
 import { WorktreePool } from "./worktree.js";
 export function createDecisionServer(options: ServeOptions): DecisionServer {
+  // Identities come from what the console's start resolved off its thread (startConsole); a path that didn't answer
+  // stays unresolved, kept restrictive. Without them (embedders, tests) the old synchronous reads apply.
+  const identities = options.identities ?? syncProjectIdentities();
   const { projectFamilyPeek, familiesInView, familyTasksInView, revisionDestination, runIsLive, runIsTaskResult, revisionViewOf, taskViewData, routeViewOf, taskChatFocus, pullRequestTargetOf, failureOf, explainAttempt, taskScreen, armTaskResume, planViewOf, planContractViewOf, revisionDocOf, revisionLedgerOf, resultDetailOf } = createTaskViews({
     get store() { return store; },
     get projectCounts() { return projectCounts; },
@@ -229,12 +234,13 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   const { authenticateApprover, authenticateCredential, authorizeMutation, projectOf, projectRequestAllowed, identify, lookupSession, restricted, visible, admissionList, codingActorAllowed, codingProjectAllowed, workAccess, familyOf, taskRepoOf, runVisible } = createSharedGuards({
     get store() { return store; },
     get liveCeiling() { return liveCeiling; },
+    identities,
     get codingProjects() { return codingProjects; },
     get unscopedMode() { return unscopedMode; },
     get managedRepos() { return managedRepos; },
     get ceiling() { return ceiling; },
     get allowedHost() { return allowedHost; },
-    get defaultProject() { return defaultProject; },
+    get defaultProject() { return defaultProject(); },
     get actionTarget() { return actionTarget; },
     get team() { return team; },
     get joinSourceOf() { return joinSourceOf; },
@@ -288,6 +294,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     };
   };
   const workspaceRevision = prepareWorkspaceRevision(store);
+  // The sidebar, the Tasks count and the crew: read at most once per workspace revision per reader's exact access
+  // (console-chrome.ts), and filled from a read worker before a page renders when one is attached.
+  const chromeReads = new RevisionCache(workspaceRevision, clock);
   const workspaceIncarnation = randomBytes(16).toString('hex');
   const workspaceValidators = new WorkspaceValidatorCache();
   const providerHome = options.connectionHome ?? homedir();
@@ -450,24 +459,27 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   let joinGlobal = { tokens: 30, refilledAt: Date.now() };
   const approvalNonces = new Map<string, ApprovalNonce>();
 
-  // Resolve startup authority once. Missing paths remain restrictive.
-  // Native additions come only from the controller after its admission checks.
-  const { ceiling, unresolved: unresolvedRepos } = resolveCeiling(
+  // Startup authority: the configured repos and roots as their identities say (startupCeiling). Missing or unresolved
+  // paths remain restrictive. Native additions come only from the controller after its admission checks.
+  const { ceiling, unresolved: unresolvedRepos, defaultProject, configured, configuredPaths } = startupCeiling(
     [...(options.repo === undefined ? [] : [options.repo]), ...(options.repos ?? [])],
     options.projectRoots ?? [],
+    options.identities === undefined ? undefined : identities,
+    identities.strict,
   );
-  /** The project every fresh session opens with: the sole configured repo, else none. */
-  const defaultProject = ceiling.repos.length === 1 && ceiling.roots.length === 0 ? ceiling.repos[0] as string : null;
 
   /** No ceiling configured at all: the legacy trust-everything mode, named. */
-  const unscopedMode = ceiling.repos.length === 0 && ceiling.roots.length === 0;
+  // An `up` console (it is handed its admitted set) is never unscoped: with every saved project away it is empty.
+  // Judged by what was configured, never by what has resolved so far: a console whose folders haven't answered yet is
+  // scoped and empty, not unscoped.
+  const unscopedMode = !configured && options.admittedRepos === undefined;
   /** Per-row visibility under the ceiling — the authorization question for reads. */
   /** The exact repositories this console serves now: `up`'s live admitted set when it supplies one, else startup's. */
   const exactRepos = (): readonly string[] => options.admittedRepos?.() ?? ceiling.repos;
   const liveCeiling = () => {
     const repos = [...exactRepos(), ...(options.additionalProjectRepos?.() ?? [])];
     // An admitted set that is empty for now is an empty ceiling, never the legacy unscoped mode.
-    return { repos: repos.length === 0 && ceiling.roots.length === 0 && !unscopedMode ? [NO_PROJECT] : repos, roots: ceiling.roots };
+    return { repos: repos.length === 0 && ceiling.roots.length === 0 && !unscopedMode ? [NO_PROJECT] : repos, roots: ceiling.roots, canon: identities.strict };
   };
   /** The explicit, currently proved project list. The callback is supplied
    * only by `up`, after it has independently checked git-ness and the root
@@ -485,7 +497,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const repos: string[] = [];
     const gone = goneRepos();
     for (const path of [...exactRepos(), ...(options.currentRepos?.() ?? [])]) {
-      const canonical = canonicalProject(path) ?? path;
+      const canonical = identities.hot(path);
       if (seen.has(canonical) || !visible(canonical) || gone.has(canonical)) continue;
       seen.add(canonical);
       repos.push(canonical);
@@ -566,7 +578,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       // A service that connects by signing in (or an app's own Connect) is offered only that way.
       catalog: TOOL_CATALOG.filter(one => !names.has(one.name) && oneClickOf(one.name) === null && localConnectOf(one.name) === null),
       connections: connectionsOf(store, repo, toolHome), kit, wanted,
-      found: discoverTools(repo, codex, toolHome).filter(one => !names.has(one.spec.name)),
+      // The project's own .mcp.json as the background pass last read it off the console's thread (never read here).
+      found: discoverTools(repo, codex, toolHome, process.env, options.identities === undefined ? undefined : savedProjectMcp.get(repo) ?? null).filter(one => !names.has(one.spec.name)),
       storage: toolSecretStorage(),
     };
   };
@@ -768,6 +781,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // uses the address it reached), reads one row, and says nothing else about the installation.
     const method = request.method ?? "GET";
     const matchedRoute = matchRoute(method, hook.pathname);
+    // Where a slow answer's time went (latency-timeline.ts): milestones by route id only, kept when it took a second.
+    const timeline = new Timeline();
+    timeline.mark("route matched");
     const edgeRoute = matchedRoute?.stage === 'edge' ? matchedRoute : null;
     const wrongMethodEdge = edgeRoute === null ? ROUTES.find(row => row.stage === 'edge' && new RegExp(row.pattern).test(hook.pathname)) ?? null : null;
     // D7: a password on a request still signs in this release, announced on every answer and named in every refusal;
@@ -823,6 +839,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     if (refuseBudget(admitPasswordSource(request))) return;
     const refusedToken: { principal?: Principal } = {};
     const who = identify(request, touch, edgeRoute?.domain === 'live', refusedToken);
+    timeline.mark("signed in");
     if (refusedToken.principal !== undefined) {
       if (refuseBudget(requestBudget.admit(refusedToken.principal.tokenId, "api"))) return;
       if (method === "POST") {
@@ -859,6 +876,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       browser: who.via === 'cookie',
       // Passwordless (read once for rendering; every act proves it again at the act): ceremony fields render as nothing.
       passwordless: who.via === 'cookie' && passwordlessOn(store),
+      openProject: who.via === 'cookie' ? who.session.project : null,
       // v100: signed in with the identity provider: its label, and whether it checked them recently enough to stand in for a password.
       // Cockpit B2: "fresh" is an explicit re-check made on request and not yet spent (read live; one step-up uses it).
       sso: who.via === 'cookie' && who.session.sso !== undefined ? { label: ssoSettings()?.label ?? "your identity provider",
@@ -866,8 +884,12 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       refusal: (answer: ServerResponse, status: number, body: Html) => sendScreen(answer, status,
         screen(status === 404 ? "Not found" : "Request refused", body, { chrome: chromeFor(who.via === "cookie" ? who.session.project : null, "work") })),
       workspaceRead,
+      freshWork: ["request", "task", "result"].some(name => url.searchParams.has(name)),
+      ...(workspaceRead && typeof request.headers['if-none-match'] === 'string' ? { workspaceIfNoneMatch: request.headers['if-none-match'] } : {}),
       workspaceRequest: url.searchParams.get('request'),
+      timeline,
     };
+    response.once("finish", () => keepSlowRequest(store, timeline, matchedRoute?.id ?? "unmatched", response.statusCode, clock()));
     if (method === "GET" || method === "POST") return freshFacts.run(fresh, () => provenPasswordAccount.run(passwordProof, () => requestContext.run(requestFacts, async () => {
       if (edgeRoute?.domain === 'live') return dispatchEdge(edgeRoute, { url, who, request, response, method });
       const body = method === "POST" ? await form(request, (matchedRoute?.stage === "console" ? matchedRoute.bodyCap : undefined) ?? BODY_CAP) : null;
@@ -915,6 +937,15 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
             // no database row changed (for example an expired worker lease).
             facts.workspaceValidator = { key, revision, expiresAt,
               etag: '"' + createHash('sha256').update(`${key}:${revision}:${expiresAt}`).digest('hex') + '"' };
+          }
+          await prefetchChrome(route, url, who);
+          timeline.mark("chrome and worker reads");
+          // The worker wait lets a sign-out, credential/access change or console ceiling change land. Prove the
+          // cookie and route again before rendering protected content or answering with a content validator.
+          if (who.via === 'cookie') {
+            const current = identify(request, false);
+            if (current?.via !== 'cookie' || current.session !== who.session) return redirect(response, loginHref(url.pathname + url.search));
+            if (!projectRequestAllowed(route, route.project, url, who, request, response, null)) return;
           }
           return handleGet(route, url, who, request, response);
         }
@@ -977,7 +1008,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     }
     const known = new Set(["/recipes/prepare", "/recipes/preview", "/recipes/import", "/recipes/save", "/recipes/launch", "/tasks/add", "/queue/move", "/queue/note", "/people/invite", "/people/invite-revoke", "/people/revoke", "/people/projects", "/projects/select", "/projects/open", "/mode/confirm", "/mode/sign", "/mode/revoke", "/settings/chat-approval/save", "/settings/chat-approval/off", "/settings/project/live-view"]);
     const placed = url.pathname === "/tasks/add" ? body?.get("repo")?.trim() : null;
-    return { repo: url.pathname.startsWith("/people/") ? null : placed ? canonicalProject(placed) ?? placed : projectOf(who, request) ?? null, taskId: null, runId: null,
+    return { repo: url.pathname.startsWith("/people/") ? null : placed ? identities.strict(placed) ?? placed : projectOf(who, request) ?? null, taskId: null, runId: null,
       action: known.has(url.pathname) ? url.pathname.slice(1).replaceAll("/", " ") : "console request" };
   }
 
@@ -1270,8 +1301,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   function chatEnablement(): ChatEnablement {
     if (store.isDemo()) return { ok: false, code: "demo", why: "this is a demo database — chat cannot contact an external model" };
     if (unscopedMode) return { ok: false, code: "unscoped", why: "chat needs at least one added project" };
-    if (options.currentRepos === undefined && unresolvedRepos.length > 0) {
-      return { ok: false, code: "unresolved", why: "a configured project path did not resolve at startup — fix it and restart before chat will run" };
+    if (options.currentRepos === undefined && unresolvedRepos().length > 0) {
+      return { ok: false, code: "unresolved", why: "a configured project folder hasn't been found yet — chat runs once it answers; if its path is wrong, fix it and restart" };
     }
     if (managedRepos().length === 0) return { ok: false, code: "empty", why: "add a project first — chat will include it automatically" };
     const config = store.getChatConfig();
@@ -1408,6 +1439,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
    * are what sensitivity strips.
    */
   function sendScreen(response: ServerResponse, status: number, s: Screen): void {
+    requestContext.getStore()?.timeline?.mark("handler done; rendering");
     // Sensitivity is the page as authored (cockpit §2, R14): its own explicit word, else a password field it was written
     // with — judged before an identity-provider sign-in replaces that field, so an SSO step-up page stays sensitive.
     const authored = s.sensitive ?? (
@@ -1419,12 +1451,18 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const ssoFacts = requestContext.getStore()?.sso;
     if (ssoFacts !== undefined) {
       const back = requestContext.getStore()?.returnTo ?? "/";
-      s = { ...s, body: ssoStepUps(s.body, ssoFacts, back), ...(s.workspace?.pageHtml == null ? {} : { workspace: { ...s.workspace, pageHtml: ssoStepUps(s.workspace.pageHtml, ssoFacts, back) } }) };
+      // A typed-only proof (settings-kit.ts) stays a password field: its handler takes nothing else.
+      s = { ...s, body: keepTypedFields(s.body, ssoStepUps, ssoFacts, back), ...(s.workspace?.pageHtml == null ? {} : { workspace: { ...s.workspace, pageHtml: keepTypedFields(s.workspace.pageHtml, ssoStepUps, ssoFacts, back) } }) };
       if (s.workspace?.view?.kind === "flow") s = { ...s, workspace: { ...s.workspace, view: { ...s.workspace.view, stepUp: { label: ssoFacts.label, fresh: ssoFacts.fresh, confirmHref: `/login/sso?reauth=1&return=${encodeURIComponent(back)}` } } } };
     }
     // D5: team chat (the central team service) is deprecated; /chat?team=1 still opens this release, but nothing links to it.
     const sensitive = authored || s.forceSensitive === true;
     const requestFacts = requestContext.getStore();
+    // The settings frame (settings-kit.ts): its breadcrumb, for the shell and the workspace alike.
+    if (s.chrome !== undefined && s.chrome.crumbs === undefined) {
+      const crumbs = settingsCrumbs(new URL(requestFacts?.returnTo ?? '/', 'http://standing-orders.local').pathname, s.title, htmlString(s.body));
+      if (crumbs !== undefined) s = { ...s, chrome: { ...s.chrome, crumbs } };
+    }
     if (requestFacts?.browser && s.chrome && !s.forceSensitive && (requestFacts.workspaceRead || browserAssetsAvailable())) {
       const path = new URL(requestFacts.returnTo, 'http://standing-orders.local');
       path.searchParams.delete('format');
@@ -1438,12 +1476,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const notices = [...(extras.notices ?? [])];
       if (s.chrome.modeBanner) notices.push(s.chrome.modeBanner.words);
       if (s.chrome.updateWaiting) notices.push(s.chrome.updateWaiting.words);
+      if (options.draining?.() === true) notices.push('Toolroll is restarting (draining). Saved work is kept; new builds start once it is back.');
       let crew: Pick<BrowserWorkspace, 'crew' | 'crewTruncated'> = { crew: [], crewTruncated: false };
       try {
         const project = s.chrome.active === 'chat' ? null : s.chrome.project;
         crew = extras.team?.tasks ? browserCrewFromIndex(extras.team.tasks, extras.team.selected?.id) : requestFacts.workCrew?.project === project ? browserCrewFromIndex(requestFacts.workCrew.page)
           // The reader's own lead's claims read "<name> is on it" here too.
-          : browserCrewOf(store, clock(), { principal: 'operator', repos: managedRepos(), includeUnplaced: false, viewer: requestFacts.actor ?? null }, { evidenceRoot, project });
+          : (() => {
+            const access = { principal: 'operator' as const, repos: managedRepos(), includeUnplaced: false, viewer: requestFacts.actor ?? null };
+            return chromeRead(`crew\u0000${accessKey(access)}\u0000${project ?? ''}`, () => browserCrewOf(store, clock(), access, { evidenceRoot, project }));
+          })();
       } catch { notices.push('Crew updates are unavailable. Open Tasks to inspect saved work.'); }
       // A running row says what its agent did last, and when (the task page's own line).
       try {
@@ -1482,6 +1524,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const request = requestFacts.workspaceRequest;
       const workspace: BrowserWorkspace = {
         version: 1, path: currentPath, title: s.title, user: requestFacts.actor ?? '', csrf: requestFacts.csrf, sensitive,
+        // The project picker names the open project; the settings frame carries its breadcrumb.
+        // Only a project this person may see now: never the raw saved path (settings-kit.ts openProjectFor).
+        openProject: openProjectFor(requestFacts.openProject ?? null, s.chrome.project, s.chrome.projects ?? []),
+        ...(s.chrome.crumbs === undefined ? {} : { crumbs: s.chrome.crumbs }),
         ...(requestFacts.passwordless === true ? { passwordless: true } : {}),
         ...(requestFacts.actor ? { leadName: leadNameOf(store, requestFacts.actor) } : {}),
         refreshUrl: path.pathname + path.search,
@@ -1524,7 +1570,16 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           workspaceValidators.set(validator.key, validator);
           response.setHeader('ETag', validator.etag);
         }
-        return respond(response, status, 'application/json; charset=utf-8', JSON.stringify(workspace));
+        const body = JSON.stringify(workspace);
+        // Every other page's re-read after a live `change` (chat keeps its own validator, and its receipt, task and
+        // result reads none): when what it renders now is exactly what the page holds, it hears 304 and keeps its view
+        // (no transfer, no re-render).
+        if (status === 200 && validator === undefined && path.pathname !== '/chat') {
+          const etag = '"w' + createHash('sha256').update(body).digest('base64url') + '"';
+          response.setHeader('ETag', etag);
+          if (requestFacts.workspaceIfNoneMatch === etag) return respond(response, 304, 'application/json; charset=utf-8', '');
+        }
+        return respond(response, status, 'application/json; charset=utf-8', body);
       }
       const nonce = randomBytes(16).toString('base64');
       // React owns the conversation and its refresh/draft lifecycle. Native
@@ -1561,8 +1616,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     return page(response, status, document, nonce, s.functional?.fetches === true || chromeLayer || sensitiveChrome !== "");
   }
   /** The needs-you count every surface wears, read from this request's own
-   * Work counts (one query per request, never a cached earlier one), so a
-   * live page's badge and its Needs you tab always agree. */
+   * Work counts (one read per request, kept only while the workspace revision
+   * it was read at stands), so a live page's badge and its Needs you tab
+   * always agree. */
   function needsYouBadge(project: string | null): { count: number; saturated: boolean } {
     return needsYouCount(project);
   }
@@ -1591,42 +1647,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
   function projectSummary(): BrowserProjectState[] {
     const projects = sidebarProjects();
     const actor = requestContext.getStore()?.actor ?? '';
-    const states = new Map(projectStates(store, workAccess(), actor, clock(), evidenceRoot, projects.map(one => one.path)).map(one => [one.repo, one]));
-    // A row that needs a person or failed says what the Tasks list says it needs (its own next step); a row at work says
-    // what its agent did last; a finished one says Done.
-    const asking = [...states.values()].flatMap(one => one.families.slice(0, RAIL_TASKS)).filter(one => one.state === 'needs-you' || one.state === 'failed').map(one => one.rootId);
-    const needWords = new Map<string, string>();
-    if (asking.length > 0) {
-      try {
-        // Every row the rail may list, in pages the index allows.
-        for (let at = 0; at < asking.length; at += WORK_INDEX_MAX_LIMIT)
-          for (const item of workIndexPage(store, clock(), workAccess(), { roots: asking.slice(at, at + WORK_INDEX_MAX_LIMIT), limit: WORK_INDEX_MAX_LIMIT, root: evidenceRoot }).items)
-            needWords.set(item.rootId, item.status.detail !== '' ? item.status.detail : item.status.label);
-      } catch { /* the rows keep their state's words */ }
-    }
-    // The chime's subjects: an opaque key per obligation and version, scoped to this reader (no words, no ids in it).
-    const keyOf = (...parts: (string | number)[]) => createHash('sha256').update([actor, ...parts].join('\u0000')).digest('base64url').slice(0, 22);
-    // Newest first, so a new ask always has a key however many older ones wait (those were heard when they were new).
-    const asksOf = (state: ProjectState | undefined): BrowserAsk[] => [
-      ...(state?.families ?? []).flatMap(one => one.ask === undefined ? [] : [{ at: one.ask.at, ask: { key: keyOf('task', one.rootId, one.ask.version), task: one.rootId, run: one.ask.run, at: one.ask.at } }]),
-      ...(state?.flowAsks ?? []).map(one => ({ at: one.at, ask: { key: keyOf('flow', one.card, one.stage, one.entry), task: null, run: null, at: one.at } })),
-    ].sort((a, b) => b.at.localeCompare(a.at)).slice(0, ASKS_PER_PROJECT).map(one => one.ask);
-    const railOf = (state: ProjectState | undefined) => {
-      const families = state?.families ?? [];
-      const tasks = families.slice(0, RAIL_TASKS).flatMap((one): BrowserRailTask[] => {
-        const task = store.getTask(one.rootId);
-        const line = one.state === 'needs-you' || one.state === 'failed' ? needWords.get(one.rootId) ?? null : one.line;
-        return task === null ? [] : [{ id: one.rootId, title: task.title, href: `/t/${encodeURIComponent(one.rootId)}`, state: one.state, line: line ?? STATE_WORDS[one.state] }];
-      });
-      return { tasks, more: Math.max(0, families.length - RAIL_TASKS), asks: asksOf(state) };
-    };
-    const rows: BrowserProjectState[] = projects.map(one => {
-      const state = states.get(one.path);
-      return { path: one.path, name: one.name, href: `/work?project=${encodeURIComponent(one.path)}`, state: state?.state ?? 'idle', counts: state?.counts ?? { ...NO_COUNTS }, ...railOf(state) };
-    });
-    const unplaced = states.get(null);
-    if (unplaced !== undefined && unplaced.state !== 'idle') rows.push({ path: null, name: 'No project', href: '/work', state: unplaced.state, counts: unplaced.counts, ...railOf(unplaced) });
-    return boundProjectSummary(rows);
+    const access = workAccess();
+    return chromeRead(summaryKey(actor, access, projects), () => projectSummaryOf(store, clock(), access, actor, projects, evidenceRoot));
   }
   /** What one account may see now, as the summary room keys it: a narrowed ceiling or grant is a different key, so a
    * snapshot read for the wider scope never reaches it. Null: no such account. */
@@ -1718,12 +1740,14 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       ...(scope === undefined ? {} : { scope }),
     };
   }
-  // All project counts are read together. No task artifacts or processes are
-  // inspected to paint a badge or a project switcher.
+  // All project counts are read together, at most once per workspace revision
+  // for this reader's access. No task artifacts or processes are inspected to
+  // paint a badge or a project switcher.
   function projectCounts(now: Date) {
     const facts = requestContext.getStore();
     if (facts?.workCounts !== undefined) return facts.workCounts;
-    const counts = workCountsByProject(store, now, workAccess());
+    const access = workAccess();
+    const counts = chromeRead(countsKey(access), () => workCountsByProject(store, now, access));
     if (facts !== undefined) facts.workCounts = counts;
     return counts;
   }
@@ -1731,6 +1755,58 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     const count = projectCounts(clock()).filter(one => project === null || one.repo === project)
       .reduce((sum, one) => sum + one.totals['needs-you'], 0);
     return { count, saturated: false };
+  }
+  /** One work index page for an already-admitted reader, through the chrome cache: a whole view the chat landing reads
+   * on every refresh. */
+  function sharedIndexPage(access: WorkSummaryAccess, options: WorkIndexOptions): WorkIndexPage {
+    // Receipt reconciliation, task and result reads always read work afresh (disk state included).
+    if (requestContext.getStore()?.freshWork === true) return workIndexPage(store, clock(), access, options);
+    return chromeRead(indexKey(access, options), () => workIndexPage(store, clock(), access, options));
+  }
+  /** A chrome read for this request: what it already read (its prefetch included) stands for the whole request, else
+   * the revision cache's value, else `compute()` now. */
+  function chromeRead<T>(key: string, compute: () => T): T {
+    const facts = requestContext.getStore();
+    const held = facts?.chromeReads?.get(key);
+    if (held !== undefined) return held as T;
+    const value = chromeReads.read(key, compute);
+    if (facts !== undefined) (facts.chromeReads ??= new Map()).set(key, value);
+    return value;
+  }
+  /** The chat landing's three whole views (chat.ts chatHomeOf), as it asks for them. */
+  const chatHomeViews = (): WorkIndexOptions[] => (["all", "needs-you", "completed"] as const)
+    .map(view => ({ view, limit: WORK_INDEX_MAX_LIMIT, ...(evidenceRoot === undefined ? {} : { root: evidenceRoot }) }));
+  /** Pages that wear the chrome (the sidebar's states and the Tasks count). */
+  const CHROME_PAGES = new Set(["home", "work", "board", "agents", "agents.live", "task.page", "run.page", "chat.page", "review", "tasks", "inbox",
+    "next", "done", "projects.page", "flows.page", "flow.page", "settings.page", "decision.page", "menu"]);
+  /** Before a chromed page renders: its chrome reads (and the chat landing's views) run on a read worker, so the
+   * request thread finds them cached instead of computing them. The reader is the one this request admitted; the keys
+   * carry its exact access (console-chrome.ts). Without a worker, or when one fails, the page computes them as before. */
+  async function prefetchChrome(route: RouteDeclaration, url: URL, who: Who): Promise<void> {
+    if (reads === null || who.via !== "cookie" || !CHROME_PAGES.has(route.id)) return;
+    try {
+      const actor = requestContext.getStore()?.actor ?? "";
+      const access = workAccess(), projects = sidebarProjects(), now = clock();
+      // Populate only the revision cache. Each answer must still pass its revision/expiry check when rendering:
+      // another job can remain pending while an earlier answer's approval or Needs-you state changes.
+      const fill = async <T>(key: string, read: () => Promise<T>) => { await chromeReads.fill(key, read); };
+      const jobs = [
+        fill(countsKey(access), () => reads.workCounts(now, access)),
+        fill(summaryKey(actor, access, projects), () => reads.projectSummary(now, access, actor, projects, evidenceRoot)),
+      ];
+      if (route.id === "chat.page") {
+        if (!["project", "room", "team"].some(name => url.searchParams.has(name)) && requestContext.getStore()?.freshWork !== true)
+          for (const options of chatHomeViews()) jobs.push(fill(indexKey(access, options), () => reads.workIndexPage(now, access, options)));
+        // The conversation's briefing (chat.ts: the fleet snapshot's states), read as chat reads it.
+        const repos = managedRepos();
+        if (repos.length > 0 && requestContext.getStore()?.freshWork !== true) {
+          const fleet = { principal: "operator" as const, repos, includeUnplaced: false, viewer: who.name };
+          const options: WorkIndexOptions = { limit: 100, ...(evidenceRoot === undefined ? {} : { root: evidenceRoot }) };
+          jobs.push(fill(indexKey(fleet, options), () => reads.workIndexPage(now, fleet, options)));
+        }
+      }
+      await Promise.all(jobs);
+    } catch { /* the page computes what is missing */ }
   }
   /** A live page's own beat without a docked chat: 10 s while any admitted task is building, else 30 s. */
   function liveRefreshSeconds(): number {
@@ -1843,6 +1919,8 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
           // The other agents Settings lists: their last answer is what the page shows.
           for (const provider of PROVIDER_IDS.filter(isKeyedProvider).filter(one => one !== "claude" && one !== "codex")) waits.push(connectionCheck(provider).catch(() => undefined));
         }
+        // Project identities, resolved off the thread: what pages asked about, and answers gone stale.
+        waits.push(identities.refresh([...configuredPaths, ...exactRepos(), ...(options.currentRepos?.() ?? []), ...store.listProjects().map(one => one.path), ...store.knownRepos()]));
         integrations.refreshIfDue();
         const sso = ssoSettings();
         if (sso !== null && (ssoProvider === null || ssoProvider.issuer !== sso.issuer || Date.now() - ssoProvider.at >= 10 * 60_000)) waits.push(providerFor(sso.issuer));
@@ -1871,13 +1949,22 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
             if (entry !== undefined && (entry.reading || entry.until > Date.now())) continue;
             const reading = { until: Date.now() + 10 * 60_000, found: entry?.found ?? null, reading: true };
             firstTasks.set(repo, reading);
-            waits.push(findFirstTasks(repo, options.firstTaskRunner ?? execRun).then(found => { reading.found = found; }, () => {}).finally(() => { reading.reading = false; }));
+            // A test's runner reads in-process; otherwise in a process of its own (learning-look.ts), so the hardened
+            // git's synchronous reads of the project's folder never hold the console's thread.
+            waits.push((options.firstTaskRunner !== undefined ? findFirstTasks(repo, options.firstTaskRunner) : firstTasksOffThread(repo)).then(found => { reading.found = found; }, () => {}).finally(() => { reading.reading = false; }));
           }
         }
         // Learning recovered from reviewed runs (and a project's saved rows carried to its current identity), which
         // Settings → Learning and Knowledge used to do as they opened.
         if (lastChecks.due("learning", 10 * 60_000)) {
           waits.push(lastChecks.run("learning", async () => {
+            // Its reads of each project's Git folder are synchronous, so with a database file they run in a process of
+            // their own (learning-look.ts): a folder that doesn't answer costs its own recovery, never the console. An
+            // in-memory database (a test) can't be shared, so it is read here.
+            if (databaseFile !== null) {
+              await recoverLearningOffThread({ databaseFile, evidenceRoot, repos: managedRepos() }, options.learningRunner === undefined ? {} : { runner: options.learningRunner });
+              return;
+            }
             for (const repo of managedRepos()) {
               try { acceptedIdentities(store, repo); } catch { /* the next pass tries again */ }
               try { recoverLearning(store, evidenceRoot, repo); } catch { /* the next pass tries again */ }
@@ -1886,6 +1973,10 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
         }
         // What Codex has configured, per project, for Settings → Tools to offer.
         for (const repo of managedRepos()) {
+          // The project's own .mcp.json, read off the console's thread (folder-look.ts) for the Tools page and the lead.
+          if (options.identities !== undefined && lastChecks.due(`project-mcp:${repo}`, 10 * 60_000)) {
+            waits.push(lastChecks.run(`project-mcp:${repo}`, async () => { const looked = await lookProjectMcp(repo); if (looked.ok) savedProjectMcp.set(repo, looked.value); return looked.ok; }));
+          }
           if (lastChecks.due(`codex-tools:${repo}`, 10 * 60_000)) waits.push(lastChecks.run(`codex-tools:${repo}`, () => codexServers(repo)));
         }
         if (databaseFile !== null && lastChecks.due("storage", 30 * 60_000)) {
@@ -1998,6 +2089,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get projectFamilyPeek(): ServerRuntime['projectFamilyPeek'] { return projectFamilyPeek; },
     get needsYouBadge(): ServerRuntime['needsYouBadge'] { return needsYouBadge; },
     get liveRefreshSeconds(): ServerRuntime['liveRefreshSeconds'] { return liveRefreshSeconds; },
+    get sharedIndexPage(): ServerRuntime['sharedIndexPage'] { return sharedIndexPage; },
     get chatKeyFor(): ServerRuntime['chatKeyFor'] { return chatKeyFor; },
     get chatCatalog(): ServerRuntime['chatCatalog'] { return chatCatalog; },
     get chatCatalogKnown(): ServerRuntime['chatCatalogKnown'] { return chatCatalogKnown; },
@@ -2042,7 +2134,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get providerFor(): ServerRuntime['providerFor'] { return providerFor; },
     get providerKnown(): ServerRuntime['providerKnown'] { return providerKnown; },
     get connectVisits(): ServerRuntime['connectVisits'] { return connectVisits; },
-    get defaultProject(): ServerRuntime['defaultProject'] { return defaultProject; },
+    get defaultProject(): ServerRuntime['defaultProject'] { return defaultProject(); },
     get googleVisits(): ServerRuntime['googleVisits'] { return googleVisits; },
     get setupAttemptsLeft(): ServerRuntime['setupAttemptsLeft'] { return setupAttemptsLeft; },
     set setupAttemptsLeft(value) { setupAttemptsLeft = value; },
@@ -2084,6 +2176,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     get revisionLedgerOf(): ServerRuntime['revisionLedgerOf'] { return revisionLedgerOf; },
     get firstTasks(): ServerRuntime['firstTasks'] { return firstTasks; },
     get authenticateCredential(): ServerRuntime['authenticateCredential'] { return authenticateCredential; },
+    get identities(): ServerRuntime['identities'] { return identities; },
   };
   const tasksHandlers = createTasksHandlers(handlerRuntime);
   const pagesHandlers = createPagesHandlers(handlerRuntime);
@@ -2163,3 +2256,48 @@ export { diffFileAnchor,editorFileHref,needActionOf,orderChangedFiles,plainConcl
 export { settingsGroups,settingsTiles } from "./server/render-settings.js";
 export { decisionAnswerScript,earlierVersionsWords,revisionLineageWords,type RouteView } from "./server/render-tasks.js";
 export { SIGN_IN_LINK_MS,SIGN_IN_LINK_PATH,type DecisionServer } from "./server/session.js";
+
+/**
+ * The console's configured repos and roots. Without identities (embedders and tests) they resolve once, synchronously,
+ * as before. With them, the console resolves them in the background after it listens (operate.ts startConsole), so
+ * each is read from the last answer: a configured path counts by its real path from the moment its folder answers,
+ * and until then only by its spelling, which the strict `canon` never matches for an unresolved row.
+ */
+function startupCeiling(repos: readonly string[], roots: readonly string[], identities: ProjectIdentities | undefined, canon: (path: string) => string | null): {
+  ceiling: { readonly repos: readonly string[]; readonly roots: readonly string[]; canon: (path: string) => string | null };
+  unresolved: () => readonly string[];
+  /** The project every fresh session opens with: the sole configured repo once resolved, else none. */
+  defaultProject: () => string | null;
+  /** Whether any repo or root was configured at all (an unscoped console has none). */
+  configured: boolean;
+  /** Every configured repo and root as given: what the background pass resolves, answered or not. */
+  configuredPaths: readonly string[];
+} {
+  const configured = repos.length > 0 || roots.length > 0;
+  const configuredPaths = [...repos, ...roots];
+  if (identities === undefined) {
+    const once = resolveCeiling(repos, roots);
+    return {
+      ceiling: { ...once.ceiling, canon },
+      unresolved: () => once.unresolved,
+      defaultProject: () => once.ceiling.repos.length === 1 && once.ceiling.roots.length === 0 ? once.ceiling.repos[0] as string : null,
+      configured,
+      configuredPaths,
+    };
+  }
+  // Only resolved entries authorize: an unresolved configured path is in no list, so it matches nothing (not even its
+  // own spelling) and is no session's default until its folder answers.
+  const resolved = (paths: readonly string[]): string[] => [...new Set(paths.flatMap(path => { const real = identities.known(path); return typeof real === "string" ? [real] : []; }))];
+  const ceiling = {
+    get repos() { return resolved(repos); },
+    get roots() { return resolved(roots); },
+    canon,
+  };
+  return {
+    ceiling,
+    unresolved: () => [...repos, ...roots].filter(path => typeof identities.known(path) !== "string"),
+    defaultProject: () => repos.length === 1 && roots.length === 0 ? resolved(repos)[0] ?? null : null,
+    configured,
+    configuredPaths,
+  };
+}

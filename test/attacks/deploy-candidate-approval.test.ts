@@ -11,6 +11,10 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, test } from "vitest";
 import { openStore, type Store } from "../../src/store.js";
 import { APPROVAL_PROOF, addApprover, approvalProofDetail, personApprovalOf, propose } from "../../src/scope.js";
+import { noteCiRunning } from "../../src/release-ci-hold.js";
+import { liftCiHold } from "../../src/release-auto.js";
+import { REQUIRED_PR_CHECKS, REQUIRED_PR_CHECKS_WORKFLOW } from "../../src/release.js";
+import { deploymentGate } from "../../src/deploy-gate.js";
 // @ts-expect-error plain ESM script without declarations
 import { deploymentCandidate } from "../../scripts/deploy-candidate.mjs";
 import { useScratch } from "./harness.js";
@@ -40,6 +44,28 @@ function candidate(store: Store, id: string, proof: string): number {
 
 describe("attack: the candidate's own scope.js approves its deployment", () => {
   const scratch = useScratch("deploy-approval");
+
+  test("a person's early approval cannot bypass pending CI through either deployment gate, even without release terms", () => {
+    const store = openStore(join(scratch(), "orders.db"));
+    try {
+      expect(addApprover(store, "alex", NOW).ok).toBe(true);
+      for (const phase of ["build", "plan", "review"] as const) store.setPhaseConfig("installation", phase, "claude", "sonnet", "test", NOW);
+      const runId = candidate(store, "early-approval", "password-now");
+      noteCiRunning(store, { taskId: "early-approval", candidate: HEAD, now: NOW });
+      const input = { runId, head: HEAD, evidenceRoot: "/evidence", now: NOW };
+      const deps = { assignmentOf: () => null, verificationEvidence: () => ({ ok: false }), installedScope: { personApprovalOf } };
+      for (const releaseFlow of [false, true]) {
+        expect(deploymentGate(store, { ...input, releaseFlow })).toMatchObject({ ok: false, message: expect.stringContaining("CI") });
+        expect(() => deploymentCandidate(store, { ...input, releaseFlow }, deps)).toThrow("CI");
+      }
+      expect(liftCiHold(store, { taskId: "early-approval", candidate: HEAD, now: NOW, ask: false, ci: {
+        head: HEAD, observedAt: NOW.toISOString(), complete: true,
+        runs: REQUIRED_PR_CHECKS.map((name, i) => ({ id: i + 1, suite: 1, name, status: "completed", conclusion: "success", head: HEAD, app: "github-actions", workflowPath: REQUIRED_PR_CHECKS_WORKFLOW[name] })),
+      } })).toEqual({ ok: true });
+      expect(deploymentGate(store, input)).toMatchObject({ ok: false, message: expect.stringContaining("Native check") });
+      expect(() => deploymentCandidate(store, input, deps)).toThrow("Native check");
+    } finally { store.close(); }
+  });
 
   test("a candidate dist whose personApprovalOf returns yes is never asked; a lead-sealed candidate is refused", async () => {
     const dir = scratch();
@@ -99,12 +125,16 @@ describe("attack: the candidate's own scope.js approves its deployment", () => {
     expect(browser.slice(0, early)).not.toMatch(/candidateAssignment|loadNames\(join\(source/);
     expect(browser).toContain('assignment: await load(priorDist, "assignment.js")');
     expect(browser).toContain("assignmentOf: oldRt.assignment.assignmentOf");
-    // Every git read of the candidate (HEAD, status, the archive it builds from, the blobs it compares) ignores
-    // replacement objects and lazy fetch, and no shell pipes an archive.
-    const calls = [...browser.matchAll(/(?:execFileSync|spawnSync)\("git", \[([^\]]*)/g)].map(one => one[1]!);
-    expect(calls.length).toBeGreaterThanOrEqual(5);
-    for (const args of calls) expect(args.startsWith("...SAFE_GIT,"), args).toBe(true);
-    expect(browser).toMatch(/const SAFE_GIT = \["--no-replace-objects",/);
+    // Every git read of the candidate (HEAD, cleanliness, the files it builds from, the blobs it compares) goes through
+    // deploy-git.mjs's own view (review 2, findings 2 and 3): the script never spawns git itself.
+    expect(browser).not.toMatch(/(?:execFileSync|spawnSync|execFile|spawn)\(\s*"git"/);
+    expect(browser).toContain("headOf(REPO_GIT, SAFE_GIT_ENV)");
+    expect(browser).toContain('headOf(["-C", result.worktree], SAFE_GIT_ENV)');
+    // The commit's files and the checkout's cleanliness are read with no attribute applied (deploy-git.mjs): never
+    // archive, show or status, which run the filters and textconv a repository names.
+    expect(browser).not.toMatch(/"(archive|show|status)"/);
+    expect(browser).toContain("extractTree(REPO_GIT, commit, scratch, SAFE_GIT_ENV)");
+    expect(browser).toMatch(/import \{[^}]*headOf[^}]*\} from "\.\/deploy-git\.mjs";/);
     expect(browser).toMatch(/GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1"/);
     expect(browser).not.toMatch(/git -C .*archive/);
   });

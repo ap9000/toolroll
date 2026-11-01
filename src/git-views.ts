@@ -73,9 +73,9 @@ const heldHere = new AsyncLocalStorage<ReadonlySet<string>>();
  * another on the same checkout (teardown's git run through the builder's hardened runner, a view within a view) runs
  * under the lock its caller already holds instead of waiting on itself.
  */
-export async function withCheckoutLock<T>(home: string, checkout: string, work: () => Promise<T>): Promise<T> {
+export async function withCheckoutLock<T>(home: string, checkout: string, work: () => Promise<T>, timeoutMs?: number): Promise<T> {
   const held = heldHere.getStore() ?? new Set<string>();
   if (held.has(checkout)) return work();
-  const release = await lockCheckout(home, checkout);
+  const release = await lockCheckout(home, checkout, timeoutMs);
   try { return await heldHere.run(new Set([...held, checkout]), work); } finally { release(); }
 }

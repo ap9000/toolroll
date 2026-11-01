@@ -84,7 +84,7 @@ describe("attack: the operator's terminals from inside the fence", () => {
     // Made from the runtime's own words, the way it quotes them.
     const env = ["env", "-u", "SECRET_TOKEN", "HTTP_PROXY=http://localhost:1", "/usr/bin/sandbox-exec", "-p", "(version 1)\n(deny default)", "/bin/bash", "-c", "/bin/echo hi"];
     const good = srtQuote(env);
-    expect(withSeatbeltRules(good, "(allow file-read*)", "/bin/echo hi")).toBe(srtQuote([...env.slice(0, 6), "(version 1)\n(deny default)\n(allow file-read*)\n", ...env.slice(7)]));
+    expect(withSeatbeltRules(good, "(allow file-read*)", "/bin/echo hi")).toBe(srtQuote([...env.slice(0, 6), "(version 1)\n(deny default)\n(deny mach-lookup (with no-report))\n(allow file-read*)\n", ...env.slice(7)]));
     const refused = [
       `touch /tmp/x; ${good}`, `/bin/echo ${good}`, `${good}; touch /tmp/x`, `${good} && touch /tmp/x`, `${good} extra`, `${good} | cat`,
       `${good}\ntouch /tmp/x`, ` ${good}`, `${good} `, srtQuote(["env", "touch", ...env.slice(1)]), srtQuote(["env", ...env.slice(4, 6), "(version 1)\n(allow default)", ...env.slice(7)]),

@@ -5,6 +5,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import ts from "typescript-parser";
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync, readdirSync, mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -244,12 +245,21 @@ describe("the invocation gateway", () => {
     expect(store.getRun(runId)).toMatchObject({ tokensIn: 41_000, tokensOut: 2_500, costUsd: 0.4321 });
   });
 
+  test("v140: the run keeps the exact model its session's own init reported, never the agent's words", async () => {
+    const stdout = [
+      { type: "system", subtype: "init", session_id: "s-model", model: "claude-sonnet-4-5-20250929" },
+      { type: "result", subtype: "success", session_id: "s-model", result: "I ran on claude-opus-9", num_turns: 3, total_cost_usd: 0.2, usage: { input_tokens: 10, output_tokens: 5 } },
+    ].map(line => JSON.stringify(line)).join("\n");
+    await invokeAgent(store, runId, CLAUDE, ASK, { runner: async () => ({ ...OK, stdout }) });
+    expect(store.getRun(runId)).toMatchObject({ modelReported: "claude-sonnet-4-5-20250929", agentTurns: 3, costUsd: 0.2 });
+  });
+
   test("what was not measured stays NULL — never a fabricated zero", async () => {
     await invokeRan(store, runId, CLAUDE, ASK, {
       runner: async () => ({ ...OK, stdout: "not json at all" }),
     });
 
-    expect(store.getRun(runId)).toMatchObject({ tokensIn: null, tokensOut: null, costUsd: null });
+    expect(store.getRun(runId)).toMatchObject({ tokensIn: null, tokensOut: null, costUsd: null, modelReported: null });
     // But the spawn itself is on the record regardless.
     expect(store.getRun(runId)?.providerStartedAt).not.toBeNull();
   });
@@ -262,6 +272,8 @@ describe("the invocation gateway", () => {
     expect(capped.kind).toBe("ran");
     expect(store.getRun(runId)).toMatchObject({ costUsd: 3, tokensIn: 10 });
     expect(note()).toEqual({ cost_note: "cost unknown, charged at the cap", usage: { input_tokens: 10, output_tokens: 1 } });
+    // PR #263 review: and the run's money is unknown by its sticky column, whatever later turns write over the note.
+    expect(store.handle.prepare("SELECT cost_unknown FROM run WHERE id = ?").get(runId)?.["cost_unknown"]).toBe(1);
 
     store.finishRun(runId, { outcome: "built", now: T0 });
     store.createTask({ id: "t-uncapped", title: "u" }, T0);
@@ -269,6 +281,7 @@ describe("the invocation gateway", () => {
     await invokeAgent(store, runId, CLAUDE, ASK, { runner: async () => ({ ...OK, code: 1, stdout: unknown }) });
     expect(store.getRun(runId)?.costUsd).toBeNull();
     expect(note()["cost_note"]).toBe("cost unknown, no dollar cap applied: unmeasured");
+    expect(store.handle.prepare("SELECT cost_unknown FROM run WHERE id = ?").get(runId)?.["cost_unknown"]).toBe(1);
   });
 
   test("negative or non-numeric usage is a lie, not a measurement", async () => {
@@ -1035,10 +1048,15 @@ describe("the architecture rule", () => {
     for (const name of readdirSync(src)) {
       if (!name.endsWith(".ts") || name.endsWith(".test.ts")) continue;
       const text = readFileSync(join(src, name), "utf8");
-      if (name !== "invoke.ts" && name !== "provider.ts" && /\badapterFor\b/.test(text)) {
+      // Actual identifier nodes include imports and calls, with either quote style. Policy manifests can name a
+      // function in string data without acquiring authority to call it; comments and strings are not identifiers.
+      const identifiers = new Set<string>();
+      const visit = (node: ts.Node): void => { if (ts.isIdentifier(node)) identifiers.add(node.text); ts.forEachChild(node, visit); };
+      visit(ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true));
+      if (name !== "invoke.ts" && name !== "provider.ts" && identifiers.has("adapterFor")) {
         spawners.push(name);
       }
-      if (name !== "invoke.ts" && /\binvokeAgent\b/.test(text)) {
+      if (name !== "invoke.ts" && identifiers.has("invokeAgent")) {
         invokers.push(name);
       }
     }

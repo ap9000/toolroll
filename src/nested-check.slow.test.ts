@@ -23,7 +23,9 @@ test.skipIf(!native)("files that launch flows' scripts and tools' servers pass i
   const nested = spawnSync("/usr/bin/sandbox-exec", ["-p", OUTER, "/usr/bin/sandbox-exec", "-p", NEST_PROBE, "/usr/bin/true"], { encoding: "utf8" });
   expect(nested.status).not.toBe(0);
   const ran = spawnSync("/usr/bin/sandbox-exec", ["-p", OUTER, resolve(root, "node_modules/.bin/vitest"), "run", ...FILES], {
-    cwd: root, encoding: "utf8", timeout: 540_000, env: { ...withoutColor(process.env), NO_COLOR: "1", VITEST_MAX_WORKERS: "2" },
+    // Inside the outer sandbox no new one can start, so these files' native cases must skip there: the CI lane's
+    // TOOLROLL_REQUIRE_NATIVE (which makes a missing native facility fail) is not the inner run's to obey.
+    cwd: root, encoding: "utf8", timeout: 540_000, env: { ...withoutRequiredNative(withoutColor(process.env)), NO_COLOR: "1", VITEST_MAX_WORKERS: "2" },
   });
   expect(ran.status, `${ran.stdout}\n${ran.stderr}`.slice(-4000)).toBe(0);
   // Plain text: the release check forces colour, whose codes would sit between the words (run 3241).
@@ -33,5 +35,11 @@ test.skipIf(!native)("files that launch flows' scripts and tools' servers pass i
 /** The environment without what forces colour, so the inner run's summary is plain text. */
 function withoutColor(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const { FORCE_COLOR: _force, CLICOLOR_FORCE: _clicolor, ...rest } = env;
+  return rest;
+}
+
+/** The environment without the lane's native requirement, which a run inside an outer sandbox can never meet. */
+function withoutRequiredNative(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const { TOOLROLL_REQUIRE_NATIVE: _required, ...rest } = env;
   return rest;
 }

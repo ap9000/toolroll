@@ -301,9 +301,10 @@ ${AUTHORITY_LINE}
 
 - One command, inside the repository: \`npx toolroll up\` (or
   \`bunx toolroll up\`; Node 22.13+ must be installed — Bun's own
-  runtime cannot host it). \`up\` mints the first login and prints it (saved
-  beside the database as \`up-login.txt\`), registers the machine as a
-  worker, runs the console, opens the browser. Later starts ask for the
+  runtime cannot host it). \`up\` mints the first login and saves it beside the
+  database as \`up-login.txt\` (every start prints that path and the
+  \`cat\` command that shows the password, never the password itself),
+  registers the machine as a worker, runs the console, opens the browser. Later starts ask for the
   password at most once and remember it on that machine.
 - From a phone over a tailnet: add \`--host 0.0.0.0 --allow-host
   <name>:4180\`.
@@ -489,22 +490,29 @@ with a time limit.
    saved first; if either name doesn't answer as the new build, both go
    back. It goes on only when the console, worker and both names run the
    gated commit. A rerun relinks without deploying again.
-8. **ci**: waits for every pull-request check on the gated commit:
-   Ubuntu on Node 22 and 24, Linux and Windows containment. Pending,
-   missing, skipped, cancelled or failed never merges.
+8. **ci**: waits for every pull-request check on the gated commit: Node 24
+   on Ubuntu and macOS, the area lanes (Linux cgroup and fence, Windows,
+   git 2.41 and 2.47), and Node 22 on Ubuntu and macOS, which runs on a
+   release-* branch's pull request.
+   Pending, missing, skipped, cancelled or failed never merges, and main's
+   protection must require every one of them.
 9. **merge**: squash-merges with the head pinned to the gated commit,
    once main has nothing the branch lacks, then deletes the remote branch
    only if its head still matches. A resumed merge also finishes this cleanup.
 10. **tree**: main's merge commit must have exactly the gated tree, or
    nothing is tagged.
-11. **tag**: pushes \`v<version>\` on that merge commit. In publish.yml,
-    macOS Node 22 and 24 must both pass before npm and GitHub publication.
-    macos.yml keeps the nightly matrix.
-12. **publish**: waits for npm, the GitHub release and the tag's macOS
-    and publish checks.
-13. **homebrew**: updates the tap's formula, waits for checks to register
-    and every registered check to pass, then merges. No checks means waiting,
-    within the Homebrew time limit; a failed or skipped check stops the release.
+11. **tag**: pushes \`v<version>\` on that merge commit. The tag runs no
+    tests again: publish.yml's release proof reads GitHub's record that the
+    tagged tree is the merged pull request's head tree and passed every
+    required check there, and npm and GitHub publication need it.
+12. **publish**: waits for npm, the GitHub release and the tag's release
+    proof and publish jobs; not main's own push run on the merge commit.
+13. **homebrew**: the release is published once npm and the GitHub release
+    are verified. It proposes the tap's formula change (checksum from npm's
+    tarball) and looks at its checks once: \`Published; Homebrew pending\`
+    (or failed) ends the run, and the same command finishes it later, waiting
+    for checks to register and every one to pass, then merging exactly that
+    change. A tap already on a newer version is never moved back.
 
 ## When it stops
 
@@ -524,11 +532,14 @@ instead of making them twice.
   A stop at the gate comes before the task is filed, so nothing was filed
   either: a fix pushed as a new commit is released with \`--new\`; after
   rerunning the failed job on GitHub, run the same command again.
-- \`publish-failed\` / \`homebrew-failed\`: fix the failed workflow before
-  resuming. A failed tag check cannot finish publication or update Homebrew.
-- \`base-moved\`: main gained a commit the branch doesn't have, so the
-  merge wouldn't be the checked tree. Nothing was merged: update the
-  branch and release it with \`--new\`.
+- \`publish-failed\`: fix the failed workflow before resuming. A failed tag
+  check cannot finish publication or update Homebrew.
+- Homebrew failed: the release is still published. Fix or rerun the tap's
+  check, then run the same command to finish Homebrew.
+- \`base-moved\`: the branch is behind main (it doesn't contain main's
+  head), so the merge wouldn't be the tree CI tested. Checked at the gate
+  (nothing filed) and again right before merging (nothing merged): update
+  the branch, push, and release it with \`--new\`.
 - \`tree-mismatch\`: main changed what was checked. Nothing was tagged;
   the deployed build stays.
 - \`timeout\`: rerun to keep waiting; \`--limit <step>=<minutes>\`
@@ -536,6 +547,10 @@ instead of making them twice.
 - An interrupted deployment resumes with \`deploy-browser.mjs --stage <saved
   path> --phase recover\` before any new attempt, including \`--new\`.
   Failed recovery stops there; the original deployment journal remains available.
+  \`toolroll release --recover-deploy\` shows what that recovery will do for
+  the one unfinished deployment, and \`--yes\` runs it: when the old service
+  isn't proved stopped it stops only processes proved to be that service's
+  own, restarts the previous service and lifts the pause. Safe to rerun.
 - \`link\`: a CLI name didn't answer as the new build, so both were put
   back. The service already runs the new build; fix the name and rerun.
 - \`gate-held\`: the deployment stopped before its swap but left new work

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CheckProgressTracker, isCheckProgressLine, parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-progress.js";
+import { CheckProgressTracker, coalescedProgressWriter, isCheckProgressLine, parseCheckProgressSnapshot, type CheckProgressSnapshot } from "./check-progress.js";
 import { isTelegramProgressNotification, openStore, type Store } from "./store.js";
 import { addApprover } from "./scope.js";
 import { register } from "./runner.js";
@@ -233,5 +233,140 @@ describe("saved and delivered progress", () => {
     const again = openStore(file);
     expect(again.checkProgress(run)).toMatchObject({ run, line: first.line, final: first.final });
     again.close();
+  });
+});
+
+// Release check 3264: the 0.9.77 check streamed every part's lines tagged `[app] …`; a 0.9.76 plane read each tagged
+// group line as the app suite's own, counted every group's journeys against one group's total, and the store refused the
+// snapshot — inside the builder, before the check's log, report and receipt were sealed. Nothing was saved.
+describe("tagged release-check output (release check 3264)", () => {
+  const strict = (seen: CheckProgressSnapshot[]) => (snapshot: CheckProgressSnapshot) => {
+    if (parseCheckProgressSnapshot(JSON.stringify(snapshot)) === null) throw new Error("invalid check progress");
+    seen.push(snapshot);
+  };
+
+  test("output read past a total never reaches the store, and finishing never throws", () => {
+    const seen: CheckProgressSnapshot[] = [];
+    const tracker = new CheckProgressTracker(strict(seen));
+    tracker.feed("[app] Running 2 groups, at most 4 at once (--at-once 4): console, task\n");
+    tracker.feed("[app] [console] [app]  3s  PASS  Sign-in (3 s)\n[app] [console] [app]  4s  1 passed, 0 failed, 0 skipped — r\n");
+    tracker.feed("[app] [task   ] [app]  5s  PASS  An idea (5 s)\n");
+    expect(() => tracker.finish()).not.toThrow();
+    expect(seen.every(one => parseCheckProgressSnapshot(JSON.stringify(one)) !== null)).toBe(true);
+  });
+
+  test("the check's own part tags: unit by its summary, flows and app groups apart at once, other parts ignored", () => {
+    const seen: CheckProgressSnapshot[] = [];
+    const tracker = new CheckProgressTracker(strict(seen));
+    tracker.feed("flows | Running 1 groups, at most 2 at once (--at-once 2): triggers\napp | Running 2 groups, at most 4 at once (--at-once 4): console, task\n");
+    tracker.feed("app | [console] [app]  3s  PASS  Sign-in (3 s)\nflows | [triggers] [flows]  4s  PASS  Sign in (4 s)\n");
+    tracker.feed("unit | [app] printed by a test PASS\nflows-real | Running 1 groups at once: build\nflows-real | [build] [flows]  9s  PASS  A real build\n");
+    tracker.feed("app | [console] [app]  4s  1 passed, 0 failed, 0 skipped — r\napp | [task   ] [app]  5s  PASS  An idea (5 s)\napp | [task   ] [app]  6s  1 passed, 0 failed, 0 skipped — r\n");
+    tracker.feed("flows | [triggers] [flows]  5s  1 passed, 0 failed, 0 skipped — r\nflows | ✅ triggers  0.1 min\nflows | 1 of 1 groups passed in 0.1 min — out\n");
+    tracker.feed("app | ✅ console  0.1 min\napp | ✅ task  0.1 min\napp | 2 of 2 groups passed in 0.1 min — out\n");
+    tracker.feed("unit |  Test Files  191 passed (191)\n");
+    expect(tracker.finish()?.line).toBe("unit ✓ 191 · flows ✓ 1 · 1/1 groups · app ✓ 2 · 2/2 groups");
+    expect(seen.at(-1)?.final).toBe(true);
+  });
+
+  test("the tag is one no earlier plane reads as a journey line", () => {
+    // Every plane up to 0.9.76 takes `[flows] …`, `[app] …`, `flows: …` and `app: …` as a journey suite's own words.
+    const legacy = (line: string) => /^\s*\[(flows|app)\]\s*(.*)$/i.test(line) || /^\s*(flows|app)\s*:\s*(.*)$/i.test(line) || /^\[\s*([A-Za-z0-9_.-]+)\s*\]\s*\[(flows|app)\]/i.test(line);
+    return import("../scripts/release-check.mjs").then(({ partTag }) => {
+      for (const part of ["typecheck", "build", "unit", "flows", "app", "flows-real", "app-real", "upgrade"])
+        for (const body of ["[console] [app]  3s  PASS  Sign-in", "app: step one", "[app] 1 passed, 0 failed, 0 skipped"])
+          expect(legacy(`${partTag(part)}${body}`), `${part}: ${body}`).toBe(false);
+    });
+  });
+});
+
+describe("coalesced display writes", () => {
+  // A virtual clock and timer: the writer's schedule is the whole subject.
+  function harness() {
+    let clock = 0;
+    const timers: { at: number; run: () => void }[] = [];
+    const saved: CheckProgressSnapshot[] = [];
+    const writer = coalescedProgressWriter(snapshot => saved.push(snapshot), {
+      intervalMs: 1_000, now: () => clock,
+      setTimer: (run, ms) => { const timer = { at: clock + ms, run }; timers.push(timer); return timer; },
+      clearTimer: timer => { const at = timers.indexOf(timer as never); if (at >= 0) timers.splice(at, 1); },
+    });
+    const advance = (ms: number) => {
+      clock += ms;
+      for (const due of timers.filter(one => one.at <= clock)) { timers.splice(timers.indexOf(due), 1); due.run(); }
+    };
+    return { writer, saved, advance, pending: () => timers.length };
+  }
+  const snap = (passed: number, final = false): CheckProgressSnapshot =>
+    ({ version: 1, final, line: `unit ${passed}`, suites: { unit: { state: final ? "passed" : "running", passed, failed: 0, skipped: 0, total: null }, flows: { state: "pending", passed: 0, failed: 0, skipped: 0, total: null }, app: { state: "pending", passed: 0, failed: 0, skipped: 0, total: null } } });
+
+  test("a burst writes the first at once and the newest one interval later; the final is written at once and is the last", () => {
+    const { writer, saved, advance, pending } = harness();
+    for (let passed = 1; passed <= 500; passed++) { writer.push(snap(passed)); advance(1); }
+    // 500 snapshots in half a second: the first, then nothing until its interval is up.
+    expect(saved.map(one => one.line)).toEqual(["unit 1"]);
+    advance(600);
+    expect(saved.map(one => one.line)).toEqual(["unit 1", "unit 500"]);
+    writer.push(snap(501));
+    writer.push(snap(502));
+    // The final snapshot: exact, at once, and nothing kept from before it is written after it.
+    writer.push(snap(503, true));
+    expect(saved.at(-1)).toEqual(snap(503, true));
+    expect(pending()).toBe(0);
+    advance(5_000);
+    writer.push(snap(504));
+    writer.flush();
+    expect(saved.map(one => one.line)).toEqual(["unit 1", "unit 500", "unit 503"]);
+  });
+
+  test("flush writes what is kept, once; a quiet stream writes every snapshot", () => {
+    const { writer, saved, advance } = harness();
+    writer.push(snap(1));
+    writer.push(snap(2));
+    writer.flush();
+    writer.flush();
+    expect(saved.map(one => one.line)).toEqual(["unit 1", "unit 2"]);
+    advance(2_000);
+    writer.push(snap(3));
+    advance(2_000);
+    writer.push(snap(4));
+    expect(saved.map(one => one.line)).toEqual(["unit 1", "unit 2", "unit 3", "unit 4"]);
+  });
+
+  test("a final snapshot whose write fails is kept until a flush saves it; nothing throws (Codex round 1, finding 6)", () => {
+    let clock = 0, failing = true;
+    const saved: CheckProgressSnapshot[] = [];
+    const writer = coalescedProgressWriter(snapshot => { if (failing) throw new Error("database is locked"); saved.push(snapshot); }, { intervalMs: 1_000, now: () => clock });
+    expect(() => writer.push(snap(1))).not.toThrow();
+    clock += 2_000;
+    expect(() => writer.push(snap(2, true))).not.toThrow();
+    expect(writer.flush()).toBe(false);
+    // A display snapshot after the final is never written, even when the store recovers.
+    writer.push(snap(3));
+    failing = false;
+    expect(writer.flush()).toBe(true);
+    expect(saved).toEqual([snap(2, true)]);
+    // Saved once: a later flush writes nothing again.
+    expect(writer.flush()).toBe(true);
+    expect(saved).toEqual([snap(2, true)]);
+    // A later final replaces one never saved, and is retried the same way.
+    const other = coalescedProgressWriter(snapshot => { if (failing) throw new Error("disk full"); saved.push(snapshot); });
+    failing = true;
+    other.push(snap(7, true));
+    failing = false;
+    other.push(snap(8, true));
+    expect(saved.at(-1)).toEqual(snap(8, true));
+  });
+
+  test("through the store: the saved row ends as the exact final snapshot", () => {
+    const store = openStore(":memory:");
+    const run = fixture(store);
+    const all = samples();
+    const writer = coalescedProgressWriter(snapshot => { store.saveCheckProgress(run, snapshot, T0); });
+    for (const one of all) writer.push(one);
+    writer.flush();
+    expect(store.checkProgress(run)).toMatchObject({ run, line: all.at(-1)!.line, final: true });
+    expect(JSON.parse(String(store.handle.prepare("SELECT snapshot FROM run_check WHERE run = ?").get(run)?.["snapshot"]))).toEqual(all.at(-1));
+    store.close();
   });
 });

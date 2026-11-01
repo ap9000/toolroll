@@ -13,6 +13,7 @@ import { phoneText, projectLabel, type PhoneTaskLink } from "./telegram-status.j
 import { isLifecycleNotification, type ChatBatch, type Notification, type Run, type Store } from "./store.js";
 import { leadSubjectOf } from "./lead-voice.js";
 import { decideFallbackLink, decideTargetOf, type DecideTarget } from "./chat-decide.js";
+import { YOUIYOUX_CARD_KIND } from "./contracts/youiyoux-request.js";
 
 /** `also`: more buttons after `link`, such as [Look first] beside [Merge]. `target`: the one card a chat may act on in
  * place (chat-decide.ts), when the message is about one result, plan, failure or pull request. */
@@ -112,8 +113,8 @@ export function quietCardView(store: Store, taskRefs: readonly number[], now: Da
 }
 
 /** Facts that carry their own controls or must stand alone (a security alert, a decision, a flow card, a
- * screenshot, an acceptance packet) are never folded into a batch. */
-const OWN_MESSAGE_KINDS = new Set(["security-release", "secret-detected", "flow-decision", "flow-card", "acceptance-ready", "acceptance-evidence"]);
+ * screenshot, an acceptance packet, a youiyoux pass's card) are never folded into a batch. */
+const OWN_MESSAGE_KINDS = new Set(["security-release", "secret-detected", "flow-decision", "flow-card", "acceptance-ready", "acceptance-evidence", YOUIYOUX_CARD_KIND]);
 
 /** Whether this update for a person joins their two-minute batch: anything about one task that needs them,
  * except a fact that must stand alone. */

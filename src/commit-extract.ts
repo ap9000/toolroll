@@ -10,12 +10,10 @@
  * files are written (mode 644, or 755 when the tree says executable), each at a normalized path inside the folder;
  * symlinks, submodules and any other entry refuse the whole extraction.
  */
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
-import { join, sep } from "node:path";
-import { checkoutGitEnv, HARDENED_GIT_ARGS } from "./agent-fence.js";
-import { commandSetting } from "./teardown-git.js";
+import { basename, dirname, join, sep } from "node:path";
+import { commandSetting, viewedGitSync } from "./teardown-git.js";
 
 export type Extraction = { ok: true; files: number } | { ok: false; message: string };
 
@@ -51,17 +49,41 @@ export function parseTree(bytes: Buffer, idBytes: number): TreeEntry[] | null {
   return entries;
 }
 
+/**
+ * Why a commit's file paths can't all be written as separate regular files, or null: a `.git` part, a path twice, two
+ * paths that are one on a case-insensitive or Unicode-normalizing file system (macOS), or a path that is both a file
+ * and a folder. scripts/deploy-git.mjs writtenPathsProblem keeps the same rules (held equal by test).
+ */
+export function writtenPathsProblem(paths: readonly string[]): string | null {
+  const folded = new Map<string, string>();
+  for (const path of paths) {
+    if (!normalizedTreePath(path)) return `${JSON.stringify(path)} isn't a plain relative path`;
+    if (path.split("/").some(part => part.toLowerCase() === ".git")) return `${path} names a .git folder`;
+    const key = path.normalize("NFC").toLowerCase();
+    const known = folded.get(key);
+    if (known !== undefined) return known === path ? `${path} is listed twice` : `${path} and ${known} are the same file on this computer`;
+    folded.set(key, path);
+  }
+  for (const key of folded.keys()) {
+    const parts = key.split("/");
+    for (let at = 1; at < parts.length; at++) {
+      const folder = parts.slice(0, at).join("/");
+      if (folded.has(folder)) return `${folded.get(folder)} is both a file and a folder`;
+    }
+  }
+  return null;
+}
+
 /** Write commit `sha` of the repository whose Git directory is `gitDir` (a realpath Toolroll took from its own
  * records) into `dest`, an empty folder this process made. Every object on the way — the commit, each tree, each
  * blob — is hashed here and must be the id that names it: Git's own answer about an id is never taken on trust, so a
  * corrupted or replaced object in a store a build could write to refuses the extraction. */
 export function extractCommit(gitDir: string, sha: string, dest: string, limits: ExtractionLimits = EXTRACTION_LIMITS): Extraction {
   const refuse = (message: string): Extraction => ({ ok: false, message });
-  const env = { ...checkoutGitEnv(), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_ATTR_NOSYSTEM: "1" };
-  const git = (args: readonly string[], input?: Buffer) =>
-    spawnSync("git", ["--git-dir", gitDir, "--no-replace-objects", ...HARDENED_GIT_ARGS, ...args], { env, input, maxBuffer: MAX_BYTES, timeout: 300_000 });
+  const git = protectedGit(gitDir, {}, []);
   // The repository's own config, read without includes, must name no command and include nothing.
   const config = git(["config", "--list", "--no-includes", "--show-scope", "-z"]);
+  if (config.refused !== null) return refuse(`The project's Git directory can't be read safely: ${config.refused}.`);
   if (config.status !== 0) return refuse("The project's Git config couldn't be read.");
   const listing = config.stdout.toString("utf8");
   const command = commandSetting(listing);
@@ -130,6 +152,8 @@ export function extractCommit(gitDir: string, sha: string, dest: string, limits:
     level = next;
   }
   if (files.length === 0) return refuse(`The commit ${sha.slice(0, 7)} holds no files.`);
+  const clash = writtenPathsProblem(files.map(one => one.path));
+  if (clash !== null) return refuse(`The commit's files can't be written: ${clash}.`);
 
   const blobs = read([...new Set(files.map(one => one.id))]);
   if (typeof blobs === "string") return refuse(`The approved commit couldn't be verified: ${blobs}.`);
@@ -176,25 +200,54 @@ export type TreeChange = {
 };
 type VerifiedReader = { format: "sha1" | "sha256"; hexLength: number; read(ids: readonly string[]): Map<string, { type: string; bytes: Buffer }> | string;
   /** Git itself, hardened as above, for listings whose every id is then read through `read`. */
-  git(args: readonly string[]): ReturnType<typeof spawnSync> };
+  git(args: readonly string[]): GitAnswer };
 export type Verified<T> = { ok: true; value: T } | { ok: false; message: string };
 
 /** Which Git runs and with what environment: the release path's fixed absolute Git and its own environment, or by
  * default the checkout Git environment's. The hardening settings are added over either. */
-export type GitRunner = { git?: string; env?: NodeJS.ProcessEnv };
+export type GitRunner = { git?: string; env?: NodeJS.ProcessEnv;
+  /** Each git call's time limit (default five minutes). */
+  timeoutMs?: number;
+  /** An absolute wall-clock deadline (ms): every git subprocess, setup included, gets only what is left of it, and a
+   * read past it fails (teardown-git.ts viewedGitSync). */
+  deadline?: number };
+
+/** One protected git run: its exit (null when it didn't end on its own), its output, and why it was refused before it
+ * ran (a frozen view's refusal), else null. */
+type GitAnswer = { status: number | null; stdout: Buffer; refused: string | null };
+
+/**
+ * How the protected readers run git on the project's Git directory (eval-harness review 1, finding 5): never a fetch.
+ * Every command, on every git version, runs through a frozen view of the repository (teardown-git.ts viewedGitSync,
+ * findings 5 and 7): its config read once into a folder of the plane's own and inspected there — an include, a key that
+ * names a command, every `protocol.*` key and (on a git without `--no-lazy-fetch`) a partial clone refused — which is
+ * the config git then runs with, bounded in time. Every run also denies every transport (`protocol.allow=never`) and,
+ * on git 2.45+, takes `--no-lazy-fetch`; nothing leans on GIT_NO_LAZY_FETCH, which 2.41.0 ignores.
+ */
+function protectedGit(gitDir: string, runner: GitRunner, extra: readonly string[]): (args: readonly string[], input?: Buffer) => GitAnswer {
+  const base = ["--no-replace-objects", "-c", "protocol.allow=never", ...extra];
+  // The view is of a checkout: the project's own `.git` folder, as Toolroll records it.
+  const checkout = basename(gitDir) === ".git" ? dirname(gitDir) : null;
+  return (args, input) => {
+    if (checkout === null) return { status: null, stdout: Buffer.alloc(0), refused: "it isn't a checkout's .git folder, which this git can only read through a view" };
+    try {
+      const ran = viewedGitSync(checkout, [...base, ...args], { buffer: true, timeoutMs: runner.timeoutMs ?? 300_000, ...(runner.deadline === undefined ? {} : { deadline: runner.deadline }), maxBuffer: MAX_BYTES, ...(input === undefined ? {} : { input }), ...(runner.git === undefined ? {} : { git: runner.git }) });
+      return { status: ran.status, stdout: ran.stdout, refused: null };
+    } catch (error) { return { status: null, stdout: Buffer.alloc(0), refused: error instanceof Error ? error.message : "it couldn't be read" }; }
+  };
+}
 
 /** A reader over the project's object store that hashes every object it hands back, or why it can't be one. */
 function verifiedReader(gitDir: string, runner: GitRunner = {}): Verified<VerifiedReader> {
   const refuse = (message: string): Verified<VerifiedReader> => ({ ok: false, message });
-  const env = { ...(runner.env ?? checkoutGitEnv()), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1", GIT_ATTR_NOSYSTEM: "1" };
   // The commit-graph file is a cache a build can write: parents come from the objects themselves, never from it.
-  const git = (args: readonly string[], input?: Buffer) =>
-    spawnSync(runner.git ?? "git", ["--git-dir", gitDir, "--no-replace-objects", ...HARDENED_GIT_ARGS, "-c", "core.commitGraph=false", ...args], { cwd: "/", env, input, maxBuffer: MAX_BYTES, timeout: 300_000 });
+  const git = protectedGit(gitDir, runner, ["-c", "core.commitGraph=false"]);
   // History a build could have rewritten around the objects: a shallow boundary, grafts, or replacement refs. Each is
   // refused outright, so no reader here ever has to decide whether to believe one.
   if (existsSync(join(gitDir, "shallow"))) return refuse("The project's history is shallow, so the commits between the approval and this one can't all be read.");
   if (existsSync(join(gitDir, "info", "grafts"))) return refuse("The project's Git directory has grafts, which rewrite history; they are refused.");
   const replaced = git(["for-each-ref", "--format=%(refname)", "refs/replace/"]);
+  if (replaced.refused !== null) return refuse(`The project's Git directory can't be read safely: ${replaced.refused}.`);
   if (replaced.status !== 0) return refuse("The project's refs couldn't be read.");
   if (replaced.stdout.toString("utf8").trim() !== "") return refuse("The project's Git directory has replacement refs, which swap objects; they are refused.");
   const config = git(["config", "--list", "--no-includes", "--show-scope", "-z"]);
@@ -470,4 +523,35 @@ export function verifiedRange(gitDir: string, from: string, to: string, options:
   }
   const unreached = wanted.find(one => !reached.has(one));
   return unreached === undefined ? { ok: true, value: commits } : { ok: false, message: `${unreached.slice(0, 7)} isn't verified as part of the last release's history.` };
+}
+
+/**
+ * Whether `until` lies on `from`'s first-parent history, within a deadline (nightly-github.ts): "yes" when the walk
+ * reaches it; "no" only when it is PROVEN not to — `until` is itself a readable, verified commit and every commit from
+ * `from` back to the root was read and verified without meeting it; "unknown" for anything less certain (an object
+ * missing or unreadable, `max` commits walked, the deadline reached). Every git call is bounded by what is left of
+ * the deadline, at most `callMs`.
+ */
+export function verifiedFirstParentAncestry(gitDir: string, from: string, until: string, options: { deadline: number; now?: () => number; max?: number; callMs?: number }): "yes" | "no" | "unknown" {
+  const now = options.now ?? Date.now;
+  const left = () => options.deadline - now();
+  // Every answer is checked against the deadline as it is given: nothing past it is ever "yes" or "no".
+  const answer = (value: "yes" | "no"): "yes" | "no" | "unknown" => left() > 0 ? value : "unknown";
+  if (left() <= 0) return "unknown";
+  // The absolute deadline goes down to every subprocess (setup included); each call is also held to `callMs`.
+  const reader = verifiedReader(gitDir, { timeoutMs: options.callMs ?? 10_000, deadline: options.deadline });
+  if (!reader.ok) return "unknown";
+  if (from === until) return readCommitWith(reader.value, until).ok ? answer("yes") : "unknown";
+  if (left() <= 0 || !readCommitWith(reader.value, until).ok) return "unknown";
+  let at = from;
+  for (let walked = 0; walked < (options.max ?? 20_000); walked++) {
+    if (left() <= 0) return "unknown";
+    const commit = readCommitWith(reader.value, at);
+    if (!commit.ok) return "unknown";
+    const parent = commit.value.parents[0];
+    if (parent === undefined) return answer("no");
+    if (parent === until) return answer("yes");
+    at = parent;
+  }
+  return "unknown";
 }

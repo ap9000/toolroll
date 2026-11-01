@@ -45,6 +45,12 @@ export const checkReportSchema = versioned(1, {
     ran: z.boolean(),
     code: z.int().min(0).max(255).nullable(),
     timedOut: z.boolean(),
+    /** When it started, the signal that ended it, whether the check stopped it (another part's failure or the check's
+     * own limit) and whether it could start at all — each apart from its code. Absent from an older orchestrator. */
+    startedAt: z.string().max(40).nullable().optional(),
+    signal: z.string().max(20).nullable().optional(),
+    stopped: z.boolean().optional(),
+    spawnFailed: z.boolean().optional(),
   })).max(CHECK_PARTS.length),
   /** The unit suite, from the Vitest main process's fd-3 lines: every file's outcome, and the identities that failed,
    * were skipped, passed on a retry or were asked about. Null when the unit part didn't run. */
@@ -72,6 +78,9 @@ export const checkReportSchema = versioned(1, {
     script: z.enum(JOURNEY_SCRIPTS),
     kind: z.enum(["scripted", "real"]),
     finished: z.boolean(),
+    /** The runner listed its groups before any started (an empty list is an explicit "none of this kind"); absent or
+     * false, the run has no inventory and nothing it lacks can be told from nothing it owed. */
+    inventoried: z.boolean().optional(),
     groups: z.array(z.strictObject({
       group: groupName,
       state: z.enum(["passed", "failed", "not-run"]),
@@ -84,6 +93,8 @@ export const checkReportSchema = versioned(1, {
   })).max(4),
   upgrades: z.strictObject({
     finished: z.boolean(),
+    /** The upgrade path listed its versions before any ran. */
+    inventoried: z.boolean().optional(),
     versions: z.array(z.strictObject({ version: versionName, state: z.enum(["passed", "failed", "not-run"]) })).max(500),
   }).nullable(),
 });
@@ -98,7 +109,13 @@ export function readCheckReport(input: unknown): ContractResult<CheckReport> {
  * sealed beside these after it ran. */
 export const checkInventorySchema = versioned(1, {
   units: z.array(repoPath).max(20_000),
+  /** The parts the check owes. For a full check the plane decides them before it runs (check-report.ts
+   * fullObligationsOf) and they ride on the handshake; every one needs an outcome. */
   parts: z.array(z.enum(CHECK_PARTS)).max(CHECK_PARTS.length),
+  /** Whether CI's run of the exact commit may stand in for the local unit suite. Absent is no. */
+  ciSubstitute: z.boolean().optional(),
+  /** Whether the plane prepared it as a release's check (sealed with the attempt; absent on older inventories). */
+  release: z.boolean().optional(),
 });
 export type CheckInventory = z.infer<typeof checkInventorySchema>;
 
@@ -150,7 +167,7 @@ export const obligationSnapshotSchema = versioned(1, {
 export type ObligationSnapshot = z.infer<typeof obligationSnapshotSchema>;
 
 /** What the plane writes on the check's stdin before closing it. */
-export type CheckHandshake = { nonce: string; mode: "full" | "targeted"; plan: TargetedPlan | null; watch: string[] };
+export type CheckHandshake = { nonce: string; mode: "full" | "targeted"; plan: TargetedPlan | null; watch: string[]; owed?: CheckPart[]; ciSubstitute?: boolean };
 
 // ------------------------------------------------------------------ identities
 

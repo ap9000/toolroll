@@ -1,3 +1,4 @@
+import { type ProjectIdentities } from "../project-identity.js";
 import type { FreshFacts } from '../scope.js';
 import type { createPersonalQueueRuntime } from '../lead-queue-runtime.js';
 import type { FlowRooms } from '../flow-live.js';
@@ -87,7 +88,9 @@ export interface ServerRuntime {
   clock: () => Date;
   taskRooms: TaskRooms;
   identify: (request: IncomingMessage, touch?: boolean, limited?: boolean, refusedToken?: { principal?: Principal; }) => Who | null;
-  liveCeiling: () => { repos: string[]; roots: readonly string[]; };
+  liveCeiling: () => { repos: string[]; roots: readonly string[]; canon?: (path: string) => string | null };
+  /** Project identities without reading folders on the console's thread (project-identity.ts). */
+  identities: ProjectIdentities;
   taskScreen: (response: ServerResponse, who: Who, taskId: string, problem: string | null, status: number, scopeDraft?: URLSearchParams, cancelDraft?: string, editPlan?: boolean, page?: TaskPageExtras) => void;
   runVisible: (run: Run) => boolean;
   runIsLive: (run: Pick<Run, "outcome" | "leaseId" | "taskRef">) => boolean;
@@ -119,6 +122,8 @@ export interface ServerRuntime {
   projectFamilyPeek: (repo: string, now: Date) => ProjectPeek;
   needsYouBadge: (project: string | null) => { count: number; saturated: boolean; };
   liveRefreshSeconds: () => number;
+  /** One work index page for an already-admitted reader, read at most once per workspace revision (console-chrome.ts). */
+  sharedIndexPage: (access: import("../work-summary.js").WorkSummaryAccess, options: import("../work-index.js").WorkIndexOptions) => import("../work-index.js").WorkIndexPage;
   chatKeyFor: (provider: DirectChatProviderId) => { key: string; source: "environment" | "stored"; } | null;
   chatCatalog: () => Promise<import("../converse.js").CatalogModel[] | null>;
   /** The catalog as last fetched: what a page shows. A page never fetches. */

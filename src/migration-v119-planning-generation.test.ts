@@ -52,9 +52,9 @@ test.each([118, -118])("v%s: planning generations and closure reasons are added,
   expect(updateSafeSchema(118)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(119);
   store = openStore(file);
-  expect(SCHEMA_VERSION).toBe(136);
+  expect(SCHEMA_VERSION).toBe(142);
   const db = store.handle;
-  expect(db.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(136);
+  expect(db.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(142);
   for (const table of ["task_ref", "run", "plan_revision"]) {
     expect(db.prepare(`SELECT DISTINCT planning_generation AS g FROM ${table}`).all().map(row => row["g"])).toEqual([0]);
   }

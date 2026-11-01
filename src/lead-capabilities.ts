@@ -185,7 +185,8 @@ export function integrationCapabilities(list: readonly Integration[]): Capabilit
   return list.map(one => {
     const link: ChatControl = one.group === "agents" ? "providers" : one.group === "tools" ? "tools" : INTEGRATION_LINK[one.key.replace(/^.*:/, "").toLowerCase()] ?? INTEGRATION_LINK[one.name.toLowerCase()] ?? "integrations";
     const lets = one.usedBy.length > 0 ? `use ${one.name} for ${one.usedBy.join(", ")}` : `use ${one.name}`;
-    const next = one.action.kind === "setup" ? `Not set up: set up ${one.name} in Settings` : one.action.kind === "fix" ? `Fix: ${one.action.words}` : null;
+    const next = one.action.kind === "setup" ? `Not set up: set up ${one.name} in Settings` : one.action.kind === "fix" ? `Fix: ${one.action.words}`
+      : one.action.kind === "switch" ? (one.action.words !== null ? `Fix: ${one.action.words}` : one.action.on ? `Turned off: turn ${one.name} on in Settings → Integrations` : null) : null;
     return { name: one.name, kind: one.group, state: STATE_WORDS[one.state], ok: one.state === "connected", account: one.account, usedBy: one.usedBy, lastError: one.lastError, lets, next, link: next === null ? null : link };
   });
 }

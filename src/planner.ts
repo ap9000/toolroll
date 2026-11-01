@@ -26,7 +26,7 @@ import { checkoutGit } from "./teardown-git.js";
 import { auditOf, isProviderId } from "./provider.js";
 import type { Store } from "./store.js";
 import { currentClaim, heartbeat } from "./claim.js";
-import { heartbeat as runnerHeartbeat } from "./runner.js";
+import { heartbeat as runnerHeartbeat, RUNNER_HEARTBEAT_MS } from "./runner.js";
 import { parseDecision, type ParsedDecision, type Problem } from "./decision.js";
 import { parsePlan, type ParsedPlan, type PlanProblem } from "./plan.js";
 import { PLAN_MODEL_SCHEMA } from "./contracts/plan.js";
@@ -69,7 +69,7 @@ const GIT = "git";
 const AGENT_ENV_DENYLIST: readonly string[] = [...TELEGRAM_TOKEN_ENVS];
 const DEFAULT_PLAN_TIMEOUT_MS = 20 * 60_000;
 const DEFAULT_PLAN_TURNS = CLAUDE_LIMITS.maxTurns;
-const DEFAULT_PULSE_MS = 60_000;
+const DEFAULT_PULSE_MS = RUNNER_HEARTBEAT_MS;
 
 export type PlanRequest = {
   /** v105: what's left of a monthly budget this API-key work counts toward (the CLI's own cap), when one does. */

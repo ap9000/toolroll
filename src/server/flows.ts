@@ -47,7 +47,7 @@ import { redirect,respond,SAFETY,taskHref } from "./http.js";
 import { html, type Html } from "../html.js";
 import { type Who } from "./session.js";
 export function createFlowsHandlers(runtime: ServerRuntime) {
-  const { store, clock, sendScreen, chromeFor, consoleProjects, options, visible, liveCeiling, providerHome, toolHome, restricted, evidenceRoot, authenticateApprover, authenticateCredential, projectOf, unscopedMode, ceiling, authorizeMutation } = runtime;
+  const { identities, store, clock, sendScreen, chromeFor, consoleProjects, options, visible, liveCeiling, providerHome, toolHome, restricted, evidenceRoot, authenticateApprover, authenticateCredential, projectOf, unscopedMode, ceiling, authorizeMutation } = runtime;
 
   // ---- reads ---------------------------------------------------------------
 
@@ -743,10 +743,18 @@ export function createFlowsHandlers(runtime: ServerRuntime) {
       for (const field of ["repo", "projectRevision", "preview", "source", "sourceRevision", "document", "recipe", "recipeRevision", "purpose", "next"] as const) if (body.getAll(field).length > 1) throw new RecipeError(`Duplicated ${field} field.`);
       if (body.get("repo") !== project || (who.via === "cookie" && body.get("projectRevision") !== String(who.session.projectRevision))) throw new RecipeError("The open project changed. Reopen this recipe in the intended project.", 409);
       const rootMode = !unscopedMode && ceiling.roots.length > 0;
-      if (rootMode && !(await authorizedProject(liveCeiling(), project))) throw new RecipeError("The project is outside this server's access.", 403);
+      const decidedOn = identities.generation();
+      if (rootMode) {
+        // A mutation's target is resolved now, off the console's thread, and must still be the project it names.
+        const resolved = await identities.resolveNow(project);
+        if (resolved === "no-answer") throw new RecipeError("The project's folder didn't answer. It may be on a drive that's disconnected, or waiting on macOS. Try again in a moment.", 503);
+        if (resolved !== project || !(await authorizedProject(liveCeiling(), resolved))) throw new RecipeError("The project is outside this server's access.", 403);
+      }
       const rechecked = authorizeMutation(request, who, readForm(posted, CONSOLE_FORMS.mutationGuard));
       if (rechecked !== null) throw new RecipeError(rechecked.message, rechecked.status);
       if (projectOf(who, request) !== project) throw new RecipeError("The open project changed. Preview the intended project again.", 409);
+      // An identity that changed during the awaits above undoes what they proved.
+      if (identities.generation() !== decidedOn) throw new RecipeError("A project folder changed while this was being checked. Try again.", 409);
       const revision = who.via === "cookie" ? who.session.projectRevision : 0;
       if (step === "prepare") {
         const id = body.get("recipe") ?? "", version = body.get("recipeRevision") ?? "";

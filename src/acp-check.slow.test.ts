@@ -198,7 +198,12 @@ describe("a check's claim and its recovery", () => {
     };
     await runAcpChecks(job());
     pool.lease = real;
-    // The late checkout reopened cleanup, and the pass's own closing settle let it go.
+    // The late checkout reopened cleanup. The superseded watch's own closing settle may not claim the task to tear it
+    // down (claims are fenced by the active watch lease), so the checkout is still there, unsettled.
+    expect(store.acpCheck(id)).toMatchObject({ state: "failed", settledAt: null });
+    expect(store.listWorktrees().filter(one => one.branch === `toolroll/agent-check-${id}`)).not.toEqual([]);
+    // The live watch's next pass lets it go.
+    await runAcpChecks(takeover());
     expect(store.acpCheck(id)).toMatchObject({ state: "failed", settledAt: expect.any(String) });
     expect(store.listWorktrees().filter(one => one.branch === `toolroll/agent-check-${id}`)).toEqual([]);
   });

@@ -16,7 +16,7 @@ export const INTEGRATIONS_CSS = `.integrations{max-width:760px;min-width:0}.inte
   `.integrations .integration>:not(.integration-action),.integrations .integration-body>*{grid-column:1}.integrations .integration-body{display:contents}.integrations .integration:first-of-type{border-top:0}.integrations .integration-head{margin:0;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;min-width:0}` +
   `.integrations .integration .integration-body>*{margin-left:calc(var(--brand-mark) + 10px)}.integrations .integration-head strong{overflow-wrap:anywhere}.integrations .integration p{margin:2px 0 0;min-width:0;overflow-wrap:anywhere}` +
   `.integrations .integration-action{grid-column:2;grid-row:1 / span 3;align-self:center;margin:0}.integrations .integration-action button,.integrations .integration-action .button-link{min-height:44px;white-space:nowrap}` +
-  `.integrations .integration .integration-action button{width:auto}.integrations .integration .integration-action a.integration-quiet{background:var(--so-paper);color:var(--so-ink);border:1px solid var(--so-input-line)}` +
+  `.integrations .integration .integration-action button{width:auto}.integrations .integration .integration-action a.integration-quiet,.integrations .integration .integration-action button.integration-quiet{background:var(--so-paper);color:var(--so-ink);border:1px solid var(--so-input-line)}` +
   `.integrations .integration-fix{color:var(--so-danger)}.integrations code{overflow-wrap:anywhere}.integrations details{margin-top:4px;font-size:.8125rem}.integrations summary{cursor:pointer;padding:4px 0}` +
   `.integration-state{display:inline-flex;align-items:center;gap:6px;font-size:.75rem;font-weight:500;padding:0 8px;border-radius:5px;line-height:20px;white-space:nowrap}` +
   `.integration-state i{width:6px;height:6px;border-radius:50%;background:currentColor}` +
@@ -37,6 +37,11 @@ function action(one: Integration, csrf: string): Html | "" {
   if (a.kind === "test") {
     return csrf === "" ? "" : postForm("/settings/integrations/test", html`<button type="submit">Send test</button>`, { attrs: { class: "integration-action" }, hidden: { key: one.key } });
   }
+  // A project's youiyoux requests: one switch for that project.
+  if (a.kind === "switch") {
+    return csrf === "" ? "" : postForm("/settings/integrations/youiyoux", html`<button type="submit"${a.on ? "" : html` class="integration-quiet"`}>${a.label}</button>`,
+      { attrs: { class: "integration-action" }, hidden: { repo: a.repo, on: a.on ? "1" : "0" } });
+  }
   // A command is run where Toolroll runs; a page is linked. Fix and Set up both say which.
   // Fix is the one filled action on the page; Set up stays quiet so a list of unused services doesn't shout.
   if (a.href !== null) return html`<p class="integration-action"><a class="button-link${a.kind === "setup" ? " integration-quiet" : ""}" href="${a.href}">${a.label}</a></p>`;
@@ -54,12 +59,13 @@ function row(one: Integration, csrf: string): Html {
     ? html`<span class="integration-state integration-state--checking"><i aria-hidden="true"></i>Checking</span>`
     : html`<span class="integration-state integration-state--${one.state}"><i aria-hidden="true"></i>${STATE_WORDS[one.state]}</span>`;
   const facts = [one.account, one.detail, one.credentials].filter(Boolean).join(" · ");
-  const command = one.action.kind !== "test" ? one.action.command : null;
-  const fix = one.action.kind === "fix" ? html`<p class="integration-fix" role="status">${one.action.words}</p>` : "";
+  const command = one.action.kind === "setup" || one.action.kind === "fix" ? one.action.command : null;
+  const words = one.action.kind === "fix" || one.action.kind === "switch" ? one.action.words : null;
+  const fix = words !== null ? html`<p class="integration-fix" role="status">${words}</p>` : "";
   const run = command === null || (one.action.kind === "fix" && one.action.words.includes(command)) ? "" : html`<p class="meta">Run <code>${command}</code> on the computer running Toolroll.</p>`;
   const seen = [one.lastSuccessAt === null ? null : html`Last success ${when(one.lastSuccessAt)}`, one.usedBy.length === 0 ? null : html`Used by ${one.usedBy.join(", ")}`].filter(Boolean);
   const history = one.state === "not-set-up" || seen.length === 0 ? "" : html`<p class="meta">${joinHtml(seen, " · ")}</p>`;
-  const lastError = one.lastError === null || one.state === "not-set-up" ? "" : one.state === "broken" && one.action.kind === "fix" && one.action.words === one.lastError
+  const lastError = one.lastError === null || one.state === "not-set-up" ? "" : one.state === "broken" && words === one.lastError
     ? html`<p class="meta">Failed ${when(one.lastErrorAt ?? "")}</p>`
     : html`<details><summary>Last error ${one.lastErrorAt === null ? "" : when(one.lastErrorAt)}</summary><p class="meta">${one.lastError}</p></details>`;
   return html`<div class="integration" data-integration="${one.key}" data-state="${one.state}"><p class="integration-head">${brandMarkHtml(markFor(one), one.name, one.state === "connected")}<strong>${one.name}</strong> ${badge}</p>${

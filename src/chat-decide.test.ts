@@ -11,7 +11,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
-import { addApprover, approvalProofOf, approve, personApprovalOf, propose } from "./scope.js";
+import { addApprover, APPROVAL_PROOF, approvalProofOf, approve, personApprovalOf, propose } from "./scope.js";
 import { register } from "./runner.js";
 import { storeEvidence } from "./evidence.js";
 import { sealVerificationReceipt } from "./verification-evidence.js";
@@ -21,6 +21,9 @@ import { bridgePass, hashPairingCode, mintPairingCode, PAIRING_TTL_MS, type Tele
 import { modeDigestOf, modeTermsJson, modeWords, presetTerms, type ModeTerms } from "./modes.js";
 import { mergeInChat, planInChat } from "./chat-decide.js";
 import { runOperate } from "./operate.js";
+import { setChatApproval } from "./chat-approval.js";
+import { readYouiyouxRequest } from "./contracts/youiyoux-request.js";
+import { fileYouiyouxRequest, noteYouiyouxFiled } from "./youiyoux-intake.js";
 
 const T0 = new Date("2026-10-03T09:00:00.000Z");
 const BOT = "777000";
@@ -552,5 +555,133 @@ describe("decisions finish in the chat app", () => {
     expect(card.labels).toEqual(["Fail open", "Fail closed ✓"]);
     await tapIn(BOB, card.token(/^Fail closed/), card.messageId);
     expect(store.getDecision(decision)).toMatchObject({ state: "answered", choice: "closed", answeredBy: "bob", answeredVia: "telegram" });
+  });
+
+  describe("a youiyoux pass's card", () => {
+    /** One youiyoux change request filed as a task, as the intake files it (youiyoux-intake.ts). */
+    const fileRequest = (id: string, title: string, task: Record<string, unknown> = {}, kind: "change" | "options" = "change"): string => {
+      const read = readYouiyouxRequest({ schema: "youi.request/v1", id, project: "alpha", kind, status: "open", body: title,
+        author: { kind: "person", name: "Rosa" }, createdAt: now.toISOString(), updatedAt: now.toISOString(), target: { route: "/flows", scope: "element", name: "Button" },
+        task: { title, goal: `Make ${title.toLowerCase()} on /flows.`, touches: ["src/button.tsx"], touchesKnown: true, not: ["New dependencies"],
+          acceptance: [{ statement: `${title} is done`, evidence: ["screenshot"] }], ...task }, thread: [] });
+      if (!read.ok) throw new Error("request fixture");
+      const made = fileYouiyouxRequest(store, REPO, read.value, now);
+      if (made.made !== "filed") throw new Error(`request not filed: ${JSON.stringify(made)}`);
+      return made.taskId;
+    };
+    const chatApprovalOn = () => expect(setChatApproval(store, { approver: "bob", scope: REPO, enabled: true, via: "test" }, now).ok).toBe(true);
+    const proofs = (taskId: string) => store.handle.prepare("SELECT outcome FROM action_ledger WHERE action = ? AND task_id = ?").all(APPROVAL_PROOF, taskId).length;
+
+    test("y1: one card per pass shows every word of each task, and Approve all approves exactly them, each with its own proof", async () => {
+      chatApprovalOn();
+      const calm = fileRequest("r-0000000001", "Calmer button");
+      const wide = fileRequest("r-0000000002", "Wider page", { touches: [], touchesKnown: false, why: "Every page" });
+      noteYouiyouxFiled(store, [calm, wide], now);
+      await pass();
+      const card = script.cardWith(BOB, /^Approve all \(2\)$/);
+      // One card for the pass, not one per request.
+      expect(script.inChat(BOB).filter(call => call.method === "sendMessage" && String(call.params["text"]).includes("youiyoux change requests"))).toHaveLength(1);
+      expect(card.text).toBe([
+        "2 youiyoux change requests wait for you · alpha", "",
+        "1. Calmer button", "Goal:", "From youiyoux request r-0000000001 on /flows.", "", "Make calmer button on /flows.", "", "Not this:", "- New dependencies", "",
+        "Files: src/button.tsx", "", "Done when:", "• Calmer button is done (screenshot)", "", `Starting allows: ${card.text.match(/Starting allows: (.*)/)![1]}`, "",
+        "2. Wider page", "Goal:", "From youiyoux request r-0000000002 on /flows.", "", "Make wider page on /flows.", "", "Not this:", "- New dependencies", "",
+        "Files: any file (no file list)", "", "Done when:", "• Wider page is done (screenshot)", "", `Starting allows: ${card.text.match(/Starting allows: (.*)/)![1]}`,
+      ].join("\n"));
+      expect(card.labels).toEqual(["Approve all (2)", "Approve 1", "Open 1 ↗", "Approve 2", "Open 2 ↗"]);
+      // A plain plan card never approves a change request: only its own card, which shows every word.
+      expect(planInChat(store, calm, "bob", now, "telegram", dir)).toMatchObject({ ok: false });
+
+      await tapIn(BOB, card.token(/^Approve all/), card.messageId);
+      expect(script.current(BOB, card.messageId).text).toBe(`${card.text}\n\nApprove 2 tasks?`);
+      expect(store.getScope(calm)!.approvedAt).toBeNull();
+      await tapIn(BOB, script.current(BOB, card.messageId).token(/^Yes$/), card.messageId);
+      for (const id of [calm, wide]) {
+        expect(store.getScope(id)).toMatchObject({ approvedBy: "bob", approvalBasis: "chat", approvedDigest: store.getScope(id)!.digest });
+        expect(proofs(id)).toBe(1);
+      }
+      expect(script.current(BOB, card.messageId).text).toBe(`${card.text}\n\n✓ Approved "Calmer button", "Wider page". Work starts when a worker is free.`);
+    });
+
+    test("y1b: an options request comes on the same card, every word shown, and approves the same way", async () => {
+      chatApprovalOn();
+      const file = ".youi/proposals/p-0000000007.json";
+      const looks = fileRequest("r-0000000007", "Options for the button", { touches: [file], offer: { proposal: "p-0000000007", file, choices: {}, text: true } }, "options");
+      const calm = fileRequest("r-0000000008", "Calmer button");
+      noteYouiyouxFiled(store, [looks, calm], now);
+      await pass();
+      const card = script.cardWith(BOB, /^Approve all \(2\)$/);
+      expect(card.text.split("\n").slice(0, 8)).toEqual(["2 youiyoux requests wait for you · alpha", "", "1. Options for the button", "Goal:", "From youiyoux request r-0000000007 on /flows.", "",
+        "Make options for the button on /flows.", ""]);
+      expect(card.text).toContain(`Files: ${file}\n`);
+      await tapIn(BOB, card.token(/^Approve 1$/), card.messageId);
+      await tapIn(BOB, script.current(BOB, card.messageId).token(/^Yes$/), card.messageId);
+      expect(store.getScope(looks)).toMatchObject({ approvedBy: "bob", approvalBasis: "chat" });
+      expect(proofs(looks)).toBe(1);
+      expect(store.getScope(calm)!.approvedAt).toBeNull();
+      // Its own card only: a plain plan card never approves it either.
+      expect(planInChat(store, looks, "bob", now, "telegram", dir)).toMatchObject({ ok: false });
+    });
+
+    test("y2: a task whose terms changed after the card was sent is named and left out, never approved on the old words", async () => {
+      chatApprovalOn();
+      const calm = fileRequest("r-0000000003", "Calmer button");
+      const wide = fileRequest("r-0000000004", "Wider page");
+      noteYouiyouxFiled(store, [calm, wide], now);
+      await pass();
+      const card = script.cardWith(BOB, /^Approve all \(2\)$/);
+      await tapIn(BOB, card.token(/^Approve all/), card.messageId);
+      const scope = store.getScope(wide)!;
+      propose(store, { taskId: wide, goal: `${scope.goal}\nAlso delete the tests.`, outOfScope: scope.outOfScope, touches: scope.touches, acceptance: scope.acceptance, now });
+      await tapIn(BOB, script.current(BOB, card.messageId).token(/^Yes$/), card.messageId);
+      expect(store.getScope(calm)!.approvedBy).toBe("bob");
+      expect(store.getScope(wide)!.approvedAt).toBeNull();
+      expect(proofs(wide)).toBe(0);
+      // The card names it, then shows what still waits as it reads now, every word, with its own Approve.
+      const after = script.current(BOB, card.messageId);
+      expect(after.text).toMatch(/^✓ Approved "Calmer button"\. Work starts when a worker is free\.\n✗ Not approved: "Wider page": its terms changed since this card was sent\n\nA youiyoux change request waits for you · alpha\n\n1\. Wider page\n/);
+      expect(after.text).toContain("Also delete the tests.");
+      expect(after.labels).toEqual(["Approve & start", "Open in Toolroll ↗"]);
+    });
+
+    test("y3: a task whose full terms don't fit in one message, or would show a private folder, is named with its link, and Approve never covers it", async () => {
+      chatApprovalOn();
+      const calm = fileRequest("r-0000000005", "Calmer button");
+      const long = fileRequest("r-0000000006", "Long page", { goal: `Rework the page. ${"Every paragraph keeps its words. ".repeat(110)}` });
+      const home = fileRequest("r-0000000009", "Notes page", { goal: "Copy the layout from /Users/rosa/notes/page.html." });
+      noteYouiyouxFiled(store, [calm, long, home], now);
+      await pass();
+      const card = script.cardWith(BOB, /^Approve 1$/);
+      expect(card.text).toContain("1. Calmer button\nGoal:");
+      expect(card.text).not.toContain("Every paragraph keeps its words.");
+      expect(card.text).toContain("Open in Toolroll to approve:\n2. Long page: its full terms don't fit in one chat message\n3. Notes page: its terms name a key or a folder on this computer");
+      expect(card.text).not.toContain("rosa");
+      expect(card.labels).toEqual(["Approve 1", "Open 1 ↗", "Open 2 ↗", "Open 3 ↗"]);
+      await tapIn(BOB, card.token(/^Approve 1$/), card.messageId);
+      expect(script.current(BOB, card.messageId).text).toBe(`${card.text}\n\nApprove and start "Calmer button"?`);
+      await tapIn(BOB, script.current(BOB, card.messageId).token(/^Yes$/), card.messageId);
+      expect(store.getScope(calm)!.approvedBy).toBe("bob");
+      for (const id of [long, home]) expect(store.getScope(id)!.approvedAt).toBeNull();
+      // What still waits can't be approved here: only its links.
+      expect(script.current(BOB, card.messageId).labels).toEqual(["Open 1 ↗", "Open 2 ↗"]);
+    });
+
+    test("y4: without approving from chat turned on, the card still arrives with each task's link, and nothing approves", async () => {
+      const calm = fileRequest("r-0000000007", "Calmer button");
+      const wide = fileRequest("r-0000000008", "Wider page", { touches: [], touchesKnown: false });
+      noteYouiyouxFiled(store, [calm, wide], now);
+      await pass();
+      const card = script.cardWith(BOB, /^Open 1$/);
+      expect(card.labels).toEqual(["Open 1 ↗", "Open 2 ↗"]);
+      expect(card.text).toBe([
+        "2 youiyoux change requests wait for you · alpha", "",
+        "Approving from chat isn't turned on for this project. Open each to approve it in Toolroll.", "",
+        // In short, as chat text always is (a route reads as a path there).
+        "1. Calmer button", "Files: src/button.tsx", "Make calmer button on [path]", "",
+        "2. Wider page", "Files: any file (no file list)", "Make wider page on [path]",
+      ].join("\n"));
+      expect(card.rows.find(one => one.text === "Open 2")!.url).toBe(`${ORIGIN}/chat?task=${encodeURIComponent(wide)}#task-chat-action`);
+      expect(store.getScope(calm)!.approvedAt).toBeNull();
+    });
   });
 });

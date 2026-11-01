@@ -23,14 +23,17 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { deployStateDir, loadNames, stagedRuntimePaths } from "./deploy-paths.mjs";
+import { blobAt, extractTree, headOf, trackedChanges } from "./deploy-git.mjs";
 import { loadCodingDeploymentRuntime } from "./deploy-coding.mjs";
 import { recoverOnExit } from "./deploy-recovery.mjs";
-import { browserDeployment, openDeploymentDatabase, sha, snapshot } from "./deploy-phases.mjs";
+import { activeWorkRefusal, browserDeployment, openDeploymentDatabase, sha, snapshot } from "./deploy-phases.mjs";
+import { serviceStopper } from "./deploy-stop.mjs";
 
 const args = process.argv.slice(2);
-// git inside the candidate's checkout (AGENTS.md trust boundary): no user global or system config, hooks or fsmonitor,
-// and no replacement objects or lazy fetch, so the bytes read under a SHA are that SHA's own (as evidence.ts reads them).
-const SAFE_GIT = ["--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"];
+// git on the candidate's repository (AGENTS.md trust boundary) runs only through deploy-git.mjs: a Git directory of the
+// script's own over the repository's objects and refs, with a config it writes itself (the repository's never applies),
+// no user global or system config, hooks, fsmonitor, replacement objects, transport or lazy fetch, and every object
+// hashed against its id, so the bytes read under a SHA are that SHA's own (eval-harness review 2, findings 2 and 3).
 const SAFE_GIT_ENV = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: process.env.HOME ?? "", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null",
   GIT_NO_REPLACE_OBJECTS: "1", GIT_NO_LAZY_FETCH: "1" };
 const flag = (name, fallback = undefined) => { const at = args.indexOf(`--${name}`); return at >= 0 ? args[at + 1] : fallback; };
@@ -86,7 +89,7 @@ const gitDirGiven = flag("git-dir");
 const REPO_GIT = gitDirGiven === undefined ? ["-C", source] : ["--git-dir", gitDirGiven];
 const headGiven = flag("head");
 if (headGiven !== undefined) requireTrue(/^[0-9a-f]{40}$/.test(headGiven), "--head takes the full approved commit SHA.");
-const candidateHead = headGiven ?? execFileSync("git", [...SAFE_GIT, ...REPO_GIT, "rev-parse", "HEAD"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim();
+const candidateHead = headGiven ?? headOf(REPO_GIT, SAFE_GIT_ENV);
 const short = candidateHead.slice(0, 7);
 const stageDir = flag("stage") ?? join(stateDir, "staged-upgrades", `browser-${short}-${randomUUID().slice(0, 6)}`);
 const journalFile = join(stageDir, "deployment.json");
@@ -108,7 +111,19 @@ const load = async (root, name) => {
 };
 const oldRt = { scope: await load(priorDist, "scope.js"), assignment: await load(priorDist, "assignment.js"), store: await load(priorDist, "store.js"), gate: await load(priorDist, "desktop-update-gate.js"), evidence: await load(priorDist, "verification-evidence.js"), update: await load(priorDist, "desktop-update.js") };
 oldRt.coding = await loadCodingDeploymentRuntime(priorDist);
+// GitHub's nightly lane debt (evals-nightly.md, A2): the installed runtime's own reader, when it has one.
+oldRt.nightly = existsSync(join(priorDist, "nightly-github.js")) ? await load(priorDist, "nightly-github.js") : null;
 // The candidate is proven here, on every entry but recovery, before anything of its own runs.
+// GitHub's nightly lane debt (evals-nightly.md, A2): this deploy's own bounded read, through the installed runtime,
+// before the stored check — a deploy started here re-reads its exemptions and sees a new failure (Codex round 1, 3).
+// Without that re-read (an installed runtime that can't, or a refresh that threw) no exemption counts for this deploy.
+let nightlyRefreshed = false;
+if (phaseWanted !== "recover" && typeof oldRt.nightly?.refreshNightlyForDeploy === "function") {
+  const db = openDeploymentDatabase(database);
+  try { await oldRt.nightly.refreshNightlyForDeploy(new oldRt.store.Store(db), { runId, now: () => new Date() }); nightlyRefreshed = true; }
+  catch { /* the stored check below decides, exemptions not counted */ }
+  finally { db.close(); }
+}
 const early = phaseWanted === "recover" ? null : (() => { const db = openDeploymentDatabase(database, { readOnly: true }); try { return facts(db); } finally { db.close(); } })();
 // A stage made before the rename installed the runtime under the older name; resuming it keeps that path.
 const stagedRuntime = stagedRuntimePaths(stageDir, packageName, names);
@@ -119,15 +134,16 @@ function facts(db) {
   const store = new oldRt.store.Store(db);
   // `--operation` names the coordinator's reserved deploy (adopted, with its secret, before anything is staged): only
   // then may a release's own automatic approval stand.
-  const result = deploymentCandidate(store, { runId, head: candidateHead, evidenceRoot, now: new Date(), releaseFlow: flag("operation") !== undefined }, {
+  const result = deploymentCandidate(store, { runId, head: candidateHead, evidenceRoot, now: new Date(), releaseFlow: flag("operation") !== undefined, nightlyRefreshed }, {
     assignmentOf: oldRt.assignment.assignmentOf, verificationEvidence: oldRt.evidence.verificationEvidence, installedScope: oldRt.scope,
+    installedNightly: oldRt.nightly,
   });
-  requireTrue(resolve(result.worktree) === source || execFileSync("git", [...SAFE_GIT, "-C", result.worktree, "rev-parse", "HEAD"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim() === candidateHead, "Run this from the builder's worktree for this run.");
+  requireTrue(resolve(result.worktree) === source || headOf(["-C", result.worktree], SAFE_GIT_ENV) === candidateHead, "Run this from the builder's worktree for this run.");
   return result;
 }
 function quiet(db) {
   const work = oldRt.gate.activeUpdateWork(db);
-  requireTrue(Object.values(work).every(n => n === 0), `Current work must finish first: ${JSON.stringify(work)}.`);
+  requireTrue(Object.values(work).every(n => n === 0), activeWorkRefusal(work));
   const store = new oldRt.store.Store(db);
   for (const row of db.prepare("SELECT DISTINCT run FROM run_process WHERE exited_at IS NULL").all()) {
     const problem = store.stopQuiescenceProblem(row.run);
@@ -142,21 +158,38 @@ function service(dist) {
   if (!command.includes(`${dist}/controller-service.js`)) return null;
   const children = execFileSync("/usr/bin/pgrep", ["-P", String(pid)], { encoding: "utf8" }).trim().split(/\s+/).filter(Boolean).map(Number);
   const commands = children.map(p => spawnSync("/bin/ps", ["-p", String(p), "-o", "command="], { encoding: "utf8" }).stdout);
-  return commands.some(c => c.includes(`${dist}/cli.js up --db ${database}`)) ? { supervisor: pid, children, command, commands } : null;
+  const up = children.filter((_, at) => commands[at].includes(`${dist}/cli.js up --db ${database}`));
+  if (up.length !== 1) return null;
+  // `up`'s console and worker (isolated-checks stage 1), each verified by its command: this runtime's role entry and
+  // its one role argument. Deployment proves their exit too (round 1, finding 3). A role from another runtime is not
+  // this service. An `up` from before the split has none.
+  const roles = [];
+  const below = spawnSync("/usr/bin/pgrep", ["-P", String(up[0])], { encoding: "utf8" });
+  if (below.status !== 0 && below.status !== 1) return null;
+  for (const child of below.stdout.trim().split(/\s+/).filter(Boolean).map(Number)) {
+    const roleCommand = spawnSync("/bin/ps", ["-p", String(child), "-o", "command="], { encoding: "utf8" }).stdout.trim();
+    if (!roleCommand.includes("up-role-child.js")) continue;
+    const role = / (console|worker)$/.exec(roleCommand)?.[1];
+    if (!roleCommand.includes(`${dist}/up-role-child.js `) || role === undefined) return null;
+    roles.push({ role, pid: child });
+  }
+  return { supervisor: pid, children, command, commands, roles };
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function verifyServiceStopped(pids) {
-  for (let i = 0; i < 60; i++) { signal.throwIfAborted(); if (pids.every(pid => spawnSync("/bin/ps", ["-p", String(pid), "-o", "pid="], { encoding: "utf8" }).status === 1)) break; await sleep(1000); }
-  for (const pid of pids) requireTrue(spawnSync("/bin/ps", ["-p", String(pid), "-o", "pid="], { encoding: "utf8" }).status === 1, `Service process has not exited: ${pid}`);
-  requireTrue(spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status !== 0, "The service is still loaded.");
-}
+// Proving the old service's processes gone, and stopping what it left once each is proved its own (deploy-stop.mjs).
+const { verifyServiceStopped, leftFrom, processes, stopProcesses } = serviceStopper({
+  database, spawnSync, kill: (pid, name) => process.kill(pid, name), sleep, signal, say,
+  loaded: () => spawnSync("/bin/launchctl", ["print", `gui/${uid}/${label}`], { encoding: "utf8" }).status === 0,
+});
 const schemaDigest = db => sha(JSON.stringify(db.prepare("SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name").all()));
 const list = (root, prefix = "") => readdirSync(join(root, prefix), { withFileTypes: true }).flatMap(e => e.isDirectory() ? list(root, join(prefix, e.name)) : [join(prefix, e.name)]).sort();
 
 // ---- phases ------------------------------------------------------------------
 function stage() {
   // Run by hand, the checkout must be clean; under the release every packed byte is proven against the commit itself.
-  if (gitDirGiven === undefined) requireTrue(!execFileSync("git", [...SAFE_GIT, "-C", source, "status", "--porcelain", "--untracked-files=no"], { encoding: "utf8", env: SAFE_GIT_ENV }).trim(), "The candidate checkout has tracked changes.");
+  // Tracked files hashed here with no filter (deploy-git.mjs trackedChanges), never `git status`, which runs the clean
+  // filters the repository's attributes name.
+  if (gitDirGiven === undefined) requireTrue(trackedChanges(source, candidateHead, SAFE_GIT_ENV).length === 0, "The candidate checkout has tracked changes.");
   if (!releaseMode) requireTrue(existsSync(join(source, "dist")), "The candidate has no dist; the native gate builds it.");
   mkdirSync(stageDir, { recursive: true, mode: 0o700 });
   // Spotlight leaves staged runtimes alone (src/never-index.ts).
@@ -208,8 +241,8 @@ function cleanBuildOf(commit) {
     requireTrue(commit === candidateHead, "The extraction is of the approved commit only.");
     cpSync(approvedRoot, scratch, { recursive: true, verbatimSymlinks: true });
   } else {
-    const archive = execFileSync("git", [...SAFE_GIT, ...REPO_GIT, "archive", "--format=tar", commit], { env: SAFE_GIT_ENV, maxBuffer: 1024 * 1024 * 1024 });
-    execFileSync("tar", ["-x", "-C", scratch], { input: archive });
+    // The commit's stored bytes, each object hashed against its id; never `git archive`, which applies attributes.
+    extractTree(REPO_GIT, commit, scratch, SAFE_GIT_ENV);
   }
   const env = NPM_ENV;
   execFileSync("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline", "--silent"], { cwd: scratch, stdio: ["ignore", "ignore", "inherit"], env });
@@ -252,7 +285,7 @@ function proveStaged() {
   for (const f of list(self).filter(f => !f.startsWith("dist/"))) {
     const expected = releaseMode
       ? (existsSync(join(approvedRoot, f)) ? readFileSync(join(approvedRoot, f)) : null)
-      : (() => { const blob = spawnSync("git", [...SAFE_GIT, ...REPO_GIT, "show", `${candidateHead}:${f}`], { maxBuffer: 64 * 1024 * 1024, env: SAFE_GIT_ENV }); return blob.status === 0 ? blob.stdout : null; })();
+      : blobAt(REPO_GIT, candidateHead, f, SAFE_GIT_ENV);
     requireTrue(expected !== null && expected.equals(readFileSync(join(self, f))), `Packed file differs from the candidate commit: ${f}`);
   }
   const staged = stagedPackages(join(runtime, "node_modules"), "node_modules").filter(dep => dep !== `node_modules/${stagedName}`).sort();
@@ -304,7 +337,8 @@ async function pruneStaged(keep) {
 // The journaled phases and their recovery, run with the real services, runtimes and records.
 const { save, loadPhase, assertPreserved, assertMigrated, ensureCodingBackup, prepare, swap, finish, recoverJournal } = browserDeployment({
   database, stageDir, stateDir, journalFile, plist, livePlist, priorDist, nextDist, uid, label, servicePort, runId, candidateHead, publicUrl, script: fileURLToPath(import.meta.url), oldRt, deploymentLock, signal,
-  facts, quiet, service, proveStaged, verifyServiceStopped, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
+  facts, quiet, service, proveStaged, verifyServiceStopped, leftFrom, load, loadCodingDeploymentRuntime, spawnSync, fetch, sleep, say, requireTrue, pruneStaged,
+  processes, stopProcesses,
 });
 recover = recoverJournal;
 

@@ -4,6 +4,7 @@
  * main; for a carried task, whose release approval it was carried from. Read-only, from the store.
  */
 import { liveReleaseOf } from "./scope.js";
+import { nightlyReleaseLines } from "./nightly-github.js";
 import { releaseAuthorityOfTask, releaseCarries, type Store } from "./store.js";
 
 export type LandedView = { sha: string; task: string; files: { path: string; added: number; deleted: number }[] };
@@ -25,6 +26,9 @@ export type ReleaseView = {
   obligations: string[];
   nightly: { at: string; sha: string; outcome: string | null } | null;
   openMainFailures: number;
+  /** GitHub's nightly (nightly-github.ts): each open lane failure, held or exempted for this release's tip, and a
+   * warning when it couldn't be read or hasn't run lately. */
+  githubNightly: string[];
 };
 
 export function releaseViewOf(store: Store, taskId: string, now: Date, obligations: (authority: number) => string[] = () => []): ReleaseView | null {
@@ -44,5 +48,6 @@ export function releaseViewOf(store: Store, taskId: string, now: Date, obligatio
     obligations: obligations(a.id),
     nightly: nightly === undefined ? null : { at: String(nightly["at"]), sha: String(nightly["sha"]), outcome: nightly["outcome"] == null ? null : String(nightly["outcome"]) },
     openMainFailures: open,
+    githubNightly: nightlyReleaseLines(store, { repo: a.repo, taskId: a.tipTask, candidate: a.tipSha, now }),
   };
 }

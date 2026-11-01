@@ -6,10 +6,12 @@ import { handlersOf } from './handler-registry.js';
 import { html, joinHtml, postForm, type Html, reauth } from "../html.js";
 /** pages handlers, moved without changing their route bodies. */
 import { createHmac,randomBytes } from "node:crypto";
-import { existsSync,opendirSync,readdirSync,realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
 import { type ServerResponse } from "node:http";
 import { homedir,hostname } from "node:os";
-import { dirname,join } from "node:path";
+import { basename,dirname,join,resolve } from "node:path";
+import { buildersFor } from "../dispatch.js";
+import { listFolder,localOrigins } from "../folder-look.js";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { setImmediate as yieldEventLoop } from "node:timers/promises";
@@ -52,19 +54,20 @@ import { tally } from "../summary.js";
 import type { EdgeContext,HandlerContext } from './handler-context.js';
 import { serveInstallAsset } from "./pages-assets.js";
 import { healthz } from "./remote-hooks.js";
+import { slowRequestLines, SLOW_REQUEST_MS } from "../latency-timeline.js";
 import type { ServerRuntime } from './runtime.js';
 import { leadsStillAdmitted, leadTilesFor } from './agents-live-lead.js';
 import { refuse, regionScript, screen, settingsRows, WORKSPACE_STYLE, workToolRows, type NavRow } from "./chrome.js";
 import { redirect,respond,safeReturn,SAFETY,taskHref } from "./http.js";
 import { assignmentOf } from "../assignment.js";
 import { assignmentTaskStatusOf } from "../assignment-presentation.js";
-import { browsePage,fleetBody,fleetScript,githubIdentityOf,githubReposPage,homePage,originUrlOf,portfolioOverview,projectsPage,systemPage,workbenchRail } from "./render-pages.js";
+import { browsePage,fleetBody,fleetScript,githubIdentityOf,githubReposPage,homePage,portfolioOverview,projectsPage,startBuilderHtml,systemPage,workbenchRail } from "./render-pages.js";
 import { capsPage } from "./render-settings.js";
 import { decisionAnswerScript,taskBody } from "./render-tasks.js";
 import { type Who } from "./session.js";
 import { rereadBrowser } from "./live.js";
 export function createPagesHandlers(runtime: ServerRuntime) {
-  const { clock, lastChecks, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession } = runtime;
+  const { identities, clock, lastChecks, store, visible, consoleProjects, restricted, ceiling, options, projectFamilyPeek, sendScreen, chromeFor, unscopedMode, admissionList, taskRepoOf, taskViewData, runVisible, evidenceRoot, workAccess, identify, liveCeiling, sessions, deletedRepos, authenticateApprover, authenticateCredential, projectOf, lookupSession } = runtime;
 
   // The filesystem browser (operator request): pick a project folder by
   // looking, not typing. CONFINED to exactly what opening allows —
@@ -77,40 +80,32 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const { url, who, response } = ctx;
     if (who.via !== "cookie") return refuse(response, who, 403, "browsing feeds a browser session's act");
     const browseRoots =
-      ceiling.roots.length > 0 ? [...ceiling.roots] : unscopedMode ? [realpathSync(homedir())] : [];
+      ceiling.roots.length > 0 ? [...ceiling.roots] : unscopedMode ? [identities.hot(homedir())] : [];
     if (browseRoots.length === 0) {
       return refuse(response, who, 404, "this server was configured with an explicit repo list — the openable projects are all on the projects page", "/projects");
     }
     const asked = url.searchParams.get("at") ?? browseRoots[0] as string;
-    const canonical = canonicalProject(asked);
-    const inside =
-      canonical !== null &&
-      browseRoots.some(root => canonical === root || canonical.startsWith(`${root}/`));
-    if (canonical === null || !inside) {
+    const within = (path: string) => browseRoots.some(root => path === root || path.startsWith(`${root}/`));
+    // Spelled outside every root: refused before anything is read. Inside, the look resolves links and checks again.
+    if (!within(resolve(asked))) {
       return refuse(response, who, 403, "that path is outside what this server may browse", "/projects/browse");
     }
-    let entries: { name: string; path: string; git: boolean }[] = [];
-    try {
-      entries = readdirSync(canonical, { withFileTypes: true })
-        .filter(one => one.isDirectory() || one.isSymbolicLink())
-        .filter(one => !one.name.startsWith(".") && one.name !== "node_modules")
-        .slice(0, 400)
-        .map(one => {
-          const path = join(canonical, one.name);
-          // Resolve NOW so a symlink pointing outside the fence renders
-          // as nothing rather than as a door.
-          const resolved = canonicalProject(path);
-          if (resolved === null || !browseRoots.some(root => resolved === root || resolved.startsWith(`${root}/`))) {
-            return null;
-          }
-          return { name: one.name, path: resolved, git: existsSync(join(resolved, ".git")) };
-        })
-        .filter((one): one is { name: string; path: string; git: boolean } => one !== null)
-        .sort((a, b) => Number(b.git) - Number(a.git) || a.name.localeCompare(b.name))
-        .slice(0, 200);
-    } catch {
-      return refuse(response, who, 404, "that directory cannot be read", "/projects/browse");
+    // Read off the console's thread (folder-look.ts): a folder that doesn't answer never freezes the console.
+    const looked = await listFolder(asked, browseRoots, { ...(options.folderLook === undefined ? {} : { runner: options.folderLook }), ...(options.folderLookMs === undefined ? {} : { deadlineMs: options.folderLookMs }) });
+    if (!looked.ok) {
+      return looked.why === "no-answer"
+        ? refuse(response, who, 503, "This folder didn't answer. It may be on a drive that's disconnected, or waiting on macOS. Try again in a moment.", "/projects")
+        : refuse(response, who, 404, "that directory cannot be read", "/projects/browse");
     }
+    const canonical = looked.value.at;
+    if (canonical === null || !within(canonical)) {
+      return refuse(response, who, 403, "that path is outside what this server may browse", "/projects/browse");
+    }
+    // The look kept only folders inside a root; checked here again, as before.
+    const entries = looked.value.entries
+      .filter(one => within(one.path))
+      .sort((a, b) => Number(b.git) - Number(a.git) || a.name.localeCompare(b.name))
+      .slice(0, 200);
     const root = browseRoots.find(one => canonical === one || canonical.startsWith(`${one}/`)) as string;
     const parent = canonical === root ? null : canonical.slice(0, canonical.lastIndexOf("/")) || root;
     const csrf = who.session.csrf;
@@ -147,41 +142,23 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     // (GitHub's rule); the FIRST match wins.
     const localByIdentity = new Map<string, string>();
     const registered = new Set<string>();
-    for (const project of store.listProjects()) {
-      if (!visible(project.path)) continue;
-      registered.add(project.path);
-      const identity = githubIdentityOf(originUrlOf(project.path) ?? "");
-      if (identity !== null && !localByIdentity.has(identity.toLowerCase())) {
-        localByIdentity.set(identity.toLowerCase(), project.path);
-      }
-    }
+    for (const project of store.listProjects()) if (visible(project.path)) registered.add(project.path);
     // Roots are walked ONLY when there are listed repos to match against
-    // (finding 1), through an iterator that stops at 400 entries — a
-    // directory with a million children costs 400 stats, not a scan.
-    if (listed !== null && listed.ok && listed.repos.length > 0) {
-      for (const root of ceiling.roots) {
-        const children: string[] = [];
-        try {
-          const dir = opendirSync(root);
-          try {
-            for (let seen = 0; seen < 400; seen++) {
-              const entry = dir.readSync();
-              if (entry === null) break;
-              if (entry.isDirectory()) children.push(join(root, entry.name));
-            }
-          } finally {
-            dir.closeSync();
-          }
-        } catch {
-          // an unreadable root offers nothing
+    // (finding 1), at most 400 folders a root. Every read runs off the
+    // console's thread (folder-look.ts): a folder that doesn't answer
+    // leaves its copies unmatched and the page says so.
+    const roots = listed !== null && listed.ok && listed.repos.length > 0 ? [...ceiling.roots] : [];
+    let localUnanswered = false;
+    if (registered.size > 0 || roots.length > 0) {
+      const looked = await localOrigins([...registered], roots, { ...(options.folderLook === undefined ? {} : { runner: options.folderLook }), ...(options.folderLookMs === undefined ? {} : { deadlineMs: options.folderLookMs }) });
+      if (looked.ok) {
+        const children = looked.value.found.filter(one => roots.some(root => one.path.startsWith(`${root}/`)));
+        for (const one of [...looked.value.registered.filter(row => registered.has(row.path)), ...children]) {
+          const identity = githubIdentityOf(one.url ?? "");
+          if (identity !== null && !localByIdentity.has(identity.toLowerCase())) localByIdentity.set(identity.toLowerCase(), one.path);
         }
-        for (const child of children) {
-          if (!existsSync(join(child, ".git"))) continue;
-          const identity = githubIdentityOf(originUrlOf(child) ?? "");
-          if (identity !== null && !localByIdentity.has(identity.toLowerCase())) {
-            localByIdentity.set(identity.toLowerCase(), child);
-          }
-        }
+      } else {
+        localUnanswered = looked.why === "no-answer";
       }
     }
     return sendScreen(
@@ -194,6 +171,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         csrf: who.via === "cookie" ? who.session.csrf : "",
         cloneReady: ceiling.roots.length > 0,
         openProject: who.via === "cookie" ? who.session.project ?? null : null,
+        localUnanswered,
       }),
     );
   }
@@ -378,7 +356,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         runners: store.listRunners(),
         worktrees: store
           .listWorktrees()
-          .filter(one => project === null || sameRepo(one.repo, project)),
+          .filter(one => project === null || one.repo === project || identities.hot(one.repo) === identities.hot(project)),
         episode: project === null ? null : store.latestWatchEpisode(project),
         now,
       }),
@@ -408,7 +386,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
         }),
         building: store.liveClaims(project, now),
         runners: store.listRunners(),
-        worktrees: store.listWorktrees().filter(one => project === null || sameRepo(one.repo, project)),
+        worktrees: store.listWorktrees().filter(one => project === null || one.repo === project || identities.hot(one.repo) === identities.hot(project)),
         episode: project === null ? null : store.latestWatchEpisode(project),
         outboxPending: store.pendingForAttention().length,
         // External work at a glance (arc 3 finding 24): every dispatch
@@ -661,9 +639,12 @@ export function createPagesHandlers(runtime: ServerRuntime) {
   async function health(ctx: HandlerContext): Promise<void> {
     const { request, response } = ctx;
     const health = store.telemetry.snapshot();
+    // Beside /healthz, for an instance operator: where the slowest recent console answers spent their time (route ids
+    // and milestones only).
+    const slow = slowRequestLines(store);
     return request.headers.accept?.includes('application/json')
-      ? respond(response, 200, 'application/json; charset=utf-8', JSON.stringify(health))
-      : respond(response, 200, 'text/plain; charset=utf-8', `${healthWords(health)}\n`);
+      ? respond(response, 200, 'application/json; charset=utf-8', JSON.stringify({ ...health, slowRequests: slow }))
+      : respond(response, 200, 'text/plain; charset=utf-8', `${healthWords(health)}\n${slow.length === 0 ? "" : `\nSlow console requests (over ${SLOW_REQUEST_MS} ms), newest first:\n${slow.join("\n")}\n`}`);
   }
 
   // v104: Prometheus metrics, for an instance operator (a scraper sends one's API token).
@@ -697,10 +678,16 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       return refuse(response, who, 403, "selecting a project is a browser session's act");
     }
     const askedPath = (body.get("path") ?? "").trim();
-    const canonicalPick = askedPath === "" ? null : canonicalProject(askedPath);
+    // Resolved off the console's thread (project-identity.ts): a folder that doesn't answer is said, never waited on.
+    const decidedOn = identities.generation();
+    const picked = askedPath === "" ? null : await identities.resolveNow(askedPath);
+    if (picked === "no-answer") return refuse(response, who, 503, "That project's folder didn't answer. It may be on a drive that's disconnected, or waiting on macOS. Try again in a moment.");
+    const canonicalPick = picked;
     if ((askedPath !== "" && canonicalPick === null) || (canonicalPick !== null && (!visible(canonicalPick) || !(await authorizedProject(liveCeiling(), canonicalPick))))) {
       return refuse(response, who, 403, "that project is outside this console's reach");
     }
+    // An identity that changed during the awaits above undoes what they proved.
+    if (identities.generation() !== decidedOn) return refuse(response, who, 409, "a project folder changed while this was being checked — try again");
     who.session.project = canonicalPick;
     who.session.projectRevision += 1;
     sessions.persist(who.session);
@@ -730,7 +717,12 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       return refuse(response, who, 403, "opening a project is a browser session's act");
     }
     const asked = (body.get("path") ?? "").trim();
-    const canonical = asked === "" ? null : canonicalProject(asked);
+    const decidedOn = identities.generation();
+    const resolved = asked === "" ? null : await identities.resolveNow(asked);
+    if (resolved === "no-answer") {
+      return void projectsScreen(response, who, "that folder didn't answer — it may be on a drive that's disconnected, or waiting on macOS; try again in a moment", 503, safeReturn(body.get("return")));
+    }
+    const canonical = resolved;
     if (canonical === null) {
       return void projectsScreen(response, who, "that path does not exist on this server", 400, safeReturn(body.get("return")));
     }
@@ -748,13 +740,19 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     if (!visible(canonical)) {
       return void projectsScreen(response, who, "That project is outside your access.", 403, safeReturn(body.get("return")));
     }
+    // An identity that changed during the awaits above undoes what they proved.
+    if (identities.generation() !== decidedOn) return void projectsScreen(response, who, "a project folder changed while this was being checked — try again", 409, safeReturn(body.get("return")));
     // Opening an allowed repository admits it the same way `repos add` does
     // (project-admission.ts). A co-located `up` notices the durable list and
     // connects its builder; there is no separate restart or binding step.
-    const admitted = await admitProject(store, { registryFile: options.registryPath ?? null, path: canonical, actor: { label: who.name, origin: "console" }, now });
+    // The admission asks again, inside its registry lock and its transaction, about the repo it proves.
+    const stillAllowed = (repo: string): boolean => identities.generation() === decidedOn && visible(repo);
+    const admitted = await admitProject(store, { registryFile: options.registryPath ?? null, path: canonical, actor: { label: who.name, origin: "console" }, now, stillAllowed });
     if (!admitted.ok) {
-      return void projectsScreen(response, who, admitted.reason === "not-git" ? "that path is not a git repository" : `that project is valid, but it could not be added — ${admitted.message}`, 400, safeReturn(body.get("return")));
+      return void projectsScreen(response, who, admitted.reason === "not-git" ? "that path is not a git repository" : `that project is valid, but it could not be added — ${admitted.message}`, admitted.reason === "moved" ? 409 : 400, safeReturn(body.get("return")));
     }
+    // And once more before the session follows it.
+    if (!stillAllowed(admitted.repo)) return void projectsScreen(response, who, "a project folder changed while this was being checked — try again", 409, safeReturn(body.get("return")));
     deletedRepos.delete(admitted.repo);
     who.session.project = admitted.repo;
     who.session.projectRevision++;
@@ -832,12 +830,8 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const rootIndex = Number(body.get("root") ?? "0");
     const rootRaw = Number.isInteger(rootIndex) ? ceiling.roots[rootIndex] : undefined;
     if (rootRaw === undefined) return projectsScreen(response, who, "pick one of the configured roots", 400);
-    let root: string;
-    try {
-      root = realpathSync(rootRaw);
-    } catch {
-      return projectsScreen(response, who, "that projects root does not resolve right now", 400);
-    }
+    const root = await identities.resolveNow(rootRaw);
+    if (root === null || root === "no-answer") return projectsScreen(response, who, "that projects root does not resolve right now", 400);
     const previewed = await (options.ghPreview ?? previewGithubRepo)(shape.owner, shape.name);
     if (!previewed.ok) return projectsScreen(response, who, previewed.message, 400);
     const reparsed = parseGithubRepo(previewed.preview.nameWithOwner);
@@ -896,17 +890,15 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       return projectsScreen(response, who, "that preview expired or was already used — preview again", 400);
     }
     live.onboard?.delete(nonce); // consumed BEFORE the first await
+    // Identities as this confirmation found them: the admission below re-checks against them (project-identity.ts).
+    const decidedOn = identities.generation();
     if (record.large && body.get("big-ok") !== "1") {
       return projectsScreen(response, who, "that repository is large (or its size is unknown) — tick the box to clone it anyway", 400);
     }
     const rootRaw = ceiling.roots[record.rootIndex];
     if (rootRaw === undefined) return projectsScreen(response, who, "the configured roots changed — preview again", 400);
-    let root: string;
-    try {
-      root = realpathSync(rootRaw);
-    } catch {
-      return projectsScreen(response, who, "that projects root does not resolve right now", 400);
-    }
+    const root = await identities.resolveNow(rootRaw);
+    if (root === null || root === "no-answer") return projectsScreen(response, who, "that projects root does not resolve right now", 400);
     if (dirname(record.target) !== root) return projectsScreen(response, who, "the configured roots changed — preview again", 400);
 
     const cloned = await (options.ghClone ?? cloneGithubRepo)(record.nameWithOwner, root, async (cwd: string) => {
@@ -921,15 +913,17 @@ export function createPagesHandlers(runtime: ServerRuntime) {
       return projectsScreen(response, who, "the clone answered with a different path than the preview promised — refused; nothing was enrolled", 400);
     }
     // authorizedProject AFTER the repository exists (finding 20).
-    const proved = await authorizedProject(liveCeiling(), cloned.target);
-    const admitted = proved ? (canonicalProject(cloned.target) ?? cloned.target) : null;
+    const clonedAt = await identities.resolveNow(cloned.target);
+    const admitted = typeof clonedAt === "string" && clonedAt !== "no-answer" && (await authorizedProject(liveCeiling(), clonedAt)) ? clonedAt : null;
     if (admitted === null) {
       return projectsScreen(response, who, `the clone landed at ${cloned.target} but did not prove under the ceiling — it was left in place; enroll it by hand`, 400);
     }
-    const joined = await admitProject(store, { registryFile: options.registryPath ?? null, path: admitted, actor: { label: who.name, origin: "console" }, now });
+    const stillAllowed = (repo: string): boolean => identities.generation() === decidedOn && visible(repo);
+    const joined = await admitProject(store, { registryFile: options.registryPath ?? null, path: admitted, actor: { label: who.name, origin: "console" }, now, stillAllowed });
     if (!joined.ok) {
-      return projectsScreen(response, who, `${cloned.target} is cloned but not added — ${joined.message}`, 400);
+      return projectsScreen(response, who, `${cloned.target} is cloned but not added — ${joined.message}`, joined.reason === "moved" ? 409 : 400);
     }
+    if (!stillAllowed(joined.repo)) return projectsScreen(response, who, `${cloned.target} is cloned but wasn't opened — a project folder changed while it was being checked; try again`, 409);
     deletedRepos.delete(admitted);
     who.session.project = admitted;
     who.session.projectRevision += 1;
@@ -963,7 +957,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     const recentPaths = new Set(recent.map(one => one.path));
     const candidates = new Set<string>();
     for (const path of consoleProjects()) {
-      const canonical = canonicalProject(path) ?? path;
+      const canonical = identities.hot(path);
       if (!recentPaths.has(canonical) && visible(canonical)) candidates.add(canonical);
     }
     const open = who.via === "cookie" ? who.session.project : null;
@@ -1021,7 +1015,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
 
   async function healthzEdge(ctx: EdgeContext): Promise<void> {
     const { response, method } = ctx;
-    return healthz(store, response, method === 'HEAD');
+    return healthz(store, response, method === 'HEAD', options.draining?.() === true);
   }
 
   async function browserAsset(ctx: EdgeContext): Promise<void> {
@@ -1117,6 +1111,22 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     return respond(response, 200, "application/json", JSON.stringify(window.ok ? window : { error: window.reason }));
   }
 
+  /** Start a builder (Settings revamp S4): the command, and whether a builder that may build the open project is
+   * checking in, as dispatch decides. Read-only; a project-limited person sees only a project they may see. */
+  async function startBuilderPage(ctx: HandlerContext): Promise<void> {
+    const { response, now, project, url, who } = ctx;
+    // ?task=<id>: that task's own saved project (a builder there, as dispatch decides for it), never the open one; the
+    // session's selection is left alone. Unknown, unplaced or not visible to this person: 404, the same answer.
+    const taskId = url.searchParams.get("task");
+    const ref = taskId === null ? null : store.lookupRef(taskId.slice(0, 200));
+    if (taskId !== null && (ref === null || ref.repo === null || !visible(ref.repo))) return refuse(response, who, 404, "That task is not available.", "/work");
+    const shown = ref !== null ? ref.repo : project !== null && visible(project) ? project : null;
+    const connected = shown === null ? null : buildersFor(store, shown, now, ref?.assignedRunner ?? null).alive.length > 0;
+    return sendScreen(response, 200, screen("Start a builder", startBuilderHtml({
+      heading: "h1", project: shown === null ? null : basename(shown), connected, managed: !restricted(),
+    }), { chrome: chromeFor(project, "none") }));
+  }
+
   const registrations = handlersOf("pages", {
     "projects.browse": projectsBrowse,
     "projects.github": projectsGithub,
@@ -1128,6 +1138,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "ledger": ledgerPage,
     "activity": activityPage,
     "system": systemScreen,
+    "start-builder": startBuilderPage,
     "peek": peekPage,
     "agents": agentsPage,
     "agents.live": agentsLive,

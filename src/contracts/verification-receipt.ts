@@ -32,6 +32,12 @@ export const VERIFICATION_FAILURES = [
   "custody-lost",
   // A release check that didn't cover what it owed, or lost a required test (release-once.md): never a pass.
   "coverage-incomplete",
+  // A Full release check with no complete, valid result (check-report.ts fullCheckProblem): an error, never a pass.
+  "no-result",
+  // Toolroll's own shutdown stopped the check (its hard stop): it never finished.
+  "stopped-by-toolroll",
+  // A Full check whose recorded last release couldn't be verified: what it owed is unknown, so it never ran.
+  "baseline-unverifiable",
 ] as const;
 
 /**
@@ -42,7 +48,10 @@ export const VERIFICATION_FAILURES = [
 export const verifyCommandFactsSchema = z.union([
   z.strictObject({ configured: z.literal(false) }),
   z.strictObject({ configured: z.literal(true), ran: z.literal(false), attemptFailed: z.literal(true), failure: z.enum(VERIFICATION_FAILURES).optional() }),
-  z.strictObject({ configured: z.literal(true), ran: z.literal(true), exitCode: z.int().min(0).max(255), setupReplayed: z.literal(true).optional() }),
+  z.strictObject({ configured: z.literal(true), ran: z.literal(true), exitCode: z.int().min(0).max(255), setupReplayed: z.literal(true).optional(),
+    // The first attempt of a check rerun after the approved setup, classified on its own (eval-harness review 2,
+    // finding 5): only a launch failure — its program missing — is ever replayed.
+    firstAttempt: z.strictObject({ class: z.literal("launch"), program: z.string().min(1).max(200), exitCode: z.int().min(0).max(255) }).optional() }),
 ]);
 
 export type VerifyCommandFacts = z.infer<typeof verifyCommandFactsSchema>;
@@ -74,7 +83,7 @@ export const receiptLogSchema = z.strictObject({
 
 export const RECEIPT_VERSION = 3;
 
-export const RECEIPT_COVERAGES = ["full", "composed", "partial", "identity-removed"] as const;
+export const RECEIPT_COVERAGES = ["full", "composed", "partial", "identity-removed", "no-result"] as const;
 export type ReceiptCoverage = typeof RECEIPT_COVERAGES[number];
 
 const receiptFields = {
@@ -97,7 +106,10 @@ export const verificationReceiptSchema = versioned(RECEIPT_VERSION, {
   /** Version 3: the attempt sealed before the check ran, and its sealed report (null: it gave none). */
   check: z.strictObject({ attempt: z.enum(["full", "targeted"]), report: z.string().nullable(), inventory: z.string().nullable(),
     /** The command's own exit, kept here when `result` reads a failed attempt because the coverage fell short. */
-    exitCode: z.int().min(0).max(255).nullable().optional() }).optional(),
+    exitCode: z.int().min(0).max(255).nullable().optional(),
+    /** What passed only on a retry inside the check (check-failure.ts retriedInside), sealed here from its report: null
+     * when it gave no valid report, so nobody can tell (unknown, never "no retries"). Absent on older receipts. */
+    retried: z.array(z.string().min(1).max(800)).max(6000).nullable().optional() }).optional(),
   /** Version 3, composed: the full check A and every link the reader proves again. */
   composed: z.strictObject({
     base: z.int().min(1), baseReceipt: z.string(), baseReport: z.string(), authority: z.int().min(1), carries: z.array(z.int()),

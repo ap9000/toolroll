@@ -21,6 +21,9 @@ import { type launchRuntimeUpdate } from "../toolroll-update.js";
 import { timingSafeEqual } from "node:crypto";
 import { type IncomingMessage,type ServerResponse } from "node:http";
 import { SIGN_IN_LINK_PATH } from "./session.js";
+import { type FolderLookRunner } from "../folder-look.js";
+import { type ProjectIdentities } from "../project-identity.js";
+import { type LearningRunner } from "../learning-look.js";
 
 export type ServeOptions = {
   /** Tests: runs a person's command for the HTTP MCP gateway instead of operate.ts's. */
@@ -145,6 +148,8 @@ export type ServeOptions = {
   ssoFetch?: typeof fetch;
   /** Cockpit B1: this `up` console's instance secret (null: none — the instance route answers 404). */
   instanceSecret?: () => string | null;
+  /** v137: whether this console is draining (its `up` is stopping): /healthz says so at once, and pages say Toolroll is restarting. */
+  draining?: () => boolean;
   /** Cockpit E: how Finder is asked to reveal a proved checkout (tests pass their own; never a launch). True: shown. */
   revealPath?: (path: string) => Promise<boolean> | boolean;
   chatEnv?: Record<string, string | undefined>;
@@ -167,6 +172,14 @@ export type ServeOptions = {
    * how often they run and ask this computer's agents again. */
   backgroundChecks?: boolean;
   backgroundChecksMs?: number;
+  /** Tests: how a person's folders are read off the console's thread (folder-look.ts), and how long a read may take. */
+  folderLook?: FolderLookRunner;
+  folderLookMs?: number;
+  /** Project identities resolved off the console's thread (project-identity.ts); `up` and `serve` pass them. Absent:
+   * the old synchronous reads (embedders and tests). */
+  identities?: ProjectIdentities;
+  /** Tests: how the background pass runs one project's learning recovery in a process of its own. */
+  learningRunner?: LearningRunner;
   connectionHome?: string;
   /** Test seam for Chat's first tasks: the `gh` and `git grep` reads. */
   firstTaskRunner?: typeof execRun;
@@ -228,6 +241,10 @@ export function taskHref(taskId: string): string {
   return `/t/${encodeURIComponent(taskId)}`;
 }
 
+export function runHref(runId: number): string {
+  return `/r/${Math.trunc(runId)}`;
+}
+
 // ---- rendering -------------------------------------------------------------
 
 export const SAFETY = {
@@ -247,10 +264,13 @@ export function respond<T extends string>(response: ServerResponse, status: numb
   // writeHead's headers would otherwise win.
   const own = response.getHeader("content-security-policy");
   const cache = response.getHeader("cache-control");
+  // The first-account form's page sends `same-origin` so its own post names this console (signup-gate.ts).
+  const referrer = response.getHeader("referrer-policy");
   response.writeHead(status, {
     ...SAFETY,
     ...(own === undefined ? {} : { "content-security-policy": own as string }),
     ...(cache === undefined ? {} : { "Cache-Control": cache as string }),
+    ...(referrer === "same-origin" ? { "Referrer-Policy": "same-origin" } : {}),
     "Content-Type": type,
   });
   response.end(isHtml(body) ? htmlString(body) : body);
