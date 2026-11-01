@@ -5,7 +5,7 @@ import type { DisplayStatus, StatusTone, WorkStatus } from './workspace-ui.js';
 import { assignmentPresentationOf, shortenedMaterialReason, type AssignmentStatusOptions, type AssignmentWorkStatus } from './assignment-presentation.js';
 import { plainReasonWords } from './proof.js';
 import { chatResultHref } from './chat-controls.js';
-import { START_BUILDER_HREF } from './needs-you.js';
+import { startBuilderHref } from './needs-you.js';
 import { statusDetailsHtml, statusWhyHtml, type PullRequestFact, type TaskStatus } from './task-status.js';
 import { html, type Html } from './html.js';
 
@@ -42,7 +42,7 @@ export function assignmentActionHref(assignment: AssignmentSnapshot): string | n
   }
   if (runId !== null && (action.code === 'inspect-run' || action.code === 'reconcile-run')) return `/r/${runId}`;
   // The task page only repeats that no builder is connected: lead to the command that connects one.
-  if (action.code === 'start-worker') return START_BUILDER_HREF;
+  if (action.code === 'start-worker') return startBuilderHref(taskId);
   const anchor = action.code === 'approve-scope' ? '#approve'
     : action.code === 'inspect-stop' || action.code === 'resume-run' ? '#task-control'
     // Retry (and Build again) is the task's status card itself, at the top: no anchor to its options.

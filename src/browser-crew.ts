@@ -2,7 +2,7 @@
 import type { BrowserCrewItem } from './browser-workspace.js';
 import type { WorkIndexItem, WorkIndexPage } from './work-index.js';
 import { chatControlHref, chatResultHref } from './chat-controls.js';
-import { START_BUILDER_HREF } from './needs-you.js';
+import { startBuilderHref } from './needs-you.js';
 
 /** The index is navigation only. Controls retain their exact owning task, run,
  * decision and approval ceremony; opening a result keeps its saved execution. */
@@ -22,7 +22,7 @@ export function browserWorkActionHref(item: WorkIndexItem): string | null {
   }
   if (runId !== null && (action.code === 'inspect-run' || action.code === 'reconcile-run')) return `/r/${runId}`;
   // The task page only repeats that no builder is connected: lead to the command that connects one.
-  if (action.code === 'start-worker') return START_BUILDER_HREF;
+  if (action.code === 'start-worker') return startBuilderHref(taskId);
   const anchor = action.code === 'approve-scope' ? '#approve'
     : action.code === 'inspect-stop' || action.code === 'resume-run' ? '#task-control'
     // Retry (and Build again) is the task's status card itself, at the top: no anchor to its options.

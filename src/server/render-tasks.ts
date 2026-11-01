@@ -26,7 +26,7 @@ import { taskRoad, type RoadChecks } from "../first-run.js";
 import { starterForWork } from "../flow-starters.js";
 import { type Gap } from "../gaps.js";
 import { readAuthModeStrict } from "../keys.js";
-import { failedAttemptSentence,type FailureExplanation,retryNoteOf,START_BUILDER_COMMAND,START_BUILDER_HREF } from "../needs-you.js";
+import { failedAttemptSentence,type FailureExplanation,retryNoteOf,START_BUILDER_COMMAND,startBuilderHref } from "../needs-you.js";
 import { chosenWords, makesNoPlan, PHASES as ROUTE_PHASES, type RouteOverride, type RouteProjection, TASK_SIZES } from "../phase-routing.js";
 import { type MilestoneState,parseExecutionPlanDocument } from "../plan.js";
 import { type ContractChange } from "../planner-source.js";
@@ -903,7 +903,7 @@ export function taskRecoveryHref(taskId: string, diagnosis: DispatchDiagnosis | 
   switch (diagnosis.action) {
     // The task page only repeats that no builder is connected: lead to the command that connects one.
     case "start-worker":
-      return START_BUILDER_HREF;
+      return startBuilderHref(taskId);
     case "repair-dependency":
       return `${task}#run-status`;
     case "retry-task":
@@ -1723,7 +1723,7 @@ export function taskBodyParts(data: {
             firstConnection
               ? html`<p class="meta">This is the normal start command: it opens the app, connects the project, and starts its builder. Keep Toolroll running; approved tasks begin automatically.</p>`
               : html`<p class="meta">This task resumes automatically when the builder reconnects. You do not need to file or approve it again.</p>`,
-            html`<p><a href="${START_BUILDER_HREF}">See connection status →</a></p></div></details>`,
+            html`<p><a href="${startBuilderHref(task.id)}">See connection status →</a></p></div></details>`,
           ]);
         }
         // Never a link to this page's own acts: Retry sits on the status card and below.

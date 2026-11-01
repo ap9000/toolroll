@@ -25,7 +25,7 @@ worstCaseForPrice
 } from "../converse.js";
 import { DEMO_CHAT_SCRIPT,demoChatHtml,demoThreadHtml,type DemoResultView } from "../demo-chat.js";
 import type { DemoExchange } from "../demo.js";
-import { builderReadyFor,withDispatchDiagnoses } from "../dispatch.js";
+import { builderReadyFor,firstRunBuilderRepo,withDispatchDiagnoses } from "../dispatch.js";
 import { readVerifiedArtifact,scanForSecrets } from "../evidence.js";
 import { run as execRun } from "../exec.js";
 import { findFirstTasks,firstTaskSuggestions,HOW_IT_WORKS,SANDBOX_COMMAND,withBuilderStep,type FirstTaskSuggestion } from "../first-run.js";
@@ -1114,7 +1114,7 @@ export function createChatHandlers(runtime: ServerRuntime) {
   function chatFirstRun(now: Date, project: string | null): BrowserFirstRun | undefined {
     const repo = project ?? managedRepos()[0] ?? null;
     // Done only when a task in this project could start: a live builder bound to it, as dispatch decides.
-    const steps = withBuilderStep(firstRunStepsNow(now), builderReadyFor(store, repo, now));
+    const steps = withBuilderStep(firstRunStepsNow(now), builderReadyFor(store, firstRunBuilderRepo(store, project, visible, managedRepos()), now));
     if (steps === null) return undefined;
     const taskFiled = steps.find(one => one.key === "task")?.done ?? true;
     const agent = steps.find(one => one.key === "agent");

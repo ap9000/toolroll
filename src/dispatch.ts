@@ -290,6 +290,17 @@ export function builderReadyFor(store: Store, repo: string | null, now: Date): b
   return repo !== null && buildersFor(store, repo, now).alive.length > 0;
 }
 
+/** The project the first-run "Builder connected" step speaks for, on Chat and the board alike: the open one; else the
+ * saved project of the first filed task the viewer may see (All projects); else, only before any task exists, the
+ * first managed project. Null when tasks exist but none sits in a project the viewer may see: then nothing says done. */
+export function firstRunBuilderRepo(store: Store, selected: string | null, visible: (repo: string | null) => boolean, managed: readonly string[]): string | null {
+  if (selected !== null) return selected;
+  const placed = store.handle.prepare("SELECT repo FROM task_ref WHERE repo IS NOT NULL ORDER BY id").all() as { repo: string }[];
+  const first = placed.find(row => visible(row.repo));
+  if (first !== undefined) return first.repo;
+  return store.hasAnyWork() ? null : managed[0] ?? null;
+}
+
 export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, readableRepos: readonly string[] | null = null): DispatchDiagnosis | null {
   const task = store.getTask(taskId);
   const ref = store.lookupRef(taskId);

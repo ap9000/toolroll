@@ -33,7 +33,7 @@ export const actions = [{
     const link = page.locator("a[data-primary-action]", { hasText: "Connect a builder" }).first();
     if (await link.count() === 0) return [...findings, { probe: "load", detail: "the task shows no Connect a builder action" }];
     const href = await link.getAttribute("href");
-    if (href !== "/start-builder") findings.push({ probe: "load", detail: `Connect a builder goes to ${href}, not /start-builder` });
+    if (href !== "/start-builder?task=waiting-1") findings.push({ probe: "load", detail: `Connect a builder goes to ${href}, not /start-builder?task=waiting-1` });
     await Promise.all([page.waitForLoadState("load"), link.click()]);
     await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
     await page.locator("#builder").scrollIntoViewIfNeeded().catch(() => {});
