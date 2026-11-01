@@ -79,8 +79,24 @@ touches (when youiyoux knew them all) and its requirements.
   `<id>.task.json` with the task and its status: queued, needs-you,
   building, ready, done, failed or stopped. It also links to the task and to
   what needs you in Toolroll, using the console address you set, or else this
-  computer's own console. It is the only file Toolroll writes in your
-  checkout, and never through a link.
+  computer's own console. Beside an options request's options (below), it is
+  the only file Toolroll writes in your checkout, and never through a link.
+- **Options come back to youiyoux's canvas.** When you ask youiyoux for
+  options on a component, the request becomes a task the same way, and waits
+  for your approval the same way. Its agent may write one file,
+  `.youi/proposals/p-<id>.json`, with two to four options. Once the result is
+  ready for review, Toolroll copies that file from the result's commit into
+  your project, and youiyoux's hub shows the options on the Screens canvas.
+  It never copies a file that is a link, over 64 KB, not youiyoux's options
+  format, already decided or holding a key, and never replaces a file already
+  there; the request's status says why instead. Keep `.youi/proposals` out of
+  `.gitignore`, so the agent's file is part of its result.
+- **Pick in youiyoux, done in Toolroll.** When you pick an option or dismiss
+  them in the hub, Toolroll marks the task complete without merging or
+  publishing its branch, and its history says who decided what. If the task
+  would need someone else to complete it (it changed protected files), has a
+  failing check, or has a newer result, it stays ready for review and says
+  why.
 
 Settings → Integrations shows each project's **youiyoux** row: Connected with
 how many requests are queued, Broken when a request file can't be read (a link,

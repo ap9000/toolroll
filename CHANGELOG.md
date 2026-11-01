@@ -17,6 +17,14 @@
   from chat turned on.
 - **A task shows the youiyoux request it came from**: the request, page,
   component and file:line, on its page and its approval.
+- **youiyoux options requests: options back on the Screens canvas.** An
+  options request becomes a task that may write one file, its options. Once
+  the result is ready for review, Toolroll copies that file from the result
+  into the project for youiyoux's hub, only when it is safe and never over a
+  file already there. Picking an option or dismissing them in the hub marks
+  the task complete without merging its branch, with who decided what in its
+  history; a task that needs more stays ready for review and says why.
+- **A youiyoux request's status reads done once its task is complete.**
 
 ## 0.9.83 — 2026-10-31
 
