@@ -3692,8 +3692,10 @@ async function tickCommand(
 
   settleFinished();
   const replied = replyPass.taken > 0 || replyPass.problem !== null;
-  const flows = flowPass.moved + flowPass.filed.length + flowPass.problems.length + triggerPass.added + triggerPass.problems.length + stepPass.ran + stepPass.problems.length === 0 && !replied ? {} : { flows: { ...flowPass,
-    ...(triggerPass.added + triggerPass.problems.length === 0 ? {} : { triggers: triggerPass }), ...(stepPass.ran + stepPass.problems.length === 0 ? {} : { steps: stepPass }), ...(replied ? { replies: replyPass } : {}) } };
+  const requestPass = housekeeping?.youiyoux ?? { filed: 0, skipped: 0, invalid: 0, updated: 0, problems: [] };
+  const requested = requestPass.filed + requestPass.problems.length > 0;
+  const flows = flowPass.moved + flowPass.filed.length + flowPass.problems.length + triggerPass.added + triggerPass.problems.length + stepPass.ran + stepPass.problems.length === 0 && !replied && !requested ? {} : { flows: { ...flowPass,
+    ...(triggerPass.added + triggerPass.problems.length === 0 ? {} : { triggers: triggerPass }), ...(requested ? { youiyoux: requestPass } : {}), ...(stepPass.ran + stepPass.problems.length === 0 ? {} : { steps: stepPass }), ...(replied ? { replies: replyPass } : {}) } };
 
   const summary = () => {
     const lines = [`Considered ${considered}, built ${built}, parked ${parked}, broke ${broke}.`];
@@ -6898,8 +6900,8 @@ async function runWatchLoop(args: {
         base = head.stdout.trim();
       }
       const pass = await flowHousekeeping(store, repo, context.clock, flowIoOf(context, flowPool, flowGit, base), admissionStopped);
-      flowsDid(pass.flows.moved + pass.triggers.added + pass.steps.ran + pass.replies.taken, pass.flows.filed.length,
-        `flow pass — ${pass.triggers.added} card(s) added, ${pass.replies.taken} reply(ies) taken, ${pass.steps.ran} step(s) run, ${pass.flows.moved} moved`);
+      flowsDid(pass.flows.moved + pass.triggers.added + pass.steps.ran + pass.replies.taken, pass.flows.filed.length + pass.youiyoux.filed,
+        `flow pass — ${pass.triggers.added} card(s) added, ${pass.youiyoux.filed} youiyoux request(s) filed, ${pass.replies.taken} reply(ies) taken, ${pass.steps.ran} step(s) run, ${pass.flows.moved} moved`);
     },
   });
 

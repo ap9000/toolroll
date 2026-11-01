@@ -122,6 +122,7 @@ import { configBase, envValue, namedPath } from "./names.js";
 import { PULL_REQUEST_SCHEMA } from "./pull-request-schema.js";
 import { chatTurnAmountOf, combineReportedModels, providerTurnsOf, reportedCostUsdOf, reportedModelOf, runAmountOf, type ReportedAmount } from "./reported-usage.js";
 import { usageOf } from "./run-efficiency.js";
+import { YOUIYOUX_FILED_VIA } from "./contracts/youiyoux-request.js";
 
 // PR #263 follow-up: the built-ins the Store money seal uses, captured as this module is evaluated, so code that later
 // replaces `Object.defineProperty` and the like can't fool the seal or the lock (lockStoreMoneyMethods refuses when
@@ -752,6 +753,38 @@ export const V141_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
   chat_turn: { billing_reported: { definition: "TEXT CHECK (billing_reported IS NULL OR billing_reported IN ('subscription','api-key'))", saved: "NULL" } },
 });
 
+/** v142 (youiyoux-intake.ts): youiyoux change requests as tasks. `youiyoux_intake` is one row per project the intake
+ * has looked at: a person's on/off choice (`enabled` NULL: automatic, on while the project uses youiyoux) and the last
+ * pass's answer (whether the project uses youiyoux, how many request files couldn't be read, and the problem, if any).
+ * `youiyoux_request` is one row per request taken, keyed by project and request id: the task it became (NULL: left
+ * out, `note` says why), never filed again, and the status last written beside it. New tables only. */
+export const V142_SCHEMA = `
+CREATE TABLE IF NOT EXISTS youiyoux_intake (
+  repo        TEXT PRIMARY KEY,
+  enabled     INTEGER CHECK (enabled IS NULL OR enabled IN (0, 1)),
+  uses        INTEGER NOT NULL DEFAULT 0 CHECK (uses IN (0, 1)),
+  changed_by  TEXT,
+  changed_at  TEXT,
+  checked_at  TEXT,
+  invalid     INTEGER NOT NULL DEFAULT 0 CHECK (invalid >= 0),
+  problem     TEXT
+);
+CREATE TABLE IF NOT EXISTS youiyoux_request (
+  repo          TEXT NOT NULL,
+  request       TEXT NOT NULL CHECK (length(request) = 12 AND request GLOB 'r-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'),
+  task_id       TEXT,
+  note          TEXT,
+  filed_at      TEXT NOT NULL,
+  status        TEXT CHECK (status IS NULL OR status IN ('queued','needs-you','building','ready','done','failed','stopped')),
+  detail        TEXT,
+  status_at     TEXT,
+  written_at    TEXT,
+  write_problem TEXT,
+  PRIMARY KEY (repo, request),
+  UNIQUE (task_id)
+);
+`;
+
 /** A project's "Show commands in the live view" (live-detail.ts): absent means off. */
 export const LIVE_DETAIL_SCHEMA = `
 CREATE TABLE IF NOT EXISTS live_detail_setting (
@@ -1085,7 +1118,9 @@ export type SealedLedgerEntry = LedgerEntry & { seal: { prev: string; hash: stri
 // v141 adds, and changes no saved row: the eval set's records (docs/plans/evals-nightly.md, part C) — campaigns,
 // attempts, each attempt's provider dispatches, the baseline pin and eval debt (V141_SCHEMA) — and how a run's or chat
 // request's billing was known (V141_ADDED_COLUMNS; saved rows NULL: unknown).
-export const SCHEMA_VERSION = 141;
+// v142 adds, and changes no saved row: youiyoux change requests as tasks (V142_SCHEMA, new tables only) — each
+// project's intake choice and last answer, and each request taken, with the task it became.
+export const SCHEMA_VERSION = 142;
 
 /** v118: the tables merged into `credential`, in the order they move (a person's API tokens keep their ids first). */
 export const V118_MERGED_TABLES: Readonly<Record<string, CredentialKind>> = Object.freeze({ api_token: "person", coordinator_credential: "coordinator", lead_credential: "lead" });
@@ -1223,7 +1258,7 @@ const V115_DROPPED_REFERENCES = /\s+REFERENCES (?:contestant|contest|tournament_
  * unchanged), and adds the nullable column in V125_ADDED_COLUMNS, checked the same way. v126 only adds a new table
  * (task_source) and the columns in V126_ADDED_COLUMNS (null or 0), checked the same way.
  */
-export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141]);
+export const UPDATE_SAFE_MIGRATIONS: readonly number[] = Object.freeze([108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142]);
 
 /** v119: the columns it adds, by table, with the value every row saved before it reads (toolroll-update's HISTORY_RULES). */
 export const V119_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string, { definition: string; saved: string }>>>> = Object.freeze({
@@ -5652,6 +5687,8 @@ CREATE INDEX IF NOT EXISTS run_checkpoint_by_task ON run_checkpoint (task_ref, i
   for (const [table, columns] of Object.entries(V141_ADDED_COLUMNS)) {
     for (const [column, { definition }] of Object.entries(columns)) addColumn(db, table, column, definition);
   }
+  // v142: youiyoux change requests as tasks (new tables only).
+  db.exec(V142_SCHEMA);
   // Keep the epoch until reclamation succeeds, including a retry after compaction already committed. A new file has
   // nothing to reclaim.
   if (!fresh) reclaimDatabase(db, "migration");
@@ -8711,6 +8748,11 @@ export class Store {
             .prepare("SELECT 1 AS hit FROM task_scope WHERE task_id = ? AND proposed_via IN ('mate','coordinator','scout')")
             .get(taskId);
           if (writtenByLead !== undefined) return false;
+          // THE OUTSIDE-REQUEST QUARANTINE (youiyoux-intake.ts): a task filed from a youiyoux change request is text
+          // anyone who can write the project's folder wrote. Its provenance is immutable, so no road around this
+          // exists: a mode, a grant, a schedule, a chat tap or an automatic seal never approves it; only a person's
+          // own ceremony on the page that shows every word.
+          if (this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA) return false;
           // CHECK ACCESS (v132, check-access.ts): a scope whose checks reach beyond the fence (sign-ins, or no sandbox at
           // all) seals only on a person's password ceremony — never a mode, a grant, a chat confirmation or a carry.
           const profileText = this.db.prepare("SELECT profile_json FROM task_scope WHERE task_id = ?").get(taskId)?.["profile_json"];

@@ -31,9 +31,9 @@ test.each([136, -136])("v%s: lifecycle, latency timelines and the continuous cop
 
   expect(updateSafeSchema(136)).toBe(true);
   expect(UPDATE_SAFE_MIGRATIONS).toContain(137);
-  expect(SCHEMA_VERSION).toBe(141);
+  expect(SCHEMA_VERSION).toBe(142);
   store = openStore(file);
-  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(141);
+  expect(store.handle.prepare("SELECT version FROM schema_version").get()?.["version"]).toBe(142);
   for (const table of ["service_lifecycle", "latency_timeline", "live_backup"]) expect(store.handle.prepare(`SELECT count(*) AS n FROM ${table}`).get()?.["n"]).toBe(0);
   expect(store.handle.prepare("SELECT count(*) AS n FROM pragma_table_info('task_scope') WHERE name = 'release_check_json'").get()?.["n"]).toBe(1);
   // Absent settings read as the defaults: every 5 minutes, keep 24, beside the database.
