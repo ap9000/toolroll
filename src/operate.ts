@@ -13192,6 +13192,6 @@ export function consoleIdentitiesInBackground(identities: ProjectIdentities, pat
  * token, the lead's token) never changes which models run. The write re-proves them inside its transaction: still an
  * unrestricted instance operator, at that very generation, by a proof that still stands. */
 export function writeModelRow(store: Store, proved: { actor: string; generation: number; method: string }, scope: string, knownProject: (repo: string) => boolean, slot: Slot | null, to: ModelChange["to"], now: Date, extra: readonly ExtraWrite[] = []): ApplyResult {
-  return applyModelChoices(store, { scope, change: slot === null ? [] : [{ slot, to }], expected: { state: stateDigest(store, scope) }, strict: false, knownProject, extra },
+  return applyModelChoices(store, { scope, change: slot === null ? [] : [{ slot, to }], expected: null, strict: false, knownProject, extra },
     { ...proved, live: () => true }, now);
 }

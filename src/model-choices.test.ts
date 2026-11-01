@@ -6,7 +6,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { execFile } from "node:child_process";
 import { openStore, BUILT_IN, type Store } from "./store.js";
 import { addApprover, approve, propose } from "./scope.js";
 import { INSTALLATION_SCOPE, resolveAgentAuthority, resolveRouteCandidates } from "./agentconfig.js";
@@ -318,4 +319,37 @@ test("a Gemini builder and planner stay configurable from the command line, one 
   expect(await cli(["set", "review", "--provider", "claude", "--model", "sonnet", ...as])).toBe(0);
   expect(checkScope(store, null).kind).toBe("ok");
   expect(rowAt(store, INSTALLATION_SCOPE, { phase: "plan", tier: "routine" })).toEqual({ provider: "gemini", model: "gemini-2.5-pro" });
+});
+
+describe("the command line in separate processes (0.9.84 release check)", () => {
+  const BIN = resolve("dist/bin.js");
+  const cliProcess = (args: string[]) => new Promise<{ code: number; out: string }>(done => execFile(process.execPath, [BIN, "config", ...args, "--db", file, "--json"],
+    { encoding: "utf8", env: { ...process.env, NODE_OPTIONS: "" }, timeout: 120_000 }, (error, stdout, stderr) => done({ code: error === null ? 0 : Number((error as { code?: number }).code ?? 1), out: `${stdout}${stderr}` })));
+  const as = () => ["--as", "alex", "--token", token];
+
+  test("concurrent `config set` of different rows all succeed: there's no page to be stale against", async () => {
+    store.close();
+    const results = await Promise.all(["plan", "build", "repair", "review"].map(phase => cliProcess(["set", phase, "--provider", "claude", "--model", "sonnet", ...as()])));
+    store = openStore(file);
+    for (const one of results) {
+      expect(one.out).not.toMatch(/page loaded/);
+      expect(one.code, one.out).toBe(0);
+    }
+    expect(store.listPhaseConfig(INSTALLATION_SCOPE).map(one => `${one.phase}:${one.model}`)).toEqual(["build:sonnet", "plan:sonnet", "repair:sonnet", "review:sonnet"]);
+  }, 120_000);
+
+  test("concurrent writes that together would break repairs: whichever lands second is refused on the real result", async () => {
+    applyModelChoices(store, input(presetChange("sized")), operator(), T0);
+    store.close();
+    const results = await Promise.all([
+      cliProcess(["set", "build", "--tier", "light", "--provider", "codex", "--model", "gpt-5-codex", ...as()]),
+      cliProcess(["set", "repair", "--provider", "claude", "--model", SONNET, ...as()]),
+    ]);
+    store = openStore(file);
+    expect(results.map(one => one.code === 0).filter(Boolean)).toHaveLength(1);
+    const refused = results.find(one => one.code !== 0)!;
+    expect(refused.out).toMatch(/Nothing was saved/);
+    expect(refused.out).not.toMatch(/page loaded/);
+    expect(checkScope(store, null).kind).toBe("ok");
+  }, 120_000);
 });
