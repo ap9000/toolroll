@@ -307,3 +307,15 @@ describe("review round 2 (PR #270)", () => {
     expect(checkScope(store, null).kind).toBe("invalid");
   });
 });
+
+test("a Gemini builder and planner stay configurable from the command line, one row at a time, before any reviewer is set", async () => {
+  const lines: string[] = [];
+  const cli = (args: string[]) => runOperate("config", args, line => lines.push(line), { databaseFile: file, now: T0 });
+  const as = ["--as", "alex", "--token", token, "--json"];
+  expect(await cli(["set", "build", "--provider", "gemini", "--model", "gemini-2.5-pro", ...as])).toBe(0);
+  // The unset reviewer follows a Gemini planner; routing never lets that stop a task, so this is not refused.
+  expect(await cli(["set", "plan", "--provider", "gemini", "--model", "gemini-2.5-pro", ...as])).toBe(0);
+  expect(await cli(["set", "review", "--provider", "claude", "--model", "sonnet", ...as])).toBe(0);
+  expect(checkScope(store, null).kind).toBe("ok");
+  expect(rowAt(store, INSTALLATION_SCOPE, { phase: "plan", tier: "routine" })).toEqual({ provider: "gemini", model: "gemini-2.5-pro" });
+});

@@ -271,8 +271,10 @@ export function checkScope(store: Store, repo: string | null): ScopeCheck {
   if (!build.ok) return { kind: "invalid", problem: build.problem };
   const plan = resolvePhaseAgent(store, "plan", repo, {});
   if (!plan.ok) return { kind: "invalid", problem: plan.problem };
-  const review = resolvePhaseAgent(store, "review", repo, {});
-  if (!review.ok) return { kind: "invalid", problem: review.problem };
+  // The reviewer is not checked here: an unset reviewer follows the planner, and routing deliberately never lets a
+  // reviewer setting stop a task from planning or building (agentconfig.ts resolveRouteCandidates; that leg never
+  // runs). So a Gemini planner with no reviewer of its own stays a valid configuration. A reviewer row written here is
+  // still refused when an ACP agent, and in the editor when Gemini (rowProblem).
   const repair = (repo === null ? null : store.phaseConfig(repo, "repair")) ?? store.phaseConfig(INSTALLATION_SCOPE, "repair");
   if (repair !== null && repair.provider !== build.spec.provider) return { kind: "invalid", problem: `Repairs must use the builder's provider (${build.spec.provider}).` };
   // What is configured is checked first, with a stand-in for any role that has no model yet, so a missing planner
