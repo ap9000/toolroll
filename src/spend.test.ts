@@ -246,7 +246,9 @@ test("the Spend page, its CSV and budgets are an instance operator's; the task p
   const sam = addApprover(store, "sam", NOW, { name: "alex", token: alex.token });
   if (!sam.ok) throw new Error("sam");
   expect(store.setAccountProjects("sam", [REPO], "alex", NOW)).toEqual({ ok: true });
-  work({ name: "alex", kind: "person" }, { costUsd: 3 }, new Date());
+  const keyed = work({ name: "alex", kind: "person" }, { costUsd: 3 }, new Date());
+  // Its own evidence proved the key (invoke.ts records the basis); without it the run's money would read as unknown.
+  store.handle.prepare("UPDATE run SET billing_basis = 'evidence' WHERE id = ?").run(keyed.run);
   const server = createDecisionServer({ store, evidenceRoot: join(dir, "evidence"), repo: REPO });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -258,8 +260,12 @@ test("the Spend page, its CSV and budgets are an instance operator's; the task p
     const cookie = await signIn("alex", alex.token);
     const page = await (await fetch(`${base}/spend`, { headers: { cookie } })).text();
     expect(page).toContain("<h1>Spend</h1>");
-    expect(page).toContain('data-spend-total="3000000"');
-    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(page)![1]!;
+    expect(page).toContain('data-amount-kind="api" data-microusd="3000000"');
+    // Limits change on Settings → Spend, not on the Spend page.
+    expect(page).not.toContain('action="/spend/budget"');
+    const settings = await (await fetch(`${base}/settings/spend`, { headers: { cookie } })).text();
+    expect(settings).toContain('action="/spend/budget"');
+    const csrf = /name="csrf" value="([0-9a-f]{64})"/.exec(settings)![1]!;
     const post = (fields: Record<string, string>) => fetch(`${base}/spend/budget`, { method: "POST", headers: { cookie, origin: base }, body: new URLSearchParams({ csrf, ...fields }), redirect: "manual" });
     expect((await post({ target: `project:${REPO}`, usd: "2", stop: "1", action: "save", password: "wrong" })).headers.get("location")).toContain("problem=");
     expect(store.budgets()).toEqual([]);
@@ -268,13 +274,14 @@ test("the Spend page, its CSV and budgets are an instance operator's; the task p
     expect((await post({ target: "project:/somewhere/else", usd: "2", action: "save", password: alex.token })).headers.get("location")).toContain("problem=");
     const csv = await fetch(`${base}/spend?format=csv`, { headers: { cookie } });
     expect(csv.headers.get("content-type")).toContain("text/csv");
-    expect(await csv.text()).toContain("time_utc,kind,project,person");
+    expect(await csv.text()).toContain("time_utc,source,role,project,person");
     // A queued task under the used-up budget says why it waits.
     store.createTask({ id: "waiting", title: "waiting", filedBy: { name: "alex", kind: "person" } }, new Date());
     store.placeTask(store.refFor("built-in", "waiting").id, REPO);
     expect(await (await fetch(`${base}/t/waiting`, { headers: { cookie } })).text()).toContain("monthly budget is used up");
     const samCookie = await signIn("sam", sam.token);
     expect((await fetch(`${base}/spend`, { headers: { cookie: samCookie }, redirect: "manual" })).status).toBe(403);
+    expect((await fetch(`${base}/settings/spend`, { headers: { cookie: samCookie }, redirect: "manual" })).status).toBe(403);
     // Tasks shows the plan's windows and the budgets to whoever runs the installation, and to no one else.
     store.recordProviderLimits({ provider: "claude", plan: null, windows: [{ window: "five_hour", usedPercent: 48, windowMinutes: 300, resetsAt: new Date(Date.now() + 3_600_000).toISOString(), reached: false }] }, new Date());
     const tasks = await (await fetch(`${base}/work`, { headers: { cookie } })).text();

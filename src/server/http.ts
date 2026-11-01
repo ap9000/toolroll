@@ -241,6 +241,10 @@ export function taskHref(taskId: string): string {
   return `/t/${encodeURIComponent(taskId)}`;
 }
 
+export function runHref(runId: number): string {
+  return `/r/${Math.trunc(runId)}`;
+}
+
 // ---- rendering -------------------------------------------------------------
 
 export const SAFETY = {

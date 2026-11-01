@@ -215,6 +215,7 @@ get("pages", "workbench", "/workbench", free);
 get("tasks", "board", "/board", { limited: "collection" });
 get("tasks", "review", "/review", { limited: "collection" });
 get("settings", "spend", "/spend", { ...free, ...anyOperator("An instance operator sees spend.", "/") });
+get("settings", "settings.spend", "/settings/spend", { ...free, ...anyOperator("An instance operator sets spending limits.", "/settings") });
 get("pages", "ledger", "/ledger", { limited: "unscoped", ...free });
 get("pages", "activity", "/activity");
 get("tasks", "done", "/done", { limited: "collection" });
