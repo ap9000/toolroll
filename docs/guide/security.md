@@ -11,17 +11,23 @@ the project's own check command before they can be deployed.
 
 Agents run as your own user, so without a fence they could read your saved
 login, keys or the database and approve their own work. The fence closes that
-at the operating system:
+at the operating system.
 
-| Agent | macOS | Linux |
-|---|---|---|
-| Codex | its own sandbox profile | its own sandbox profile |
-| Claude | Seatbelt sandbox | bubblewrap (install `bubblewrap`) |
-| Gemini | Seatbelt sandbox | bubblewrap |
+Every fenced launch (a build's agent, its setup and check commands, a saved
+result's checks, a flow's setup and script, a project tool's server) runs inside
+[Anthropic's sandbox-runtime](https://github.com/anthropics/sandbox-runtime)
+(`@anthropic-ai/sandbox-runtime`, pinned in `package.json`): the same sandbox
+Claude Code uses. Its own code writes the macOS Seatbelt profile and the Linux
+bubblewrap and seccomp command for each launch; Toolroll only hands it a short
+config. `toolroll doctor` and **Settings → Project → Home folder** name the
+engine and its version. Codex builds use Codex's own sandbox, given the same
+rules.
 
-Each run records how it was fenced. A build this machine can't fence (Windows,
-or Linux without bubblewrap) doesn't start, unless an instance operator runs
-`toolroll config unconfined-agents allow`; install bubblewrap instead.
+Each run records how it was fenced. Where the runtime can't run (Windows; Linux
+without bubblewrap, socat or ripgrep, or with unprivileged user namespaces off),
+a build doesn't start, unless an instance operator runs
+`toolroll config unconfined-agents allow`; install the missing tools instead
+([Linux](linux.md)).
 
 ## Builds reach only their approved hosts
 
@@ -51,6 +57,104 @@ elsewhere in your home folder can choose otherwise:
 
 or **Settings → Project → Where builds write**. New scopes use the setting;
 approved ones keep what they were approved with.
+
+### What an agent can reach
+
+What Toolroll adds to the runtime's config, and nothing else:
+
+- **Toolroll's own folders** are denied to read and write: the state folder
+  beside the database (your remembered login `up-login.txt`, runner and
+  coordinator tokens, chat bot tokens, the database and its backups, other runs'
+  evidence) except the checkout pool, and `~/.toolroll` (stored provider keys and
+  project tool secrets); other launches' private folders are unread.
+- **The build's own checkout** is writable; **other tasks' checkouts** are read,
+  never written (those there when it starts).
+- **Your home folder** is readable, as in the runtime. A project hides more with
+  **Settings → Project → Home folder**, or
+  `toolroll project sandbox --repo <p> --read-deny "~/.ssh,~/.aws"`; each
+  approved scope seals that list.
+- **The network**: open, or only through the run's own proxy (above).
+
+The runtime's limits are accepted as they are: rules are fixed when a launch
+starts; on Linux a deny for a path that isn't there yet is the runtime's to
+handle; concurrent builds share the system temp folder; another process's
+arguments and environment can be read on macOS; and a folder or checkout made
+after a build starts is writable to it unless something above denies it.
+
+| | Auto | Full access |
+|---|---|---|
+| **Claude, Gemini, ACP agents** | Anthropic's sandbox-runtime (Seatbelt on macOS; bubblewrap and its seccomp filter on Linux, which also needs socat and ripgrep): reads your home folder except the folders the project lists, never Toolroll's folders; other tasks' work read, never written; writes only the checkout, its Git data, the project's caches, the run's temp folder and the agent's own session files (anywhere outside the fence, under a project set to write anywhere), never the runtime's protected names in the checkout (Git hooks and config, shell profiles, `.mcp.json`, editor settings); no Apple Events. Neither (Windows, or a Linux missing one of those): the build doesn't start, unless an instance operator allows unconfined agents | same |
+| **Codex / OpenRouter** (any OS) | Codex's own sandbox, given the same fence: reads your home folder except the folders the project lists, never Toolroll's folders; other tasks' work read, never written; writes only the checkout, its Git data and the project's caches (anywhere outside the fence, under a project set to write anywhere); no network | the same reads and writes, with the fence; its commands reach the network only when the project's network is open |
+
+Toolroll's own Git on a build's checkout runs hardened (no hooks, fsmonitor,
+submodules or signing), reads none of your global Git config but its plain
+values (identity, line endings, a standard git-lfs install), and refuses a
+checkout whose config includes a file or names a command; a project's tool
+servers can't read the checkout and never run a file the build wrote.
+
+Two limits to know: in **API-key mode** an agent's own provider key is in its
+environment, so its shell can read it (subscription mode, the default, puts
+no key there); and a project's own tool secrets reach that project's tools.
+They stay in a per-run broker outside the fence: the agent gets only its
+address and a token that stops working when the run ends. A tool server's own
+environment (its secrets among it) is readable to a build on macOS through the
+process list, a limit of the sandbox runtime's baseline. Reviews and the lead
+chat run with no tools and are confined to their own files. See
+[SECURITY.md](../../SECURITY.md).
+
+### How build sessions are protected
+
+A build runs as your own user, so Toolroll keeps the secrets it holds (tool
+keys and sign-ins, the Linear key, a Google mail connection, flow webhook
+secrets) away from it in layers:
+
+- **The fence.** The operating system denies the build Toolroll's own
+  folders, your home configuration and other projects (the table above).
+- **The broker.** A run's tools are served by a broker in Toolroll's own
+  process, outside the fence. The agent gets only the broker's local address
+  and a key for that run, which stops working when the run ends. Another
+  run's key opens nothing.
+- **The keychain.** At rest, secrets are in the macOS Keychain (through
+  `security`, with the value on its input) or the Linux Secret Service (the
+  system's `secret-tool`, value on its input). A fenced build can still ask
+  the keychain for an item, so each is sealed with a key in `tool-secrets`
+  beside Toolroll's database. Toolroll makes that folder when it starts,
+  before any build, and records which key it made; a folder, key or link put
+  there by anything else is refused. What a build reads is ciphertext.
+  Secrets are read only when a run starts. Files from before move into the
+  keychain the first time they are used, and the plaintext copy is removed.
+  Where there is no keychain, or the keyring doesn't answer, secrets stay in
+  owner-only files, and Settings and `toolroll integrations` say so.
+- **Short-lived tokens.** A service connected by signing in gives each run
+  a fresh access token of its own, made outside the fence when the run starts
+  and limited to read access for research steps where the service allows.
+  The refresh token never leaves Toolroll, and one renewal runs at a time
+  across Toolroll's processes. If a renewed sign-in can't be saved, the run
+  doesn't start and every token made for it is revoked. The run's token is
+  revoked when the run ends, or runs out on its own where the service has no
+  way to revoke it. Keys you paste in stay in the broker. Settings → Tools
+  shows which each tool uses.
+
+What remains: any program of yours running outside the fence (not started by
+a build) can read what you can, including Toolroll's folder and the keychain.
+Toolroll protects your secrets from its builds, not from other software you
+run.
+
+## Unattended permissions
+
+**Settings → unattended permissions** chooses the starting policy for new
+tasks. **Auto** lets routine repository commands and edits proceed while the
+provider may stop on a risky permission request. **Full access** runs Claude
+with `--dangerously-skip-permissions`, Codex (and its OpenRouter transport) in
+its own sandbox widened to write anywhere with network on, and Gemini with
+`--approval-mode yolo`, so permission prompts cannot pause work while you are
+away. A Full access agent can change files anywhere on your computer outside
+the fence. Use Full access only for repositories and setup commands you trust.
+
+Every new-task and task-scope form has the same two-choice control. A task's
+choice is durable through planning rewrites and is sealed into the approved
+execution profile; changing the installation default never broadens an
+existing scope or approval.
 
 ## Sign in with your identity provider
 
