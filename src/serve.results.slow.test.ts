@@ -2069,7 +2069,18 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     // access was lost after admission) is refused there too.
     expect(dropFeedbackImage(store, run, saved!.id, "robin", () => "unavailable", new Date())).toEqual({ ok: false, reason: "not-authorized" });
     expect(dropFeedbackImage(store, run, saved!.id, "nobody", () => "unavailable", new Date())).toEqual({ ok: false, reason: "not-authorized" });
+    // Admitted approvers on this project whose standing changes before the write: one revoked, one downgraded to viewer.
+    for (const name of ["casey", "dana"]) {
+      const added = addApprover(store, name, T0, { name: "alex", token: approverToken });
+      if (!added.ok) throw new Error(`fixture ${name}`);
+      expect(store.accountCanAccess(name, "/repo/main")).toBe(true);
+    }
+    expect(store.revokeAccount("casey", "alex", T0).ok).toBe(true);
+    store.handle.prepare("UPDATE approver SET role = 'viewer', generation = generation + 1 WHERE name = 'dana'").run();
+    expect(dropFeedbackImage(store, run, saved!.id, "casey", () => "unavailable", new Date())).toEqual({ ok: false, reason: "not-authorized" });
+    expect(dropFeedbackImage(store, run, saved!.id, "dana", () => "unavailable", new Date())).toEqual({ ok: false, reason: "not-authorized" });
     unchanged();
+    expect(removals()).toEqual([]);
     expect(removals()).toEqual([]);
     // The approver on this project may keep the words without the broken screenshot; the ledger names who did it.
     expect((await drop(cookie)).status).toBe(303);
