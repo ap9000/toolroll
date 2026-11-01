@@ -2021,6 +2021,43 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect(store.allDiffComments(run)).toHaveLength(1);
   });
 
+  test("a saved note's screenshot is proved inside the write, and one that stops verifying can be dropped so the note still revises", async () => {
+    const ref = seed("image-drop", "Image feedback recovery");
+    const run = build("image-drop", ref, { patch: "diff --git a/a b/a\n+x\n", screenshot: { path: "phone.png", caption: "Phone" } });
+    store.stampRun(run, { scopeDigest: store.getScope("image-drop")!.digest });
+    const shot = store.artifactsFor(run).find(one => one.kind === "screenshot")!;
+    const image = { run, artifact: shot.id, sha256: shot.sha256 };
+    await boot();
+    const cookie = await login();
+    const csrf = csrfOf(await (await fetch(url(`/r/${run}`), { headers: { cookie } })).text());
+    // Check and write together: the insert runs inside the same write transaction as the custody proof.
+    const insert = store.addDiffComment.bind(store);
+    const inTransaction: boolean[] = [];
+    store.addDiffComment = (args, now) => { inTransaction.push(store.handle.isTransaction); return insert(args, now); };
+    try {
+      expect((await post(cookie, `/r/${run}/comment`, { csrf, note: "Give the phone heading more space.", image: JSON.stringify(image), request: "d".repeat(32), intent: "note", return: `/r/${run}` })).status).toBe(303);
+    } finally { store.addDiffComment = insert; }
+    expect(inTransaction).toEqual([true]);
+    const [saved] = store.allDiffComments(run);
+    writeFileSync(join(evidenceRoot, shot.key), Buffer.from("not the image any more"));
+    const blocked = await post(cookie, `/r/${run}/revise`, { csrf, ...revisionFormOf(await (await fetch(url(`/r/${run}`), { headers: { cookie } })).text()) });
+    expect(blocked.status).toBe(409);
+    const page = await (await fetch(url(`/r/${run}`), { headers: { cookie } })).text();
+    expect(page).toContain("Keep note without screenshot");
+    // Only a live note on this run with a screenshot can be dropped; a forged id or another run's note is refused.
+    expect((await post(cookie, `/r/${run}/comment`, { csrf, intent: "drop-image", comment: "999999", return: `/r/${run}` })).status).toBe(409);
+    expect((await post(cookie, `/r/${run}/comment`, { csrf, intent: "drop-image", comment: String(saved!.id), return: `/r/${run}` })).status).toBe(303);
+    const after = store.allDiffComments(run);
+    expect(after).toHaveLength(2);
+    expect(after[0]).toMatchObject({ id: saved!.id, image, supersededBy: after[1]!.id });
+    expect(after[1]).toMatchObject({ note: saved!.note, author: saved!.author, image: null, supersededBy: null });
+    expect((await post(cookie, `/r/${run}/comment`, { csrf, intent: "drop-image", comment: String(saved!.id), return: `/r/${run}` })).status).toBe(409);
+    const revised = await post(cookie, `/r/${run}/revise`, { csrf, ...revisionFormOf(await (await fetch(url(`/r/${run}`), { headers: { cookie } })).text()) });
+    expect(revised.status, await revised.text()).toBe(303);
+    expect(store.allDiffComments(run)[1]?.consumedBy).not.toBeNull();
+    expect(store.allDiffComments(run)[0]?.consumedBy ?? null).toBeNull();
+  });
+
   test("package 3 c4: a refused note sends the reader back to the view they came from; a result id that is not this task's is refused for the lens; the browser script rides every result surface", async () => {
     const ref = seed("t-back", "recoverable", "/repo/main", { acceptance: [{ id: "c1", statement: "It works", evidence: ["check", "screenshot"] }] });
     const run = build("t-back", ref, RICH);

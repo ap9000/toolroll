@@ -981,6 +981,8 @@ shows the selected thumbnail and caption beside your note before **Request chang
 **Save for later** keeps the note for a future batch. The result, chat confirmation,
 and revision retain the exact screenshot; a changed or unavailable image refuses
 submission and keeps the browser draft. Remove the image to submit general feedback.
+If a saved note's screenshot later stops verifying, **Keep note without screenshot**
+keeps its words for the batch; the original note stays in the result's history.
 In chat, `propose_review` accepts an image id from the result. A typed note replying
 to a Telegram screenshot keeps that image unless `image: null` drops it; a newer
 result or a saved-notes-only revision does not attach it. A confirmation card too long

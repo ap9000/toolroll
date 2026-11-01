@@ -25490,3 +25490,20 @@ function readFeedbackImage(value: unknown): FeedbackImage | null {
   if (image === false) throw new Error("The saved feedback image is damaged.");
   return image;
 }
+
+/** Takes a saved note's screenshot off without losing the note or its history (v143): the live, unconsumed note on
+ * this run is superseded by an exact copy with no image, in one write transaction. Returns the copy's id, or null
+ * when there is no such live note with a screenshot (already used, superseded, on another run, or imageless). */
+export function dropFeedbackImage(store: Store, runId: number, commentId: number, now: Date): number | null {
+  return store.transact(() => {
+    const live = store.handle.prepare(`SELECT id FROM diff_comment WHERE id = ? AND run = ? AND superseded_by IS NULL AND consumed_by IS NULL
+      AND image_json IS NOT NULL`).get(commentId, runId);
+    if (live === undefined) return null;
+    const copy = store.handle.prepare(`INSERT INTO diff_comment (artifact, artifact_sha, run, path, line, note, author, created_at, reviewer_run, severity)
+      SELECT artifact, artifact_sha, run, path, line, note, author, ?, reviewer_run, severity FROM diff_comment WHERE id = ?`).run(now.toISOString(), commentId);
+    const id = Number(copy.lastInsertRowid);
+    const moved = store.handle.prepare("UPDATE diff_comment SET superseded_by = ? WHERE id = ? AND superseded_by IS NULL AND consumed_by IS NULL").run(id, commentId);
+    if (Number(moved.changes) !== 1) throw new Error("The saved note changed while its screenshot was being removed.");
+    return id;
+  });
+}

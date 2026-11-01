@@ -2322,7 +2322,11 @@ export function resultPanelParts(detail: ResultDetail, o: ResultPanelOptions): {
   const imageNote = (one: DiffComment): Html => {
     if (one.image == null) return html``;
     const shot = shots.find(shot => shot.artifactId === one.image!.artifact && shot.sha256 === one.image!.sha256 && one.image!.run === runId && shot.problem === null);
-    return html`<figure class="feedback-image">${shot === undefined ? html`<figcaption>Screenshot ${one.image.artifact} is unavailable.</figcaption>`
+    // A live saved note whose screenshot no longer verifies can be kept without it, so it never blocks a revision.
+    const drop = shot !== undefined || o.csrf === "" || one.consumedBy != null || !detail.comments.some(live => live.id === one.id) ? html``
+      : postForm(`/r/${runId}/comment`, html`<input type="hidden" name="intent" value="drop-image"><input type="hidden" name="comment" value="${String(one.id)}"><button type="submit" class="quiet">Keep note without screenshot</button>`,
+        { attrs: { class: "feedback-image-drop" }, returnTo: o.returnTo, hidden: { tab: o.tab } });
+    return html`<figure class="feedback-image">${shot === undefined ? html`<figcaption>Screenshot ${one.image.artifact} is unavailable.</figcaption>${drop}`
       : html`<a href="/r/${runId}/evidence/${shot.artifactId}"><img src="/r/${runId}/evidence/${shot.artifactId}" alt="${shot.caption}"></a><figcaption>${shot.caption} · Screenshot ${shot.artifactId}</figcaption>`}</figure>`;
   };
   const pathWords = (path: string, line: number | null): Html => {

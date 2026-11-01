@@ -1,5 +1,5 @@
 import { parseFeedbackImage, sameFeedbackImage } from "../result-review.js";
-import { releaseAuthorityOfTask, revokeRelease, runLiveCommands } from "../store.js";
+import { dropFeedbackImage, releaseAuthorityOfTask, revokeRelease, runLiveCommands } from "../store.js";
 import { steerCapabilityOf } from "../steer-capabilities.js";
 import { canReveal, localCheckoutOf, revealInFinder } from "../checkout-proof.js";
 
@@ -1446,6 +1446,15 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const viewParam = returnTo.startsWith("/t/") ? "section" : "tab";
     const back = selectedTab === "summary" ? returnTo
       : `${returnTo.replace(/&section=(?:summary|changes|checks)$/, "")}${returnTo.includes("?") ? "&" : "?"}${viewParam}=${selectedTab}`;
+    if (body.get("intent") === "drop-image") {
+      // A saved note whose screenshot is gone or changed would block every revision that seals it. Its words stay:
+      // the note is superseded by an exact imageless copy, and the original remains in history.
+      const comment = Number(body.get("comment") ?? "");
+      if (!Number.isSafeInteger(comment) || comment < 1) return refuse(response, who, 400, "Choose a saved note.", back);
+      const copied = dropFeedbackImage(store, id, comment, now);
+      if (copied === null) return refuse(response, who, 409, "That saved note changed or was already used. Reload the result.", back);
+      return redirect(response, `${back}#request-changes`);
+    }
     const image = parseFeedbackImage(body.get("image"));
     if (image === false) return refuse(response, who, 400, "Choose a screenshot from this result again. Your draft is unchanged.", back);
     if (body.get("intent") === "revise") {
@@ -1493,12 +1502,18 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     const request = body.get("request");
     const sourceKey = commentSourceKey(who.name, request);
     const path = rawPath === "" ? null : rawPath;
-    const imageProblem = feedbackImageProblem(store, evidenceRoot, id, image);
-    if (imageProblem !== null) return refuse(response, who, 409, imageProblem, `/r/${id}?record=1#request-changes`);
-    const inserted = store.addDiffComment(
-      { artifactId: terminal.id, runId: id, path, line, note: note.note, author: who.name, image, ...(sourceKey === undefined ? {} : { sourceKey }) },
-      now,
-    );
+    // Freshness, custody and the insert in one write transaction: a newer attempt finishing in between can't leave a
+    // stale screenshot attached (check and write together).
+    const saved = store.transact((): { problem: string } | { inserted: number | null } => {
+      const imageProblem = feedbackImageProblem(store, evidenceRoot, id, image);
+      if (imageProblem !== null) return { problem: imageProblem };
+      return { inserted: store.addDiffComment(
+        { artifactId: terminal.id, runId: id, path, line, note: note.note, author: who.name, image, ...(sourceKey === undefined ? {} : { sourceKey }) },
+        now,
+      ) };
+    });
+    if ("problem" in saved) return refuse(response, who, 409, saved.problem, `/r/${id}?record=1#request-changes`);
+    const inserted = saved.inserted;
     if (inserted === null && sourceKey !== undefined) {
       // The token was used before (repair 2026-09-14, finding 1). A
       // request identity is IMMUTABLE: it names exactly one note on
