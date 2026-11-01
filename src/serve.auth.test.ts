@@ -1383,10 +1383,65 @@ describe("the first account (setup review): sign up on the login page with the p
     expect(store.listApprovers()).toHaveLength(1);
   });
 
+  // Settings revamp S3: a refusal keeps the username, never the code or the password, and marks the field it is about.
+  const post = (fields: Record<string, string>) => fetch(`${base}/signup`, { method: "POST", body: new URLSearchParams(fields), redirect: "manual" });
+  const inputOf = (page: string, name: string) => [...page.matchAll(/<input\b[^>]*>/g)].map(one => one[0]).find(one => one.includes(` name="${name}"`)) ?? "";
+
+  test("a wrong code keeps the username, empties the code and the password, counts down and marks the code", async () => {
+    const wrong = await post({ code: "987654", name: "alex.p", password: "correct horse battery" });
+    expect(wrong.status).toBe(403);
+    expect(wrong.headers.get("cache-control")).toBe("no-store");
+    const page = await wrong.text();
+    expect(inputOf(page, "name")).toContain('value="alex.p"');
+    expect(inputOf(page, "code")).not.toContain("value=");
+    expect(inputOf(page, "password")).not.toContain("value=");
+    expect(page).not.toContain("987654");
+    expect(page).not.toContain("correct horse battery");
+    expect(inputOf(page, "code")).toMatch(/aria-invalid="true" aria-describedby="signup-code-note signup-problem" autofocus/);
+    expect(inputOf(page, "name")).not.toContain("aria-invalid");
+    expect(page).toMatch(/<p class="problem signup-problem" id="signup-problem" role="alert">/);
+    expect(page).toContain("4 tries left");
+    expect(store.listApprovers()).toHaveLength(0);
+  });
+
+  test("a bad username or a short password is marked on its own field, keeps the username and creates nothing", async () => {
+    const badName = await post({ code: "424242", name: "-<b>x", password: "correct horse battery" });
+    expect(badName.status).toBe(400);
+    const namePage = await badName.text();
+    expect(inputOf(namePage, "name")).toContain('value="-&lt;b&gt;x"');
+    expect(inputOf(namePage, "name")).toContain('aria-invalid="true"');
+    expect(inputOf(namePage, "code")).not.toContain("value=");
+    expect(namePage).not.toContain("424242");
+    expect(namePage).not.toContain("correct horse battery");
+
+    const short = await post({ code: "424242", name: "alex", password: "short12" });
+    expect(short.status).toBe(400);
+    const shortPage = await short.text();
+    expect(inputOf(shortPage, "password")).toMatch(/aria-invalid="true" aria-describedby="signup-password-note signup-problem"/);
+    expect(inputOf(shortPage, "password")).not.toContain("value=");
+    expect(inputOf(shortPage, "name")).toContain('value="alex"');
+    expect(shortPage).not.toContain("short12");
+    // Neither refusal spent a try or left an account behind.
+    expect(shortPage).toContain("5 tries left");
+    expect(store.listApprovers()).toHaveLength(0);
+  });
+
+  test("two first visitors with the right code make exactly one account", async () => {
+    const [one, two] = await Promise.all([
+      post({ code: "424242", name: "alex", password: "correct horse battery" }),
+      post({ code: "424242", name: "mallory", password: "correct horse battery" }),
+    ]);
+    expect([one.status, two.status].sort()).toEqual([303, 409]);
+    expect(store.listApprovers()).toHaveLength(1);
+  });
+
   test("five wrong codes close the road until restart", async () => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const wrong = await fetch(`${base}/signup`, { method: "POST", body: new URLSearchParams({ code: "111111", name: "x", password: "correct horse battery" }), redirect: "manual" });
       expect(wrong.status).toBe(403);
+      const left = 4 - attempt, page = await wrong.text();
+      if (left > 0) expect(page).toContain(left === 1 ? "1 try left" : `${left} tries left`);
+      else expect(page).not.toContain('action="/signup"');
     }
     const closed = await fetch(`${base}/signup`, { method: "POST", body: new URLSearchParams({ code: "424242", name: "x", password: "correct horse battery" }), redirect: "manual" });
     expect(closed.status).toBe(403);

@@ -26,7 +26,7 @@ import { personAuditHtml,personHref } from "../people-audit-ui.js";
 import { cursorOf as auditCursorOf,remoteAudit } from "../remote-audit.js";
 import { credentialProof,hashPassword,proveAccountNow } from "../scope.js";
 import { form,HANDOFF_STYLE,loginHref,loginReturn,page,SIGN_IN_COOKIE,signInSpent,startedHere } from "./http.js";
-import { joinDeadPage,joinFormPage,loginPage,signupPage } from "./render-people.js";
+import { joinDeadPage,joinFormPage,loginPage,SIGNUP_NAME,SIGNUP_PASSWORD_MIN,signupPage } from "./render-people.js";
 import { SESSION_COOKIE,SIGN_IN_LINK_PATH,type SsoIntent } from "./session.js";
 
 /** Clock skew allowed between the provider and this server when reading auth_time — forward only (a provider clock
@@ -435,10 +435,10 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
     // five tries: the bootstrap door underneath is atomic, so two first
     // visitors serialize to one owner.
     if (options.setupCode === undefined || store.listApprovers().length > 0) {
-      return page(response, 409, loginPage("an account already exists — sign in"));
+      return page(response, 409, loginPage("An account already exists. Sign in."));
     }
     if (runtime.setupAttemptsLeft <= 0) {
-      return page(response, 403, signupPage("too many wrong codes — restart the server to get a fresh code", 0));
+      return page(response, 403, signupPage("Too many wrong setup codes. Restart Toolroll to get a new code.", 0));
     }
     const body = readForm(await form(request), CONSOLE_FORMS.signup);
     const code = (body.get("code") ?? "").trim();
@@ -448,18 +448,21 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
     const wanted = Buffer.from(options.setupCode.padEnd(64, " "), "utf8");
     if (code === "" || !timingSafeEqual(given, wanted)) {
       runtime.setupAttemptsLeft -= 1;
-      return page(response, 403, signupPage("that is not the setup code the server printed", runtime.setupAttemptsLeft));
+      // What was typed comes back except the code and the password (never echoed); the count rides the code's note.
+      return page(response, 403, signupPage(runtime.setupAttemptsLeft > 0
+        ? { field: "code", text: "That isn't the setup code Toolroll printed. Check the terminal and try again." }
+        : "That wasn't the setup code, and that was the last try. Restart Toolroll to get a new code.", runtime.setupAttemptsLeft, name));
     }
-    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
-      return page(response, 400, signupPage("a username is letters, digits, dots, dashes — up to 64", runtime.setupAttemptsLeft));
+    if (!SIGNUP_NAME.test(name)) {
+      return page(response, 400, signupPage({ field: "name", text: "Use only letters, digits, dots, dashes or underscores, starting with a letter or digit." }, runtime.setupAttemptsLeft, name));
     }
-    if (password.length < 8) {
-      return page(response, 400, signupPage("a password is at least 8 characters", runtime.setupAttemptsLeft));
+    if (password.length < SIGNUP_PASSWORD_MIN) {
+      return page(response, 400, signupPage({ field: "password", text: `Use at least ${SIGNUP_PASSWORD_MIN} characters.` }, runtime.setupAttemptsLeft, name));
     }
     const made = store.bootstrapApproverIfNone(name, hashPassword(password), clock());
-    if (!made.ok) return page(response, 409, loginPage("an account already exists — sign in"));
+    if (!made.ok) return page(response, 409, loginPage("An account already exists. Sign in."));
     const authenticated = authenticateAccount(store, name, password);
-    if (authenticated === null || !authenticated.ok) return page(response, 500, loginPage("the account was created but could not sign in — try again"));
+    if (authenticated === null || !authenticated.ok) return page(response, 500, loginPage("The account was created, but signing in failed. Sign in with it now."));
     const id = randomBytes(32).toString("hex");
     sessions.set(id, {
       ...arrival(request),
