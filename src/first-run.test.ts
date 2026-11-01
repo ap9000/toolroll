@@ -29,7 +29,7 @@ describe("the three first-run steps", () => {
     const none = withBuilderStep(filed, false)!;
     expect(none.map(one => [one.key, one.done])).toEqual([["agent", true], ["project", true], ["builder", false], ["task", true]]);
     expect(none.every(one => one.done)).toBe(false);
-    expect(none.find(one => one.key === "builder")!.action).toEqual({ kind: "link", label: "Start a builder", href: "/system#builder" });
+    expect(none.find(one => one.key === "builder")!.action).toEqual({ kind: "link", label: "Start a builder", href: "/start-builder" });
     const connected = withBuilderStep(filed, true)!;
     expect(connected.every(one => one.done && one.action === null)).toBe(true);
     expect(withBuilderStep(null, false)).toBeNull();

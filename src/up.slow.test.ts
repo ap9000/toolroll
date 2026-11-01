@@ -6,9 +6,9 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, existsSync, statSync, readFileSync, writeFileSync, realpathSync, readdirSync, symlinkSync } from "node:fs";
-import { homedir, tmpdir, userInfo } from "node:os";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, rmSync, existsSync, statSync, readFileSync, writeFileSync, realpathSync, readdirSync, symlinkSync } from "node:fs";
+import { tmpdir, userInfo } from "node:os";
+import { dirname, join } from "node:path";
 import { createServer } from "node:net";
 import { execFileSync } from "node:child_process";
 import { runOperate, parseOperateArgs, upNarrowDeferred } from "./operate.js";
@@ -259,10 +259,8 @@ describe("toolroll up", () => {
     expect(greeting).not.toContain("/login/once/");
     // Every start says where the password is saved and the exact command that shows it, whether or not the browser
     // opened, and never the password itself.
-    const showsPassword = (said: string): void => {
-      const command = /^Your password: run `cat (\S+)`$/m.exec(said);
-      expect(command, said).not.toBeNull();
-      expect(command![1]!.replace(/^~(?=\/)/, homedir())).toBe(join(base, "up-login.txt"));
+    const showsPassword = (said: string, file = join(base, "up-login.txt")): void => {
+      expect(said).toContain(`Your password: run \`cat -- '${file}'\``);
     };
     showsPassword(greeting);
     // A person at a terminal reads at most one plain sentence about containment; --verbose adds the exact status.
@@ -278,6 +276,24 @@ describe("toolroll up", () => {
     expect(opened).toHaveLength(1);
     showsPassword(lines.join("\n"));
     expect(lines.join("\n")).not.toContain(secret);
+    // A relative --db that starts with a dash or a tilde still prints one absolute, quoted path, never an option or
+    // another user's home.
+    const cwd = process.cwd();
+    try {
+      process.chdir(base);
+      for (const [index, relative] of (["-state/orders.db", "~root/state/orders.db"] as const).entries()) {
+        mkdirSync(join(base, dirname(relative)), { recursive: true });
+        lines = [];
+        expect(await runOperate("up", [`--db=${relative}`, "--repo", repo, "--port", String(PORT + 19 + index), "--for", "1200", "--no-open"], line => lines.push(line), {
+          upSeams: { terminal: true, env: {} },
+        })).toBe(0);
+        const file = join(realpathSync(base), dirname(relative), "up-login.txt");
+        const [, own = ""] = readFileSync(file, "utf8").trim().split(" ");
+        showsPassword(lines.join("\n"), file);
+        expect(own).not.toBe("");
+        expect(lines.join("\n")).not.toContain(own);
+      }
+    } finally { process.chdir(cwd); }
     lines = [];
     expect(await runOperate("up", ["--repo", repo, "--port", String(PORT + 17), "--for", "1200", "--verbose"], line => lines.push(line), {
       databaseFile: db,

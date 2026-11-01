@@ -8,7 +8,8 @@ import { createHmac,randomBytes } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { type ServerResponse } from "node:http";
 import { homedir,hostname } from "node:os";
-import { dirname,join,resolve } from "node:path";
+import { basename,dirname,join,resolve } from "node:path";
+import { builderReadyFor } from "../dispatch.js";
 import { listFolder,localOrigins } from "../folder-look.js";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -59,7 +60,7 @@ import { refuse, regionScript, screen, settingsRows, WORKSPACE_STYLE, workToolRo
 import { redirect,respond,safeReturn,SAFETY,taskHref } from "./http.js";
 import { assignmentOf } from "../assignment.js";
 import { assignmentTaskStatusOf } from "../assignment-presentation.js";
-import { browsePage,fleetBody,fleetScript,githubIdentityOf,githubReposPage,homePage,portfolioOverview,projectsPage,systemPage,workbenchRail } from "./render-pages.js";
+import { browsePage,fleetBody,fleetScript,githubIdentityOf,githubReposPage,homePage,portfolioOverview,projectsPage,startBuilderHtml,systemPage,workbenchRail } from "./render-pages.js";
 import { capsPage } from "./render-settings.js";
 import { decisionAnswerScript,taskBody } from "./render-tasks.js";
 import { type Who } from "./session.js";
@@ -1104,6 +1105,16 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     return respond(response, 200, "application/json", JSON.stringify(window.ok ? window : { error: window.reason }));
   }
 
+  /** Start a builder (Settings revamp S4): the command, and whether a builder that may build the open project is
+   * checking in, as dispatch decides. Read-only; a project-limited person sees only a project they may see. */
+  async function startBuilderPage(ctx: HandlerContext): Promise<void> {
+    const { response, now, project } = ctx;
+    const shown = project !== null && visible(project) ? project : null;
+    return sendScreen(response, 200, screen("Start a builder", startBuilderHtml({
+      heading: "h1", project: shown === null ? null : basename(shown), connected: builderReadyFor(store, shown, now) ? true : shown === null ? null : false, managed: !restricted(),
+    }), { chrome: chromeFor(project, "none") }));
+  }
+
   const registrations = handlersOf("pages", {
     "projects.browse": projectsBrowse,
     "projects.github": projectsGithub,
@@ -1115,6 +1126,7 @@ export function createPagesHandlers(runtime: ServerRuntime) {
     "ledger": ledgerPage,
     "activity": activityPage,
     "system": systemScreen,
+    "start-builder": startBuilderPage,
     "peek": peekPage,
     "agents": agentsPage,
     "agents.live": agentsLive,

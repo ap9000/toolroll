@@ -1,4 +1,4 @@
-/** Settings revamp S4, first-run dead ends: a task with no builder leads to Start a builder on /system (the command as
+/** Settings revamp S4, first-run dead ends: a task with no builder leads to Start a builder (/start-builder: the command as
  * text to select), and /system names each model once. */
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -9,6 +9,7 @@ export const fixture = "lived-in";
 
 export const pages = [
   { name: "system", path: "/system" },
+  { name: "start-builder", path: "/start-builder" },
 ];
 
 const dist = path => import(pathToFileURL(join(ROOT, "dist", path)).href);
@@ -32,7 +33,7 @@ export const actions = [{
     const link = page.locator("a[data-primary-action]", { hasText: "Connect a builder" }).first();
     if (await link.count() === 0) return [...findings, { probe: "load", detail: "the task shows no Connect a builder action" }];
     const href = await link.getAttribute("href");
-    if (href !== "/system#builder") findings.push({ probe: "load", detail: `Connect a builder goes to ${href}, not /system#builder` });
+    if (href !== "/start-builder") findings.push({ probe: "load", detail: `Connect a builder goes to ${href}, not /start-builder` });
     await Promise.all([page.waitForLoadState("load"), link.click()]);
     await page.waitForLoadState("networkidle", { timeout: 5_000 }).catch(() => {});
     await page.locator("#builder").scrollIntoViewIfNeeded().catch(() => {});

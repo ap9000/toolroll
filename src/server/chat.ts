@@ -25,11 +25,10 @@ worstCaseForPrice
 } from "../converse.js";
 import { DEMO_CHAT_SCRIPT,demoChatHtml,demoThreadHtml,type DemoResultView } from "../demo-chat.js";
 import type { DemoExchange } from "../demo.js";
-import { withDispatchDiagnoses } from "../dispatch.js";
+import { builderReadyFor,withDispatchDiagnoses } from "../dispatch.js";
 import { readVerifiedArtifact,scanForSecrets } from "../evidence.js";
 import { run as execRun } from "../exec.js";
 import { findFirstTasks,firstTaskSuggestions,HOW_IT_WORKS,SANDBOX_COMMAND,withBuilderStep,type FirstTaskSuggestion } from "../first-run.js";
-import { isAlive as runnerAlive } from "../runner.js";
 import { leadBriefHtml } from '../lead-context.js';
 import { configureLeadFollow,leadFollowStatus } from '../lead-follow.js';
 import { leadActivity } from "../lead-voice.js";
@@ -1113,10 +1112,11 @@ export function createChatHandlers(runtime: ServerRuntime) {
   }
   /** Chat's first run: the steps, first tasks until the first task exists, and the sandbox while no agent is signed in. */
   function chatFirstRun(now: Date, project: string | null): BrowserFirstRun | undefined {
-    const steps = withBuilderStep(firstRunStepsNow(now), store.listRunners().some(one => runnerAlive(one, now)));
+    const repo = project ?? managedRepos()[0] ?? null;
+    // Done only when a task in this project could start: a live builder bound to it, as dispatch decides.
+    const steps = withBuilderStep(firstRunStepsNow(now), builderReadyFor(store, repo, now));
     if (steps === null) return undefined;
     const taskFiled = steps.find(one => one.key === "task")?.done ?? true;
-    const repo = project ?? managedRepos()[0] ?? null;
     const agent = steps.find(one => one.key === "agent");
     const lead = leadWords();
     return {

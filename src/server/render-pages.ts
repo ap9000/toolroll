@@ -6,7 +6,7 @@ import { type BoardCard } from "../board.js";
 import { type BrowserLimits,type BrowserProjectRow,type BrowserProjectsView,type BrowserTasksView,browserWorkActionHref } from "../browser-workspace.js";
 import { CHECK_LEVEL_WORDS,type CheckLevel } from "../check-levels.js";
 import { type DispatchDiagnosis } from "../dispatch.js";
-import { type FirstRunStep,withBuilderStep } from "../first-run.js";
+import { type FirstRunStep } from "../first-run.js";
 import { type Gap } from "../gaps.js";
 import { limitsHtml } from "../limits-ui.js";
 import { type Ask,ASK_LABEL,ASKS,START_BUILDER_COMMAND } from "../needs-you.js";
@@ -173,8 +173,7 @@ export function inboxPage(chrome: Chrome, data: {
 
   // The first-run steps, until the first Ready result: each is done or
   // shows the one action that does it.
-  // Never all done while no builder answers: a task filed then would wait forever.
-  const steps = withBuilderStep(data.wizard, data.worker.answering > 0);
+  const steps = data.wizard;
   const wizard =
     steps === null
       ? null
@@ -258,6 +257,23 @@ export function inboxPage(chrome: Chrome, data: {
 }
 
 /** System: the machinery — workers, background service, workspaces. */
+/** Start a builder: the one command, as text to select (/start-builder, where every "Connect a builder" leads, and
+ * /system#builder). `project`: the open project's name, when the viewer may see it; `connected`: whether a builder
+ * that may build there is checking in (null: say nothing); `managed`: whether this person can start one themselves
+ * (registering a builder takes an instance operator), else who to ask. */
+export function startBuilderHtml(data: { heading: "h1" | "h2"; project: string | null; connected: boolean | null; managed: boolean }): Html {
+  const where = data.project === null ? null : html` to <strong>${data.project}</strong>`;
+  const state = data.connected === null ? null
+    : data.connected ? html`<p>A builder is connected${where}. Approved tasks there start on their own.</p>`
+    : html`<p><strong>No builder is connected</strong>${where}. Tasks wait until one is.</p>`;
+  const title = data.heading === "h1" ? html`<h1 id="builder-heading">Start a builder</h1>` : html`<h2 id="builder-heading">Start a builder</h2>`;
+  return html`<section id="builder" aria-labelledby="builder-heading">${title}<div class="card">${state}<p>On the computer where ${data.project ?? "the project"} lives, open the project's folder in a terminal and run:</p><p><code class="start-builder-command" style="user-select:all">${START_BUILDER_COMMAND}</code></p>${
+    data.managed
+      ? html`<p class="meta">Keep it running. Approved tasks start on their own. The console alone (<code>toolroll serve</code>) doesn't build.</p>`
+      : html`<p class="meta">Starting a builder takes someone who manages this Toolroll. Ask them to run it there; your tasks start on their own once it connects.</p>`
+  }</div></section>`;
+}
+
 export function systemPage(chrome: Chrome, data: {
   agents: {
     phase: "plan" | "build" | "repair" | "review";
@@ -328,10 +344,7 @@ export function systemPage(chrome: Chrome, data: {
     html`<p class="hint">builders execute tasks in isolated temporary copies of each project</p>`,
     agentsCard,
     cards.length === 0 ? null : html`<div class="cards">${cards}</div>`,
-    // Where every "Connect a builder" leads (needs-you START_BUILDER_HREF): the one command, as text to select.
-    html`<section id="builder" aria-labelledby="builder-heading"><h2 id="builder-heading">Start a builder</h2><div class="card">${
-      data.runners.some(one => one.retiredAt === null && runnerAlive(one, data.now)) ? null : html`<p><strong>No builder is connected.</strong> Tasks wait until one is.</p>`
-    }<p>On the computer where the project lives, open the project's folder in a terminal and run:</p><p><code class="start-builder-command" style="user-select:all">${START_BUILDER_COMMAND}</code></p><p class="meta">Keep it running. Approved tasks start on their own. The console alone (<code>toolroll serve</code>) doesn't build.</p></div></section>`,
+    startBuilderHtml({ heading: "h2", project: null, connected: data.runners.some(one => one.retiredAt === null && runnerAlive(one, data.now)) ? null : false, managed: true }),
     data.outboxPending > 0 ? html`<p class="meta">Notifications: ${data.outboxPending} pending delivery</p>` : null,
     (data.externalWork ?? []).length === 0
       ? null

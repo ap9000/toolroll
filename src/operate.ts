@@ -8016,12 +8016,10 @@ async function upCommand(
         consoleRole?.send({ type: "sign-in-link", id, account });
       });
       // Every start says where the saved password is and the exact command that shows it, browser or not (Settings
-      // revamp S4, D2). Only the path is printed, never what the file holds. A path the shell would split is quoted.
-      const home = homedir();
-      const saved = approverPlan2.passwordFile;
-      const shortPath = saved === null ? null : saved.startsWith(`${home}/`) ? `~${saved.slice(home.length)}` : saved;
-      const showCommand = saved === null || shortPath === null ? null
-        : /^[\w@%+=:,./~-]+$/.test(shortPath) ? `cat ${shortPath}` : `cat '${saved.replaceAll("'", "'\\''")}'`;
+      // revamp S4, D2). Only the path is printed, never what the file holds: absolute (a relative --db names this
+      // directory), single-quoted (no ~ or $ expands), after `--` (a leading dash is never an option).
+      const saved = approverPlan2.passwordFile === null ? null : resolve(approverPlan2.passwordFile);
+      const showCommand = saved === null ? null : `cat -- '${saved.replaceAll("'", "'\\''")}'`;
       const signInWords = account === null
         ? `sign in as one of ${approverPlan2.approvers.join(", ")}`
         : showCommand === null ? `sign in as ${account} with your password` : `sign in as ${account}`;

@@ -33,6 +33,8 @@ const LIMITED_ACCESS = {
   'code.other': 'self', 'code.changes-read': 'self', 'code.ship-preview': 'self', 'code.recover-send': 'self', 'code.resume-send': 'self', 'code.send-send': 'self',
   // Lead sweeps: the handler shows and acts only on a sweep in a project the reader can see.
   'sweep.page': 'unscoped', 'sweep.cancel-rest': 'unscoped',
+  // Start a builder (S4): where Connect a builder leads; the handler shows only a visible project.
+  'start-builder': 'unscoped',
   'code.session': 'self', 'code.ship': 'self', 'code.ship-send': 'self', 'code.start': 'self', 'code.state': 'self', 'code.stop-send': 'self',
   'settings.skills-revise': 'unscoped', 'settings.skills-import': 'unscoped', 'settings.skills-change': 'unscoped',
   'flows.gallery-create': 'resource', 'flows.create': 'resource', 'flows.import': 'resource',
