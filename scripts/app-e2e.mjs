@@ -23,6 +23,8 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, s
 import { createServer as createHttpServer } from "node:http";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { createHash, generateKeyPairSync, randomBytes, sign as signWith } from "node:crypto";
 import { flag, freePort, GiveUp, groupAlive, groupList, mailSink, option, own, REAL_MODEL, REAL_TURN_MS, SCRIPTED, Skip, SKIPPED_FADE, spawnOwned, stopGroups, waitFor, world, insideFence } from "./e2e-kit.mjs";
 import { makeTempRoot } from "./suite-lifecycle.mjs";
@@ -1054,6 +1056,14 @@ await journey("flows", SCRIPTED, "A schedule runs a script and makes a card of e
 
 /** A real mail server (GreenMail in Docker) for one check: SMTP to write in with, IMAP to read anyone's inbox. support@shop.example is Settings → Email's. */
 async function mailServer() {
+  // Resolve each mail package's own entry from the build's install, not a hard-coded file inside it (mailparser
+  // 3.10+ moved its entry to dist/, which broke a fixed path). They load before the
+  // container starts, so a missing module can't leave one running.
+  const fromBuild = createRequire(join(w.bin, "../../package.json"));
+  const load = (name) => import(pathToFileURL(fromBuild.resolve(name)).href);
+  const nodemailer = (await load("nodemailer")).default;
+  const { ImapFlow } = await load("imapflow");
+  const { simpleParser } = await load("mailparser");
   if (!docker) throw new Skip("Docker isn't running here, so there's no real mail server to read");
   const name = `so-e2e-greenmail-${randomBytes(3).toString("hex")}`;
   try {
@@ -1066,9 +1076,6 @@ async function mailServer() {
     try { execFileSync("docker", ["rm", "-f", name], { stdio: "ignore", timeout: 60_000, killSignal: "SIGKILL" }); } catch { /* never made */ }
     throw new Skip("the mail server container couldn't start (is port 993 or 3025 taken?)");
   }
-  const nodemailer = (await import(join(w.bin, "../../node_modules/nodemailer/dist/cjs/nodemailer.js"))).default;
-  const { ImapFlow } = await import(join(w.bin, "../../node_modules/imapflow/dist/cjs/imap-flow.js"));
-  const { simpleParser } = await import(join(w.bin, "../../node_modules/mailparser/index.js"));
   const smtp = nodemailer.createTransport({ host: "127.0.0.1", port: 3025, secure: false, ignoreTLS: true });
   const stop = () => { smtp.close(); execFileSync("docker", ["rm", "-f", name], { stdio: "ignore", timeout: 60_000, killSignal: "SIGKILL" }); };
   try { await until("the mail server", async () => { await smtp.verify(); return true; }, { timeoutMs: 60_000, everyMs: 2000 }); } catch (error) { stop(); throw error; }
