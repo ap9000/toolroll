@@ -17,8 +17,10 @@ export type ModelChoice = { value: string; label: string };
 export function modelChoices(provider: ProviderId, configured: string | null, home = homedir()): ModelChoice[] {
   // Aliases documented at https://code.claude.com/docs/en/model-config.
   let choices: ModelChoice[] = provider === "claude"
-    ? [{ value: "sonnet", label: "Sonnet — everyday coding" }, { value: "opus", label: "Opus — complex tasks" },
-      { value: "haiku", label: "Haiku — smaller tasks" }]
+    // Exact ids first: Sonnet 5.5 builds routine tasks under "Sized by job" (Settings → Models); the short names float.
+    ? [{ value: "claude-sonnet-5-5", label: "Sonnet 5.5 — routine tasks" }, { value: "claude-opus-5-5", label: "Opus 5.5 — large or risky tasks" },
+      { value: "claude-haiku-5-5", label: "Haiku 5.5 — small tasks" }, { value: "sonnet", label: "Sonnet (floating) — moves to the newest version" },
+      { value: "opus", label: "Opus (floating) — moves to the newest version" }, { value: "haiku", label: "Haiku (floating) — moves to the newest version" }]
     : [];
   if (provider === "codex") {
     // Use the local CLI's own catalog, including account-specific availability.

@@ -155,7 +155,11 @@ export const CONSOLE_FORMS = {
   toolsConnect: formContract("POST /settings/tools/connect", ["repo", "also", "service", "template", "kit", "shown", "password", "access"]),
   toolsChange: formContract("POST /settings/tools/change", ["repo", "shown", "action", "name", "password", "catalog", "transport", "target", "secrets", "import", "secret", "value"]),
   appearance: formContract("POST /settings/appearance", ["accent", "quiet", "return", "theme"]),
-  models: formContract("POST /settings/models/check, /settings/models/watch, /settings/models/update, /settings/models/agent", ["enabled", "tool", "phase", "agent"]),
+  models: formContract("POST /settings/models/check, /settings/models/watch, /settings/models/update", ["enabled", "tool"]),
+  // The one Models editor (docs/plans/spend-dashboard.md slice 3): every role at a scope in one save, or a previewed
+  // preset or switch; the digest is what the page showed, and the change digest what the preview showed.
+  modelsChange: formContract("POST /settings/models/agent, /settings/models/apply", ["password", "scope", "digest", "change", "preset", "switch", "to",
+    "plan", "plan-strong", "build-light", "build", "build-strong", "repair", "review", "review-strong"]),
   knowledgeRefresh: formContract("POST /settings/knowledge/refresh", ["repo"]),
   knowledgeProposal: formContract("POST /settings/knowledge/proposal", ["repo", "decision", "proposal"]),
   knowledgeDecision: formContract("POST /settings/knowledge/decision", ["repo", "action", "claim", "why", "decision", "reason"]),

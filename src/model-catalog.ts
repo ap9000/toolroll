@@ -75,6 +75,12 @@ export const WATCH_EVERY_MS = 6 * 3_600_000;
 const NEW_FOR_MS = 14 * 86_400_000;
 const FAMILIES = ["opus", "sonnet", "haiku", "fable"] as const;
 const ALIAS_WORDS: Record<string, string> = { opus: "complex tasks", sonnet: "everyday coding", haiku: "smaller tasks" };
+/** The current Claude models by exact id, offered even before the first catalog check has run. */
+export const CLAUDE_EXACT: readonly { value: string; label: string }[] = Object.freeze([
+  { value: "claude-opus-5-5", label: "Claude Opus 5.5" },
+  { value: "claude-sonnet-5-5", label: "Claude Sonnet 5.5" },
+  { value: "claude-haiku-5-5", label: "Claude Haiku 5.5" },
+]);
 
 const title = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
 const stripVendor = (name: string) => name.replace(/^(Anthropic|OpenAI|Google): /, "");
@@ -201,12 +207,15 @@ export type ModelOption = { value: string; label: string; isNew: boolean };
 export function modelOptions(store: Store, provider: ProviderId, now: Date, home = homedir()): ModelOption[] {
   const option = (model: SeenModel): ModelOption => ({ value: model.id, label: `${model.name} · ${priceWords(model)}${isNewModel(model, now) ? " · New" : ""}`, isNew: isNewModel(model, now) });
   if (provider === "claude") {
+    // Exact ids first (Settings → Models presets write only these); the short names float to the newest version.
+    const seen = seenModels(store, "claude").slice(0, 20);
+    const builtIn = CLAUDE_EXACT.filter(one => !seen.some(model => model.id === one.value)).map(one => ({ ...one, isNew: false }));
     const aliases = ["sonnet", "opus", "haiku"].map(alias => {
       const target = aliasTarget(store, alias);
       // Short enough that a phone's select still shows which model it means.
-      return { value: alias, label: target === null ? `${title(alias)} — ${ALIAS_WORDS[alias]}` : `${title(alias)} · latest (${target.name.replace(/^Claude /, "")})`, isNew: false };
+      return { value: alias, label: target === null ? `${title(alias)} (floating) — ${ALIAS_WORDS[alias]}` : `${title(alias)} (floating) · now ${target.name.replace(/^Claude /, "")}`, isNew: false };
     });
-    return [...aliases, ...seenModels(store, "claude").slice(0, 20).map(option)];
+    return [...seen.map(option), ...builtIn, ...aliases];
   }
   if (provider === "codex") {
     const live = codexCatalog(home);
