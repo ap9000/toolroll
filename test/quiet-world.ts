@@ -22,7 +22,9 @@ import { modeDigestOf, modeTermsJson, presetTerms } from "../src/modes.js";
 export const QUIET_T0 = new Date("2026-10-27T12:00:00.000Z");
 
 /** What a read may write (the plan's "Allowed bookkeeping"): whole tables, and per-row exceptions. */
-const BOOKKEEPING_TABLES = ["action_ledger", "ledger_seal", "request_budget_usage", "agent_seen", "run_efficiency", "ceremony_nonce", "agent_view", "oauth_client", "oauth_code"];
+const BOOKKEEPING_TABLES = ["action_ledger", "ledger_seal", "request_budget_usage", "agent_seen", "run_efficiency", "ceremony_nonce", "agent_view", "oauth_client", "oauth_code",
+  // A request slower than SLOW_REQUEST_MS keeps its timeline (latency-timeline.ts): bookkeeping, as in workspace-revision.ts.
+  "latency_timeline"];
 const bookkeepingRow = (table: string, row: Record<string, unknown>): Record<string, unknown> | null => {
   if (table === "service_cursor" && row["key"] === "workspace-content:v1") return null;
   if (table === "installation_fact" && row["key"] === "first-success-at") return null;
