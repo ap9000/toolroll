@@ -1,678 +1,836 @@
 # Settings revamp: build plan (UI revamp, Phase 3)
 
-Status: plan, 2026-10-31. Nothing is built yet. This plan is built on `main` **after PR #270 (Models editor) merges**.
-Every slice branches from that `main`.
+Status: plan, revised after Codex review round 1 (2026-10-31). Nothing is built yet.
 
-Inputs: `docs/plans/settings-ui-audit.md` (the merged top 10), `evidence/ui-revamp/audit-{A,B,C,D}-*.md`,
-`evidence/ui-revamp/SCOPE.md`, `evidence/ui-revamp/directions.md`, and the prototype `evidence/ui-revamp/directions.html`
-(the screens to match are `directions/1-refined-*.png` and `1-guided-hub-*.png`). The evidence folder is gitignored, so
-build agents get these files copied into their worktree, or a path to them.
+**Base:** `main` **after PR #270 (Models editor) merges**. Every slice branches from a `main` that already contains
+its prerequisites. Before S11 starts, check on that `main` that `control-setup.ts` `approveSetup` applies the Sized
+preset. On #270's head (64b5ca91) it does, but only when the installation has no model rows yet and the person
+approving is an instance operator. In any other case it refuses with a message.
 
-**What the owner chose.** Direction 1, "Guided setup + grouped hub":
-- A five-step `/setup`: Password → Project → Agent and models (Sized by job applied) → Phone (optional) → First task.
-  Every step can be skipped, and the screen says what skipping costs.
+**Inputs:**
+- `docs/plans/settings-ui-audit.md` (the merged top 10)
+- `evidence/ui-revamp/audit-{A,B,C,D}-*.md`
+- `evidence/ui-revamp/SCOPE.md`
+- `evidence/ui-revamp/directions.md`
+- the prototype `evidence/ui-revamp/directions.html`. The screens to match are `directions/1-refined-*.png` and
+  `1-guided-hub-*.png`.
+
+The evidence folder is gitignored, so build agents get these copied in or are given their path.
+
+**What the owner chose:** Direction 1, "Guided setup + grouped hub".
+- `/setup` has five steps: Password → Project → Agent and models (Sized by job applied) → Phone (optional) → First
+  task. You can skip any step, and the page says what skipping costs.
 - The Settings hub becomes an index of eight groups: General, Agents and models, Chat apps and alerts, Approvals and
   safety, Projects, People and sign-in, Spend, System. A "Needs you" block sits on top.
-- Each group is a short page with a sticky save bar.
-- One step-up password dialog per Save. It honours the 15-minute remember and Passwordless.
-- One page per chat app: token → pair → test.
+- Each group is a short page with sticky saving.
+- Saving opens one step-up dialog. It asks for exactly the proof that action already needs.
+- Each chat app gets one page: token → pair → check.
+- From Direction 3: a "Before your first task" checklist, filtered to the steps still open, for anyone who skipped
+  setup steps.
 
-Added from Direction 3: a "Before your first task" checklist, filtered to the steps still open, for anyone who skipped
-part of setup.
-
-Also in scope: the accessibility and guideline fixes, the frame fixes, the Spend number fixes, one name per model, a
-project picker that shows the open project, `/system`'s stale wording, showing the `up` password, and the `serve`-path
-"no builder" dead end.
+Also in scope:
+- the accessibility and guideline fixes;
+- the frame fixes;
+- the Spend number fixes;
+- one name per model;
+- a project picker that shows the open project;
+- `/system`'s stale wording;
+- making the `up` password easy to find;
+- the dead end on the `serve` path when there is no builder.
 
 ---
 
 ## 1. What the code says (read this before any slice)
 
-These facts come from the source. They decide how the slices are cut and what a reviewer checks.
-
-1. **The 15-minute remember covers three routes, and none of them is a settings save.** `route-table.ts` marks
-   exactly `task.act.approve`, `chat.send` and `chat.proposal.confirm` as `freshness: "allowlist"`, and
-   `src/password-freshness.test.ts` pins that list. Every settings Save today needs a password typed now, or
-   Passwordless. So a dialog that skips the password on a remembered session would **widen** a proof. In this plan
-   the dialog only *reflects* what the server already accepts. Making settings saves honour the remember is a
-   separate, owner-gated security slice (S18, decision D1).
-2. **Passwordless already covers the dialog's other case.** `proveAccountNow` (`src/scope.ts`) accepts an empty
-   password when Passwordless is on and the request comes from this person's live browser session. Credential acts
-   (`proveCredential`, the closed list in `docs/plans/passwordless.md`) always need a typed password. Examples are
-   pairing a chat, inviting someone, SSO settings, a project's network, writes, check access or sandbox, and turning
-   Passwordless on. `passwordlessSessionFor(store, by)` already tells a page which case applies.
-3. **Sensitive pages are decided from the page as written.** `sendScreen` (`src/serve.ts` ~1441) treats a page as
-   sensitive when it says so explicitly, or when its HTML holds a password field (`SENSITIVE_INPUT`). A sensitive page
-   gets no live sidebar states, no summary room and no chrome forms (`chrome.ts` ~649). This is why the sidebar
-   "drops rows" on pages with a password field. **A step-up dialog must keep its password field in the
-   server-rendered HTML, or the page must set `sensitive: true`.** A field that a script adds in the browser would
-   turn a password page into a non-sensitive one.
-4. **Function positions are pinned.** `src/password-freshness.test.ts` pins where functions sit in `src/operate.ts`,
-   `src/store.ts`, `src/server/tasks.ts` and `src/server/settings.ts`, for example
-   `createSettingsHandlers@1>controlAct@73`. **New inner handlers go after the last inner function of
-   `createSettingsHandlers`, and new logic goes in new modules.** Any new mention of `authenticateApprover`,
-   `authenticateAccount`, `approveSetup`, `fresh` or the freshness facts changes a pinned count. That makes it a
-   reviewed security change, so name it in the PR.
-5. **Routes.** Each address is one row in `src/server/route-table.ts` with exactly one handler
-   (`handler-registry.ts` fails startup otherwise). Domain factories register handlers with `handlersOf`, and new
-   factories can live in their own module (as `createSweepHandlers` does). `route-roles-http.test.ts`,
-   `route-policy-http.test.ts`, `get-quiet.test.ts` (every GET only reads) and `post-forms-http.test.ts` (every POST
-   form carries the session's CSRF field) are generated from the table, so new rows are covered automatically. Each
-   new row still needs its line in the compact role expectations.
-6. **PR #270 already applies Sized by job.** On a new installation with nothing chosen, approving project setup
-   (`control-setup.ts` `approveSetup`, via `POST /control/setup-approve`) applies `DEFAULT_PRESET` ("sized"). The
-   setup wizard reuses that route. It does not add a second way to apply models.
-7. **The hub is React; the other settings pages are server HTML.** `src/browser/views/settings-view.tsx` draws the
-   hub from `BrowserSettingsView` (`src/contracts/console-api.ts`). Every other settings page is server HTML shown in
-   the shell's `.so-native-region`. `render-settings.ts` `settingsPage` builds a no-JS twin of every hub card
-   (permission, quality, keys, workers, updates, chat, messaging, push, digest, Telegram token). Group pages reuse
-   those twins as server HTML.
-8. **Known bug locations.**
-   - Project picker: `src/browser/app.tsx` ~589 picks the current project only from `?project=`, `?repo=` or the focused task, never the session's open project.
-   - Two h1s: `app.tsx` ~1004, plus the sr-only h1 at `settings-view.tsx` ~481.
-   - 44px targets: `console.css` 268–270 beats `workspace.css` 373 on specificity.
-   - Input contrast: `tokens.css` `--so-input-line` is #d4d4d4 (1.48:1).
-   - "Connect a builder" links to its own page: `browser-crew.ts:29` points `start-worker` at `#run-status`.
-   - Stale `/system` copy: `render-pages.ts:321`, "never by a browser click".
-   - Cents dropped: `spend.ts` `usd()` drops cents at $10 and above. It is shared with `budget-alerts.ts`, `limits-ui.ts`, `tier-report.ts`, `evidence-pack.ts` and `store.ts`.
-   - The `up` password: `operate.ts` `UP_LOGIN_FILE` writes it to `up-login.txt` with mode 0600 and never shows it.
-   - Keyboard autosave: `settings-view.tsx` `AutoForm`, and `render-settings.ts` `SETTINGS_AUTOSAVE_SCRIPT`.
+1. **Proofs differ by action, and the plan changes none of them.**
+   - The step-up field is called `password` on some routes and `token` on others (`/control/*`, `/mode/*`,
+     `/people/*`, `/push/subscribe`, `/chat/config`, chat-approval).
+   - Some forms have a field named like a credential that is **not a proof**:
+     - in `/settings/telegram-token`, `token` is the bot token;
+     - in `/settings/email`, `password` is the SMTP password;
+     - `provider-key` sends the API key as `value`.
+   - Many saves need nothing beyond the session and CSRF: quality, notifications, messaging, digest, provider key,
+     Telegram token, email, Google.
+   - Credential acts need a typed password, even under Passwordless.
+   - Widening check access needs a password typed *now* by an instance operator (`settings.ts` ~2406).
+   - When someone signed in through an identity provider, `sendScreen` replaces the step-up fields on the page with a
+     one-use re-check link (`ssoStepUps`).
+   - Approvals carry a nonce and a digest. Project setup consumes its nonce **before** it checks the password
+     (`settings.ts` ~1550), so after a failed attempt the person must review again.
+   - The 15-minute remember covers three routes only: `task.act.approve`, `chat.send` and `chat.proposal.confirm`. It
+     stays that way in this arc.
+2. **There are two kinds of sensitive page.**
+   - A page that has a password field in its server HTML, or `sensitive: true`, keeps its script. It loses the live
+     sidebar states, the summary room and the chrome forms.
+   - A page with `forceSensitive: true` holds a one-time secret: an API token, an invite link, a pairing code. It
+     leaves the workspace for a focused page with **no script at all** (`serve.ts` ~1580).
+   - So a step-up dialog keeps its field in the server HTML, and a revealed secret stays script-free, with text you
+     can select and no scripted Copy.
+3. **Positions are pinned.** `src/password-freshness.test.ts` pins where functions sit in `operate.ts`, `store.ts`,
+   `server/tasks.ts` and `server/settings.ts`, and counts every mention of the provers and the freshness facts.
+   - New handlers go after the last inner function of `createSettingsHandlers`, or in new modules.
+   - Edits inside existing functions must not add arrow functions ahead of pinned anonymous ones (for example
+     `controlAct@73><anonymous>@1`).
+   - A pin change is a reviewed security change. Say so in the PR.
+4. **Routes.**
+   - Every address is one row in `route-table.ts` with one handler.
+   - A console GET needs an open project unless its row sets `needsProject: false` (`route-table.ts` ~110).
+   - `/` sends a browser session to `/chat`, but sends a restricted (project-limited) account or a token caller to
+     `/work` (`pages.ts` `homeRedirect`).
+   - The sign-in return list is `http.ts` `LOGIN_RETURN_PAGES`.
+   - `sayTo(page, anchor)` writes the query and then the anchor. Pass an anchor as that argument, never inside the
+     page string.
+   - The generated suites (`route-roles-http`, `route-policy-http`, `get-quiet`, `post-forms-http`) cover new rows.
+   - `get-quiet` pins some current pages at 200. Making one of them a redirect means changing that test on purpose.
+5. **Where the code differs from what the design assumed.**
+   - The lead's API key lives in `chat-key-<provider>` under the config folder (`serve.ts` ~1338, `chat.ts` ~1241),
+     separate from AI-provider keys (`keys.ts` `keyFileFor`).
+   - Integrations is more than chat apps and webhooks. It also covers GitHub, Linear, email, MCP tools, monitoring,
+     agents, diagnostics, and warnings about how secrets are stored.
+   - Its "Send test" button runs a connection check. It does not deliver a message.
+   - `/settings/models` reads `scope`, `preset`, `switch` and `to`.
+   - The hub's anchors used across the code are `#providers`, `#email`, `#settings-chat-apps`, `#telegram-token` and
+     `#updates`. S7 lists them all with grep.
+   - `up-login.txt` can hold a password the person chose themselves, not only a generated one (`operate.ts` ~7405).
+   - `up` prints where that file is only when the browser fails to open (`operate.ts` ~8000).
+   - No CLI command shows the password. Reading the file with `cat` is the only way today.
+6. **Bug locations.**
+   - Project picker: `app.tsx` ~589 doesn't read the open project.
+   - Two h1s: `app.tsx` ~1004, plus the screen-reader-only h1 at `settings-view.tsx` ~481.
+   - 44px targets: `console.css` 268–270 beats `workspace.css` 373.
+   - `--so-input-line` contrast is 1.48:1.
+   - `start-worker` points at `#run-status` (`browser-crew.ts:29`).
+   - `/system` stale copy: `render-pages.ts:321`.
+   - `usd()` drops cents at $10 and above (`spend.ts`, shared with alerts and limits).
+   - Autosave on arrow keys: `AutoForm` and `SETTINGS_AUTOSAVE_SCRIPT`.
    - Telegram loop: `telegram-settings.ts:22`.
-9. **Accent.** `--so-attention` is `var(--so-signal)`, and `accent-colors.ts` rewrites `--so-signal` from the accent
-   cookie. So today the accent picker repaints "needs you". Ink acts (`--so-attention` on result buttons and counts)
-   must stay ink. Needs-you therefore gets **new** tokens, not a re-pointed `--so-attention`.
+   - `--so-attention` is `var(--so-signal)`, which the accent cookie rewrites (`accent-colors.ts`).
 
 ## 2. Rules for every build agent
 
-- Worktree off `main` (after #270), one slice each. Open a **non-draft PR; don't merge**. Don't write live state: no
-  `:4180`, no `~/.config/standing-orders`, no real database. Build the fixture the way
-  `evidence/ui-revamp/capture.mjs` does (temp HOME, temp DB, random 127.0.0.1 port).
-- Read `AGENTS.md`. Run its UI simplicity pass on every page you touch. Run the **safety self-review** before committing
-  anything that touches step-up, credentials, sessions, sensitivity, routes or approvals, and say in the PR how each
-  item applies. Pass that review on to anyone you hand work to.
-- Placement: new handlers in new modules, or at the end of `createSettingsHandlers`. Never insert a function above
-  existing ones in `settings.ts`, `operate.ts`, `store.ts` or `tasks.ts`. Run `npx vitest run src/password-freshness.test.ts`
-  on every slice that touches `src/server/`.
-- Tests: only the kinds `docs/testing.md` keeps (security rules, contracts, data integrity). Route, auth and redirect
-  contracts go through HTTP. No wording, markup or CSS unit tests, and no copy matrices. Run the affected test files
-  only (`npx vitest run <files>`); GitHub CI and the release check run the full suite.
-- UI evidence: run the settings journey (S1) at **1440 and 390**, with its a11y probes, and put the screenshots in
-  `evidence/<slice>/`. Never commit images.
-- Commit trailers exactly:
+- **Branch and PR.** Use a worktree off a `main` that contains the slice's prerequisites. Open a **non-draft PR and
+  don't merge**.
+- **No live state.** Don't touch `:4180`, `~/.config/standing-orders` or the real database. Use S1's fixture.
+- **Reviews.** Read `AGENTS.md` and run its UI simplicity pass. Run the **safety self-review** before any commit that
+  touches step-up, credentials, sessions, sensitivity, routes, approvals or redirects, and say in the PR how each item
+  applies.
+- **Placement.** Follow §1.3. Run `npx vitest run src/password-freshness.test.ts` on every slice that touches `src/`
+  server code.
+- **Never normalise auth handlers.** A slice may change where a handler returns to, and how it reports field
+  validation errors (§4). It may not change:
+  - which field a handler reads;
+  - which prover it calls;
+  - its role;
+  - its nonce or digest;
+  - its Passwordless or SSO behaviour.
+- **Tests.**
+  - Only the kinds `docs/testing.md` keeps: security rules, contracts, data integrity.
+  - Route, auth and redirect contracts are tested over HTTP.
+  - No tests for wording, markup or CSS.
+  - Run only the affected files with `npx vitest run <files>`. CI and the release check run everything.
+- **Evidence.** See §6.
+- **Trailers**, exactly:
   ```
   Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
   Claude-Session: https://claude.ai/code/session_01U8qFAnWnZybhqHvofLBVL7
   ```
-- **Old URLs keep working.** Every GET address that exists today either still renders, now under its group's
-  breadcrumb, or redirects to its new home with the same redirect `/tasks → /work` uses. **POST endpoints don't
-  move.** Forms move between pages, but they keep posting to the same routes with the same proofs. Only the
-  page each handler returns to changes. CLI, chat and Telegram callers are unaffected.
+- **Compatibility.** Old URLs keep working (§3). POST endpoints don't move: forms move between pages but keep the same
+  routes, fields and proofs.
 
 ## 3. Information architecture
 
-| Group (hub card) | URL | Holds | Comes from |
+| Group | URL | Holds | Comes from |
 |---|---|---|---|
-| General | `/settings/general` | Appearance (theme; accent under "Customize accent", ≤6 presets + hex); this browser (chime, remembered password + Forget, moved out of the sidebar) | hub Appearance + Accent cards, sidebar chips |
-| Agents and models | `/settings/agents` | Agent (builder + sign-in state + how it's paid: AI providers), **the Models editor from #270** (`#models`), then rows: Lead, Subagents, Tools, Skills, Knowledge, Learning | hub AI providers card, `/settings/models`, Agents tiles |
-| Chat apps and alerts | `/settings/alerts` | Rows per chat app (Telegram, Slack, Discord, Teams) with state; what reaches you (chat messages, digest, screenshots, per-project mute); this device (push); email (closed, Google first); phone access (Tailscale) | hub Notifications + phone card + Email, Chat apps tiles, chat-app half of `/settings/integrations` |
-| Approvals and safety | `/settings/safety` | Defaults for new tasks (unattended permissions, quality), who approves (approval rules + release approval), limits (policy), per project (operating mode summary → `/mode`, project sandbox/network → `/settings/project`), one sentence on which wins | hub Permission + Quality cards, Approval rules, Policy, `/mode` |
-| Projects | `/settings/projects` | One row per project → Project settings, Checks, Pull requests, Tools for it; incoming webhooks (Integrations' webhook half) | Project tile, Projects-only links, Integrations |
-| People and sign-in | `/settings/people` | People (list, invite), Sessions & tokens, Sign-in (SSO), Passwordless | `/people` (Workspace tools), Access tiles |
-| Spend | `/settings/spend` (exists) | This month in one line, monthly limits (cents, at-risk marked), link to the report `/spend` | today's Spend limits page |
-| System | `/settings/system` | Builders/workers (with **Start a builder**, `#builder`), Updates (one place), Backups, Storage, Retention, Data, Monitoring; rows to Fleet, Requirements, `/system` | hub Workers + Updates cards, System tiles, Workspace-tools Settings group |
+| General | `/settings/general` | Appearance (theme; accent under "Customize accent"); the remembered-password chip with Forget, and chime, moved out of the sidebar | hub Appearance and Accent; sidebar chips |
+| Agents and models | `/settings/agents` | The agent (builder, sign-in state, how it's paid = AI providers); **#270's Models editor** at `#models`; rows for Lead, Subagents, Tools, Skills, Knowledge, Learning | hub AI providers; `/settings/models`; Agents tiles |
+| Chat apps and alerts | `/settings/alerts` | One row per chat app with its state; what reaches you (chat messages, digest, screenshots, mute per project); this device (push); email (closed, Google first); phone access (Tailscale) | hub Notifications, phone and Email; Chat apps tiles |
+| Approvals and safety | `/settings/safety` | Defaults for new tasks (permissions, quality); who approves (approval rules, release approval); limits (policy); per project (summary of the operating mode → `/mode`; sandbox and network → `/settings/project`); one sentence on which setting wins | hub Permission and Quality; Approval rules; Policy; `/mode` |
+| Projects | `/settings/projects` | One row per project → Project settings, Checks, Pull requests, Tools | Project tile; links that today exist only on Projects |
+| People and sign-in | `/settings/people` | People, Sessions and tokens, Sign-in (SSO), Passwordless | `/people`; Access tiles |
+| Spend | `/settings/spend` (already exists) | This month in one line, monthly limits, a link to the `/spend` report | today's limits page |
+| System | `/settings/system` | Builders (with **Start a builder**, `#builder`), Updates, Backups, Storage, Retention, Data, Monitoring; rows to Fleet, Requirements, `/system`, and **Integrations**, which stays a status page of its own | hub Workers and Updates; System tiles; the Workspace-tools Settings group |
 
-Redirects and addresses that stay:
-- `/settings/models` → `/settings/agents#models`.
-- `/settings/checks` and `/settings/pull-requests` with no `?repo=` → the open project's page, else `/settings/projects`.
-  Today they return 404.
-- `/settings/integrations` → `/settings/alerts` (decision D3).
-- `/people`, `/mode`, `/fleet`, `/caps`, `/system`, `/control` and every `/settings/<tile>` page stay where they are.
-  Chat, the CLI, Telegram and old links point at them. Each now shows "Settings / <Group>" as its breadcrumb.
-- The hub's old anchors (`/settings#telegram-token`, `#phone`) forward to the new page through a small hash map in
-  the hub script.
-- Workspace tools' separate "Settings" group (`chrome.ts` `settingsRows`) shrinks to the single Settings entry. Its
-  rows (Fleet, Requirements, People, Operating mode, System) live inside groups.
+**Who can open a group page.**
+- A group page lets in anyone who can read **any** part of it. The server then drops the sections and controls that
+  person can't use. Every action keeps its own role check.
+  - A viewer still sees the Models read-out, their own People entry and their own sessions.
+  - A project-limited approver sees only their projects.
+  - A token caller gets exactly what it gets today on the pages being gathered.
+- Hiding a hub card is not the same as keeping someone's access. The tests check both.
 
-## 4. Shared patterns (built once in S2, used by every later slice)
+**Compatibility map.** S7 owns it. Every target is a fixed path.
 
-- **Settings frame.**
-  - One `<h1>`, from the page. The shell header shows the section name as text: `app.tsx` already has the `pageOnly`
-    branch for this.
-  - A breadcrumb "Settings / Group" made of real links.
-  - One content width token for every settings page, matching the prototype's 760px column.
-  - The Single frame (no Crew sheet) on `/settings/*`, `/setup`, `/people`, `/mode`, `/control` and `/spend`.
+| Old | New | Kept |
+|---|---|---|
+| `/settings/models?scope=&preset=&switch=&to=&said=&problem=` | `/settings/agents?<same validated params>#models` | Each parameter is checked with the #270 editor's own validators and dropped if it fails. A bad scope never quietly becomes the installation-wide scope |
+| `/settings#providers` | `/settings/agents#providers` | — |
+| `/settings#email`, `#settings-chat-apps`, `#telegram-token`, `#phone` | `/settings/alerts#email`, `/settings/alerts`, `/settings/telegram#token`, `/settings/alerts#phone` | Forwarded by the hub script, because fragments never reach the server. Internal links that point at these anchors are updated |
+| `/settings#updates` | `/settings/system#updates` | — |
+| `/settings/checks` or `/settings/pull-requests` with no `?repo=` | the open project's page, otherwise `/settings/projects` | Today these return 404 |
+| `/people`, `/mode`, `/fleet`, `/caps`, `/system`, `/control`, `/settings/integrations`, every `/settings/<tile>` | unchanged | breadcrumb "Settings / Group" |
+
+When a handler's return target gains an anchor, the anchor goes in `sayTo`'s anchor argument, so the query comes
+before the fragment.
+
+## 4. The settings kit (built in S2, used by every later slice)
+
+- **Frame.**
+  - One `<h1>`, the page's own. The shell header shows the section name as text, using the existing `pageOnly` branch.
+  - The breadcrumb "Settings / Group" uses real links.
+  - One content width token: a 760px column.
+  - Single frame with no Crew sheet on `/settings/*`, `/setup`, `/people`, `/mode`, `/control` and `/spend`.
 - **Section.** A heading, a one-line state, then the form. No nested wells.
-- **Sticky save bar.**
-  - It reads "No changes", or "1 change", or "<what changed>", and has one ink **Save**.
-  - Only one section on a page can be changed at a time. Editing a second one asks you to Save or Discard the first
-    (decision D6).
-  - Save submits that section's existing form to its existing route. Nothing is sent by `fetch`, nothing is batched,
-    and no new endpoints are added.
-- **Step-up dialog.**
-  - It is a server-rendered `<dialog>` holding the same `password` field the handler reads today
-    (`autocomplete="current-password"`, a visible label). On a phone it opens as a bottom sheet.
-  - It shows the change before → after, where the page knows it. The Models preview already does this.
-  - The server tells each form which proof it needs: `none` (Passwordless and not a credential act), `password`, or
-    `password-credential`. The dialog only asks when needed.
-  - Saving always posts to the server, which proves it again. A wrong guess in the browser can only lead to a
-    refusal, never to a bypass.
-  - Without JavaScript, the field shows inline, as it does today.
-- **Field errors.**
-  - On a refused Save, the handler re-renders the page with status 422 and no redirect.
-  - Values are kept. Password and secret fields are never echoed back.
-  - The message sits under the field (`id` + `aria-describedby`, `aria-invalid="true"`), and focus moves to that field.
-  - `?problem=` links still render, for back-compat.
+- **Save, local to each section.**
+  - Each editable section has its own sticky Save: "No changes" or "<what changed>", plus one ink Save button.
+  - Save submits that section's existing form to its existing route.
+  - There is no lock across sections, no batching and no `fetch`.
+- **Step-up dialog, drawn from each action's own contract.**
+  - The server renders the form's real proof field (`password` or `token`, with a visible label and
+    `current-password`) inside a `<dialog>` in its own HTML.
+  - It opens on submit. It keeps the original submitter (the pressed button's `name=value`) and every hidden term
+    (nonce, digest, fingerprint).
+  - Cancel closes it without posting.
+  - Without JavaScript, the field shows inline exactly as it does today.
+  - SSO replaces the field written into the page, as it does today.
+  - It asks for nothing on CSRF-only actions.
+  - Under Passwordless it asks for nothing only where the action is not a credential act.
+  - The server still proves everything, so a wrong guess in the page leads to a refusal, never a bypass.
+- **Errors.**
+  - **Field validation errors** (a bad amount, a missing field) come back as an inline 422 with the values kept.
+    Credential and secret fields are never echoed back.
+  - The message sits under the field, with `aria-invalid` and `aria-describedby`, and focus moves there.
+  - **Auth refusals, conflicts and rate limits** keep their current responses.
+  - **A consumed or stale approval nonce** sends the person back to review, with a fresh preview. The form never
+    returns with a dead nonce.
+  - Handlers this arc doesn't move keep redirecting with `?problem=`. The kit shows that message, with
+    `role="alert"`, in the section the anchor points to.
   - Toasts are for success only.
-- **Secret inputs.** One helper for API keys, bot tokens, client secrets and SMTP passwords. Each gets
-  `autocomplete="off"`, a name that doesn't read as "password", and the password-manager opt-outs (`data-1p-ignore`,
-  `data-lpignore="true"`, `data-bwignore`, `data-form-type="other"`). Only the step-up field is `current-password`.
-- **Choice groups.** A `fieldset` with a `legend`, each option's detail linked by `aria-describedby`, and **no
-  autosave**. A choice goes to the save bar. Per-browser preferences (theme, accent, chime) may save in the background,
-  as long as each announces "Saved" in an `aria-live="polite"` node and leaves focus where it was.
-- **Repeated buttons name their object**, for example `aria-label="Manage Anthropic"`.
+- **Secret inputs.**
+  - Use `autocomplete="off"` and a field name that doesn't read as "password".
+  - Add the password-manager opt-outs: `data-1p-ignore`, `data-lpignore="true"`, `data-bwignore`,
+    `data-form-type="other"`.
+  - The SMTP username stops using `autocomplete="username"`.
+- **Revealed secrets** (pairing code, API token, invite link) stay `forceSensitive`, with no script and selectable
+  text. Scripted Copy is **Later**.
+- **Choice groups.**
+  - `fieldset` with a `legend`. Option details are linked with `aria-describedby`.
+  - No autosave.
+  - Preferences kept per browser (theme, accent, chime) may save in the background. Each save is announced with
+    `aria-live`, and focus stays where it was.
+- **Repeated buttons name their object**, for example "Manage Anthropic".
+
+### Proof inventory
+
+S2 completes this table from the handlers, pins it with a test, and the kit renders from it. The rows below come from
+the `console-api.ts` form contracts and `route-table.ts`; S2 checks each against its handler. "Credential" means the
+Passwordless closed list: a password typed now, or an SSO one-use re-check.
+
+| Action | Route(s) | Proof field | Role | Proof today | Nonce/digest |
+|---|---|---|---|---|---|
+| Quality default, notifications, mute, messaging, Telegram digest | `/settings/{quality-default,notifications,notifications/mute,messaging,telegram-digest}` | none (CSRF) | approver | session | — |
+| Provider key | `/settings/provider-key(-clear)` | none; `value` is the API key **secret** | approver | session | — |
+| Telegram bot token | `/settings/telegram-token` | none; `token` is the **bot credential** | approver | session | — |
+| Email, Google | `/settings/email*`, `/settings/google*` | none; `password` and `clientSecret` are **service secrets** | approver | session | — |
+| Permission default | `/settings/permission-default` | `password`, only for Full access | approver | step-up when widening | — |
+| Spend limit | `/spend/budget` | `password` | operator | step-up | — |
+| Models apply/agent | `/settings/models/{apply,agent}` | `password` | operator | step-up | state + change digest |
+| Policy, approval rules, retention, backups, data, monitoring | `/settings/<name>` | `password` | operator | step-up | — |
+| Sign-in (SSO), Passwordless on, release auto-approve | `/settings/{sign-in,passwordless,release-approval}` | `password` | operator / approver | **credential** | — |
+| Project network, writes, sandbox, check access | `/settings/project/*` | `password` | per row | **credential**; widening check access: typed now + operator | — |
+| Project delete | `/settings/project/delete` | `password` + typed name | operator | step-up | — |
+| Tools connect/change | `/settings/tools/{connect,change}` | `password` | approver | step-up | `shown` digest |
+| Telegram pair/unpair; Slack, Discord, Teams connect/pair/… | `/settings/telegram/*`, `/settings/{slack,discord,teams}/*` | `password` | approver | **credential** | — |
+| Chat approval save | `/settings/chat-approval/save` | `token` | approver, self | **credential** | nonce + digest |
+| Push enrol | `/push/subscribe` | `token` | approver | step-up | — |
+| Project setup approve | `/control/setup-approve` | `token` | approver | step-up | nonce (consumed first) + fingerprint |
+| Mode sign | `/mode/sign` | `token` | approver | step-up; **credential** with chat-approve | nonce + digest |
+| People invite, projects, revoke, invite-revoke | `/people/*` | `token` | operator / approver | invite and widening: **credential** | — |
+| Lead config and key | `/chat/config` | `token` | approver | step-up | — |
 
 ## 5. Slices
 
-Each slice lists: what the user gets, the files, the routes, security notes, tests, what it depends on, and its wave.
-Slices in the same wave can run at the same time; **no two slices in a wave touch the same file.**
+Each slice lists what the user gets, files, routes, security notes, tests and prerequisites. The wave is in the
+heading. **No two slices in a wave touch the same file**, and that includes shared test and contract files.
 
-### S1. Settings journey and capture harness (wave 1)
-- **User value:** reviewers and the owner see every settings and setup page at 1440 and 390 on every PR. The
-  accessibility rules get checked the same way each time, instead of by eye.
-- **Files:**
-  - New `scripts/settings-journey.mjs`, built from `capture.mjs`'s synthetic fixture.
-  - New `scripts/settings-journey/*.mjs`, one step file per slice, so later slices add a file instead of editing a
-    shared one.
-  - Output goes to `evidence/` only.
-- **What it does:**
-  - Unrolls the inner scroller (`.so-main-column`) before full-length shots. This is the Phase 0 bug.
-  - Captures each page at 1440 and 390.
-  - Probes each page:
-    - exactly one `h1`;
-    - no sideways scroll;
-    - every input, select, button and link in the main region is ≥44px tall at 390;
-    - after a forced bad Save, the failing field has `aria-invalid="true"` and an `aria-describedby` target holding
-      text;
-    - pressing ArrowDown in a radio group sends no request;
-    - secret inputs carry the opt-outs;
-    - the sidebar's set of rows is the same on a sensitive page as on a normal one.
-- **Security:** fixture only (temp HOME, temp database). It refuses to run if HOME or the DB path resolves to the real
-  ones.
-- **Tests:** the journey is the test. No unit tests.
+### S1. Settings journey harness (wave 0, interface first)
+- **User value:** the owner and reviewers see the pages each PR changes at 1440 and 390, with the same accessibility
+  probes every time.
+- **Stage 1 (wave 0), lands before wave 1:**
+  - `scripts/settings-journey.mjs`, which builds the synthetic fixture: temp HOME, temp DB, random port. It refuses to
+    run if any path resolves to the real setup.
+  - The step-file interface: `scripts/settings-journey/<slice>.mjs` exports pages and actions.
+  - The probe API.
+- **Stage 2:** each later slice adds its own step file. Nothing edits the runner except S1.
+- **Probes:**
+  - exactly one `h1`;
+  - no sideways scroll;
+  - main-region controls at least 44px tall at 390;
+  - after a forced validation error, `aria-invalid` and a description are present;
+  - ArrowDown in a radio group sends no request;
+  - secret inputs carry the opt-outs;
+  - the sticky save never covers the focused control;
+  - keyboard focus is visible after the dialog closes;
+  - the sidebar has the same slots on sensitive pages.
+- **How it runs:** with the real scroller intact, scrolling the sheet. Unrolled full-length shots are extra. A no-JS
+  pass for any form the slice changed, and a long-error case.
+- **Security:** fixture only.
+- **Tests:** the journey itself.
 
 ### S2. One frame and the settings kit (wave 1)
 - **User value:**
-  - Every settings page has the same top bar, breadcrumb, single title and column width.
-  - The sidebar no longer jumps between pages.
-  - The project picker names the open project instead of "All projects".
-  - Text fields and buttons on a phone are 44px tall.
-  - Settings pages drop the unrelated Crew sheet.
-  - The kit in §4 is ready for the slices that follow.
+  - the same top bar, breadcrumb, single title and width on every settings page;
+  - the sidebar stops jumping;
+  - the project picker shows the open project;
+  - 44px targets on a phone;
+  - no Crew sheet on settings pages;
+  - the kit and the proof inventory exist for later slices.
 - **Files:**
-  - `src/browser/app.tsx`: header h1 rule, project picker from the session's open project, sidebar slots on sensitive
-    pages.
-  - `src/browser/workspace.css`: width token, 44px specificity.
-  - `src/server/console.css`: the input rule moves into `:where()`.
-  - `src/server/chrome.ts`: crumbs on `Chrome`, Single frame for settings, inert sidebar placeholders on sensitive
-    pages.
-  - `src/contracts/console-api.ts`: `openProject` and `crumbs` on the workspace.
-  - `src/serve.ts`: only `sendScreen` passing those two fields.
-  - New `src/settings-kit.ts`: section, save bar, step-up dialog markup, field problem, secret input and fieldset
-    helpers, plus the kit's CSS as an exported string (the way `MODELS_CSS` does it).
-  - New `src/settings-kit-script.ts`: the enhancement script for the dialog and save bar.
+  - `src/browser/app.tsx`
+  - `src/browser/workspace.css`
+  - `src/server/console.css` (move the input rule into `:where()`)
+  - `src/server/chrome.ts` (breadcrumbs, single frame, inert sidebar slots on sensitive pages)
+  - `src/contracts/console-api.ts` (`openProject`, `crumbs`)
+  - `src/serve.ts` (`sendScreen` passes those two, nothing else)
+  - new: `src/settings-kit.ts` (helpers and a CSS string), `src/settings-kit-script.ts`, `src/settings-proofs.ts`
+    (the inventory as data), `src/settings-kit.test.ts`
+  - `src/serve.sidebar.test.ts`, `src/serve.chrome.test.ts`
 - **Routes:** none.
 - **Security:**
-  - A sensitive page **keeps** its row *slots*, drawn as static, inert text: no live states, no summary room, no
-    forms, no extra script. The R14 rule stands, and only the layout changes.
-  - The kit's dialog renders its password field on the server, so `SENSITIVE_INPUT` still classes the page.
-  - The kit never sets `value` on a password or secret input.
+  - A sensitive page keeps its sidebar *slots* as static, inert text: no live states, no summary room, no forms, no
+    added script.
+  - The dialog's field is in the server HTML, so sensitivity and the SSO replacement both still apply.
+  - The kit never sets `value` on a proof or secret field.
+  - Only rendering code reads the inventory. Handlers never read it.
 - **Tests:**
-  - `serve.sidebar.test.ts`: one case added to its rule. A sensitive page has the same rows but no live states and no
-    chrome forms.
-  - `serve.chrome.test.ts`: the project picker's current value is the session's open project.
-  - One contract case in a new `src/settings-kit.test.ts`: dialog and secret helpers never emit a `value` for
-    password or secret fields, and the dialog's field name matches the handler's (`password`).
-  - Journey probes.
-- **Depends on:** #270 merged.
+  - `settings-kit.test.ts`, as contract tables:
+    - for every inventory row, the rendered proof field name equals the handler's form-contract field;
+    - CSRF-only rows render no proof field;
+    - secret fields never carry `value`;
+    - the dialog keeps the submitter and the hidden fields.
+  - One sidebar case: a sensitive page keeps the same slots, with no live states and no chrome forms.
+  - One picker case: it shows the open project.
 
 ### S3. The first-account page (wave 1)
-- **User value:** creating the first account (the `toolroll serve` path) states its rules up front and keeps what you
-  typed when something's wrong. Errors sit beside the field and are announced. It says how many code attempts are
-  left. It has a real title: "Create the first account".
-- **Files:** `src/server/render-people.ts` (`signupPage`), `src/server/people-tokens.ts` (`signupSend`; edits inside
-  the existing function only).
-- **What changes:**
-  - `<h1>Create the first account</h1>`, with the wordmark as a logo, and per-page `<title>`s for login, signup and
-    errors.
-  - `required`, `minlength="8"`, and the username `pattern` with hint text.
-  - The username is kept on every error. The setup code is kept only when the error isn't about the code.
-  - `role="alert"`, plus `aria-describedby` on the failing field.
-  - Error copy in sentence case.
+- **User value:** creating the first account:
+  - shows the rules up front;
+  - keeps what you typed when something's wrong;
+  - announces each error next to its field;
+  - says how many tries are left;
+  - has a real title.
+- **Files:** `src/server/render-people.ts` (`signupPage`), `src/server/people-tokens.ts` (inside `signupSend` only).
+- **Changes:**
+  - `<h1>Create the first account</h1>`, plus page titles.
+  - `required`, `minlength="8"`, and a username `pattern` with a hint.
+  - The username is kept on every error. The setup code is kept unless the error is about the code.
+  - `role="alert"` plus `aria-describedby`.
+  - Errors in sentence case.
 - **Security:**
-  - The password is never echoed back. The attempt counter and lockout are unchanged.
-  - The page stays sensitive and `no-store`.
-  - `signupSend`'s position and its `authenticateAccount` mention are unchanged (tripwire).
-- **Tests:** an HTTP case in the existing signup test. A wrong code returns 4xx with the username kept and the code
-  field empty, and five tries still lock. `password-freshness.test.ts` must pass unchanged.
+  - The account is still created all at once or not at all.
+  - The **five-try lockout** is unchanged.
+  - The password is never echoed back.
+  - The page is sensitive and `no-store`.
+  - No pins change.
+- **Tests:** HTTP cases added to the existing signup test:
+  - a wrong code keeps the username, empties the code and counts down;
+  - the fifth try locks;
+  - a failed create leaves no account behind.
 
-### S4. No dead end without a builder, and one name per model (wave 1)
+### S4. First-run dead ends (wave 1)
 - **User value:**
-  - Under `toolroll serve`, a task with no builder says what to do and links to **Start a builder**, with the exact
-    command and a Copy button. It no longer links back to itself.
-  - `/system` no longer says models can't be changed in the browser. It links to Agents and models instead.
-  - A model has one display name everywhere.
+  - A task with no builder links to **Start a builder**, which shows the exact command. It no longer links to itself.
+  - `/system` stops saying models can't be changed in the browser.
+  - Each model has one name everywhere.
+  - `up` always says where your password is and how to see it: "Your password: run `cat ~/…/up-login.txt`". Today it
+    says this only when the browser fails to open.
 - **Files:**
-  - `src/needs-you.ts` and `src/browser-crew.ts`: the `start-worker` action goes to `/system#builder` until the
-    System group exists. S16 re-points it to `/settings/system#builder`.
-  - `src/server/render-tasks.ts`: how the `start-worker` action renders.
-  - `src/server/render-pages.ts`: the `/system` Agents copy, a `#builder` section with `toolroll up` and Copy, and model
-    names.
-  - New `src/model-names.ts`: `modelName(provider, id)` built on #270's catalog labels. Used here, then by S6, S11
-    and S13.
+  - `src/needs-you.ts`
+  - `src/browser-crew.ts`
+  - `src/server/render-tasks.ts`
+  - `src/server/render-pages.ts` (`/system` copy and its `#builder` section)
+  - new `src/model-names.ts` (`modelName(provider, id)` over #270's catalog labels)
+  - `src/operate.ts` (the `up` print block ~7998, edited in place)
 - **Routes:** none.
-- **Security:** read-only copy and links. The command shown is a constant, never built from input.
-- **Tests:** add one case to `serve.workspace.slow.test.ts`'s existing "no-worker-registered" check: the action's
-  target is the builder section, not the task's own page. One table test for `modelName` (contract: an id with no
-  catalog row falls back to the id).
+- **Security:**
+  - The commands are constants plus Toolroll's own path. The password itself is never printed.
+  - In `operate.ts`, only the existing print lines change; no functions are added.
+- **Tests:**
+  - One case added to the no-worker check in `serve.workspace.slow.test.ts`: the action points at the builder section.
+  - A `modelName` table, where an unknown id falls back to the id.
+  - One case in the existing `up` output test: the password-file line prints whether or not the browser opened.
 
 ### S5. Needs-you colour and contrast tokens (wave 2; waits for `evidence/ui-revamp/needs-you-colour.md`)
 - **User value:**
-  - What waits on you is marked again: an amber outline plus a "Needs you" chip on Crew items, the sidebar chip, the
-    hub's Needs you block and an at-risk spend limit.
-  - Input borders and the off-state switch reach 3:1.
-  - The accent picker can no longer repaint needs-you.
+  - The amber outline and chip return for what waits on you.
+  - Input borders and the off switch reach 3:1 contrast.
+  - The accent can't repaint needs-you any more.
 - **Files:**
-  - `src/design/tokens.css`: `--so-needs-you`, `--so-needs-you-line`, `--so-needs-you-text` and
-    `--so-needs-you-soft`, each in light, dark and `[data-theme]` blocks, with the values from the colour doc. Also a
-    darker `--so-input-line` and a new `--so-switch-off`.
-  - `DESIGN.md`: frontmatter colours, and a rule that needs-you is never themeable.
-  - `src/browser/workspace.css`: only the needs-you selectors (`.so-needs-chip`, project-state needs-you, Crew rows)
-    move to the new tokens. Ink verbs and counts stay on `--so-attention`.
-  - `src/browser/components/ui/switch.tsx` and `form-controls.tsx`.
-  - `src/accent-colors.ts`: the description changes to "Colour for buttons and focus. Things that need you are always
-    amber", and the amber warning on the ink default is dropped.
-- **Routes:** none.
-- **Security:** none. These are CSS tokens.
-- **Tests:** one table case in `src/accent-colors.test.ts`: for every accent preset, the needs-you tokens the page
-  prints are unchanged. The journey probe computes the outline contrast (≥3:1) and the chip text contrast (≥4.5:1) on
-  paper, in light and dark.
-- **Depends on:** S2 (`workspace.css`) and the colour doc. Until S5 lands, later slices write
-  `var(--so-needs-you, var(--so-warning))`, so nothing waits on it.
-
-### S6. Spend you can trust, on the new save pattern (wave 2)
-- **User value:**
-  - Limits and totals show cents: "$12.57 of $13.00 · 96%". A zero reads as "$0", not "None", and empty KPI tiles
-    are hidden.
-  - A limit that will stop work at 90% or more is marked as needing you, in words as well as colour ("Near the
-    limit"). An over-limit alert-only line says so in words.
-  - `/spend` and `/settings/spend` have different titles.
-  - The limits page loses its unrelated Models block, and model rows use one name.
-  - This is the first page on the save bar, the step-up dialog and inline field errors: a bad amount keeps what you
-    typed and points at the field.
-- **Files:**
-  - `src/spend.ts`: `usd()` shows cents whenever the amount isn't whole dollars (decision D7).
-  - `src/spend-ui.ts`.
-  - `src/server/settings.ts`: `spendSettingsPage` and `spendBudget`, edited in place, re-rendering with 422 on a
-    refused form.
-- **Routes:** none new. `POST /spend/budget` keeps its operator role and step-up.
-- **Security:**
-  - The budget write still proves the password, or Passwordless, inside the handler as today.
-  - The 422 re-render echoes the amount and scope, never the password.
-  - The page is sensitive, because the dialog's field is server-rendered.
+  - `src/design/tokens.css`: `--so-needs-you{,-line,-text,-soft}` in light, dark and `[data-theme]`; a darker
+    `--so-input-line`; `--so-switch-off`.
+  - `DESIGN.md`
+  - `src/browser/workspace.css`: needs-you selectors only. Ink verbs and counts stay on `--so-attention`.
+  - `src/browser/components/ui/{switch,form-controls}.tsx`
+  - `src/accent-colors.ts`: copy only, and remove the amber warning on the ink default.
+- **Security:** none.
 - **Tests:**
-  - HTTP: a bad amount returns 422 with the amount kept, `aria-invalid`, and no redirect.
-  - A wrong password is refused with nothing written (one case in the existing spend route test).
-  - `src/spend.test.ts`: one table case for `usd` (12.57 → "$12.57", 50 → "$50").
-  - Callers in `budget-alerts.ts` and `limits-ui.ts` keep their tests.
-- **Depends on:** S2. Can run beside S5.
+  - One case in `accent-colors.test.ts`: for every preset, **and for a saved custom colour**, the needs-you tokens
+    don't change.
+  - Contrast is checked by a journey probe: outline at least 3:1 and chip text at least 4.5:1, in light and dark.
+- **Prerequisite:** S2. Until S5 lands, later slices write `var(--so-needs-you, var(--so-warning))`.
+
+### S6. Spend you can trust (wave 2)
+- **User value:**
+  - "$12.57 of $13.00 · 96%".
+  - Zero reads "$0", and empty KPI tiles are hidden.
+  - A hard-stop limit at 90% or more is marked as needing you, in words as well as colour.
+  - `/spend` is titled "Spend report".
+  - The limits page loses its Models block and uses one name per model.
+  - This is the first page on the kit: a Save for its own section, the dialog, and an inline 422 for a bad amount.
+- **Files:**
+  - `src/spend.ts` (`usd()` formatting only)
+  - `src/spend-ui.ts`
+  - `src/server/settings.ts` (`spendSettingsPage` and `spendBudget`, in place; **the first handler moved to inline
+    field errors**)
+  - `scripts/settings-journey/spend.mjs`
+- **Routes:** unchanged.
+- **Security:**
+  - The budget's step-up and operator role are unchanged.
+  - The 422 echoes the amount and target, never the password.
+  - Auth refusals keep their response.
+- **D7, display only:** stored money, `--json` output and the budget input (whole dollars) don't change. If `usd()`
+  feeds any JSON or machine output, add a separate display formatter instead of changing it.
+- **Tests:**
+  - HTTP:
+    - a bad amount returns 422 with the amount kept, `aria-invalid` set and nothing written;
+    - a wrong password gets today's refusal with nothing written;
+    - a missing or foreign CSRF token is refused.
+  - A `usd` table.
+- **Prerequisite:** S2.
 
 ### S7. The hub and the eight group pages (wave 3)
 - **User value:**
-  - Settings becomes a one-screen index, from about 4,000px down to roughly 1 screen at a desk and 2 on a phone.
-    "Needs you" is at the top: no builder running, agent not signed in, models not set, a hard-stop limit at 90% or
-    more, Telegram failing. Each item has one verb.
-  - Below are eight group cards, each with a state sentence ("Claude, signed in · Sized by job").
-  - Every inline hub card moves to its group page. People, Fleet, Requirements, Operating mode and System are found
-    under Settings.
-  - Viewers see only groups they can open. A refusal reads as a neutral notice, not a red error.
-  - The Models editor (#270) lives on Agents and models.
-  - Choice groups no longer save on arrow keys.
+  - Settings becomes a one-screen index.
+  - "Needs you" sits on top, with one verb each: no builder, agent not signed in, models not set, a hard-stop limit at
+    90% or more, Telegram failing.
+  - Eight group cards, each with a state sentence.
+  - Every inline hub card moves to its group.
+  - People, Fleet, Requirements, Operating mode and System are reachable under Settings.
+  - Viewers see only what they can open, and refusals are neutral.
+  - The Models editor lives on Agents and models.
+  - Arrow keys no longer save a choice.
 - **Files:**
-  - `src/browser/views/settings-view.tsx`, rewritten as the index: Needs-you block plus group cards. Gone: the
-    `AutoForm`, `AccentPicker`, Email, Providers, Notifications and Telegram token components.
-  - `src/server/render-settings.ts`: the no-JS hub becomes an index. `SETTINGS_GROUPS` becomes the eight groups.
-    `SETTINGS_AUTOSAVE_SCRIPT` is removed. The card twins are extracted into the group modules.
-  - `src/server/settings.ts`: `settingsHome` slimmed; moved forms' handlers return to their group page (target
-    strings only); `modelsPage` redirects; `checksPage` and `pullRequestsPage` redirect instead of returning 404;
-    `integrationsPage` redirects (D3).
-  - `src/server/route-table.ts`: 7 new GET rows (`/settings/{general,agents,alerts,safety,projects,people,system}`),
-    with the same roles as the pages they gather (operator-only rows hidden for others).
-  - New `src/server/settings-groups.ts`: `createSettingsGroupHandlers`.
-  - New `src/settings-groups/{general,agents,alerts,safety,projects,people,spend,system}.ts`: one render module per
-    group, so later polish slices each own one file.
-  - New `src/settings-needs.ts`: facts → needs-you items.
-  - `src/server/chrome.ts`: `settingsRows`, `SETTINGS_KEYS`, the neutral refusal tone at ~108.
-  - `src/contracts/console-api.ts`: the hub view.
-  - `src/serve.ts`: registering the new factory, one line.
-  - `src/models-ui.ts`: an embeddable variant whose forms return to `/settings/agents#models`.
-- **Routes:** the 7 GETs above. Redirects: `/settings/models`, `/settings/integrations`, and repo-less `/settings/checks`
-  and `/settings/pull-requests`. No POST route changes.
+  - `src/browser/views/settings-view.tsx`: rewritten as the index.
+  - `src/server/render-settings.ts`: the no-JS index; the eight `SETTINGS_GROUPS`; `SETTINGS_AUTOSAVE_SCRIPT` removed;
+    the card twins extracted.
+  - `src/server/settings.ts`, in place:
+    - `settingsHome`;
+    - the return targets of moved forms, through `sayTo(page, anchor)`;
+    - `modelsPage` becomes the compatibility redirect;
+    - checks and pull requests with no repo redirect.
+  - `src/server/route-table.ts`: 7 GET rows, `/settings/{general,agents,alerts,safety,projects,people,system}`. Their
+    callers are the union of the pages they gather, and their roles follow §3 (anyone who can read any part).
+  - New `src/server/settings-groups.ts` (`createSettingsGroupHandlers`).
+  - New `src/settings-groups/{general,agents,alerts,safety,projects,people,spend,system}.ts`.
+  - New `src/settings-needs.ts`.
+  - `src/server/chrome.ts` (`settingsRows`, `SETTINGS_KEYS`, a neutral tone for refusals).
+  - `src/contracts/console-api.ts`.
+  - `src/serve.ts` (registration).
+  - `src/models-ui.ts` (an embeddable variant that returns to its group).
+  - `route-roles-http.test.ts`; `get-quiet.test.ts` (redirected pages move from 200 to 302/303 on purpose);
+    `scripts/settings-journey/hub.mjs`.
 - **Security:**
-  - The group GETs only read (`get-quiet.test.ts`). Each declares the strictest role of what it shows, and shows
-    owner-only sections only to operators. Admission still happens in the table.
-  - Every moved form keeps its route, CSRF field and proof. Handlers change only their return target.
-  - Group pages with a step-up form are sensitive.
+  - Group GETs only read.
+  - Sections and controls are filtered on the server per person. Action routes keep their own roles.
+  - Every redirect goes to a fixed target. Kept parameters are checked by the page that owns them.
+  - Moved forms keep their route, fields, CSRF and proof.
   - `settings-needs.ts` reads facts and never acts.
-  - Redirects use fixed targets, never a caller-supplied URL.
 - **Tests:**
-  - Route contracts over HTTP: each new row's roles in `route-roles-http.test.ts`. Each old URL lands on its new home
-    with the right status. A viewer gets the neutral refusal on an operator group.
-  - `get-quiet` and `post-forms-http` run as generated.
-  - `src/settings-needs.test.ts`: one table covering which facts raise an item (the 90% hard-stop rule, alerts-only at
-    96% doesn't, no builder, models unresolved). No wording.
-  - Journey: hub and all eight groups at 1440 and 390, and keyboard through a choice group sends nothing until Save.
-- **Depends on:** S2 and S6 (`settings.ts`). S5 if it has landed; otherwise it uses the fallback variable.
+  - HTTP, each run as operator, viewer, project-limited approver and bearer token:
+    - every group page;
+    - every old URL in the compatibility map, with its parameters and notices kept. This includes
+      `/settings/models?scope=<project>&preset=sized` landing on that project's preview, and a bad `scope` that
+      doesn't fall back to the installation-wide scope;
+    - a notice that survives the query-then-anchor order.
+  - `settings-needs.test.ts`: one table of which facts raise an item.
+  - The journey: moving through a choice group with the keyboard sends nothing until Save.
+- **Prerequisites:** S2 and S6 (`settings.ts`). S5 is optional.
 
-### S8. Telegram on one page: token → pair → test (wave 4)
-- **User value:** connecting Telegram happens on one page, in three numbered steps.
-  1. Create a bot. A link to `t.me/BotFather` and the exact `/newbot` words, then paste the token.
-  2. Pair your phone. A Copy button for `/pair 123456` with an announced "Copied", plus an **Open the bot** link to
-     `t.me/<bot>`.
-  3. Send a test message.
-
-  The hub, the alerts page and setup all link here. The loop back to the hub is gone.
+### S8. Chat apps and alerts (wave 4)
+- **User value:**
+  - Telegram, Slack, Discord and Teams each get one page with numbered steps.
+  - Telegram: a `t.me/BotFather` link and the `/newbot` words → paste the token → pair → check.
+  - The pairing code shows on its own script-free page as selectable text, with an **Open the bot** link that doesn't
+    contain the code.
+  - The check step uses the existing connection or delivery state, labelled "Check connection", nothing more.
+  - The loop back to the hub is gone.
+  - On the alerts page:
+    - email is one closed row, Google first;
+    - the SMTP username can no longer pull in your Toolroll password;
+    - push for this device is one row;
+    - the Tailscale row keeps its wording.
 - **Files:**
-  - `src/telegram-settings.ts`: the three steps; it also exports the step renderer for `/setup`.
-  - `src/server/settings.ts`: `telegramPage`, and `telegramTokenSave`, which returns to `/settings/telegram`. A new
-    `telegramTest` handler goes at the end of `createSettingsHandlers`.
-  - `src/server/route-table.ts`: `POST /settings/telegram/test` (approver, `limited: "self"`, act scope).
-  - `src/telegram.ts`, if sending needs a helper.
+  - `src/telegram-settings.ts`
+  - `src/chat-settings-page.ts`
+  - `src/{slack,discord,teams}-settings.ts`
+  - `src/server/settings.ts` (`telegramPage` and the `telegramTokenSave` return target, in place)
+  - `src/settings-groups/alerts.ts`
+  - `scripts/settings-journey/chat-apps.mjs`
+- **Routes:** none new. Endpoints that send a test message are Later.
 - **Security:**
-  - Pairing stays a **credential act**: a typed password, even under Passwordless. The dialog is told
-    `password-credential`.
-  - The token save keeps its step-up. The token is never echoed and uses the secret input.
-  - **The pairing code never goes in a URL** (decision D4), so there is no `?start=<code>` link and no QR of the code.
-  - The test sends only to the person's own paired chat, through the existing send path, and states the result.
+  - Pairing and connecting stay credential acts.
+  - Saving the token stays CSRF-only, with the token in a secret input that is never echoed.
+  - The pairing code never goes in a URL or QR (D4).
+  - `forceSensitive` pages stay script-free.
 - **Tests:**
-  - HTTP: the test route refuses a viewer and someone else's pairing, and sends one message to the caller's own
-    binding (fake bot).
-  - `src/telegram-settings.test.ts`: one case that no rendered link contains the pairing code.
-- **Depends on:** S7.
+  - `telegram-settings.test.ts`: one case that no rendered link contains the pairing code.
+  - HTTP: the pairing response is still script-free (no `<script>`).
+- **Prerequisite:** S7.
 
-### S9. Agents and models, finished (wave 4)
+### S9. Agents and models (wave 4)
 - **User value:**
-  - One page answers "which agent builds, how it's paid, which model does what".
-  - Sign-in method words agree everywhere: "Your Claude plan" or "API key".
-  - The lead's separate key form becomes a link to AI providers.
-  - The lead name field renders properly.
-  - Tools asks for the password *after* you pick a tool, and its secret fields stop inviting password managers.
-- **Files:** `src/settings-groups/agents.ts`, `src/server/render-settings.ts` (`leadSettingsHtml`, `leadConfigForm`),
-  `src/tools-ui.ts`, `src/models-ui.ts` (copy only).
-- **Pre-check:** confirm the plan page shows the task size and the model. The sizing copy says "you see the size and
-  model on the plan before you approve". If the plan page doesn't show them, change the copy, or file the plan-page
-  change as a follow-up. Never ship the claim untrue.
-- **Security:** the lead's own key path keeps its proof until it is removed. Removing it must not leave a stored key
-  reachable: the existing key stays usable, readable only from AI providers.
-- **Tests:** HTTP: the Tools connect form still refuses without proof. The journey covers the Agents page.
-- **Depends on:** S7. Runs beside S8.
+  - One page answers which agent builds, how it's paid, and which model does what.
+  - Sign-in words agree: "Your Claude plan" or "API key".
+  - The lead's own key controls stay where they are, clearly labelled "The lead's own key", not merged into AI
+    providers.
+  - The lead's name field renders properly.
+  - Tools asks for the password only after you pick a tool.
+  - Secret fields stop inviting password managers.
+- **Files:**
+  - `src/settings-groups/agents.ts`
+  - `src/server/render-settings.ts` (`leadSettingsHtml`, `leadConfigForm`; rendering only)
+  - `src/tools-ui.ts` (rendering only; the field names and the `shown` digest stay the same)
+  - `src/models-ui.ts` (copy)
+- **Pre-check:** confirm the plan page shows the task's size and model. If it doesn't, change the sizing copy so it
+  doesn't promise that.
+- **Security:** the lead key's storage, precedence, rotation and removal are unchanged. Nothing is copied between
+  stores.
+- **Tests:**
+  - HTTP: Tools connect without proof is still refused.
+  - A journey step file.
+- **Prerequisite:** S7.
 
-### S10. Chat apps and alerts, finished (wave 4)
-- **User value:**
-  - Slack, Discord and Teams follow the same token → pair → test layout as Telegram.
-  - Email is one closed row, with Google first. The SMTP username stops pairing with a password field, so a password
-    manager can't put your Toolroll password into it.
-  - The Tailscale row gets **Check again**.
-  - The Integrations page's duplicate chat-app list is gone.
-- **Files:** `src/settings-groups/alerts.ts`, `src/slack-settings.ts`, `src/discord-settings.ts`,
-  `src/teams-settings.ts`, `src/integrations-ui.ts`.
-- **Security:** connect, pair and alerts stay credential acts. SMTP and Google secrets use the secret input. No route
-  changes.
-- **Tests:** the journey. One HTTP case: the email form's username field is not `autocomplete="username"`.
-- **Depends on:** S7. Runs beside S8 and S9.
-
-### S11. General (wave 4)
+### S10. General (wave 4)
 - **User value:**
   - Appearance in one place.
-  - The accent becomes "Customize accent": up to 6 presets and a hex field. The rainbow plane and the 31 swatches go.
-  - "Password remembered · 15 min [Forget]" and "Chime" move out of the sidebar into General, and into the account
-    menu under your name.
-- **Files:** `src/settings-groups/general.ts`, `src/accent-colors.ts` (preset list), `src/browser/app.tsx` (sidebar
-  chips → account menu).
-- **Security:** Forget keeps its route (`/session/forget-password`) and its effect. Theme and accent stay cookies.
-- **Tests:** `serve.sidebar.test.ts`: one case saying the fresh chip is reachable from the account menu and Forget still
-  ends the window.
-- **Depends on:** S5 (`accent-colors.ts`), S7. Runs beside S8–S10.
-
-### S12. Guided `/setup` (wave 5)
-- **User value:**
-  - A new owner goes from install to a first planned task in about 6 steps (the `up` path) or 8 (the `serve` path),
-    down from 9–11 and 16–19.
-  - No CLI command after install, except the provider's own sign-in.
-  - "Sized by job" is applied.
-  - The `up` password is shown once.
-  - Every step can be skipped and says what skipping costs.
-- **Routes:**
-  - `GET /setup`, which redirects to the first open step.
-  - `GET /setup/{password,project,agent,phone,task}`: approver; `limited: "deny"`; sensitive on `password` and `agent`.
-  - `POST /setup/skip` (`step=`), cookie only, act scope. It records the skip and nothing else.
-  - Writes reuse existing POSTs, each with `return=/setup/<next>`:
-    - `/projects/open`;
-    - `/control/setup-preview` then `/control/setup-approve` (builder + Sized by job, through #270's `approveSetup`);
-    - `/settings/telegram-token` and `/settings/telegram/pair`;
-    - push enrolment;
-    - task creation.
-- **The steps:**
-  1. **Password.**
-     - `serve` path: "Password set" is already done; it offers Passwordless as a link.
-     - `up` path: it shows the generated password **once**, with Copy and a password-manager save prompt (a form with
-       the username plus `autocomplete="new-password"`), and "I've saved it" to continue (decision D2).
-  2. **Project.** Repos under the projects folder, with the current one preselected. GitHub and paste-a-link sit under
-     a disclosure.
-  3. **Agent and models.**
-     - The builder is a radio list with the sign-in state beside each option, replacing the 9 ink buttons in
-       `control-ui.ts`. The common three come first; the rest are under "Something else".
-     - The models card shows Sized by job (recommended) or Opus for everything, with the size table.
-     - "Use Sized by job and continue" is the existing preview, then approve.
-     - If the provider can't take the preset, the step blocks and says why in plain words.
-     - Not signed in: the exact command with Copy, and **Check again**, which is the existing
-       `POST /settings/connection/check`.
-     - No builder connected (`serve`): Start a builder (S4's section).
-  4. **Phone (optional).** Telegram (S8's step renderer), or This device (push), or Skip.
-  5. **First task.** `firstTaskSuggestions` plus a text box → **Plan it**, which lands on the task page.
-- **Landing:**
-  - `/` sends an approver to `/setup` while setup has open steps that weren't skipped and nothing has been filed yet.
-    This is in `pages.ts` (home).
-  - Signup already lands on `/`.
-  - The `up` one-time link (`people-tokens.ts:345`) lands on `/` instead of `/chat`.
+  - "Customize accent" offers up to 6 presets plus a hex field.
+  - The remembered-password chip with Forget, and the chime, move from the sidebar to General and the account menu.
 - **Files:**
-  - New `src/server/setup.ts` (`createSetupHandlers`) and new `src/setup-ui.ts`.
-  - `src/first-run.ts`: setup facts. The agent step is done only when the agent is signed in **and** a builder is
-    connected; models resolved is its own fact.
-  - `src/control-ui.ts`: builder radio list and shared model names.
-  - `src/server/settings.ts`: `controlAct` honours a `return` limited to `/setup/*` through `safeReturn`, edited in
-    place.
-  - `src/server/route-table.ts`, `src/server/pages.ts` (home), `src/server/people-tokens.ts` (the once-link target).
-  - `src/serve.ts`: registration.
-- **Security:**
-  - GET `/setup/*` only reads: no agent probes on GET, which reads the cached check, and no nonce minting. Approval
-    nonces are minted only by the existing preview POST, which restates the terms.
-  - Every write goes through its existing route with its existing proof. `/setup` adds no way to apply models or pick
-    a builder.
-  - `return` is accepted only for `/setup/...` paths (`safeReturn` plus a prefix check). Anything else falls back to
-    the handler's own page.
-  - **The `up` password reveal** reads `up-login.txt` on GET and shows it only if all of these hold:
-    - the request is from this computer (`fromThisComputer`);
-    - the session belongs to the account named in the file;
-    - the file still verifies against that account's password hash (a stale file shows nothing);
-    - the response is `no-store` and sensitive;
-    - it is never logged and never in a URL.
+  - `src/settings-groups/general.ts`
+  - `src/accent-colors.ts` (the preset list; **a saved custom colour keeps working**)
+  - `src/browser/app.tsx`
+  - `src/serve.sidebar.test.ts`
+- **Security:** Forget keeps its route and its effect. Theme and accent stay in cookies.
+- **Tests:** one sidebar case: Forget is reachable from the account menu and still ends the window.
+- **Prerequisites:** S5, S7.
 
-    It shows nothing for a remote or SSO session. Reading a file on GET counts as a read under `get-quiet`; confirm the
-    quiet-world harness allows it.
-  - Step 3's "No password needed" line appears only when the server's own proof would accept an empty field:
-    Passwordless now, or S18 if approved.
-  - Skips record nothing security-relevant (decision D8).
-- **Tests:**
-  - HTTP:
-    - `/` lands an approver on `/setup` on a fresh install and on `/chat` once a task exists;
-    - the password reveal refuses a non-local request, another account, and a file whose password doesn't verify;
-    - `return=https://…` and `return=/settings` are ignored;
-    - completing step 3 through the wizard leaves the same models rows as `/control` does (one case in
-      `serve.models.test.ts`).
-  - `src/first-run.test.ts`: one case saying the agent step isn't done without a connected builder.
-  - `password-freshness.test.ts` must pass. If `approveSetup` or a prover is mentioned anywhere new, the pin changes,
-    and the PR names it.
-  - Journey: the whole `serve`-path walk at 1440 and 390, plus a skip on every step.
-- **Depends on:** S3 (`people-tokens.ts`), S4 (builder section, model names), S8 (Telegram step, `settings.ts`,
-  `route-table.ts`).
+### S11. Guided `/setup` (wave 5)
+- **User value:**
+  - A new owner gets from install to a first planned task in far fewer steps.
+  - Sized by job is applied.
+  - The `up` password is easy to find.
+  - Every step except creating the account can be skipped, and the page says what skipping costs.
+
+**Who sees it.**
+- `/setup` is for a browser session (`via: "cookie"`) that is not restricted and has installation access, on a
+  non-demo installation that hasn't had its first result.
+- Everyone else keeps today's landing: restricted accounts and tokens go to `/work`, everyone else to `/chat`.
+- `/` sends an eligible person to `/setup` until each step is either done or skipped by that person.
+
+**Steps.** A closed set of ids, `password | project | agent | phone | task`. Each maps to the **constant** path
+`/setup/<id>`. Forms post `step=<id>`, never a path.
+
+- **Password.** Creating the account (signup, or `up`'s account) happens before `/setup` and can't be skipped. This
+  step only says where the password is:
+  - On `serve`: you just set it.
+  - On `up`: "It's saved on the computer running Toolroll. In a terminal there, run `cat ~/…/up-login.txt`". The path
+    is shown only on a request from this computer.
+  - A link to Passwordless.
+  - No secret appears on the page.
+- **Project.** Repositories under the projects folder, with the current one preselected → the existing
+  `/projects/open`.
+- **Agent and models.**
+  - The builder is a radio list with each one's sign-in state. This replaces the 9 ink buttons in `control-ui.ts`.
+  - Models: Sized by job (recommended) or Opus for everything.
+  - "Continue" posts to the existing `/control/setup-preview`. Its review page (`setupPreviewHtml`) carries
+    `step=agent` into `/control/setup-approve`. Only on **success** does `controlAct` send the person to
+    `/setup/phone`.
+  - A consumed or stale nonce goes back to a fresh preview.
+  - If the provider can't take the preset, or the person isn't an instance operator, the step blocks and gives the
+    exact reason.
+  - Not signed in: the command, plus **Check again** (the existing `/settings/connection/check`).
+  - No builder: Start a builder (S4). For `serve`, the page says this needs `toolroll up` in a terminal. It doesn't
+    promise "no CLI after install".
+- **Phone.**
+  - Telegram goes through S8's steps. The pairing code stays on its own script-free response page, which gets a
+    separate **Continue setup** link (a constant path), shown only when `step=phone` was posted.
+  - Push posts to the existing `/push/subscribe` with `step=phone`. On success it goes to `/setup/task`.
+- **First task.** `firstTaskSuggestions` plus a text box → the existing task creation → the task page.
+
+**Skips.**
+- `POST /setup/skip` with `step=<id>` records a skip **bound to the signed-in account**.
+- A skip changes only what is shown. It never counts as done for models, builder, approval or readiness.
+- A skip can be undone ("Un-skip" on the checklist).
+- When everything left has been skipped, the person lands on `/chat` with the "Before your first task" checklist
+  (S16).
+- `/setup` can always be reopened from the hub ("Finish setup") while any step is open.
+- Storage (D8): one record per account in the store, using the next free schema version if one is needed. Only the
+  setup and checklist modules read it, and a static test pins that.
+
+**Routes.**
+- `GET /setup` and `GET /setup/{password,project,agent,phone,task}`: cookie callers, approver, `limited: "deny"`.
+  `needsProject: false` on `/setup`, `password`, `project` and `phone`.
+- `POST /setup/skip`: cookie, act scope.
+- `/setup` is added to `LOGIN_RETURN_PAGES` on purpose.
+
+**Files.**
+- New: `src/server/setup.ts`, `src/setup-ui.ts`, `src/setup-steps.ts` (id → path), `scripts/settings-journey/setup.mjs`.
+- `src/server/route-table.ts`
+- `src/server/http.ts` (login return)
+- `src/contracts/console-api.ts` (`step` on the project-open, setup, push and Telegram-pair contracts)
+- `src/control-ui.ts` (`setupPreviewHtml` carries `step`; the builder radio list; model names)
+- `src/server/settings.ts` (`controlAct`'s success target, in place, with no new closures before pinned ones)
+- `src/server/chat.ts` (`pushSubscribe`'s success target, in place)
+- `src/telegram-settings.ts` (the Continue setup link)
+- `src/server/pages.ts` (`homeRedirect`, and the `projects.open` success target)
+- `src/server/people-tokens.ts` (the once-link lands on `/`)
+- `src/first-run.ts` (setup facts: the agent step is done only when signed in **and** a builder is connected; models
+  resolved)
+- `src/serve.ts` (registration and the builder-connected facts)
+- The store module for the skip record: new code at the end of the file, plus a migration if needed.
+- `route-roles-http.test.ts`, `get-quiet.test.ts`, `first-run.test.ts`
+
+**Security.**
+- GET `/setup/*` only reads. Agent checks are cached, and no nonce is minted on a GET.
+- Every write goes through its existing route and proof.
+- A step id outside the set is refused. Destinations are constants: no prefix matching, nothing to escape with `..`.
+- Callers that aren't the wizard keep their destinations when `step` is absent.
+- `password-freshness.test.ts` must pass, and any pin change is named in the PR.
+
+**Tests (HTTP).**
+- Landing:
+  - a fresh install goes to `/setup`;
+  - a restricted account and a token still go to `/work`;
+  - a demo installation goes to `/chat`;
+  - an installation with a first result goes to `/chat`.
+- Steps:
+  - `step=../settings` and unknown ids are refused;
+  - a missing `step` keeps today's target;
+  - a consumed nonce goes back to preview.
+- Models: the rows written match the `/control` path (one case added in `serve.models.test.ts`).
+- Skips:
+  - skipping models still leaves plans unapprovable;
+  - one account's skip doesn't affect another.
+- The pairing response stays script-free and carries the Continue link only with `step=phone`.
+- A sign-in with `return=/setup` lands there.
+
+**Prerequisites:** S3, S4, S8.
+
+### S12. System (wave 5)
+- **User value:**
+  - One page shows builders (with Start a builder), the version and updates (in one place), the last backup, disk use
+    and retention.
+  - Plain words replace "repair turns", "re-reserve" and "probed on the worker".
+  - Monitoring placeholders say `toolroll`.
+  - Integrations stays a status page linked from here. Its "Send test" becomes "Check connection".
+- **Files:**
+  - `src/settings-groups/system.ts`
+  - `src/server/render-pages.ts`
+  - `src/server/render-settings.ts` (`capsPage`)
+  - `src/monitoring-ui.ts`
+  - `src/toolroll-update-ui.ts`
+  - `src/integrations-ui.ts` (labels)
+  - `src/needs-you.ts`, `src/browser-crew.ts` (point to `/settings/system#builder`; `/system` keeps a link)
+- **Security:** read-only status. Registering and retiring workers is unchanged.
+- **Tests:** update the existing no-worker link case; a journey step file.
+- **Prerequisites:** S4, S9 (`render-settings.ts`).
 
 ### S13. Approvals and safety (wave 6)
-- **User value:** "how much runs without asking" is answered on one page, in plain words.
-  - Defaults come first, then who approves, then limits, then per project.
+- **User value:**
+  - "How much runs without asking" is answered on one page.
   - One sentence says which setting wins.
-  - `/mode` loses "touchpoints", "publication grant" and "my filings", and its select options become short labels
-    with the explanation on their own line, so nothing is cut off on a phone.
-  - Two password fields per page become one dialog.
-- **Files:** `src/settings-groups/safety.ts`, `src/approval-rules-ui.ts`, `src/policy-ui.ts`, `src/server/settings.ts`
-  (`modePage` copy, in place).
+  - `/mode` loses "touchpoints", "publication grant" and "my filings". Its options get short labels with the
+    explanation on its own line.
+  - The permission default, approval rules and policy handlers move to inline field errors.
+- **Files:**
+  - `src/settings-groups/safety.ts`
+  - `src/approval-rules-ui.ts`
+  - `src/policy-ui.ts`
+  - `src/server/settings.ts`, in place: `modePage` copy, and the validation responses of `approvalSave`,
+    `policySave` and `permissionDefaultSave`
 - **Security:**
-  - Full access as a permission default still needs the password; narrowing doesn't. That rule is unchanged.
-  - Signing a mode with chat approval stays a credential act, and the signed terms stay fully visible before consent.
-  - The mode's digest-bound fields are unchanged. Only labels change, and the digest covers values, not words: check
-    this.
-- **Tests:** HTTP: `/mode/sign` refuses without proof, and its digest is unchanged for the same choices. One case added
-  to the existing mode test.
-- **Depends on:** S12 (`settings.ts`).
+  - Full access still needs the password.
+  - Signing a mode with chat approval stays a credential act, with its full terms visible.
+  - The mode digest covers values, not labels. Check this and pin it.
+- **Tests (HTTP):**
+  - `/mode/sign` refuses without proof.
+  - The same choices give the same digest.
+  - A policy validation error returns 422 with the values kept.
+- **Prerequisite:** S11 (`settings.ts`).
 
 ### S14. People and sign-in (wave 6)
 - **User value:**
-  - A people list (name, role, projects, last active, a ⋯ menu), with no destructive button first.
-  - **Invite someone** opens a dialog and shows the link with Copy after the password.
-  - One set of role names everywhere: "Can view" and "Can approve".
-  - SSO warns when the console's address is loopback.
-- **Files:** `src/settings-groups/people.ts`, `src/server/render-people.ts`, `src/server/people-tokens.ts`
-  (`peoplePage` render data only), `src/sso-ui.ts`.
-- **Security:** invite, widen access and SSO stay credential acts. Remove and revoke keep their proofs. Role
-  *names* change; role *values* and checks don't.
-- **Tests:** HTTP: an invite without a typed password is refused even under Passwordless (one case in
-  `serve.passwordless.test.ts`).
-- **Depends on:** S3 and S12 (`people-tokens.ts`). Runs beside S13.
+  - A people list (name, role, projects, last active, ⋯ menu). The first button is no longer a destructive one.
+  - **Invite someone** opens a form whose link shows on its existing script-free page.
+  - Role names "Can view" and "Can manage and approve". Installation-wide authority is stated separately where it is
+    granted.
+  - SSO warns when the address is loopback.
+- **Files:**
+  - `src/settings-groups/people.ts`
+  - `src/server/render-people.ts`
+  - `src/server/people-tokens.ts` (render data only)
+  - `src/sso-ui.ts`
+  - `src/serve.passwordless.test.ts`
+- **Security:**
+  - Inviting, widening access and SSO stay credential acts.
+  - Role names change in the UI only; machine and CLI values stay the same.
+- **Tests (HTTP):**
+  - An invite without a typed password is refused under Passwordless.
+  - A viewer still reaches their own People and Sessions information.
+- **Prerequisites:** S3, S11 (`people-tokens.ts`).
 
 ### S15. Projects (wave 6)
 - **User value:**
-  - One row per project, with Project settings, Checks, Pull requests and Tools.
-  - The project page shows its name with the path muted, and has one primary action.
+  - One row per project.
+  - The project page shows the name with the path muted, and has one primary action.
   - Radio groups get legends.
-  - Incoming webhooks are listed here.
 - **Files:** `src/settings-groups/projects.ts`, `src/project-delete-ui.ts`, `src/check-levels-ui.ts`,
-  `src/pull-request-ui.ts`.
-- **Security:** network, writes, check access and sandbox stay credential acts. Delete keeps typing the name plus the
-  password.
+  `src/pull-request-ui.ts`. Rendering only; the handlers keep `sayTo` with anchors.
+- **Security:**
+  - Network, writes, check access and sandbox stay credential acts.
+  - Widening check access still needs the password typed now by an operator.
+  - Delete still needs the typed name and the password.
 - **Tests:** the journey. No new routes.
-- **Depends on:** S7. Runs beside S13 and S14.
+- **Prerequisite:** S7.
 
-### S16. System (wave 5)
+### S16. "Before your first task" on `/chat` (wave 6)
 - **User value:**
-  - One page shows builders (with Start a builder), the version and updates (one place, not two), last backup, disk
-    use and retention.
-  - Plain words replace "repair turns", "re-reserve" and "probed on the worker".
-  - Monitoring placeholders say `toolroll`.
+  - Someone who skipped steps sees only the open ones, as needs-you rows.
+  - Each row has one verb that opens its constant `/setup/<id>`. Skipped rows offer Un-skip.
+  - "Write your first task" stays locked until models and a builder are ready.
+  - The checklist goes away after the first result.
 - **Files:**
-  - `src/settings-groups/system.ts`.
-  - `src/server/render-pages.ts`: `/system` and Fleet copy; the `#builder` section moves here, and `/system` keeps
-    a link to it.
-  - `src/server/render-settings.ts` (`capsPage`).
-  - `src/monitoring-ui.ts`, `src/toolroll-update-ui.ts`.
-  - `src/needs-you.ts` and `src/browser-crew.ts`, re-pointed to `/settings/system#builder`.
-- **Security:** read-only status. Register and retire a worker are unchanged (credential act).
-- **Tests:** the journey, and one link-target case in the existing no-worker check.
-- **Depends on:** S4, and S9 (`render-settings.ts`).
+  - `src/first-run.ts` (the filter)
+  - `src/browser/first-run.tsx`
+  - `src/server/chat.ts` (`chatFirstRun` only)
+  - `src/first-run.test.ts`
+- **Security:** read-only. A skip never unlocks anything.
+- **Tests:** a filter table:
+  - done steps are hidden;
+  - a skipped step still shows as open;
+  - the task step stays locked until models and a builder are both done.
+- **Prerequisite:** S11.
 
-### S17. "Before your first task" on `/chat` (wave 6)
-- **User value:** someone who skipped part of setup sees only the steps still open, as needs-you rows, each with one
-  verb that opens its `/setup` step. "Write your first task" waits until models and a builder are ready. It retires
-  after the first result, as today.
-- **Files:** `src/first-run.ts` (filter), `src/browser/first-run.tsx`, `src/server/chat.ts` (`chatFirstRun`).
-- **Security:** read-only. `chat.ts` carries freshness pins, so edit inside `chatFirstRun` only.
-- **Tests:** `src/first-run.test.ts`: one table case for the filter (done steps hidden; task step locked until models
-  and builder are both done).
-- **Depends on:** S12. Runs beside S13–S16.
+## 6. Verification plan
 
-### S18. Remembered password for settings saves (wave 7, only if the owner says yes to D1)
-- **User value:** within 15 minutes of typing your password on this computer, a settings Save stops asking again,
-  including setup step 3's "you set it 2 minutes ago".
-- **Files:**
-  - `src/server/route-table.ts`: `freshness: "allowlist"` on a closed list of **non-credential, non-widening** settings
-    saves. Proposed list: models apply, spend budget, quality default, notification settings, retention, backups.
-  - Each listed handler wraps its proof in `withFreshness(...)`.
-  - `src/password-freshness.test.ts`: new pins.
-- **Security:** this widens what a remembered session can do, so it needs Codex review before merge.
-  - Excluded: credential acts, Full access, anything that widens a grant or an approval scope, and Passwordless
-    itself.
-  - Only on direct local requests, with the same window, the same Forget, and the check made at the moment of the act
-    (the existing `freshnessFor` rules).
-- **Tests:** the existing freshness table gains one row per new route (allowed when local and fresh; refused when
-  remote, stale, after Forget, or for another person), and the allowlist pin is updated.
+- **Every PR runs its own step files** from S1's journey, at 1440 and 390, with the real scroller. Unrolled shots are
+  extra. It also checks:
+  - a no-JS pass on each form it changed;
+  - long errors;
+  - keyboard focus;
+  - that the sticky save doesn't overlap the focused control.
 
-## 6. Running order
+  It does not run every settings page on every small PR.
+- **Focused HTTP cases that the generated suites don't reach:**
+  - one-time POST responses (pairing code, invite link, token): script-free and `no-store`;
+  - a first install, and who is eligible for landing;
+  - a missing or foreign CSRF token on newly placed forms;
+  - SSO one-use re-check vs Passwordless vs a typed credential, on at least one row of each proof kind;
+  - repeated and expired previews (setup, models, mode);
+  - skipped steps;
+  - compatibility redirects, with parameters and notices kept.
+- **Invariants that must stay true wherever a slice touches them:**
+  - creating the first account happens all at once, with the five-try lockout;
+  - the freshness allowlist stays at three routes;
+  - tripwire pins;
+  - `get-quiet` passes for every GET.
+
+## 7. Running order
 
 | Wave | Slices, run in parallel | Waits for |
 |---|---|---|
-| 1 | S1 harness · S2 frame + kit · S3 first account · S4 builder dead end + model names | #270 on main |
+| 0 | S1 stage 1 (harness interface) | #270 on main |
+| 1 | S2 frame + kit · S3 first account · S4 first-run dead ends | S1 stage 1 |
 | 2 | S5 tokens (once the colour doc lands) · S6 Spend | S2 |
 | 3 | S7 hub + groups | S2, S6 (S5 optional) |
-| 4 | S8 Telegram · S9 Agents and models · S10 Chat apps and alerts · S11 General | S7 (S11 also S5) |
-| 5 | S12 `/setup` · S16 System | S8 (S12); S4, S9 (S16) |
-| 6 | S13 Safety · S14 People · S15 Projects · S17 checklist | S12 (S13, S14, S17); S7 (S15) |
-| 7 | S18 remembered password (owner-gated) | S12, S13 |
+| 4 | S8 chat apps and alerts · S9 Agents and models · S10 General | S7 (S10 also S5) |
+| 5 | S11 `/setup` · S12 System | S3, S4, S8 (S11); S4, S9 (S12) |
+| 6 | S13 Safety · S14 People · S15 Projects · S16 checklist | S11 (S13, S14, S16); S7 (S15) |
 
-S16 sits in wave 5 because it needs only S4 and S9, and it shares no file with S12. Within each wave I checked that
-the file lists don't overlap. The files that force an order are `src/server/settings.ts` (S6 → S7 → S8 → S12 → S13),
-`src/server/route-table.ts` (S7 → S8 → S12 → S18), `src/server/render-settings.ts` (S7 → S9 → S16), `app.tsx` and
-`workspace.css` (S2 → S5 → S11), and `people-tokens.ts` (S3 → S12 → S14). If two slices in a wave turn out to need
-the same file, the later one waits. Don't resolve it with a cross-PR merge.
+Files that force an order:
 
-## 7. Owner decisions (recommendations in bold)
+| File | Order |
+|---|---|
+| `src/server/settings.ts` | S6 → S7 → S8 → S11 → S13 |
+| `src/server/route-table.ts` | S7 → S11 |
+| `src/server/render-settings.ts` | S7 → S9 → S12 |
+| `src/browser/app.tsx` and `workspace.css` | S2 → S5 → S10 |
+| `src/server/people-tokens.ts` | S3 → S11 → S14 |
+| `src/telegram-settings.ts` | S8 → S11 |
+| `src/first-run.ts` | S11 → S16 |
+| `src/needs-you.ts` and `src/browser-crew.ts` | S4 → S12 |
+| `src/accent-colors.ts` | S5 → S10 |
+| `src/contracts/console-api.ts` | S2 → S7 → S11 |
+| test `route-roles-http` | S7 → S11 |
+| test `get-quiet` | S7 → S11 |
+| test `serve.sidebar` | S2 → S10 |
 
-- **D1. Remembered password on settings saves.** Today the 15-minute remember covers only approving a plan and chat.
-  The dialog can honour Passwordless without changing any proof, but honouring the remember on settings saves
-  extends a proof. **Ship the dialog without it (S2 onwards), and decide S18 separately: yes for a closed
-  non-credential list, after a Codex review.**
-- **D2. The `up` password.** **Show it once in `/setup` step 1, with the local-only, own-account, still-valid rules in
-  S12.** Other options are printing it in the terminal (it was kept out of scrollback on purpose) or leaving it in the
-  file. Letting the person choose a new password without typing the old one would turn the one-time link into a
-  credential act, so that one is off the table.
-- **D3. Where the stragglers live.** **As in §3: Knowledge and Learning under Agents and models; starter flows stay
-  on the Flows page with no Settings tile; Integrations splits (chat apps → Chat apps and alerts, webhooks → Projects)
-  and `/settings/integrations` redirects; Operating mode under Approvals and safety, keeping `/mode` for the signing
-  ceremony.**
-- **D4. Telegram one-tap pairing.** A `t.me/<bot>?start=<code>` link or a QR code would put the pairing code (a
-  credential) in a URL. **No: Copy the `/pair` code, plus an "Open the bot" link without the code.**
-- **D5. Accent.** **Amber is fixed for needs-you and isn't themeable. The accent changes only buttons and focus, with
-  up to 6 presets and a hex field under General → Appearance.** The other option is removing the picker.
-- **D6. Save bar scope.** **One section at a time per page, each saved to its own route with its own proof.** A
-  multi-section batch (Direction 2's idea) would need a new combined endpoint and a combined proof.
-- **D7. Cents.** **Change `usd()` everywhere: cents whenever the amount isn't whole dollars ($12.57, $50).** This also
-  fixes budget alert texts that say "$13 of $13". The alternative is cents on Spend pages only.
-- **D8. Remembering skipped setup steps.** **Work out "done" from live facts. Store only "skipped" per account in the
-  existing instance settings ledger if a new key needs no migration, and fall back to a cookie otherwise. `/` opens
-  `/setup` only until the first task is filed.**
-- **D9. Spend titles.** **`/settings/spend` is "Spend" (the group: this month plus limits). `/spend` becomes "Spend
-  report".**
-- **D10. Crew sheet on settings pages.** **Off (DESIGN.md's Single frame). The sidebar count still carries
-  needs-you.**
-- **D11. Role names.** **"Can view" and "Can approve" everywhere, replacing viewer/operator/approves/watches/instance
-  operator in the UI. Role values in the database don't change.**
-- **D12. Outline-button ring and blur shadow** (audit C M2, a DESIGN.md "Hairline first" choice). **Leave it out of
-  this arc.** It is a design-system change, and DESIGN.md should decide it, not a settings slice.
-- **D13. `serve` and builders.** **Link to Start a builder now (S4).** Having `serve` start a local builder by itself
-  is a separate arc.
+If a slice finds it needs a file another slice in its wave owns, it waits. Never merge across PRs to get around it.
 
-## 8. Not in this plan
+## 8. Owner decisions
 
-- The macOS desktop app's setup.
-- Terminal `up` and `demo` output, beyond D2.
-- Connected states that need real tokens or outside services. Their pages follow the same pattern, but nothing here
-  checks them against a real service.
-- The plan-page tier display, beyond S9's pre-check.
-- `/settings/slack/manifest` (a download).
+| | Decision | Status | Outcome |
+|---|---|---|---|
+| D1 | Remembered password on settings saves | Settled | **Not in this arc** (Later). The dialog asks exactly what each action requires today. |
+| D2 | The `up` password | Settled | **No web reveal.** `up` always prints the path and the `cat` command, and setup step 1 says the same in words. A one-use bootstrap capability is Later. |
+| D3 | Where the leftover pages go | Recommended | **As in §3.** Knowledge and Learning go under Agents and models. Starter flows stay on Flows. Integrations stays a status page linked from System. `/mode` stays for signing, under Approvals and safety. |
+| D4 | Telegram pairing links | Settled | **No code in any URL or QR.** Selectable text plus an "Open the bot" link. |
+| D5 | Accent | Recommended | **Amber is fixed for needs-you.** The accent covers buttons and focus only: up to 6 presets plus hex, and saved custom colours keep working. Still to settle before S10: which ink actions stay themeable, because DESIGN.md says every act is ink. |
+| D6 | Saving | Settled | **Save is local to each section.** No lock across sections, no batching. |
+| D7 | Cents | Settled | **Display formatting only.** Storage, JSON and the budget input don't change. |
+| D8 | Skipped steps | Settled | **A per-account record that only changes what is shown, can be undone, and never grants readiness.** Recommended storage is in S11. |
+| D9 | Spend titles | Recommended | **"Spend" for the group, "Spend report" for `/spend`.** |
+| D10 | Crew sheet on settings pages | Recommended | **Off.** No live state comes back to sensitive pages to make up for it. |
+| D11 | Role names | Settled | **"Can view" and "Can manage and approve".** Installation authority is stated separately. Machine values don't change. |
+| D12 | Ring and blur on outline buttons | Recommended | **Defer** to DESIGN.md. |
+| D13 | `serve` and builders | Settled | **Link only.** No "no CLI after install" promise for `serve`, and `serve` doesn't start workers. |
+
+## 9. Later (outside this arc)
+
+- **A one-use bootstrap capability for the `up` password.** It expires, and it is bound to the newly generated
+  credential, the account's generation and the intended local session. A POST with CSRF consumes it atomically. A GET
+  neither reveals it nor consumes it. `up-login.txt` stays, because the CLI uses it. This is a separate security slice
+  with a Codex review.
+- **Remembered password for settings saves**, on a closed list of exact non-credential actions. It needs its own
+  Codex review and pin updates.
+- **One place for credentials:** the lead's `chat-key-*` file and the AI-provider keys, with precedence, migration and
+  removal defined.
+- **Scripted Copy on revealed secrets.** This changes the script-free secret page, so it's a separate security
+  decision.
+- **Endpoints that send a real test message** to chat apps, with ownership tests, and a Tailscale check-again endpoint.
+- **Breaking up Integrations**, once each of its capabilities has a home.
+- **Other:** `serve` starting a local builder; the outline-button shadow; the macOS app's setup; connected states
+  checked against real services.
+
+## 10. Review round 1 (Codex, on 7dd186c9: NO-GO, 12 findings)
+
+| # | Finding | Checked in code | Outcome |
+|---|---|---|---|
+| 1 | The GET reveal exposes stored passwords and doesn't happen only once | `operate.ts` ~7405 stores a password the person chose; ~8000 prints the path only when the browser fails | **Closed.** Reveal dropped. `up` always prints the path and the `cat` command (S4), and step 1 says it in words. The bootstrap capability moves to Later. |
+| 2 | The dialog's proof model doesn't match the code | `console-api.ts` uses `token` and `password`; quality and notifications are CSRF-only; Telegram's `token` is the bot credential; check access needs a password typed now | **Closed.** Proof inventory added (§4). The kit renders each action's existing contract, and handlers are never normalised. S18 removed. |
+| 3 | Sensitive forms and revealed secrets need different rendering | `serve.ts` ~1580: `forceSensitive` gives a page with no script | **Closed.** Revealed secrets stay script-free with selectable text; scripted Copy is Later. Dialogs keep their field in the server HTML, so the SSO replacement still works. |
+| 4 | The wizard's return flow is incomplete, and the prefix check can be escaped | Preview → approve at `settings.ts` ~1521–1554; push goes back to `/settings` (`chat.ts` ~553); `LOGIN_RETURN_PAGES` doesn't include `/setup` | **Closed.** Step ids map to constant paths. Every transition is listed with its file. The wizard continues only after success. The pairing secret stays on its page with a separate Continue. The login return list is updated on purpose. |
+| 5 | Eligibility and skipping are underspecified | `homeRedirect` sends restricted users to `/work`; GETs default to `needsProject: true` | **Closed.** Eligibility is explicit. `needsProject: false` on the steps before a project exists. Creating the account can't be skipped. Skips are per account, change only what is shown, can be undone, and never grant readiness. The all-skipped destination is defined. |
+| 6 | "Strictest role in the group" removes read access | The Models GET is open to anyone signed in; People and Sessions show a person their own data | **Closed.** Anyone who can read any part gets in, with server-side filtering. Actions keep their own roles. Tests run as operator, viewer, limited approver and token. |
+| 7 | Fixed redirects lose Models parameters and notices | `/settings/models` reads `scope`, `preset`, `switch` and `to`; `sayTo` puts `?problem` after the `#` if the anchor is in the page string | **Closed.** Compatibility map added (§3). Kept parameters are checked by the page that owns them, anchors go through `sayTo`'s argument, and every hub anchor is mapped. |
+| 8 | One 422 rule for everything conflicts with how approvals recover | `controlAct` consumes the nonce before checking the password | **Closed.** 422 only for field validation. Auth, conflict and rate-limit responses are kept. A stale nonce goes back through review. The dialog keeps the submitter and the hidden terms, Cancel posts nothing, and it works without JS. |
+| 9 | Removing the Lead key form strands a separate credential store | `chat-key-<provider>` vs `keys.ts` `keyFileFor` | **Closed.** The Lead key controls stay intact, labelled as the lead's. Combining the stores is Later. |
+| 10 | The Integrations split leaves things out | `integrations-ui.ts` groups; "Send test" is a connection check | **Closed.** Integrations stays a status page linked from System, with accurate labels. No new test-message endpoints. |
+| 11 | The waves rely on incomplete file lists | `chat-settings-page.ts` is shared; S12's return work spans `console-api`, `http`, `control-ui`, `chat` and `serve` | **Closed.** S8 and S10 merged into one slice (now S8). The `/setup` file list is expanded. Each handler change has an owner: S6 for spend; S13 for permission, approval and policy; everything else keeps `sayTo`. S1's interface lands first. Shared test and contract files are in the ordering. |
+| 12 | Verification misses the riskiest paths and over-tests | `post-forms-http` reads only GET pages; `get-quiet` pins pages that are about to redirect | **Closed.** §6 adds focused cases: one-time POST pages, first install, CSRF, SSO vs Passwordless vs credential, stale previews, skips, redirects. The real scroller comes first. Each PR runs only its own pages. `get-quiet` is edited on purpose in S7 and S11. |
+
+Codex's views on D1–D13 are applied:
+- D1 and D2 moved to Later.
+- D6: Save is local to each section.
+- D7: display only.
+- D11: "Can manage and approve".
+- D13: link only.
+- D5: saved custom colours keep working.
