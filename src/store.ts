@@ -762,8 +762,9 @@ export const V141_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
  * named ('' for none), and where the person pointed (route, component, file:line), cleaned, for the task page. An
  * options request (`kind`) also keeps the options file its agent writes (`proposal`, p-<its hex>), set when filed and
  * never read from the request again: whether it went to the project's main checkout from which result (`proposal_state`,
- * `proposal_run`, and why not in `proposal_note`), and what a person decided on it in youiyoux's hub (`decided`,
- * `decided_note`: what Toolroll did about it). New tables only. */
+ * `proposal_run`, and why not in `proposal_note`; `taken`: a file was already there, so it was left and is never read
+ * for a decision), the digest of what was copied apart from what a decision changes (`proposal_digest`), and what a
+ * person decided on it in youiyoux's hub (`decided`, `decided_note`: what Toolroll did about it). New tables only. */
 export const V142_SCHEMA = `
 CREATE TABLE IF NOT EXISTS youiyoux_intake (
   repo        TEXT PRIMARY KEY,
@@ -792,7 +793,8 @@ CREATE TABLE IF NOT EXISTS youiyoux_request (
   source_at     TEXT,
   kind          TEXT NOT NULL DEFAULT 'change' CHECK (kind IN ('change','options')),
   proposal      TEXT CHECK (proposal IS NULL OR (length(proposal) = 12 AND proposal GLOB 'p-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]')),
-  proposal_state TEXT CHECK (proposal_state IS NULL OR proposal_state IN ('copied','kept','missing','unsafe','retry')),
+  proposal_state TEXT CHECK (proposal_state IS NULL OR proposal_state IN ('copied','taken','missing','unsafe','retry')),
+  proposal_digest TEXT CHECK (proposal_digest IS NULL OR (length(proposal_digest) = 64 AND proposal_digest NOT GLOB '*[^0-9a-f]*')),
   proposal_run  INTEGER,
   proposal_note TEXT,
   proposal_at   TEXT,
@@ -803,7 +805,7 @@ CREATE TABLE IF NOT EXISTS youiyoux_request (
   UNIQUE (task_id),
   CHECK ((kind = 'options') = (proposal IS NOT NULL)),
   CHECK (proposal_state IS NULL OR kind = 'options'),
-  CHECK (decided IS NULL OR coalesce(proposal_state IN ('copied','kept'), 0))
+  CHECK (decided IS NULL OR coalesce(proposal_state = 'copied' AND proposal_digest IS NOT NULL, 0))
 );
 `;
 

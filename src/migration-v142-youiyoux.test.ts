@@ -59,7 +59,13 @@ test.each([141, -141])("v%s: youiyoux's intake and request tables are added; no 
   expect(() => set("proposal_state = 'copied'").run("r-3333333333")).toThrow();
   expect(() => set("proposal_state = 'sent'").run("r-5555555555")).toThrow();
   expect(() => set("decided = 'chosen'").run("r-5555555555")).toThrow();
+  // Only Toolroll's own copy, with the digest of what it copied, is ever decided on: never a file that was there first.
+  set("proposal_state = 'taken'").run("r-5555555555");
+  expect(() => set("decided = 'chosen'").run("r-5555555555")).toThrow();
   set("proposal_state = 'copied'").run("r-5555555555");
+  expect(() => set("decided = 'chosen'").run("r-5555555555")).toThrow();
+  expect(() => set("proposal_digest = 'xyz'").run("r-5555555555")).toThrow();
+  set(`proposal_digest = '${"a".repeat(64)}'`).run("r-5555555555");
   expect(() => set("decided = 'picked'").run("r-5555555555")).toThrow();
   set("decided = 'chosen'").run("r-5555555555");
   store.handle.exec("DELETE FROM youiyoux_request; DELETE FROM youiyoux_intake");

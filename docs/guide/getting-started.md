@@ -89,10 +89,12 @@ touches (when youiyoux knew them all) and its requirements.
   your project, and youiyoux's hub shows the options on the Screens canvas.
   It never copies a file that is a link, over 64 KB, not youiyoux's options
   format, already decided or holding a key, and never replaces a file already
-  there; the request's status says why instead. Keep `.youi/proposals` out of
+  there (that task then waits for your review); the request's status says why
+  instead. Keep `.youi/proposals` out of
   `.gitignore`, so the agent's file is part of its result.
 - **Pick in youiyoux, done in Toolroll.** When you pick an option or dismiss
-  them in the hub, Toolroll marks the task complete without merging or
+  them in the hub (on the options Toolroll copied, unchanged), Toolroll marks
+  the task complete without merging or
   publishing its branch, and its history says who decided what. If the task
   would need someone else to complete it (it changed protected files), has a
   failing check, or has a newer result, it stays ready for review and says

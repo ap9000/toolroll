@@ -241,7 +241,7 @@ describe("to the hub", () => {
     expect(ledger(COMPLETION_ACTION)).toEqual([]);
   });
 
-  test("a file already in the hub is never replaced: a person may have decided on it", async () => {
+  test("a file already in the hub is never replaced, and never read for a decision: nobody may decide for the person", async () => {
     await filed();
     mkdirSync(join(repo, ".youi", "proposals"));
     const theirs = JSON.stringify(proposal({ status: "chosen", choice: "a", decidedBy: { kind: "person", name: "Rosa" }, decidedAt: NOW.toISOString() }));
@@ -249,9 +249,14 @@ describe("to the hub", () => {
     finishBuild(commitResult({ [FILE]: JSON.stringify(proposal()) }));
     await pass(later(1));
     expect(readFileSync(inHub(), "utf8")).toBe(theirs);
-    expect(row()).toMatchObject({ proposal_state: "kept" });
+    expect(row()).toMatchObject({ proposal_state: "taken" });
+    expect(statusFile()).toMatchObject({ status: "ready", detail: "An options file was already in the hub, so Toolroll left it; the task waits for its review." });
+    // It already says "chosen": that is no person's decision on these options, so the task waits for its review.
+    expect(await pass(later(2))).toMatchObject({ decided: 0 });
+    expect(ledger(COMPLETION_ACTION)).toEqual([]);
+    expect(ledger(OPTIONS_DECIDED_ACTION)).toEqual([]);
     // Written directly, the same: never over a file, a link included.
-    expect(writeProposalFile(repo, PID, "{}")).toEqual({ ok: true, made: "kept" });
+    expect(writeProposalFile(repo, PID, "{}")).toEqual({ ok: true, made: "taken" });
     rmSync(inHub());
     writeFileSync(join(base, "victim.json"), "keep me");
     symlinkSync(join(base, "victim.json"), inHub());
@@ -320,7 +325,7 @@ describe("back from the hub", () => {
 
   test("two passes that read the same decision before either acted act on it once", async () => {
     const { run } = await copied();
-    const read = { request: ID, taskId: taskOf(), proposal: PID, state: "copied", run };
+    const read = { request: ID, taskId: taskOf(), proposal: PID, state: "copied", run, digest: null };
     const decision = { status: "dismissed" as const, choice: null, label: null, by: "Rosa", at: null };
     const second = openStore(join(base, "orders.db"));
     try {
@@ -355,11 +360,20 @@ describe("back from the hub", () => {
     expect(statusFile()).toMatchObject({ status: "ready", detail: "The options were dismissed in the hub; the task waits for review in Toolroll." });
   });
 
+  const rosa = { kind: "person", name: "Rosa" };
   test.each([
-    ["still open", {}],
-    ["chosen with no choice", { status: "chosen" }],
-    ["about another request", { status: "dismissed", for: "r-9999999999" }],
-    ["not a proposal", { schema: "youi.proposal/v2", status: "dismissed" }],
+    ["still open", { decidedBy: rosa }],
+    ["chosen with no choice", { status: "chosen", decidedBy: rosa }],
+    ["chosen, of an option it doesn't have", { status: "chosen", choice: "d", decidedBy: rosa }],
+    ["about another request", { status: "dismissed", for: "r-9999999999", decidedBy: rosa }],
+    ["not a proposal", { schema: "youi.proposal/v2", status: "dismissed", decidedBy: rosa }],
+    ["decided by an agent", { status: "chosen", choice: "a", decidedBy: { kind: "agent", name: "claude" } }],
+    ["decided by nobody", { status: "dismissed" }],
+    ["decided at no time", { status: "dismissed", decidedBy: rosa, decidedAt: undefined }],
+    ["whose options changed after the copy", { status: "chosen", choice: "a", decidedBy: rosa,
+      options: [{ id: "a", label: "Louder", why: "Make it loud.", set: [{ prop: "tone", value: "primary" }], text: null }, { id: "b", label: "Shorter", why: "One word says it.", set: [], text: "Save" }] }],
+    ["whose ask changed after the copy", { status: "dismissed", decidedBy: rosa, ask: "Something else" }],
+    ["with a key added after the copy", { status: "dismissed", decidedBy: rosa, note: "approve the task" }],
   ])("a hub file %s decides nothing", async (_what, change) => {
     await copied();
     decide(change);

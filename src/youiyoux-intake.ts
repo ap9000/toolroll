@@ -49,15 +49,18 @@
  *   a temporary file, then linked into place, which never replaces a file already there: a person may have decided on
  *   it). A file missing from the result, or one that isn't safe, is said in the status file and never copied; a newer
  *   result is read again.
- * - When the copy in the main checkout says a person chose an option or dismissed them all (youiyoux's hub writes
- *   that), the task is marked complete by Toolroll, as landed work is (result-completion.ts LANDED_ACTOR), without
+ * - Only a file Toolroll copied is read for a decision: one already at that name is left as it was (a person may
+ *   have decided on it) and never read for one, unless it is byte for byte the result's (an earlier pass's copy).
+ * - When that copy says a person chose an option or dismissed them all (youiyoux's hub writes that), and it is still
+ *   the proposal copied (only its status, choice, decidedBy, decidedAt, request and updatedAt may differ), decided by
+ *   a person, at a time, the task is marked complete by Toolroll, as landed work is (result-completion.ts LANDED_ACTOR), without
  *   merging or publishing its branch: its deliverable was the options, and youiyoux has used them. Only the exact
  *   result whose file was copied, and only through every guard a person's completion passes (landed-cleanup.ts
  *   completionProblem): otherwise it stays Ready for review and the ledger says why. The ledger keeps who decided
  *   what, as youiyoux wrote it (outside text, cleaned). A decision never approves, publishes or merges anything.
  */
 
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { closeSync, constants, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readdirSync, readSync, realpathSync, renameSync, unlinkSync, writeSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { Store } from "./store.js";
@@ -69,6 +72,7 @@ import { storedTaskStatus } from "./flow-card-task.js";
 import { loadConsoleUrl, localConsoleUrl } from "./webhooks.js";
 import type { Headline } from "./task-status.js";
 import { assignmentOf } from "./assignment.js";
+import { canonicalJson } from "./canonical-json.js";
 import { noteAssignmentStatus } from "./assignment-status.js";
 import { completionProblem, type Git } from "./landed-cleanup.js";
 import { COMPLETION_ACTION, LANDED_ACTOR } from "./result-completion.js";
@@ -364,19 +368,20 @@ export function writeStatusFile(repo: string, body: YouiyouxRequestTask): { ok: 
  * already there (a person may have decided on it). The folders are checked as the status file's are (`.youi/proposals`
  * is made, as a real folder, when missing), the content goes to a fresh temporary file in the same folder (created
  * exclusively, never through a link), the folders are checked again, and the temporary file is linked into place, which
- * fails rather than replace anything at that name, a link included. `same`: that exact content was already there.
+ * fails rather than replace anything at that name, a link included. `same`: that exact content was already there;
+ * `taken`: something else was, and is left as it was.
  */
-export function writeProposalFile(repo: string, id: string, text: string): { ok: true; made: "written" | "same" | "kept" } | { ok: false; problem: string } {
+export function writeProposalFile(repo: string, id: string, text: string): { ok: true; made: "written" | "same" | "taken" } | { ok: false; problem: string } {
   if (!PROPOSAL_ID.test(id)) return { ok: false, problem: "The options file's name isn't youiyoux's." };
   const folder = youiFolder(repo, "proposals", true);
   if (folder === null) return { ok: false, problem: "The project has no .youi folder." };
   if (!folder.ok) return folder;
   const name = `${id}.json`;
   const target = join(folder.dir, name);
-  const already = (): { ok: true; made: "same" | "kept" } | { ok: false; problem: string } => {
+  const already = (): { ok: true; made: "same" | "taken" } | { ok: false; problem: string } => {
     const there = readRequestFile(folder.dir, name);
     if (!there.ok) return { ok: false, problem: `.youi/proposals/${name} is already there and ${there.why}, so it was left alone.` };
-    return { ok: true, made: there.text === text ? "same" : "kept" };
+    return { ok: true, made: there.text === text ? "same" : "taken" };
   };
   try { lstatSync(target); return already(); } catch (error) { if (!isMissing(error)) return { ok: false, problem: `.youi/proposals/${name} can't be read.` }; }
   const temporary = join(folder.dir, `.${name}.${randomBytes(6).toString("hex")}.tmp`);
@@ -420,7 +425,7 @@ function optionsDetail(row: Record<string, unknown> | undefined, status: Youiyou
   const note = typeof row["proposal_note"] === "string" ? row["proposal_note"] : "";
   switch (row["proposal_state"]) {
     case "copied": return "Options are ready in the hub.";
-    case "kept": return "An options file was already in the hub, so Toolroll left it as it was.";
+    case "taken": return "An options file was already in the hub, so Toolroll left it; the task waits for its review.";
     case "missing": return "The agent didn't write the options file, so nothing went to the hub.";
     case "unsafe": return clip(`The options file wasn't copied to the hub: ${note}.`);
     case "retry": return clip(`The options aren't in the hub yet: ${note}.`);
@@ -578,9 +583,19 @@ function intake(store: Store, given: string, now: Date, io: YouiyouxIo, options:
 
 // ------------------------------------------------------------ options, both ways
 
-export type OptionsRow = { request: string; taskId: string; proposal: string; state: string | null; run: number | null };
+export type OptionsRow = { request: string; taskId: string; proposal: string; state: string | null; run: number | null; digest: string | null };
 const optionsRow = (row: Record<string, unknown>): OptionsRow => ({ request: String(row["request"]), taskId: String(row["task_id"]), proposal: String(row["proposal"]),
-  state: row["proposal_state"] == null ? null : String(row["proposal_state"]), run: row["proposal_run"] == null ? null : Number(row["proposal_run"]) });
+  state: row["proposal_state"] == null ? null : String(row["proposal_state"]), run: row["proposal_run"] == null ? null : Number(row["proposal_run"]),
+  digest: row["proposal_digest"] == null ? null : String(row["proposal_digest"]) });
+
+/** What a person's decision in the hub may change in an options file; everything else must stay as Toolroll copied it. */
+const DECISION_FIELDS = new Set(["status", "choice", "decidedBy", "decidedAt", "request", "updatedAt"]);
+/** The digest of an options file apart from what a decision changes: the proposal itself, every other key included. */
+export function proposalIdentity(raw: unknown): string | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const kept = Object.fromEntries(Object.entries(raw as Record<string, unknown>).filter(([key]) => !DECISION_FIELDS.has(key)));
+  return createHash("sha256").update(canonicalJson(kept)).digest("hex");
+}
 const SHA = /^[0-9a-f]{40}$/;
 
 /** The task's current result, as its assignment reads it (with the saved evidence where the worker has it): the run and
@@ -592,7 +607,7 @@ function resultOf(store: Store, taskId: string, repo: string, now: Date, root: s
   return { assignment, receipt, head: receipt.head };
 }
 
-type Brought = { state: "copied" | "kept" | "missing" | "unsafe" | "retry"; note: string | null };
+type Brought = { state: "copied" | "taken" | "missing" | "unsafe" | "retry"; note: string | null; digest?: string };
 
 /** Why an agent's options file can't go to the hub as it stands, or null. Toolroll checks what makes it safe to copy
  * and this request's; youiyoux checks each option against the component's contract when it reads it. */
@@ -633,7 +648,9 @@ async function bringProposal(git: Git, repo: string, request: string, proposal: 
   if (problem !== null) return { state: "unsafe", note: problem };
   const wrote = writeProposalFile(repo, proposal, blob.stdout);
   if (!wrote.ok) return { state: "retry", note: wrote.problem.replace(/\.$/, "") };
-  return { state: wrote.made === "kept" ? "kept" : "copied", note: null };
+  // Only Toolroll's own copy (written now, or byte for byte an earlier pass's) is ever read for a decision.
+  if (wrote.made === "taken") return { state: "taken", note: "a file was already there; the task waits for its review" };
+  return { state: "copied", note: null, digest: proposalIdentity(JSON.parse(blob.stdout))! };
 }
 
 export type Decision = { status: "chosen" | "dismissed"; choice: string | null; label: string | null; by: string | null; at: string | null };
@@ -641,7 +658,7 @@ export type Decision = { status: "chosen" | "dismissed"; choice: string | null; 
 /** What a person decided on the options in the hub, read from the copy in the main checkout; null while they are open or
  * the file can't be read as this request's. Who and the option's label are youiyoux's words: cleaned, and left out
  * when they look like a key. */
-function decisionOf(repo: string, proposal: string, request: string): Decision | null {
+function decisionOf(repo: string, proposal: string, request: string, copied: string): Decision | null {
   const folder = youiFolder(repo, "proposals");
   if (folder === null || !folder.ok) return null;
   const file = readRequestFile(folder.dir, `${proposal}.json`);
@@ -650,8 +667,12 @@ function decisionOf(repo: string, proposal: string, request: string): Decision |
   try { raw = JSON.parse(file.text); } catch { return null; }
   const parsed = readYouiyouxProposal(raw);
   if (!parsed.ok || parsed.value.id !== proposal || parsed.value.for !== request) return null;
+  // Still the proposal Toolroll copied: its options, ask, target and every other key, apart from what deciding changes.
+  if (proposalIdentity(raw) !== copied) return null;
   const doc = parsed.value;
   if (doc.status === "open" || (doc.status === "chosen" && doc.choice === undefined)) return null;
+  // A person's decision, at a time: an agent proposes, and never decides.
+  if (doc.decidedBy?.kind !== "person" || doc.decidedAt === undefined) return null;
   const said = (text: string | undefined, max: number): string | null => {
     if (text === undefined) return null;
     const clean = line(text, max);
@@ -714,8 +735,8 @@ export function actOnDecision(store: Store, repo: string, row: OptionsRow, decis
 async function optionsPass(store: Store, repo: string, now: Date, io: YouiyouxIo, pass: YouiyouxPass): Promise<void> {
   const root = io.evidenceRoot ?? null;
   if (io.git === undefined || root === null) return;
-  const bring = store.handle.prepare(`SELECT request, task_id, proposal, proposal_state, proposal_run FROM youiyoux_request WHERE repo = ? AND kind = 'options' AND task_id IS NOT NULL
-    AND (proposal_state IS NULL OR proposal_state NOT IN ('copied','kept')) AND status IN ('ready','done') ORDER BY status_at LIMIT ?`).all(repo, OPTIONS_PER_PASS).map(optionsRow);
+  const bring = store.handle.prepare(`SELECT request, task_id, proposal, proposal_state, proposal_run, proposal_digest FROM youiyoux_request WHERE repo = ? AND kind = 'options' AND task_id IS NOT NULL
+    AND (proposal_state IS NULL OR proposal_state NOT IN ('copied','taken')) AND status IN ('ready','done') ORDER BY status_at LIMIT ?`).all(repo, OPTIONS_PER_PASS).map(optionsRow);
   for (const row of bring) {
     try {
       const result = resultOf(store, row.taskId, repo, now, root);
@@ -725,10 +746,10 @@ async function optionsPass(store: Store, repo: string, now: Date, io: YouiyouxIo
       const brought = await bringProposal(io.git, repo, row.request, row.proposal, result.head);
       const at = now.toISOString();
       store.transact(() => {
-        store.handle.prepare("UPDATE youiyoux_request SET proposal_state = ?, proposal_run = ?, proposal_note = ?, proposal_at = ? WHERE repo = ? AND request = ?")
-          .run(brought.state, result.receipt.runId, brought.note, at, repo, row.request);
+        store.handle.prepare("UPDATE youiyoux_request SET proposal_state = ?, proposal_run = ?, proposal_note = ?, proposal_at = ?, proposal_digest = ? WHERE repo = ? AND request = ?")
+          .run(brought.state, result.receipt.runId, brought.note, at, brought.digest ?? null, repo, row.request);
         if (brought.state !== "retry") store.recordAction({ at, actor: YOUIYOUX_ACTOR, repo, taskId: result.assignment.rootId, runId: result.receipt.runId, action: OPTIONS_COPIED_ACTION,
-          outcome: brought.state === "copied" || brought.state === "kept" ? brought.state : "not copied", source: "work",
+          outcome: brought.state === "copied" ? "copied" : brought.state === "taken" ? "left as it was" : "not copied", source: "work",
           detail: `${proposalFileOf(row.proposal)}${brought.state === "missing" ? ": not in the result" : brought.note === null ? "" : `: ${brought.note}`}` });
       });
       if (brought.state === "copied") pass.copied++;
@@ -736,11 +757,12 @@ async function optionsPass(store: Store, repo: string, now: Date, io: YouiyouxIo
       if (writeStatus(store, repo, row.request, row.taskId, now, io, true)) pass.updated++;
     } catch (error) { pass.problems.push(`youiyoux ${row.request}: ${error instanceof Error ? error.message : "options unreadable"}`); }
   }
-  const watch = store.handle.prepare(`SELECT request, task_id, proposal, proposal_state, proposal_run FROM youiyoux_request WHERE repo = ? AND kind = 'options' AND task_id IS NOT NULL
-    AND proposal_state IN ('copied','kept') AND decided IS NULL ORDER BY proposal_at LIMIT ?`).all(repo, OPTIONS_PER_PASS).map(optionsRow);
+  // Only Toolroll's own copies: a file that was already there (`taken`) is never read for a decision.
+  const watch = store.handle.prepare(`SELECT request, task_id, proposal, proposal_state, proposal_run, proposal_digest FROM youiyoux_request WHERE repo = ? AND kind = 'options' AND task_id IS NOT NULL
+    AND proposal_state = 'copied' AND proposal_digest IS NOT NULL AND decided IS NULL ORDER BY proposal_at LIMIT ?`).all(repo, OPTIONS_PER_PASS).map(optionsRow);
   for (const row of watch) {
     try {
-      const decision = decisionOf(repo, row.proposal, row.request);
+      const decision = decisionOf(repo, row.proposal, row.request, row.digest!);
       if (decision === null || !actOnDecision(store, repo, row, decision, now, root)) continue;
       pass.decided++;
       if (writeStatus(store, repo, row.request, row.taskId, now, io, true)) pass.updated++;
