@@ -1449,10 +1449,15 @@ export function createTasksHandlers(runtime: ServerRuntime) {
     if (body.get("intent") === "drop-image") {
       // A saved note whose screenshot is gone or changed would block every revision that seals it. Its words stay:
       // the note is superseded by an exact imageless copy, and the original remains in history.
+      // Who: a signed-in browser approver admitted to this run's project (checked above) — the same authority that
+      // seals any saved note into a revision. What: only a screenshot that is unusable right now, re-proved inside
+      // dropFeedbackImage's transaction, and recorded in the ledger under this person.
+      if (who.via !== "cookie" || who.role !== "approver") return refuse(response, who, 403, "Only a signed-in approver can change saved feedback.", back);
       const comment = Number(body.get("comment") ?? "");
       if (!Number.isSafeInteger(comment) || comment < 1) return refuse(response, who, 400, "Choose a saved note.", back);
-      const copied = dropFeedbackImage(store, id, comment, now);
-      if (copied === null) return refuse(response, who, 409, "That saved note changed or was already used. Reload the result.", back);
+      const dropped = dropFeedbackImage(store, id, comment, who.name, one => feedbackImageProblem(store, evidenceRoot, id, one), now);
+      if (!dropped.ok) return refuse(response, who, 409, dropped.reason === "image-usable"
+        ? "That screenshot still verifies, so the note keeps it. Reload the result." : "That saved note changed or was already used. Reload the result.", back);
       return redirect(response, `${back}#request-changes`);
     }
     const image = parseFeedbackImage(body.get("image"));

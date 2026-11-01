@@ -25491,19 +25491,31 @@ function readFeedbackImage(value: unknown): FeedbackImage | null {
   return image;
 }
 
-/** Takes a saved note's screenshot off without losing the note or its history (v143): the live, unconsumed note on
- * this run is superseded by an exact copy with no image, in one write transaction. Returns the copy's id, or null
- * when there is no such live note with a screenshot (already used, superseded, on another run, or imageless). */
-export function dropFeedbackImage(store: Store, runId: number, commentId: number, now: Date): number | null {
+/** Takes a saved note's screenshot off without losing the note or its history (v143). Fail closed, in one write
+ * transaction: the note must be live and unconsumed on this run, its screenshot must be genuinely unusable right now
+ * (`unusable` is result-actions.ts feedbackImageProblem, re-read inside the transaction, never the page's say-so), and
+ * the change is recorded in the action ledger under the person who made it. The note is superseded by an exact
+ * imageless copy; the original stays in history. The caller has already proved the person may request changes on
+ * this run (the same authority that seals any saved note into a revision). */
+export function dropFeedbackImage(store: Store, runId: number, commentId: number, actor: string,
+  unusable: (image: FeedbackImage) => string | null, now: Date): { ok: true; id: number } | { ok: false; reason: "not-found" | "image-usable" } {
   return store.transact(() => {
-    const live = store.handle.prepare(`SELECT id FROM diff_comment WHERE id = ? AND run = ? AND superseded_by IS NULL AND consumed_by IS NULL
-      AND image_json IS NOT NULL`).get(commentId, runId);
-    if (live === undefined) return null;
+    const live = store.handle.prepare(`SELECT id, image_json FROM diff_comment WHERE id = ? AND run = ? AND superseded_by IS NULL AND consumed_by IS NULL
+      AND reviewer_run IS NULL AND image_json IS NOT NULL`).get(commentId, runId);
+    if (live === undefined) return { ok: false as const, reason: "not-found" as const };
+    const image = readFeedbackImage(live["image_json"]);
+    if (image === null) return { ok: false as const, reason: "not-found" as const };
+    const problem = unusable(image);
+    if (problem === null) return { ok: false as const, reason: "image-usable" as const };
     const copy = store.handle.prepare(`INSERT INTO diff_comment (artifact, artifact_sha, run, path, line, note, author, created_at, reviewer_run, severity)
       SELECT artifact, artifact_sha, run, path, line, note, author, ?, reviewer_run, severity FROM diff_comment WHERE id = ?`).run(now.toISOString(), commentId);
     const id = Number(copy.lastInsertRowid);
     const moved = store.handle.prepare("UPDATE diff_comment SET superseded_by = ? WHERE id = ? AND superseded_by IS NULL AND consumed_by IS NULL").run(id, commentId);
     if (Number(moved.changes) !== 1) throw new Error("The saved note changed while its screenshot was being removed.");
-    return id;
+    const run = store.getRun(runId);
+    store.recordAction({ at: now.toISOString(), actor, repo: run === null ? null : store.refById(run.taskRef)?.repo ?? null,
+      taskId: run === null ? null : store.externalIdFor(run.taskRef) ?? null, runId, action: "feedback screenshot removed", outcome: "recorded", source: "work",
+      detail: `note ${commentId} kept as note ${id} without screenshot ${image.artifact}: ${problem}` });
+    return { ok: true as const, id };
   });
 }

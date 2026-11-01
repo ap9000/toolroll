@@ -1,3 +1,4 @@
+import { feedbackImageProblem } from "../result-actions.js";
 import { parseFeedbackImage } from "../result-review.js";
 import { releaseViewOf } from "../release-view.js";
 import { releaseCiRunningOf } from "../release-ci-hold.js";
@@ -1128,6 +1129,9 @@ export function createTaskViews(runtime: TaskViewsRuntime) {
       outsideTouches: files.filter(one => one.outsideTouches).map(one => one.path),
       fileAnchors,
       comments: runtime.store.liveDiffComments(run.id).filter(isRevisionFeedback),
+      // The same check that refuses a saved note's screenshot at revision time decides when it can be removed.
+      unusableImageNotes: runtime.store.liveDiffComments(run.id).filter(one => isRevisionFeedback(one) && one.image != null
+        && feedbackImageProblem(runtime.store, runtime.evidenceRoot, run.id, one.image) !== null).map(one => one.id),
       pastComments: runtime.store.allDiffComments(run.id).filter(one => one.reviewerRun === null && (one.consumedBy !== null || one.supersededBy !== null)),
       reviewerFindings: runtime.store.allDiffComments(run.id).filter(one => one.reviewerRun !== null),
       automaticReview: buildReviewOf(runtime.store, run.id),

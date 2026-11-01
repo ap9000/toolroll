@@ -2027,6 +2027,10 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     store.stampRun(run, { scopeDigest: store.getScope("image-drop")!.digest });
     const shot = store.artifactsFor(run).find(one => one.kind === "screenshot")!;
     const image = { run, artifact: shot.id, sha256: shot.sha256 };
+    // A second person, limited to another project: a stranger to this run.
+    const robin = addApprover(store, "robin", T0, { name: "alex", token: approverToken });
+    if (!robin.ok) throw new Error("fixture robin");
+    expect(store.setAccountProjects("robin", ["/repo/other"], "alex", T0)).toEqual({ ok: true });
     await boot();
     const cookie = await login();
     const csrf = csrfOf(await (await fetch(url(`/r/${run}`), { headers: { cookie } })).text());
@@ -2039,23 +2043,59 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     } finally { store.addDiffComment = insert; }
     expect(inTransaction).toEqual([true]);
     const [saved] = store.allDiffComments(run);
+    const drop = (who: string, fields: Record<string, string> = {}) => post(who, `/r/${run}/comment`, { csrf, intent: "drop-image", comment: String(saved!.id), return: `/r/${run}`, ...fields });
+    const unchanged = () => expect(store.allDiffComments(run)).toEqual([saved]);
+    const removals = () => store.handle.prepare("SELECT actor, run_id, detail FROM action_ledger WHERE action = 'feedback screenshot removed'").all();
+    // Precondition: a screenshot that still verifies on the current result is never dropped, whatever the form says.
+    expect((await drop(cookie)).status).toBe(409);
+    expect(await (await fetch(url(`/r/${run}`), { headers: { cookie } })).text()).not.toContain("Keep note without screenshot");
+    unchanged();
     writeFileSync(join(evidenceRoot, shot.key), Buffer.from("not the image any more"));
     const blocked = await post(cookie, `/r/${run}/revise`, { csrf, ...revisionFormOf(await (await fetch(url(`/r/${run}`), { headers: { cookie } })).text()) });
     expect(blocked.status).toBe(409);
     const page = await (await fetch(url(`/r/${run}`), { headers: { cookie } })).text();
     expect(page).toContain("Keep note without screenshot");
-    // Only a live note on this run with a screenshot can be dropped; a forged id or another run's note is refused.
-    expect((await post(cookie, `/r/${run}/comment`, { csrf, intent: "drop-image", comment: "999999", return: `/r/${run}` })).status).toBe(409);
-    expect((await post(cookie, `/r/${run}/comment`, { csrf, intent: "drop-image", comment: String(saved!.id), return: `/r/${run}` })).status).toBe(303);
+    // A stranger to the project is refused and changes nothing; so is a post without the session's CSRF token, a GET,
+    // a forged note id and another note's state.
+    const stranger = await fetch(url("/login"), { method: "POST", body: new URLSearchParams({ name: "robin", token: robin.token }), redirect: "manual" });
+    const robinCookie = (stranger.headers.get("set-cookie") ?? "").split(";")[0] as string;
+    const robinCsrf = csrfOf(await (await fetch(url("/"), { headers: { cookie: robinCookie } })).text());
+    expect((await drop(robinCookie, { csrf: robinCsrf })).status).toBe(404);
+    expect((await drop(cookie, { csrf: "0".repeat(64) })).status).toBe(403);
+    expect((await fetch(url(`/r/${run}/comment?intent=drop-image&comment=${saved!.id}`), { headers: { cookie }, redirect: "manual" })).status).not.toBe(303);
+    expect((await drop(cookie, { comment: "999999" })).status).toBe(409);
+    unchanged();
+    expect(removals()).toEqual([]);
+    // The approver on this project may keep the words without the broken screenshot; the ledger names who did it.
+    expect((await drop(cookie)).status).toBe(303);
     const after = store.allDiffComments(run);
     expect(after).toHaveLength(2);
     expect(after[0]).toMatchObject({ id: saved!.id, image, supersededBy: after[1]!.id });
     expect(after[1]).toMatchObject({ note: saved!.note, author: saved!.author, image: null, supersededBy: null });
-    expect((await post(cookie, `/r/${run}/comment`, { csrf, intent: "drop-image", comment: String(saved!.id), return: `/r/${run}` })).status).toBe(409);
+    expect(removals()).toEqual([expect.objectContaining({ actor: "alex", run_id: run })]);
+    expect((await drop(cookie)).status).toBe(409);
     const revised = await post(cookie, `/r/${run}/revise`, { csrf, ...revisionFormOf(await (await fetch(url(`/r/${run}`), { headers: { cookie } })).text()) });
     expect(revised.status, await revised.text()).toBe(303);
     expect(store.allDiffComments(run)[1]?.consumedBy).not.toBeNull();
     expect(store.allDiffComments(run)[0]?.consumedBy ?? null).toBeNull();
+  });
+
+  test("a saved screenshot that still verifies but belongs to a superseded attempt can be dropped too", async () => {
+    const ref = seed("image-stale", "Image feedback on an older attempt");
+    const run = build("image-stale", ref, { patch: "diff --git a/a b/a\n+x\n", screenshot: { path: "phone.png", caption: "Phone" } });
+    store.stampRun(run, { scopeDigest: store.getScope("image-stale")!.digest });
+    const shot = store.artifactsFor(run).find(one => one.kind === "screenshot")!;
+    await boot();
+    const cookie = await login();
+    const csrf = csrfOf(await (await fetch(url(`/r/${run}`), { headers: { cookie } })).text());
+    expect((await post(cookie, `/r/${run}/comment`, { csrf, note: "Tighten the phone heading.", image: JSON.stringify({ run, artifact: shot.id, sha256: shot.sha256 }), request: "e".repeat(32), intent: "note", return: `/r/${run}` })).status).toBe(303);
+    const [saved] = store.allDiffComments(run);
+    const newer = build("image-stale", ref, { patch: "diff --git a/a b/a\n+y\n" });
+    store.stampRun(newer, { scopeDigest: store.getScope("image-stale")!.digest });
+    const record = await (await fetch(url(`/r/${run}?record=1`), { headers: { cookie } })).text();
+    expect(record).toContain("Keep note without screenshot");
+    expect((await post(cookie, `/r/${run}/comment`, { csrf, intent: "drop-image", comment: String(saved!.id), return: `/r/${run}` })).status).toBe(303);
+    expect(store.allDiffComments(run)[1]).toMatchObject({ note: saved!.note, image: null });
   });
 
   test("package 3 c4: a refused note sends the reader back to the view they came from; a result id that is not this task's is refused for the lens; the browser script rides every result surface", async () => {
