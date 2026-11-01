@@ -264,10 +264,13 @@ export function respond<T extends string>(response: ServerResponse, status: numb
   // writeHead's headers would otherwise win.
   const own = response.getHeader("content-security-policy");
   const cache = response.getHeader("cache-control");
+  // The first-account form's page sends `same-origin` so its own post names this console (signup-gate.ts).
+  const referrer = response.getHeader("referrer-policy");
   response.writeHead(status, {
     ...SAFETY,
     ...(own === undefined ? {} : { "content-security-policy": own as string }),
     ...(cache === undefined ? {} : { "Cache-Control": cache as string }),
+    ...(referrer === "same-origin" ? { "Referrer-Policy": "same-origin" } : {}),
     "Content-Type": type,
   });
   response.end(isHtml(body) ? htmlString(body) : body);

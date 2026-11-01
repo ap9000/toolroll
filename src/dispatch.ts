@@ -8,7 +8,7 @@
  */
 
 import { authorityStandsSql } from "./approval-authority.js";
-import { isAlive } from "./runner.js";
+import { isAlive, type Runner } from "./runner.js";
 import { updateAdmissionPaused, UPDATE_PAUSED } from "./desktop-update-gate.js";
 import { approvalOf, type ExecutionProfile } from "./scope.js";
 import { plannerSourceProblemOf } from "./planner-source.js";
@@ -275,6 +275,32 @@ function approvedProfile(scope: ReturnType<Store["getScope"]>): ExecutionProfile
 }
 
 /** The read-side lifecycle answer. Project access limits dependency detail, never the readiness gate. */
+/** The builders that may take work in `repo`, as dispatch decides: registered and not retired (`all`), bound to the
+ * project (`eligible`; only the assigned one when a task names one), and checking in now (`alive`). The first-run
+ * "Builder connected" step reads the same answer, so it is done only when a task there could start. */
+export function buildersFor(store: Store, repo: string, now: Date, assignedRunner: string | null = null): { all: Runner[]; eligible: Runner[]; alive: Runner[] } {
+  const all = store.listRunners().filter(one => one.retiredAt === null);
+  const bound = all.filter(one => one.repos.includes(repo));
+  const eligible = assignedRunner === null ? bound : bound.filter(one => one.name === assignedRunner);
+  return { all, eligible, alive: eligible.filter(one => isAlive(one, now)) };
+}
+
+/** Whether a task in `repo` could start for want of nothing but a person: a live builder bound to it. */
+export function builderReadyFor(store: Store, repo: string | null, now: Date): boolean {
+  return repo !== null && buildersFor(store, repo, now).alive.length > 0;
+}
+
+/** The project the first-run "Builder connected" step speaks for, on Chat and the board alike: the open one; else the
+ * saved project of the first filed task the viewer may see (All projects); else, only before any task exists, the
+ * first managed project. Null when tasks exist but none sits in a project the viewer may see: then nothing says done. */
+export function firstRunBuilderRepo(store: Store, selected: string | null, visible: (repo: string | null) => boolean, managed: readonly string[]): string | null {
+  if (selected !== null) return selected;
+  const placed = store.handle.prepare("SELECT repo FROM task_ref WHERE repo IS NOT NULL ORDER BY id").all() as { repo: string }[];
+  const first = placed.find(row => visible(row.repo));
+  if (first !== undefined) return first.repo;
+  return store.hasAnyWork() ? null : managed[0] ?? null;
+}
+
 export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, readableRepos: readonly string[] | null = null): DispatchDiagnosis | null {
   const task = store.getTask(taskId);
   const ref = store.lookupRef(taskId);
@@ -385,9 +411,7 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
   const gap = missingCapability(store, ref.id, ref.repo, now);
   if (gap !== null) return answer("missing-requirement", "waiting", "Missing a requirement", gap, { action: "repair-capability", role });
 
-  const all = store.listRunners().filter(one => one.retiredAt === null);
-  const bound = all.filter(one => one.repos.includes(ref.repo as string));
-  const eligible = ref.assignedRunner === null ? bound : bound.filter(one => one.name === ref.assignedRunner);
+  const { all, eligible, alive } = buildersFor(store, ref.repo, now, ref.assignedRunner);
   if (eligible.length === 0) {
     const detail = ref.assignedRunner === null
       ? all.length === 0
@@ -396,7 +420,6 @@ export function diagnoseTaskDispatch(store: Store, taskId: string, now: Date, re
       : `This task is assigned to ${ref.assignedRunner}, but that builder is not connected to this project.`;
     return answer("no-worker-registered", "waiting", "Builder not connected", detail, { action: "start-worker", role });
   }
-  const alive = eligible.filter(one => isAlive(one, now));
   if (alive.length === 0) {
     return answer(
       "no-worker-online",

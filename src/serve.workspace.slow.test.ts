@@ -6,7 +6,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { Server } from "node:http";
 import { openStore, type Store } from "./store.js";
 import { acquire, release } from "./claim.js";
@@ -111,6 +111,30 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     await new Promise<void>(resolve => server.close(() => resolve()));
     store.close();
     rmSync(root, { recursive: true, force: true });
+  });
+
+  test("Start a builder speaks for the task it came from, and the first-run step for the first task's project", async () => {
+    // Builder only in alpha; the only task in beta; All projects: the step is not done (alpha is not that task's project).
+    const ref = seedTask("t-beta", "Beta work", beta);
+    sealScopeFixture(store, "t-beta", approverToken, "Beta work");
+    void ref;
+    register(store, { name: "alpha-worker", host: "here", capacity: 1, repos: [alpha], now, newToken: () => "alpha-token" });
+    const cookie = await login();
+    const chat = workspaceOf(await page(cookie, "/chat"));
+    expect(chat.firstRun?.steps.find(one => one.key === "builder")).toMatchObject({ done: false });
+    expect(await page(cookie, "/inbox")).toMatch(/data-step="builder"><span class="mono" aria-hidden="true">○<\/span>/);
+    // The task's link names it; the page reports beta whatever is open, and the selection stays alpha.
+    await openProject(cookie, alpha);
+    const task = await page(cookie, "/t/t-beta");
+    expect(task).toMatch(/<a [^>]*href="\/start-builder\?task=t-beta"[^>]*>Connect a builder/);
+    expect(await page(cookie, "/start-builder?task=t-beta")).toContain(`<strong>No builder is connected</strong> to <strong>${basename(beta)}</strong>`);
+    expect(await page(cookie, "/start-builder")).toContain(`A builder is connected to <strong>${basename(alpha)}</strong>`);
+    // Unknown, or outside what this person may see: 404.
+    expect((await fetch(url("/start-builder?task=no-such-task"), { headers: { cookie } })).status).toBe(404);
+    const minted = store.mintInvite("approver", "alex", now, undefined, [alpha]);
+    expect(store.consumeInviteAndCreateAccount({ tokenValue: minted.token, name: "member", credentialHash: hashPassword(memberPassword) }, now).ok).toBe(true);
+    const member = await login("member", memberPassword);
+    expect((await fetch(url("/start-builder?task=t-beta"), { headers: { cookie: member } })).status).toBe(404);
   });
 
   test("an unanswered question stays primary in Work and the task page when the builder disconnects", async () => {
@@ -401,6 +425,33 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     await agree(id, "needs-approval", "Approve plan", "Approve & start");
     approve(store, id, "alex", now, store.getScope(id)!.digest, approverToken);
     await agree(id, "no-worker-registered", "Connect a builder");
+    // Connect a builder leads to Start a builder and its command, never back to the task's own page.
+    for (const path of ["/work", `/t/${id}`]) {
+      const shown = await page(cookie, path);
+      expect(shown, path).toMatch(new RegExp(`<a [^>]*href="/start-builder\\?task=${id}"[^>]*>Connect a builder`));
+      expect(shown, path).not.toMatch(/<a [^>]*href="[^"]*#run-status"[^>]*>Connect a builder/);
+    }
+    expect(await page(cookie, "/system")).toMatch(/<section id="builder"[^>]*><h2 id="builder-heading">Start a builder<\/h2>[\s\S]*>toolroll up<\/code>/);
+    // A live builder bound to another project doesn't connect this one: not on Start a builder, not in the first-run
+    // steps (dispatch's own answer, buildersFor).
+    register(store, { name: "beta-worker", host: "here", capacity: 1, repos: [beta], now, newToken: () => "beta-token" });
+    await openProject(cookie, alpha);
+    const builderStep = workspaceOf(await page(cookie, "/chat")).firstRun?.steps.find(one => one.key === "builder");
+    expect(builderStep).toMatchObject({ done: false, action: { href: "/start-builder" } });
+    expect(await page(cookie, "/start-builder")).toContain(`<strong>No builder is connected</strong> to <strong>${basename(alpha)}</strong>`);
+    await agree(id, "no-worker-registered", "Connect a builder");
+    // A project-limited person reaches the same instructions (System stays instance-only), told who can start one.
+    const limitedInvite = store.mintInvite("approver", "alex", now, undefined, [alpha]);
+    expect(store.consumeInviteAndCreateAccount({ tokenValue: limitedInvite.token, name: "limited", credentialHash: hashPassword(memberPassword) }, now).ok).toBe(true);
+    const limited = await login("limited", memberPassword);
+    expect(await page(limited, `/t/${id}`)).toMatch(new RegExp(`<a [^>]*href="/start-builder\\?task=${id}"[^>]*>Connect a builder`));
+    const limitedStart = await fetch(url("/start-builder"), { headers: { cookie: limited } });
+    expect(limitedStart.status).toBe(200);
+    const limitedPage = await limitedStart.text();
+    expect(limitedPage).toContain(">toolroll up</code>");
+    expect(limitedPage).toContain("takes someone who manages this Toolroll");
+    expect(limitedPage).not.toContain(basename(beta));
+    expect((await fetch(url("/system"), { headers: { cookie: limited } })).status).toBe(403);
     const blocker = seedTask('t-before-status', 'First task', alpha);
     store.addEdge(id, 't-before-status');
     await agree(id, 'waiting-dependency', 'View task details');

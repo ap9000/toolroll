@@ -286,9 +286,10 @@ the git tests on 2.41 and on 2.47.
 `npm install -g toolroll` gives you the bare `toolroll` command for later
 (`standing-orders`, the older name, still works).
 
-`up` prints your login once (and saves it beside the database as
-`up-login.txt`), opens the app in your browser, and connects this machine as
-the builder. Add an existing folder or a GitHub repository from **Projects**;
+`up` saves your password beside the database as `up-login.txt` (every
+start prints where, and the `cat` command that shows it; never the password
+itself), opens the app in your browser, and connects this machine as the
+builder. Add an existing folder or a GitHub repository from **Projects**;
 the builder and unified chat pick it up while the app keeps running. The
 projects folder and every added repository are remembered. Later,
 `toolroll up` can be run from any directory and reconnects all of them.
