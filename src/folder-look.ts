@@ -53,7 +53,9 @@ export type FolderLookRun = { answer: Promise<unknown>; ended: Promise<void> };
 /** Starts one look. Production starts a child process; tests pass their own. */
 export type FolderLookRunner = (request: FolderLookRequest, deadlineMs: number) => FolderLookRun;
 
-export type FolderLook<T> = { ok: true; value: T } | { ok: false; why: "no-answer" | "failed" };
+/** `started`: when the process that answered was started, in this console's order of starts. A caller that joined a
+ * look already under way gets that look's start, never its own, so an older answer always reads as older. */
+export type FolderLook<T> = { ok: true; value: T; started?: number } | { ok: false; why: "no-answer" | "failed" };
 
 /** At most this many look processes at once, stuck ones included: a folder that never answers costs one each. */
 export const FOLDER_LOOK_CHILDREN = 8;
@@ -199,7 +201,9 @@ export const childLook: FolderLookRunner = (request, deadlineMs) => {
 
 /** Looks whose process hasn't ended, by request: callers asking the same thing share one; each holds a child slot
  * until its process is gone. */
-const inFlight = new Map<string, FolderLookRun>();
+const inFlight = new Map<string, FolderLookRun & { started: number }>();
+/** Looks started so far: each look's place in that order is fixed when its process starts. */
+let starts = 0;
 
 /** The same request however its paths were spelled: resolved paths, roots in order. */
 function lookKey(request: FolderLookRequest): string {
@@ -228,8 +232,10 @@ export async function lookFolders(request: FolderLookRequest, options: { runner?
   let run = inFlight.get(key);
   if (run === undefined) {
     if (inFlight.size >= FOLDER_LOOK_CHILDREN) return { ok: false, why: "no-answer" };
-    try { run = (options.runner ?? childLook)(request, deadlineMs); } catch { return { ok: false, why: "failed" }; }
-    const mine = run;
+    let started: FolderLookRun;
+    try { started = (options.runner ?? childLook)(request, deadlineMs); } catch { return { ok: false, why: "failed" }; }
+    const mine = { ...started, started: ++starts };
+    run = mine;
     inFlight.set(key, mine);
     const forget = () => { if (inFlight.get(key) === mine) inFlight.delete(key); };
     mine.ended.then(forget, forget);
@@ -242,7 +248,7 @@ export async function lookFolders(request: FolderLookRequest, options: { runner?
     if (first === "failed") return { ok: false, why: "failed" };
     const answer = first.value as { ok?: unknown; value?: unknown } | null;
     if (answer === null || typeof answer !== "object" || answer.ok !== true) return { ok: false, why: "failed" };
-    return { ok: true, value: answer.value };
+    return { ok: true, value: answer.value, started: run.started };
   } finally {
     clearTimeout(timer);
   }
@@ -290,7 +296,7 @@ export async function lookIdentities(paths: readonly string[], options: FolderLo
     const row = one as { path?: unknown; real?: unknown } | null;
     if (row !== null && typeof row === "object" && text(row.path) && (row.real === null || text(row.real))) out.set(row.path, row.real as string | null);
   }
-  return { ok: true, value: out };
+  return { ok: true, value: out, ...(looked.started === undefined ? {} : { started: looked.started }) };
 }
 
 /** A project's own `.mcp.json` (parsed object, or null when absent or not one), read off the thread. */

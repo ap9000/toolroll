@@ -42,7 +42,7 @@ export function sameVisitCheck(authTime: number | null, startedAt: number, now: 
   return Math.min(Math.max(at, startedAt), now);
 }
 export function createPeopleHandlers(runtime: ServerRuntime) {
-  const { joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, authenticateCredential, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, defaultProject, cookieSecure, consoleOrigin, providerFor, providerKnown, joinSourceOf, signInBudget, signInActor, minutesWords } = runtime;
+  const { joinBySource, ssoOffer, ssoVisits, ssoSettings, options, clock, ssoHandoffs, managedRepos, store, visible, admissionList, sendScreen, chromeFor, restricted, sessions, consoleProjects, authenticateApprover, authenticateCredential, bustBadge, projectOf, signInLinks, linkKey, fromThisComputer, recordSignIn, passwordAllowed, arrival, cookieSecure, consoleOrigin, providerFor, providerKnown, joinSourceOf, signInBudget, signInActor, minutesWords } = runtime;
 
   // v101: Settings → Sessions & tokens: where you're signed in, and your API tokens. An instance operator can see everyone's.
   async function sessionsPage(ctx: HandlerContext): Promise<void> {
@@ -339,7 +339,7 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
     if (!passwordAllowed(held.account)) return page(response, 403, loginPage(`Sign in with ${ssoSettings()?.label ?? "your identity provider"}.`, "/chat", ssoOffer()));
     const id = randomBytes(32).toString("hex");
     sessions.set(id, { ...arrival(request), name: held.account, csrf: randomBytes(32).toString("hex"), role: account.role, generation: account.generation, createdAt: Date.now(), sawBoardAt: null, lastSeen: Date.now(),
-      project: defaultProject, projectRevision: 1 });
+      project: runtime.defaultProject, projectRevision: 1 });
     recordSignIn(held.account, "signed in", "one-time link");
     response.setHeader("Set-Cookie", `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`);
     return redirect(response, "/chat");
@@ -423,7 +423,7 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
     const account = store.accountOf(signedIn.account)!;
     const id = randomBytes(32).toString("hex");
     sessions.set(id, { ...arrival(request), name: signedIn.account, csrf: randomBytes(32).toString("hex"), role: account.role, generation: account.generation, createdAt: Date.now(), sawBoardAt: null, lastSeen: Date.now(),
-      project: defaultProject, projectRevision: 1, sso: { at: handoff.checkedAt ?? 0 } });
+      project: runtime.defaultProject, projectRevision: 1, sso: { at: handoff.checkedAt ?? 0 } });
     recordSignIn(signedIn.account, "signed in", settings.label);
     response.setHeader("Set-Cookie", [signInSpent("/login/sso/finish"), `${SESSION_COOKIE}=${id}; HttpOnly; SameSite=Strict; Path=/${cookieSecure}`]);
     return redirect(response, handoff.returnTo);
@@ -470,7 +470,7 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
       createdAt: Date.now(),
       sawBoardAt: null,
       lastSeen: Date.now(),
-      project: defaultProject,
+      project: runtime.defaultProject,
       projectRevision: 1,
       // A password typed on this computer starts this session's freshness window (cockpit B2); from anywhere else, never.
       ...(fromThisComputer(request) ? { passwordAt: Date.now() } : {}),
@@ -523,7 +523,7 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
       createdAt: Date.now(),
       sawBoardAt: null,
       lastSeen: Date.now(),
-      project: defaultProject,
+      project: runtime.defaultProject,
       projectRevision: 1,
       // A password typed to sign in on this computer starts this session's freshness window (cockpit B2); from anywhere
       // else (a phone, a proxy) it signs in and proves nothing more.
@@ -613,7 +613,7 @@ ${reauth(html`<label>Password <input type="password" name="token" autocomplete="
       createdAt: Date.now(),
       sawBoardAt: null,
       lastSeen: Date.now(),
-      project: defaultProject,
+      project: runtime.defaultProject,
       projectRevision: 1,
     });
     response.setHeader(
