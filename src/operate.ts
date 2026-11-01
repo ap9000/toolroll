@@ -8015,11 +8015,16 @@ async function upCommand(
         pendingLinks.set(id, value => { clearTimeout(timer); resolveLink(value); });
         consoleRole?.send({ type: "sign-in-link", id, account });
       });
+      // Every start says where the saved password is and the exact command that shows it, browser or not (Settings
+      // revamp S4, D2). Only the path is printed, never what the file holds. A path the shell would split is quoted.
       const home = homedir();
-      const file = approverPlan2.passwordFile === null ? null : approverPlan2.passwordFile.startsWith(`${home}/`) ? `~${approverPlan2.passwordFile.slice(home.length)}` : approverPlan2.passwordFile;
+      const saved = approverPlan2.passwordFile;
+      const shortPath = saved === null ? null : saved.startsWith(`${home}/`) ? `~${saved.slice(home.length)}` : saved;
+      const showCommand = saved === null || shortPath === null ? null
+        : /^[\w@%+=:,./~-]+$/.test(shortPath) ? `cat ${shortPath}` : `cat '${saved.replaceAll("'", "'\\''")}'`;
       const signInWords = account === null
         ? `sign in as one of ${approverPlan2.approvers.join(", ")}`
-        : file === null ? `sign in as ${account} with your password` : `sign in as ${account}: the password is in ${file}`;
+        : showCommand === null ? `sign in as ${account} with your password` : `sign in as ${account}`;
       write("");
       write(`Toolroll is on ${url}`);
       if (link !== null) {
@@ -8028,8 +8033,9 @@ async function upCommand(
         (context.upSeams?.openBrowser ?? openBrowser)(new URL(link, url).toString());
       } else {
         write(`${signInWords.charAt(0).toUpperCase()}${signInWords.slice(1)}.`);
-        write("Ctrl-C stops it.");
       }
+      if (showCommand !== null) write(`Your password: run \`${showCommand}\``);
+      if (link === null) write("Ctrl-C stops it.");
     }
   }
   // A bounded run (--for) counts from readiness, so a slow start never eats the window it asked for.

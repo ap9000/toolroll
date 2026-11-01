@@ -6,16 +6,17 @@ import { type BoardCard } from "../board.js";
 import { type BrowserLimits,type BrowserProjectRow,type BrowserProjectsView,type BrowserTasksView,browserWorkActionHref } from "../browser-workspace.js";
 import { CHECK_LEVEL_WORDS,type CheckLevel } from "../check-levels.js";
 import { type DispatchDiagnosis } from "../dispatch.js";
-import { type FirstRunStep } from "../first-run.js";
+import { type FirstRunStep,withBuilderStep } from "../first-run.js";
 import { type Gap } from "../gaps.js";
 import { limitsHtml } from "../limits-ui.js";
-import { type Ask,ASK_LABEL,ASKS } from "../needs-you.js";
+import { type Ask,ASK_LABEL,ASKS,START_BUILDER_COMMAND } from "../needs-you.js";
 import { type ListOutcome } from "../onboard.js";
 import { type parseBaseTreeSnapshot } from "../peek.js";
 import { projectName } from "../project.js";
 import { type CriterionMatrixRow } from "../proof.js";
 import { type QualityMode } from "../quality.js";
 import { type Runner,isAlive as runnerAlive } from "../runner.js";
+import { agentModelName,modelName } from "../model-names.js";
 import { type Scope,type UnattendedPermissionMode } from "../scope.js";
 import { type Decision,type Incident,type RepairChainRow,type Run,type Store,type Task,type TaskState,type WorktreeRow } from "../store.js";
 import { runCostWords,spendLine,tally } from "../summary.js";
@@ -172,11 +173,13 @@ export function inboxPage(chrome: Chrome, data: {
 
   // The first-run steps, until the first Ready result: each is done or
   // shows the one action that does it.
+  // Never all done while no builder answers: a task filed then would wait forever.
+  const steps = withBuilderStep(data.wizard, data.worker.answering > 0);
   const wizard =
-    data.wizard === null
+    steps === null
       ? null
       : html`<div class="card" data-first-run><p><strong>Get to your first result</strong></p>${joinHtml(
-          data.wizard.map(
+          steps.map(
             step =>
               html`<p class="row" data-step="${step.key}"><span class="mono" aria-hidden="true">${step.done ? "✓" : "○"}</span> <strong>${step.title}</strong>${
                 step.checking ? html` <span class="meta">checking…</span>` : step.action === null ? html` <span class="meta">done</span>`
@@ -315,7 +318,7 @@ export function systemPage(chrome: Chrome, data: {
             ? html`set for the whole installation${one.setBy === null ? null : html` by ${one.setBy}`}`
             : html`the default — nothing configured`;
       const dollars = one.provider === "claude" ? null : html` · <span title="this provider reports tokens, not dollars — its runs land as unmeasured spend">no dollar costs</span>`;
-      return html`<p class="row"><span class="mono">${one.phase}</span> <strong>${one.provider ?? ""}</strong>${one.model === null || one.model === undefined ? html` <span class="meta">(its default model)</span>` : html` · <span class="mono">${one.model}</span>`}<span class="right meta">${who}${dollars}</span></p><p class="meta" style="margin-top:0">${PHASE_SAID[one.phase] ?? ""}</p>`;
+      return html`<p class="row"><span class="mono">${one.phase}</span> <strong>${one.provider === null || one.provider === undefined ? "" : agentModelName(one.provider, one.model ?? null)}</strong>${one.model === null || one.model === undefined ? html` <span class="meta">(its default model)</span>` : null}<span class="right meta">${who}${dollars}</span></p><p class="meta" style="margin-top:0">${PHASE_SAID[one.phase] ?? ""}</p>`;
     }), "\n");
   const agentsCard =
     html`<h2>Agents</h2><p class="meta">Which AI provider runs each phase. An instance operator changes them in <a href="/settings/models">Settings → Models</a> with their password, or with <code>toolroll config</code>.</p><div class="card">${agentLines}<p class="meta">Repair always stays on the provider that built — only its model can differ. A schedule's task filed under an approval moved from a routine is pinned to the agents approved then.</p></div>`;
@@ -324,9 +327,11 @@ export function systemPage(chrome: Chrome, data: {
     html`<h1>System</h1>`,
     html`<p class="hint">builders execute tasks in isolated temporary copies of each project</p>`,
     agentsCard,
-    cards.length === 0
-      ? html`<p class="meta">No builder is connected yet. On the machine where the project lives, open that folder and run <code>toolroll up</code>.</p>`
-      : html`<div class="cards">${cards}</div>`,
+    cards.length === 0 ? null : html`<div class="cards">${cards}</div>`,
+    // Where every "Connect a builder" leads (needs-you START_BUILDER_HREF): the one command, as text to select.
+    html`<section id="builder" aria-labelledby="builder-heading"><h2 id="builder-heading">Start a builder</h2><div class="card">${
+      data.runners.some(one => one.retiredAt === null && runnerAlive(one, data.now)) ? null : html`<p><strong>No builder is connected.</strong> Tasks wait until one is.</p>`
+    }<p>On the computer where the project lives, open the project's folder in a terminal and run:</p><p><code class="start-builder-command" style="user-select:all">${START_BUILDER_COMMAND}</code></p><p class="meta">Keep it running. Approved tasks start on their own. The console alone (<code>toolroll serve</code>) doesn't build.</p></div></section>`,
     data.outboxPending > 0 ? html`<p class="meta">Notifications: ${data.outboxPending} pending delivery</p>` : null,
     (data.externalWork ?? []).length === 0
       ? null
@@ -540,11 +545,11 @@ export function boardBody(
       ? null
       : html`<span class="steps" role="img" aria-label="${`step ${step + 1} of ${BUILD_STEPS.length}: ${BUILD_STEPS[step]}`}">${BUILD_STEPS.map((_, index) => html`<i class="${index < step ? "on" : index === step ? "now" : ""}"></i>`)}</span>`;
     // Who, which model and which branch, as one muted line: words in Geist, the model and branch in mono.
-    const model = claim.model === null ? null : `${claim.provider !== null && claim.provider !== "claude" ? `${claim.provider} · ` : ""}${claim.model}`;
+    const model = claim.model === null ? null : claim.provider === null ? modelName(null, claim.model) : agentModelName(claim.provider, claim.model);
     const branch = claim.branch === null ? null : `${claim.branch}${workspace === null ? "" : ` · ${workspace}`}`;
     const who = joinHtml([
       html`<span>${claim.runner}</span>`,
-      model === null ? null : html`<span class="mono">${model}</span>`,
+      model === null ? null : html`<span>${model}</span>`,
       branch === null ? null : html`<span class="mono">${branch}</span>`,
     ].filter((one): one is Html => one !== null), html`<span aria-hidden="true"> · </span>`);
     return html`<a class="lane-card building" href="${card.href}" data-vt="${card.taskId}"><span class="t"><span class="dot dot-ok pulse"></span>${card.title}</span>${steps}<span class="live-line"><span class="stage">${live}</span>${tickingClock(claim.claimedAt, data.now)}</span><span class="id">${card.taskId}</span><span class="who">${who}</span>${chips([
@@ -716,7 +721,7 @@ export function homePage(chrome: Chrome, data: {
       ? null
       : html`<h2>Building now</h2><p class="hint">live builds — this page refreshes itself every 10 seconds while anything runs</p><div class="cards">${data.building.map(
           claim =>
-            html`<a class="stat-card" href="${taskHref(claim.taskId)}" style="text-decoration:none"><span class="k"><span class="dot dot-ok pulse"></span>${claim.taskId}</span><span class="v">${claim.runner} · ${Math.max(1, Math.round((data.now.getTime() - new Date(claim.claimedAt).getTime()) / 60_000))}m elapsed${claim.model === null ? null : html` · ${claim.model}`}</span></a>`,
+            html`<a class="stat-card" href="${taskHref(claim.taskId)}" style="text-decoration:none"><span class="k"><span class="dot dot-ok pulse"></span>${claim.taskId}</span><span class="v">${claim.runner} · ${Math.max(1, Math.round((data.now.getTime() - new Date(claim.claimedAt).getTime()) / 60_000))}m elapsed${claim.model === null ? null : html` · ${modelName(null, claim.model)}`}</span></a>`,
         )}</div>`;
 
   // THE FLEET: runners by heartbeat age, worktrees by lease state, the watch.
@@ -1151,7 +1156,7 @@ export function portfolioOverview(data: {
   // ---- running: current live claims, project chips on ----
   const liveRows = joinHtml(data.live.map(
     one =>
-      html`<p class="row"><a href="${taskHref(one.taskId)}">${one.taskId}</a>${projectChip(one.repo)} <span class="badge badge-running">Running</span> <span class="mono meta">${one.runner}${one.model === null ? null : html` · ${one.model}`} · <time data-elapsed-since="${one.claimedAt}"></time></span></p>`,
+      html`<p class="row"><a href="${taskHref(one.taskId)}">${one.taskId}</a>${projectChip(one.repo)} <span class="badge badge-running">Running</span> <span class="meta"><span class="mono">${one.runner}</span>${one.model === null ? null : html` · ${modelName(null, one.model)}`} · <time data-elapsed-since="${one.claimedAt}"></time></span></p>`,
   ), "\n");
 
   // ---- the ledger: terminal runs started in the window, one chip each ----
@@ -1166,7 +1171,7 @@ export function portfolioOverview(data: {
   };
   const ledgerRows = joinHtml(data.ledger.map(
     one =>
-      html`<p class="row"><a href="/r/${one.runId}">${one.title}</a>${projectChip(one.repo)} <span class="badge ${chipClass(one.outcome)}">${sentenceCase(one.outcome)}</span> ${one.role === "scout" ? html`<a class="badge" href="${taskHref(one.taskId)}#report">Report</a> ` : null}<span class="mono meta">${one.provider === null ? "" : one.provider}${one.model === null ? null : html` · ${one.model}`}${one.ranMinutes === null ? null : html` · ${one.ranMinutes}m`} · ${runCostWords({ authMode: one.authMode, costUsd: one.costUsd, tokensIn: null, tokensOut: null })}${prLink(one)}</span></p>`,
+      html`<p class="row"><a href="/r/${one.runId}">${one.title}</a>${projectChip(one.repo)} <span class="badge ${chipClass(one.outcome)}">${sentenceCase(one.outcome)}</span> ${one.role === "scout" ? html`<a class="badge" href="${taskHref(one.taskId)}#report">Report</a> ` : null}<span class="meta">${one.provider === null ? (one.model === null ? "" : modelName(null, one.model)) : agentModelName(one.provider, one.model)}${one.ranMinutes === null ? null : html` · ${one.ranMinutes}m`} · ${runCostWords({ authMode: one.authMode, costUsd: one.costUsd, tokensIn: null, tokensOut: null })}${prLink(one)}</span></p>`,
   ), "\n");
 
   return joinHtml([
@@ -1566,7 +1571,7 @@ export function fleetBody(
           )}<p class="meta">${runnerAlive(runner, new Date()) ? "alive" : "quiet"} · ${live.length}/${runner.capacity} building</p>`;
     const buildingCards = joinHtml(live.map(
       claim =>
-        html`<div class="lane-card" data-taken="1"><p class="row"><span class="dot dot-ok pulse"></span> ${claim.taskId}</p><p class="row meta">building${chip(claim.repo ?? null)}${claim.model === null ? null : html` · ${claim.model}`} · ${Math.max(1, Math.round((Date.now() - new Date(claim.claimedAt).getTime()) / 60_000))}m</p></div>`,
+        html`<div class="lane-card" data-taken="1"><p class="row"><span class="dot dot-ok pulse"></span> ${claim.taskId}</p><p class="row meta">building${chip(claim.repo ?? null)}${claim.model === null ? null : html` · ${modelName(null, claim.model)}`} · ${Math.max(1, Math.round((Date.now() - new Date(claim.claimedAt).getTime()) / 60_000))}m</p></div>`,
     ), "\n");
     const queuedCards = joinHtml(own.map(queuedCardOf), "\n");
     const empty =

@@ -6,7 +6,7 @@ import { describe, expect, test, vi } from "vitest";
 import { run } from "./exec.js";
 import type { ExecResult, RunOptions } from "./exec.js";
 import {
-  findFirstTasks, firstRunSteps, firstTaskSuggestions, GENERIC_FIRST_TASKS, parseTodoLines, signInCommandFor,
+  findFirstTasks, firstRunSteps, firstTaskSuggestions, GENERIC_FIRST_TASKS, parseTodoLines, signInCommandFor, withBuilderStep,
 } from "./first-run.js";
 
 const result = (stdout: string, code = 0): ExecResult => ({ code, stdout, stderr: "", timedOut: false, notFound: false });
@@ -22,6 +22,17 @@ describe("the three first-run steps", () => {
   test("until this machine's sign-in check answers, the agent step is checking: neither done nor to do", () => {
     const [agent] = firstRunSteps({ agentSignedIn: null, projects: 0, hasTask: false, firstResultAt: null })!;
     expect(agent).toEqual({ key: "agent", title: "Agent signed in", done: false, action: null, checking: true });
+  });
+
+  test("with no builder connected the steps never all read done, and the open step leads to Start a builder", () => {
+    const filed = firstRunSteps({ agentSignedIn: true, projects: 1, hasTask: true, firstResultAt: null });
+    const none = withBuilderStep(filed, false)!;
+    expect(none.map(one => [one.key, one.done])).toEqual([["agent", true], ["project", true], ["builder", false], ["task", true]]);
+    expect(none.every(one => one.done)).toBe(false);
+    expect(none.find(one => one.key === "builder")!.action).toEqual({ kind: "link", label: "Start a builder", href: "/system#builder" });
+    const connected = withBuilderStep(filed, true)!;
+    expect(connected.every(one => one.done && one.action === null)).toBe(true);
+    expect(withBuilderStep(null, false)).toBeNull();
   });
 
   test("the list retires after the first Ready result", () => {

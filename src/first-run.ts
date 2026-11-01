@@ -1,5 +1,5 @@
 /**
- * The first run: three plain steps to a first result, and three first tasks
+ * The first run: four plain steps to a first result, and three first tasks
  * to try. Everything here is derived from live facts on each render; the
  * list retires permanently with the first Ready result (the
  * 'first-success-at' installation fact). A suggestion only drafts words in
@@ -9,6 +9,7 @@ import { run } from "./exec.js";
 import { hardenedGit } from "./teardown-git.js";
 import type { Runner } from "./backend.js";
 import { githubIssues } from "./issues.js";
+import { START_BUILDER_HREF } from "./needs-you.js";
 
 export const SIGN_IN_COMMAND = "claude auth login";
 export const SANDBOX_COMMAND = "npx toolroll demo";
@@ -33,11 +34,11 @@ export function signInCommandFor(states: { claude: SignInState; codex: SignInSta
 
 export type FirstRunAction = { kind: "link"; label: string; href: string } | { kind: "command"; command: string };
 /** `checking`: the answer is not in yet, so the step is shown neither done nor to do. */
-export type FirstRunStep = { key: "agent" | "project" | "task"; title: string; done: boolean; action: FirstRunAction | null; checking?: true };
+export type FirstRunStep = { key: "agent" | "project" | "builder" | "task"; title: string; done: boolean; action: FirstRunAction | null; checking?: true };
 /** agentSignedIn is null until this machine's first sign-in check has answered. */
 export type FirstRunFacts = { agentSignedIn: boolean | null; projects: number; hasTask: boolean; firstResultAt: string | null; signInCommand?: string };
 
-/** The three steps, each done or with the one action that does it; null once the first result has arrived. */
+/** The steps (the builder step is added by withBuilderStep), each done or with the one action that does it; null once the first result has arrived. */
 export function firstRunSteps(facts: FirstRunFacts): FirstRunStep[] | null {
   if (facts.firstResultAt !== null) return null;
   const project = facts.projects > 0;
@@ -47,6 +48,16 @@ export function firstRunSteps(facts: FirstRunFacts): FirstRunStep[] | null {
     { key: "project", title: "Project added", done: project, action: project ? null : { kind: "link", label: "Add a project", href: "/projects" } },
     { key: "task", title: "Your first task", done: facts.hasTask, action: facts.hasTask ? null : { kind: "link", label: "New task", href: "/tasks/new" } },
   ];
+}
+
+/** The builder step, before the first task: under `toolroll serve` nothing connects a builder, and a task filed then
+ * waits forever, so the steps never all read done without one. It leads to Start a builder, which shows the command. */
+export function withBuilderStep(steps: FirstRunStep[] | null, connected: boolean): FirstRunStep[] | null {
+  if (steps === null) return null;
+  const builder: FirstRunStep = { key: "builder", title: "Builder connected", done: connected,
+    action: connected ? null : { kind: "link", label: "Start a builder", href: START_BUILDER_HREF } };
+  const task = steps.findIndex(one => one.key === "task");
+  return task < 0 ? [...steps, builder] : [...steps.slice(0, task), builder, ...steps.slice(task)];
 }
 
 export type OpenIssue = { number: number; title: string };

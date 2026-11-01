@@ -7,7 +7,7 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, existsSync, statSync, readFileSync, writeFileSync, realpathSync, readdirSync, symlinkSync } from "node:fs";
-import { tmpdir, userInfo } from "node:os";
+import { homedir, tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import { execFileSync } from "node:child_process";
@@ -257,11 +257,27 @@ describe("toolroll up", () => {
     const [, secret = ""] = readFileSync(join(base, "up-login.txt"), "utf8").trim().split(" ");
     expect(greeting).not.toContain(secret);
     expect(greeting).not.toContain("/login/once/");
+    // Every start says where the password is saved and the exact command that shows it, whether or not the browser
+    // opened, and never the password itself.
+    const showsPassword = (said: string): void => {
+      const command = /^Your password: run `cat (\S+)`$/m.exec(said);
+      expect(command, said).not.toBeNull();
+      expect(command![1]!.replace(/^~(?=\/)/, homedir())).toBe(join(base, "up-login.txt"));
+    };
+    showsPassword(greeting);
     // A person at a terminal reads at most one plain sentence about containment; --verbose adds the exact status.
     expect(lines.join("\n")).not.toContain("watch: containment: ");
     expect(lines.filter(line => line.startsWith("Agents run without Linux process containment")).length).toBeLessThanOrEqual(1);
     // onboard names the console where up last served it.
     expect(JSON.parse(readFileSync(join(base, "up-console.json"), "utf8"))).toMatchObject({ url: `http://127.0.0.1:${PORT + 15}/` });
+    lines = [];
+    expect(await runOperate("up", ["--repo", repo, "--port", String(PORT + 18), "--for", "1200", "--no-open"], line => lines.push(line), {
+      databaseFile: db,
+      upSeams: { terminal: true, env: {}, openBrowser: url => opened.push(url) },
+    })).toBe(0);
+    expect(opened).toHaveLength(1);
+    showsPassword(lines.join("\n"));
+    expect(lines.join("\n")).not.toContain(secret);
     lines = [];
     expect(await runOperate("up", ["--repo", repo, "--port", String(PORT + 17), "--for", "1200", "--verbose"], line => lines.push(line), {
       databaseFile: db,

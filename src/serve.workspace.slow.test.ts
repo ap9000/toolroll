@@ -401,6 +401,13 @@ describe("workspace package 1: one navigation shell, Work views, and one truthfu
     await agree(id, "needs-approval", "Approve plan", "Approve & start");
     approve(store, id, "alex", now, store.getScope(id)!.digest, approverToken);
     await agree(id, "no-worker-registered", "Connect a builder");
+    // Connect a builder leads to Start a builder and its command, never back to the task's own page.
+    for (const path of ["/work", `/t/${id}`]) {
+      const shown = await page(cookie, path);
+      expect(shown, path).toMatch(/<a [^>]*href="\/system#builder"[^>]*>Connect a builder/);
+      expect(shown, path).not.toMatch(/<a [^>]*href="[^"]*#run-status"[^>]*>Connect a builder/);
+    }
+    expect(await page(cookie, "/system")).toMatch(/<section id="builder"[^>]*><h2 id="builder-heading">Start a builder<\/h2>[\s\S]*>toolroll up<\/code>/);
     const blocker = seedTask('t-before-status', 'First task', alpha);
     store.addEdge(id, 't-before-status');
     await agree(id, 'waiting-dependency', 'View task details');
