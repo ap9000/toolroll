@@ -301,7 +301,7 @@ import { isTaskSize, legOf, projectRoute, routeDigestOf, routeWords, TASK_SIZES,
 import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runner.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
 import { effectiveConcurrency, maySlotTake, parseProjectConcurrency, PROJECT_CONCURRENCY_DEFAULT, ProjectPasses, projectConcurrency, saveProjectConcurrency, savedProjectConcurrency, type SlotFacts } from "./project-concurrency.js";
-import { activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, loadWebhookTargets, effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, saveConsoleUrl, savePrimary } from "./webhooks.js";
+import { activeWebhookTargets, webhookPass, LEGACY_WEBHOOK_WARNING, loadWebhookTargets, effectivePrimary, isMessagingChannel, loadConsoleUrl, phoneOrigin, readUpConsoleUrl, saveConsoleUrl, savePrimary, UP_CONSOLE_FILE } from "./webhooks.js";
 import { auditOf, inspectionOf, isProviderId, MONEY_CAPABILITIES, PROVIDER_IDS, validModelId, validateSpec, type ProviderAudit, type ProviderId, ALL_CREDENTIAL_ENV } from "./provider.js";
 import { attestProvider, attestationOf, versionInRange, type AttestOutcome, type AttestationRange } from "./attest.js";
 import {
@@ -7462,8 +7462,6 @@ export function openBrowser(url: string): void {
   }
 }
 
-/** Where `up` last served its console, kept beside the database so `onboard` names the same address. */
-const UP_CONSOLE_FILE = "up-console.json";
 
 function recordUpConsoleUrl(dir: string, url: string, now: Date): void {
   try {
@@ -7472,15 +7470,6 @@ function recordUpConsoleUrl(dir: string, url: string, now: Date): void {
     renameSync(temporary, file);
   } catch {
     // A display fact: a failed write only leaves onboard on the default port.
-  }
-}
-
-export function readUpConsoleUrl(dir: string): string | null {
-  try {
-    const parsed = JSON.parse(readFileSync(join(dir, UP_CONSOLE_FILE), "utf8")) as { url?: unknown };
-    return typeof parsed.url === "string" && /^https?:\/\/[^\s]+$/.test(parsed.url) ? parsed.url.replace(/\/+$/, "") : null;
-  } catch {
-    return null;
   }
 }
 

@@ -22,8 +22,10 @@
  *   approves it in Toolroll, or with their own two taps in their paired chat where they turned approving from chat
  *   on (chat-decide.ts), bound to the exact scope the card showed.
  *
- * Beside each request it writes `<id>.task.json` (`youi.request-task/v1`): the task, its link and its status, when
- * filed and whenever the status changes. That is the only file it writes in the checkout: written whole (a temporary
+ * Beside each request it writes `<id>.task.json` (`youi.request-task/v1`): the task and its status, and, when the
+ * console has an address (the one the installation names, else this machine's own console where `up` serves it, on
+ * loopback), the task's link and `home`, where a person approves all waiting work. It is written when filed, whenever
+ * the status changes, and once more when that address changes. That is the only file it writes in the checkout: written whole (a temporary
  * file in the same folder, then renamed over), refused when the folder or the target is a link, never the request
  * itself. The status is also kept in the store; nothing Toolroll decides reads the file back.
  *
@@ -41,9 +43,9 @@ import { canonicalProject } from "./project.js";
 import { scanForSecrets } from "./evidence.js";
 import { hasDisguisedText } from "./decision.js";
 import { storedTaskStatus } from "./flow-card-task.js";
-import { loadConsoleUrl } from "./webhooks.js";
+import { loadConsoleUrl, localConsoleUrl } from "./webhooks.js";
 import type { Headline } from "./task-status.js";
-import { readYouiyouxRequest, YOUIYOUX_CARD_KIND, YOUIYOUX_FILED_VIA, YOUIYOUX_HOME_PATH, type YouiyouxRequest, type YouiyouxRequestTask, type YouiyouxTaskStatus } from "./contracts/youiyoux-request.js";
+import { readYouiyouxRequest, readYouiyouxRequestTask, YOUIYOUX_CARD_KIND, YOUIYOUX_FILED_VIA, YOUIYOUX_HOME_PATH, type YouiyouxRequest, type YouiyouxRequestTask, type YouiyouxTaskStatus } from "./contracts/youiyoux-request.js";
 
 export { YOUIYOUX_FILED_VIA };
 /** Who files the tasks: an automation, like a flow trigger. */
@@ -251,14 +253,23 @@ export function youiyouxOnboardLine(store: Store, repo: string): string | null {
 
 // ------------------------------------------------------------ the status file
 
-/** The task's link in the console the installation names (CONSOLE_URL or the console-url file); null without one. */
-export function taskLink(env: Record<string, string | undefined>, dir: string | null, taskId: string): string | null {
-  const configured = dir === null ? null : loadConsoleUrl(env, dir);
-  if (configured === null) return null;
+/** The console the links name: the address the installation names (CONSOLE_URL or the console-url file), else, with
+ * none named, this machine's own console where `up` serves it (loopback http only, never a guessed host); null without
+ * either. Either way http(s) with no credentials, query or fragment. */
+export function consoleBase(env: Record<string, string | undefined>, dir: string | null): string | null {
+  if (dir === null) return null;
+  const given = loadConsoleUrl(env, dir) ?? localConsoleUrl(dir);
+  if (given === null) return null;
   let url: URL;
-  try { url = new URL(configured); } catch { return null; }
+  try { url = new URL(given); } catch { return null; }
   if ((url.protocol !== "https:" && url.protocol !== "http:") || url.username !== "" || url.password !== "" || url.search !== "" || url.hash !== "") return null;
-  return `${url.origin}${url.pathname.replace(/\/+$/, "")}/t/${encodeURIComponent(taskId)}`;
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+}
+
+/** The task's page in that console; null without one. */
+export function taskLink(env: Record<string, string | undefined>, dir: string | null, taskId: string): string | null {
+  const base = consoleBase(env, dir);
+  return base === null ? null : `${base}/t/${encodeURIComponent(taskId)}`;
 }
 
 /**
@@ -272,6 +283,7 @@ export function writeStatusFile(repo: string, body: YouiyouxRequestTask): { ok: 
   if (!folder.ok) return folder;
   const plain = (path: string): boolean | null => { try { const stats = lstatSync(path); return !stats.isSymbolicLink() && stats.isFile(); } catch (error) { return isMissing(error) ? null : false; } };
   if (plain(join(folder.dir, `${body.request}.json`)) !== true) return { ok: false, problem: "The request file is gone." };
+  if (!readYouiyouxRequestTask(body).ok) return { ok: false, problem: "The status didn't meet its own contract, so it wasn't written." };
   const target = join(folder.dir, `${body.request}.task.json`);
   if (plain(target) === false) return { ok: false, problem: `${body.request}.task.json isn't a plain file, so it wasn't replaced.` };
   const temporary = join(folder.dir, `.${body.request}.task.json.${randomBytes(6).toString("hex")}.tmp`);
@@ -299,16 +311,20 @@ function statusOf(store: Store, taskId: string, repo: string, now: Date): { stat
   return read === null ? null : { status: STATUS_OF_HEADLINE[read.status.headline], detail: read.status.headline };
 }
 
+/** Write a filed task's status where it changed, where its last write failed, or where the console its links name
+ * changed since (`written_base`: '' for none), so a file written before a console address existed gets its links. */
 function writeStatus(store: Store, repo: string, request: string, taskId: string, now: Date, io: YouiyouxIo, force: boolean): boolean {
-  const known = store.handle.prepare("SELECT status, written_at FROM youiyoux_request WHERE repo = ? AND request = ?").get(repo, request);
+  const known = store.handle.prepare("SELECT status, written_at, written_base FROM youiyoux_request WHERE repo = ? AND request = ?").get(repo, request);
   const status = statusOf(store, taskId, repo, now);
   if (status === null) return false;
-  if (!force && known?.["status"] === status.status && known?.["written_at"] !== null) return false;
-  const body: YouiyouxRequestTask = { schema: "youi.request-task/v1", request, runner: "Toolroll", task: { id: taskId, url: taskLink(io.env, io.dir, taskId) },
-    status: status.status, detail: status.detail, updatedAt: now.toISOString() };
+  const base = consoleBase(io.env, io.dir);
+  if (!force && known?.["status"] === status.status && known?.["written_at"] !== null && known?.["written_base"] === (base ?? "")) return false;
+  const body: YouiyouxRequestTask = { schema: "youi.request-task/v1", request, runner: "Toolroll", task: { id: taskId, url: base === null ? null : `${base}/t/${encodeURIComponent(taskId)}` },
+    ...(base === null ? {} : { home: `${base}${YOUIYOUX_HOME_PATH}` }), status: status.status, detail: status.detail, updatedAt: now.toISOString() };
   const wrote = writeStatusFile(repo, body);
-  store.handle.prepare(`UPDATE youiyoux_request SET status = ?, detail = ?, status_at = ?, written_at = CASE WHEN ? THEN ? ELSE written_at END, write_problem = ?
-    WHERE repo = ? AND request = ?`).run(status.status, status.detail, now.toISOString(), wrote.ok ? 1 : 0, now.toISOString(), wrote.ok ? null : wrote.problem, repo, request);
+  store.handle.prepare(`UPDATE youiyoux_request SET status = ?, detail = ?, status_at = ?, written_at = CASE WHEN ? THEN ? ELSE written_at END,
+    written_base = CASE WHEN ? THEN ? ELSE written_base END, write_problem = ? WHERE repo = ? AND request = ?`)
+    .run(status.status, status.detail, now.toISOString(), wrote.ok ? 1 : 0, now.toISOString(), wrote.ok ? 1 : 0, base ?? "", wrote.ok ? null : wrote.problem, repo, request);
   return wrote.ok;
 }
 
@@ -399,9 +415,9 @@ export function runYouiyouxIntake(store: Store, given: string, now: Date, io: Yo
     } else if (made.made === "skipped") pass.skipped++;
   }
   if (filedNow.length > 0) noteYouiyouxFiled(store, filedNow, now);
-  // Each filed task's status, where it changed (or its last write failed).
-  const filed = store.handle.prepare(`SELECT request, task_id FROM youiyoux_request WHERE repo = ? AND task_id IS NOT NULL AND (status IS NULL OR status <> 'done' OR written_at IS NULL)
-    ORDER BY status_at LIMIT ?`).all(repo, STATUS_PER_PASS);
+  // Each filed task's status, where it changed, its last write failed, or the console its links name changed.
+  const filed = store.handle.prepare(`SELECT request, task_id FROM youiyoux_request WHERE repo = ? AND task_id IS NOT NULL
+    AND (status IS NULL OR status <> 'done' OR written_at IS NULL OR written_base IS NOT ?) ORDER BY status_at LIMIT ?`).all(repo, consoleBase(io.env, io.dir) ?? "", STATUS_PER_PASS);
   for (const one of filed) {
     try { if (writeStatus(store, repo, String(one["request"]), String(one["task_id"]), now, io, false)) pass.updated++; }
     catch (error) { pass.problems.push(`youiyoux ${String(one["request"])}: ${error instanceof Error ? error.message : "status unreadable"}`); }

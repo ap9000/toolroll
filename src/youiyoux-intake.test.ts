@@ -15,7 +15,7 @@ import { fileTaskProposal } from "./proposal.js";
 import { applyModeToNewFiling } from "./plan-auto.js";
 import { modeDigestOf, modeTermsJson, presetTerms } from "./modes.js";
 import { admitProject } from "./project-admission.js";
-import { readYouiyouxRequest } from "./contracts/youiyoux-request.js";
+import { readYouiyouxRequest, readYouiyouxRequestTask } from "./contracts/youiyoux-request.js";
 import { fileYouiyouxRequest, requestPassOf, REQUEST_BYTES, runYouiyouxIntake, writeStatusFile, safeTouches, setYouiyouxIntake, youiyouxState } from "./youiyoux-intake.js";
 
 const NOW = new Date("2026-11-01T12:00:00.000Z");
@@ -263,11 +263,60 @@ describe("the status beside the request", () => {
     expect(readdirSync(requests()).sort()).toEqual([`${ID}.json`, `${ID}.task.json`]);
   });
 
-  test("its link is the console's own address when the installation names one", () => {
+  test("its links are the console's own address when the installation names one", () => {
     writeFileSync(join(base, "console-url"), "https://toolroll.example/\n");
+    writeFileSync(join(base, "up-console.json"), JSON.stringify({ url: "http://127.0.0.1:4180/" }));
     save(`${ID}.json`, request());
     pass();
-    expect(statusFile()["task"]).toEqual({ id: taskOf(), url: `https://toolroll.example/t/${taskOf()}` });
+    expect(statusFile()).toMatchObject({ task: { id: taskOf(), url: `https://toolroll.example/t/${taskOf()}` }, home: "https://toolroll.example/work?view=needs-you" });
+  });
+
+  test.each([
+    ["this machine's console on loopback", "http://127.0.0.1:4180/", "http://127.0.0.1:4180"],
+    ["localhost", "http://localhost:4312", "http://localhost:4312"],
+    ["a tailnet address", "http://100.64.0.7:4180/", null],
+    ["a public host", "http://toolroll.example:4180/", null],
+    ["https on loopback", "https://127.0.0.1:4180/", null],
+    ["an address with a password", "http://alex:pw@127.0.0.1:4180/", null],
+  ])("with no address named, the links fall back to %s only where it is loopback http", (_what, served, origin) => {
+    writeFileSync(join(base, "up-console.json"), JSON.stringify({ url: served, at: NOW.toISOString() }));
+    save(`${ID}.json`, request());
+    pass();
+    const file = statusFile();
+    expect(file["task"]).toEqual({ id: taskOf(), url: origin === null ? null : `${origin}/t/${taskOf()}` });
+    if (origin === null) expect(file).not.toHaveProperty("home");
+    else expect(file["home"]).toBe(`${origin}/work?view=needs-you`);
+  });
+
+  test("a status written before the console had an address is written again with its links, once", () => {
+    save(`${ID}.json`, request());
+    pass();
+    expect(statusFile()).toMatchObject({ task: { url: null }, updatedAt: NOW.toISOString() });
+    expect(statusFile()).not.toHaveProperty("home");
+    writeFileSync(join(base, "up-console.json"), JSON.stringify({ url: "http://127.0.0.1:4180/" }));
+    pass(later(1));
+    expect(statusFile()).toMatchObject({ task: { url: `http://127.0.0.1:4180/t/${taskOf()}` }, home: "http://127.0.0.1:4180/work?view=needs-you", status: "needs-you", updatedAt: later(1).toISOString() });
+    pass(later(2));
+    expect(statusFile()["updatedAt"]).toBe(later(1).toISOString());
+  });
+
+  test("a status that breaks its own contract is never written", () => {
+    save(`${ID}.json`, request());
+    const body = { schema: "youi.request-task/v1" as const, request: ID, runner: "Toolroll" as const, task: { id: "t-1", url: null }, home: "javascript:alert(1)", status: "queued" as const, detail: "Queued", updatedAt: NOW.toISOString() };
+    expect(writeStatusFile(repo, body)).toMatchObject({ ok: false, problem: expect.stringMatching(/contract/) });
+    expect(existsSync(join(requests(), `${ID}.task.json`))).toBe(false);
+  });
+
+  test.each([
+    ["no links at all", {}, true],
+    ["its links", { task: { id: "t-1", url: "http://127.0.0.1:4180/t/t-1" }, home: "https://toolroll.example/work?view=needs-you" }, true],
+    ["a home with a password", { home: "https://alex:pw@toolroll.example/work" }, false],
+    ["a home that isn't http", { home: "javascript:alert(1)" }, false],
+    ["a home over 2,000 characters", { home: `https://toolroll.example/${"a".repeat(2000)}` }, false],
+    ["a task link with a user name", { task: { id: "t-1", url: "https://alex@toolroll.example/t/t-1" } }, false],
+  ])("the status contract takes %s: %s", (_what, change, ok) => {
+    const body = { schema: "youi.request-task/v1", request: ID, runner: "Toolroll", task: { id: "t-1", url: null }, status: "queued", detail: "Queued", updatedAt: NOW.toISOString(), ...change };
+    expect(readYouiyouxRequestTask(body).ok).toBe(ok);
   });
 
   test("a link where the status goes is refused, and what it points at is left alone", () => {

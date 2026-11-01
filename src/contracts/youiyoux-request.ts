@@ -54,15 +54,31 @@ export function readYouiyouxRequest(raw: unknown): ContractResult<YouiyouxReques
   return parseContract(youiyouxRequestSchema, raw);
 }
 
-/** What Toolroll writes beside a request (`youi.request-task/v1`): the task it became and how that task stands. */
+/** What Toolroll writes beside a request (`youi.request-task/v1`): the task it became, how that task stands, and, when
+ * the console has an address, the task's link and `home`, where a person sees and approves all waiting work. */
 export const YOUIYOUX_TASK_STATUSES = ["queued", "needs-you", "building", "ready", "done", "failed", "stopped"] as const;
 export type YouiyouxTaskStatus = (typeof YOUIYOUX_TASK_STATUSES)[number];
-export type YouiyouxRequestTask = {
-  schema: "youi.request-task/v1";
-  request: string;
-  runner: "Toolroll";
-  task: { id: string; url: string | null };
-  status: YouiyouxTaskStatus;
-  detail: string;
-  updatedAt: string;
-};
+
+/** A link youiyoux opens: http or https, at most 2,000 characters, with no user name or password in it. */
+export const youiyouxLinkSchema = z.string().max(2000).refine(value => {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") && url.username === "" && url.password === "";
+  } catch { return false; }
+}, "an http or https address with no credentials");
+
+export const youiyouxRequestTaskSchema = z.strictObject({
+  schema: z.literal("youi.request-task/v1"),
+  request: z.string().regex(REQUEST_ID),
+  runner: z.literal("Toolroll"),
+  task: z.strictObject({ id: z.string().min(1).max(120), url: youiyouxLinkSchema.nullable() }),
+  home: youiyouxLinkSchema.optional(),
+  status: z.enum(YOUIYOUX_TASK_STATUSES),
+  detail: z.string().max(200),
+  updatedAt: when,
+});
+export type YouiyouxRequestTask = z.infer<typeof youiyouxRequestTaskSchema>;
+
+export function readYouiyouxRequestTask(raw: unknown): ContractResult<YouiyouxRequestTask> {
+  return parseContract(youiyouxRequestTaskSchema, raw);
+}

@@ -758,7 +758,8 @@ export const V141_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
  * has looked at: a person's on/off choice (`enabled` NULL: automatic, on while the project uses youiyoux) and the last
  * pass's answer (whether the project uses youiyoux, how many request files couldn't be read, and the problem, if any).
  * `youiyoux_request` is one row per request taken, keyed by project and request id: the task it became (NULL: left
- * out, `note` says why), never filed again, and the status last written beside it. New tables only. */
+ * out, `note` says why), never filed again, and the status last written beside it, with the console address its links
+ * named ('' for none). New tables only. */
 export const V142_SCHEMA = `
 CREATE TABLE IF NOT EXISTS youiyoux_intake (
   repo        TEXT PRIMARY KEY,
@@ -780,6 +781,7 @@ CREATE TABLE IF NOT EXISTS youiyoux_request (
   detail        TEXT,
   status_at     TEXT,
   written_at    TEXT,
+  written_base  TEXT,
   write_problem TEXT,
   PRIMARY KEY (repo, request),
   UNIQUE (task_id)
