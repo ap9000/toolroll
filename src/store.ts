@@ -123,6 +123,7 @@ import { PULL_REQUEST_SCHEMA } from "./pull-request-schema.js";
 import { chatTurnAmountOf, combineReportedModels, providerTurnsOf, reportedCostUsdOf, reportedModelOf, runAmountOf, type ReportedAmount } from "./reported-usage.js";
 import { usageOf } from "./run-efficiency.js";
 import { YOUIYOUX_FILED_VIA } from "./contracts/youiyoux-request.js";
+import { shownTermsDigest } from "./chat-terms.js";
 
 // PR #263 follow-up: the built-ins the Store money seal uses, captured as this module is evaluated, so code that later
 // replaces `Object.defineProperty` and the like can't fool the seal or the lock (lockStoreMoneyMethods refuses when
@@ -8717,8 +8718,9 @@ export class Store {
    * exactly what the signed digest was bound to. Returns false when the
    * scope vanished mid-ceremony. */
   sealScopeApproval(taskId: string, by: string, now: Date, mutation: Mutation = {}, basis?: { kind: "mode" | "chat" | "grant" | "schedule" | "auto-check" | "auto-green"; modeDigest: string;
-    /** A chat seal of a deploy gate: the release card it came from (chat-management.md §0a.5). */
-    card?: "release"; cardDigest?: string }, approverKind?: ApproverKind): boolean {
+    /** A chat seal of a deploy gate: the release card it came from (chat-management.md §0a.5). A chat seal of a task
+     * filed from outside text: `terms`, and the digest of every word the card showed (chat-terms.ts). */
+    card?: "release" | "terms"; cardDigest?: string }, approverKind?: ApproverKind): boolean {
     return (
       this.once(mutation, "sealScopeApproval", () => {
         // ONLY A PERSON'S SEAL HAS NO BASIS (approval policy, phase 1): with none given this is the person's
@@ -8749,10 +8751,12 @@ export class Store {
             .get(taskId);
           if (writtenByLead !== undefined) return false;
           // THE OUTSIDE-REQUEST QUARANTINE (youiyoux-intake.ts): a task filed from a youiyoux change request is text
-          // anyone who can write the project's folder wrote. Its provenance is immutable, so no road around this
-          // exists: a mode, a grant, a schedule, a chat tap or an automatic seal never approves it; only a person's
-          // own ceremony on the page that shows every word.
-          if (this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA) return false;
+          // anyone who can write the project's folder wrote, so only a person who read every word of it approves it.
+          // Its provenance is immutable, so no road around this exists. A mode, a grant, a schedule, auto-check and
+          // auto-green (approvals no person read) never seal it. A person's own ceremony does. So does their paired-
+          // chat tap, only with the digest of every word the card showed (`terms`, chat-terms.ts), recomputed below
+          // from the live scope: a card that cut a word, or terms that changed since, seal nothing.
+          if (basis.kind !== "chat" && this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA) return false;
           // CHECK ACCESS (v132, check-access.ts): a scope whose checks reach beyond the fence (sign-ins, or no sandbox at
           // all) seals only on a person's password ceremony — never a mode, a grant, a chat confirmation or a carry.
           const profileText = this.db.prepare("SELECT profile_json FROM task_scope WHERE task_id = ?").get(taskId)?.["profile_json"];
@@ -8806,6 +8810,9 @@ export class Store {
         if (!purpose.ok) return false;
         if (purpose.purpose !== null && basis !== undefined && basis.kind !== "chat") return false;
         if (deployGate && basis?.kind === "chat" && !(basis.card === "release" && typeof basis.cardDigest === "string" && /^[0-9a-f]{64}$/.test(basis.cardDigest))) return false;
+        // The outside-request quarantine's chat road (above): the card showed every word of these live terms.
+        if (basis?.kind === "chat" && this.filedViaOf(taskId) === YOUIYOUX_FILED_VIA
+          && !(basis.card === "terms" && typeof basis.cardDigest === "string" && basis.cardDigest === shownTermsDigest(readScope(working)))) return false;
         // AUTOMATIC RELEASE SEALS (auto-approve-green.md): only on a release task (a candidate and release terms signed
         // in), only naming the evidence row the plane wrote for exactly this task, kind, digest and candidate.
         const automatic = basis?.kind === "auto-check" || basis?.kind === "auto-green";

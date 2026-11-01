@@ -9,13 +9,14 @@ import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
-import { addApprover } from "./scope.js";
+import { addApprover, propose } from "./scope.js";
+import { shownTermsDigest } from "./chat-terms.js";
 import { fileTaskProposal } from "./proposal.js";
 import { applyModeToNewFiling } from "./plan-auto.js";
 import { modeDigestOf, modeTermsJson, presetTerms } from "./modes.js";
 import { admitProject } from "./project-admission.js";
 import { readYouiyouxRequest } from "./contracts/youiyoux-request.js";
-import { fileYouiyouxRequest, REQUEST_BYTES, runYouiyouxIntake, writeStatusFile, safeTouches, setYouiyouxIntake, youiyouxState } from "./youiyoux-intake.js";
+import { fileYouiyouxRequest, requestPassOf, REQUEST_BYTES, runYouiyouxIntake, writeStatusFile, safeTouches, setYouiyouxIntake, youiyouxState } from "./youiyoux-intake.js";
 
 const NOW = new Date("2026-11-01T12:00:00.000Z");
 const later = (minutes: number) => new Date(NOW.getTime() + minutes * 60_000);
@@ -78,6 +79,21 @@ describe("filing", () => {
     save(`${ID}.json`, request(ID, { updatedAt: later(2).toISOString() }, { title: "Something else entirely" }));
     expect(pass(later(2))).toMatchObject({ filed: 0 });
     expect(filed()).toEqual([{ request: ID, task_id: id, note: null, status: "needs-you" }]);
+  });
+
+  test("a pass says what it filed once: one card for all its tasks, and a later pass its own", () => {
+    save(`${ID}.json`, request());
+    save("r-1111111111.json", request("r-1111111111"));
+    expect(pass().filed).toBe(2);
+    const cards = () => store.handle.prepare("SELECT task_id, push_class, link, subject FROM notification WHERE kind = 'youiyoux-requests' ORDER BY id").all().map(row => ({ ...row }));
+    expect(cards()).toEqual([{ task_id: taskOf(), push_class: "attention", link: "/work?view=needs-you", subject: "2 youiyoux change requests wait for your approval" }]);
+    expect(requestPassOf(store, taskOf("r-1111111111"))).toEqual([taskOf(), taskOf("r-1111111111")]);
+    expect(pass(later(1)).filed).toBe(0);
+    expect(cards()).toHaveLength(1);
+    save("r-2222222222.json", request("r-2222222222"));
+    expect(pass(later(2)).filed).toBe(1);
+    expect(cards().map(one => one["subject"])).toEqual(["2 youiyoux change requests wait for your approval", "A youiyoux change request waits for your approval"]);
+    expect(requestPassOf(store, taskOf("r-2222222222"))).toEqual([taskOf("r-2222222222")]);
   });
 
   test("two passes that read the same request before either filed it make one task", () => {
@@ -188,7 +204,7 @@ describe("approval", () => {
     return digest;
   };
 
-  test("a live mode that approves its signer's filings approves the signer's own, never a request's", () => {
+  test("a live mode that approves its signer's filings approves the signer's own, never a request's; a person's chat tap may", () => {
     const digest = signMode();
     const own = fileTaskProposal(store, { title: "Alex's own", repo, goal: "Change one line", touches: ["src/a.ts"], acceptance: [{ id: "c1", statement: "it works", how: null, evidence: ["check"] }],
       filedVia: "console", filedBy: { name: "alex", kind: "person" }, planning: "skip" }, NOW);
@@ -200,10 +216,31 @@ describe("approval", () => {
     expect(pass().filed).toBe(1);
     const id = taskOf();
     applyModeToNewFiling(store, id, "alex", NOW);
-    for (const kind of ["mode", "grant", "schedule", "chat"] as const) expect(store.sealScopeApproval(id, "alex", NOW, {}, { kind, modeDigest: digest }), kind).toBe(false);
+    // Approvals no person looked at never seal it.
+    for (const kind of ["mode", "grant", "schedule", "auto-check", "auto-green"] as const) expect(store.sealScopeApproval(id, "alex", NOW, {}, { kind, modeDigest: digest }), kind).toBe(false);
     expect(store.getScope(id)!.approvedAt).toBeNull();
-    // A person's own yes is the one road.
+    // A person's own yes does: their ceremony, or their two taps in chat (chat-decide.ts decides when one is offered).
     expect(store.sealScopeApproval(id, "alex", NOW)).toBe(true);
+  });
+
+  test("a chat tap seals it only with the digest of every word the card showed, recomputed from the live terms", () => {
+    save(`${ID}.json`, request());
+    expect(pass().filed).toBe(1);
+    const id = taskOf();
+    const shown = shownTermsDigest(store.getScope(id)!);
+    const tap = (card: { card?: "release" | "terms"; cardDigest?: string }) => store.sealScopeApproval(id, "alex", NOW, {}, { kind: "chat", modeDigest: "m".repeat(64), ...card });
+    // No evidence, another card's kind, or words the card didn't show: nothing seals.
+    expect(tap({})).toBe(false);
+    expect(tap({ card: "release", cardDigest: shown })).toBe(false);
+    expect(tap({ card: "terms", cardDigest: "0".repeat(64) })).toBe(false);
+    // Terms changed after the card was drawn: the digest it carries is stale.
+    const scope = store.getScope(id)!;
+    propose(store, { taskId: id, goal: `${scope.goal}\nAlso delete the tests.`, outOfScope: scope.outOfScope, touches: scope.touches, acceptance: scope.acceptance, now: later(1) });
+    expect(tap({ card: "terms", cardDigest: shown })).toBe(false);
+    expect(store.getScope(id)!.approvedAt).toBeNull();
+    // The card that showed these exact words seals, as the person's own chat yes.
+    expect(tap({ card: "terms", cardDigest: shownTermsDigest(store.getScope(id)!) })).toBe(true);
+    expect(store.getScope(id)).toMatchObject({ approvalBasis: "chat", approvedBy: "alex" });
   });
 });
 

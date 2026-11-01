@@ -10,6 +10,11 @@ import { parseContract, type ContractResult } from "./contract.js";
 export const REQUEST_ID = /^r-[0-9a-f]{10}$/;
 /** The provenance every task filed from a request carries (task_ref.filed_via): immutable, and the seal reads it. */
 export const YOUIYOUX_FILED_VIA = "youiyoux";
+/** The one chat card a pass's filings make for a project (youiyoux-intake.ts), drawn by chat-decide.ts: the new tasks,
+ * Approve all and each one's own Approve and Open. */
+export const YOUIYOUX_CARD_KIND = "youiyoux-requests";
+/** Where a person sees and approves everything waiting on them in the console (flow-triggers.ts NEEDS_YOU_HREF). */
+export const YOUIYOUX_HOME_PATH = "/work?view=needs-you";
 const text = (max: number) => z.string().min(1).max(max);
 const who = z.object({ kind: z.enum(["person", "agent"]), name: text(100) });
 // The published schema's date-time: an ISO timestamp with a zone.

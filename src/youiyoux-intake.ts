@@ -1,5 +1,5 @@
 /**
- * youiyoux change requests become tasks (docs/guide/code.md, "Change requests from youiyoux").
+ * youiyoux change requests become tasks (docs/guide/getting-started.md, "Change requests from youiyoux").
  *
  * youiyoux is a design-system tool: in its hub a person points at a component on a screenshot of their app and asks
  * for a change, and it saves the request as `<project>/.youi/requests/<id>.json` (`youi.request/v1`). A project that
@@ -17,8 +17,10 @@
  * - text that looks like a key or password is left out (recorded once, never filed), as flow triggers do;
  * - a path the task may touch is kept only when youiyoux knew them all and every one is a plain relative path;
  * - the task is filed through the one filing door (proposal.ts) by the "youiyoux" automation, unplanned, and waits
- *   for a person: its provenance (`filed_via = 'youiyoux'`) keeps every automatic seal off it (store.ts, the
- *   outside-request quarantine), so no operating mode, grant or chat tap approves it.
+ *   for a person: its provenance (`filed_via = 'youiyoux'`) keeps every seal no person looked at off it (store.ts,
+ *   the outside-request quarantine), so no operating mode, grant, schedule or automatic seal approves it. A person
+ *   approves it in Toolroll, or with their own two taps in their paired chat where they turned approving from chat
+ *   on (chat-decide.ts), bound to the exact scope the card showed.
  *
  * Beside each request it writes `<id>.task.json` (`youi.request-task/v1`): the task, its link and its status, when
  * filed and whenever the status changes. That is the only file it writes in the checkout: written whole (a temporary
@@ -41,7 +43,7 @@ import { hasDisguisedText } from "./decision.js";
 import { storedTaskStatus } from "./flow-card-task.js";
 import { loadConsoleUrl } from "./webhooks.js";
 import type { Headline } from "./task-status.js";
-import { readYouiyouxRequest, YOUIYOUX_FILED_VIA, type YouiyouxRequest, type YouiyouxRequestTask, type YouiyouxTaskStatus } from "./contracts/youiyoux-request.js";
+import { readYouiyouxRequest, YOUIYOUX_CARD_KIND, YOUIYOUX_FILED_VIA, YOUIYOUX_HOME_PATH, type YouiyouxRequest, type YouiyouxRequestTask, type YouiyouxTaskStatus } from "./contracts/youiyoux-request.js";
 
 export { YOUIYOUX_FILED_VIA };
 /** Who files the tasks: an automation, like a flow trigger. */
@@ -340,6 +342,29 @@ export function fileYouiyouxRequest(store: Store, repo: string, request: Youiyou
 }
 
 /**
+ * One message for what a pass filed, however many: the person's paired chats draw it as one card (chat-decide.ts) that
+ * lists each new task, with Approve all and each one's own Approve and Open, and a phone push links to what needs
+ * them. Keyed by the pass's first task, so a pass says it once; the tasks are the ones filed with it (one project, one
+ * moment: requestPassOf). Titles are cleaned outside text, as filed.
+ */
+export function noteYouiyouxFiled(store: Store, taskIds: readonly string[], now: Date): void {
+  const first = store.lookupRef(taskIds[0]!);
+  if (first === null) return;
+  const titles = taskIds.map(id => store.getTask(id)?.title ?? id);
+  store.enqueueNotification({
+    dedupeKey: `${YOUIYOUX_CARD_KIND}:${first.id}`, kind: YOUIYOUX_CARD_KIND, pushClass: "attention", link: YOUIYOUX_HOME_PATH, source: { taskRef: first.id },
+    subject: taskIds.length === 1 ? "A youiyoux change request waits for your approval" : `${taskIds.length} youiyoux change requests wait for your approval`,
+    body: titles.map(title => `• ${title}`).join("\n"),
+  }, now);
+}
+
+/** The tasks one pass filed beside this one (one project, one moment), in request order; empty for any other task. */
+export function requestPassOf(store: Store, taskId: string): string[] {
+  return store.handle.prepare(`SELECT r.task_id FROM youiyoux_request me JOIN youiyoux_request r ON r.repo = me.repo AND r.filed_at = me.filed_at
+    WHERE me.task_id = ? AND r.task_id IS NOT NULL ORDER BY r.request LIMIT ?`).all(taskId, FILED_PER_PASS).map(row => String(row["task_id"]));
+}
+
+/**
  * One project's pass: read new change requests and file them, then write each filed task's status where it changed.
  * The folder read is the project in Toolroll's records that `given` resolves to; anything else is left alone.
  */
@@ -364,13 +389,16 @@ export function runYouiyouxIntake(store: Store, given: string, now: Date, io: Yo
     return pass;
   }
   pass.invalid = read.invalid.length;
+  const filedNow: string[] = [];
   for (const request of read.requests.slice(0, FILED_PER_PASS)) {
     const made = fileYouiyouxRequest(store, repo, request, now);
     if (made.made === "filed") {
       pass.filed++;
+      filedNow.push(made.taskId);
       if (writeStatus(store, repo, request.id, made.taskId, now, io, true)) pass.updated++;
     } else if (made.made === "skipped") pass.skipped++;
   }
+  if (filedNow.length > 0) noteYouiyouxFiled(store, filedNow, now);
   // Each filed task's status, where it changed (or its last write failed).
   const filed = store.handle.prepare(`SELECT request, task_id FROM youiyoux_request WHERE repo = ? AND task_id IS NOT NULL AND (status IS NULL OR status <> 'done' OR written_at IS NULL)
     ORDER BY status_at LIMIT ?`).all(repo, STATUS_PER_PASS);
