@@ -522,16 +522,17 @@ export function workOutcomeRows(store: Store, now: Date, access: WorkSummaryAcce
     ORDER BY sort_at DESC,root_ref DESC LIMIT $outcomeLimit
   ), amounts AS (
     -- reported-usage.ts runAmountOf, row for row: only evidenced billing on a run whose cost was reported is known;
-    -- an API run counts its priced spend as dollars, a subscription run its reported cost as usage, never dollars.
+    -- an API run counts its priced spend as dollars (a safe integer), a subscription run its reported cost as usage,
+    -- never dollars. TOTAL sums as a float, so no family's sum can overflow.
     SELECT m.root_ref,r.cost_usd,s.microusd,
       CASE WHEN r.billing_basis IS NOT 'evidence' OR COALESCE(r.cost_unknown,1)<>0 THEN 'unknown'
         WHEN s.billing='subscription' THEN 'subscription'
-        WHEN s.billing='api-key' AND typeof(s.microusd)='integer' AND s.microusd>=0 THEN 'api'
+        WHEN s.billing='api-key' AND typeof(s.microusd)='integer' AND s.microusd>=0 AND s.microusd<=9007199254740991 THEN 'api'
         ELSE 'unknown' END amount
     FROM selected f JOIN members m ON m.root_ref=f.root_ref JOIN run r ON r.task_ref=m.ref_id LEFT JOIN run_spend s ON s.run=r.id
   ), attempts AS (
     SELECT root_ref,COUNT(*) runs,COUNT(CASE WHEN amount='api' THEN 1 END) api_runs,
-      SUM(CASE WHEN amount='api' THEN microusd END) api_microusd,
+      TOTAL(CASE WHEN amount='api' THEN microusd END) api_microusd,
       COUNT(CASE WHEN amount='subscription' THEN 1 END) subscription_runs,
       SUM(CASE WHEN amount='subscription' AND typeof(cost_usd) IN ('integer','real') AND cost_usd>=0 THEN cost_usd END) subscription_usd
     FROM amounts GROUP BY root_ref

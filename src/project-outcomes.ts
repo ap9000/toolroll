@@ -80,14 +80,23 @@ export function projectOutcomes(store: Store, project: string, now: Date, access
     incompleteHistory: families.filter(one => one.state === 'history-unavailable').length, families };
 }
 
-/** The lead's page of one report: every aggregate unchanged, family rows in bounded pages with short titles, so
- * the reply always fits the tool-result cap (lead.ts) and the lead can read further with nextOffset. */
+/** The lead's page of one report: every aggregate unchanged, family rows in pages bounded by count AND by their
+ * serialized size, so the reply always fits the tool-result cap (lead.ts, converse.ts LEAD_TOOL_RESULT_CAP_BYTES) and
+ * the lead reads further with nextOffset. Long ids and titles are shortened; an over-long link is left out. */
 export const ACTIVITY_LEAD_PAGE = 10;
+export const ACTIVITY_LEAD_PAGE_BYTES = 12_000;
+const shorten = (value: string, max: number) => [...value].length > max ? `${[...value].slice(0, max - 1).join('')}…` : value;
+const embeddedBytes = (value: unknown) => Buffer.byteLength(JSON.stringify(JSON.stringify(value)), 'utf8');
 export function projectOutcomesPage(report: ProjectOutcomes, offset = 0) {
-  const start = Math.max(0, Math.min(offset, report.families.length));
-  const page = report.families.slice(start, start + ACTIVITY_LEAD_PAGE).map(one => ({
-    ...one, title: [...one.title].length > 80 ? `${[...one.title].slice(0, 79).join('')}…` : one.title }));
+  const start = Math.max(0, Math.min(Number.isSafeInteger(offset) ? offset : 0, report.families.length));
+  const page: (Omit<ActivityFamily, 'href'> & { href: string | null })[] = [];
+  const base = { ...report, families: page, familiesTotal: report.families.length, familiesOffset: start, nextOffset: null as number | null };
+  for (const one of report.families.slice(start, start + ACTIVITY_LEAD_PAGE)) {
+    const row = { ...one, root: shorten(one.root, 200), task: shorten(one.task, 200), title: shorten(one.title, 80), href: Buffer.byteLength(one.href) > 512 ? null : one.href };
+    page.push(row);
+    if (page.length > 1 && embeddedBytes(base) > ACTIVITY_LEAD_PAGE_BYTES) { page.pop(); break; }
+  }
   const next = start + page.length;
-  return { ...report, families: page, familiesTotal: report.families.length, familiesOffset: start,
-    nextOffset: next < report.families.length ? next : null };
+  base.nextOffset = next < report.families.length ? next : null;
+  return base;
 }

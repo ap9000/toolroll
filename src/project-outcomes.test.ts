@@ -78,8 +78,10 @@ test('costs follow the shared accounting: unreported charges and guessed billing
 test('the lead reads every aggregate and pages of family rows that always fit the tool-result cap', () => {
   store = openStore(':memory:');
   const f = outcomeFixture(store, repo, now);
-  const title = 'Ünïcødé "quoted" title that runs long '.repeat(20);
-  for (let i = 0; i < 40; i++) { const one = f.built(`${'x'.repeat(60)}-${String(i).padStart(3, '0')}`, { title }); f.complete(one); }
+  const title = 'Ünïcødé "quoted" 😀 title that runs long '.repeat(20);
+  // Worst cases: multibyte ids, and ids far longer than any page row should carry.
+  for (let i = 0; i < 20; i++) { const one = f.built(`${'界'.repeat(60)}-${String(i).padStart(3, '0')}`, { title }); f.complete(one); }
+  for (let i = 0; i < 20; i++) { const one = f.built(`${'y'.repeat(512)}-${String(i).padStart(3, '0')}`, { title }); f.complete(one); }
   const report = projectOutcomes(store, repo, now, access);
   expect(report.completed.count).toBe(40);
   const who = verifyApproverByPassword(store, 'inspector', f.password, [repo]);
@@ -93,10 +95,22 @@ test('the lead reads every aggregate and pages of family rows that always fit th
     expect(toolResultBytes(JSON.stringify(result.body))).toBeLessThanOrEqual(LEAD_TOOL_RESULT_CAP_BYTES);
     const body = result.body as ReturnType<typeof projectOutcomesPage>;
     expect([body.completed, body.cost, body.familiesTotal]).toEqual([report.completed, report.cost, 40]);
+    expect(body.families.length).toBeGreaterThan(0);
     seen.push(...body.families.map(one => one.root));
     offset = body.nextOffset;
   }
-  expect(seen).toEqual(report.families.map(one => one.root));
+  expect(seen).toEqual(report.families.map(one => [...one.root].length > 200 ? `${[...one.root].slice(0, 199).join('')}…` : one.root));
+  const end = tool.handle({ store, now, who: who.who, draft: () => null, step: 0, readDecisions: new Map() }, { repo: 'r1', offset: 999 });
+  expect(end.ok && (end.body as ReturnType<typeof projectOutcomesPage>)).toMatchObject({ families: [], nextOffset: null });
+});
+
+test('an API amount beyond the safe integer range is unknown, as runAmountOf reads it, and never breaks the report', () => {
+  store = openStore(':memory:');
+  const f = outcomeFixture(store, repo, now);
+  const huge = f.built('huge', { cost: 1 }); f.complete(huge);
+  store.handle.prepare('UPDATE run_spend SET microusd=9007199254740992 WHERE run=?').run(huge.run);
+  const report = projectOutcomes(store, repo, now, access);
+  expect([report.cost.recordedUsd, report.cost.knownRuns]).toEqual([null, 0]);
 });
 
 test('empty history has zero samples and unknown averages, never a zero-dollar success', () => {
