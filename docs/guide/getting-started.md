@@ -49,6 +49,28 @@ Open **Chat** and say what you want in plain words. The lead drafts a task
 with a goal, boundaries and checks for you to approve. Nothing is built until
 you approve it, and every result waits for you to accept it.
 
+## Change requests from youiyoux
+
+If a project uses youiyoux, the design-system tool (it has a
+`youi.project.json` or a `.youi/requests` folder), a change you ask for in the
+youiyoux hub becomes a Toolroll task by itself, within a minute, with no setup.
+The task keeps the request's goal, what it must not change, the files it
+touches (when youiyoux knew them all) and its requirements.
+
+- **It always waits for you.** No hands-off mode, flow grant or chat tap
+  approves it; you approve it in Toolroll, where you see every word.
+- **Each request is filed once.** Editing or reopening it later files nothing
+  new. Comments and closed requests are left alone, and text that looks like
+  a key or password is never filed.
+- **youiyoux sees how it's going.** Beside each request Toolroll writes
+  `<id>.task.json` with the task, its link (when a console address is set) and its
+  status: queued, needs-you, building, ready, done, failed or stopped. It is
+  the only file Toolroll writes in your checkout, and never through a link.
+
+Settings → Integrations shows each project's **youiyoux** row: Connected with
+how many requests are queued, Broken when a request file can't be read (a link,
+over 64 KB, or not a request), and **Turn off** to stop it for that project.
+
 ## Start from a kit
 
 **Starter kits** (linked from an empty chat, Flows and Settings → Lead) set up a

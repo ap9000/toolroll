@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **youiyoux change requests become tasks by themselves.** In a project that
+  uses youiyoux, each open change request in `.youi/requests` is filed once as
+  a task with its goal, exclusions, files and requirements, and waits for your
+  approval: no mode, grant or chat tap approves it. Toolroll writes the task's
+  status beside the request for youiyoux to show. Settings → Integrations has
+  a youiyoux row per project, with **Turn off**.
+
 ## 0.9.83 — 2026-10-31
 
 - **A folder that doesn't answer can't freeze the console.** A disconnected
