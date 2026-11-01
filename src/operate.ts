@@ -295,7 +295,7 @@ import { fileTaskProposal, validateTaskText } from "./proposal.js";
 import { TEMPLATES, templateByName } from "./templates.js";
 import { isDirectChatProvider, isSubscriptionChatProvider, priceOf, PRICED_MODELS } from "./converse.js";
 import { resolvePhaseAgent, resolveScopeProfile, resolveRouteCandidates, routeOfTask, INSTALLATION_SCOPE, type TaskRoute } from "./agentconfig.js";
-import { applyModelChoices, stateDigest, type ApplyResult, type ModelChange, type Slot, type SlotPhase } from "./model-choices.js";
+import { applyModelChoices, stateDigest, type ApplyResult, type ExtraWrite, type ModelChange, type Slot, type SlotPhase } from "./model-choices.js";
 import { isTaskSize, legOf, projectRoute, routeDigestOf, routeWords, TASK_SIZES, PHASES as ROUTE_PHASES, type TaskSize, type ReadinessLookup, type ReadinessObservation, type RouteOverride, type RouteStamp } from "./phase-routing.js";
 import { observeProviderReadiness, reportProviderReadinessAuthed } from "./runner.js";
 import { parseDemoUrl, projectDemoUrl, saveProjectDemo } from "./project-demo.js";
@@ -5460,6 +5460,19 @@ async function configCommand(
   // Clearing one left from before stays possible.
   if (tierGiven === "light" && phase !== "build" && !(action === "clear" && phase === "plan" && !flag(flags, "also"))) return fail(write, json, `config ${action}`, "usage", "--tier light is for build only — a small change makes no plan, and repairs resume the builder's session", EXIT.usage);
 
+  // Every row below — plain, tier, `--also`, and a leftover light planner's removal — is written through the one write
+  // path (model-choices.ts): one transaction, the actor re-proved as an instance operator at the credential generation
+  // proved above by a proof that still stands, the target and the resulting configuration checked, every row ledgered.
+  // A project named with --repo must be one Toolroll knows (the editor's own rule).
+  const projectKnown = repoGiven === undefined || (await knownProject(context, repoGiven, { listed: true, canonical: true })) !== undefined;
+  const proof = { actor: acting.name, generation: provedGeneration, method: verified.method };
+  const written = (slot: Slot | null, to: ModelChange["to"], extra: ExtraWrite[] = []) => writeModelRow(store, proof, scope, () => projectKnown, slot, to, clock(), extra);
+  // A configuration still missing a role's model is saved, and said (JSON: `incomplete`).
+  const said = (command: string, result: ApplyResult, payload: Record<string, unknown>, lines: () => string[]) => {
+    const incomplete = result.ok ? result.unresolved : null;
+    return succeed(write, json, command, { ...payload, ...(incomplete === null ? {} : { incomplete }) }, () => [...lines(), ...(incomplete === null ? [] : [`  ! new tasks can't be filed here yet: ${incomplete}`])]);
+  };
+
   // Another provider's candidate on the same tier (`--also`): one per provider, and at filing the one whose plan
   // has more room runs.
   if (flag(flags, "also")) {
@@ -5468,8 +5481,10 @@ async function configCommand(
     const alsoProvider = text(flags, "provider");
     if (alsoProvider !== undefined && !isProviderId(alsoProvider)) return fail(write, json, `config ${action}`, "usage", `--provider is one of ${PROVIDER_IDS.join(", ")}`, EXIT.usage);
     if (action === "clear") {
-      const removed = store.clearPhaseTierAlternates(scope, phase, tier, alsoProvider ?? null);
-      return succeed(write, json, "config clear", { scope, phase, tier, also: true, provider: alsoProvider ?? null, cleared: removed }, () => [
+      const alsoClear = written(null, null, [{ kind: "also-clear", phase, tier, provider: alsoProvider ?? null }]);
+      if (!alsoClear.ok) return fail(write, json, "config clear", alsoClear.reason, alsoClear.problem, EXIT.refused);
+      const removed = alsoClear.extra;
+      return said("config clear", alsoClear, { scope, phase, tier, also: true, provider: alsoProvider ?? null, cleared: removed }, () => [
         removed > 0 ? `Removed ${removed} other-provider ${tier} ${phase} agent${removed === 1 ? "" : "s"} at ${scope}; sealed routes are untouched.` : `No other-provider ${tier} ${phase} agent${alsoProvider === undefined ? "" : ` on ${alsoProvider}`} was configured at ${scope}.`,
       ]);
     }
@@ -5477,10 +5492,11 @@ async function configCommand(
     if (alsoProvider === undefined || alsoModel === undefined) return fail(write, json, "config set", "usage", "--also names an exact --provider and --model — approvals bind exact routing", EXIT.usage);
     const alsoValid = validateSpec({ provider: alsoProvider, model: alsoModel });
     if (!alsoValid.ok) return fail(write, json, "config set", "invalid", alsoValid.problem, EXIT.usage);
-    store.setPhaseTierAlternate(scope, phase, tier, alsoProvider, alsoModel, acting.name, clock());
+    const alsoSet = written(null, null, [{ kind: "also-set", phase, tier, provider: alsoProvider, model: alsoModel }]);
+    if (!alsoSet.ok) return fail(write, json, "config set", alsoSet.reason, alsoSet.problem, EXIT.refused);
     const resolvedNow = resolveRouteCandidates(store, scope === INSTALLATION_SCOPE ? null : scope);
     const own = !resolvedNow.ok ? null : tier === "routine" ? resolvedNow.candidates[phase].routine : tier === "light" ? resolvedNow.candidates[phase].light ?? null : resolvedNow.candidates[phase].strong;
-    return succeed(write, json, "config set", { scope, phase, tier, also: true, provider: alsoProvider, model: alsoModel }, () => [
+    return said("config set", alsoSet, { scope, phase, tier, also: true, provider: alsoProvider, model: alsoModel }, () => [
       `${tier} ${phase} at ${scope === INSTALLATION_SCOPE ? "the installation" : scope} can also run ${alsoProvider} · ${alsoModel}, set by ${acting.name}.`,
       own !== null && own.provider === alsoProvider && !own.source.includes("also")
         ? `  ! the ${tier} ${phase} agent already runs ${alsoProvider} (${own.model}) — this one is not used while it does.`
@@ -5488,24 +5504,21 @@ async function configCommand(
     ]);
   }
 
-  // Every plain and tier row below is written through the one write path (model-choices.ts): one transaction, the
-  // actor re-proved as an instance operator at the credential generation proved above, every row ledgered before → after.
-  // A project named with --repo must be one Toolroll knows (the editor's own rule).
-  const projectKnown = repoGiven === undefined || (await knownProject(context, repoGiven, { listed: true, canonical: true })) !== undefined;
-  const written = (slot: Slot, to: ModelChange["to"]) => writeModelRow(store, { actor: acting.name, generation: provedGeneration, method: verified.method }, scope, () => projectKnown, slot, to, clock());
   if (action === "clear") {
     if (tierGiven === "light" && phase === "build") {
       const lightWrite = written({ phase, tier: "light" }, null);
       if (!lightWrite.ok) return fail(write, json, "config clear", lightWrite.reason, lightWrite.problem, EXIT.refused);
       const clearedLight = lightWrite.diff.length > 0;
-      return succeed(write, json, "config clear", { scope, phase, tier: "light", cleared: clearedLight }, () => [
+      return said("config clear", lightWrite, { scope, phase, tier: "light", cleared: clearedLight }, () => [
         clearedLight ? `Cleared the light ${phase} agent at ${scope} — small changes keep the default and say so; sealed routes are untouched.` : `No light ${phase} agent was configured at ${scope}.`,
       ]);
     }
     if (tierGiven === "light") {
       // A light planner from before light became build-only: removed here, never written.
-      const clearedLight = store.clearPhaseTierConfig(scope, phase, "light");
-      return succeed(write, json, "config clear", { scope, phase, tier: "light", cleared: clearedLight }, () => [
+      const legacyClear = written(null, null, [{ kind: "legacy-light-clear", phase: phase as SlotPhase }]);
+      if (!legacyClear.ok) return fail(write, json, "config clear", legacyClear.reason, legacyClear.problem, EXIT.refused);
+      const clearedLight = legacyClear.extra > 0;
+      return said("config clear", legacyClear, { scope, phase, tier: "light", cleared: clearedLight }, () => [
         clearedLight ? `Cleared the light ${phase} agent at ${scope} — small changes keep the default and say so; sealed routes are untouched.` : `No light ${phase} agent was configured at ${scope}.`,
       ]);
     }
@@ -5513,14 +5526,14 @@ async function configCommand(
       const strongWrite = written({ phase: phase as SlotPhase, tier: "strong" }, null);
       if (!strongWrite.ok) return fail(write, json, "config clear", strongWrite.reason, strongWrite.problem, EXIT.refused);
       const clearedStrong = strongWrite.diff.length > 0;
-      return succeed(write, json, "config clear", { scope, phase, tier: "strong", cleared: clearedStrong }, () => [
+      return said("config clear", strongWrite, { scope, phase, tier: "strong", cleared: clearedStrong }, () => [
         clearedStrong ? `Cleared the strong ${phase} agent at ${scope} — demanding routes keep the default and say so; sealed routes are untouched.` : `No strong ${phase} agent was configured at ${scope}.`,
       ]);
     }
     const routineWrite = written({ phase: phase as SlotPhase, tier: "routine" }, null);
     if (!routineWrite.ok) return fail(write, json, "config clear", routineWrite.reason, routineWrite.problem, EXIT.refused);
     const cleared = routineWrite.diff.length > 0;
-    return succeed(write, json, "config clear", { scope, phase, cleared }, () => [
+    return said("config clear", routineWrite, { scope, phase, cleared }, () => [
       cleared ? `Cleared ${phase} at ${scope} — it resolves one layer down now.` : `Nothing was configured for ${phase} at ${scope}.`,
     ]);
   }
@@ -5534,7 +5547,7 @@ async function configCommand(
     if (modelGiven === null) return fail(write, json, "config set", "usage", `a light ${phase} agent names an exact --model — approvals bind exact routing`, EXIT.usage);
     const lightSet = written({ phase: phase as SlotPhase, tier: "light" }, { provider: providerGiven, model: modelGiven });
     if (!lightSet.ok) return fail(write, json, "config set", lightSet.reason, lightSet.problem, EXIT.refused);
-    return succeed(write, json, "config set", { scope, phase, tier: "light", provider: providerGiven, model: modelGiven }, () => [
+    return said("config set", lightSet, { scope, phase, tier: "light", provider: providerGiven, model: modelGiven }, () => [
       `light ${phase} at ${scope === INSTALLATION_SCOPE ? "the installation" : scope} is ${providerGiven} · ${modelGiven}, set by ${acting.name}.`,
       "  small changes filed from now on build on it with no plan; sealed routes are untouched.",
     ]);
@@ -5544,7 +5557,7 @@ async function configCommand(
     if (modelGiven === null) return fail(write, json, "config set", "usage", `a strong ${phase} agent names an exact --model — approvals bind exact routing`, EXIT.usage);
     const strongSet = written({ phase: phase as SlotPhase, tier: "strong" }, { provider: providerGiven, model: modelGiven });
     if (!strongSet.ok) return fail(write, json, "config set", strongSet.reason, strongSet.problem, EXIT.refused);
-    return succeed(write, json, "config set", { scope, phase, tier: "strong", provider: providerGiven, model: modelGiven }, () => [
+    return said("config set", strongSet, { scope, phase, tier: "strong", provider: providerGiven, model: modelGiven }, () => [
       `strong ${phase} at ${scope === INSTALLATION_SCOPE ? "the installation" : scope} is ${providerGiven}${modelGiven === null ? "" : ` · ${modelGiven}`}, set by ${acting.name}.`,
       "  large or risky, strict, screenshot-proof, and automerge routes filed from now on reach for it; sealed routes are untouched.",
       ...(phase === "repair" ? ["  a strong repair agent applies only when its provider is the build's — cross-provider repair does not exist."] : []),
@@ -5563,7 +5576,7 @@ async function configCommand(
   if (providerGiven !== "claude") {
     warnings.push(`${providerGiven} does not report dollar cost: its runs land as UNMEASURED, and any schedule with a weekly limit fails closed on them by design.`);
   }
-  return succeed(write, json, "config set", { scope, phase, provider: providerGiven, model: modelGiven, warnings }, () => [
+  return said("config set", routineSet, { scope, phase, provider: providerGiven, model: modelGiven, warnings }, () => [
     `${phase} at ${scope === INSTALLATION_SCOPE ? "the installation" : scope} now runs ${providerGiven}${modelGiven === null ? "" : ` · ${modelGiven}`}, set by ${acting.name}.`,
     ...warnings.map(one => `  ! ${one}`),
   ]);
@@ -13160,7 +13173,7 @@ export function upNarrowDeferred(held: readonly string[], reported: readonly str
  * person proved themselves with their own password or login at `proved.generation`; a machine credential (a remote
  * token, the lead's token) never changes which models run. The write re-proves them inside its transaction: still an
  * unrestricted instance operator, at that very generation, by a proof that still stands. */
-export function writeModelRow(store: Store, proved: { actor: string; generation: number; method: string }, scope: string, knownProject: (repo: string) => boolean, slot: Slot, to: ModelChange["to"], now: Date): ApplyResult {
-  return applyModelChoices(store, { scope, change: [{ slot, to }], expected: { state: stateDigest(store, scope) }, strict: false, knownProject },
+export function writeModelRow(store: Store, proved: { actor: string; generation: number; method: string }, scope: string, knownProject: (repo: string) => boolean, slot: Slot | null, to: ModelChange["to"], now: Date, extra: readonly ExtraWrite[] = []): ApplyResult {
+  return applyModelChoices(store, { scope, change: slot === null ? [] : [{ slot, to }], expected: { state: stateDigest(store, scope) }, strict: false, knownProject, extra },
     { ...proved, live: () => true }, now);
 }

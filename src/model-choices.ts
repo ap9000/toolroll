@@ -12,7 +12,7 @@ import { isAcpProvider } from "./acp-agents.js";
 import { INSTALLATION_SCOPE, resolvePhaseAgent, resolveRouteCandidates } from "./agentconfig.js";
 import { seenModels, type SeenModel } from "./model-catalog.js";
 import { passwordlessOn } from "./passwordless.js";
-import { exactModelId, recommendRoute, routeProblems, type PhaseRoute } from "./phase-routing.js";
+import { exactModelId, recommendRoute, routeProblems, type PhaseRoute, type RouteCandidates } from "./phase-routing.js";
 import { isProviderId, validateSpec } from "./provider.js";
 import type { Store } from "./store.js";
 
@@ -143,8 +143,15 @@ export const ROUTE_CASES: readonly { label: string; size: "small" | "medium" | "
 export function effectiveRoutes(store: Store, repo: string | null): { ok: true; routes: { label: string; route: PhaseRoute }[] } | { ok: false; problem: string } {
   const candidates = resolveRouteCandidates(store, repo);
   if (!candidates.ok) return { ok: false, problem: candidates.problem };
-  return { ok: true, routes: ROUTE_CASES.map(one => ({ label: one.label, route: recommendRoute({ qualityMode: one.strict ? "strict" : "default", evidence: [], publication: "none",
-    candidates: candidates.candidates, overrides: [], size: { size: one.size, risky: one.risky, source: "heuristic", reason: "" } }) })) };
+  return { ok: true, routes: routesOf(candidates.candidates) };
+}
+/** Every size's and demand's route over these candidates. (A build moved to another provider for plan headroom takes
+ * its repairs with it, so that move can't break a repair; a tier whose only candidate is another provider's is its
+ * primary here, and checked.) */
+function routesOf(candidates: RouteCandidates): { label: string; route: PhaseRoute }[] {
+  const routes = ROUTE_CASES.map(one => ({ label: one.label, route: recommendRoute({ qualityMode: one.strict ? "strict" : "default", evidence: [], publication: "none",
+    candidates, overrides: [], size: { size: one.size, risky: one.risky, source: "heuristic", reason: "" } }) }));
+  return routes;
 }
 
 /** Which preset a scope's EFFECTIVE configuration matches (what each size would really run, inherited rows
@@ -218,9 +225,16 @@ export type ApplyInput = {
    * resulting configuration is checked the same way for both. */
   strict: boolean;
   knownProject: (repo: string) => boolean;
+  /** The command line's other rows, under the same proof, target and result checks: another provider's candidate on
+   * a tier (`--also`), and removing a light planner left from before light became build-only. */
+  extra?: readonly ExtraWrite[];
 };
+export type ExtraWrite =
+  | { kind: "also-set"; phase: "plan" | "build"; tier: SlotTier; provider: string; model: string }
+  | { kind: "also-clear"; phase: "plan" | "build"; tier: SlotTier; provider: string | null }
+  | { kind: "legacy-light-clear"; phase: SlotPhase };
 export type ApplyRefusal = { ok: false; reason: "authority" | "unknown-project" | "stale" | "invalid"; problem: string };
-export type ApplyResult = { ok: true; diff: DiffRow[]; unresolved: string | null } | ApplyRefusal;
+export type ApplyResult = { ok: true; diff: DiffRow[]; unresolved: string | null; extra: number } | ApplyRefusal;
 
 class Refused extends Error { constructor(readonly refusal: ApplyRefusal) { super(refusal.problem); } }
 
@@ -253,18 +267,25 @@ export type ScopeCheck = { kind: "ok" } | { kind: "incomplete" | "invalid"; prob
  * inherited rows included. An invalid result is never saved.
  */
 export function checkScope(store: Store, repo: string | null): ScopeCheck {
-  const effective = effectiveRoutes(store, repo);
-  if (!effective.ok) return { kind: /has no exact model/.test(effective.problem) ? "incomplete" : "invalid", problem: effective.problem };
   const build = resolvePhaseAgent(store, "build", repo, {});
   if (!build.ok) return { kind: "invalid", problem: build.problem };
+  const plan = resolvePhaseAgent(store, "plan", repo, {});
+  if (!plan.ok) return { kind: "invalid", problem: plan.problem };
   const review = resolvePhaseAgent(store, "review", repo, {});
   if (!review.ok) return { kind: "invalid", problem: review.problem };
   const repair = (repo === null ? null : store.phaseConfig(repo, "repair")) ?? store.phaseConfig(INSTALLATION_SCOPE, "repair");
   if (repair !== null && repair.provider !== build.spec.provider) return { kind: "invalid", problem: `Repairs must use the builder's provider (${build.spec.provider}).` };
-  for (const one of effective.routes) {
-    const problems = routeProblems(one.route);
-    if (problems.length > 0) return { kind: "invalid", problem: `${one.label} tasks: ${problems[0]}` };
+  // What is configured is checked first, with a stand-in for any role that has no model yet, so a missing planner
+  // never hides a repair that can't resume its builder: every size's and demand's route, inherited rows included.
+  const standIn = (spec: { provider: string; model: string | null }) => isProviderId(spec.provider) ? { provider: spec.provider, model: spec.model ?? "not-chosen-yet" } : null;
+  const configured = resolveRouteCandidates(store, repo, { plan: standIn(plan.spec), build: standIn(build.spec) });
+  if (!configured.ok) return { kind: /has no exact model/.test(configured.problem) ? "incomplete" : "invalid", problem: configured.problem };
+  for (const route of routesOf(configured.candidates)) {
+    const problems = routeProblems(route.route);
+    if (problems.length > 0) return { kind: "invalid", problem: `${route.label} tasks: ${problems[0]}` };
   }
+  const effective = effectiveRoutes(store, repo);
+  if (!effective.ok) return { kind: /has no exact model/.test(effective.problem) ? "incomplete" : "invalid", problem: effective.problem };
   return { kind: "ok" };
 }
 /** A resolver's words for a browser: what is wrong, never a terminal command to fix it. */
@@ -309,7 +330,7 @@ export function applyModelChoices(store: Store, input: ApplyInput, authority: Mo
   }
 }
 
-function applyLocked(store: Store, input: ApplyInput, authority: ModelAuthority, now: Date): { ok: true; diff: DiffRow[]; unresolved: string | null } {
+function applyLocked(store: Store, input: ApplyInput, authority: ModelAuthority, now: Date): { ok: true; diff: DiffRow[]; unresolved: string | null; extra: number } {
   {
     {
       const account = store.accountOf(authority.actor);
@@ -344,6 +365,8 @@ function applyLocked(store: Store, input: ApplyInput, authority: ModelAuthority,
         }
         store.recordAction({ at: now.toISOString(), actor: authority.actor, repo, taskId: null, runId: null, action: ACTION_OF(slot), outcome: "changed", source: "policy", detail: `${pairWords(row.before)} → ${pairWords(after)}` });
       }
+      let extra = 0;
+      for (const op of input.extra ?? []) extra += extraWrite(store, scope, repo, op, authority.actor, now);
       // INVALID is never saved, for the target or any project inheriting from it. INCOMPLETE (a role with no exact
       // model yet) is saved and said for the target; another project that could file tasks before must still.
       let unresolved: string | null = null;
@@ -356,7 +379,7 @@ function applyLocked(store: Store, input: ApplyInput, authority: ModelAuthority,
         }
         if (target === repo) unresolved = checked.problem;
       }
-      return { ok: true as const, diff, unresolved };
+      return { ok: true as const, diff, unresolved, extra };
     }
   }
 }
@@ -370,4 +393,30 @@ export function recentRuns(store: Store, limit = 8): RecentRun[] {
     JOIN task_ref ON task_ref.id = run.task_ref ORDER BY run.started_at DESC, run.id DESC LIMIT ?`).all(Math.max(1, Math.min(limit, 50))) as Record<string, unknown>[])
     .map(row => ({ runId: Number(row["id"]), taskId: String(row["external_id"]), role: String(row["role"]), chosen: row["model"] == null ? null : String(row["model"]),
       ranOn: row["model_reported"] == null ? null : String(row["model_reported"]), at: String(row["started_at"]) }));
+}
+
+/** One of the command line's other rows, ledgered; how many rows it changed. */
+function extraWrite(store: Store, scope: string, repo: string | null, op: ExtraWrite, actor: string, now: Date): number {
+  const ledger = (action: string, detail: string) => store.recordAction({ at: now.toISOString(), actor, repo, taskId: null, runId: null, action, outcome: "changed", source: "policy", detail });
+  if (op.kind === "legacy-light-clear") {
+    const before = store.phaseTierConfig(scope, op.phase, "light");
+    if (before === null || !store.clearPhaseTierConfig(scope, op.phase, "light")) return 0;
+    ledger(`light agent for ${op.phase} changed`, `${pairWords(before)} → not set`);
+    return 1;
+  }
+  if (op.tier === "light" && op.phase !== "build") throw new Refused({ ok: false, reason: "invalid", problem: "Only the builder has a small-task model." });
+  if (op.kind === "also-clear") {
+    const before = store.phaseTierAlternates(scope, op.phase, op.tier).filter(row => op.provider === null || row.provider === op.provider);
+    const removed = store.clearPhaseTierAlternates(scope, op.phase, op.tier, op.provider);
+    for (const row of before) ledger(`other-provider ${op.tier} agent for ${op.phase} changed`, `${pairWords(row)} → not set`);
+    return removed;
+  }
+  if (!isProviderId(op.provider)) throw new Refused({ ok: false, reason: "invalid", problem: "Choose a known provider." });
+  const valid = validateSpec({ provider: op.provider, model: op.model });
+  if (!valid.ok || !exactModelId(op.model)) throw new Refused({ ok: false, reason: "invalid", problem: valid.ok ? "Choose an exact model." : valid.problem });
+  const before = store.phaseTierAlternates(scope, op.phase, op.tier).find(row => row.provider === op.provider) ?? null;
+  if (before !== null && before.model === op.model) return 0;
+  store.setPhaseTierAlternate(scope, op.phase, op.tier, op.provider, op.model, actor, now);
+  ledger(`other-provider ${op.tier} agent for ${op.phase} changed`, `${pairWords(before)} → ${pairWords({ provider: op.provider, model: op.model })}`);
+  return 1;
 }

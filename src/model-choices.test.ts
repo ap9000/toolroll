@@ -259,3 +259,51 @@ describe("review round 1 (PR #270)", () => {
     expect(checkScope(store, null).kind).toBe("incomplete");
   });
 });
+
+describe("review round 2 (PR #270)", () => {
+  const cli = async (args: string[]) => {
+    const lines: string[] = [];
+    const code = await runOperate("config", args, line => lines.push(line), { databaseFile: file, now: T0 });
+    return { code, out: lines.join("\n") };
+  };
+  const as = () => ["--as", "alex", "--token", token, "--json"];
+
+  test("1: `--also` and a leftover light planner's removal carry the proved generation too: a rotation after the proof writes nothing", () => {
+    // A light planner from before light became build-only (no setter writes one now).
+    store.raw().prepare("INSERT INTO phase_tier_config (scope, phase, tier, provider, model, updated_at, updated_by) VALUES ('installation', 'plan', 'light', 'claude', ?, ?, 'alex')").run(HAIKU, T0.toISOString());
+    store.setPhaseTierAlternate(INSTALLATION_SCOPE, "build", "routine", "codex", "gpt-5-codex", "alex", T0);
+    const proved = { actor: "alex", generation: store.accountOf("alex")!.generation, method: "password-now" };
+    store.raw().prepare("UPDATE approver SET generation = generation + 1 WHERE name = 'alex'").run();
+    for (const extra of [
+      [{ kind: "also-set" as const, phase: "build" as const, tier: "strong" as const, provider: "codex", model: "gpt-5-codex" }],
+      [{ kind: "also-clear" as const, phase: "build" as const, tier: "routine" as const, provider: null }],
+      [{ kind: "legacy-light-clear" as const, phase: "plan" as const }],
+    ]) expect(writeModelRow(store, proved, INSTALLATION_SCOPE, () => false, null, null, T0, extra)).toMatchObject({ ok: false, reason: "authority" });
+    expect(store.listPhaseTierAlternates(INSTALLATION_SCOPE).map(one => `${one.phase}-${one.tier}:${one.provider}`)).toEqual(["build-routine:codex"]);
+    expect(store.phaseTierConfig(INSTALLATION_SCOPE, "plan", "light")).not.toBeNull();
+  });
+
+  test("7a: `--also` faces the target and result checks: an unknown project, and a Codex small-task builder against Claude repairs, write nothing", async () => {
+    for (const phase of ["plan", "build", "review"]) expect((await cli(["set", phase, "--provider", "claude", "--model", SONNET, ...as()])).code).toBe(0);
+    expect((await cli(["set", "repair", "--provider", "claude", "--model", HAIKU, ...as()])).code).toBe(0);
+    expect((await cli(["set", "build", "--also", "--tier", "light", "--provider", "codex", "--model", "gpt-5-codex", ...as()])).code).not.toBe(0);
+    expect((await cli(["set", "build", "--also", "--provider", "codex", "--model", "gpt-5-codex", "--repo", "/not/a/project", ...as()])).code).not.toBe(0);
+    expect(store.listPhaseTierAlternates(INSTALLATION_SCOPE)).toEqual([]);
+    expect(store.listPhaseTierAlternates("/not/a/project")).toEqual([]);
+    // A valid one is written, and ledgered.
+    expect((await cli(["set", "build", "--also", "--provider", "codex", "--model", "gpt-5-codex", ...as()])).code).toBe(0);
+    expect(policyEntries()).toContain("other-provider routine agent for build changed: not set → codex · gpt-5-codex");
+  });
+
+  test("7b: a missing planner doesn't hide a repair that can't resume its builder; incomplete is said on the command line", async () => {
+    applyModelChoices(store, input(presetChange("sized")), operator(), T0);
+    const cleared = await cli(["clear", "plan", ...as()]);
+    expect(cleared.code).toBe(0);
+    expect(JSON.parse(cleared.out)).toMatchObject({ incomplete: expect.stringContaining("no exact model") });
+    expect(checkScope(store, null).kind).toBe("incomplete");
+    expect((await cli(["set", "repair", "--provider", "codex", "--model", "gpt-5-codex", ...as()])).code).not.toBe(0);
+    expect(store.phaseConfig(INSTALLATION_SCOPE, "repair")).toBeNull();
+    store.setPhaseConfig(INSTALLATION_SCOPE, "repair", "codex", "gpt-5-codex", "alex", T0); // written around the check
+    expect(checkScope(store, null).kind).toBe("invalid");
+  });
+});
