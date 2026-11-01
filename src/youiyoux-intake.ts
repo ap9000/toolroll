@@ -588,8 +588,9 @@ const optionsRow = (row: Record<string, unknown>): OptionsRow => ({ request: Str
   state: row["proposal_state"] == null ? null : String(row["proposal_state"]), run: row["proposal_run"] == null ? null : Number(row["proposal_run"]),
   digest: row["proposal_digest"] == null ? null : String(row["proposal_digest"]) });
 
-/** What a person's decision in the hub may change in an options file; everything else must stay as Toolroll copied it. */
-const DECISION_FIELDS = new Set(["status", "choice", "decidedBy", "decidedAt", "request", "updatedAt"]);
+/** What a person's decision in the hub may change in an options file (youiyoux seals it, with a key only the person
+ * holds: `seal`); everything else must stay as Toolroll copied it. */
+const DECISION_FIELDS = new Set(["status", "choice", "decidedBy", "decidedAt", "request", "seal", "updatedAt"]);
 /** The digest of an options file apart from what a decision changes: the proposal itself, every other key included. */
 export function proposalIdentity(raw: unknown): string | null {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
@@ -620,7 +621,7 @@ export function proposalProblem(text: string, proposal: string, request: string)
   if (doc.id !== proposal) return `its id isn't ${proposal}`;
   if (doc.for !== request) return `it doesn't answer ${request}`;
   // An agent proposes; only a person decides, in the hub. A file that arrives decided would decide for them.
-  if (doc.status !== "open" || doc.choice !== undefined || doc.decidedBy !== undefined || doc.decidedAt !== undefined || doc.request !== undefined) return "it arrived already decided, and only a person decides";
+  if (doc.status !== "open" || doc.choice !== undefined || doc.decidedBy !== undefined || doc.decidedAt !== undefined || doc.request !== undefined || Object.hasOwn(raw as object, "seal")) return "it arrived already decided, and only a person decides";
   if (doc.author.kind !== "agent") return "its author isn't an agent";
   if (scanForSecrets(text).length > 0) return "it looked like it held a key or password";
   return null;

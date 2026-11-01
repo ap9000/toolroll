@@ -392,3 +392,16 @@ describe("back from the hub", () => {
     expect(words).not.toContain(key);
   });
 });
+
+describe("youiyoux's seal on a decision", () => {
+  test("is part of what a decision changes, so a sealed pick on Toolroll's copy is still that copy; an agent's file that arrives sealed is refused", async () => {
+    const { proposalIdentity, proposalProblem } = await import("./youiyoux-intake.js");
+    const open = { schema: "youi.proposal/v1", id: "p-00000000aa", for: "r-00000000aa", project: "app", route: "/", ask: "x", author: { kind: "agent", name: "builder" }, createdAt: "2026-11-01T10:00:00Z", updatedAt: "2026-11-01T10:00:00Z", status: "open",
+      target: { name: "Button", box: { x: 0, y: 0, width: 10, height: 10 } }, options: [{ id: "a", label: "A", why: "x", set: [], text: "A" }, { id: "b", label: "B", why: "x", set: [], text: "B" }] };
+    const decided = { ...open, status: "chosen", choice: "b", decidedBy: { kind: "person", name: "you" }, decidedAt: "2026-11-01T11:00:00Z", updatedAt: "2026-11-01T11:00:00Z", seal: "f".repeat(64) };
+    expect(proposalIdentity(decided)).toBe(proposalIdentity(open));
+    expect(proposalIdentity({ ...decided, options: [...open.options].reverse() })).not.toBe(proposalIdentity(open));
+    expect(proposalProblem(JSON.stringify({ ...open, seal: "f".repeat(64) }), "p-00000000aa", "r-00000000aa")).toBe("it arrived already decided, and only a person decides");
+    expect(proposalProblem(JSON.stringify(open), "p-00000000aa", "r-00000000aa")).toBeNull();
+  });
+});
