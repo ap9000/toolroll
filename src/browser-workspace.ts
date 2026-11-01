@@ -691,6 +691,10 @@ export type BrowserWorkspace = {
   version: 1; path: string; title: string; user: string; csrf: string; sensitive: boolean;
   /** Passwordless is on for this signed-in browser: ceremony password fields are left out (docs/plans/passwordless.md). */
   passwordless?: boolean;
+  /** The session's open project (its path), or null: the sidebar's project picker names it. */
+  openProject?: string | null;
+  /** The settings frame's breadcrumb ("Settings / <page>"; settings-kit.ts): the header shows it as links. */
+  crumbs?: { label: string; href: string | null }[];
   /** What this person named their lead (Settings → Lead): the chat header and every lead message say it. */
   leadName?: string;
   refreshUrl: string; receipt: { request: string; received: boolean } | null;

@@ -26,13 +26,14 @@ import { taskRoad, type RoadChecks } from "../first-run.js";
 import { starterForWork } from "../flow-starters.js";
 import { type Gap } from "../gaps.js";
 import { readAuthModeStrict } from "../keys.js";
-import { failedAttemptSentence,type FailureExplanation,retryNoteOf } from "../needs-you.js";
+import { failedAttemptSentence,type FailureExplanation,retryNoteOf,START_BUILDER_COMMAND,startBuilderHref } from "../needs-you.js";
 import { chosenWords, makesNoPlan, PHASES as ROUTE_PHASES, type RouteOverride, type RouteProjection, TASK_SIZES } from "../phase-routing.js";
 import { type MilestoneState,parseExecutionPlanDocument } from "../plan.js";
 import { type ContractChange } from "../planner-source.js";
 import { projectName } from "../project.js";
 import { type CriterionMatrixRow,dispatchStatusToken,manualReviewOnly,plainReasonWords,type ProofVerdict,reviewConflict } from "../proof.js";
 import { providerName } from "../provider-auth.js";
+import { agentModelName } from "../model-names.js";
 import { type Phase } from "../provider.js";
 import { type QualityMode,qualityModeTitle } from "../quality.js";
 import { evidenceShortenedWords } from "../result-review.js";
@@ -160,14 +161,7 @@ export function acceptanceCeremonyHtml(criteria: readonly AcceptanceCriterion[])
 }
 /** "claude" + "opus" → "Claude Opus"; "claude-opus-5-5" → "Claude Opus 5.5"; anything else keeps its exact id. */
 export function agentNameWords(provider: string, model: string | null): string {
-  const name = providerName(provider);
-  if (model === null || model === "" || model === "default") return name;
-  const bare = model.startsWith(`${provider}-`) ? model.slice(provider.length + 1) : model;
-  const title = (word: string): string => `${word[0]!.toUpperCase()}${word.slice(1)}`;
-  if (/^[a-z]+$/.test(bare)) return `${name} ${title(bare)}`;
-  const versioned = /^([a-z]+)-(\d+(?:-\d+)*)$/.exec(bare);
-  if (versioned !== null) return `${name} ${title(versioned[1]!)} ${versioned[2]!.replace(/-/g, ".")}`;
-  return `${name} ${model}`;
+  return agentModelName(provider, model);
 }
 
 /** The permission a sealed profile grants, in two or three words. */
@@ -913,7 +907,9 @@ export function taskRecoveryHref(taskId: string, diagnosis: DispatchDiagnosis | 
   if (diagnosis?.action === null || diagnosis?.action === undefined) return null;
   const task = taskHref(taskId);
   switch (diagnosis.action) {
+    // The task page only repeats that no builder is connected: lead to the command that connects one.
     case "start-worker":
+      return startBuilderHref(taskId);
     case "repair-dependency":
       return `${task}#run-status`;
     case "retry-task":
@@ -1729,11 +1725,11 @@ export function taskBodyParts(data: {
             firstConnection
               ? html`<p>Toolroll is open, but this project has not been connected to a builder yet.</p><p>On the machine where the project lives, open that folder and run:</p>`
               : html`<p>Toolroll is open, but this project's builder stopped checking in. Reopen Toolroll on the machine where the project lives.</p><p>If you normally start it from a terminal, open the project folder and run:</p>`,
-            html`<code class="dispatch-recovery-command">toolroll up</code>`,
+            html`<code class="dispatch-recovery-command">${START_BUILDER_COMMAND}</code>`,
             firstConnection
               ? html`<p class="meta">This is the normal start command: it opens the app, connects the project, and starts its builder. Keep Toolroll running; approved tasks begin automatically.</p>`
               : html`<p class="meta">This task resumes automatically when the builder reconnects. You do not need to file or approve it again.</p>`,
-            html`<p><a href="/system">See connection status →</a></p></div></details>`,
+            html`<p><a href="${startBuilderHref(task.id)}">See connection status →</a></p></div></details>`,
           ]);
         }
         // Never a link to this page's own acts: Retry sits on the status card and below.

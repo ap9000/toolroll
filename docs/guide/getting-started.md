@@ -12,9 +12,12 @@ It installs the `toolroll` command and starts it with your projects in
 `~/Projects`. `standing-orders`, the older name, still works. You can also run
 it without installing: `npx toolroll up`.
 
-The first start prints your login and saves it in
-`~/.config/toolroll/up-login.txt`, then opens the console at
-http://127.0.0.1:4180.
+The first start creates your login, saves the password in
+`~/.config/toolroll/up-login.txt` and opens the console at
+http://127.0.0.1:4180, already signed in. Every start prints where that
+file is and the command that shows the password
+(`cat ~/.config/toolroll/up-login.txt`); the password itself is never
+printed.
 
 To look around first, `npx toolroll demo` opens a throwaway sandbox
 with tasks and two flows already mid-flight. It never spends and never

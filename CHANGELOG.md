@@ -26,6 +26,33 @@
   history; a task that needs more stays ready for review and says why.
 - **A youiyoux request's status reads done once its task is complete.**
 
+## 0.9.84 — 2026-11-01
+
+- **An honest Spend page, in Settings.** See API dollars, plan usage and
+  unknown cost separately — never added together, and unknown never shown
+  as $0 — by project, model, role and person, with the most expensive runs
+  and a CSV export. Settings → Spend holds your monthly limits.
+- **One Models editor (Settings → Models).** "Sized by job" is the default:
+  Haiku 5.5 for small tasks, Sonnet 5.5 for routine ones, Opus 5.5 for large
+  or risky ones, and Opus 5.5 plans and reviews. "Opus for everything" is one
+  click away. Every change shows its exact before → after first, needs your
+  password, and is logged; approved work keeps its models. "Switch to it"
+  appears when a newer model ships. A fresh install now starts on Sized by
+  job instead of needing a terminal command.
+- **A safer first-account page.** The setup code page now locks after five
+  wrong tries (with how to get a new code), and only accepts submissions from
+  the page itself.
+- **No more dead ends on first run.** "Connect a builder" opens the steps to
+  do it, the setup checklist knows when a builder is connected, model names
+  read plainly, and `toolroll up` prints the exact command to read your
+  sign-in details.
+- **Settings, rebuilt on one frame.** A clearer layout and one consistent
+  way to confirm sensitive changes: each one shows exactly what it asks for,
+  can't be sent twice, and keeps what you typed if it's refused.
+- **The console answers right away.** Projects are checked in the
+  background; a project only becomes visible once its folder is confirmed.
+- **CI** jobs now have time limits.
+
 ## 0.9.83 — 2026-10-31
 
 - **A folder that doesn't answer can't freeze the console.** A disconnected

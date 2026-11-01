@@ -80,6 +80,18 @@ describe("arc 4 — the chrome layer, sensitivity, and motion contracts", () => 
     expect(settings.headers.get("content-security-policy") ?? "").toContain("connect-src 'self'");
   });
 
+  test("settings frame: the page before scripts has its breadcrumb in real links and one h1, the page's own", async () => {
+    const cookie = await login();
+    const page = await (await fetch(url("/settings/retention"), { headers: { cookie } })).text();
+    // The server-rendered document (what a browser without JavaScript shows) beside the workspace's data.
+    const shell = page.replace(/<script[\s\S]*?<\/script>/g, "");
+    expect(shell).toMatch(/<nav class="kit-crumbs" aria-label="Breadcrumb"><ol><li><a href="\/settings">Settings<\/a><\/li><li aria-current="page">Retention<\/li><\/ol><\/nav>/);
+    expect(shell.match(/<h1\b/g)).toHaveLength(1);
+    // The hub itself is the top of the trail: no breadcrumb there.
+    const hub = (await (await fetch(url("/settings"), { headers: { cookie } })).text()).replace(/<script[\s\S]*?<\/script>/g, "");
+    expect(hub).not.toContain('class="kit-crumbs"');
+  });
+
   test("Settings shows one legacy webhook warning with replacement links, including both services", async () => {
     const cookie = await login();
     const get = async () => (await fetch(url("/settings"), { headers: { cookie } })).text();
