@@ -363,7 +363,7 @@ describe("where freshness may be honoured", () => {
       // nightly-github: turning GitHub's nightly on, a lane alias and a lane's retirement, each a person proved now.
       "src/nightly-github.ts": 1, "src/operate.ts": 58, "src/pull-request-flow.ts": 1,
       // release-cli: ask-every-commit, unsandboxed-carry, and publish-ok (auto-approve-green: a person lets a held release go on).
-      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 9, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 23,
+      "src/release-cli.ts": 3, "src/scope.ts": 2, "src/server/chat.ts": 5, "src/server/flows.ts": 9, "src/server/pages.ts": 2, "src/server/people-tokens.ts": 2, "src/server/settings.ts": 25,
       "src/server/tasks.ts": 6, "src/server/terminals.ts": 1, "src/task-outcome-cli.ts": 1 });
     expect(using(/freshFacts\.run\(/)).toEqual(["src/serve.ts", "src/server/chat.ts", "src/server/remote.ts"]);
     // chat.ts only ever CLEARS the facts, for the lead's detached turn (Passwordless: background work carries no session).
@@ -540,6 +540,9 @@ const TRIPWIRE_PINS: Record<string, Record<string, number>> = {
     "src/server/settings.ts#createSettingsHandlers@1>dataExport@60": 1,
     "src/server/settings.ts#createSettingsHandlers@1>discordAct@79><anonymous>@1": 1,
     "src/server/settings.ts#createSettingsHandlers@1>modeAct@90><anonymous>@1": 1,
+    // Settings → Models (spend-dashboard slice 3): the editor's save and a preset's or switch's apply.
+    "src/server/settings.ts#createSettingsHandlers@1>modelsApply@108": 1,
+    "src/server/settings.ts#createSettingsHandlers@1>modelsSave@107": 1,
     "src/server/settings.ts#createSettingsHandlers@1>monitoringSave@63": 1,
     "src/server/settings.ts#createSettingsHandlers@1>permissionDefaultSave@81": 1,
     "src/server/settings.ts#createSettingsHandlers@1>policySave@49": 1,

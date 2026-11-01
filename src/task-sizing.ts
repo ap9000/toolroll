@@ -32,8 +32,8 @@ import type { Store } from "./store.js";
 
 /** The classifier's whole budget, from asking to answer. */
 export const SIZING_BUDGET_MS = 5_000;
-/** The model `claude -p` sizes with: small and fast. */
-export const SIZING_CLAUDE_MODEL = "haiku";
+/** The model `claude -p` sizes with: small and fast, by its exact id (an alias would float to whatever is newest). */
+export const SIZING_CLAUDE_MODEL = "claude-haiku-5-5";
 
 export type SizingInput = { title: string; goal?: string | undefined; outOfScope?: string | null | undefined; touches?: readonly string[] | undefined };
 export type { SizeAnswer } from "./contracts/task-sizing.js";
@@ -67,12 +67,12 @@ function answerOf(value: unknown): SizeAnswer | null {
   return read.ok ? read.value : null;
 }
 
-const SIZE_MEANS: Record<TaskSize, string> = {
+export const SIZE_MEANS: Record<TaskSize, string> = {
   small: "a contained change a fast model can make directly: copy, a style, a config value, one small function, one or two files",
   medium: "ordinary feature or fix work across a few files that benefits from the everyday model",
   large: "broad or structural work: many files, a new subsystem, a redesign or refactor, cross-cutting behaviour",
 };
-const RISKY_MEANS = "Could a mistake here lose data, break security, sign-in, payments or permissions, change a database schema or migration, or be hard to undo?";
+export const RISKY_MEANS = "Could a mistake here lose data, break security, sign-in, payments or permissions, change a database schema or migration, or be hard to undo?";
 
 /** What the classifier reads: the task as data, bounded, keys blanked. */
 export function sizingText(input: SizingInput): string {

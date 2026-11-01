@@ -409,7 +409,10 @@ for (const one of ["policy", "approval", "request-limits", "sessions", "sign-in"
 }
 post("settings", "settings.flows-on", "/settings/flows/on", { limited: "collection", ...approver("An approver switches starter flows on.", "/settings/flows") });
 const MODELS = approver("Sign in as an approver to change models.", "/settings/models");
-for (const one of ["check", "watch", "update", "agent"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, MODELS);
+for (const one of ["check", "watch", "update"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, MODELS);
+// Changing which model a role uses: an instance operator's browser step-up (the handler proves the password, or the
+// Passwordless session; model-choices.ts re-proves the session and standing inside its one transaction).
+for (const one of ["agent", "apply"]) post("settings", `settings.models-${one}`, `/settings/models/${one}`, { scope: "step-up", ...operator("An instance operator changes models.", "/settings/models") });
 // Any other models action answers the models area's own refusal.
 post("settings", "settings.models-act", "^\\/settings\\/models\\/.*$", { sample: "/settings/models/unknown", ...MODELS });
 post("settings", "settings.knowledge-refresh", "/settings/knowledge/refresh", { project: "form", limited: "unscoped", ...approver("Sign in as an approver to refresh project context.", "/settings/knowledge") });

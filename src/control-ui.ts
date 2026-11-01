@@ -41,8 +41,9 @@ export function controlSetupHtml(data: {
 }
 
 /** `fields` may still carry the session's csrf (a caller's habit): postForm writes the one CSRF field. */
-export function setupPreviewHtml(inputs: SetupInputs, fields: Record<string, string>): Html {
+export function setupPreviewHtml(inputs: SetupInputs, fields: Record<string, string>, models: { label: string; rows: { role: string; model: string }[] } | null = null): Html {
   const { csrf: _csrf, ...rest } = fields;
-  return html`<h1>Approve project setup</h1><div class="card"><p>${fields.repo ?? ""}</p><p><strong>Builder:</strong> ${inputs.provider} · ${inputs.model}</p><p><strong>Preparation:</strong></p><pre class="recap">${inputs.command || "No preparation command"}</pre><p>Preparation timeout: ${inputs.seconds} seconds.</p><p>The builder default applies to new tasks. Preparation applies to subsequent runs, including already approved tasks. Existing signed task settings and verification rules remain in force.</p>${
+  const chosen = models === null ? "" : html`<p><strong>Models for every project:</strong> ${models.label}</p><ul>${models.rows.map(row => html`<li>${row.role}: <span class="mono">${row.model}</span></li>`)}</ul><p class="meta">Change them later in Settings → Models.</p>`;
+  return html`<h1>Approve project setup</h1><div class="card"><p>${fields.repo ?? ""}</p><p><strong>Builder:</strong> ${inputs.provider} · ${inputs.model}</p>${chosen}<p><strong>Preparation:</strong></p><pre class="recap">${inputs.command || "No preparation command"}</pre><p>Preparation timeout: ${inputs.seconds} seconds.</p><p>The builder default applies to new tasks. Preparation applies to subsequent runs, including already approved tasks. Existing signed task settings and verification rules remain in force.</p>${
     postForm("/control/setup-approve", html`${reauth(html`<label>Your password<input type="password" name="token" autocomplete="current-password" required></label>`)}<button>Approve project setup</button>`, { hidden: { ...rest, ...inputs } })}</div>`;
 }
