@@ -25496,10 +25496,18 @@ function readFeedbackImage(value: unknown): FeedbackImage | null {
  * (`unusable` is result-actions.ts feedbackImageProblem, re-read inside the transaction, never the page's say-so), and
  * the change is recorded in the action ledger under the person who made it. The note is superseded by an exact
  * imageless copy; the original stays in history. The caller has already proved the person may request changes on
- * this run (the same authority that seals any saved note into a revision). */
+ * this run (the same authority that seals any saved note into a revision); that standing is re-proved here too. */
 export function dropFeedbackImage(store: Store, runId: number, commentId: number, actor: string,
-  unusable: (image: FeedbackImage) => string | null, now: Date): { ok: true; id: number } | { ok: false; reason: "not-found" | "image-usable" } {
+  unusable: (image: FeedbackImage) => string | null, now: Date): { ok: true; id: number } | { ok: false; reason: "not-found" | "image-usable" | "not-authorized" } {
   return store.transact(() => {
+    // The person's standing is re-read under the write lock: a revocation, a downgrade or a lost project committed
+    // after the request was admitted refuses here (check and write together).
+    const run = store.getRun(runId);
+    const repo = run === null ? null : store.refById(run.taskRef)?.repo ?? null;
+    const account = store.accountOf(actor);
+    if (run === null || account === null || account.revokedAt !== null || account.role !== "approver" || !store.accountCanAccess(actor, repo)) {
+      return { ok: false as const, reason: "not-authorized" as const };
+    }
     const live = store.handle.prepare(`SELECT id, image_json FROM diff_comment WHERE id = ? AND run = ? AND superseded_by IS NULL AND consumed_by IS NULL
       AND reviewer_run IS NULL AND image_json IS NOT NULL`).get(commentId, runId);
     if (live === undefined) return { ok: false as const, reason: "not-found" as const };
@@ -25512,9 +25520,8 @@ export function dropFeedbackImage(store: Store, runId: number, commentId: number
     const id = Number(copy.lastInsertRowid);
     const moved = store.handle.prepare("UPDATE diff_comment SET superseded_by = ? WHERE id = ? AND superseded_by IS NULL AND consumed_by IS NULL").run(id, commentId);
     if (Number(moved.changes) !== 1) throw new Error("The saved note changed while its screenshot was being removed.");
-    const run = store.getRun(runId);
-    store.recordAction({ at: now.toISOString(), actor, repo: run === null ? null : store.refById(run.taskRef)?.repo ?? null,
-      taskId: run === null ? null : store.externalIdFor(run.taskRef) ?? null, runId, action: "feedback screenshot removed", outcome: "recorded", source: "work",
+    store.recordAction({ at: now.toISOString(), actor, repo,
+      taskId: store.externalIdFor(run.taskRef) ?? null, runId, action: "feedback screenshot removed", outcome: "recorded", source: "work",
       detail: `note ${commentId} kept as note ${id} without screenshot ${image.artifact}: ${problem}` });
     return { ok: true as const, id };
   });

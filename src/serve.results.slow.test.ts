@@ -1,4 +1,5 @@
 import { readChatResult } from "./chat-review.js";
+import { dropFeedbackImage } from "./store.js";
 /**
  * The console server: the review cockpit — a ranked, verified projection of
  * completed work and its result pages.
@@ -2064,6 +2065,10 @@ describe("the review cockpit (Priority 5): a ranked, verified projection of comp
     expect((await drop(cookie, { csrf: "0".repeat(64) })).status).toBe(403);
     expect((await fetch(url(`/r/${run}/comment?intent=drop-image&comment=${saved!.id}`), { headers: { cookie }, redirect: "manual" })).status).not.toBe(303);
     expect((await drop(cookie, { comment: "999999" })).status).toBe(409);
+    // Standing is re-proved inside the write itself, past the handler: a person without this project (or one whose
+    // access was lost after admission) is refused there too.
+    expect(dropFeedbackImage(store, run, saved!.id, "robin", () => "unavailable", new Date())).toEqual({ ok: false, reason: "not-authorized" });
+    expect(dropFeedbackImage(store, run, saved!.id, "nobody", () => "unavailable", new Date())).toEqual({ ok: false, reason: "not-authorized" });
     unchanged();
     expect(removals()).toEqual([]);
     // The approver on this project may keep the words without the broken screenshot; the ledger names who did it.

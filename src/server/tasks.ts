@@ -1456,6 +1456,7 @@ export function createTasksHandlers(runtime: ServerRuntime) {
       const comment = Number(body.get("comment") ?? "");
       if (!Number.isSafeInteger(comment) || comment < 1) return refuse(response, who, 400, "Choose a saved note.", back);
       const dropped = dropFeedbackImage(store, id, comment, who.name, one => feedbackImageProblem(store, evidenceRoot, id, one), now);
+      if (!dropped.ok && dropped.reason === "not-authorized") return refuse(response, who, 403, "Only a signed-in approver on this project can change saved feedback.", back);
       if (!dropped.ok) return refuse(response, who, 409, dropped.reason === "image-usable"
         ? "That screenshot still verifies, so the note keeps it. Reload the result." : "That saved note changed or was already used. Reload the result.", back);
       return redirect(response, `${back}#request-changes`);
