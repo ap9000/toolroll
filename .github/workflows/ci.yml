@@ -36,6 +36,7 @@ jobs:
     # unprivileged, so the agent-fence and ACP tests take the Linux fence road
     # they were never written for.
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     strategy:
@@ -60,7 +61,8 @@ jobs:
           cache: npm
       # The sandbox runtime's tools, and unprivileged user namespaces (ubuntu-24.04's AppArmor default refuses them),
       # as the linux fence job sets them up: flows' scripts and tools' servers run in the real Linux fence here.
-      - run: sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
+      - timeout-minutes: 8
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm ci
       - run: npm run typecheck
@@ -93,6 +95,7 @@ jobs:
     needs: test-shard
     if: ${{ always() }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     strategy:
@@ -137,6 +140,7 @@ jobs:
   macos-shard:
     name: node ${{ matrix.node }} · macos shard ${{ matrix.shard }}/4
     runs-on: macos-latest
+    timeout-minutes: 40
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     strategy:
@@ -186,6 +190,7 @@ jobs:
     needs: macos-shard
     if: ${{ always() }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     strategy:
@@ -246,6 +251,7 @@ jobs:
   scope:
     name: area lanes · scope
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     outputs:
@@ -298,6 +304,7 @@ jobs:
     # Skipped only on a documentation-only pull request, by a scope job that succeeded; otherwise it runs.
     if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
@@ -343,6 +350,7 @@ jobs:
     # Skipped only on a documentation-only pull request, by a scope job that succeeded; otherwise it runs.
     if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
@@ -358,7 +366,8 @@ jobs:
         with:
           node-version: "22"
           cache: npm
-      - run: sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
+      - timeout-minutes: 8
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap socat ripgrep
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - run: npm ci
       - run: npm run build
@@ -373,6 +382,7 @@ jobs:
     # Skipped only on a documentation-only pull request, by a scope job that succeeded; otherwise it runs.
     if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}
     runs-on: windows-latest
+    timeout-minutes: 30
     env:
       TESTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
@@ -412,6 +422,7 @@ jobs:
     # Skipped only on a documentation-only pull request, by a scope job that succeeded; otherwise it runs.
     if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     # --init: an init process reaps orphaned children, as a real machine's PID 1 does (the pool's orphaned-group test).
     container:
       image: node:22-trixie
@@ -448,6 +459,7 @@ jobs:
     # Skipped only on a documentation-only pull request, by a scope job that succeeded; otherwise it runs.
     if: ${{ always() && !(needs.scope.result == 'success' && needs.scope.outputs.areas == 'docs-only') }}
     runs-on: ubuntu-24.04
+    timeout-minutes: 25
     # --init: an init process reaps orphaned children, as a real machine's PID 1 does (the pool's orphaned-group test).
     container:
       image: node:22-trixie
