@@ -219,8 +219,9 @@ const PERSON_PROOFS = new Set(["password-now", "sso-now", "session", "cli-login"
 export type ApplyInput = {
   scope: string;
   change: readonly ModelChange[];
-  /** The state the person saw, and (for a preview) the exact change it showed. */
-  expected: { state: string; change?: string };
+  /** The state a page showed, and (for a preview) the exact change it showed; null on the command line, which shows
+   * nothing before it writes. */
+  expected: { state: string; change?: string } | null;
   /** The console: exact ids only. The CLI may also name a floating name, or a routine row with no model. The
    * resulting configuration is checked the same way for both. */
   strict: boolean;
@@ -342,8 +343,13 @@ function applyLocked(store: Store, input: ApplyInput, authority: ModelAuthority,
       }
       const scope = input.scope;
       if (scope !== INSTALLATION_SCOPE && !input.knownProject(scope)) throw new Refused({ ok: false, reason: "unknown-project", problem: "That isn't a project here." });
-      if (stateDigest(store, scope) !== input.expected.state) throw new Refused({ ok: false, reason: "stale", problem: "Models changed since this page loaded. Nothing was saved. Review the current choices and try again." });
-      if (input.expected.change !== undefined && diffDigest(scope, diffOf(store, scope, input.change)) !== input.expected.change) throw new Refused({ ok: false, reason: "stale", problem: "This change is not the one you reviewed. Nothing was saved." });
+      // A page's form or preview: refused when what it showed moved since. The command line shows nothing first
+      // (`expected: null`): its change applies to the rows as they stand inside this transaction, and the result is
+      // checked below against exactly those rows, so concurrent command-line writers serialize instead of refusing.
+      if (input.expected !== null) {
+        if (stateDigest(store, scope) !== input.expected.state) throw new Refused({ ok: false, reason: "stale", problem: "Models changed since this page loaded. Nothing was saved. Review the current choices and try again." });
+        if (input.expected.change !== undefined && diffDigest(scope, diffOf(store, scope, input.change)) !== input.expected.change) throw new Refused({ ok: false, reason: "stale", problem: "This change is not the one you reviewed. Nothing was saved." });
+      }
       const keys = input.change.map(one => slotKey(one.slot));
       if (new Set(keys).size !== keys.length) throw new Refused({ ok: false, reason: "invalid", problem: "Each role can change once per save." });
       for (const one of input.change) {
