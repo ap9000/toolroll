@@ -42,7 +42,8 @@ export const youiyouxRequestSchema = z.object({
   author: who,
   createdAt: when,
   updatedAt: when,
-  target: z.object({ route: text(300), scope: z.enum(["here", "element"]), name: text(200) }),
+  // Where the person pointed: the page, the component, and (when youiyoux knew it) the file and line that draw it.
+  target: z.object({ route: text(300), scope: z.enum(["here", "element"]), name: text(200), file: text(500).optional(), line: z.int().positive().max(Number.MAX_SAFE_INTEGER).optional() }),
   task: youiyouxTaskSchema.optional(),
   thread: z.array(z.unknown()).max(500),
 });

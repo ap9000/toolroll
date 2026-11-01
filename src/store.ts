@@ -758,8 +758,9 @@ export const V141_ADDED_COLUMNS: Readonly<Record<string, Readonly<Record<string,
  * has looked at: a person's on/off choice (`enabled` NULL: automatic, on while the project uses youiyoux) and the last
  * pass's answer (whether the project uses youiyoux, how many request files couldn't be read, and the problem, if any).
  * `youiyoux_request` is one row per request taken, keyed by project and request id: the task it became (NULL: left
- * out, `note` says why), never filed again, and the status last written beside it, with the console address its links
- * named ('' for none). New tables only. */
+ * out, `note` says why), never filed again, the status last written beside it, with the console address its links
+ * named ('' for none), and where the person pointed (route, component, file:line), cleaned, for the task page. New
+ * tables only. */
 export const V142_SCHEMA = `
 CREATE TABLE IF NOT EXISTS youiyoux_intake (
   repo        TEXT PRIMARY KEY,
@@ -783,6 +784,9 @@ CREATE TABLE IF NOT EXISTS youiyoux_request (
   written_at    TEXT,
   written_base  TEXT,
   write_problem TEXT,
+  route         TEXT,
+  component     TEXT,
+  source_at     TEXT,
   PRIMARY KEY (repo, request),
   UNIQUE (task_id)
 );
@@ -12054,6 +12058,19 @@ export class Store {
   taskSourceOf(taskId: string): { flow: number; card: number; entry: number; sourceJson: string } | null {
     const row = this.db.prepare("SELECT flow, card, card_entry, source_json FROM task_source WHERE task_id = ?").get(taskId);
     return row === undefined ? null : { flow: Number(row["flow"]), card: Number(row["card"]), entry: Number(row["card_entry"]), sourceJson: String(row["source_json"]) };
+  }
+
+  /** v142: where a task filed from a youiyoux change request came from, as kept when it was filed (youiyoux-intake.ts;
+   * a revision reads its first version's): the request, and where the person pointed. Null for every other task. */
+  youiyouxOriginOf(taskId: string): { request: string; route: string | null; component: string | null; at: string | null } | null {
+    const text = (value: unknown) => typeof value === "string" && value !== "" ? value : null;
+    let id: string | null = taskId;
+    for (let hop = 0; id !== null && hop < 20; hop++) {
+      const row = this.db.prepare("SELECT request, route, component, source_at FROM youiyoux_request WHERE task_id = ?").get(id);
+      if (row !== undefined) return { request: String(row["request"]), route: text(row["route"]), component: text(row["component"]), at: text(row["source_at"]) };
+      id = this.lookupRef(id)?.revisionOf ?? null;
+    }
+    return null;
   }
 
   // ---- the revision boundary: ONE field-by-field policy -------------------

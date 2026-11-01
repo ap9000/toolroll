@@ -165,7 +165,9 @@ function statement(text: string): string {
   return line(text.replace(/\|/g, "/"), 300);
 }
 
-export type RequestTask = { title: string; goal: string; outOfScope: string | null; touches: string[]; acceptance: { id: string; statement: string; how: null; evidence: string[] }[] };
+export type RequestTask = { title: string; goal: string; outOfScope: string | null; touches: string[]; acceptance: { id: string; statement: string; how: null; evidence: string[] }[];
+  /** Where the person pointed, for the task page: the route, the component, and `file:line` when youiyoux knew a plain one. */
+  pointed: { route: string; component: string; at: string | null } };
 
 /** The task a request asks for, in Toolroll's terms. Text is cleaned here; whether it may be filed is decided by the caller. */
 export function requestTask(request: YouiyouxRequest): RequestTask {
@@ -179,15 +181,22 @@ export function requestTask(request: YouiyouxRequest): RequestTask {
     touches,
     acceptance: task.acceptance.map((one, index) => ({ id: `c${index + 1}`, statement: statement(one.statement), how: null, evidence: [...new Set(one.evidence)] }))
       .filter(one => one.statement !== ""),
+    pointed: { route: line(request.target.route, 300), component: line(request.target.name, 200), at: pointedAt(request.target) },
   };
+}
+
+/** `file:line` (or the file alone) where youiyoux knew a plain relative path; null otherwise. */
+function pointedAt(target: YouiyouxRequest["target"]): string | null {
+  const file = target.file === undefined ? null : safeTouches([target.file])?.[0] ?? null;
+  return file === null ? null : target.line === undefined ? file : `${file}:${target.line}`;
 }
 
 /** Why a request's task can't be filed as it stands, or null. */
 function refusalOf(request: YouiyouxRequest, task: RequestTask): string | null {
   const given = request.task!;
   // Read as written and as cleaned: cleaning must never be what lets a key through.
-  const raw = [given.title, given.goal, request.target.route, ...given.not, ...given.touches, ...given.acceptance.map(one => one.statement)];
-  const all = [task.title, task.goal, task.outOfScope ?? "", ...task.touches, ...task.acceptance.map(one => one.statement)];
+  const raw = [given.title, given.goal, request.target.route, request.target.name, request.target.file ?? "", ...given.not, ...given.touches, ...given.acceptance.map(one => one.statement)];
+  const all = [task.title, task.goal, task.outOfScope ?? "", ...task.touches, ...task.acceptance.map(one => one.statement), task.pointed.route, task.pointed.component, task.pointed.at ?? ""];
   if ([...raw, ...all].some(one => scanForSecrets(one).length > 0)) return "it looked like it held a key or password";
   if (all.some(one => hasDisguisedText(one))) return "it carried hidden characters";
   if (task.acceptance.length === 0) return "it had no requirement to check";
@@ -351,7 +360,8 @@ export function fileYouiyouxRequest(store: Store, repo: string, request: Youiyou
       filedVia: YOUIYOUX_FILED_VIA, filedBy: { name: YOUIYOUX_ACTOR, kind: "automation" }, planning: "skip", admittedRepos: [repo],
     }, now);
     if (!filed.ok) return leaveOut(`Toolroll refused it: ${filed.message}`);
-    store.handle.prepare("INSERT INTO youiyoux_request (repo, request, task_id, filed_at) VALUES (?, ?, ?, ?)").run(repo, request.id, filed.id, now.toISOString());
+    store.handle.prepare("INSERT INTO youiyoux_request (repo, request, task_id, filed_at, route, component, source_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(repo, request.id, filed.id, now.toISOString(), task.pointed.route, task.pointed.component, task.pointed.at);
     store.recordAction({ at: now.toISOString(), actor: YOUIYOUX_ACTOR, repo, taskId: filed.id, runId: null, action: "filed from a youiyoux request", outcome: "waits for approval", source: "work", detail: request.id });
     return { made: "filed" as const, taskId: filed.id };
   });

@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { openStore, type Store } from "./store.js";
 import { addApprover, propose } from "./scope.js";
 import { shownTermsDigest } from "./chat-terms.js";
+import { originNote, originOf } from "./task-source.js";
 import { fileTaskProposal } from "./proposal.js";
 import { applyModeToNewFiling } from "./plan-auto.js";
 import { modeDigestOf, modeTermsJson, presetTerms } from "./modes.js";
@@ -94,6 +95,21 @@ describe("filing", () => {
     expect(pass(later(2)).filed).toBe(1);
     expect(cards().map(one => one["subject"])).toEqual(["2 youiyoux change requests wait for your approval", "A youiyoux change request waits for your approval"]);
     expect(requestPassOf(store, taskOf("r-2222222222"))).toEqual([taskOf("r-2222222222")]);
+  });
+
+  test("the task says where it came from: the request, the page, the component and its file and line", () => {
+    save(`${ID}.json`, request());
+    save("r-1111111111.json", request("r-1111111111", { target: { route: "/settings", scope: "here", name: "Page", file: "/Users/rosa/src/page.tsx", line: 4 } }));
+    expect(pass().filed).toBe(2);
+    expect(originOf(store, taskOf(), () => true)).toEqual({ flow: null, source: null, request: { id: ID, route: "/flows", component: "Button", at: "src/button.tsx:12" } });
+    expect(originNote(originOf(store, taskOf(), () => true))).toBe(`From youiyoux change request ${ID}: Button on /flows (src/button.tsx:12). Whoever can write the project's folder wrote these words; read them all before you approve.`);
+    // A file that isn't a plain path inside the project is left out; the rest stands.
+    expect(originOf(store, taskOf("r-1111111111"), () => true)?.request).toEqual({ id: "r-1111111111", route: "/settings", component: "Page", at: null });
+    // Any other task has no such origin.
+    const own = fileTaskProposal(store, { title: "Alex's own", repo, goal: "Change one line", acceptance: [{ id: "c1", statement: "it works", how: null, evidence: ["check"] }],
+      filedVia: "console", filedBy: { name: "alex", kind: "person" }, planning: "skip" }, NOW);
+    if (!own.ok) throw new Error(own.message);
+    expect(originOf(store, own.id, () => true)).toBeNull();
   });
 
   test("two passes that read the same request before either filed it make one task", () => {
