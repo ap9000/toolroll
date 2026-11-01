@@ -25,12 +25,21 @@ export function outcomeFixture(store: Store, repo: string, now: Date, by?: { nam
     store.finishRun(run, { outcome: 'built', committed: true, now: at });
     store.setTaskState(id, 'done', at);
     store.recordRunCheck(run, { status: options.check ?? 'passed', exitCode: options.check === 'failed' ? 1 : 0, suites: [] }, at);
-    store.handle.prepare('UPDATE run SET cost_usd=? WHERE id=?').run(options.cost === undefined ? 1 : options.cost, run);
+    bill(run, options.cost === undefined ? 1 : options.cost);
     return { id, ref, run, at };
+  }
+  /** Records a run's amount the way invoke/spend do: evidenced API dollars, subscription usage, or an unreported
+   * charge (cost_unknown: cost_usd then holds a conservative cap). Null leaves the cost unknown. */
+  function bill(run: number, cost: number | null, billing: 'api-key' | 'subscription' | 'unreported' = 'api-key') {
+    store.handle.prepare('DELETE FROM run_spend WHERE run=?').run(run);
+    store.handle.prepare("UPDATE run SET cost_usd=?, billing_basis=?, cost_unknown=? WHERE id=?")
+      .run(cost, cost === null ? null : 'evidence', billing === 'unreported' || cost === null ? 1 : 0, run);
+    if (cost !== null) store.handle.prepare("INSERT INTO run_spend (run, microusd, source, billing, billing_fixed, priced_at) VALUES (?, ?, 'reported', ?, 1, ?)")
+      .run(run, billing === 'subscription' ? null : Math.round(cost * 1_000_000), billing === 'subscription' ? 'subscription' : 'api-key', now.toISOString());
   }
   function complete(task: ReturnType<typeof built>, actor = 'operator:inspector', root = task.id, hours = 1, machine = false) {
     store.recordAction({ at: before(hours).toISOString(), actor, repo: store.lookupRef(task.id)!.repo, taskId: root, runId: task.run,
       action: COMPLETION_ACTION, outcome: 'd'.repeat(64), source: 'work', detail: machine ? 'proof machine' : actor.startsWith('operator:') ? COMPLETION_BY_PERSON : 'its work landed' });
   }
-  return { built, complete, password: added.token };
+  return { built, bill, complete, password: added.token };
 }

@@ -2,7 +2,7 @@
   "about": "Calls the lead and gateway tools accepted in 0.9.36, as the model and coordinators made them (taken from the behavior suites). Every one is read the same by the 0.9.36 schema (schemas-0.9.36.json) and the derived one.",
   "lead": {
     "get_brief": [{}, { "repo": "r1" }],
-    "get_project_activity": [{ "repo": "r1" }],
+    "get_project_activity": [{ "repo": "r1" }, { "repo": "r1", "offset": 10 }],
     "get_project_context": [{ "repo": "r1", "query": "where the footer link is rendered" }, { "repo": "r2", "query": "src/serve.ts", "mode": "impact" }],
     "get_action_status": [{ "proposal": 3 }],
     "get_actions": [{}],

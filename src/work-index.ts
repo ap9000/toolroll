@@ -520,16 +520,26 @@ export function workOutcomeRows(store: Store, now: Date, access: WorkSummaryAcce
     SELECT * FROM ranked WHERE code='ready-to-check' OR code='history-problem'
       OR (code='complete' AND checked_at >= $since AND checked_at <= $now)
     ORDER BY sort_at DESC,root_ref DESC LIMIT $outcomeLimit
+  ), amounts AS (
+    -- reported-usage.ts runAmountOf, row for row: only evidenced billing on a run whose cost was reported is known;
+    -- an API run counts its priced spend as dollars, a subscription run its reported cost as usage, never dollars.
+    SELECT m.root_ref,r.cost_usd,s.microusd,
+      CASE WHEN r.billing_basis IS NOT 'evidence' OR COALESCE(r.cost_unknown,1)<>0 THEN 'unknown'
+        WHEN s.billing='subscription' THEN 'subscription'
+        WHEN s.billing='api-key' AND typeof(s.microusd)='integer' AND s.microusd>=0 THEN 'api'
+        ELSE 'unknown' END amount
+    FROM selected f JOIN members m ON m.root_ref=f.root_ref JOIN run r ON r.task_ref=m.ref_id LEFT JOIN run_spend s ON s.run=r.id
   ), attempts AS (
-    SELECT m.root_ref,COUNT(*) runs,COUNT(CASE WHEN r.cost_usd>=0 THEN 1 END) known_runs,
-      SUM(CASE WHEN r.cost_usd>=0 THEN r.cost_usd END) recorded_usd
-    FROM selected f JOIN members m ON m.root_ref=f.root_ref JOIN run r ON r.task_ref=m.ref_id
-    GROUP BY m.root_ref
+    SELECT root_ref,COUNT(*) runs,COUNT(CASE WHEN amount='api' THEN 1 END) api_runs,
+      SUM(CASE WHEN amount='api' THEN microusd END) api_microusd,
+      COUNT(CASE WHEN amount='subscription' THEN 1 END) subscription_runs,
+      SUM(CASE WHEN amount='subscription' AND typeof(cost_usd) IN ('integer','real') AND cost_usd>=0 THEN cost_usd END) subscription_usd
+    FROM amounts GROUP BY root_ref
   ) SELECT f.root_id,f.id task_id,f.root_title title,f.code,f.finished_at,f.result_id,f.result_role,
     f.version_count,f.checked_at,f.checked_actor,f.checked_detail,
     (SELECT lead FROM task_act WHERE task_ref=f.root_ref AND act='completed' AND at=f.checked_at ORDER BY id DESC LIMIT 1) completed_by_lead,
     (SELECT status FROM run_check WHERE run=f.result_id) check_status,
-    COALESCE(a.runs,0) runs,COALESCE(a.known_runs,0) known_runs,a.recorded_usd
+    COALESCE(a.runs,0) runs,COALESCE(a.api_runs,0) api_runs,a.api_microusd,COALESCE(a.subscription_runs,0) subscription_runs,a.subscription_usd
     FROM selected f LEFT JOIN attempts a ON a.root_ref=f.root_ref ORDER BY f.sort_at DESC,f.root_ref DESC`)
     .all({ ...parameters(now, access, { project }, custodyReadings(store)), $since: since, $outcomeLimit: limit + 1 });
 }

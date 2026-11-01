@@ -4,7 +4,7 @@ import { checkLevelFromWords, isCheckLevel } from "./check-levels.js";
 import { policyParts } from "./policy.js";
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import { projectOutcomes } from './project-outcomes.js';
+import { projectOutcomes, projectOutcomesPage } from './project-outcomes.js';
 import { repositoryContextRead } from './repository-context.js';
 import { assignmentCatchUp } from './assignment-brief.js';
 import { CHAT_ACTIONS, CHAT_ACTION_FIELDS, isChatAction, prepareSharedAction, sharedActionNeedsReview, sharedActionPayload } from './chat-actions.js';
@@ -554,11 +554,11 @@ const LEAD_TOOL_HANDLERS: { [N in LeadToolName]: LeadToolHandler<N> } = {
     },
   },
   get_project_activity: {
-    description: 'Read project Activity: current Ready backlog, finished-to-decision elapsed time, explicit revisions and recorded cost for completed families in the last 60 days. Includes coverage and underlying tasks; not review labor or a quality score.',
+    description: 'Read project Activity: current Ready backlog, finished-to-decision elapsed time, explicit revisions and recorded cost for completed families in the last 60 days. Includes coverage and a page of underlying tasks (offset: nextOffset for more); not review labor or a quality score.',
     handle: (ctx, args) => {
       const repo = repoPathOf(ctx.who, args['repo']);
       if (!repo || !ctx.store.accountCanAccess(ctx.who.name, repo)) return { ok: false, message: 'Choose an available project from list_repos.' };
-      return { ok: true, body: projectOutcomes(ctx.store, repo, ctx.now, { principal: 'operator', repos: ctx.who.repos }) };
+      return { ok: true, body: projectOutcomesPage(projectOutcomes(ctx.store, repo, ctx.now, { principal: 'operator', repos: ctx.who.repos }), Number(args['offset'] ?? 0)) };
     },
   },
   get_project_context: {
