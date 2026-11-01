@@ -3,6 +3,7 @@
  * `change` carries the snapshot, it is the reader's own (a narrowed account sees its projects only), and being in it
  * never watches an agent. */
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -126,6 +127,28 @@ describe("the sidebar's project states", () => {
     const robinStream = await fetch(url("/live?room=summary"), { headers: { cookie: robin, accept: "text/event-stream" }, signal: theirs.signal });
     expect(Object.keys(statesOf(snapshotOf(await until(robinStream.body!.getReader(), frame => frame.includes("event: change")))))).toEqual([repoB]);
     theirs.abort();
+  });
+
+  test("settings frame: a sensitive page keeps the open project and its breadcrumb, and carries no live state", async () => {
+    running("t-a", repoA);
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: repoA });
+    const alex = await login("alex", alexToken);
+    const csrf = (await page("/projects", alex)).csrf;
+    const opened = await fetch(url("/projects/open"), { method: "POST", headers: { cookie: alex, origin: base }, body: new URLSearchParams({ csrf, path: repoA }), redirect: "manual" });
+    expect(opened.status).toBe(303);
+    // A password page: the picker still names the open project; no states, no remembered-password chip, no usage chip.
+    const retention = await page("/settings/retention", alex);
+    expect(retention.sensitive).toBe(true);
+    expect(retention.openProject).toBe(repoA);
+    expect(retention.crumbs).toEqual([{ label: "Settings", href: "/settings" }, { label: "Retention", href: null }]);
+    expect(retention.projectStates).toBeUndefined();
+    expect(retention.fresh).toBeUndefined();
+    expect(retention.usage).toBeUndefined();
+    // An ordinary page names the same open project and keeps its live states.
+    const agents = await page("/agents", alex);
+    expect(agents.openProject).toBe(repoA);
+    expect(agents.crumbs).toBeUndefined();
+    expect(statesOf(agents.projectStates)[repoA]).toBeDefined();
   });
 
   test("a password page carries no rail states", async () => {

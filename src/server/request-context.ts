@@ -33,6 +33,8 @@ export type RequestFacts = {
   workspaceValidator?: { key: string; revision: string; expiresAt: number; etag: string };
   /** Passwordless is on and this is a signed-in browser: ceremony password fields render as nothing (html.ts reauth). */
   passwordless?: boolean;
+  /** The browser session's open project (display only: the sidebar's picker names it). */
+  openProject?: string | null;
 };
 
 /**

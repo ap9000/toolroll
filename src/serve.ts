@@ -173,6 +173,7 @@ import { createChatHandlers } from './server/chat.js';
 import { createLiveHandlers } from './server/live.js';
 import { createTerminalHandlers, terminalHostFor } from './server/terminals.js';
 import { passwordlessOn } from './passwordless.js';
+import { settingsCrumbs } from './settings-kit.js';
 import { createSweepHandlers } from './server/sweeps.js';
 import { createFlowsHandlers } from './server/flows.js';
 import type { HandlerContext } from './server/handler-context.js';
@@ -875,6 +876,7 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       browser: who.via === 'cookie',
       // Passwordless (read once for rendering; every act proves it again at the act): ceremony fields render as nothing.
       passwordless: who.via === 'cookie' && passwordlessOn(store),
+      openProject: who.via === 'cookie' ? who.session.project : null,
       // v100: signed in with the identity provider: its label, and whether it checked them recently enough to stand in for a password.
       // Cockpit B2: "fresh" is an explicit re-check made on request and not yet spent (read live; one step-up uses it).
       sso: who.via === 'cookie' && who.session.sso !== undefined ? { label: ssoSettings()?.label ?? "your identity provider",
@@ -1455,6 +1457,11 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
     // D5: team chat (the central team service) is deprecated; /chat?team=1 still opens this release, but nothing links to it.
     const sensitive = authored || s.forceSensitive === true;
     const requestFacts = requestContext.getStore();
+    // The settings frame (settings-kit.ts): its breadcrumb, for the shell and the workspace alike.
+    if (s.chrome !== undefined && s.chrome.crumbs === undefined) {
+      const crumbs = settingsCrumbs(new URL(requestFacts?.returnTo ?? '/', 'http://standing-orders.local').pathname, s.title, htmlString(s.body));
+      if (crumbs !== undefined) s = { ...s, chrome: { ...s.chrome, crumbs } };
+    }
     if (requestFacts?.browser && s.chrome && !s.forceSensitive && (requestFacts.workspaceRead || browserAssetsAvailable())) {
       const path = new URL(requestFacts.returnTo, 'http://standing-orders.local');
       path.searchParams.delete('format');
@@ -1516,6 +1523,9 @@ export function createDecisionServer(options: ServeOptions): DecisionServer {
       const request = requestFacts.workspaceRequest;
       const workspace: BrowserWorkspace = {
         version: 1, path: currentPath, title: s.title, user: requestFacts.actor ?? '', csrf: requestFacts.csrf, sensitive,
+        // The project picker names the open project; the settings frame carries its breadcrumb.
+        openProject: requestFacts.openProject ?? null,
+        ...(s.chrome.crumbs === undefined ? {} : { crumbs: s.chrome.crumbs }),
         ...(requestFacts.passwordless === true ? { passwordless: true } : {}),
         ...(requestFacts.actor ? { leadName: leadNameOf(store, requestFacts.actor) } : {}),
         refreshUrl: path.pathname + path.search,

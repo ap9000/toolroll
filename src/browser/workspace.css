@@ -116,6 +116,13 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 
 .so-workspace .so-main-content { flex: 1; min-height: 0; min-width: 0; max-width: none; width: 100%; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .so-page-content { padding: var(--so-space-2xl) var(--so-space-3xl); overflow: auto; min-height: 0; }
+/* The settings frame: one 760px column, the breadcrumb in the header, and room under a sticky Save. */
+.so-workspace--settings .so-page-content > * { max-width: var(--so-settings-width, 760px); }
+.so-workspace--settings .so-page-content:has(.kit-save-bar) { scroll-padding-bottom: 80px; }
+.so-workspace-header .kit-crumbs { min-width: 0; flex-shrink: 1; }
+.so-workspace-header .kit-crumbs ol { flex-wrap: nowrap; font-size: inherit; }
+.so-workspace-header .kit-crumbs li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.so-workspace-header .kit-crumbs li:last-child { min-width: 0; }
 .so-lead-chat { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .ui-conversation { position: relative; flex: 1; min-height: 0; overflow: hidden; }
 .ui-conversation > div { height: 100%; overflow-y: auto; overscroll-behavior: contain; }
@@ -190,6 +197,11 @@ html[data-mobile-keyboard] { --safe-bottom: 0px; }
 .so-crew-group-title > span { font: 12px/1 var(--so-mono); font-variant-numeric: tabular-nums; }
 .so-crew-more > summary { min-height: 36px; display: flex; align-items: center; font-size: 12px; color: var(--so-muted); }
 .so-project-states { display: grid; gap: 1px; margin: var(--so-space-sm) 0; }
+/* The sidebar keeps its slots on every page (settings revamp S2): the live parts sit in wrappers that don't change the
+   layout, and a sensitive page shows the project names as static text in the same place. */
+[data-sidebar-slot]:not(.so-project-states), .so-sidebar-live { display: contents; }
+.so-project-states--inert .so-project-state { display: flex; align-items: center; min-height: 30px; margin: 0; padding: 0 10px; border-radius: 6px; font-size: 13px; color: var(--so-muted); }
+.so-project-states--inert .so-project-state[aria-current] { background: var(--so-raised); color: var(--so-ink); }
 .so-project-state > a { display: flex; align-items: center; gap: var(--so-space-sm); min-height: 30px; padding: 0 10px; border-radius: 6px; font-size: 13px; color: var(--so-ink); text-decoration: none; }
 .so-project-state > a[aria-current] { background: var(--so-raised); }
 .so-project-state-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
